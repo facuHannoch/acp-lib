@@ -2,6 +2,15 @@
 // These are what every client (AcpClient, and later PtyClient) produces, so callers
 // render against these regardless of which mode is active. See SPEC.md.
 
+/**
+ * A slash command the AGENT itself exposes (e.g. codex /model, kimi /sessions), learned
+ * from the `available_commands_update` notification. Invoke with the `//name` passthrough.
+ */
+export interface AgentCommand {
+  name: string;
+  description: string;
+}
+
 /** Token accounting for a turn. Nullable per-field — not all providers report all of it. */
 export interface Usage {
   inputTokens: number;

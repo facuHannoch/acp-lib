@@ -5,6 +5,7 @@ import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { Logger } from "./logger.ts";
 import type {
+  AgentCommand,
   Attachment,
   PromptHandlers,
   PromptResult,
@@ -129,6 +130,11 @@ export class AgentController implements AgentClient {
   /** Auth methods the agent advertised (empty in degraded mode or if none). */
   get authMethods(): Capabilities["authMethods"] {
     return this.acp?.authMethods ?? [];
+  }
+
+  /** Slash commands the agent exposes (ACP mode only). Reach them via the `//name` passthrough. */
+  get agentCommands(): AgentCommand[] {
+    return this.acp?.agentCommands ?? [];
   }
 
   get adapterIds(): string[] {

@@ -635,3 +635,30 @@ the REPL (unhandled rejection); (b) Claude Code TUI rendered garbled through the
   the Claude garble). Clear on entry + exit.
 - Going back and forth bridge↔REPL keeps context (confirmed by user). Real-terminal
   Claude/codex render test still pending (harness has no TTY).
+
+## 2026-06-15 — command namespacing: `/` ours, `//` agent
+
+Three command sources were colliding (consumer / acp-lib native / agent). Native shadowed
+agent commands of the same name (kimi /sessions unreachable). Resolution:
+- **`//name` = verbatim agent passthrough** (repl.ts): sends `/name` to the agent as a
+  prompt, bypassing our handlers. Escape hatch for clashes (//sessions → kimi's).
+- **Agent commands surfaced**: AcpClient captures `available_commands_update` →
+  `agentCommands` getter; controller exposes it; `/help` lists them ("send with //name").
+  `AgentCommand` type added + exported.
+- Verified vs codex: `available_commands_update` arrives AFTER the first turn (not at
+  session/new), so /help shows agent cmds once a turn has happened — mcp, skills, status,
+  logout, $figma:*, etc. `//name` forwards correctly. Typecheck clean.
+- Plain `/foo` unchanged: native first, else fall through to agent. Degraded: `//name`
+  types /name into the TUI (may open a modal → pair with /bridge).
+
+## 2026-06-15 — /sessions empty on kimi: explicit-null cwd filter
+
+`/sessions` returned "(no sessions)" on (newly-upgraded) kimi, but works on codex.
+Root cause candidate: we sent `cwd: null` + `cursor: null` explicitly. Per schema cwd is
+an optional FILTER ("Filter sessions by working directory"); an explicit null can be read
+as "sessions whose cwd is null" → empty, vs OMITTING = no filter = all. codex tolerates
+null and returns all; kimi may not. Fix: build the request omitting cwd/cursor unless set.
+- codex regression check: still lists all 26 sessions. Typecheck clean.
+- kimi unverifiable locally (not installed) — needs user retest; if still empty, capture
+  `--debug` list_sessions_response to see if kimi returns [] (migration/upgrade) or a
+  different shape (parser).

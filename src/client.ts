@@ -27,6 +27,7 @@ import type {
   PermissionOutcome,
   Attachment,
   SessionListPage,
+  AgentCommand,
 } from "./types.ts";
 
 export interface AcpClientConfig {
@@ -89,6 +90,7 @@ export class AcpClient implements AgentClient {
   private transport: AcpTransport | null = null;
   private _capabilities: Capabilities | null = null;
   private _configOptions: ConfigOptions = new Map();
+  private _agentCommands: AgentCommand[] = [];
   private _sessionId: string | null = null;
 
   // Per-turn streaming state (only the in-flight turn).
@@ -130,6 +132,10 @@ export class AcpClient implements AgentClient {
   /** Auth methods the agent advertised. Empty does NOT mean authenticated (state is opaque). */
   get authMethods(): Capabilities["authMethods"] {
     return this._capabilities?.authMethods ?? [];
+  }
+  /** Slash commands the agent exposes (from available_commands_update). Reach via `//name`. */
+  get agentCommands(): AgentCommand[] {
+    return this._agentCommands;
   }
   get currentSessionId(): string | null {
     return this._sessionId;
@@ -333,10 +339,13 @@ export class AcpClient implements AgentClient {
     if (!this.capabilities.agent.sessionCapabilities.list) {
       throw new Error("agent does not advertise session/list (sessionCapabilities.list)");
     }
-    const res = await transport.listSessions({
-      cwd: options.cwd ?? this.config.cwd ?? null,
-      cursor: options.cursor ?? null,
-    } as schema.ListSessionsRequest);
+    // Send cwd/cursor ONLY when set. An explicit `cwd: null` is a filter some agents read
+    // as "sessions with no cwd" → empty; omitting it means "no filter" (all sessions).
+    const params: Record<string, unknown> = {};
+    const cwd = options.cwd ?? this.config.cwd;
+    if (cwd) params.cwd = cwd;
+    if (options.cursor) params.cursor = options.cursor;
+    const res = await transport.listSessions(params as schema.ListSessionsRequest);
     this.log.debug("list_sessions_response", { response: res });
     return {
       sessions: (res.sessions ?? []).map((s) => {
@@ -388,6 +397,7 @@ export class AcpClient implements AgentClient {
     cwd: string,
     mcpServers: schema.McpServer[],
   ): Promise<string> {
+    this._agentCommands = []; // re-populated by the agent's available_commands_update
     const res = await transport.newSession({ cwd, mcpServers } as schema.NewSessionRequest);
     this._configOptions = parseConfigOptions(res.configOptions);
     this.log.info("session_new", {
@@ -526,11 +536,17 @@ export class AcpClient implements AgentClient {
     this.log.debug("session_update", { notification });
 
     const update = notification.update;
+    const kind = (update as Record<string, any>).sessionUpdate;
     if (
-      (update as Record<string, any>).sessionUpdate === "config_option_update" &&
+      kind === "config_option_update" &&
       (!notification.sessionId || notification.sessionId === this._sessionId)
     ) {
       this._configOptions = parseConfigOptions((update as Record<string, any>).configOptions);
+    }
+    if (kind === "available_commands_update") {
+      this._agentCommands = ((update as Record<string, any>).availableCommands ?? []).map(
+        (c: Record<string, any>) => ({ name: c.name, description: c.description ?? "" }),
+      );
     }
 
     if (!this.active) {

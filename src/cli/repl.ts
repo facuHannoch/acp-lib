@@ -65,6 +65,12 @@ export async function runRepl(
   // ---- handle one accepted line; returns true to keep looping, false to exit ----
   const handleLine = async (line: string): Promise<boolean> => {
     if (line === "/exit" || line === "/quit") return false;
+    // `//foo` = verbatim passthrough: send `/foo` to the AGENT as a prompt (its own slash
+    // command), bypassing our handlers. The escape hatch for name clashes like /sessions.
+    if (line.startsWith("//")) {
+      await runTurn(line.slice(1));
+      return true;
+    }
     if (line.startsWith("/") && options.onSlashCommand) {
       const [command = "", ...rest] = line.slice(1).split(/\s+/);
       try {

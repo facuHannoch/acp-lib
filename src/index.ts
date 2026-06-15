@@ -70,4 +70,5 @@ export type {
   Attachment,
   SessionListEntry,
   SessionListPage,
+  AgentCommand,
 } from "./types.ts";

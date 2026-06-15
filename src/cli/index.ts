@@ -99,12 +99,21 @@ async function chat(args: Args): Promise<void> {
       intro,
       onSlashCommand: async (command, commandArgs) => {
         switch (command) {
-          case "help":
+          case "help": {
             note(
               `commands: /help ${controller.getCommands().map((c) => c.usage).join(" ")} ` +
                 `/degrade /upgrade /exit`,
             );
+            const agentCmds = controller.agentCommands;
+            if (agentCmds.length > 0) {
+              note(`agent commands (send with //name): ${agentCmds.map((c) => `/${c.name}`).join(" ")}`);
+            } else if (!controller.isDegraded) {
+              note("agent commands: (none advertised) — //name still forwards a /name to the agent");
+            } else {
+              note("//name forwards a /name slash command to the agent's TUI");
+            }
             return true;
+          }
           case "caps": {
             if (controller.isDegraded) {
               note("degraded (pty) mode — no ACP capabilities; /upgrade to reconnect over ACP");
