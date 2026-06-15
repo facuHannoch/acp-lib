@@ -16,6 +16,7 @@ import {
   AcpClient,
   ADAPTERS,
   createConsoleLogger,
+  type AgentClient,
   type AdapterPreset,
 } from "../index.ts";
 import { runRepl } from "./repl.ts";
@@ -84,6 +85,13 @@ async function chat(args: Args): Promise<void> {
 
   await client.connect();
   const { sessionId, resumed } = await client.startSession();
+  let current = client;
+  let currentAdapter = args.adapter;
+  const proxy: AgentClient = {
+    prompt: (...promptArgs) => current.prompt(...promptArgs),
+    interrupt: (...interruptArgs) => current.interrupt(...interruptArgs),
+    stop: () => current.stop(),
+  };
   const label = ADAPTERS[args.adapter].displayName ?? args.adapter;
   const intro =
     `${resumed ? "resumed" : "new"} session ${sessionId} (${label}) — ` +
@@ -93,7 +101,7 @@ async function chat(args: Args): Promise<void> {
   const note = (s: string) => process.stderr.write(paint(color, DIM, s) + "\n");
 
   try {
-    await runRepl(client, {
+    await runRepl(proxy, {
       activity: args.activity,
       // Suppress the spinner under --debug: raw session_update lines would fight its \r.
       spinner: !args.debug,
@@ -101,26 +109,26 @@ async function chat(args: Args): Promise<void> {
       onSlashCommand: async (command, commandArgs) => {
         switch (command) {
           case "help":
-            note("commands: /help /caps /session /sessions /load SESSION_ID /resume SESSION_ID /fork SESSION_ID /exit");
+            note("commands: /help /caps /session /sessions /load SESSION_ID /resume SESSION_ID /fork SESSION_ID /switch ADAPTER /exit");
             return true;
           case "caps": {
-            const c = client.capabilities.agent;
+            const c = current.capabilities.agent;
             note(
               `loadSession=${c.loadSession} image=${c.promptCapabilities.image} ` +
                 `logout=${c.auth?.logout ?? false} list=${c.sessionCapabilities.list} ` +
-                `config=[${[...client.configOptions.keys()].join(",")}]`,
+                `config=[${[...current.configOptions.keys()].join(",")}]`,
             );
             return true;
           }
           case "session":
-            note(String(client.currentSessionId));
+            note(`${current.currentSessionId} (${currentAdapter})`);
             return true;
           case "sessions": {
-            if (!client.capabilities.agent.sessionCapabilities.list) {
+            if (!current.capabilities.agent.sessionCapabilities.list) {
               note("agent does not support session/list");
               return true;
             }
-            const page = await client.listSessions();
+            const page = await current.listSessions();
             if (page.sessions.length === 0) note("(no sessions)");
             for (const s of page.sessions) {
               note(`${s.sessionId}  ${s.title ?? ""}  ${s.updatedAt ?? ""}`);
@@ -133,13 +141,13 @@ async function chat(args: Args): Promise<void> {
               note("usage: /load SESSION_ID");
               return true;
             }
-            if (!client.capabilities.agent.loadSession) {
+            if (!current.capabilities.agent.loadSession) {
               note("load not supported by this agent");
               return true;
             }
             const replay = createSessionReplayRenderer(color);
             clearTerminal();
-            const result = await client.loadSession(target, { onUpdate: replay.onUpdate });
+            const result = await current.loadSession(target, { onUpdate: replay.onUpdate });
             replay.finish();
             note(`loaded session ${result.sessionId}`);
             return true;
@@ -150,11 +158,11 @@ async function chat(args: Args): Promise<void> {
               note("usage: /resume SESSION_ID");
               return true;
             }
-            if (!client.capabilities.agent.sessionCapabilities.resume) {
+            if (!current.capabilities.agent.sessionCapabilities.resume) {
               note("resume not supported by this agent");
               return true;
             }
-            const result = await client.resumeSession(target);
+            const result = await current.resumeSession(target);
             note(`resumed session ${result.sessionId}`);
             return true;
           }
@@ -164,12 +172,53 @@ async function chat(args: Args): Promise<void> {
               note("usage: /fork SESSION_ID");
               return true;
             }
-            if (!client.capabilities.agent.sessionCapabilities.fork) {
+            if (!current.capabilities.agent.sessionCapabilities.fork) {
               note("fork not supported by this agent");
               return true;
             }
-            const result = await client.forkSession(target);
+            const result = await current.forkSession(target);
             note(`forked session ${target} -> ${result.sessionId}`);
+            return true;
+          }
+          case "switch": {
+            const target = commandArgs[0];
+            if (!target) {
+              note(`usage: /switch ADAPTER (${availableAdapters()})`);
+              return true;
+            }
+            if (!isAdapterPreset(target)) {
+              note(`unknown adapter: ${target}`);
+              note(`available adapters: ${availableAdapters()}`);
+              return true;
+            }
+            if (target === currentAdapter) {
+              note(`already using ${target}`);
+              return true;
+            }
+
+            const next = new AcpClient({
+              adapter: ADAPTERS[target],
+              execPrefix: args.execPrefix,
+              cwd: args.cwd,
+              defaultPermission: args.approve ? "approve" : "cancel",
+              logger,
+            });
+            let switched;
+            try {
+              await next.connect();
+              switched = await next.startSession();
+            } catch (err) {
+              await next.stop();
+              throw err;
+            }
+
+            const previous = current;
+            current = next;
+            currentAdapter = target;
+            await previous.stop();
+
+            const nextLabel = ADAPTERS[target].displayName ?? target;
+            note(`switched to ${nextLabel}, new session ${switched.sessionId}`);
             return true;
           }
           default:
@@ -178,7 +227,7 @@ async function chat(args: Args): Promise<void> {
       },
     });
   } finally {
-    await client.stop();
+    await current.stop();
   }
 }
 
@@ -191,6 +240,14 @@ await chat(args);
 
 function clearTerminal(): void {
   if (process.stderr.isTTY) process.stderr.write("\x1b[2J\x1b[H");
+}
+
+function isAdapterPreset(value: string): value is AdapterPreset {
+  return Object.hasOwn(ADAPTERS, value);
+}
+
+function availableAdapters(): string {
+  return Object.keys(ADAPTERS).join(", ");
 }
 
 function createSessionReplayRenderer(color: boolean): {
