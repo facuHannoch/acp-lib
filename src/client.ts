@@ -68,6 +68,15 @@ export interface ConnectResult {
   resumed: boolean;
 }
 
+export interface SwitchSessionOptions {
+  /** MCP servers bound while loading/resuming/forking the target session. */
+  mcpServers?: schema.McpServer[];
+  /** Additional absolute workspace roots to activate for the target session. */
+  additionalDirectories?: string[];
+  /** Raw session updates emitted while switching sessions, e.g. session/load replay. */
+  onUpdate?: (notification: unknown) => void;
+}
+
 interface QueueItem {
   text: string;
   handlers?: PromptHandlers;
@@ -87,6 +96,12 @@ export class AcpClient implements AgentClient {
     chunks: string[];
     handlers?: PromptHandlers;
     cancelled: boolean;
+  } | null = null;
+
+  // Session switch replay state (session/load may stream previous conversation history).
+  private replay: {
+    sessionId: string;
+    onUpdate?: (notification: unknown) => void;
   } | null = null;
 
   // Serialized prompt queue.
@@ -202,6 +217,100 @@ export class AcpClient implements AgentClient {
 
     this._sessionId = sessionId;
     return { sessionId, resumed };
+  }
+
+  /** Load an existing session and replay its history if the agent supports session/load. */
+  async loadSession(
+    sessionId: string,
+    options: SwitchSessionOptions = {},
+  ): Promise<ConnectResult> {
+    const transport = this.requireTransport();
+    if (!this.capabilities.agent.loadSession) {
+      throw new Error("agent does not advertise session/load (loadSession)");
+    }
+    this.replay = { sessionId, onUpdate: options.onUpdate };
+    let res: schema.LoadSessionResponse;
+    try {
+      res = await transport.loadSession({
+        sessionId,
+        cwd: this.config.cwd ?? process.cwd(),
+        mcpServers: options.mcpServers ?? [],
+        additionalDirectories: options.additionalDirectories,
+      } as schema.LoadSessionRequest);
+    } finally {
+      this.replay = null;
+    }
+    this._sessionId = sessionId;
+    this._configOptions = parseConfigOptions(res.configOptions);
+    this.log.info("session_loaded", {
+      sessionId,
+      configOptions: [...this._configOptions.keys()],
+    });
+    this.log.debug("session_load_response", { response: res });
+    return { sessionId, resumed: true };
+  }
+
+  /** Resume an existing session without replaying history, when advertised by the agent. */
+  async resumeSession(
+    sessionId: string,
+    options: SwitchSessionOptions = {},
+  ): Promise<ConnectResult> {
+    const transport = this.requireTransport();
+    if (!this.capabilities.agent.sessionCapabilities.resume) {
+      throw new Error("agent does not advertise session/resume (sessionCapabilities.resume)");
+    }
+    this.replay = { sessionId, onUpdate: options.onUpdate };
+    let res: schema.ResumeSessionResponse;
+    try {
+      res = await transport.resumeSession({
+        sessionId,
+        cwd: this.config.cwd ?? process.cwd(),
+        mcpServers: options.mcpServers ?? [],
+        additionalDirectories: options.additionalDirectories,
+      } as schema.ResumeSessionRequest);
+    } finally {
+      this.replay = null;
+    }
+    this._sessionId = sessionId;
+    this._configOptions = parseConfigOptions(res.configOptions);
+    this.log.info("session_resumed", {
+      sessionId,
+      configOptions: [...this._configOptions.keys()],
+    });
+    this.log.debug("session_resume_response", { response: res });
+    return { sessionId, resumed: true };
+  }
+
+  /** Fork an existing session and switch this client to the newly-created fork. */
+  async forkSession(
+    sessionId: string,
+    options: SwitchSessionOptions = {},
+  ): Promise<ConnectResult> {
+    const transport = this.requireTransport();
+    if (!this.capabilities.agent.sessionCapabilities.fork) {
+      throw new Error("agent does not advertise session/fork (sessionCapabilities.fork)");
+    }
+    this.replay = { sessionId, onUpdate: options.onUpdate };
+    let res: schema.ForkSessionResponse;
+    try {
+      res = await transport.forkSession({
+        sessionId,
+        cwd: this.config.cwd ?? process.cwd(),
+        mcpServers: options.mcpServers ?? [],
+        additionalDirectories: options.additionalDirectories,
+      } as schema.ForkSessionRequest);
+    } finally {
+      this.replay = null;
+    }
+    this._sessionId = res.sessionId;
+    this._configOptions = parseConfigOptions(res.configOptions);
+    this.log.info("session_forked", {
+      fromSessionId: sessionId,
+      sessionId: res.sessionId,
+      configOptions: [...this._configOptions.keys()],
+    });
+    this.log.debug("session_fork_response", { response: res });
+    return { sessionId: res.sessionId, resumed: false };
   }
 
   /**
@@ -373,7 +482,12 @@ export class AcpClient implements AgentClient {
     // Raw protocol trace (logged even outside an active turn, e.g. session/load replay).
     this.log.debug("session_update", { notification });
 
-    if (!this.active) return;
+    if (!this.active) {
+      if (this.replay && (!notification.sessionId || notification.sessionId === this.replay.sessionId)) {
+        this.replay.onUpdate?.(notification);
+      }
+      return;
+    }
     if (notification.sessionId && notification.sessionId !== this._sessionId) return;
 
     const update = notification.update;

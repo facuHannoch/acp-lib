@@ -19,7 +19,7 @@ import {
   type AdapterPreset,
 } from "../index.ts";
 import { runRepl } from "./repl.ts";
-import { DIM, colorEnabled, paint } from "./colors.ts";
+import { BOLD, DIM, colorEnabled, paint } from "./colors.ts";
 
 interface Args {
   command: string;
@@ -98,10 +98,10 @@ async function chat(args: Args): Promise<void> {
       // Suppress the spinner under --debug: raw session_update lines would fight its \r.
       spinner: !args.debug,
       intro,
-      onSlashCommand: async (command) => {
+      onSlashCommand: async (command, commandArgs) => {
         switch (command) {
           case "help":
-            note("commands: /help /caps /session /sessions /exit");
+            note("commands: /help /caps /session /sessions /load SESSION_ID /resume SESSION_ID /fork SESSION_ID /exit");
             return true;
           case "caps": {
             const c = client.capabilities.agent;
@@ -127,6 +127,51 @@ async function chat(args: Args): Promise<void> {
             }
             return true;
           }
+          case "load": {
+            const target = commandArgs[0];
+            if (!target) {
+              note("usage: /load SESSION_ID");
+              return true;
+            }
+            if (!client.capabilities.agent.loadSession) {
+              note("load not supported by this agent");
+              return true;
+            }
+            const replay = createSessionReplayRenderer(color);
+            clearTerminal();
+            const result = await client.loadSession(target, { onUpdate: replay.onUpdate });
+            replay.finish();
+            note(`loaded session ${result.sessionId}`);
+            return true;
+          }
+          case "resume": {
+            const target = commandArgs[0];
+            if (!target) {
+              note("usage: /resume SESSION_ID");
+              return true;
+            }
+            if (!client.capabilities.agent.sessionCapabilities.resume) {
+              note("resume not supported by this agent");
+              return true;
+            }
+            const result = await client.resumeSession(target);
+            note(`resumed session ${result.sessionId}`);
+            return true;
+          }
+          case "fork": {
+            const target = commandArgs[0];
+            if (!target) {
+              note("usage: /fork SESSION_ID");
+              return true;
+            }
+            if (!client.capabilities.agent.sessionCapabilities.fork) {
+              note("fork not supported by this agent");
+              return true;
+            }
+            const result = await client.forkSession(target);
+            note(`forked session ${target} -> ${result.sessionId}`);
+            return true;
+          }
           default:
             return false; // unknown → treat as a normal prompt
         }
@@ -143,3 +188,41 @@ if (args.command !== "chat") {
   process.exit(1);
 }
 await chat(args);
+
+function clearTerminal(): void {
+  if (process.stderr.isTTY) process.stderr.write("\x1b[2J\x1b[H");
+}
+
+function createSessionReplayRenderer(color: boolean): {
+  onUpdate(notification: unknown): void;
+  finish(): void;
+} {
+  let currentRole: "user" | "agent" | null = null;
+  let wrote = false;
+
+  const label = (role: "user" | "agent") => {
+    if (currentRole === role) return;
+    if (wrote) process.stderr.write("\n");
+    const text = role === "user" ? "you ›" : "agent ›";
+    process.stderr.write(paint(color, BOLD, text) + " ");
+    currentRole = role;
+    wrote = true;
+  };
+
+  return {
+    onUpdate(notification: unknown) {
+      const update = (notification as Record<string, any>)?.update;
+      const kind = update?.sessionUpdate;
+      if (kind !== "user_message_chunk" && kind !== "agent_message_chunk") return;
+
+      const text = update.content?.type === "text" ? (update.content.text ?? "") : "";
+      if (!text) return;
+
+      label(kind === "user_message_chunk" ? "user" : "agent");
+      process.stderr.write(text);
+    },
+    finish() {
+      if (wrote) process.stderr.write("\n");
+    },
+  };
+}

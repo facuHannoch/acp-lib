@@ -8,6 +8,7 @@ export type {
   AcpClientConfig,
   StartSessionOptions,
   ListSessionsOptions,
+  SwitchSessionOptions,
   ConnectResult,
 } from "./client.ts";
 
