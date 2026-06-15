@@ -29,7 +29,12 @@ export type {
   SetConfigFromStringResult,
 } from "./controller.ts";
 
-export type { AgentClient, InterruptOptions } from "./agent-client.ts";
+export type {
+  AgentClient,
+  InterruptOptions,
+  Bridgeable,
+  BridgeOptions,
+} from "./agent-client.ts";
 
 export { ADAPTERS, buildSpawnCommand } from "./adapters.ts";
 export type { Adapter, AdapterPreset } from "./adapters.ts";

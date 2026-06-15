@@ -73,8 +73,14 @@ export class PtyTransport {
       .catch(() => {});
   }
 
-  /** Write raw bytes to the pty (keystrokes, prompt text, control chars). */
+  /** Write to the pty (keystrokes, prompt text, control chars). */
   write(data: string): void {
+    if (!this.terminal) throw new ProcessCrashError(null, "pty transport not started");
+    this.terminal.write(data);
+  }
+
+  /** Write raw bytes verbatim — used by the bridge to forward keystrokes unmangled. */
+  writeBytes(data: Uint8Array): void {
     if (!this.terminal) throw new ProcessCrashError(null, "pty transport not started");
     this.terminal.write(data);
   }

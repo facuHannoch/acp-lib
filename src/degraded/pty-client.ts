@@ -10,7 +10,7 @@
 // `extractReply` is the deterministic default; an injected `parser` (ScreenParser/SML)
 // can replace it for messier TUIs without touching the transport/turn machinery.
 
-import type { AgentClient, InterruptOptions } from "../agent-client.ts";
+import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "../agent-client.ts";
 import type { Adapter } from "../adapters.ts";
 import { buildPtyCommand } from "../adapters.ts";
 import type { ScreenParser } from "../parser/types.ts";
@@ -53,10 +53,12 @@ interface Turn {
   settle: ReturnType<typeof setTimeout> | null;
 }
 
-export class PtyClient implements AgentClient {
+export class PtyClient implements AgentClient, Bridgeable {
   private transport: PtyTransport | null = null;
   private screen: EmulatorScreen | null = null;
   private turn: Turn | null = null;
+  // Raw pty-output subscribers (used by bridge() to mirror the pty to the user's screen).
+  private rawListeners = new Set<(data: string) => void>();
   private readonly settleMs: number;
   private readonly submitDelayMs: number;
   private readonly cols: number;
@@ -172,7 +174,82 @@ export class PtyClient implements AgentClient {
 
   private onData(data: string): void {
     this.screen?.write(data);
+    for (const listener of this.rawListeners) listener(data);
     if (this.turn) this.armSettle();
+  }
+
+  /**
+   * Hand the pty directly to the user: mirror its output to `output` and forward
+   * keystrokes from `input` until the exit byte (default Ctrl-], 0x1d). For tty-auth
+   * (login) and as an escape hatch when scraping can't read a TUI (e.g. codex modals).
+   */
+  async bridge(options: BridgeOptions = {}): Promise<void> {
+    if (!this.transport) throw new NotConnectedError("PtyClient is not started");
+    if (this.turn) throw new Error("cannot bridge while a turn is in flight");
+
+    const input = (options.input ?? process.stdin) as NodeJS.ReadStream & {
+      setRawMode?: (raw: boolean) => void;
+      isRaw?: boolean;
+    };
+    const output = options.output ?? process.stdout;
+    const exitBytes = new Set(options.exitBytes ?? [0x1d, 0x03]); // Ctrl-], Ctrl-C
+    const status = options.onStatus ?? ((m: string) => void process.stderr.write(m));
+    const label = this.opts.adapter.displayName ?? "agent";
+
+    // Size the pty to the user's REAL terminal so the TUI renders aligned (a fixed
+    // 100×30 pty mis-wraps in a different terminal), then the SIGWINCH triggers a clean
+    // full repaint. We do NOT dump the emulated screen — for full TUIs that overlaps the
+    // live repaint and garbles it (Claude Code).
+    const term = output as unknown as {
+      columns?: number;
+      rows?: number;
+      on?: (ev: string, cb: () => void) => void;
+      off?: (ev: string, cb: () => void) => void;
+    };
+    output.write("\x1b[2J\x1b[H"); // clear; the repaint below redraws the TUI fresh
+    this.resize(term.columns ?? this.cols, term.rows ?? this.rows);
+    status(`— bridge: driving ${label} directly · Ctrl-] or Ctrl-C to return —\r\n`);
+
+    const mirror = (d: string) => void output.write(d);
+    this.rawListeners.add(mirror);
+    // Keep the TUI fitting if the user resizes the terminal while bridged.
+    const onResize = () => this.resize(term.columns ?? this.cols, term.rows ?? this.rows);
+    term.on?.("resize", onResize);
+
+    const wasRaw = Boolean(input.isRaw);
+    try {
+      input.setRawMode?.(true);
+    } catch {
+      /* not a tty */
+    }
+    input.resume();
+
+    await new Promise<void>((resolve) => {
+      const onInput = (buf: Buffer) => {
+        // Forward everything up to (but not including) the first exit byte, then stop.
+        let i = 0;
+        for (; i < buf.length; i++) if (exitBytes.has(buf[i]!)) break;
+        if (i > 0) this.transport?.writeBytes(new Uint8Array(buf.subarray(0, i)));
+        if (i < buf.length) {
+          input.off("data", onInput);
+          resolve();
+          return;
+        }
+      };
+      input.on("data", onInput);
+    });
+
+    term.off?.("resize", onResize);
+    this.rawListeners.delete(mirror);
+    try {
+      if (!wasRaw) input.setRawMode?.(false);
+    } catch {
+      /* ignore */
+    }
+    input.pause();
+    // Clear the agent's TUI so the REPL returns to a clean screen.
+    output.write("\x1b[2J\x1b[H");
+    status(`— bridge closed —\r\n`);
   }
 
   private armSettle(): void {

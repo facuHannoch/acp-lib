@@ -67,7 +67,13 @@ export async function runRepl(
     if (line === "/exit" || line === "/quit") return false;
     if (line.startsWith("/") && options.onSlashCommand) {
       const [command = "", ...rest] = line.slice(1).split(/\s+/);
-      if (await options.onSlashCommand(command, rest)) return true;
+      try {
+        if (await options.onSlashCommand(command, rest)) return true;
+      } catch (e) {
+        // A failing command (e.g. /load on a session with no rollout) must not crash the REPL.
+        err(paint(color, DIM, `(/${command} failed: ${String(e)})`) + "\n");
+        return true;
+      }
       // not handled → fall through and send it as a normal prompt
     }
     await runTurn(line);

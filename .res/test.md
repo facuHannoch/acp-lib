@@ -590,3 +590,48 @@ Verified against real codex-acp:
 - `/help` shows `/login [METHOD] /new`. ✓  `/new` → fresh session id. ✓
 - degraded `/login` → guarded ("bridge not built yet"). ✓
 - Did NOT trigger `/login chat-gpt` (codex already authed; would launch browser/device flow).
+
+## 2026-06-15 — /bridge (terminal passthrough) + auth stderr filter
+
+- `isRpcNoise` filter: during /login the agent's stderr is teed to show login URLs, but
+  raw JSON-RPC error dumps (codex's `Error handling request {…}` on api-key failure) are
+  now suppressed — we report the error ourselves. (api-key over ACP: schema is just
+  `{methodId}`, no credential field; codex rejects it -32600. It's env/out-of-band, like
+  kimi's terminal method — informational.)
+- **Bridge**: `Bridgeable`/`BridgeOptions` interface; `PtyClient.bridge()` mirrors the pty
+  to the user (rawListeners → output) and forwards keystrokes (writeBytes) until Ctrl-]
+  (0x1d). SIGWINCH nudge forces a repaint on entry. `AgentController.bridge()` (degraded-
+  only) + CLI `/bridge`. The tty-auth path + escape hatch for unreadable TUIs (the /d case).
+- Verified with synthetic streams vs bash: banner shown, `echo BRIDGED_9` mirrored back,
+  Ctrl-] exits + resolves cleanly. Normal-mode /bridge guarded. Typecheck clean.
+
+## 2026-06-15 — bridge fixes (repaint, exit, both modes)
+
+Feedback from live codex /bridge: didn't repaint, Ctrl-] didn't exit, Ctrl-C hung. Fixes:
+- **Exit**: now exits on Ctrl-] (0x1d) OR Ctrl-C (0x03) — `exitBytes` set. Kills the hang
+  (raw mode disables ISIG, so Ctrl-C was being forwarded to codex forever). codex
+  interrupts with ESC, not Ctrl-C, so nothing lost. Forward bytes up to the exit byte.
+- **Repaint**: SIGWINCH nudge was unreliable; instead dump the current emulated screen
+  (clear + readScreen view) on entry, and clear screen on exit so the REPL returns clean.
+- **Both modes**: `AgentController.bridge()` now works in normal mode too — spins up an
+  EPHEMERAL interactive pty (adapter.ptyCommand), bridges it, tears it down; ACP session
+  untouched. Degraded mode still bridges the LIVE pty (same conversation). CLI guard removed.
+- Verified synthetic (bash): input forwarded, output mirrored (BRIDGED_9), Ctrl-C exits.
+  Real-terminal codex test still pending (needs a TTY; harness can't drive it).
+
+## 2026-06-15 — bridge sizing + slash-command crash guard
+
+Live feedback: (a) /load on an empty codex session → `-32603 "no rollout found"` CRASHED
+the REPL (unhandled rejection); (b) Claude Code TUI rendered garbled through the bridge.
+
+- **Crash guard**: repl.ts now wraps `onSlashCommand` in try/catch → "(/load failed: …)"
+  instead of killing the process. Covers load/resume/fork/sessions/config/switch. (The
+  codex error is expected: a freshly-created session has no persisted rollout to load;
+  loading one WITH history works — verified, 你好 conversation replayed fine.)
+- **Bridge sizing**: the pty was fixed 100×30 but the user's terminal differs → TUI
+  mis-wraps. bridge() now resizes the pty+emulator to the REAL terminal size
+  (output.columns/rows) on entry (SIGWINCH → clean full repaint) and tracks live
+  `resize` events. Dropped the entry screen-dump (it overlapped full-TUI repaints —
+  the Claude garble). Clear on entry + exit.
+- Going back and forth bridge↔REPL keeps context (confirmed by user). Real-terminal
+  Claude/codex render test still pending (harness has no TTY).

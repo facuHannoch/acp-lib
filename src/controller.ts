@@ -1,6 +1,6 @@
 import { AcpClient, type AcpClientConfig, type ConnectResult, type SwitchSessionOptions } from "./client.ts";
 import type { Adapter } from "./adapters.ts";
-import type { AgentClient, InterruptOptions } from "./agent-client.ts";
+import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { Logger } from "./logger.ts";
@@ -52,7 +52,8 @@ export type ControllerCommandId =
   | "load"
   | "resume"
   | "fork"
-  | "switch";
+  | "switch"
+  | "bridge";
 
 export interface ControllerCommand {
   id: ControllerCommandId;
@@ -158,6 +159,34 @@ export class AgentController implements AgentClient {
 
   interrupt(options?: InterruptOptions): void {
     this.current?.interrupt(options);
+  }
+
+  /**
+   * Hand a real terminal to the user. In degraded mode this bridges the LIVE pty (same
+   * conversation). In normal (ACP) mode there's no pty, so it spins up an EPHEMERAL
+   * interactive pty for the adapter, bridges it, and tears it down — the ACP session is
+   * untouched. Useful for tty-auth (login) and as an escape hatch into the native TUI.
+   */
+  async bridge(options?: BridgeOptions): Promise<void> {
+    const current = this.current as Partial<Bridgeable> | null;
+    if (this.isDegraded && typeof current?.bridge === "function") {
+      await current.bridge(options);
+      return;
+    }
+    const { PtyClient } = await import("./degraded/index.ts");
+    const pty = new PtyClient({
+      adapter: this.requireAdapter(this.adapterId),
+      execPrefix: this.config.execPrefix,
+      env: this.config.env,
+      cwd: this.config.cwd,
+      logger: this.config.logger,
+    });
+    try {
+      await pty.start();
+      await pty.bridge(options);
+    } finally {
+      await pty.stop();
+    }
   }
 
   async stop(): Promise<void> {
@@ -318,6 +347,11 @@ export class AgentController implements AgentClient {
         id: "switch",
         usage: "/switch ADAPTER",
         available: this.adapterIds.length > 0,
+      },
+      {
+        id: "bridge",
+        usage: "/bridge",
+        available: Boolean(this.current),
       },
     ];
   }

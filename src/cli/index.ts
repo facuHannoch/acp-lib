@@ -172,6 +172,14 @@ async function chat(args: Args): Promise<void> {
             }
             return true;
           }
+          case "bridge": {
+            try {
+              await controller.bridge();
+            } catch (e) {
+              note(`bridge failed: ${String(e)}`);
+            }
+            return true;
+          }
           case "degrade":
           case "upgrade": {
             const mode = command === "degrade" ? "degraded" : "normal";
