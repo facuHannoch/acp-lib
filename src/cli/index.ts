@@ -18,6 +18,7 @@ import {
   createConsoleLogger,
   type AgentClient,
   type AdapterPreset,
+  type ConfigOption,
 } from "../index.ts";
 import { runRepl } from "./repl.ts";
 import { BOLD, DIM, colorEnabled, paint } from "./colors.ts";
@@ -109,7 +110,7 @@ async function chat(args: Args): Promise<void> {
       onSlashCommand: async (command, commandArgs) => {
         switch (command) {
           case "help":
-            note("commands: /help /caps /session /sessions /load SESSION_ID /resume SESSION_ID /fork SESSION_ID /switch ADAPTER /exit");
+            note("commands: /help /caps /session /sessions /config [CONFIG_ID [VALUE]] /load SESSION_ID /resume SESSION_ID /fork SESSION_ID /switch ADAPTER /exit");
             return true;
           case "caps": {
             const c = current.capabilities.agent;
@@ -180,6 +181,37 @@ async function chat(args: Args): Promise<void> {
             note(`forked session ${target} -> ${result.sessionId}`);
             return true;
           }
+          case "config": {
+            const configId = commandArgs[0];
+            if (!configId) {
+              note(formatConfigList(current.configOptions));
+              return true;
+            }
+
+            const option = current.configOptions.get(configId);
+            if (!option) {
+              note(`unknown config: ${configId}`);
+              note(`available configs: ${[...current.configOptions.keys()].join(", ") || "(none)"}`);
+              return true;
+            }
+
+            const rawValue = commandArgs.slice(1).join(" ");
+            if (!rawValue) {
+              note(formatConfigDetail(option));
+              return true;
+            }
+
+            const parsed = parseConfigValue(option, rawValue);
+            if (!parsed.ok) {
+              note(parsed.error);
+              return true;
+            }
+
+            await current.setConfig(configId, parsed.value);
+            const updated = current.configOptions.get(configId);
+            note(`set ${configId}=${formatValue(updated?.currentValue ?? parsed.value)}`);
+            return true;
+          }
           case "switch": {
             const target = commandArgs[0];
             if (!target) {
@@ -248,6 +280,84 @@ function isAdapterPreset(value: string): value is AdapterPreset {
 
 function availableAdapters(): string {
   return Object.keys(ADAPTERS).join(", ");
+}
+
+function formatConfigList(configOptions: Map<string, ConfigOption>): string {
+  if (configOptions.size === 0) return "no config options advertised by this session";
+  return [...configOptions.values()]
+    .map((option) => {
+      const label = option.label ? ` (${option.label})` : "";
+      return `${option.configId}${label}  ${option.type}  current=${formatValue(option.currentValue)}`;
+    })
+    .join("\n");
+}
+
+function formatConfigDetail(option: ConfigOption): string {
+  const lines = [
+    `${option.configId}${option.label ? `: ${option.label}` : ""}`,
+    `type: ${option.type}`,
+    `current: ${formatValue(option.currentValue)}`,
+  ];
+  if (option.description) lines.push(`description: ${option.description}`);
+  if (option.allowedValues?.length) {
+    lines.push(`values: ${option.allowedValues.map((choice) => formatValue(choice.value)).join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+function parseConfigValue(
+  option: ConfigOption,
+  rawValue: string,
+): { ok: true; value: unknown } | { ok: false; error: string } {
+  switch (option.type) {
+    case "boolean": {
+      const value = parseBoolean(rawValue);
+      if (value == null) return { ok: false, error: `invalid boolean: ${rawValue}` };
+      return { ok: true, value };
+    }
+    case "select": {
+      const choice = option.allowedValues?.find((c) => String(c.value) === rawValue);
+      if (!choice) {
+        const allowed = option.allowedValues?.map((c) => formatValue(c.value)).join(", ") || "(none)";
+        return {
+          ok: false,
+          error: `invalid value "${rawValue}" for ${option.configId}; allowed: ${allowed}`,
+        };
+      }
+      return { ok: true, value: choice.value };
+    }
+    default:
+      return { ok: true, value: parseJsonOrString(rawValue) };
+  }
+}
+
+function parseBoolean(value: string): boolean | null {
+  switch (value.toLowerCase()) {
+    case "true":
+    case "on":
+    case "yes":
+    case "1":
+      return true;
+    case "false":
+    case "off":
+    case "no":
+    case "0":
+      return false;
+    default:
+      return null;
+  }
+}
+
+function parseJsonOrString(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function formatValue(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
 }
 
 function createSessionReplayRenderer(color: boolean): {

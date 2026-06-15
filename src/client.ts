@@ -467,13 +467,14 @@ export class AcpClient implements AgentClient {
 
   async setConfig(configId: string, value: unknown): Promise<void> {
     if (!this.transport || !this._sessionId) throw new NotConnectedError();
-    await this.transport.setSessionConfigOption({
+    const existing = this._configOptions.get(configId);
+    const res = await this.transport.setSessionConfigOption({
       sessionId: this._sessionId,
       configId,
+      ...(existing?.type === "boolean" ? { type: "boolean" } : {}),
       value,
     } as unknown as schema.SetSessionConfigOptionRequest);
-    const existing = this._configOptions.get(configId);
-    if (existing) existing.currentValue = value;
+    this._configOptions = parseConfigOptions(res.configOptions);
   }
 
   // --- internal handlers --------------------------------------------------------
@@ -481,6 +482,14 @@ export class AcpClient implements AgentClient {
   private handleUpdate(notification: schema.SessionNotification): void {
     // Raw protocol trace (logged even outside an active turn, e.g. session/load replay).
     this.log.debug("session_update", { notification });
+
+    const update = notification.update;
+    if (
+      (update as Record<string, any>).sessionUpdate === "config_option_update" &&
+      (!notification.sessionId || notification.sessionId === this._sessionId)
+    ) {
+      this._configOptions = parseConfigOptions((update as Record<string, any>).configOptions);
+    }
 
     if (!this.active) {
       if (this.replay && (!notification.sessionId || notification.sessionId === this.replay.sessionId)) {
@@ -490,7 +499,6 @@ export class AcpClient implements AgentClient {
     }
     if (notification.sessionId && notification.sessionId !== this._sessionId) return;
 
-    const update = notification.update;
     const text = extractChunkText(update);
     if (text) {
       this.active.chunks.push(text);

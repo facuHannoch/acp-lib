@@ -33,11 +33,7 @@ export function parseConfigOptions(
 
     const allowedValues: ConfigOptionChoice[] | undefined =
       type === "select" && Array.isArray(opt.options)
-        ? opt.options.map((c: Record<string, any>) => ({
-            value: c.value ?? c.id,
-            label: c.name ?? c.label,
-            description: c.description ?? undefined,
-          }))
+        ? flattenSelectOptions(opt.options)
         : undefined;
 
     map.set(opt.id, {
@@ -45,9 +41,25 @@ export function parseConfigOptions(
       label: opt.name ?? undefined,
       description: opt.description ?? undefined,
       type,
-      currentValue: opt.value ?? opt.currentValue,
+      currentValue: opt.currentValue ?? opt.value,
       allowedValues,
     });
   }
   return map;
+}
+
+function flattenSelectOptions(options: Record<string, any>[]): ConfigOptionChoice[] {
+  const choices: ConfigOptionChoice[] = [];
+  for (const option of options) {
+    if (Array.isArray(option.options)) {
+      choices.push(...flattenSelectOptions(option.options));
+      continue;
+    }
+    choices.push({
+      value: option.value ?? option.id,
+      label: option.name ?? option.label,
+      description: option.description ?? undefined,
+    });
+  }
+  return choices;
 }
