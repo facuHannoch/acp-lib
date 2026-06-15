@@ -511,11 +511,33 @@ degraded mode does **not** depend on `node-pty`.
 Instead it uses **Bun's built-in pseudo-terminal** (Bun ≥ 1.3.5):
 ```ts
 Bun.spawn(command, { terminal: { cols, rows, data(term, bytes) { … } } })
-// proc.terminal.write(...) / .resize(cols, rows) / .setRawMode(...) / termios flags
+// proc.terminal.write(...) / .resize(cols, rows) / .setRawMode(...) / .close() / termios
 ```
 `PtyTransport` wraps exactly that — no native addon, no external `script` binary, and a
 real `resize()` for TUIs. (An earlier iteration shelled out to the OS `script` util; the
-native API supersedes it — verified identical capture against bash.)
+native API supersedes it.) NB: the terminal handle keeps the event loop alive — `stop()`
+must `terminal.close()` (then SIGKILL after a grace), or the process hangs after the child
+is killed.
+
+### What's implemented (stages 1–3, deterministic)
+The pipeline below is built and verified end-to-end against the **real codex TUI** through
+`AgentController` (degraded mode): "6×7" → `42`, "multiply that by 2" → `84` (multi-turn
+context preserved); and through the CLI (`--degraded`).
+- **Stage 1 — emulate.** `EmulatorScreen` feeds raw bytes into `@xterm/headless` and reads
+  the cell grid (viewport + scrollback) as text. This is what makes a redraw TUI legible:
+  stripping ANSI gives overlapping garbage; the emulated grid gives the clean screen.
+- **Stage 2 — settle.** Turn complete = the screen has been idle for `settleMs` (default
+  800). A separate Enter keypress submits (`submitDelayMs`, default 150) — a single
+  `text+Enter` write is treated as a paste by TUIs and won't submit.
+- **Stage 3 — extract.** `extractReply` anchors on the echoed prompt and takes the lines
+  after it up to the next input-prompt / status / shell-prompt chrome (stripping bullets).
+  This is the deterministic DEFAULT; an injected `ScreenParser` (SML) replaces it for
+  messier providers without touching stages 1–2.
+
+Not yet done: incremental streaming (currently the reply is emitted once on settle),
+broader provider coverage of the extract heuristic, and the SML `ScreenParser`.
+
+`@xterm/headless` is a dep of the **degraded subpath only** — the core never imports it.
 
 **First implementation = the naive path, not the full emulator.** The pipeline above
 (emulate → frame de-dup → SML) is the eventual target; the shipped `PtyClient` starts at

@@ -9,7 +9,10 @@
 // .res/test.md), driven by the same Bun.spawn pipes the ACP transport uses, so importing
 // this subpath pulls in NO native addon.
 
-export { PtyClient, stripAnsi, stripEcho, trimPromptTail } from "./pty-client.ts";
+export { PtyClient } from "./pty-client.ts";
 export type { PtyClientOptions } from "./pty-client.ts";
 export { PtyTransport } from "./pty-transport.ts";
 export type { PtyTransportOptions } from "./pty-transport.ts";
+export { EmulatorScreen, compactLines } from "./emulator.ts";
+export type { EmulatorOptions } from "./emulator.ts";
+export { extractReply } from "./extract.ts";

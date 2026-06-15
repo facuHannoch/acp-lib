@@ -28,6 +28,7 @@ interface BunTerminal {
   write(data: string | Uint8Array): void;
   resize(cols: number, rows: number): void;
   close(): void;
+  unref(): void;
 }
 
 export class PtyTransport {
@@ -86,13 +87,34 @@ export class PtyTransport {
   async stop(): Promise<void> {
     this.stopping = true;
     const proc = this.proc;
+    const terminal = this.terminal;
     this.proc = null;
     this.terminal = null;
-    if (!proc) return;
     try {
-      proc.kill("SIGTERM");
+      proc?.kill("SIGTERM");
     } catch {
       /* already exited */
+    }
+    // The native pty handle keeps Bun's event loop alive until closed — without this the
+    // process hangs after the child is killed. close() also releases the pty master fd.
+    try {
+      terminal?.close();
+    } catch {
+      /* already closed */
+    }
+    // SIGKILL after a short grace in case the child ignores SIGTERM (TUIs in raw mode).
+    if (proc) {
+      const killed = await Promise.race([
+        proc.exited.then(() => true),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 500)),
+      ]);
+      if (!killed) {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          /* gone */
+        }
+      }
     }
   }
 

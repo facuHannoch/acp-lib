@@ -551,3 +551,24 @@ Pointed `mode: degraded` at the actual `codex` interactive CLI. Findings:
   (`Booti…Bng`, interleaved boxes). The answer "42" is present but buried. Confirms the
   SPEC "emulate, don't strip" requirement — TUIs need a grid emulator + segmentation, not
   ANSI stripping. Naive path remains fine for line-oriented CLIs (bash/REPLs).
+
+## 2026-06-15 — Option 2 (emulator pipeline) WORKS against real codex TUI
+
+Built the full deterministic pipeline: raw bytes → EmulatorScreen (@xterm/headless grid)
+→ settle → extractReply. @xterm/headless renders codex's redraw-in-place screen perfectly
+under Bun (clean box + "› prompt" + "• 42"), vs strip-garbage.
+
+- **Offline** (captured codex turn → /tmp/codex-raw.bin): extractReply → "42".
+- **Live via AgentController** (mode degraded, adapter codex): "what is 6×7" → "42",
+  "now multiply that by 2" → "84" — MULTI-TURN CONTEXT PRESERVED.
+- **Live via CLI** (`chat --adapter codex --degraded`, piped): "capital of France" →
+  "Paris", clean exit 0.
+- **bash** (line CLI) through the same emulator path: "HELLO_42", "a\nb\nc" (trailing
+  shell prompt stripped by extractReply's SHELL_PROMPT stop).
+- **Exit hang fixed**: native pty `terminal` handle keeps Bun's loop alive → stop() now
+  `terminal.close()` + SIGKILL after 500ms grace.
+
+extractReply = deterministic default (anchor on echoed prompt → lines until next
+input/status/shell-prompt chrome, strip bullets). Injectable ScreenParser (SML) is the
+upgrade seam. TODO: incremental streaming (reply currently emitted once on settle),
+provider coverage, SML parser.
