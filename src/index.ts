@@ -38,6 +38,7 @@ export type {
   Capabilities,
   ClientCapabilities,
   AgentCapabilities,
+  AuthMethod,
 } from "./capabilities.ts";
 export type {
   ConfigOption,

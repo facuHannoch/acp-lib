@@ -216,7 +216,7 @@ export async function runRepl(
       } else {
         if (sawActivity) err("\n");
         if (result.status === "completed") {
-          err(paint(color, DIM, "(no response — the agent may be unauthenticated)") + "\n");
+          err(paint(color, DIM, "(no response — if this persists, the agent may need auth: try /login)") + "\n");
         }
       }
       if (result.status !== "completed") {

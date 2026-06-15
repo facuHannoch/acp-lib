@@ -7,6 +7,13 @@
 
 import type * as schema from "@agentclientprotocol/sdk";
 
+/** An auth method the agent advertises in initialize — pass `id` to authenticate(). */
+export interface AuthMethod {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface Capabilities {
   /** Protocol version the agent agreed on. */
   protocolVersion: number;
@@ -16,8 +23,8 @@ export interface Capabilities {
   client: ClientCapabilities;
   /** What the AGENT reports it supports — discovered from initialize. */
   agent: AgentCapabilities;
-  /** Auth methods the agent advertises (raw from initialize). */
-  authMethods: schema.AuthMethod[];
+  /** Auth methods the agent advertises. Empty ≠ "authenticated" — auth state is opaque. */
+  authMethods: AuthMethod[];
 }
 
 export interface ClientCapabilities {
@@ -88,6 +95,10 @@ export function parseCapabilities(init: schema.InitializeResponse): Capabilities
         additionalDirectories: session.additionalDirectories != null,
       },
     },
-    authMethods: (init as any).authMethods ?? [],
+    authMethods: ((init as any).authMethods ?? []).map((m: Record<string, any>) => ({
+      id: m.id,
+      name: m.name ?? m.id,
+      description: m.description ?? undefined,
+    })),
   };
 }

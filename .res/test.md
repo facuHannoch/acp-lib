@@ -572,3 +572,21 @@ extractReply = deterministic default (anchor on echoed prompt → lines until ne
 input/status/shell-prompt chrome, strip bullets). Injectable ScreenParser (SML) is the
 upgrade seam. TODO: incremental streaming (reply currently emitted once on settle),
 provider coverage, SML parser.
+
+## 2026-06-15 — ACP /login (authenticate) round
+
+Auth state is OPAQUE (kimi answers {} then empties every turn; can't discriminate
+authed/unauthed). So: one uniform flow, /login available anytime when connected.
+
+- `AcpClient`: `authMethods` getter, `authenticate(methodId, {onOutput})` (connection-level,
+  tees agent stderr → onOutput so login URL/device-code shows), `newSession()` (forced fresh).
+- `AgentController`: same surface; `login`/`new` in command registry (gated to ACP mode).
+- `bringUp`: `startSession()` failure is now NON-FATAL — keep the connection so the user can
+  /login then /new. connect() stays fatal.
+- `AuthMethod` type added (no SDK leak); empty-turn REPL hint now points at /login.
+
+Verified against real codex-acp:
+- `/login` → lists `api-key (API Key)`, `chat-gpt (ChatGPT)`. ✓
+- `/help` shows `/login [METHOD] /new`. ✓  `/new` → fresh session id. ✓
+- degraded `/login` → guarded ("bridge not built yet"). ✓
+- Did NOT trigger `/login chat-gpt` (codex already authed; would launch browser/device flow).

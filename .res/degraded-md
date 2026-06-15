@@ -411,3 +411,70 @@ And for more complex session management, like loading context, storing, exportin
 
 
 We could have an interface like AgentController, which AcpController implements, and the future PtyController too.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+---
+---
+
+
+
+
+Two separate things here, and the second (the `/d` breakage) is the more important one — because it's **not really a parser problem, it's a state problem.** Let me take that first.
+
+## Why `/d` breaks everything after it
+
+`/d` isn't a normal turn. It's a codex **slash command that opens a full-screen modal pager** — note the footer `↑/↓ to scroll · q to quit`. Our whole `PtyClient` model assumes one shape: *type text → agent replies → cursor returns to the input box.* A modal violates every part of that:
+
+1. `/d` got forwarded to codex as a prompt (our REPL doesn't know it, so it falls through). codex opened the pager. extractReply happened to scrape the diff off the screen — so it *looked* like it worked.
+2. **But the pager never closed.** It only responds to `↑/↓/q`. So your next `hello` gets typed *into the pager*, which ignores it. codex never receives a prompt → screen barely changes → extract finds nothing → `chars=0` → "no response."
+3. Worse, sometimes the screen still shows pager content, so extract returns **stale** text (the `bun.lock`/`sha512…` diff lines you saw on a later "what files are here").
+
+So the real gap: **we're blind to what state codex is in.** We assume "at the input box" and never verify. The fix isn't a better parser, it's:
+- **Readiness/modal detection** — before sending a turn, check the screen actually shows the input box (the `› … model · cwd` bar), and if a modal footer (`q to quit`, a popup) is up, **send `q`/ESC to dismiss it first** to get back to a known state.
+- Optionally, **intercept codex's own UI slash-commands** (`/d`, `/model`, `/diff`…) in degraded mode rather than forwarding them blindly — they open modals we can't drive.
+
+And notice: *detecting that footer* ("q to quit" ⇒ pager, this popup ⇒ model picker) is inherently **codex-specific knowledge** — which is the perfect segue to your architecture question.
+
+## Per-adapter parsers + how they compose
+
+**Yes — per-adapter parser, available but not mandatory.** This is well-motivated, and the `/d` bug is the proof: a `CodexParser` should know not just codex's bullets/boxes but its *modal footers and input-box marker* (i.e. state, not just extraction). The `ScreenParser` is already injectable; I'd let an `Adapter` optionally carry one (or a factory), with the generic heuristic as the default. The adapter already knows *how to launch* — letting it optionally know *how to read its own screen* is a clean symmetry.
+
+On compose — **(b), one-or-the-other, but with the SML as a *fallback*, not a mandatory two-step.** Concretely:
+
+> adapter-specific deterministic parser **first**; if it returns empty / low-confidence **and** an SML is configured, fall back to the SML.
+
+Reasons:
+- Codex just proved the deterministic path is *often completely sufficient* — `42`, `84`, `Paris`, the file listing all came out clean with zero model cost. Always running an SML afterward (mandatory two-step) would add latency and tokens to every turn for no gain.
+- Order matters: **specific → SML**, never the reverse. Cheap+reliable first, expensive+fuzzy only when the cheap one is unsure. Running the SML first means paying the model cost on every turn unconditionally.
+- The SML's real job is the *messy* providers where deterministic segmentation can't find the reply — that's exactly "deterministic returned nothing, ask the model."
+
+This also resolves your earlier "extract = the parser?" question: make the heuristic a `ScreenParser` (taking turn context: `sentText` + `pre`/`post` grids), so there's **one seam** — generic heuristic, `CodexParser`, and SML are all the same type, selected/chained by the same rule. `extractReply` becomes the *implementation* of the default heuristic parser, not a special branch.
+
+So the target shape:
+
+```
+Adapter.parser?  ──┐
+                   ├─►  chosen ScreenParser  ──(empty & SML set)──►  SML fallback
+generic heuristic ─┘     (knows codex modals,
+                          input-box readiness)
+```
+
+## What I'd build next, in order
+
+1. **Modal/readiness robustness** (fixes `/d`): before each turn, verify the input box is present; dismiss lingering modals (`q`/ESC); intercept codex UI slash-commands in degraded mode. This is the highest-value fix — it's the difference between "works until you hit a modal" and "stays usable."
+2. **Unify the parser seam**: `ScreenParser` takes turn context; `extractReply` becomes the default `HeuristicParser`; `Adapter` can supply its own.
+3. **SML fallback wiring** (parse-empty → SML), leaving the actual ollama parser for whenever you want it.
+
+My recommendation is to do **1 first** — the architecture (2/3) is sound but the modal-state blindness is what actually broke your session. Want me to start there?

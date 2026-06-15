@@ -47,6 +47,8 @@ export type ControllerCommandId =
   | "session"
   | "sessions"
   | "config"
+  | "login"
+  | "new"
   | "load"
   | "resume"
   | "fork"
@@ -121,6 +123,11 @@ export class AgentController implements AgentClient {
 
   get configOptions(): ConfigOptions {
     return this.acp?.configOptions ?? new Map();
+  }
+
+  /** Auth methods the agent advertised (empty in degraded mode or if none). */
+  get authMethods(): Capabilities["authMethods"] {
+    return this.acp?.authMethods ?? [];
   }
 
   get adapterIds(): string[] {
@@ -199,6 +206,19 @@ export class AgentController implements AgentClient {
     return brought.result;
   }
 
+  /** Authenticate the connection. Available whenever connected over ACP (with or without a session). */
+  authenticate(
+    methodId: string,
+    handlers: { onOutput?: (line: string) => void } = {},
+  ): Promise<unknown> {
+    return this.requireAcp().authenticate(methodId, handlers);
+  }
+
+  /** Force a fresh session (e.g. after /login). */
+  newSession(): Promise<ConnectResult> {
+    return this.requireAcp().newSession();
+  }
+
   listSessions(): Promise<SessionListPage> {
     return this.requireAcp().listSessions();
   }
@@ -252,6 +272,18 @@ export class AgentController implements AgentClient {
     return [
       { id: "caps", usage: "/caps", available: Boolean(acp), unavailableReason: degradedReason },
       { id: "session", usage: "/session", available: Boolean(this.current) },
+      {
+        id: "login",
+        usage: "/login [METHOD]",
+        available: Boolean(acp),
+        unavailableReason: degradedReason,
+      },
+      {
+        id: "new",
+        usage: "/new",
+        available: Boolean(acp),
+        unavailableReason: degradedReason,
+      },
       {
         id: "sessions",
         usage: "/sessions",
@@ -329,14 +361,23 @@ export class AgentController implements AgentClient {
       clientInfo: this.config.clientInfo,
       logger: this.config.logger,
     });
+    // connect() is fatal (no connection = nothing to do). startSession() is NOT: an
+    // unauthenticated agent may refuse session/new, but we keep the connection up so the
+    // user can /login and then create a session. (Auth state is opaque — see SPEC.)
     try {
       await client.connect();
-      const result = await client.startSession();
-      return { client, acp: client, result };
     } catch (err) {
       await client.stop();
       throw err;
     }
+    let result: ConnectResult;
+    try {
+      result = await client.startSession();
+    } catch (err) {
+      this.config.logger?.warn("session_start_failed", { error: String(err) });
+      result = { sessionId: "", resumed: false };
+    }
+    return { client, acp: client, result };
   }
 
   private requireAdapter(adapterId: string): Adapter {

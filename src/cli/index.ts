@@ -124,6 +124,54 @@ async function chat(args: Args): Promise<void> {
                 `(${controller.currentAdapterId}, ${controller.currentMode})`,
             );
             return true;
+          case "login": {
+            if (controller.isDegraded) {
+              note("ACP login unavailable in degraded mode (terminal bridge not built yet)");
+              return true;
+            }
+            const methods = controller.authMethods;
+            const methodId = commandArgs[0];
+            if (!methodId) {
+              if (methods.length === 0) {
+                note("agent advertises no auth methods (it may log in externally, or already be authenticated)");
+                return true;
+              }
+              note("auth methods:");
+              for (const m of methods) {
+                note(`  ${m.id}  ${m.name}${m.description ? ` — ${m.description}` : ""}`);
+              }
+              note("run: /login METHOD");
+              return true;
+            }
+            if (methods.length > 0 && !methods.some((m) => m.id === methodId)) {
+              note(`unknown method: ${methodId}`);
+              note(`available: ${methods.map((m) => m.id).join(", ") || "(none)"}`);
+              return true;
+            }
+            note(`authenticating with ${methodId}… (follow any URL/code shown below)`);
+            try {
+              await controller.authenticate(methodId, {
+                // Tee the agent's stderr (login URL / device code) but drop the noise of a
+                // raw JSON-RPC error dump on failure — we report the error ourselves.
+                onOutput: (line) => {
+                  if (!isRpcNoise(line)) note(line);
+                },
+              });
+              note(`authenticated with ${methodId}. If replies were empty, run /new for a fresh session.`);
+            } catch (e) {
+              note(`login failed: ${String(e)}`);
+            }
+            return true;
+          }
+          case "new": {
+            try {
+              const result = await controller.newSession();
+              note(`new session ${result.sessionId}`);
+            } catch (e) {
+              note(`could not start a new session: ${String(e)}`);
+            }
+            return true;
+          }
           case "degrade":
           case "upgrade": {
             const mode = command === "degrade" ? "degraded" : "normal";
@@ -270,6 +318,16 @@ await chat(args);
 
 function clearTerminal(): void {
   if (process.stderr.isTTY) process.stderr.write("\x1b[2J\x1b[H");
+}
+
+/** True for lines that are part of an agent's raw JSON-RPC error dump (not user-facing). */
+function isRpcNoise(line: string): boolean {
+  const t = line.trim();
+  if (t === "") return true;
+  if (/^Error handling request/i.test(t)) return true;
+  if (/^[{}],?$/.test(t)) return true;
+  if (/^(jsonrpc|id|method|params|code|message|data)\s*:/i.test(t)) return true;
+  return false;
 }
 
 function formatConfigList(configOptions: Map<string, ConfigOption>): string {

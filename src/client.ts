@@ -108,6 +108,10 @@ export class AcpClient implements AgentClient {
   private queue: QueueItem[] = [];
   private pumping = false;
 
+  // While authenticating, agent stderr (login URL / device code) is teed here so the
+  // caller can show it — auth output almost always arrives on stderr, not the protocol.
+  private authStderrSink: ((line: string) => void) | null = null;
+
   private readonly log: Logger;
 
   constructor(private config: AcpClientConfig) {
@@ -122,6 +126,10 @@ export class AcpClient implements AgentClient {
   }
   get configOptions(): ConfigOptions {
     return this._configOptions;
+  }
+  /** Auth methods the agent advertised. Empty does NOT mean authenticated (state is opaque). */
+  get authMethods(): Capabilities["authMethods"] {
+    return this._capabilities?.authMethods ?? [];
   }
   get currentSessionId(): string | null {
     return this._sessionId;
@@ -157,7 +165,10 @@ export class AcpClient implements AgentClient {
       env: this.config.env,
       onUpdate: (n) => this.handleUpdate(n),
       onPermissionRequest: (p) => this.handlePermission(p),
-      onStderr: (line) => this.log.debug("agent_stderr", { line }),
+      onStderr: (line) => {
+        this.log.debug("agent_stderr", { line });
+        this.authStderrSink?.(line);
+      },
       onCrash: (code) => {
         this.transport = null;
         this._sessionId = null;
@@ -339,6 +350,37 @@ export class AcpClient implements AgentClient {
       }),
       nextCursor: (res as Record<string, any>).nextCursor ?? undefined,
     };
+  }
+
+  /**
+   * Authenticate the CONNECTION with one of the advertised methods. Connection-level, so
+   * it works with or without a session. Auth state is opaque (an agent may answer ok and
+   * still be unauthenticated), so this never throws on "wrong" — only on transport errors.
+   * `onOutput` receives the agent's stderr during the call (login URL / device code).
+   */
+  async authenticate(
+    methodId: string,
+    handlers: { onOutput?: (line: string) => void } = {},
+  ): Promise<schema.AuthenticateResponse> {
+    const transport = this.requireTransport();
+    this.log.info("authenticate", { methodId });
+    this.authStderrSink = handlers.onOutput ?? null;
+    try {
+      const res = await transport.authenticate({ methodId } as schema.AuthenticateRequest);
+      this.log.debug("authenticate_response", { response: res });
+      return res;
+    } finally {
+      this.authStderrSink = null;
+    }
+  }
+
+  /** Force a brand-new session, ignoring config.sessionId. Useful after authenticating. */
+  async newSession(options: { mcpServers?: schema.McpServer[] } = {}): Promise<ConnectResult> {
+    const transport = this.requireTransport();
+    const cwd = this.config.cwd ?? process.cwd();
+    const sessionId = await this.newSessionInternal(transport, cwd, options.mcpServers ?? []);
+    this._sessionId = sessionId;
+    return { sessionId, resumed: false };
   }
 
   private async newSessionInternal(
