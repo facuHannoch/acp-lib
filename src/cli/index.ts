@@ -68,7 +68,8 @@ async function chat(args: Args): Promise<void> {
     logger,
   });
 
-  const { sessionId, resumed } = await client.connect();
+  await client.connect();
+  const { sessionId, resumed } = await client.startSession();
   const label = ADAPTERS[args.adapter].displayName ?? args.adapter;
   const intro =
     `${resumed ? "resumed" : "new"} session ${sessionId} (${label}) — ` +
@@ -81,16 +82,16 @@ async function chat(args: Args): Promise<void> {
     await runRepl(client, {
       verbose: args.verbose,
       intro,
-      onSlashCommand: (command) => {
+      onSlashCommand: async (command) => {
         switch (command) {
           case "help":
-            note("commands: /help /caps /session /exit");
+            note("commands: /help /caps /session /sessions /exit");
             return true;
           case "caps": {
             const c = client.capabilities.agent;
             note(
               `loadSession=${c.loadSession} image=${c.promptCapabilities.image} ` +
-                `logout=${c.auth?.logout ?? false} ` +
+                `logout=${c.auth?.logout ?? false} list=${c.sessionCapabilities.list} ` +
                 `config=[${[...client.configOptions.keys()].join(",")}]`,
             );
             return true;
@@ -98,6 +99,18 @@ async function chat(args: Args): Promise<void> {
           case "session":
             note(String(client.currentSessionId));
             return true;
+          case "sessions": {
+            if (!client.capabilities.agent.sessionCapabilities.list) {
+              note("agent does not support session/list");
+              return true;
+            }
+            const page = await client.listSessions();
+            if (page.sessions.length === 0) note("(no sessions)");
+            for (const s of page.sessions) {
+              note(`${s.sessionId}  ${s.title ?? ""}  ${s.updatedAt ?? ""}`);
+            }
+            return true;
+          }
           default:
             return false; // unknown → treat as a normal prompt
         }

@@ -26,6 +26,7 @@ import type {
   PermissionRequest,
   PermissionOutcome,
   Attachment,
+  SessionListPage,
 } from "./types.ts";
 
 export interface AcpClientConfig {
@@ -47,9 +48,18 @@ export interface AcpClientConfig {
   logger?: Logger;
 }
 
-export interface ConnectOptions {
+export interface StartSessionOptions {
+  /** Resume this session (falls back to a new one on failure). Defaults to config.sessionId. */
+  sessionId?: string;
   /** MCP servers bound at session creation. */
   mcpServers?: schema.McpServer[];
+}
+
+export interface ListSessionsOptions {
+  /** Filter by working directory. Defaults to config.cwd. */
+  cwd?: string;
+  /** Pagination cursor from a previous page's nextCursor. */
+  cursor?: string;
 }
 
 export interface ConnectResult {
@@ -101,13 +111,25 @@ export class AcpClient implements AgentClient {
   get currentSessionId(): string | null {
     return this._sessionId;
   }
+  /** True once connect() has spawned + initialized (a session may not exist yet). */
   get isConnected(): boolean {
-    return this.transport !== null && this._sessionId !== null;
+    return this.transport !== null;
+  }
+  /** True once a session has been created or loaded. */
+  get hasSession(): boolean {
+    return this._sessionId !== null;
   }
 
   // --- lifecycle ----------------------------------------------------------------
 
-  async connect(options: ConnectOptions = {}): Promise<ConnectResult> {
+  /**
+   * Spawn the agent and initialize the connection. Populates `capabilities`. Does NOT
+   * create a session — call startSession() (or just prompt(), which lazily starts one),
+   * or listSessions() to pick an existing one first.
+   */
+  async connect(): Promise<Capabilities> {
+    if (this.transport) return this.capabilities;
+
     const command = buildSpawnCommand(this.config.adapter, this.config.execPrefix);
     const isDockerExec = command[0] === "docker";
 
@@ -147,39 +169,68 @@ export class AcpClient implements AgentClient {
       protocolVersion: this._capabilities.protocolVersion,
       loadSession: this._capabilities.agent.loadSession,
     });
+    return this._capabilities;
+  }
 
+  /**
+   * Create a new session, or resume one (sessionId from the option or config). On resume
+   * failure, falls back to a new session. Populates `configOptions`.
+   */
+  async startSession(options: StartSessionOptions = {}): Promise<ConnectResult> {
+    const transport = this.requireTransport();
     const mcpServers = options.mcpServers ?? [];
     const cwd = this.config.cwd ?? process.cwd();
+    const resumeId = options.sessionId ?? this.config.sessionId;
 
     let resumed = false;
     let sessionId: string;
 
-    if (this.config.sessionId && this._capabilities.agent.loadSession) {
+    if (resumeId && this.capabilities.agent.loadSession) {
       try {
-        await transport.loadSession({
-          sessionId: this.config.sessionId,
-          cwd,
-          mcpServers,
-        } as schema.LoadSessionRequest);
-        sessionId = this.config.sessionId;
+        await transport.loadSession({ sessionId: resumeId, cwd, mcpServers } as schema.LoadSessionRequest);
+        sessionId = resumeId;
         resumed = true;
         this.log.info("session_loaded", { sessionId });
       } catch (err) {
-        this.log.warn("session_load_failed", {
-          sessionId: this.config.sessionId,
-          error: String(err),
-        });
-        sessionId = await this.startNewSession(transport, cwd, mcpServers);
+        this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
+        sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
       }
     } else {
-      sessionId = await this.startNewSession(transport, cwd, mcpServers);
+      sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
     }
 
     this._sessionId = sessionId;
     return { sessionId, resumed };
   }
 
-  private async startNewSession(
+  /**
+   * Ask the AGENT for its sessions (authoritative). Gated by sessionCapabilities.list.
+   * Requires connect() but NOT a created session — use it to pick one before starting.
+   */
+  async listSessions(options: ListSessionsOptions = {}): Promise<SessionListPage> {
+    const transport = this.requireTransport();
+    if (!this.capabilities.agent.sessionCapabilities.list) {
+      throw new Error("agent does not advertise session/list (sessionCapabilities.list)");
+    }
+    const res = await transport.listSessions({
+      cwd: options.cwd ?? this.config.cwd ?? null,
+      cursor: options.cursor ?? null,
+    } as schema.ListSessionsRequest);
+    return {
+      sessions: (res.sessions ?? []).map((s) => {
+        const e = s as Record<string, any>;
+        return {
+          sessionId: e.sessionId,
+          cwd: e.cwd,
+          title: e.title ?? undefined,
+          updatedAt: e.updatedAt ?? undefined,
+        };
+      }),
+      nextCursor: (res as Record<string, any>).nextCursor ?? undefined,
+    };
+  }
+
+  private async newSessionInternal(
     transport: AcpTransport,
     cwd: string,
     mcpServers: schema.McpServer[],
@@ -191,6 +242,16 @@ export class AcpClient implements AgentClient {
       configOptions: [...this._configOptions.keys()],
     });
     return res.sessionId;
+  }
+
+  private requireTransport(): AcpTransport {
+    if (!this.transport) throw new NotConnectedError();
+    return this.transport;
+  }
+
+  /** Lazily ensure a session exists (used by prompt()). */
+  private async ensureSession(): Promise<void> {
+    if (!this._sessionId) await this.startSession();
   }
 
   async stop(): Promise<void> {
@@ -232,7 +293,8 @@ export class AcpClient implements AgentClient {
   }
 
   private async runPrompt(item: QueueItem): Promise<PromptResult> {
-    if (!this.transport || !this._sessionId) throw new NotConnectedError();
+    if (!this.transport) throw new NotConnectedError();
+    await this.ensureSession(); // lazily create a session on first prompt
 
     const contentBlocks: schema.ContentBlock[] = [];
     if (item.text) contentBlocks.push({ type: "text", text: item.text });

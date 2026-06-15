@@ -38,9 +38,13 @@ export interface AgentCapabilities {
   };
   /** Null when the agent does not advertise logout. */
   auth: { logout: boolean } | null;
+  /** Optional session-lifecycle methods, each true only if the agent advertises it. */
   sessionCapabilities: {
-    /** Null when not advertised; {} (→ true) means session/delete from session/list. */
+    list: boolean;
     delete: boolean;
+    close: boolean;
+    fork: boolean;
+    resume: boolean;
     additionalDirectories: boolean;
   };
 }
@@ -76,7 +80,11 @@ export function parseCapabilities(init: schema.InitializeResponse): Capabilities
       },
       auth: a.auth != null ? { logout: a.auth.logout != null } : null,
       sessionCapabilities: {
+        list: session.list != null,
         delete: session.delete != null,
+        close: session.close != null,
+        fork: session.fork != null,
+        resume: session.resume != null,
         additionalDirectories: session.additionalDirectories != null,
       },
     },

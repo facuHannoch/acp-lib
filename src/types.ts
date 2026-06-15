@@ -86,3 +86,18 @@ export interface Attachment {
   data: ArrayBuffer;
   mimeType: string;
 }
+
+/** A session as reported by the agent via session/list (the authoritative source). */
+export interface SessionListEntry {
+  sessionId: string;
+  cwd: string;
+  title?: string;
+  updatedAt?: string;
+}
+
+/** Result of a paginated session/list call. */
+export interface SessionListPage {
+  sessions: SessionListEntry[];
+  /** Pass back as `cursor` to fetch the next page; absent when there are no more. */
+  nextCursor?: string;
+}

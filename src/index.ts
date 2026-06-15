@@ -6,7 +6,8 @@
 export { AcpClient } from "./client.ts";
 export type {
   AcpClientConfig,
-  ConnectOptions,
+  StartSessionOptions,
+  ListSessionsOptions,
   ConnectResult,
 } from "./client.ts";
 
@@ -43,4 +44,6 @@ export type {
   PermissionOutcome,
   Usage,
   Attachment,
+  SessionListEntry,
+  SessionListPage,
 } from "./types.ts";

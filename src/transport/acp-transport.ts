@@ -105,6 +105,9 @@ export class AcpTransport {
   loadSession(params: schema.LoadSessionRequest): Promise<schema.LoadSessionResponse> {
     return this.conn().loadSession(params);
   }
+  listSessions(params: schema.ListSessionsRequest): Promise<schema.ListSessionsResponse> {
+    return this.conn().listSessions(params);
+  }
   prompt(params: schema.PromptRequest): Promise<schema.PromptResponse> {
     return this.conn().prompt(params);
   }
