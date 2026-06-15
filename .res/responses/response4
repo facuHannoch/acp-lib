@@ -1,0 +1,337 @@
+{ "jsonrpc": "2.0", "id": 7, "method": "session/prompt", "params": { "sessionId": "019ec85b-ac04-7fa3-bfdd-4b0b488e50a2", "prompt": [{ "type": "text", "text": "Without using any tools: you have 25 horses and can  race 5 at a time. You have no stopwatch, only finishing order. What is the minimum number of races needed to find the top 3 fastest horses? Reason through this step by step before giving your answer." }] } }
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"session_info_update","_meta":{"codex":{"threadStatus":{"type":"active","activeFlags":[]}}}}}}
+
+
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Minimum"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":":"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" **"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"7"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" races"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"**"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Step"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" by"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" step"}}}}
+
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":":\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" Split"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"25"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" horses"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" into"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"5"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" groups"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" of"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"5"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" Race"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" each"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" group"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" once"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" That"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" takes"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" **"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"5"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" races"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"**"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"  "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" -"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" Call"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" the"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" groups"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" D"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" E"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"  "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" -"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" Within"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" each"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" group"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" rank"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" horses"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" by"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" finish"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":":"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"3"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"4"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"5"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" etc"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"3"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" Race"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" the"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"5"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" group"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" winners"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":":"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" D"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" E"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"  "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" -"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" That"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" is"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" race"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" **"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"6"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"**"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"  "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" -"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" Suppose"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" they"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" finish"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":":"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" fastest"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" then"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" then"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" then"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" D"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" then"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" E"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Now"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" eliminate"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" impossible"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" horses"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":":\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"-"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" Groups"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" D"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" and"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" E"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" cannot"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" contain"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" any"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" top"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"3"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" horse"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" because"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" even"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" their"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" fastest"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" horses"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" lost"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" to"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" and"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"-"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" In"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" group"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" only"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" can"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" still"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" matter"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" and"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" below"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" are"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" behind"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" and"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" was"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" already"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" third"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" among"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" group"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" winners"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"-"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" In"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" group"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" only"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" and"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" can"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" still"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" matter"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"-"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" In"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" group"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" only"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" and"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"3"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" can"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" still"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" matter"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" is"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" definitely"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" the"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" fastest"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" overall"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"The"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" remaining"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" candidates"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" for"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"nd"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" and"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"3"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"rd"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" are"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":":\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"`"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" A"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"3"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" B"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":","}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" C"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"`\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"4"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" Race"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" those"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"5"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" horses"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"  "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" -"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" That"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" is"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" race"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" **"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"7"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"**"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"  "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" -"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" The"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" top"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" finish"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ers"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" from"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" this"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" race"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" are"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" the"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" overall"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"2"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"nd"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" and"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"3"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"rd"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":".\n\n"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"So"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" the"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" minimum"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" number"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" of"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" races"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" is"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" **"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"7"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"**"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"usage_update","used":48887,"size":258400}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"019ec85b-ac04-7fa3-bfdd-4b0b488e50a2","update":{"sessionUpdate":"session_info_update","_meta":{"codex":{"threadStatus":{"type":"idle"}}}}}}
+{"jsonrpc":"2.0","id":7,"result":{"stopReason":"end_turn","usage":{"totalTokens":48887,"inputTokens":43543,"cachedReadTokens":4992,"outputTokens":352,"thoughtTokens":18},"_meta":{"quota":{"token_count":{"totalTokens":48887,"inputTokens":43543,"cachedInputTokens":4992,"outputTokens":352,"reasoningOutputTokens":18},"model_usage":[{"model":"gpt-5.5","token_count":{"totalTokens":48887,"inputTokens":43543,"cachedInputTokens":4992,"outputTokens":352,"reasoningOutputTokens":18}}]}}}}
