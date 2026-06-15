@@ -13,14 +13,15 @@ export type {
 } from "./client.ts";
 
 export {
-  AcpController,
+  AgentController,
   parseConfigValue,
   parseBoolean,
   parseJsonOrString,
   formatConfigValue,
 } from "./controller.ts";
 export type {
-  AcpControllerConfig,
+  AgentControllerConfig,
+  AgentMode,
   SwitchAdapterResult,
   ControllerCommand,
   ControllerCommandId,

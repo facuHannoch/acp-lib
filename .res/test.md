@@ -497,3 +497,34 @@ This is actually a strong argument for the library exposing a structured event l
 
 
 ```
+## 2026-06-15 — degraded mode PTY transport decision
+
+- **node-pty under Bun is unusable**: even a plain `bash --norc -i` child dies
+  immediately with `EXIT {exitCode:0, signal:1}` (SIGHUP); `onData` never fires.
+  This is broader than the earlier bun-in-bun quirk — the read path itself is broken.
+  (Native module also has to be hand-copied into Bun's global cache to even load:
+  `node_modules/node-pty/build/Release/pty.node` → `~/.bun/install/cache/node-pty@.../build/Release/`.)
+- **Chosen transport: `script` (util-linux) owns the pty; we drive plain Bun.spawn pipes.**
+  `script -qfec "<cmd>" /dev/null` with `TERM=xterm-color`, stdin via TransformStream,
+  stdout piped. Smoke test (interactive bash):
+    `echo HELLO_$((6*7))` → captured `bash-5.1# echo ...\nHELLO_42\nbash-5.1# ` (RAW_LEN 76, match ✓).
+  Same pipe mechanism as AcpTransport, zero native deps. macOS variant differs
+  (`script -q /dev/null cmd args`) — Linux handled first.
+
+## 2026-06-15 — degraded mode wired end-to-end
+
+Architecture landed: `AcpController` → **`AgentController`** (mode-agnostic); new
+`mode: "normal" | "degraded"` dimension orthogonal to `adapter`; PtyClient is a sibling
+leaf to AcpClient (both implement AgentClient), constructed by `bringUp()` via dynamic
+import so normal mode never loads the degraded subpath. `setMode()` degrades/upgrades in
+place. Adapter presets gained `ptyCommand` (interactive CLI for pty mode).
+
+- **PtyClient vs bash** (`echo HELLO_$((6*7))`): text `"HELLO_42"`, multi-line `"a\nb\nc"`,
+  status completed. Echo + trailing-prompt stripped. (Streaming onChunk still includes the
+  trailing prompt chrome mid-stream — final text is clean; naive limitation.)
+- **AgentController degraded** (bash adapter): start `{sessionId:"",resumed:false}`,
+  prompt streams `"CONTROLLER_OK"`, `capabilities` throws as designed, `getCommands`
+  reports caps/sessions/config/load/resume/fork unavailable, session/switch available.
+- node-pty removed from package.json. New runtime dep: system `script` (util-linux).
+- NOT yet tested against a real agent TUI (codex interactive) — naive ANSI-strip on a
+  full-screen TUI will be messy and is the next validation.

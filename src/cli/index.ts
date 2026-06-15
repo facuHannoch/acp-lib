@@ -13,7 +13,7 @@
 //   --debug   (-d): the above PLUS raw protocol payloads (initialize/prompt/session_update)
 
 import {
-  AcpController,
+  AgentController,
   ADAPTERS,
   createConsoleLogger,
   formatConfigValue,
@@ -63,11 +63,6 @@ function parseArgs(argv: string[]): Args {
 }
 
 async function chat(args: Args): Promise<void> {
-  if (args.degraded) {
-    console.error("degraded mode is not implemented yet (deferred).");
-    process.exit(1);
-  }
-
   // Logging levels:
   //   default    → warn   (quiet — only warnings/errors)
   //   --verbose  → info   (lifecycle summaries: connect, session_new, prompt_end, …)
@@ -75,9 +70,10 @@ async function chat(args: Args): Promise<void> {
   const minLevel = args.debug ? "debug" : args.verbose ? "info" : "warn";
   const logger = createConsoleLogger({ minLevel });
 
-  const controller = new AcpController({
+  const controller = new AgentController({
     adapters: ADAPTERS,
     initialAdapter: args.adapter,
+    mode: args.degraded ? "degraded" : "normal",
     execPrefix: args.execPrefix,
     cwd: args.cwd,
     sessionId: args.sessionId,
@@ -87,9 +83,10 @@ async function chat(args: Args): Promise<void> {
 
   const { sessionId, resumed } = await controller.start();
   const label = ADAPTERS[args.adapter].displayName ?? args.adapter;
-  const intro =
-    `${resumed ? "resumed" : "new"} session ${sessionId} (${label}) — ` +
-    `/exit to quit, Ctrl-C to interrupt`;
+  const intro = controller.isDegraded
+    ? `degraded (pty) session (${label}) — no ACP capabilities · /exit to quit, Ctrl-C to interrupt`
+    : `${resumed ? "resumed" : "new"} session ${sessionId} (${label}) — ` +
+      `/exit to quit, Ctrl-C to interrupt`;
 
   const color = colorEnabled(process.stderr);
   const note = (s: string) => process.stderr.write(paint(color, DIM, s) + "\n");
@@ -103,9 +100,16 @@ async function chat(args: Args): Promise<void> {
       onSlashCommand: async (command, commandArgs) => {
         switch (command) {
           case "help":
-            note(`commands: /help ${controller.getCommands().map((c) => c.usage).join(" ")} /exit`);
+            note(
+              `commands: /help ${controller.getCommands().map((c) => c.usage).join(" ")} ` +
+                `/degrade /upgrade /exit`,
+            );
             return true;
           case "caps": {
+            if (controller.isDegraded) {
+              note("degraded (pty) mode — no ACP capabilities; /upgrade to reconnect over ACP");
+              return true;
+            }
             const c = controller.capabilities.agent;
             note(
               `loadSession=${c.loadSession} image=${c.promptCapabilities.image} ` +
@@ -115,8 +119,30 @@ async function chat(args: Args): Promise<void> {
             return true;
           }
           case "session":
-            note(`${controller.currentSessionId} (${controller.currentAdapterId})`);
+            note(
+              `${controller.currentSessionId ?? "(no session)"} ` +
+                `(${controller.currentAdapterId}, ${controller.currentMode})`,
+            );
             return true;
+          case "degrade":
+          case "upgrade": {
+            const mode = command === "degrade" ? "degraded" : "normal";
+            if (controller.currentMode === mode) {
+              note(`already in ${mode} mode`);
+              return true;
+            }
+            try {
+              const result = await controller.setMode(mode);
+              note(
+                mode === "degraded"
+                  ? `degraded to pty (${controller.currentAdapterId})`
+                  : `upgraded to ACP, new session ${result.sessionId}`,
+              );
+            } catch (e) {
+              note(`could not switch to ${mode}: ${String(e)}`);
+            }
+            return true;
+          }
           case "sessions": {
             if (!controller.capabilities.agent.sessionCapabilities.list) {
               note("agent does not support session/list");

@@ -1,0 +1,413 @@
+I’d keep the architecture strict and introduce degraded mode as a separate client kind, not as “failed ACP startup fallback.”
+
+Proposed shape:
+
+**1. Keep `AcpClient` pure**
+
+No degraded branches inside `AcpClient`.
+
+```ts
+AcpClient implements AgentClient
+```
+
+It keeps the rich ACP-only surface:
+
+- capabilities
+- configOptions
+- setConfig
+- load/resume/fork
+- listSessions
+- permission handling
+
+**2. Implement `PtyClient` as its own `AgentClient`**
+
+```ts
+PtyClient implements AgentClient
+```
+
+It only guarantees:
+
+- `prompt`
+- `interrupt`
+- `stop`
+
+And PTY-only extras:
+
+- `readScreen`
+- `sendKeys`
+
+No fake `configOptions`, no fake `session/load`.
+
+**3. Split controller capabilities by mode**
+
+Right now `AcpController` assumes current client is an `AcpClient`. That is fine for now, but for degraded support I’d either:
+
+Option A: keep `AcpController` ACP-only, and later add:
+
+```ts
+AgentController
+```
+
+that can hold either ACP or PTY clients.
+
+Option B: evolve `AcpController` into a more generic controller:
+
+```ts
+AgentController
+  mode: "acp" | "degraded"
+  client: AgentClient
+```
+
+I prefer Option A short-term: keep `AcpController` ACP-only because the name is clear and it exposes ACP-specific behavior. Add degraded support beside it later.
+
+**4. Add a generic `AgentRuntime` later**
+
+This would be the app-level thing:
+
+```ts
+const runtime = new AgentRuntime({
+  clients: {
+    kimi: { mode: "acp", adapter: ADAPTERS.kimi },
+    codex: { mode: "acp", adapter: ADAPTERS.codex },
+    claudeCli: {
+      mode: "degraded",
+      adapter: { command: ["claude"] },
+      parser,
+    },
+  },
+});
+```
+
+It exposes:
+
+- `prompt`, `interrupt`, `stop`
+- `switchClient(id)`
+- `mode`
+- `getActions()`
+
+Actions would be mode-aware:
+
+For ACP:
+
+```text
+config, load, resume, fork, sessions, switch
+```
+
+For degraded:
+
+```text
+screen, keys, switch
+```
+
+Maybe also:
+
+```text
+native COMMAND
+```
+
+which just sends slash commands into the PTY.
+
+**5. Make CLI degrade gracefully based on actions**
+
+The CLI should not hardcode “all commands always exist.” It should ask the controller/runtime:
+
+```ts
+runtime.getActions()
+```
+
+Then:
+
+- `/config` works only in ACP mode
+- `/load` works only in ACP mode
+- `/send-keys` or `/screen` works only in degraded mode
+- `/switch` works across both
+
+If the user runs `/config` in degraded mode:
+
+```text
+config is not available in degraded mode
+```
+
+**6. Do not pretend degraded has structured config**
+
+For model/mode in degraded, the only honest API is:
+
+```ts
+pty.sendKeys("/model gpt-5\n")
+```
+
+or a convenience method that is explicitly native:
+
+```ts
+runtime.sendNativeCommand("/model gpt-5")
+```
+
+But it should not update `configOptions` unless the screen parser actually sees and extracts some state, and even then it should be “observed state,” not protocol truth.
+
+**7. Build PTY infrastructure as a reusable primitive**
+
+Before full `PtyClient`, implement the lower layer:
+
+```ts
+PtyTransport
+  start()
+  write()
+  resize()
+  stop()
+  onFrame()
+  readScreen()
+```
+
+Then `PtyClient` composes it.
+
+Later `AcpClient` can use the same PTY primitive for tty auth, without mixing degraded chat into ACP.
+
+**Recommended next steps**
+
+1. Rename nothing yet. Keep `AcpController` ACP-only.
+2. Add comments/types making that explicit.
+3. Implement PTY transport separately.
+4. Implement `PtyClient implements AgentClient`.
+5. Add a higher-level `AgentRuntime` only when we actually need to switch between ACP and degraded clients in one UI.
+
+So the immediate architecture becomes:
+
+```text
+AgentClient interface
+  ├─ AcpClient        rich ACP client
+  └─ PtyClient        degraded output-only client
+
+AcpController        reusable ACP orchestration
+Future AgentRuntime  mode-aware orchestration across AcpController/PtyClient
+CLI                  presentation over controller/runtime
+```
+
+That keeps degraded honest and avoids polluting the core ACP library with fake behavior.
+
+
+
+
+
+
+---
+
+
+
+
+You’re right to push back. I would not drop `AcpController`.
+
+My previous framing blurred two different layers:
+
+```text
+AcpClient       = raw ACP process/protocol primitive
+AcpController   = ACP-mode control surface for apps/CLI
+AgentSession    = higher-level conversation state/orchestration
+```
+
+Those are not redundant.
+
+**Corrected View**
+
+`AcpController` should stay.
+
+Its purpose is valuable:
+
+- gives the CLI an ACP-specific surface without sprinkling checks everywhere
+- owns current ACP client and adapter switching
+- exposes ACP-only things cleanly: capabilities, config, sessions, load/resume/fork
+- lets the CLI say “normal mode means ACP controller”
+- gives consumers a lower-level but still ergonomic ACP interface
+
+Then degraded mode should likely get a sibling:
+
+```text
+PtyController
+```
+
+Not because PTY has ACP features, but because the CLI still needs a controller-shaped object for degraded mode.
+
+So:
+
+```text
+AcpController  -> wraps AcpClient, ACP actions
+PtyController  -> wraps PtyClient, PTY/native actions
+```
+
+They can share a minimal interface:
+
+```ts
+interface AgentController extends AgentClient {
+  mode: "acp" | "degraded";
+  getActions(): Action[];
+  stop(): Promise<void>;
+}
+```
+
+But only `AcpController` has:
+
+```ts
+setConfig()
+loadSession()
+resumeSession()
+forkSession()
+capabilities
+configOptions
+```
+
+Only `PtyController` has:
+
+```ts
+readScreen()
+sendKeys()
+sendNativeCommand()
+```
+
+That avoids fake parity.
+
+**Where `AgentSession` Fits**
+
+`AgentSession` should not replace `AcpController`. It should sit above controllers.
+
+Its job is the user-level conversation object:
+
+```text
+AgentSession
+  primary controller: AcpController | PtyController
+  transcript buffer
+  session metadata
+  optional observer/companion controller(s)
+  routing policy
+```
+
+The multi-agent idea belongs here, not in `AcpController`.
+
+And yes, I understand the point now: it is not “the user has multiple sessions.” It is one user-visible session that may internally contain more than one LLM handle.
+
+So the user sees:
+
+```text
+one session
+```
+
+Internally:
+
+```text
+AgentSession
+  primary worker LLM
+  observer/responder LLM reading transcript/activity
+```
+
+If the primary worker is busy, the session can still answer questions using the observer because the observer works from the transcript/activity stream, not by touching the busy primary turn.
+
+That means `AgentSession` owns the shared substrate:
+
+- transcript
+- activity log
+- current task state
+- loaded context
+- messages injected by user
+- observed tool calls/results
+- maybe summaries
+
+The observer is not a separate user-facing session. It is an internal capability of the same `AgentSession`.
+
+**Best Architecture**
+
+I’d define it like this:
+
+```text
+Layer 1: Transport/Protocol
+  AcpClient
+  PtyClient
+
+Layer 2: Mode Controllers
+  AcpController
+  PtyController
+
+Layer 3: User Conversation
+  AgentSession
+```
+
+Responsibilities:
+
+```text
+AcpClient:
+  ACP JSON-RPC process/session primitive
+
+AcpController:
+  convenient ACP app API: switch adapter, config, load/resume/fork, actions
+
+PtyClient:
+  PTY primitive: prompt, interrupt, screen, keys
+
+PtyController:
+  degraded app API: native commands, screen, actions
+
+AgentSession:
+  one user-visible conversation, transcript, context, observers, routing
+```
+
+**CLI Usage**
+
+For the current CLI, I agree with your instinct:
+
+```text
+normal mode:
+  CLI -> AcpController
+
+--degraded:
+  CLI -> PtyController
+```
+
+That keeps the CLI simple and mode-aware without forcing `AgentSession` prematurely.
+
+Later, when we implement companion/observer behavior, the CLI can move up to:
+
+```text
+CLI -> AgentSession
+```
+
+But only when it needs session-level orchestration.
+
+**The Key Design Rule**
+
+`AcpController` controls one ACP-backed agent connection.
+
+`AgentSession` represents one user-visible conversation, which may internally use one or more controllers.
+
+That distinction solves the conflict:
+
+- You keep `AcpController` for clean ACP CLI/app usage.
+- You still get `AgentSession` later for transcript/context/multi-LLM orchestration.
+- Degraded mode gets `PtyController`, not weird ACP-shaped behavior.
+- Multi-agent stays invisible to the user as one session.
+
+
+
+
+
+
+
+
+
+
+
+
+There have been some changes to the codebase. You may want to check it. Feel free to critize the new models, but I think we are in the right correction.
+We have to implement the degraded mode / pty.
+I am thinking on the following architecture...
+We would have three layers
+1. AgentSession
+2. AcpController
+3. AcpClient
+
+The CLI was becoming the source of truth, so that motivated the creation of AcpController, which talks to the AcpClient. The CLI now talks to the controller.
+
+We currently have an interface that both controller and client implement, AgentClient. I'm not sure this is a) a good name; and b) really necessary or good.
+
+
+But for pty, we could have a PtyController. And then we could have a thing above, like AgentSession. This would allow for a) dynamic degradation -> this is not to say that both controlelrs would share sessions, but that the same session could degrade upgrade (be it a one time thing like acp does not work, ill degrade to pty, or a quick thing lie for logging with kimi). This would also allow later for multi llms, as we could have one main controller, and the AgentSession has access to its state so it can invoke an agent that knows about it. And all this without turning AcpController into a enroumous thing with a lot of responsabilities: it just keeps its own session and accepts commands, etc.
+And for more complex session management, like loading context, storing, exporting context to new sessions, etc, we can have a SessionManager or something like that, which I was thinking it for AgentSession but maybe AcpController could access it (or too much?)
+
+
+We could have an interface like AgentController, which AcpController implements, and the future PtyController too.

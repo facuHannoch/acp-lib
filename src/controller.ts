@@ -12,11 +12,21 @@ import type {
 } from "./types.ts";
 import { NotConnectedError } from "./errors.ts";
 
-export interface AcpControllerConfig {
+/**
+ * How the controller talks to the agent. Orthogonal to `adapter` (which agent):
+ *   - "normal"   → AcpClient: full ACP JSON-RPC (capabilities, config, sessions).
+ *   - "degraded" → PtyClient: scrape an interactive CLI in a pty (no rich surface).
+ * Degrading/upgrading swaps the leaf in place, keeping `adapter` fixed.
+ */
+export type AgentMode = "normal" | "degraded";
+
+export interface AgentControllerConfig {
   /** Named launch adapters the controller can switch between. */
   adapters: Record<string, Adapter>;
   /** Adapter to use on start(). */
   initialAdapter: string;
+  /** How to talk to the agent on start(). Default "normal". */
+  mode?: AgentMode;
   execPrefix?: string[];
   env?: Record<string, string>;
   cwd?: string;
@@ -66,12 +76,19 @@ export interface SetConfigFromStringResult {
  * mutable "current client" behavior such as adapter switching and config validation,
  * so CLIs and app UIs do not have to reimplement it.
  */
-export class AcpController implements AgentClient {
-  private current: AcpClient | null = null;
+export class AgentController implements AgentClient {
+  // `current` is the universal leaf (prompt/interrupt/stop) — an AcpClient in normal
+  // mode, a PtyClient in degraded mode. `acp` is the SAME object only in normal mode,
+  // typed for the rich ACP surface; it is null when degraded (that surface genuinely
+  // doesn't exist when screen-scraping).
+  private current: AgentClient | null = null;
+  private acp: AcpClient | null = null;
   private adapterId: string;
+  private mode: AgentMode;
 
-  constructor(private readonly config: AcpControllerConfig) {
+  constructor(private readonly config: AgentControllerConfig) {
     this.adapterId = config.initialAdapter;
+    this.mode = config.mode ?? "normal";
     this.requireAdapter(this.adapterId);
   }
 
@@ -79,20 +96,31 @@ export class AcpController implements AgentClient {
     return this.adapterId;
   }
 
+  /** Whether the controller is talking ACP ("normal") or scraping a pty ("degraded"). */
+  get currentMode(): AgentMode {
+    return this.mode;
+  }
+
+  /** True when the rich ACP surface (capabilities, config, sessions) is available. */
+  get isDegraded(): boolean {
+    return this.mode === "degraded";
+  }
+
+  /** The underlying ACP client. Throws in degraded mode — guard with isDegraded. */
   get currentClient(): AcpClient {
-    return this.requireCurrent();
+    return this.requireAcp();
   }
 
   get currentSessionId(): string | null {
-    return this.current?.currentSessionId ?? null;
+    return this.acp?.currentSessionId ?? null;
   }
 
   get capabilities(): Capabilities {
-    return this.requireCurrent().capabilities;
+    return this.requireAcp().capabilities;
   }
 
   get configOptions(): ConfigOptions {
-    return this.requireCurrent().configOptions;
+    return this.acp?.configOptions ?? new Map();
   }
 
   get adapterIds(): string[] {
@@ -105,19 +133,12 @@ export class AcpController implements AgentClient {
 
   async start(): Promise<ConnectResult> {
     if (this.current) {
-      return { sessionId: this.current.currentSessionId ?? "", resumed: this.current.hasSession };
+      return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
     }
-    const client = this.createClient(this.adapterId, this.config.sessionId);
-    let result: ConnectResult;
-    try {
-      await client.connect();
-      result = await client.startSession();
-    } catch (err) {
-      await client.stop();
-      throw err;
-    }
-    this.current = client;
-    return result;
+    const brought = await this.bringUp(this.adapterId, this.mode, this.config.sessionId);
+    this.current = brought.client;
+    this.acp = brought.acp;
+    return brought.result;
   }
 
   prompt(
@@ -135,6 +156,7 @@ export class AcpController implements AgentClient {
   async stop(): Promise<void> {
     const client = this.current;
     this.current = null;
+    this.acp = null;
     if (client) await client.stop();
   }
 
@@ -146,45 +168,55 @@ export class AcpController implements AgentClient {
       return {
         adapterId,
         previousAdapterId,
-        sessionId: previous.currentSessionId ?? "",
-        resumed: previous.hasSession,
+        sessionId: this.currentSessionId ?? "",
+        resumed: this.acp?.hasSession ?? false,
       };
     }
 
-    const next = this.createClient(adapterId);
-    let started: ConnectResult;
-    try {
-      await next.connect();
-      started = await next.startSession();
-    } catch (err) {
-      await next.stop();
-      throw err;
-    }
-
-    this.current = next;
+    const brought = await this.bringUp(adapterId, this.mode);
+    this.current = brought.client;
+    this.acp = brought.acp;
     this.adapterId = adapterId;
     await previous.stop();
-    return { ...started, adapterId, previousAdapterId };
+    return { ...brought.result, adapterId, previousAdapterId };
+  }
+
+  /**
+   * Degrade to pty or upgrade back to ACP, keeping the adapter fixed. This tears down the
+   * current leaf and brings up a fresh one in the new mode (sessions do NOT carry across —
+   * the two transports are unrelated). Returns the new leaf's connect result.
+   */
+  async setMode(mode: AgentMode): Promise<ConnectResult> {
+    if (mode === this.mode && this.current) {
+      return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
+    }
+    const previous = this.current;
+    const brought = await this.bringUp(this.adapterId, mode);
+    this.current = brought.client;
+    this.acp = brought.acp;
+    this.mode = mode;
+    if (previous) await previous.stop();
+    return brought.result;
   }
 
   listSessions(): Promise<SessionListPage> {
-    return this.requireCurrent().listSessions();
+    return this.requireAcp().listSessions();
   }
 
   loadSession(sessionId: string, options: SwitchSessionOptions = {}): Promise<ConnectResult> {
-    return this.requireCurrent().loadSession(sessionId, options);
+    return this.requireAcp().loadSession(sessionId, options);
   }
 
   resumeSession(sessionId: string, options: SwitchSessionOptions = {}): Promise<ConnectResult> {
-    return this.requireCurrent().resumeSession(sessionId, options);
+    return this.requireAcp().resumeSession(sessionId, options);
   }
 
   forkSession(sessionId: string, options: SwitchSessionOptions = {}): Promise<ConnectResult> {
-    return this.requireCurrent().forkSession(sessionId, options);
+    return this.requireAcp().forkSession(sessionId, options);
   }
 
   setConfig(configId: string, value: unknown): Promise<void> {
-    return this.requireCurrent().setConfig(configId, value);
+    return this.requireAcp().setConfig(configId, value);
   }
 
   getConfig(configId: string): ConfigOption | undefined {
@@ -212,40 +244,43 @@ export class AcpController implements AgentClient {
   }
 
   getCommands(): ControllerCommand[] {
-    const client = this.current;
-    const capabilities = client ? client.capabilities : null;
+    // The rich ACP commands are unavailable when degraded — `acp` is null there.
+    const acp = this.acp;
+    const degradedReason = "unavailable in degraded (pty) mode";
+    const capabilities = acp ? acp.capabilities : null;
     const session = capabilities?.agent.sessionCapabilities;
     return [
-      { id: "caps", usage: "/caps", available: Boolean(client) },
-      { id: "session", usage: "/session", available: Boolean(client) },
+      { id: "caps", usage: "/caps", available: Boolean(acp), unavailableReason: degradedReason },
+      { id: "session", usage: "/session", available: Boolean(this.current) },
       {
         id: "sessions",
         usage: "/sessions",
         available: session?.list === true,
-        unavailableReason: "agent does not support session/list",
+        unavailableReason: acp ? "agent does not support session/list" : degradedReason,
       },
       {
         id: "config",
         usage: "/config [CONFIG_ID [VALUE]]",
-        available: Boolean(client),
+        available: Boolean(acp),
+        unavailableReason: degradedReason,
       },
       {
         id: "load",
         usage: "/load SESSION_ID",
         available: capabilities?.agent.loadSession === true,
-        unavailableReason: "load not supported by this agent",
+        unavailableReason: acp ? "load not supported by this agent" : degradedReason,
       },
       {
         id: "resume",
         usage: "/resume SESSION_ID",
         available: session?.resume === true,
-        unavailableReason: "resume not supported by this agent",
+        unavailableReason: acp ? "resume not supported by this agent" : degradedReason,
       },
       {
         id: "fork",
         usage: "/fork SESSION_ID",
         available: session?.fork === true,
-        unavailableReason: "fork not supported by this agent",
+        unavailableReason: acp ? "fork not supported by this agent" : degradedReason,
       },
       {
         id: "switch",
@@ -255,9 +290,37 @@ export class AcpController implements AgentClient {
     ];
   }
 
-  private createClient(adapterId: string, sessionId?: string): AcpClient {
-    return new AcpClient({
-      adapter: this.requireAdapter(adapterId),
+  /**
+   * Bring up a fresh leaf for (adapter, mode). normal → AcpClient (connect + new/load
+   * session); degraded → PtyClient (spawn interactive CLI). PtyClient is dynamically
+   * imported so the normal-mode path never loads the degraded subpath.
+   */
+  private async bringUp(
+    adapterId: string,
+    mode: AgentMode,
+    sessionId?: string,
+  ): Promise<{ client: AgentClient; acp: AcpClient | null; result: ConnectResult }> {
+    const adapter = this.requireAdapter(adapterId);
+    if (mode === "degraded") {
+      const { PtyClient } = await import("./degraded/index.ts");
+      const client = new PtyClient({
+        adapter,
+        execPrefix: this.config.execPrefix,
+        env: this.config.env,
+        cwd: this.config.cwd,
+        logger: this.config.logger,
+      });
+      try {
+        await client.start();
+      } catch (err) {
+        await client.stop();
+        throw err;
+      }
+      return { client, acp: null, result: { sessionId: "", resumed: false } };
+    }
+
+    const client = new AcpClient({
+      adapter,
       execPrefix: this.config.execPrefix,
       env: this.config.env,
       cwd: this.config.cwd,
@@ -266,6 +329,14 @@ export class AcpController implements AgentClient {
       clientInfo: this.config.clientInfo,
       logger: this.config.logger,
     });
+    try {
+      await client.connect();
+      const result = await client.startSession();
+      return { client, acp: client, result };
+    } catch (err) {
+      await client.stop();
+      throw err;
+    }
   }
 
   private requireAdapter(adapterId: string): Adapter {
@@ -274,9 +345,17 @@ export class AcpController implements AgentClient {
     return adapter;
   }
 
-  private requireCurrent(): AcpClient {
-    if (!this.current) throw new NotConnectedError("AcpController is not started — call start() first");
+  private requireCurrent(): AgentClient {
+    if (!this.current) throw new NotConnectedError("AgentController is not started — call start() first");
     return this.current;
+  }
+
+  private requireAcp(): AcpClient {
+    if (!this.current) throw new NotConnectedError("AgentController is not started — call start() first");
+    if (!this.acp) {
+      throw new Error("operation requires ACP (normal) mode — the controller is degraded (pty)");
+    }
+    return this.acp;
   }
 }
 

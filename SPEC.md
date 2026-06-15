@@ -503,19 +503,29 @@ heuristic and provider-specific: screen stable for N ms **and** the input prompt
 showing ≈ done. The frame de-dup layer already gives the "stable for N ms" signal, so
 this falls out of the same machinery. Still the most brittle part of the mode.
 
-### Runtime caveat: `node-pty` under Bun cannot capture a Bun child
-`node-pty` works under Bun for non-Bun children (verified with bash; the real targets —
-Claude Code, Codex, Kimi — are Node/Rust/Go, not Bun). But when **both** the parent and
-the PTY child are Bun, the child's TTY output does not flow through node-pty (a
-bun-in-bun-under-pty quirk; reproduced on Bun 1.3.10). Consequences:
-- **Not a reason to move the library/CLI off Bun** — the limitation is this narrow case
-  only; the core and CLI are unaffected.
-- It surfaced only in *test tooling* (a Bun harness spawned by a Bun driver); interactive
-  REPL tests are therefore driven from a **Python** PTY parent (and rendered through
-  `pyte` to assert the visible screen).
-- For degraded mode it bites only if you PTY-drive an agent CLI that is itself Bun-based
-  (none of the current targets are). If it ever comes up, isolate that one PTY spawn under
-  Node or a different PTY backend — don't migrate the project.
+### Runtime decision: the OS `script` util owns the pty, not `node-pty`
+`node-pty` is **unusable under Bun**: even a plain `bash --norc -i` child is SIGHUP'd
+immediately (`onExit {exitCode:0, signal:1}`) and `onData` never fires — the native read
+path is broken (Bun 1.3.10), and the addon also has to be hand-copied into Bun's global
+cache to even load. So degraded mode does **not** depend on `node-pty`.
+
+Instead, the OS `script` utility allocates the pty and we drive it with the **same
+`Bun.spawn` pipe mechanism the ACP transport uses**:
+```
+script -qfec "<interactive-cmd>" /dev/null      # TERM=xterm-color, stdin/stdout piped
+```
+`PtyTransport` wraps exactly that — zero native deps. (macOS `script` has a different
+argument form — `script -q /dev/null cmd args`; Linux handled first.)
+
+**First implementation = the naive path, not the full emulator.** The pipeline above
+(emulate → frame de-dup → SML) is the eventual target; the shipped `PtyClient` starts at
+the dumbest end the interface allows: strip ANSI → accumulate → settle on idle → drop the
+echoed input line. `settleMs` (default 700) is the "screen went quiet" turn signal. A
+`ScreenParser` can be injected later to replace the naive extraction without touching the
+transport/turn machinery; the emulator+SML stages slot in behind the same seam.
+
+The earlier bun-in-bun caveat (Bun parent + Bun child) is moot — there is no node-pty in
+the path anymore, and none of the agent CLIs are Bun-based.
 
 ---
 
