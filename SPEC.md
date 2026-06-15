@@ -503,6 +503,20 @@ heuristic and provider-specific: screen stable for N ms **and** the input prompt
 showing ≈ done. The frame de-dup layer already gives the "stable for N ms" signal, so
 this falls out of the same machinery. Still the most brittle part of the mode.
 
+### Runtime caveat: `node-pty` under Bun cannot capture a Bun child
+`node-pty` works under Bun for non-Bun children (verified with bash; the real targets —
+Claude Code, Codex, Kimi — are Node/Rust/Go, not Bun). But when **both** the parent and
+the PTY child are Bun, the child's TTY output does not flow through node-pty (a
+bun-in-bun-under-pty quirk; reproduced on Bun 1.3.10). Consequences:
+- **Not a reason to move the library/CLI off Bun** — the limitation is this narrow case
+  only; the core and CLI are unaffected.
+- It surfaced only in *test tooling* (a Bun harness spawned by a Bun driver); interactive
+  REPL tests are therefore driven from a **Python** PTY parent (and rendered through
+  `pyte` to assert the visible screen).
+- For degraded mode it bites only if you PTY-drive an agent CLI that is itself Bun-based
+  (none of the current targets are). If it ever comes up, isolate that one PTY spawn under
+  Node or a different PTY backend — don't migrate the project.
+
 ---
 
 ## Protocol facts worth remembering

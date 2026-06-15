@@ -52,3 +52,48 @@ Natural next slice would be auth (the `api_key` path is trivial via the transpor
 
 
 
+
+
+----
+
+
+
+
+
+Self-reference resolves correctly: `import { runRepl } from "acp-lib/repl"` and `import { AcpClient } from "acp-lib"` both work. That's exactly how the orchestration lib will consume them once `acp-lib` is a dependency.
+
+## Where this leaves you
+
+You can drop the orchestration lib's REPL entirely. Its terminal "direct" path becomes:
+
+```ts
+import { AcpClient } from "acp-lib";
+import { runRepl } from "acp-lib/repl";
+
+const client = new AcpClient({ adapter, execPrefix, cwd, logger });
+await client.connect();
+try {
+  await runRepl(client, {
+    verbose,
+    intro,
+    onSlashCommand: (cmd, args) => {
+      // orchestration-specific: /new, /switch, /model ...
+      // return true if handled, false to send as a normal prompt
+    },
+  });
+} finally {
+  await client.stop();
+}
+```
+
+The two things that made this consumable:
+
+1. **`acp-lib/repl` is now a real importable subpath** — separate from the `./cli` executable. The orchestration lib imports `runRepl` directly; you maintain it here, improve it once, both consumers benefit.
+
+2. **`onSlashCommand` extension seam** — the orchestration lib adds its own commands (`/new`, `/switch`, `/model`) without forking the loop. Unknown commands fall through to a normal prompt. The CLI here dogfoods it with `/help`, `/caps`, `/session`.
+
+And because `runRepl` targets the `AgentClient` interface, the same loop will drive `PtyClient` (your "attach" mode) when that's built — still one REPL.
+
+The hub (web/telegram) stays as-is structurally but swaps its ACP plumbing for `AcpClient`, driving `prompt()`/`onChunk` into its own I/O — it does *not* go through `runRepl`, since its loop is event-driven, not line-based.
+
+Want me to wire `sessionsDir` persistence next (so `/new` and resume-by-id have something to work with), or sketch the hub-side `AcpClient` usage so you can diff it against your current plumbing?

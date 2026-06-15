@@ -14,7 +14,7 @@ import {
   type AdapterPreset,
 } from "../index.ts";
 import { runRepl } from "./repl.ts";
-import { DIM, RESET } from "./colors.ts";
+import { DIM, colorEnabled, paint } from "./colors.ts";
 
 interface Args {
   command: string;
@@ -71,11 +71,38 @@ async function chat(args: Args): Promise<void> {
   const { sessionId, resumed } = await client.connect();
   const label = ADAPTERS[args.adapter].displayName ?? args.adapter;
   const intro =
-    `${DIM}${resumed ? "resumed" : "new"} session ${sessionId} (${label}) — ` +
-    `/exit to quit, Ctrl-C to interrupt${RESET}`;
+    `${resumed ? "resumed" : "new"} session ${sessionId} (${label}) — ` +
+    `/exit to quit, Ctrl-C to interrupt`;
+
+  const color = colorEnabled(process.stderr);
+  const note = (s: string) => process.stderr.write(paint(color, DIM, s) + "\n");
 
   try {
-    await runRepl(client, { verbose: args.verbose, intro });
+    await runRepl(client, {
+      verbose: args.verbose,
+      intro,
+      onSlashCommand: (command) => {
+        switch (command) {
+          case "help":
+            note("commands: /help /caps /session /exit");
+            return true;
+          case "caps": {
+            const c = client.capabilities.agent;
+            note(
+              `loadSession=${c.loadSession} image=${c.promptCapabilities.image} ` +
+                `logout=${c.auth?.logout ?? false} ` +
+                `config=[${[...client.configOptions.keys()].join(",")}]`,
+            );
+            return true;
+          }
+          case "session":
+            note(String(client.currentSessionId));
+            return true;
+          default:
+            return false; // unknown → treat as a normal prompt
+        }
+      },
+    });
   } finally {
     await client.stop();
   }
