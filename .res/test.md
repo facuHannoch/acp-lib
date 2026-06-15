@@ -662,3 +662,21 @@ null and returns all; kimi may not. Fix: build the request omitting cwd/cursor u
 - kimi unverifiable locally (not installed) — needs user retest; if still empty, capture
   `--debug` list_sessions_response to see if kimi returns [] (migration/upgrade) or a
   different shape (parser).
+
+## 2026-06-15 — step 1: session storage layer (catalog)
+
+New top-level abstraction groundwork. Decided: AgentSession (front face) → AgentController
+(single-adapter, live) → leaves; SessionManager catalog on the side. This step = storage only.
+
+- `SessionStore` interface (save/get/list/delete) — pluggable so the hub can back it with
+  its DB. Default `FileSessionStore` (file-per-session JSON under sessionsDir, default
+  ~/.acp-lib/sessions, overridable). `defaultSessionsDir()` exported.
+- `SessionRecord`: OUR stable `id` (catalog key) decoupled from mutable `agentSessionId`
+  (null in degraded, changes on mode-swap) + adapter/mode/cwd/title/timestamps. Routing
+  metadata only — NOT transcript content (agent owns that; slot left to add later).
+- `SessionManager`: upsert (createdAt preserved, updatedAt bumped), get/delete/list, and
+  `listMerged()` / pure `mergeSessions()` — merges catalog with the agent's live list
+  (source: catalog | agent | both), so a broken kimi list doesn't blind us and external
+  (CLI/bridge) sessions still show.
+- Removed old standalone sessions.ts. Typecheck clean. Verified CRUD + all 3 merge cases.
+- NOT wired into AgentSession/CLI yet (review storage in isolation first).

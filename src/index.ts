@@ -51,8 +51,13 @@ export type {
   ConfigOptionChoice,
 } from "./config-options.ts";
 
-export { listSessions, saveSession, deleteSession } from "./sessions.ts";
-export type { SessionRecord } from "./sessions.ts";
+export {
+  FileSessionStore,
+  defaultSessionsDir,
+} from "./session-store.ts";
+export type { SessionStore, SessionRecord } from "./session-store.ts";
+export { SessionManager, mergeSessions } from "./session-manager.ts";
+export type { MergedSession, SessionInput } from "./session-manager.ts";
 
 export { ProcessCrashError, NotConnectedError, TimeoutError } from "./errors.ts";
 
