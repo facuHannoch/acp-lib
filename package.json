@@ -20,9 +20,6 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "0.25.1"
   },
-  "optionalDependencies": {
-    "node-pty": "^1.1.0"
-  },
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5"

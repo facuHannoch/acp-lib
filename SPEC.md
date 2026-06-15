@@ -503,19 +503,19 @@ heuristic and provider-specific: screen stable for N ms **and** the input prompt
 showing ≈ done. The frame de-dup layer already gives the "stable for N ms" signal, so
 this falls out of the same machinery. Still the most brittle part of the mode.
 
-### Runtime decision: the OS `script` util owns the pty, not `node-pty`
+### Runtime decision: Bun's native pty API (`Bun.spawn({ terminal })`)
 `node-pty` is **unusable under Bun**: even a plain `bash --norc -i` child is SIGHUP'd
-immediately (`onExit {exitCode:0, signal:1}`) and `onData` never fires — the native read
-path is broken (Bun 1.3.10), and the addon also has to be hand-copied into Bun's global
-cache to even load. So degraded mode does **not** depend on `node-pty`.
+immediately (`onExit {exitCode:0, signal:1}`) and `onData` never fires (Bun 1.3.10). So
+degraded mode does **not** depend on `node-pty`.
 
-Instead, the OS `script` utility allocates the pty and we drive it with the **same
-`Bun.spawn` pipe mechanism the ACP transport uses**:
+Instead it uses **Bun's built-in pseudo-terminal** (Bun ≥ 1.3.5):
+```ts
+Bun.spawn(command, { terminal: { cols, rows, data(term, bytes) { … } } })
+// proc.terminal.write(...) / .resize(cols, rows) / .setRawMode(...) / termios flags
 ```
-script -qfec "<interactive-cmd>" /dev/null      # TERM=xterm-color, stdin/stdout piped
-```
-`PtyTransport` wraps exactly that — zero native deps. (macOS `script` has a different
-argument form — `script -q /dev/null cmd args`; Linux handled first.)
+`PtyTransport` wraps exactly that — no native addon, no external `script` binary, and a
+real `resize()` for TUIs. (An earlier iteration shelled out to the OS `script` util; the
+native API supersedes it — verified identical capture against bash.)
 
 **First implementation = the naive path, not the full emulator.** The pipeline above
 (emulate → frame de-dup → SML) is the eventual target; the shipped `PtyClient` starts at

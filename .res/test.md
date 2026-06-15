@@ -528,3 +528,12 @@ place. Adapter presets gained `ptyCommand` (interactive CLI for pty mode).
 - node-pty removed from package.json. New runtime dep: system `script` (util-linux).
 - NOT yet tested against a real agent TUI (codex interactive) — naive ANSI-strip on a
   full-screen TUI will be messy and is the next validation.
+
+## 2026-06-15 — switched PTY transport to Bun's native terminal API
+
+Bun ≥ 1.3.5 has a built-in pty: `Bun.spawn(cmd, { terminal: { cols, rows, data } })`,
+with `proc.terminal.write/resize/setRawMode` + termios flags. Verified against bash:
+RAW_LEN 76, HAS_42 true, identical capture to the `script` approach. Replaced
+PtyTransport's `script` wrapper with the native API — no external `script` binary, real
+resize() for TUIs, command spawned as argv directly (no shell quoting). PtyClient gained
+resize(cols, rows).

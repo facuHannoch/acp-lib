@@ -144,6 +144,11 @@ export class PtyClient implements AgentClient {
     this.transport?.write(raw);
   }
 
+  /** Resize the pty window — TUIs redraw to fit, which reduces scrape garbage. */
+  resize(cols: number, rows: number): void {
+    this.transport?.resize(cols, rows);
+  }
+
   // --- internals ----------------------------------------------------------------
 
   private onData(data: string): void {
