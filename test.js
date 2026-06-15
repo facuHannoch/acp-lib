@@ -1,4 +1,4 @@
-import * as acp from "/root/qlairoslabs/libs/agents/node_modules/@agentclientprotocol/sdk/dist/acp.js";
+import * as acp from "@agentclientprotocol/sdk";
 import { spawn } from "child_process";
 
 const stdinTransform = new TransformStream();

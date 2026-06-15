@@ -18,6 +18,7 @@ import {
 import { parseConfigOptions, type ConfigOptions } from "./config-options.ts";
 import { extractChunkText, toActivityEvent } from "./updates.ts";
 import { NotConnectedError } from "./errors.ts";
+import { noopLogger, type Logger } from "./logger.ts";
 import type { AgentClient, InterruptOptions } from "./agent-client.ts";
 import type {
   PromptResult,
@@ -42,6 +43,8 @@ export interface AcpClientConfig {
   defaultPermission?: "approve" | "cancel";
   /** Identification sent in initialize. */
   clientInfo?: { name: string; title?: string; version?: string };
+  /** Diagnostics sink. Omit for a silent library. */
+  logger?: Logger;
 }
 
 export interface ConnectOptions {
@@ -80,7 +83,11 @@ export class AcpClient implements AgentClient {
   private queue: QueueItem[] = [];
   private pumping = false;
 
-  constructor(private config: AcpClientConfig) {}
+  private readonly log: Logger;
+
+  constructor(private config: AcpClientConfig) {
+    this.log = config.logger ?? noopLogger;
+  }
 
   // --- introspection (populated by connect) -------------------------------------
 
@@ -104,6 +111,8 @@ export class AcpClient implements AgentClient {
     const command = buildSpawnCommand(this.config.adapter, this.config.execPrefix);
     const isDockerExec = command[0] === "docker";
 
+    this.log.info("connect", { command, dockerExec: isDockerExec });
+
     const transport = new AcpTransport({
       command,
       // docker exec resolves paths inside the container's namespace — don't pass a host cwd.
@@ -111,9 +120,11 @@ export class AcpClient implements AgentClient {
       env: this.config.env,
       onUpdate: (n) => this.handleUpdate(n),
       onPermissionRequest: (p) => this.handlePermission(p),
-      onCrash: () => {
+      onStderr: (line) => this.log.debug("agent_stderr", { line }),
+      onCrash: (code) => {
         this.transport = null;
         this._sessionId = null;
+        this.log.error("process_exit", { code });
       },
     });
     await transport.start();
@@ -131,6 +142,11 @@ export class AcpClient implements AgentClient {
       } as schema.InitializeRequest),
     );
     this._capabilities = parseCapabilities(init);
+    this.log.info("initialized", {
+      agent: this._capabilities.agentInfo?.name,
+      protocolVersion: this._capabilities.protocolVersion,
+      loadSession: this._capabilities.agent.loadSession,
+    });
 
     const mcpServers = options.mcpServers ?? [];
     const cwd = this.config.cwd ?? process.cwd();
@@ -147,7 +163,12 @@ export class AcpClient implements AgentClient {
         } as schema.LoadSessionRequest);
         sessionId = this.config.sessionId;
         resumed = true;
-      } catch {
+        this.log.info("session_loaded", { sessionId });
+      } catch (err) {
+        this.log.warn("session_load_failed", {
+          sessionId: this.config.sessionId,
+          error: String(err),
+        });
         sessionId = await this.startNewSession(transport, cwd, mcpServers);
       }
     } else {
@@ -165,6 +186,10 @@ export class AcpClient implements AgentClient {
   ): Promise<string> {
     const res = await transport.newSession({ cwd, mcpServers } as schema.NewSessionRequest);
     this._configOptions = parseConfigOptions(res.configOptions);
+    this.log.info("session_new", {
+      sessionId: res.sessionId,
+      configOptions: [...this._configOptions.keys()],
+    });
     return res.sessionId;
   }
 
@@ -173,6 +198,7 @@ export class AcpClient implements AgentClient {
     this.transport = null;
     this._sessionId = null;
     if (t) await t.stop();
+    this.log.info("stopped", {});
   }
 
   // --- prompting ----------------------------------------------------------------
@@ -220,6 +246,8 @@ export class AcpClient implements AgentClient {
     if (contentBlocks.length === 0) contentBlocks.push({ type: "text", text: "" });
 
     this.active = { chunks: [], handlers: item.handlers, cancelled: false };
+    const t0 = Date.now();
+    this.log.debug("prompt_start", { chars: item.text.length });
     try {
       const res = await this.transport.prompt({
         sessionId: this._sessionId,
@@ -227,8 +255,15 @@ export class AcpClient implements AgentClient {
       } as schema.PromptRequest);
 
       const cancelled = this.active.cancelled;
+      const text = this.active.chunks.join("");
+      this.log[text.length === 0 && !cancelled ? "warn" : "info"]("prompt_end", {
+        stopReason: res.stopReason,
+        status: cancelled ? "cancelled" : "completed",
+        chars: text.length,
+        elapsedMs: Date.now() - t0,
+      });
       return {
-        text: this.active.chunks.join(""),
+        text,
         stopReason: res.stopReason,
         status: cancelled ? "cancelled" : "completed",
         usage: (res.usage ?? null) as PromptResult["usage"],

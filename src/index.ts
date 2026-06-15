@@ -31,6 +31,9 @@ export type { SessionRecord } from "./sessions.ts";
 
 export { ProcessCrashError, NotConnectedError, TimeoutError } from "./errors.ts";
 
+export { noopLogger, createConsoleLogger } from "./logger.ts";
+export type { Logger, LogLevel, ConsoleLoggerOptions } from "./logger.ts";
+
 export type {
   PromptResult,
   PromptHandlers,

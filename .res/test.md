@@ -113,7 +113,7 @@ Error handling request {
 ## session/new
 
 ```json
-{ "jsonrpc": "2.0", "id": 4, "method": "session/new", "params": { "cwd": "/root/qlairoslabs/libs/acp-lib", "mcpServers": [] } }
+{ "jsonrpc": "2.0", "id": 4, "method": "session/new", "params": { "cwd": "~/libs/acp-lib", "mcpServers": [] } }
 ```
 
 
@@ -211,11 +211,11 @@ Since Codex advertises both `loadSession: true` and `sessionCapabilities.resume`
 Since you closed the session (not deleted it), the session ID `019ec838-ebd0-7410-957d-b09852e3bf9a` should still be valid. Want me to append both variants?
 
 ```json
-{ "jsonrpc": "2.0", "id": 6, "method": "session/load", "params": { "sessionId": "019ec838-ebd0-7410-957d-b09852e3bf9a", "cwd": "/root/qlairoslabs/libs/acp-lib", "mcpServers": [] } }
+{ "jsonrpc": "2.0", "id": 6, "method": "session/load", "params": { "sessionId": "019ec838-ebd0-7410-957d-b09852e3bf9a", "cwd": "~/libs/acp-lib", "mcpServers": [] } }
 ```
 
 ```json
-{ "jsonrpc": "2.0", "id": 6, "method": "session/resume", "params": { "sessionId": "019ec838-ebd0-7410-957d-b09852e3bf9a", "cwd": "/root/qlairoslabs/libs/acp-lib", "mcpServers": [] } }
+{ "jsonrpc": "2.0", "id": 6, "method": "session/resume", "params": { "sessionId": "019ec838-ebd0-7410-957d-b09852e3bf9a", "cwd": "~/libs/acp-lib", "mcpServers": [] } }
 ```
 
 
@@ -461,7 +461,7 @@ This is actually a strong argument for the library exposing a structured event l
 
 
 ```json
-{ "jsonrpc": "2.0", "id": 2, "method": "session/list", "params": { "cwd": "/root/qlairoslabs/libs/acp-lib" } }
+{ "jsonrpc": "2.0", "id": 2, "method": "session/list", "params": { "cwd": "~/libs/acp-lib" } }
 ```
 
 ```json
