@@ -5,7 +5,12 @@
 //
 // Usage:
 //   acp-lib chat [SESSION_ID] [--adapter kimi] [--exec "docker exec -i <ctr>"]
-//                [--cwd /workspace] [--approve] [--verbose] [--degraded]
+//                [--cwd /workspace] [--approve] [--verbose] [--debug]
+//                [--no-activity] [--degraded]
+//
+//   activity (thinking/tool markers) shows by DEFAULT; --no-activity disables it.
+//   --verbose (-v): lifecycle summaries (connect, session_new, prompt_end)
+//   --debug   (-d): the above PLUS raw protocol payloads (initialize/prompt/session_update)
 
 import {
   AcpClient,
@@ -25,6 +30,8 @@ interface Args {
   degraded: boolean;
   approve: boolean;
   verbose: boolean;
+  debug: boolean;
+  activity: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -35,6 +42,8 @@ function parseArgs(argv: string[]): Args {
     degraded: false,
     approve: false,
     verbose: false,
+    debug: false,
+    activity: true,
   };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
@@ -44,6 +53,8 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--degraded") a.degraded = true;
     else if (arg === "--approve") a.approve = true;
     else if (arg === "--verbose" || arg === "-v") a.verbose = true;
+    else if (arg === "--debug" || arg === "-d") a.debug = true;
+    else if (arg === "--no-activity" || arg === "--disable-activity") a.activity = false;
     else if (arg && !arg.startsWith("--")) a.sessionId = arg;
   }
   return a;
@@ -55,9 +66,12 @@ async function chat(args: Args): Promise<void> {
     process.exit(1);
   }
 
-  // --verbose surfaces the ACP protocol lifecycle (and agent stderr). Without it the
-  // library logs only warnings/errors, keeping the chat clean.
-  const logger = createConsoleLogger({ minLevel: args.verbose ? "debug" : "warn" });
+  // Logging levels:
+  //   default    → warn   (quiet — only warnings/errors)
+  //   --verbose  → info   (lifecycle summaries: connect, session_new, prompt_end, …)
+  //   --debug    → debug  (the above PLUS full protocol payloads + raw session updates)
+  const minLevel = args.debug ? "debug" : args.verbose ? "info" : "warn";
+  const logger = createConsoleLogger({ minLevel });
 
   const client = new AcpClient({
     adapter: ADAPTERS[args.adapter],
@@ -80,7 +94,9 @@ async function chat(args: Args): Promise<void> {
 
   try {
     await runRepl(client, {
-      verbose: args.verbose,
+      activity: args.activity,
+      // Suppress the spinner under --debug: raw session_update lines would fight its \r.
+      spinner: !args.debug,
       intro,
       onSlashCommand: async (command) => {
         switch (command) {

@@ -169,6 +169,7 @@ export class AcpClient implements AgentClient {
       protocolVersion: this._capabilities.protocolVersion,
       loadSession: this._capabilities.agent.loadSession,
     });
+    this.log.debug("initialize_response", { response: init });
     return this._capabilities;
   }
 
@@ -216,6 +217,7 @@ export class AcpClient implements AgentClient {
       cwd: options.cwd ?? this.config.cwd ?? null,
       cursor: options.cursor ?? null,
     } as schema.ListSessionsRequest);
+    this.log.debug("list_sessions_response", { response: res });
     return {
       sessions: (res.sessions ?? []).map((s) => {
         const e = s as Record<string, any>;
@@ -241,6 +243,7 @@ export class AcpClient implements AgentClient {
       sessionId: res.sessionId,
       configOptions: [...this._configOptions.keys()],
     });
+    this.log.debug("session_new_response", { response: res });
     return res.sessionId;
   }
 
@@ -310,11 +313,13 @@ export class AcpClient implements AgentClient {
     this.active = { chunks: [], handlers: item.handlers, cancelled: false };
     const t0 = Date.now();
     this.log.debug("prompt_start", { chars: item.text.length });
+    this.log.debug("prompt_request", { sessionId: this._sessionId, prompt: contentBlocks });
     try {
       const res = await this.transport.prompt({
         sessionId: this._sessionId,
         prompt: contentBlocks,
       } as schema.PromptRequest);
+      this.log.debug("prompt_response", { response: res });
 
       const cancelled = this.active.cancelled;
       const text = this.active.chunks.join("");
@@ -365,6 +370,9 @@ export class AcpClient implements AgentClient {
   // --- internal handlers --------------------------------------------------------
 
   private handleUpdate(notification: schema.SessionNotification): void {
+    // Raw protocol trace (logged even outside an active turn, e.g. session/load replay).
+    this.log.debug("session_update", { notification });
+
     if (!this.active) return;
     if (notification.sessionId && notification.sessionId !== this._sessionId) return;
 
@@ -381,6 +389,7 @@ export class AcpClient implements AgentClient {
   private async handlePermission(
     params: schema.RequestPermissionRequest,
   ): Promise<schema.RequestPermissionResponse> {
+    this.log.debug("permission_request", { request: params });
     const handler = this.active?.handlers?.onPermissionRequest;
     const request = toPermissionRequest(params);
 
@@ -391,6 +400,7 @@ export class AcpClient implements AgentClient {
       outcome = this.defaultOutcome(request);
     }
 
+    this.log.debug("permission_response", { outcome });
     if (outcome.outcome === "selected") {
       return { outcome: { outcome: "selected", optionId: outcome.optionId } };
     }

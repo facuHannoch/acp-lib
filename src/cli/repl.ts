@@ -27,8 +27,10 @@ const ETX = 0x03; // Ctrl-C
 const EXIT_CONFIRM_MS = 3000;
 
 export interface ReplOptions {
-  /** Show activity (thinking/tool) markers on stderr (replaces the spinner). */
-  verbose?: boolean;
+  /** Show activity (thinking/tool) markers on stderr. Default true. */
+  activity?: boolean;
+  /** Show the "working…" spinner while waiting. Default true. */
+  spinner?: boolean;
   /** Optional line printed (stderr) before the loop starts. Styled by the REPL. */
   intro?: string;
   /**
@@ -164,7 +166,8 @@ export async function runRepl(
     let wroteLabel = false;
     let lastMarker = "";
     let sawActivity = false;
-    const spinner = interactive && !options.verbose ? startSpinner(color) : null;
+    const spinner =
+      interactive && options.spinner !== false ? startSpinner(color) : null;
 
     // Take over raw stdin for ESC/Ctrl-C while the turn streams (interactive only).
     let onData: ((d: Buffer) => void) | null = null;
@@ -191,15 +194,17 @@ export async function runRepl(
       out(t); // response text (no color)
     };
 
-    const onActivity = options.verbose
-      ? (e: ActivityEvent) => {
-          const marker = activityMarker(e);
-          if (!marker || marker === lastMarker) return; // collapse consecutive repeats
-          lastMarker = marker;
-          sawActivity = true;
-          err(paint(color, DIM, `[${marker}]`) + " ");
-        }
-      : undefined;
+    const onActivity =
+      options.activity !== false
+        ? (e: ActivityEvent) => {
+            const marker = activityMarker(e);
+            if (!marker || marker === lastMarker) return; // collapse consecutive repeats
+            lastMarker = marker;
+            if (!sawActivity) spinner?.stop(); // first activity replaces the spinner
+            sawActivity = true;
+            err(paint(color, DIM, `[${marker}]`) + " ");
+          }
+        : undefined;
 
     busy = true;
     try {
