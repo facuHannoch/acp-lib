@@ -30,6 +30,12 @@ export interface PtyClientOptions {
   parser?: ScreenParser;
   /** ms of screen stability that counts as "settled" / turn complete. Default 700. */
   settleMs?: number;
+  /**
+   * ms to wait after typing the prompt before sending Enter. TUIs (e.g. codex) treat a
+   * single `text+Enter` write as a paste and DON'T submit — Enter must be a separate
+   * keypress after the text registers. Default 150.
+   */
+  submitDelayMs?: number;
   cols?: number;
   rows?: number;
   logger?: Logger;
@@ -51,10 +57,12 @@ export class PtyClient implements AgentClient {
   private screen = ""; // rolling clean buffer (for readScreen)
   private turn: Turn | null = null;
   private readonly settleMs: number;
+  private readonly submitDelayMs: number;
   private readonly log: Logger;
 
   constructor(private opts: PtyClientOptions) {
     this.settleMs = opts.settleMs ?? 700;
+    this.submitDelayMs = opts.submitDelayMs ?? 150;
     this.log = opts.logger ?? noopLogger;
   }
 
@@ -110,8 +118,16 @@ export class PtyClient implements AgentClient {
         settle: null,
       };
       this.log.debug("pty_prompt", { chars: text.length });
-      this.transport!.write(text + "\r");
+      // Type the text, then send Enter as a SEPARATE keypress after a short delay —
+      // a single text+Enter write looks like a paste to TUIs and won't submit.
+      this.transport!.write(text);
       this.armSettle();
+      setTimeout(() => {
+        if (this.turn) {
+          this.transport?.write("\r");
+          this.armSettle();
+        }
+      }, this.submitDelayMs);
     });
   }
 

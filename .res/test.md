@@ -537,3 +537,17 @@ RAW_LEN 76, HAS_42 true, identical capture to the `script` approach. Replaced
 PtyTransport's `script` wrapper with the native API — no external `script` binary, real
 resize() for TUIs, command spawned as argv directly (no shell quoting). PtyClient gained
 resize(cols, rows).
+
+## 2026-06-15 — real codex TUI in degraded mode (naive path)
+
+Pointed `mode: degraded` at the actual `codex` interactive CLI. Findings:
+- **codex does NOT use the alt-screen** (no `\x1b[?1049h`) — it redraws in place with
+  cursor positioning + boxes.
+- **Submit needs a separate Enter**: `write("hello\r")` in ONE call typed `hello` into the
+  box but did NOT submit (treated as paste). Fix: `write(text)`, wait ~150ms,
+  `write("\r")` separately → turn fires, codex answered `• 42` to "what is 6×7". Landed as
+  PtyClient `submitDelayMs` (default 150) + split write.
+- **Naive strip is unusable on a redraw TUI**: cleaned output is overlapping mush
+  (`Booti…Bng`, interleaved boxes). The answer "42" is present but buried. Confirms the
+  SPEC "emulate, don't strip" requirement — TUIs need a grid emulator + segmentation, not
+  ANSI stripping. Naive path remains fine for line-oriented CLIs (bash/REPLs).
