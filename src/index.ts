@@ -12,6 +12,22 @@ export type {
   ConnectResult,
 } from "./client.ts";
 
+export {
+  AcpController,
+  parseConfigValue,
+  parseBoolean,
+  parseJsonOrString,
+  formatConfigValue,
+} from "./controller.ts";
+export type {
+  AcpControllerConfig,
+  SwitchAdapterResult,
+  ControllerCommand,
+  ControllerCommandId,
+  ConfigValueParseResult,
+  SetConfigFromStringResult,
+} from "./controller.ts";
+
 export type { AgentClient, InterruptOptions } from "./agent-client.ts";
 
 export { ADAPTERS, buildSpawnCommand } from "./adapters.ts";
