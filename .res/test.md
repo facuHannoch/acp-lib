@@ -680,3 +680,19 @@ New top-level abstraction groundwork. Decided: AgentSession (front face) → Age
   (CLI/bridge) sessions still show.
 - Removed old standalone sessions.ts. Typecheck clean. Verified CRUD + all 3 merge cases.
 - NOT wired into AgentSession/CLI yet (review storage in isolation first).
+
+## 2026-06-15 — step 2: AgentSession (the front face)
+
+`AgentSession` = durable conversation + library front face. Implements AgentClient (REPL
+can prompt it), holds an AgentController for the live connection, owns identity, persists
+to SessionManager. Adapter lives here (switch = new session).
+
+- `create(config)` mints our stable `id` (or resumes when `id`+`agentSessionId` passed);
+  `prompt` auto-derives title from first message, tracks lazy agentSessionId, persists.
+  `setMode` swaps degrade/upgrade + updates agentSessionId. `connection` getter = escape
+  hatch to the controller (config/caps/login). `listSessions()` returns the MERGED view.
+- Built on the current (multi-adapter) controller via a single-entry adapters map — step 3
+  will simplify the controller to single-adapter underneath.
+- Verified vs real codex: create → our-id ≠ agentSessionId; prompt → title + catalog write;
+  merged list shows our session as `both` among 25; RESUME from record → same our-id, agent
+  session loaded, remembered "11" (context preserved). Typecheck clean.

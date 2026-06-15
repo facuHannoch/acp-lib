@@ -29,6 +29,9 @@ export type {
   SetConfigFromStringResult,
 } from "./controller.ts";
 
+export { AgentSession } from "./agent-session.ts";
+export type { AgentSessionConfig } from "./agent-session.ts";
+
 export type {
   AgentClient,
   InterruptOptions,
