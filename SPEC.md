@@ -380,6 +380,131 @@ try {
 
 ---
 
+## Degraded mode (PTY fallback)
+
+A fallback mode for when the normal ACP connection cannot be used. Instead of speaking
+the protocol, it drives the provider's **native interactive CLI** (Claude Code, Codex,
+etc.) inside a PTY — as if a human were typing — and parses the screen back into the
+same event/result types.
+
+```
+ACP-like ↔ PTY ↔ Interactive CLI
+```
+
+As the name says, it is a deliberately inferior experience. The bar is "it kind of
+works," not parity.
+
+### When it earns its place
+- A provider has no ACP adapter at all.
+- The ACP adapter is broken / version-mismatched.
+- Auth only works interactively (the `tty` case ACP can't handle) — see below.
+
+### The PTY is a shared primitive (not just for chat)
+The PTY machinery is also the answer to the `tty` auth problem. `kimi login` fails over
+plain pipes because it demands a real terminal; a PTY *is* a real terminal as far as the
+process can tell. So the same low-level primitive powers two things:
+
+- **degraded chat** — drive the interactive CLI in a PTY + parse the screen
+- **tty auth** — drive the login command in a PTY + relay its output
+
+This means `tty`-kind auth stops being "the one we can't do." `AcpClient` reuses the PTY
+primitive for tty-auth even while running a normal ACP connection for chat.
+
+### Same output contract, (almost) no input contract
+Degraded mode is **not** "AcpClient with a worse transport." In ACP we own the protocol:
+we drive `session/new` / `session/load`, get correlated request/response, hold the
+sessionId. In degraded mode **we own nothing** — the native tool owns its session,
+history, persistence, and slash commands. We are a human at a keyboard typing into a
+single stateful stream and watching it.
+
+So most of the ACP *input* surface simply does not map:
+- **No `session/new` / `session/load` from us.** The tool resumes via its own UI
+  (`/resume`, its own picker). `sessionsDir` is irrelevant — the tool has its own store.
+- **No `capabilities` introspection.** There's no handshake; you learn by typing and
+  watching.
+- **No `onPermissionRequest`.** Hence the app must run in **full-access mode** to avoid
+  prompts — degraded mode is blind execution, with no per-call tool gating and no audit
+  trail.
+- **`configOptions`** become "type a slash command and hope," not a structured map.
+- **Auth** is whatever the tool does interactively — which is fine, and the point.
+
+What *is* preserved is the **output contract**: `prompt()` still returns a
+`PromptResult` and activity still streams as `ActivityEvent`s (best-effort). The caller's
+rendering code works in either mode. Streaming granularity is coarser — events fire when
+the screen settles, not per token.
+
+### Architecture: shared interface, two implementations
+Do **not** build a god-class that holds both modes (it would force every input-contract
+method into a "throws in degraded mode" branch — the leak we want to avoid). Instead, a
+shared interface captures the output contract; each mode implements it.
+
+```ts
+interface AgentClient {            // the common output contract
+  prompt(text, handlers?): Promise<PromptResult>
+  onActivity(cb): void
+  interrupt(opts?): void
+  stop(): void
+}
+
+class AcpClient implements AgentClient {
+  // + capabilities, configOptions, sessions, authenticate, setConfig  (rich input contract)
+}
+
+class PtyClient implements AgentClient {
+  // + readScreen(), sendKeys()                                        (PTY-only surface)
+}
+```
+
+- The rich control surfaces (`capabilities`, `configOptions`, `session/load`) live
+  **only** on `AcpClient` — they don't exist on the interface because they genuinely
+  don't exist in degraded mode.
+- PTY-only methods live **only** on `PtyClient`:
+  - `readScreen()` — pull: current grid snapshot on demand
+  - `sendKeys(raw)` — escape hatch for ESC, slash commands, arrow keys
+  - `onActivity` here is push of the same underlying thing (settled frame-deltas)
+- Mode is **explicit opt-in** — the caller knowingly constructs `PtyClient` vs
+  `AcpClient`. No hidden auto-downgrade.
+- The PTY + parsing pipeline is shared by **composition** (an internal `PtyTransport`
+  module), not inheritance — used by `PtyClient` for chat and `AcpClient` for tty-auth.
+
+### The parsing pipeline
+The hard part is **not** the LLM parse — it's segmentation. A PTY does not give you text;
+it gives you **drawing commands for a 2D grid**. A TUI repaints the screen (cursor moves,
+line clears, spinners, color codes) rather than appending lines, so naively stripping
+ANSI codes smears every intermediate paint together (the same line 50× as a spinner
+ticks).
+
+```
+PTY raw bytes
+  → terminal emulator (vt parser maintains a virtual screen grid — what a human sees)
+  → frame de-dup (snapshot grid, diff vs previous, emit only content stable for N ms)
+  → SML structured-extract (schema-constrained → valid ActivityEvent / PromptResult only)
+  → ActivityEvent / PromptResult
+```
+
+1. **Emulate, don't strip.** Feed raw bytes into a vt100 parser that maintains a screen
+   buffer (grid of cells), applying cursor moves / clears exactly like a real terminal.
+   Reading the grid = exactly what a human would see right now. (`node-pty` for the PTY;
+   a headless terminal emulator for the grid.)
+2. **Frame de-dup.** The grid changes many times a second. Snapshot it, diff against the
+   previous snapshot, and only emit content that has **stopped changing** for N ms. That
+   settled delta is the clean text — the only thing the SML ever sees.
+3. **SML parse.** A small model (runnable locally via e.g. Ollama) turns clean text into
+   structured events. It is **not** interpreting or summarizing — only parsing — so very
+   small models suffice. Constrain it with a strict schema / grammar so it can only emit
+   valid events (no free-form hallucinated structure).
+
+Most of the reliability lives in stages 1–2 (deterministic). The SML is just the last
+"clean text → struct" step.
+
+### Turn completion
+ACP tells you a turn is done via `stopReason`. A PTY just goes quiet. Detection is
+heuristic and provider-specific: screen stable for N ms **and** the input prompt is
+showing ≈ done. The frame de-dup layer already gives the "stable for N ms" signal, so
+this falls out of the same machinery. Still the most brittle part of the mode.
+
+---
+
 ## Protocol facts worth remembering
 
 - **All agent→client events are `session/update` notifications**, discriminated by the

@@ -1,0 +1,32 @@
+{
+  "name": "acp-lib",
+  "version": "0.1.0",
+  "description": "Embeddable Agent Client Protocol (ACP) client library with degraded PTY fallback.",
+  "type": "module",
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./degraded": "./src/degraded/index.ts",
+    "./parser": "./src/parser/index.ts",
+    "./cli": "./src/cli/index.ts"
+  },
+  "bin": {
+    "acp-lib": "./src/cli/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^0.21.1"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
