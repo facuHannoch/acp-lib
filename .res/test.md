@@ -696,3 +696,15 @@ to SessionManager. Adapter lives here (switch = new session).
 - Verified vs real codex: create → our-id ≠ agentSessionId; prompt → title + catalog write;
   merged list shows our session as `both` among 25; RESUME from record → same our-id, agent
   session loaded, remembered "11" (context preserved). Typecheck clean.
+
+## 2026-06-15 — step 3: AgentController is now single-adapter
+
+"Switch adapter = new AgentSession", so the controller no longer multiplexes adapters.
+- Config: `adapters` map + `initialAdapter` → `adapter: Adapter` + `adapterId: string`.
+- Removed: `switchAdapter`, `SwitchAdapterResult`, `adapterIds`, `hasAdapter`,
+  `requireAdapter`, the `switch` command. `bringUp(mode, sessionId?)` (no adapterId).
+- AgentSession now builds the controller with the clean single-adapter config (dropped the
+  temporary single-entry map). CLI: single-adapter construction, `/switch` removed.
+- Verified: codex CLI prompts + /help (no /switch); degraded controller (bash) prompts
+  "STEP3_OK"; storage tests pass. Typecheck clean.
+- Mode-swap (degrade/upgrade) stays on the controller; adapter is fixed per controller.

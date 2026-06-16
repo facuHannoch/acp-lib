@@ -22,7 +22,6 @@ export {
 export type {
   AgentControllerConfig,
   AgentMode,
-  SwitchAdapterResult,
   ControllerCommand,
   ControllerCommandId,
   ConfigValueParseResult,

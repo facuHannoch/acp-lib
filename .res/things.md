@@ -97,3 +97,49 @@ And because `runRepl` targets the `AgentClient` interface, the same loop will dr
 The hub (web/telegram) stays as-is structurally but swaps its ACP plumbing for `AcpClient`, driving `prompt()`/`onChunk` into its own I/O — it does *not* go through `runRepl`, since its loop is event-driven, not line-based.
 
 Want me to wire `sessionsDir` persistence next (so `/new` and resume-by-id have something to work with), or sketch the hub-side `AcpClient` usage so you can diff it against your current plumbing?
+
+
+
+
+  You're now relying on remembering session ids from /new output, because /sessions can't be trusted on every agent. This is the case for the sessionsDir fallback we deferred early on: if we record the sessions we
+  create (id + title + cwd + time) to disk, /sessions could merge the agent's list with our own record — so a broken/empty agent list doesn't leave you blind. You parked it before ("keep this out for now"), but
+  kimi is exactly the scenario it solves. Worth reconsidering, or still defer?
+
+
+
+
+
+
+
+
+
+
+
+Good instinct to stop me — you're right to question it, and I was about to over-build. Let me give you the honest tradeoff instead of just proceeding.
+
+## What the CLI actually gains from `AgentSession`
+
+Exactly **one** concrete, user-facing thing: **catalog-backed `/sessions` and resume.** Because `AgentSession` writes to the `SessionManager`, the CLI's `/sessions` would merge our catalog with the agent's live list — which is the fix for the kimi-empty-list pain you kept hitting, and it'd let you resume any session by a stable id across adapters.
+
+Everything else is just *dogfooding* — "the CLI uses the front face so the front face gets exercised." But that's already covered: the integration test I ran drives `AgentSession` against real codex end-to-end (create → prompt → catalog → resume-with-context). The front face is proven without the CLI needing to adopt it.
+
+## What it costs
+
+- A `SessionHandle` indirection so `/new` and `/load` can swap the active conversation (the REPL targets one client; switching conversations means swapping under it).
+- Writing session records to `~/.acp-lib/sessions` *during testing* — disk clutter for a dev tool.
+- The CLI stops being "a thin, direct harness over the controller" — which is exactly how you were picturing it.
+
+## My honest take
+
+**Your instinct is the right one.** The CLI is a low-level test harness for the library internals; the **hub** is the polished consumer that should hold `AgentSession`s. Those are different jobs, and it's fine — good, even — for the CLI to talk straight to the `AgentController`. Forcing `AgentSession` into it adds machinery and disk state to a tool whose whole value is being direct and simple.
+
+So I'd **not** do the rewrite. The CLI stays on the controller (where it is now, working, after step 3). `AgentSession` + `SessionManager` are built, tested, and exported for the hub — that's the deliverable.
+
+The one thing the CLI then *lacks* is catalog-backed `/sessions` (it stays agent-only, so still empty on kimi). If that bugs you while testing, there's a **middle ground** that respects the low-level framing: wire just a `SessionManager` into the CLI — record each session and merge `/sessions` — *without* adopting `AgentSession` or the swap machinery. Small, optional, keeps the CLI controller-centric.
+
+So, three honest options:
+1. **Stop here** — CLI on controller as-is; `AgentSession` is the hub's front face. (My recommendation.)
+2. **Middle ground** — add a `SessionManager` to the CLI for catalog `/sessions` + resume, still controller-based.
+3. **Full** — CLI adopts `AgentSession` + `SessionHandle` (what I was about to do).
+
+Which fits how you see the CLI? I lean 1, with 2 as a cheap upgrade if a working `/sessions` during testing matters to you.

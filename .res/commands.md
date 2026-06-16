@@ -30,3 +30,41 @@ One caveat for **degraded** specifically: forwarding an agent command (`//sessio
 (Side note on your kimi `+2`→`8`-not-`10`: that's the naive extractor anchoring on a *stale* `+2` from the bridge transcript — the screen had several identical `+2`→answer pairs and it grabbed an old one before the new reply settled. Real but low-priority; better anchoring / the SML fixes it. Your "maybe I went too early" is also plausibly true.)
 
 So my proposal: **`//` passthrough first** (small, kills the conflict), then surface agent commands in `/help`, and defer the native/consumer split + `loginCommand` + modal-readiness. Does that routing model match how you want the three to coexist — `/` ours, `//` the agent — or would you rather flip it (agent owns `/`, ours get a sigil)?
+
+
+
+
+
+
+
+Ah — now I see exactly where we diverged, and the good news is **what we built is correct**; the confusion is conceptual. Let me untangle it, because your own test actually proves the distinction.
+
+There are **two different command sets**, and they are not the same thing:
+
+**1. ACP-advertised commands** (what we capture via `available_commands_update`)
+This is a *curated subset* the agent chooses to expose **over the protocol**. For kimi-acp that's `/init /compact /clear /yolo /afk /plan /add-dir /export /import`. They run by sending the command as prompt text — which is **exactly** what the page you linked describes ("Commands are included as regular user messages in prompt requests"). Our `//name` does precisely this. Your test confirms it works:
+- `//compact` → "The context is empty" ✅ (it's advertised, so it ran)
+- `//sessions` → "Unknown slash command /sessions" ✅ (kimi-acp does **not** advertise `/sessions`, so the agent legitimately rejects it)
+
+So `//` is behaving correctly. `//sessions` "fails" because **`/sessions` isn't an ACP command at all.**
+
+**2. The interactive TUI's own command set** (what you saw in the kimi banner)
+`/sessions /changelog /debug /editor /btw /theme …` — the full native CLI menu. **These are NOT part of ACP.** The agent never exposes them over the protocol; they only exist inside the real TUI. There is *no* ACP mechanism to invoke them. The protocol deliberately advertises a smaller, headless-friendly subset (note kimi's ACP list omits all the UI-ish ones like sessions/editor/theme).
+
+So the boundary is fundamental, not a gap we can close:
+
+|                       | ACP-advertised cmds | TUI-only cmds                |
+| --------------------- | ------------------- | ---------------------------- |
+| **ACP (normal) mode** | `//name` ✅         | unreachable — use `/bridge`  |
+| **degraded mode**     | typed into TUI      | all work (you *are* the TUI) |
+
+The answer to your "can we access them?" is: **the TUI-only commands, only by driving the real TUI** — i.e. `/bridge` in normal mode, or degraded mode where you're already in it. That's why the bridge matters: it's the *only* door to that second set.
+
+So nothing's broken — but the label `agent commands` oversold it and made you expect the full TUI menu. I'd make `/help` honest about it:
+
+```
+agent (ACP) commands — send with //name:  /init /compact /clear /yolo /afk /plan /add-dir /export /import
+  (the agent's full interactive menu — /sessions, /theme, … — is only reachable via /bridge)
+```
+
+That one wording change sets the right expectation: `//` = the protocol's command subset; `/bridge` = the real TUI's everything. Want me to make that `/help` tweak (and otherwise leave the working `//` mechanism as-is)?

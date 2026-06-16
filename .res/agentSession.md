@@ -174,3 +174,41 @@ A couple of small decisions baked in that you might want to weigh in on:
 If the storage layer looks right, I'll move to **step 2: `AgentSession`** — owns the id/adapter/mode identity, holds an `AgentController`, implements `AgentClient`, and writes through the `SessionManager`. Want any changes here first, or go?
 
 
+
+
+
+
+
+# CLI decision
+
+
+That settles it. Since the hub's ACP usage has a **terminal/repl mode** (not just programmatic web/telegram), the commands genuinely need to be shared — otherwise you maintain them twice, which is the exact thing you've been trying to avoid. So **option 2** it is, and now the CLI adopting `AgentSession` has a real reason: it's the *means* to a shared command layer, not the goal.
+
+Here's the shape I'd propose — and notice it makes everything fall in line:
+
+**Move the commands into the library** (the `acp-lib/repl` subpath, alongside `runRepl`):
+- `createAgentCommands(deps) → onSlashCommand` — the `/sessions`, `/caps`, `/config`, `/load`, `/new`, `/login`, `/bridge`, `/degrade`… handlers, written **once**, targeting `AgentSession`.
+- `SessionHandle` — a tiny swappable `AgentClient` (holds the current `AgentSession`, forwards prompt/interrupt/stop) so `/new` and `/load` can swap the active conversation under a stable reference the REPL points at.
+
+**Then both consumers are the same three lines:**
+```
+CLI:          AgentSession + SessionHandle + createAgentCommands + runRepl
+hub terminal: AgentSession + SessionHandle + createAgentCommands + runRepl
+hub web/tg:   AgentSession directly (no REPL, no commands — its own UI)
+```
+
+`createAgentCommands` takes its dependencies injected — a `SessionManager`, the adapter registry (for cross-adapter `/load`), and a `note(msg)` output sink — so the CLI passes `ADAPTERS` + a `FileSessionStore`, and the hub passes its own adapters + DB-backed store. Same commands, different wiring.
+
+Net result, which is exactly what you wanted from the start:
+- **one** REPL (already shared),
+- **one** command set (now shared),
+- catalog-backed `/sessions`/resume **everywhere** that uses it,
+- web/telegram still drive `AgentSession` directly with their own UI.
+
+So `acp-lib/repl` becomes "the terminal interaction kit" (`runRepl` + `SessionHandle` + `createAgentCommands`), and the CLI shrinks to arg-parsing + wiring — genuinely thin, as it was meant to be.
+
+Two small decisions before I build it:
+1. **Packaging** — put `SessionHandle` + `createAgentCommands` in the `acp-lib/repl` subpath next to `runRepl`? (I think yes — it's the terminal kit.)
+2. **Incremental path** — extract the commands verbatim into the lib first (targeting the current controller, no behavior change, CLI still works), *then* switch the target to `AgentSession` + add catalog `/sessions` + swap? Or go straight to the `AgentSession` version in one move?
+
+I'd do `acp-lib/repl` for packaging and the **two-phase** extract (safer to review). Good to proceed on that?

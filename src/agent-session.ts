@@ -68,8 +68,8 @@ export class AgentSession implements AgentClient, Bridgeable {
     this._title = config.title;
     this._agentSessionId = config.agentSessionId ?? null;
     this.controller = new AgentController({
-      adapters: { [config.adapterId]: config.adapter },
-      initialAdapter: config.adapterId,
+      adapter: config.adapter,
+      adapterId: config.adapterId,
       mode: this._mode,
       execPrefix: config.execPrefix,
       env: config.env,

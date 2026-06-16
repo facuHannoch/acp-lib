@@ -22,25 +22,20 @@ import { NotConnectedError } from "./errors.ts";
 export type AgentMode = "normal" | "degraded";
 
 export interface AgentControllerConfig {
-  /** Named launch adapters the controller can switch between. */
-  adapters: Record<string, Adapter>;
-  /** Adapter to use on start(). */
-  initialAdapter: string;
+  /** The single adapter this controller drives. Switching adapter = a new AgentSession. */
+  adapter: Adapter;
+  /** Stable id for the adapter (catalog/display, e.g. "codex"). */
+  adapterId: string;
   /** How to talk to the agent on start(). Default "normal". */
   mode?: AgentMode;
   execPrefix?: string[];
   env?: Record<string, string>;
   cwd?: string;
-  /** Session id to load for the initial adapter only. */
+  /** Session id to load on start(). */
   sessionId?: string;
   defaultPermission?: "approve" | "cancel";
   clientInfo?: AcpClientConfig["clientInfo"];
   logger?: Logger;
-}
-
-export interface SwitchAdapterResult extends ConnectResult {
-  adapterId: string;
-  previousAdapterId: string;
 }
 
 export type ControllerCommandId =
@@ -53,7 +48,6 @@ export type ControllerCommandId =
   | "load"
   | "resume"
   | "fork"
-  | "switch"
   | "bridge";
 
 export interface ControllerCommand {
@@ -87,17 +81,14 @@ export class AgentController implements AgentClient {
   // doesn't exist when screen-scraping).
   private current: AgentClient | null = null;
   private acp: AcpClient | null = null;
-  private adapterId: string;
   private mode: AgentMode;
 
   constructor(private readonly config: AgentControllerConfig) {
-    this.adapterId = config.initialAdapter;
     this.mode = config.mode ?? "normal";
-    this.requireAdapter(this.adapterId);
   }
 
   get currentAdapterId(): string {
-    return this.adapterId;
+    return this.config.adapterId;
   }
 
   /** Whether the controller is talking ACP ("normal") or scraping a pty ("degraded"). */
@@ -137,19 +128,11 @@ export class AgentController implements AgentClient {
     return this.acp?.agentCommands ?? [];
   }
 
-  get adapterIds(): string[] {
-    return Object.keys(this.config.adapters);
-  }
-
-  hasAdapter(adapterId: string): boolean {
-    return Object.hasOwn(this.config.adapters, adapterId);
-  }
-
   async start(): Promise<ConnectResult> {
     if (this.current) {
       return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
     }
-    const brought = await this.bringUp(this.adapterId, this.mode, this.config.sessionId);
+    const brought = await this.bringUp(this.mode, this.config.sessionId);
     this.current = brought.client;
     this.acp = brought.acp;
     return brought.result;
@@ -181,7 +164,7 @@ export class AgentController implements AgentClient {
     }
     const { PtyClient } = await import("./degraded/index.ts");
     const pty = new PtyClient({
-      adapter: this.requireAdapter(this.adapterId),
+      adapter: this.config.adapter,
       execPrefix: this.config.execPrefix,
       env: this.config.env,
       cwd: this.config.cwd,
@@ -202,27 +185,6 @@ export class AgentController implements AgentClient {
     if (client) await client.stop();
   }
 
-  async switchAdapter(adapterId: string): Promise<SwitchAdapterResult> {
-    this.requireAdapter(adapterId);
-    const previous = this.requireCurrent();
-    const previousAdapterId = this.adapterId;
-    if (adapterId === previousAdapterId) {
-      return {
-        adapterId,
-        previousAdapterId,
-        sessionId: this.currentSessionId ?? "",
-        resumed: this.acp?.hasSession ?? false,
-      };
-    }
-
-    const brought = await this.bringUp(adapterId, this.mode);
-    this.current = brought.client;
-    this.acp = brought.acp;
-    this.adapterId = adapterId;
-    await previous.stop();
-    return { ...brought.result, adapterId, previousAdapterId };
-  }
-
   /**
    * Degrade to pty or upgrade back to ACP, keeping the adapter fixed. This tears down the
    * current leaf and brings up a fresh one in the new mode (sessions do NOT carry across —
@@ -233,7 +195,7 @@ export class AgentController implements AgentClient {
       return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
     }
     const previous = this.current;
-    const brought = await this.bringUp(this.adapterId, mode);
+    const brought = await this.bringUp(mode);
     this.current = brought.client;
     this.acp = brought.acp;
     this.mode = mode;
@@ -350,11 +312,6 @@ export class AgentController implements AgentClient {
         unavailableReason: acp ? "fork not supported by this agent" : degradedReason,
       },
       {
-        id: "switch",
-        usage: "/switch ADAPTER",
-        available: this.adapterIds.length > 0,
-      },
-      {
         id: "bridge",
         usage: "/bridge",
         available: Boolean(this.current),
@@ -363,16 +320,15 @@ export class AgentController implements AgentClient {
   }
 
   /**
-   * Bring up a fresh leaf for (adapter, mode). normal → AcpClient (connect + new/load
-   * session); degraded → PtyClient (spawn interactive CLI). PtyClient is dynamically
-   * imported so the normal-mode path never loads the degraded subpath.
+   * Bring up a fresh leaf for the configured adapter in `mode`. normal → AcpClient
+   * (connect + new/load session); degraded → PtyClient (spawn interactive CLI). PtyClient
+   * is dynamically imported so the normal-mode path never loads the degraded subpath.
    */
   private async bringUp(
-    adapterId: string,
     mode: AgentMode,
     sessionId?: string,
   ): Promise<{ client: AgentClient; acp: AcpClient | null; result: ConnectResult }> {
-    const adapter = this.requireAdapter(adapterId);
+    const adapter = this.config.adapter;
     if (mode === "degraded") {
       const { PtyClient } = await import("./degraded/index.ts");
       const client = new PtyClient({
@@ -418,12 +374,6 @@ export class AgentController implements AgentClient {
       result = { sessionId: "", resumed: false };
     }
     return { client, acp: client, result };
-  }
-
-  private requireAdapter(adapterId: string): Adapter {
-    const adapter = this.config.adapters[adapterId];
-    if (!adapter) throw new Error(`unknown adapter: ${adapterId}`);
-    return adapter;
   }
 
   private requireCurrent(): AgentClient {

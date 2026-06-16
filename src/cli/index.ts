@@ -71,8 +71,8 @@ async function chat(args: Args): Promise<void> {
   const logger = createConsoleLogger({ minLevel });
 
   const controller = new AgentController({
-    adapters: ADAPTERS,
-    initialAdapter: args.adapter,
+    adapter: ADAPTERS[args.adapter],
+    adapterId: args.adapter,
     mode: args.degraded ? "degraded" : "normal",
     execPrefix: args.execPrefix,
     cwd: args.cwd,
@@ -293,27 +293,6 @@ async function chat(args: Args): Promise<void> {
 
             const result = await controller.setConfigFromString(configId, rawValue);
             note(`set ${configId}=${formatConfigValue(result.currentValue)}`);
-            return true;
-          }
-          case "switch": {
-            const target = commandArgs[0];
-            if (!target) {
-              note(`usage: /switch ADAPTER (${controller.adapterIds.join(", ")})`);
-              return true;
-            }
-            if (!controller.hasAdapter(target)) {
-              note(`unknown adapter: ${target}`);
-              note(`available adapters: ${controller.adapterIds.join(", ")}`);
-              return true;
-            }
-            if (target === controller.currentAdapterId) {
-              note(`already using ${target}`);
-              return true;
-            }
-
-            const switched = await controller.switchAdapter(target);
-            const nextLabel = ADAPTERS[target as AdapterPreset]?.displayName ?? target;
-            note(`switched to ${nextLabel}, new session ${switched.sessionId}`);
             return true;
           }
           default:
