@@ -6,8 +6,9 @@
 //   const { onSlashCommand } = createAgentCommands({ client, note, color });
 //   await runRepl(client, { onSlashCommand });
 
-import type { AgentClient, AgentMode, Capabilities, ConfigOption } from "../index.ts";
-import type { AgentCommand, ConfigValueParseResult, SessionListEntry } from "../types.ts";
+import type { AgentClient, AgentMode, Capabilities, ConfigOption, AuthMethod } from "../index.ts";
+import type { AgentCommand, SessionListEntry } from "../types.ts";
+import type { SessionManager, MergedSession } from "../session-manager.ts";
 
 export interface CommandHandlerDeps {
   /** The agent connection (implements AgentClient + controller methods). */
@@ -16,6 +17,10 @@ export interface CommandHandlerDeps {
   note: (msg: string) => void;
   /** Whether to emit color codes. Default false. */
   color?: boolean;
+  /** Optional catalog manager for persisting session results. */
+  sessionManager?: SessionManager;
+  /** Current adapter id for catalog recording. Needed if sessionManager is set. */
+  adapterId?: string;
 }
 
 /** Return value from createAgentCommands. */
@@ -28,7 +33,22 @@ export interface AgentCommands {
  * Handles /help, /login, /new, /sessions, /load, etc.
  */
 export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
-  const { client, note, color = false } = deps;
+  const { client, note, color = false, sessionManager, adapterId } = deps;
+
+  const recordSession = async (agentSessionId: string | null): Promise<void> => {
+    if (!sessionManager || !adapterId || !client.id) return;
+    try {
+      await sessionManager.record({
+        id: client.id,
+        agentSessionId,
+        adapter: adapterId,
+        mode: client.currentMode,
+        cwd: client.currentCwd,
+      });
+    } catch {
+      // Catalog write failure is not fatal — the session still works.
+    }
+  };
 
   const onSlashCommand = async (command: string, commandArgs: string[]): Promise<boolean> => {
     switch (command) {
@@ -85,9 +105,9 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
           note("run: /login METHOD");
           return true;
         }
-        if (methods.length > 0 && !methods.some((m) => m.id === methodId)) {
+        if (methods.length > 0 && !methods.some((m: AuthMethod) => m.id === methodId)) {
           note(`unknown method: ${methodId}`);
-          note(`available: ${methods.map((m) => m.id).join(", ") || "(none)"}`);
+          note(`available: ${methods.map((m: AuthMethod) => m.id).join(", ") || "(none)"}`);
           return true;
         }
         note(`authenticating with ${methodId}… (follow any URL/code shown below)`);
@@ -107,6 +127,7 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
         try {
           const result = await client.newSession();
           note(`new session ${result.sessionId}`);
+          await recordSession(result.sessionId);
         } catch (e) {
           note(`could not start a new session: ${String(e)}`);
         }
@@ -140,14 +161,42 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
         return true;
       }
       case "sessions": {
-        if (!client.capabilities.agent.sessionCapabilities.list) {
-          note("agent does not support session/list");
-          return true;
-        }
-        const page = await client.listSessions();
-        if (page.sessions.length === 0) note("(no sessions)");
-        for (const s of page.sessions) {
-          note(`${s.sessionId}  ${s.title ?? ""}  ${s.updatedAt ?? ""}`);
+        try {
+          let sessions: (SessionListEntry | MergedSession)[] = [];
+
+          // If we have a sessionManager, show merged view (catalog + agent)
+          if (sessionManager && adapterId) {
+            let agentEntries: SessionListEntry[] = [];
+            if (!client.isDegraded && client.capabilities.agent.sessionCapabilities.list) {
+              try {
+                agentEntries = (await client.listSessions()).sessions;
+              } catch {
+                // Agent list broken — fall back to catalog only
+              }
+            }
+            sessions = await sessionManager.listMerged(agentEntries, adapterId);
+          } else if (client.capabilities.agent.sessionCapabilities.list) {
+            // No catalog — just show agent sessions
+            const page = await client.listSessions();
+            sessions = page.sessions;
+          } else {
+            note("agent does not support session/list");
+            return true;
+          }
+
+          if (sessions.length === 0) {
+            note("(no sessions)");
+          } else {
+            for (const s of sessions) {
+              const isMerged = "source" in s;
+              const merged = s as MergedSession;
+              const plain = s as SessionListEntry;
+              const source = isMerged ? ` [${merged.source}]` : "";
+              note(`${isMerged ? merged.id : plain.sessionId}  ${s.title ?? ""}  ${s.updatedAt ?? ""}${source}`);
+            }
+          }
+        } catch (e) {
+          note(`sessions failed: ${String(e)}`);
         }
         return true;
       }
@@ -166,6 +215,7 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
         const result = await client.loadSession(target, { onUpdate: replay.onUpdate });
         replay.finish();
         note(`loaded session ${result.sessionId}`);
+        await recordSession(result.sessionId);
         return true;
       }
       case "resume": {
@@ -180,6 +230,7 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
         }
         const result = await client.resumeSession(target);
         note(`resumed session ${result.sessionId}`);
+        await recordSession(result.sessionId);
         return true;
       }
       case "fork": {
@@ -194,6 +245,7 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
         }
         const result = await client.forkSession(target);
         note(`forked session ${target} -> ${result.sessionId}`);
+        await recordSession(result.sessionId);
         return true;
       }
       case "config": {

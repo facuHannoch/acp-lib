@@ -6,7 +6,7 @@
   "module": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./repl": "./src/cli/repl.ts",
+    "./repl": "./src/repl/index.ts",
     "./degraded": "./src/degraded/index.ts",
     "./parser": "./src/parser/index.ts",
     "./cli": "./src/cli/index.ts"

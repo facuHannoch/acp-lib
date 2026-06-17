@@ -726,3 +726,20 @@ the CLI and the hub's terminal/repl mode share the same command set.
   /exit). Ready for phase 4b (catalog wiring).
 - Re-export runRepl from repl module for consumer convenience (both import from one place).
 
+## 2026-06-16 — phase 4b: add optional SessionManager integration (complete)
+
+Extended createAgentCommands to support optional catalog persistence. Commands now
+automatically record session operations to a catalog if SessionManager is provided.
+
+- Added optional deps: `sessionManager?: SessionManager`, `adapterId?: string`.
+  If both set, /new, /load, /resume, /fork persist their results to the catalog.
+- Enhanced /sessions command: when sessionManager is provided, shows merged view
+  (catalog + agent list, with [source] tags). Degrades gracefully if catalog fails.
+- recordSession() helper: safely writes to catalog on /new, /load, /resume, /fork.
+  Failures are non-fatal — the session still works, just isn't cataloged.
+- CLI continues to work without changes (no sessionManager passed, catalog disabled).
+  Hub or other consumers can pass sessionManager for full catalog support.
+- Verified: typecheck clean, CLI still works with /help and all commands. Architecture
+  remains clean: commands agnostic to identity, catalog optional.
+
+Phase 4 complete: CLI + hub can share command set and optionally persist to catalog.
