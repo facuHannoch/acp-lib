@@ -708,3 +708,21 @@ to SessionManager. Adapter lives here (switch = new session).
 - Verified: codex CLI prompts + /help (no /switch); degraded controller (bash) prompts
   "STEP3_OK"; storage tests pass. Typecheck clean.
 - Mode-swap (degrade/upgrade) stays on the controller; adapter is fixed per controller.
+
+## 2026-06-16 — phase 4a: extract reusable slash-command layer (complete)
+
+Extracted command handlers from CLI into a library module (acp-lib/repl subpath) so both
+the CLI and the hub's terminal/repl mode share the same command set.
+
+- Created `src/repl/index.ts` with `createAgentCommands(deps)` → `{ onSlashCommand }`.
+  Deps: client (AgentController-like), note (output sink), color (optional).
+  Handles: /help, /caps, /session, /login, /new, /bridge, /degrade, /upgrade, /sessions,
+  /load, /resume, /fork, /config. Helper functions: clearTerminal, isRpcNoise,
+  formatConfigList, formatConfigDetail, formatConfigValue, createSessionReplayRenderer.
+- Updated package.json exports: `./repl` now points to `src/repl/index.ts` (not cli/repl.ts).
+- CLI: now imports createAgentCommands from library, calls it once at startup, passes
+  onSlashCommand to runRepl. No behavior change — commands work identical to before.
+- Verified: typecheck clean, /help shows all commands, commands execute (tested /help,
+  /exit). Ready for phase 4b (catalog wiring).
+- Re-export runRepl from repl module for consumer convenience (both import from one place).
+
