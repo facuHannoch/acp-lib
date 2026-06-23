@@ -1,9 +1,36 @@
 {
-  "name": "acp-lib",
+  "name": "@qlairoslabs/acp-client",
   "version": "0.1.0",
   "description": "Embeddable Agent Client Protocol (ACP) client library with degraded PTY fallback.",
   "type": "module",
   "module": "src/index.ts",
+  "license": "MIT",
+  "author": "Facundo Hannoch <ffacu594@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/facuHannoch/acp-lib.git"
+  },
+  "homepage": "https://github.com/facuHannoch/acp-lib#readme",
+  "bugs": {
+    "url": "https://github.com/facuHannoch/acp-lib/issues"
+  },
+  "keywords": [
+    "acp",
+    "agnostic acp client",
+    "agent-client-protocol",
+    "ai-agent",
+    "coding-agent",
+    "jsonrpc",
+    "codex",
+    "claude",
+    "kimi",
+    "opencode",
+    "repl",
+    "bun"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "src"
   ],
@@ -15,7 +42,7 @@
     "./cli": "./src/cli/index.ts"
   },
   "bin": {
-    "acp-lib": "./src/cli/index.ts"
+    "acp-client": "./src/cli/index.ts"
   },
   "scripts": {
     "test": "bun test",
