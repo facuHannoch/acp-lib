@@ -212,3 +212,64 @@ Two small decisions before I build it:
 2. **Incremental path** — extract the commands verbatim into the lib first (targeting the current controller, no behavior change, CLI still works), *then* switch the target to `AgentSession` + add catalog `/sessions` + swap? Or go straight to the `AgentSession` version in one move?
 
 I'd do `acp-lib/repl` for packaging and the **two-phase** extract (safer to review). Good to proceed on that?
+
+
+
+
+
+
+
+# 16/6 18:07
+
+
+**What we did:**
+
+1. **Step 1 — SessionStore + SessionManager**: Built a pluggable session catalog layer (`FileSessionStore`, `SessionManager`, `SessionRecord`) that stores routing metadata (id, adapter, mode, cwd, title) — NOT transcript content. The agent persists that; we just track which sessions exist and where to find them.
+
+2. **Step 2 — AgentSession (the front face)**: Created `AgentSession` implementing `AgentClient` + `Bridgeable`. It owns stable identity (our uuid `id`, adapter, mode, agentSessionId, title), wraps a single `AgentController`, and persists to the catalog on every state change (prompt, mode-swap, etc.). It's now the library's main entry point.
+
+3. **Step 3 — AgentController single-adapter**: Flattened `AgentController` from multi-adapter to single-adapter (removed `switchAdapter`, `adapterIds`, mode-mixing). Adapter is now a **session-level** decision, not a controller-level one.
+
+4. **Plus: the full degraded pipeline** — pty-transport (Bun native terminal), emulator (@xterm/headless), extract (echoed-prompt-anchored scraper), pty-client; bridge (tty passthrough + repaint); login/authenticate; `/sessions` merged catalog.
+
+---
+
+**What I plan to do next (Step 4):**
+
+Extract the reusable **slash-command layer** into the library so the CLI **and** the hub's terminal/repl mode share ONE command set:
+- Move command handlers from `cli/index.ts` → `acp-lib/repl` subpath
+- Export `createAgentCommands(deps) → onSlashCommand` 
+- Create `SessionHandle` (tiny swappable `AgentClient`) for `/new` / `/load`
+- **Two-phase**: Phase 4a extracts handlers verbatim (targeting current `AgentController`, zero behavior change); Phase 4b switches target to `AgentSession` + wires catalog
+
+Result: both CLI and hub compose `AgentSession + SessionHandle + createAgentCommands + runRepl` (three lines).
+
+---
+
+**The two confirmations I need:**
+
+1. **Packaging**: Put the extracted commands in **`acp-lib/repl` subpath** (alongside existing `runRepl`) — yes?
+2. **Extraction strategy**: **Two-phase** (safer, clearer review) — yes?
+
+
+
+Good question. **Mostly yes, but not in the narrow sense.**
+
+**Commands are REPL/interactive-context UX**, not general library APIs:
+- `/new`, `/load`, `/sessions`, `/login`, `/bridge`, etc. are slash commands — user-facing affordances for interactive terminal/REPL sessions
+- They're NOT library-level methods on `AgentSession` (those already exist: `.prompt()`, `.authenticate()`, `.listSessions()`)
+- They're a **convenience layer** that wraps those methods + adds session catalog navigation + command dispatch
+
+**However, they're NOT locked to a single REPL:**
+- Today: CLI has its own REPL + commands in `cli/index.ts`
+- Soon: Hub has a terminal/repl mode (under ACP) that needs the same commands
+- Future: Any interactive consumer (web UI REPL, TUI wrapper, etc.) might want them
+
+**So extracting to `acp-lib/repl` makes sense because:**
+- These commands are **interactive session logic**, not agent-specific
+- They're **reusable across any REPL context**
+- They encapsulate **session catalog + command dispatch** — knowledge that shouldn't live in the CLI alone
+
+The library (`acp-lib/repl`) provides the building blocks; consumers compose them into their own REPL.
+
+Does that distinction land? Should we proceed with the extraction?

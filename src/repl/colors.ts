@@ -1,4 +1,4 @@
-// Minimal ANSI helpers shared across CLI files. Not part of the library surface.
+// Minimal ANSI helpers shared by the reusable terminal UI and CLI wiring.
 export const DIM = "\x1b[90m";
 export const BOLD = "\x1b[1m";
 export const CYAN = "\x1b[36m";

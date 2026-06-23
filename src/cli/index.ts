@@ -19,7 +19,7 @@ import {
   type AdapterPreset,
 } from "../index.ts";
 import { createAgentCommands, runRepl } from "../repl/index.ts";
-import { DIM, colorEnabled, paint } from "./colors.ts";
+import { DIM, colorEnabled, paint } from "../repl/colors.ts";
 
 interface Args {
   command: string;

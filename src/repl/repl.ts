@@ -1,4 +1,4 @@
-// Interactive REPL — pure presentation/UI over the AgentClient output contract.
+// Interactive REPL — reusable presentation/UI over the AgentClient output contract.
 // Depends ONLY on AgentClient (prompt + interrupt), so it works against AcpClient today
 // and PtyClient (degraded mode) later, unchanged. The caller owns the client lifecycle
 // (connect/stop); the REPL just drives the interaction.

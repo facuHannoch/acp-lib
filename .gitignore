@@ -1,2 +1,6 @@
 .res/acp
+
 node_modules/
+.agents/.secrets/
+.agents/.workspaces/
+.agents/.artifacts/
