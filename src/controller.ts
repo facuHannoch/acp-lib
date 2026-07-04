@@ -1,4 +1,5 @@
 import { AcpClient, type AcpClientConfig, type ConnectResult, type SwitchSessionOptions } from "./client.ts";
+import type * as schema from "@agentclientprotocol/sdk";
 import type { Adapter } from "./adapters.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
@@ -33,6 +34,8 @@ export interface AgentControllerConfig {
   cwd?: string;
   /** Session id to load on start(). */
   sessionId?: string;
+  /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
+  mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
   clientInfo?: AcpClientConfig["clientInfo"];
   logger?: Logger;
@@ -211,9 +214,11 @@ export class AgentController implements AgentClient {
     return this.requireAcp().authenticate(methodId, handlers);
   }
 
-  /** Force a fresh session (e.g. after /login). */
-  newSession(): Promise<ConnectResult> {
-    return this.requireAcp().newSession();
+  /** Force a fresh session (e.g. after /login). mcpServers defaults to config.mcpServers. */
+  newSession(options: { mcpServers?: schema.McpServer[] } = {}): Promise<ConnectResult> {
+    return this.requireAcp().newSession({
+      mcpServers: options.mcpServers ?? this.config.mcpServers,
+    });
   }
 
   listSessions(): Promise<SessionListPage> {
@@ -221,15 +226,24 @@ export class AgentController implements AgentClient {
   }
 
   loadSession(sessionId: string, options: SwitchSessionOptions = {}): Promise<ConnectResult> {
-    return this.requireAcp().loadSession(sessionId, options);
+    return this.requireAcp().loadSession(sessionId, {
+      ...options,
+      mcpServers: options.mcpServers ?? this.config.mcpServers,
+    });
   }
 
   resumeSession(sessionId: string, options: SwitchSessionOptions = {}): Promise<ConnectResult> {
-    return this.requireAcp().resumeSession(sessionId, options);
+    return this.requireAcp().resumeSession(sessionId, {
+      ...options,
+      mcpServers: options.mcpServers ?? this.config.mcpServers,
+    });
   }
 
   forkSession(sessionId: string, options: SwitchSessionOptions = {}): Promise<ConnectResult> {
-    return this.requireAcp().forkSession(sessionId, options);
+    return this.requireAcp().forkSession(sessionId, {
+      ...options,
+      mcpServers: options.mcpServers ?? this.config.mcpServers,
+    });
   }
 
   setConfig(configId: string, value: unknown): Promise<void> {
@@ -368,7 +382,7 @@ export class AgentController implements AgentClient {
     }
     let result: ConnectResult;
     try {
-      result = await client.startSession();
+      result = await client.startSession({ mcpServers: this.config.mcpServers });
     } catch (err) {
       this.config.logger?.warn("session_start_failed", { error: String(err) });
       result = { sessionId: "", resumed: false };

@@ -10,6 +10,7 @@
 // agent dies on switch). Mode-swap (degrade/upgrade) stays within one AgentSession.
 
 import { AgentController, type AgentMode } from "./controller.ts";
+import type * as schema from "@agentclientprotocol/sdk";
 import type { Adapter } from "./adapters.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
@@ -35,6 +36,8 @@ export interface AgentSessionConfig {
   execPrefix?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
+  mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
   clientInfo?: { name: string; title?: string; version?: string };
   logger?: Logger;
@@ -75,6 +78,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       env: config.env,
       cwd: config.cwd,
       sessionId: config.agentSessionId,
+      mcpServers: config.mcpServers,
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,
       logger: config.logger,
