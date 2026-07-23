@@ -134,6 +134,27 @@ for (const s of await session.listSessions()) {
 await session.stop();
 ```
 
+### Optional chat transcript
+
+Pass `transcriptPath` to `AgentSession` to append a lightweight JSONL chat transcript
+that can be read later without starting the agent. The transcript stores user messages
+and final assistant replies only; tool calls, thinking, plans, and raw protocol replay
+remain in the harness session.
+
+```ts
+import { AgentSession, ADAPTERS, readTranscript } from "@qlairoslabs/acp-client";
+
+const session = await AgentSession.create({
+  adapter: ADAPTERS.codex,
+  adapterId: "codex",
+  transcriptPath: "/absolute/path/to/chat.jsonl",
+});
+
+await session.prompt("Summarize the repo.");
+
+const messages = await readTranscript("/absolute/path/to/chat.jsonl");
+```
+
 ### Interactive REPL
 
 The REPL and its slash-commands (`/help`, `/new`, `/sessions`, `/load`, `/config`,

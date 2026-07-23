@@ -61,6 +61,23 @@ export type { SessionStore, SessionRecord } from "./session-store.ts";
 export { SessionManager, mergeSessions } from "./session-manager.ts";
 export type { MergedSession, SessionInput } from "./session-manager.ts";
 
+export {
+  appendTranscriptLine,
+  readTranscript,
+  readTranscriptLines,
+} from "./transcript.ts";
+export type {
+  ReadTranscriptOptions,
+  TranscriptActivityLine,
+  TranscriptEntry,
+  TranscriptLine,
+  TranscriptMessageLine,
+  TranscriptMetaLine,
+  TranscriptPermissionLine,
+  TranscriptRawLine,
+  TranscriptRole,
+} from "./transcript.ts";
+
 export { ProcessCrashError, NotConnectedError, TimeoutError } from "./errors.ts";
 
 export { noopLogger, createConsoleLogger } from "./logger.ts";

@@ -16,8 +16,9 @@ import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from ".
 import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
-import type { Logger } from "./logger.ts";
+import { noopLogger, type Logger } from "./logger.ts";
 import type { SessionManager, MergedSession } from "./session-manager.ts";
+import { appendTranscriptLine, type TranscriptLine } from "./transcript.ts";
 import type {
   AgentCommand,
   Attachment,
@@ -25,6 +26,14 @@ import type {
   PromptResult,
   SessionListEntry,
 } from "./types.ts";
+
+interface QueueItem {
+  text: string;
+  handlers?: PromptHandlers;
+  attachments?: Attachment[];
+  resolve: (r: PromptResult) => void;
+  reject: (e: unknown) => void;
+}
 
 export interface AgentSessionConfig {
   /** The resolved adapter this conversation talks to. */
@@ -43,6 +52,8 @@ export interface AgentSessionConfig {
   logger?: Logger;
   /** Optional catalog. When present, the session records itself here. */
   sessions?: SessionManager;
+  /** Absolute path to an append-only transcript file. Omitted means no transcript. */
+  transcriptPath?: string;
   /** Our stable AgentSession id. Minted if omitted; pass a record's agentSessionId to resume. */
   agentSessionId?: string;
   /** ACP/harness session to load on start (resume an existing provider conversation). */
@@ -57,6 +68,11 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   private readonly controller: AgentController;
   private readonly sessions?: SessionManager;
+  private readonly transcriptPath?: string;
+  private readonly log: Logger;
+  private transcriptWrite: Promise<void> = Promise.resolve();
+  private queue: QueueItem[] = [];
+  private pumping = false;
   private _internalSessionId: string | null;
   private _mode: AgentMode;
   private _cwd?: string;
@@ -66,6 +82,8 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.agentSessionId = config.agentSessionId ?? crypto.randomUUID();
     this.adapterId = config.adapterId;
     this.sessions = config.sessions;
+    this.transcriptPath = config.transcriptPath;
+    this.log = config.logger ?? noopLogger;
     this._mode = config.mode ?? "normal";
     this._cwd = config.cwd;
     this._title = config.title;
@@ -100,6 +118,14 @@ export class AgentSession implements AgentClient, Bridgeable {
     const result = await this.controller.start();
     this._internalSessionId = result.sessionId || this._internalSessionId;
     await this.persist();
+    await this.appendTranscript({
+      v: 1,
+      t: "meta",
+      event: "open",
+      ts: Date.now(),
+      internalSessionId: this._internalSessionId,
+      adapter: this.adapterId,
+    });
   }
 
   // --- identity ----------------------------------------------------------------
@@ -126,17 +152,87 @@ export class AgentSession implements AgentClient, Bridgeable {
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
-    const res = await this.controller.prompt(text, handlers, attachments);
-    if (!this._title && text.trim()) {
-      this._title = text.trim().replace(/\s+/g, " ").slice(0, 60);
+    return new Promise<PromptResult>((resolve, reject) => {
+      this.queue.push({ text, handlers, attachments, resolve, reject });
+      void this.pump();
+    });
+  }
+
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.queue.length > 0) {
+        const item = this.queue.shift()!;
+        try {
+          item.resolve(await this.runPrompt(item));
+        } catch (err) {
+          item.reject(err);
+        }
+      }
+    } finally {
+      this.pumping = false;
     }
-    // A session may have been created lazily on first prompt (degraded has none).
-    this._internalSessionId = this.controller.currentSessionId ?? this._internalSessionId;
-    await this.persist();
-    return res;
+  }
+
+  private async runPrompt(item: QueueItem): Promise<PromptResult> {
+    await this.appendTranscript({
+      v: 1,
+      t: "msg",
+      role: "user",
+      text: item.text,
+      ts: Date.now(),
+    });
+
+    const chunks: string[] = [];
+    const wrappedHandlers: PromptHandlers = {
+      ...item.handlers,
+      onChunk: (chunk) => {
+        chunks.push(chunk);
+        item.handlers?.onChunk?.(chunk);
+      },
+    };
+
+    try {
+      const res = await this.controller.prompt(item.text, wrappedHandlers, item.attachments);
+      if (!this._title && item.text.trim()) {
+        this._title = item.text.trim().replace(/\s+/g, " ").slice(0, 60);
+      }
+      // A session may have been created lazily on first prompt (degraded has none).
+      this._internalSessionId = this.controller.currentSessionId ?? this._internalSessionId;
+      await this.persist();
+      await this.appendTranscript({
+        v: 1,
+        t: "msg",
+        role: "assistant",
+        text: res.text,
+        ts: Date.now(),
+        usage: res.usage,
+        stopReason: res.stopReason,
+        status: res.status,
+      });
+      return res;
+    } catch (err) {
+      await this.appendTranscript({
+        v: 1,
+        t: "msg",
+        role: "assistant",
+        text: chunks.join(""),
+        ts: Date.now(),
+        stopReason: "error",
+        status: "error",
+      });
+      throw err;
+    }
   }
 
   interrupt(options?: InterruptOptions): void {
+    if (options?.clearQueue) {
+      const dropped = this.queue.splice(0);
+      for (const item of dropped) {
+        item.resolve({ text: "", stopReason: "cancelled", status: "cancelled", usage: null });
+      }
+    }
     this.controller.interrupt(options);
   }
 
@@ -212,5 +308,22 @@ export class AgentSession implements AgentClient, Bridgeable {
       cwd: this._cwd,
       title: this._title,
     });
+  }
+
+  private async appendTranscript(line: TranscriptLine): Promise<void> {
+    if (!this.transcriptPath) return;
+    this.transcriptWrite = this.transcriptWrite
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await appendTranscriptLine(this.transcriptPath!, line);
+        } catch (err) {
+          this.log.warn("transcript_write_failed", {
+            path: this.transcriptPath,
+            error: String(err),
+          });
+        }
+      });
+    await this.transcriptWrite;
   }
 }
