@@ -128,7 +128,7 @@ await session.prompt("Start working on the auth module.");
 
 // later. List everything we know about, catalog ∪ the agent's live list
 for (const s of await session.listSessions()) {
-  console.log(s.source, s.id, s.title); // source: "catalog" | "agent" | "both"
+  console.log(s.source, s.agentSessionId, s.title); // source: "catalog" | "agent" | "both"
 }
 
 await session.stop();

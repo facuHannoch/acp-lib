@@ -29,8 +29,8 @@ import type { SessionManager, MergedSession } from "../session-manager.ts";
 
 /** The control-plane surface required by the reusable slash commands. */
 export interface InteractiveAgentClient extends AgentClient, Bridgeable {
-  /** Optional durable catalog identity, when the client is session-backed. */
-  readonly id?: string;
+  /** Optional durable AgentSession identity, when the client is session-backed. */
+  readonly agentSessionId?: string;
   readonly currentAdapterId: string;
   readonly currentMode: AgentMode;
   readonly currentSessionId: string | null;
@@ -96,12 +96,12 @@ export interface AgentCommands {
 export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
   const { client, note, color = false, sessionManager, adapterId } = deps;
 
-  const recordSession = async (agentSessionId: string | null): Promise<void> => {
-    if (!sessionManager || !adapterId || !client.id) return;
+  const recordSession = async (internalSessionId: string | null): Promise<void> => {
+    if (!sessionManager || !adapterId || !client.agentSessionId) return;
     try {
       await sessionManager.record({
-        id: client.id,
-        agentSessionId,
+        agentSessionId: client.agentSessionId,
+        internalSessionId,
         adapter: adapterId,
         mode: client.currentMode,
         cwd: client.currentCwd,
@@ -253,7 +253,7 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
               const merged = s as MergedSession;
               const plain = s as SessionListEntry;
               const source = isMerged ? ` [${merged.source}]` : "";
-              note(`${isMerged ? merged.id : plain.sessionId}  ${s.title ?? ""}  ${s.updatedAt ?? ""}${source}`);
+              note(`${isMerged ? merged.agentSessionId : plain.sessionId}  ${s.title ?? ""}  ${s.updatedAt ?? ""}${source}`);
             }
           }
         } catch (e) {

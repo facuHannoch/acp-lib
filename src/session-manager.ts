@@ -10,9 +10,10 @@ import type { SessionListEntry } from "./types.ts";
 
 /** A row in the merged session view. `source` says where it was seen. */
 export interface MergedSession {
-  /** Our catalog id when cataloged, else the agent's sessionId. */
-  id: string;
-  agentSessionId: string | null;
+  /** Our AgentSession id when cataloged, else the ACP/harness sessionId. */
+  agentSessionId: string;
+  /** The ACP/harness protocol sessionId used by lower-level session operations. */
+  internalSessionId: string | null;
   adapter: string;
   mode?: "normal" | "degraded";
   cwd?: string;
@@ -30,7 +31,7 @@ export class SessionManager {
   /** Upsert a record: preserves createdAt, bumps updatedAt. Returns the stored record. */
   async record(input: SessionInput): Promise<SessionRecord> {
     const now = new Date().toISOString();
-    const existing = await this.store.get(input.id);
+    const existing = await this.store.get(input.agentSessionId);
     const record: SessionRecord = {
       ...input,
       createdAt: existing?.createdAt ?? now,
@@ -40,12 +41,12 @@ export class SessionManager {
     return record;
   }
 
-  get(id: string): Promise<SessionRecord | null> {
-    return this.store.get(id);
+  get(agentSessionId: string): Promise<SessionRecord | null> {
+    return this.store.get(agentSessionId);
   }
 
-  delete(id: string): Promise<void> {
-    return this.store.delete(id);
+  delete(agentSessionId: string): Promise<void> {
+    return this.store.delete(agentSessionId);
   }
 
   /** Catalog records, newest first. */
@@ -73,19 +74,19 @@ export function mergeSessions(
   agentEntries: SessionListEntry[],
   adapter: string,
 ): MergedSession[] {
-  const byAgentId = new Map<string, SessionRecord>();
-  for (const r of catalog) if (r.agentSessionId) byAgentId.set(r.agentSessionId, r);
+  const byInternalId = new Map<string, SessionRecord>();
+  for (const r of catalog) if (r.internalSessionId) byInternalId.set(r.internalSessionId, r);
 
   const out: MergedSession[] = [];
-  const claimed = new Set<string>(); // catalog ids already emitted via the agent list
+  const claimed = new Set<string>(); // AgentSession ids already emitted via the agent list
 
   for (const e of agentEntries) {
-    const rec = byAgentId.get(e.sessionId);
+    const rec = byInternalId.get(e.sessionId);
     if (rec) {
-      claimed.add(rec.id);
+      claimed.add(rec.agentSessionId);
       out.push({
-        id: rec.id,
-        agentSessionId: e.sessionId,
+        agentSessionId: rec.agentSessionId,
+        internalSessionId: e.sessionId,
         adapter: rec.adapter,
         mode: rec.mode,
         cwd: e.cwd ?? rec.cwd,
@@ -96,8 +97,8 @@ export function mergeSessions(
     } else {
       // Reported by the agent but not in our catalog (made via native CLI/bridge).
       out.push({
-        id: e.sessionId,
         agentSessionId: e.sessionId,
+        internalSessionId: e.sessionId,
         adapter,
         cwd: e.cwd,
         title: e.title,
@@ -108,10 +109,10 @@ export function mergeSessions(
   }
 
   for (const r of catalog) {
-    if (claimed.has(r.id)) continue; // already emitted as "both"
+    if (claimed.has(r.agentSessionId)) continue; // already emitted as "both"
     out.push({
-      id: r.id,
       agentSessionId: r.agentSessionId,
+      internalSessionId: r.internalSessionId,
       adapter: r.adapter,
       mode: r.mode,
       cwd: r.cwd,

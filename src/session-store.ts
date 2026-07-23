@@ -1,6 +1,6 @@
 // Session catalog storage. The library is NOT the source of truth for conversation
 // CONTENT (the agent persists that; loadSession replays it) — this is a routing catalog:
-// which adapter/mode/cwd a session belongs to, keyed by OUR stable id. That's the part
+// which adapter/mode/cwd a session belongs to, keyed by OUR stable agent session id. That's the part
 // the agent can't tell us, and it survives a broken agent `session/list` (e.g. kimi).
 //
 // `SessionStore` is an interface so consumers (the orchestration hub) can back it with
@@ -12,14 +12,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export interface SessionRecord {
-  /** OUR stable catalog id (a uuid). Decoupled from the agent's sessionId on purpose. */
-  id: string;
+  /** OUR stable AgentSession id (a uuid). Decoupled from the ACP sessionId on purpose. */
+  agentSessionId: string;
   /**
-   * The agent's protocol sessionId. Null in degraded mode (no protocol session), and it
+   * The ACP/harness protocol sessionId. Null in degraded mode (no protocol session), and it
    * CHANGES on mode-swap (the pty session ≠ the ACP session). Kept as a mutable field so
    * a future portable conversation can span several agent sessions without re-keying.
    */
-  agentSessionId: string | null;
+  internalSessionId: string | null;
   /** Which adapter this session belongs to — the routing the agent's own list can't give. */
   adapter: string;
   mode: "normal" | "degraded";
@@ -32,9 +32,9 @@ export interface SessionRecord {
 
 export interface SessionStore {
   save(record: SessionRecord): Promise<void>;
-  get(id: string): Promise<SessionRecord | null>;
+  get(agentSessionId: string): Promise<SessionRecord | null>;
   list(): Promise<SessionRecord[]>;
-  delete(id: string): Promise<void>;
+  delete(agentSessionId: string): Promise<void>;
 }
 
 /** Default location for the file store. Overridable; the hub injects its own store. */
@@ -52,12 +52,12 @@ export class FileSessionStore implements SessionStore {
 
   async save(record: SessionRecord): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    await writeFile(this.path(record.id), JSON.stringify(record, null, 2), "utf8");
+    await writeFile(this.path(record.agentSessionId), JSON.stringify(record, null, 2), "utf8");
   }
 
-  async get(id: string): Promise<SessionRecord | null> {
+  async get(agentSessionId: string): Promise<SessionRecord | null> {
     try {
-      return JSON.parse(await readFile(this.path(id), "utf8")) as SessionRecord;
+      return JSON.parse(await readFile(this.path(agentSessionId), "utf8")) as SessionRecord;
     } catch {
       return null;
     }
@@ -82,15 +82,15 @@ export class FileSessionStore implements SessionStore {
     return records;
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(agentSessionId: string): Promise<void> {
     try {
-      await unlink(this.path(id));
+      await unlink(this.path(agentSessionId));
     } catch {
       /* already gone */
     }
   }
 
-  private path(id: string): string {
-    return join(this.dir, `${encodeURIComponent(id)}.json`);
+  private path(agentSessionId: string): string {
+    return join(this.dir, `${encodeURIComponent(agentSessionId)}.json`);
   }
 }

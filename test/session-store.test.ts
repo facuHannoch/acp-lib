@@ -7,8 +7,8 @@ import type { SessionRecord } from "../src/session-store.ts";
 
 function record(overrides: Partial<SessionRecord> = {}): SessionRecord {
   return {
-    id: "id-1",
-    agentSessionId: "agent-1",
+    agentSessionId: "agent-session-1",
+    internalSessionId: "internal-1",
     adapter: "codex",
     mode: "normal",
     cwd: "/work",
@@ -35,7 +35,7 @@ describe("FileSessionStore", () => {
   test("save then get round-trips a record", async () => {
     const rec = record();
     await store.save(rec);
-    expect(await store.get("id-1")).toEqual(rec);
+    expect(await store.get("agent-session-1")).toEqual(rec);
   });
 
   test("get returns null for a missing id", async () => {
@@ -45,20 +45,20 @@ describe("FileSessionStore", () => {
   test("save overwrites an existing record", async () => {
     await store.save(record({ title: "first" }));
     await store.save(record({ title: "second" }));
-    expect((await store.get("id-1"))?.title).toBe("second");
+    expect((await store.get("agent-session-1"))?.title).toBe("second");
   });
 
   test("list returns every saved record", async () => {
-    await store.save(record({ id: "a" }));
-    await store.save(record({ id: "b" }));
-    const ids = (await store.list()).map((r) => r.id).sort();
+    await store.save(record({ agentSessionId: "a" }));
+    await store.save(record({ agentSessionId: "b" }));
+    const ids = (await store.list()).map((r) => r.agentSessionId).sort();
     expect(ids).toEqual(["a", "b"]);
   });
 
   test("list skips malformed json files", async () => {
-    await store.save(record({ id: "good" }));
+    await store.save(record({ agentSessionId: "good" }));
     await writeFile(join(dir, "broken.json"), "{ not valid json", "utf8");
-    const ids = (await store.list()).map((r) => r.id);
+    const ids = (await store.list()).map((r) => r.agentSessionId);
     expect(ids).toEqual(["good"]);
   });
 
@@ -69,13 +69,13 @@ describe("FileSessionStore", () => {
 
   test("delete removes a record and is idempotent", async () => {
     await store.save(record());
-    await store.delete("id-1");
-    expect(await store.get("id-1")).toBeNull();
-    await store.delete("id-1"); // already gone — must not throw
+    await store.delete("agent-session-1");
+    expect(await store.get("agent-session-1")).toBeNull();
+    await store.delete("agent-session-1"); // already gone — must not throw
   });
 
   test("ids with filesystem-unsafe characters survive a round-trip", async () => {
-    const rec = record({ id: "weird/id:with*chars" });
+    const rec = record({ agentSessionId: "weird/id:with*chars" });
     await store.save(rec);
     expect(await store.get("weird/id:with*chars")).toEqual(rec);
   });

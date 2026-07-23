@@ -6,19 +6,19 @@ class MemorySessionStore implements SessionStore {
   readonly records = new Map<string, SessionRecord>();
 
   async save(record: SessionRecord): Promise<void> {
-    this.records.set(record.id, structuredClone(record));
+    this.records.set(record.agentSessionId, structuredClone(record));
   }
 
-  async get(id: string): Promise<SessionRecord | null> {
-    return this.records.get(id) ?? null;
+  async get(agentSessionId: string): Promise<SessionRecord | null> {
+    return this.records.get(agentSessionId) ?? null;
   }
 
   async list(): Promise<SessionRecord[]> {
     return [...this.records.values()];
   }
 
-  async delete(id: string): Promise<void> {
-    this.records.delete(id);
+  async delete(agentSessionId: string): Promise<void> {
+    this.records.delete(agentSessionId);
   }
 }
 
@@ -27,15 +27,15 @@ describe("SessionManager", () => {
     const store = new MemorySessionStore();
     const manager = new SessionManager(store);
     const first = await manager.record({
-      id: "catalog-1",
-      agentSessionId: "agent-1",
+      agentSessionId: "agent-session-1",
+      internalSessionId: "internal-1",
       adapter: "codex",
       mode: "normal",
       title: "First title",
     });
     const second = await manager.record({
-      id: "catalog-1",
-      agentSessionId: "agent-1",
+      agentSessionId: "agent-session-1",
+      internalSessionId: "internal-1",
       adapter: "codex",
       mode: "normal",
       title: "Updated title",
@@ -49,14 +49,14 @@ describe("SessionManager", () => {
     const store = new MemorySessionStore();
     const manager = new SessionManager(store);
     await manager.record({
-      id: "catalog-1",
-      agentSessionId: null,
+      agentSessionId: "agent-session-1",
+      internalSessionId: null,
       adapter: "kimi",
       mode: "degraded",
     });
 
-    await manager.delete("catalog-1");
-    expect(await manager.get("catalog-1")).toBeNull();
+    await manager.delete("agent-session-1");
+    expect(await manager.get("agent-session-1")).toBeNull();
   });
 });
 
@@ -64,8 +64,8 @@ describe("mergeSessions", () => {
   test("combines matching sessions and retains catalog-only and agent-only rows", () => {
     const catalog: SessionRecord[] = [
       {
-        id: "catalog-matched",
-        agentSessionId: "agent-matched",
+        agentSessionId: "catalog-matched",
+        internalSessionId: "agent-matched",
         adapter: "codex",
         mode: "normal",
         cwd: "/catalog",
@@ -74,8 +74,8 @@ describe("mergeSessions", () => {
         updatedAt: "2026-01-02T00:00:00.000Z",
       },
       {
-        id: "catalog-only",
-        agentSessionId: null,
+        agentSessionId: "catalog-only",
+        internalSessionId: null,
         adapter: "kimi",
         mode: "degraded",
         createdAt: "2026-01-01T00:00:00.000Z",
@@ -102,13 +102,13 @@ describe("mergeSessions", () => {
     );
 
     expect(merged).toHaveLength(3);
-    expect(merged.find((item) => item.id === "catalog-matched")).toMatchObject({
-      agentSessionId: "agent-matched",
+    expect(merged.find((item) => item.agentSessionId === "catalog-matched")).toMatchObject({
+      internalSessionId: "agent-matched",
       cwd: "/agent",
       title: "Agent title",
       source: "both",
     });
-    expect(merged.find((item) => item.id === "catalog-only")?.source).toBe("catalog");
-    expect(merged.find((item) => item.id === "agent-only")?.source).toBe("agent");
+    expect(merged.find((item) => item.agentSessionId === "catalog-only")?.source).toBe("catalog");
+    expect(merged.find((item) => item.agentSessionId === "agent-only")?.source).toBe("agent");
   });
 });

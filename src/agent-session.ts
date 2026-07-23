@@ -2,7 +2,7 @@
 // consumer (the orchestration hub, the CLI) holds: a conversation with a stable identity
 // that persists across reconnects/mode-swaps, backed by a SessionManager catalog.
 //
-// It owns identity (our `id`, adapter, mode, agentSessionId, title) and persistence, and
+// It owns identity (our `agentSessionId`, adapter, mode, internalSessionId, title) and persistence, and
 // HOLDS an AgentController for the live connection (the control plane). It implements
 // AgentClient, so the REPL and any caller can prompt it directly.
 //
@@ -43,33 +43,33 @@ export interface AgentSessionConfig {
   logger?: Logger;
   /** Optional catalog. When present, the session records itself here. */
   sessions?: SessionManager;
-  /** Our stable catalog id. Minted if omitted (a fresh conversation); pass a record's id to resume. */
-  id?: string;
-  /** Agent session to load on start (resume an existing agent conversation). */
+  /** Our stable AgentSession id. Minted if omitted; pass a record's agentSessionId to resume. */
   agentSessionId?: string;
+  /** ACP/harness session to load on start (resume an existing provider conversation). */
+  internalSessionId?: string;
   title?: string;
 }
 
 export class AgentSession implements AgentClient, Bridgeable {
-  /** Our stable catalog id — decoupled from the agent's (mutable) session id. */
-  readonly id: string;
+  /** Our stable AgentSession id — decoupled from the ACP/harness session id. */
+  readonly agentSessionId: string;
   readonly adapterId: string;
 
   private readonly controller: AgentController;
   private readonly sessions?: SessionManager;
-  private _agentSessionId: string | null;
+  private _internalSessionId: string | null;
   private _mode: AgentMode;
   private _cwd?: string;
   private _title?: string;
 
   private constructor(config: AgentSessionConfig) {
-    this.id = config.id ?? crypto.randomUUID();
+    this.agentSessionId = config.agentSessionId ?? crypto.randomUUID();
     this.adapterId = config.adapterId;
     this.sessions = config.sessions;
     this._mode = config.mode ?? "normal";
     this._cwd = config.cwd;
     this._title = config.title;
-    this._agentSessionId = config.agentSessionId ?? null;
+    this._internalSessionId = config.internalSessionId ?? null;
     this.controller = new AgentController({
       adapter: config.adapter,
       adapterId: config.adapterId,
@@ -77,7 +77,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       execPrefix: config.execPrefix,
       env: config.env,
       cwd: config.cwd,
-      sessionId: config.agentSessionId,
+      sessionId: config.internalSessionId,
       mcpServers: config.mcpServers,
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,
@@ -86,8 +86,8 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
 
   /**
-   * Start a conversation. A FRESH one if no `id`/`agentSessionId`; a RESUMED one if
-   * `agentSessionId` is given (the controller loads it). To resume from the catalog, the
+   * Start a conversation. A FRESH one if no `agentSessionId`/`internalSessionId`; a RESUMED one if
+   * `internalSessionId` is given (the controller loads it). To resume from the catalog, the
    * caller resolves the record's adapter and passes the record's fields here.
    */
   static async create(config: AgentSessionConfig): Promise<AgentSession> {
@@ -98,13 +98,13 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   private async start(): Promise<void> {
     const result = await this.controller.start();
-    this._agentSessionId = result.sessionId || this._agentSessionId;
+    this._internalSessionId = result.sessionId || this._internalSessionId;
     await this.persist();
   }
 
   // --- identity ----------------------------------------------------------------
-  get agentSessionId(): string | null {
-    return this._agentSessionId;
+  get internalSessionId(): string | null {
+    return this._internalSessionId;
   }
   get mode(): AgentMode {
     return this._mode;
@@ -131,7 +131,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       this._title = text.trim().replace(/\s+/g, " ").slice(0, 60);
     }
     // A session may have been created lazily on first prompt (degraded has none).
-    this._agentSessionId = this.controller.currentSessionId ?? this._agentSessionId;
+    this._internalSessionId = this.controller.currentSessionId ?? this._internalSessionId;
     await this.persist();
     return res;
   }
@@ -148,7 +148,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   async setMode(mode: AgentMode): Promise<ConnectResult> {
     const result = await this.controller.setMode(mode);
     this._mode = this.controller.currentMode;
-    this._agentSessionId = result.sessionId || null; // the agent session changes on swap
+    this._internalSessionId = result.sessionId || null; // the ACP/harness session changes on swap
     await this.persist();
     return result;
   }
@@ -192,8 +192,8 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
     if (this.sessions) return this.sessions.listMerged(agentEntries, this.adapterId);
     return agentEntries.map((e) => ({
-      id: e.sessionId,
       agentSessionId: e.sessionId,
+      internalSessionId: e.sessionId,
       adapter: this.adapterId,
       cwd: e.cwd,
       title: e.title,
@@ -205,8 +205,8 @@ export class AgentSession implements AgentClient, Bridgeable {
   private async persist(): Promise<void> {
     if (!this.sessions) return;
     await this.sessions.record({
-      id: this.id,
-      agentSessionId: this._agentSessionId,
+      agentSessionId: this.agentSessionId,
+      internalSessionId: this._internalSessionId,
       adapter: this.adapterId,
       mode: this._mode,
       cwd: this._cwd,

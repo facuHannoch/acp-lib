@@ -11,16 +11,16 @@ import type { ConnectResult } from "../src/client.ts";
 class MemorySessionStore implements SessionStore {
   readonly records = new Map<string, SessionRecord>();
   async save(record: SessionRecord): Promise<void> {
-    this.records.set(record.id, structuredClone(record));
+    this.records.set(record.agentSessionId, structuredClone(record));
   }
-  async get(id: string): Promise<SessionRecord | null> {
-    return this.records.get(id) ?? null;
+  async get(agentSessionId: string): Promise<SessionRecord | null> {
+    return this.records.get(agentSessionId) ?? null;
   }
   async list(): Promise<SessionRecord[]> {
     return [...this.records.values()];
   }
-  async delete(id: string): Promise<void> {
-    this.records.delete(id);
+  async delete(agentSessionId: string): Promise<void> {
+    this.records.delete(agentSessionId);
   }
 }
 
@@ -62,7 +62,7 @@ function makeClient(opts: FakeClientOptions = {}): InteractiveAgentClient {
     // Bridgeable
     bridge: async () => {},
     // identity / state
-    id: "catalog-id",
+    agentSessionId: "agent-session-id",
     currentAdapterId: "codex",
     currentMode: "normal",
     currentSessionId: "sess-1",
@@ -202,8 +202,8 @@ describe("createAgentCommands · sessions + catalog", () => {
     const { out } = await run(client, "new", [], { sessionManager: manager, adapterId: "codex" });
 
     expect(out).toContain("fresh");
-    const record = await store.get("catalog-id");
-    expect(record?.agentSessionId).toBe("fresh");
+    const record = await store.get("agent-session-id");
+    expect(record?.internalSessionId).toBe("fresh");
     expect(record?.adapter).toBe("codex");
   });
 
@@ -230,7 +230,7 @@ describe("createAgentCommands · sessions + catalog", () => {
 
     const { out } = await run(client, "resume", ["abc"], { sessionManager: manager, adapterId: "codex" });
     expect(out).toContain("resumed session abc");
-    expect((await store.get("catalog-id"))?.agentSessionId).toBe("abc");
+    expect((await store.get("agent-session-id"))?.internalSessionId).toBe("abc");
   });
 
   test("/fork refuses when unsupported", async () => {
@@ -257,8 +257,8 @@ describe("createAgentCommands · sessions + catalog", () => {
   test("/sessions shows merged view with source tags when a catalog is wired", async () => {
     const store = new MemorySessionStore();
     await store.save({
-      id: "cat-only",
-      agentSessionId: null,
+      agentSessionId: "cat-only",
+      internalSessionId: null,
       adapter: "codex",
       mode: "normal",
       title: "catalog only",
