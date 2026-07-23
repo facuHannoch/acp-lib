@@ -11,6 +11,7 @@
 
 import { AgentController, type AgentMode } from "./controller.ts";
 import type * as schema from "@agentclientprotocol/sdk";
+import { join } from "node:path";
 import type { Adapter } from "./adapters.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
@@ -54,6 +55,8 @@ export interface AgentSessionConfig {
   sessions?: SessionManager;
   /** Absolute path to an append-only transcript file. Omitted means no transcript. */
   transcriptPath?: string;
+  /** Directory for a library-named transcript file: `<agentSessionId>.jsonl`. */
+  transcriptDir?: string;
   /** Our stable AgentSession id. Minted if omitted; pass a record's agentSessionId to resume. */
   agentSessionId?: string;
   /** ACP/harness session to load on start (resume an existing provider conversation). */
@@ -79,10 +82,17 @@ export class AgentSession implements AgentClient, Bridgeable {
   private _title?: string;
 
   private constructor(config: AgentSessionConfig) {
+    if (config.transcriptPath && config.transcriptDir) {
+      throw new Error("AgentSessionConfig cannot specify both transcriptPath and transcriptDir");
+    }
     this.agentSessionId = config.agentSessionId ?? crypto.randomUUID();
     this.adapterId = config.adapterId;
     this.sessions = config.sessions;
-    this.transcriptPath = config.transcriptPath;
+    this.transcriptPath =
+      config.transcriptPath ??
+      (config.transcriptDir
+        ? join(config.transcriptDir, `${encodeURIComponent(this.agentSessionId)}.jsonl`)
+        : undefined);
     this.log = config.logger ?? noopLogger;
     this._mode = config.mode ?? "normal";
     this._cwd = config.cwd;
