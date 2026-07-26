@@ -37,23 +37,109 @@ export interface PromptResult {
   usage: Usage | null;
 }
 
+/** A raw content block: "text" | "image" | "audio" | "resource" | "resource_link". */
+export interface ContentBlock {
+  type: string;
+  [key: string]: unknown;
+}
+
+/** A file location a tool call touched — enables "follow along" UIs. */
+export interface ToolLocation {
+  path: string;
+  line?: number;
+}
+
+/** How a terminal command ended. Both fields are null while it is still running. */
+export interface TerminalExitStatus {
+  exitCode: number | null;
+  signal: string | null;
+}
+
+/**
+ * Output produced by a tool call. Mirrors the protocol's three shapes; anything we
+ * don't recognize is preserved verbatim as `other` rather than dropped.
+ *
+ * `terminal` content names a live terminal the AGENT is driving through us. We resolve
+ * its output before handing the event to the caller, so `output`/`exitStatus` are
+ * populated whenever the terminal is still ours to read.
+ */
+export type ToolContent =
+  | { type: "content"; content: ContentBlock; /** Convenience: set for text blocks. */ text?: string }
+  | { type: "diff"; path: string; oldText: string | null; newText: string }
+  | {
+      type: "terminal";
+      terminalId: string;
+      output?: string;
+      truncated?: boolean;
+      exitStatus?: TerminalExitStatus | null;
+    }
+  | { type: "other"; raw: unknown };
+
+/**
+ * A tool call the agent started. The protocol lets an agent announce a call before it
+ * knows much about it, so most fields fill in later via `tool_update`.
+ */
+export interface ToolActivity {
+  kind: "tool";
+  toolCallId: string;
+  title?: string;
+  toolKind: string;
+  status: string;
+  rawInput?: unknown;
+  rawOutput?: unknown;
+  content?: ToolContent[];
+  locations?: ToolLocation[];
+}
+
+/**
+ * A change to an in-flight tool call. Only the fields the agent actually changed are
+ * present — an absent field means "unchanged", NOT "empty". `content` and `locations`
+ * REPLACE the previous collections when present.
+ */
+export interface ToolUpdateActivity {
+  kind: "tool_update";
+  toolCallId: string;
+  status?: string;
+  title?: string;
+  toolKind?: string;
+  rawInput?: unknown;
+  rawOutput?: unknown;
+  content?: ToolContent[];
+  locations?: ToolLocation[];
+}
+
 /**
  * Real-time, observation-only events during a turn — separate from the response text.
  * Fire-and-forget; the caller renders them if it wants. (Permission requests are NOT
  * here — they are blocking and handled via PromptHandlers.onPermissionRequest.)
+ *
+ * Every session update except `agent_message_chunk` (which is the response text) maps to
+ * one of these; unrecognized kinds arrive as `unknown` with the raw payload attached, so
+ * a newer agent can never silently starve the caller of activity.
  */
 export type ActivityEvent =
   | { kind: "thinking"; text: string }
-  | {
-      kind: "tool";
-      toolCallId: string;
-      title?: string;
-      toolKind: string;
-      status: string;
-      rawInput?: unknown;
-    }
-  | { kind: "tool_update"; toolCallId: string; status: string }
-  | { kind: "plan"; entries: PlanEntry[] };
+  /** The agent echoed back user input — session/load replay, or a queued message. */
+  | { kind: "user_message"; text: string }
+  | ToolActivity
+  | ToolUpdateActivity
+  /** Full plan snapshot: replaces any previous plan. */
+  | { kind: "plan"; entries: PlanEntry[] }
+  /** Per-plan update (experimental protocol extension). */
+  | { kind: "plan_update"; planId: string; plan: unknown }
+  | { kind: "plan_removed"; planId: string }
+  /** The agent's slash commands changed; also reflected in `client.agentCommands`. */
+  | { kind: "commands"; commands: AgentCommand[] }
+  /** The agent switched session mode. */
+  | { kind: "mode"; modeId: string }
+  /** Context-window accounting. `used`/`size` are tokens. */
+  | { kind: "usage"; used: number; size: number; cost?: unknown }
+  /** The agent retitled the session or bumped its activity timestamp. */
+  | { kind: "session_info"; title?: string | null; updatedAt?: string | null }
+  /** Config options changed; also reflected in `client.configOptions`. */
+  | { kind: "config"; configOptions: unknown }
+  /** A session update we don't model. The raw notification payload is attached. */
+  | { kind: "unknown"; sessionUpdate: string; raw: unknown };
 
 export interface PlanEntry {
   content: string;
@@ -81,6 +167,11 @@ export interface PromptHandlers {
   onChunk?: (text: string) => void;
   /** Observation-only activity (thinking, tool calls, plan). */
   onActivity?: (event: ActivityEvent) => void;
+  /**
+   * Every raw `session/update` notification for this turn, before any mapping. The
+   * escape hatch for protocol fields the ActivityEvent contract doesn't model yet.
+   */
+  onUpdate?: (notification: unknown) => void;
   /**
    * Blocking permission request. Must return an outcome. If omitted, the client
    * falls back to its configured `defaultPermission`.

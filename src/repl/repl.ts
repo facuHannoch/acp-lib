@@ -304,9 +304,19 @@ function activityMarker(e: ActivityEvent): string | null {
       return "thinking";
     case "tool":
       return `tool:${e.title ?? e.toolKind}`;
+    case "tool_update":
+      // Only the terminal states are worth a marker; progress ticks are too noisy.
+      return e.status === "completed" || e.status === "failed"
+        ? `tool:${e.title ?? e.toolCallId} ${e.status}`
+        : null;
     case "plan":
+    case "plan_update":
       return "plan";
+    case "mode":
+      return `mode:${e.modeId}`;
+    case "usage":
+      return `context:${e.used}/${e.size}`;
     default:
-      return null; // tool_update is too noisy to surface
+      return null; // bookkeeping updates — nothing for a one-line marker to say
   }
 }

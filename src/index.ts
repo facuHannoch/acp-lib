@@ -41,12 +41,23 @@ export type {
 export { ADAPTERS, buildSpawnCommand } from "./adapters.ts";
 export type { Adapter, AdapterPreset } from "./adapters.ts";
 
+export { buildClientCapabilities, CLIENT_CAPABILITIES } from "./capabilities.ts";
 export type {
   Capabilities,
   ClientCapabilities,
+  ClientCapabilityConfig,
   AgentCapabilities,
   AuthMethod,
 } from "./capabilities.ts";
+
+export { TerminalRegistry, UnknownTerminalError } from "./terminals.ts";
+export type {
+  CreateTerminalParams,
+  TerminalOutput,
+  TerminalRegistryOptions,
+} from "./terminals.ts";
+
+export { extractChunkText, toActivityEvent } from "./updates.ts";
 export type {
   ConfigOption,
   ConfigOptions,
@@ -87,6 +98,12 @@ export type {
   PromptResult,
   PromptHandlers,
   ActivityEvent,
+  ToolActivity,
+  ToolUpdateActivity,
+  ToolContent,
+  ToolLocation,
+  TerminalExitStatus,
+  ContentBlock,
   PlanEntry,
   PermissionRequest,
   PermissionOutcome,

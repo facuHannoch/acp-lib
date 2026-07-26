@@ -12,15 +12,20 @@ import { buildSpawnCommand } from "./adapters.ts";
 import { AcpTransport } from "./transport/acp-transport.ts";
 import {
   parseCapabilities,
-  CLIENT_CAPABILITIES,
+  buildClientCapabilities,
   type Capabilities,
+  type ClientCapabilities,
+  type ClientCapabilityConfig,
 } from "./capabilities.ts";
 import { parseConfigOptions, type ConfigOptions } from "./config-options.ts";
-import { extractChunkText, toActivityEvent } from "./updates.ts";
+import { extractChunkText, toActivityEvent, toAgentCommands } from "./updates.ts";
+import { TerminalRegistry } from "./terminals.ts";
+import { readTextFile, writeTextFile } from "./fs-access.ts";
 import { NotConnectedError } from "./errors.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import type { AgentClient, InterruptOptions } from "./agent-client.ts";
 import type {
+  ActivityEvent,
   PromptResult,
   PromptHandlers,
   PermissionRequest,
@@ -28,6 +33,7 @@ import type {
   Attachment,
   SessionListPage,
   AgentCommand,
+  ToolContent,
 } from "./types.ts";
 
 export interface AcpClientConfig {
@@ -45,6 +51,12 @@ export interface AcpClientConfig {
   defaultPermission?: "approve" | "cancel";
   /** Identification sent in initialize. */
   clientInfo?: { name: string; title?: string; version?: string };
+  /**
+   * What we let the agent do through us: filesystem reads/writes and terminals. All
+   * enabled by default. Disabling one stops us advertising it, so the agent falls back
+   * to its own implementation instead of calling a method we won't answer.
+   */
+  clientCapabilities?: ClientCapabilityConfig;
   /** Diagnostics sink. Omit for a silent library. */
   logger?: Logger;
 }
@@ -114,10 +126,15 @@ export class AcpClient implements AgentClient {
   // caller can show it — auth output almost always arrives on stderr, not the protocol.
   private authStderrSink: ((line: string) => void) | null = null;
 
+  // Terminals the AGENT is driving through us. Null when the capability is disabled.
+  private terminals: TerminalRegistry | null = null;
+
   private readonly log: Logger;
+  private readonly clientCapabilities: ClientCapabilities;
 
   constructor(private config: AcpClientConfig) {
     this.log = config.logger ?? noopLogger;
+    this.clientCapabilities = buildClientCapabilities(config.clientCapabilities);
   }
 
   // --- introspection (populated by connect) -------------------------------------
@@ -164,6 +181,15 @@ export class AcpClient implements AgentClient {
 
     this.log.info("connect", { command, dockerExec: isDockerExec });
 
+    const caps = this.clientCapabilities;
+    this.terminals = caps.terminal
+      ? new TerminalRegistry({
+          cwd: this.config.cwd,
+          env: this.config.env,
+          logger: this.config.logger,
+        })
+      : null;
+
     const transport = new AcpTransport({
       command,
       // docker exec resolves paths inside the container's namespace — don't pass a host cwd.
@@ -171,6 +197,16 @@ export class AcpClient implements AgentClient {
       env: this.config.env,
       onUpdate: (n) => this.handleUpdate(n),
       onPermissionRequest: (p) => this.handlePermission(p),
+      onReadTextFile: caps.fs.readTextFile
+        ? async (p) => ({ content: await readTextFile(p) })
+        : undefined,
+      onWriteTextFile: caps.fs.writeTextFile
+        ? async (p) => {
+            await writeTextFile(p);
+            return {};
+          }
+        : undefined,
+      terminals: this.terminals ? this.terminalHandlers(this.terminals) : undefined,
       onStderr: (line) => {
         this.log.debug("agent_stderr", { line });
         this.authStderrSink?.(line);
@@ -187,7 +223,7 @@ export class AcpClient implements AgentClient {
     const init = await transport.raceExit(
       transport.initialize({
         protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: CLIENT_CAPABILITIES as unknown as schema.ClientCapabilities,
+        clientCapabilities: caps as unknown as schema.ClientCapabilities,
         clientInfo: this.config.clientInfo ?? {
           name: "acp-lib",
           title: "ACP Lib",
@@ -195,7 +231,7 @@ export class AcpClient implements AgentClient {
         },
       } as schema.InitializeRequest),
     );
-    this._capabilities = parseCapabilities(init);
+    this._capabilities = parseCapabilities(init, caps);
     this.log.info("initialized", {
       agent: this._capabilities.agentInfo?.name,
       protocolVersion: this._capabilities.protocolVersion,
@@ -422,8 +458,27 @@ export class AcpClient implements AgentClient {
     const t = this.transport;
     this.transport = null;
     this._sessionId = null;
+    this.terminals?.releaseAll();
+    this.terminals = null;
     if (t) await t.stop();
     this.log.info("stopped", {});
+  }
+
+  /** Adapt the registry to the transport's async handler shape. */
+  private terminalHandlers(registry: TerminalRegistry) {
+    return {
+      create: async (p: schema.CreateTerminalRequest) => ({
+        terminalId: registry.create(p as Parameters<TerminalRegistry["create"]>[0]),
+      }),
+      output: async (p: schema.TerminalOutputRequest) => {
+        const { output, truncated, exitStatus } = registry.output(p.terminalId);
+        return { output, truncated, exitStatus };
+      },
+      waitForExit: async (p: schema.WaitForTerminalExitRequest) =>
+        registry.waitForExit(p.terminalId),
+      kill: async (p: schema.KillTerminalRequest) => registry.kill(p.terminalId),
+      release: async (p: schema.ReleaseTerminalRequest) => registry.release(p.terminalId),
+    };
   }
 
   // --- prompting ----------------------------------------------------------------
@@ -544,9 +599,7 @@ export class AcpClient implements AgentClient {
       this._configOptions = parseConfigOptions((update as Record<string, any>).configOptions);
     }
     if (kind === "available_commands_update") {
-      this._agentCommands = ((update as Record<string, any>).availableCommands ?? []).map(
-        (c: Record<string, any>) => ({ name: c.name, description: c.description ?? "" }),
-      );
+      this._agentCommands = toAgentCommands((update as Record<string, any>).availableCommands);
     }
 
     if (!this.active) {
@@ -557,13 +610,37 @@ export class AcpClient implements AgentClient {
     }
     if (notification.sessionId && notification.sessionId !== this._sessionId) return;
 
+    this.active.handlers?.onUpdate?.(notification);
+
     const text = extractChunkText(update);
     if (text) {
       this.active.chunks.push(text);
       this.active.handlers?.onChunk?.(text);
     }
     const activity = toActivityEvent(update);
-    if (activity) this.active.handlers?.onActivity?.(activity);
+    if (activity) this.active.handlers?.onActivity?.(this.enrich(activity));
+  }
+
+  /**
+   * Fill in terminal output on tool-call content. The agent only sends a `terminalId`
+   * (it's polling us for the bytes), so without this the caller sees a tool call it
+   * cannot render — the terminal is OURS, and only we can read it.
+   */
+  private enrich(event: ActivityEvent): ActivityEvent {
+    if (event.kind !== "tool" && event.kind !== "tool_update") return event;
+    const registry = this.terminals;
+    if (!registry || !event.content?.some((c) => c.type === "terminal")) return event;
+
+    const content = event.content.map((c): ToolContent => {
+      if (c.type !== "terminal" || !registry.has(c.terminalId)) return c;
+      try {
+        const snapshot = registry.output(c.terminalId);
+        return { ...c, ...snapshot };
+      } catch {
+        return c; // released between the check and the read
+      }
+    });
+    return { ...event, content };
   }
 
   private async handlePermission(

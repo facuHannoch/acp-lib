@@ -9,7 +9,7 @@
 // Adapter lives HERE, not on the controller: switching adapter = a new AgentSession (the
 // agent dies on switch). Mode-swap (degrade/upgrade) stays within one AgentSession.
 
-import { AgentController, type AgentMode } from "./controller.ts";
+import { AgentController, type AgentControllerConfig, type AgentMode } from "./controller.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
 import type { Adapter } from "./adapters.ts";
@@ -50,6 +50,8 @@ export interface AgentSessionConfig {
   mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
   clientInfo?: { name: string; title?: string; version?: string };
+  /** What we let the agent do through us (terminals, filesystem). All on by default. */
+  clientCapabilities?: AgentControllerConfig["clientCapabilities"];
   logger?: Logger;
   /** Optional catalog. When present, the session records itself here. */
   sessions?: SessionManager;
@@ -57,6 +59,12 @@ export interface AgentSessionConfig {
   transcriptPath?: string;
   /** Directory for a library-named transcript file: `<agentSessionId>.jsonl`. */
   transcriptDir?: string;
+  /**
+   * Also record activity (thinking, tool calls and their output, plans) as `t:"activity"`
+   * lines. Off by default — it makes transcripts much larger, and `readTranscript()`
+   * ignores them either way; read them with `readTranscriptLines()`.
+   */
+  transcriptActivity?: boolean;
   /** Our stable AgentSession id. Minted if omitted; pass a record's agentSessionId to resume. */
   agentSessionId?: string;
   /** ACP/harness session to load on start (resume an existing provider conversation). */
@@ -72,6 +80,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly controller: AgentController;
   private readonly sessions?: SessionManager;
   private readonly transcriptPath?: string;
+  private readonly transcriptActivity: boolean;
   private readonly log: Logger;
   private transcriptWrite: Promise<void> = Promise.resolve();
   private queue: QueueItem[] = [];
@@ -93,6 +102,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       (config.transcriptDir
         ? join(config.transcriptDir, `${encodeURIComponent(this.agentSessionId)}.jsonl`)
         : undefined);
+    this.transcriptActivity = config.transcriptActivity === true;
     this.log = config.logger ?? noopLogger;
     this._mode = config.mode ?? "normal";
     this._cwd = config.cwd;
@@ -109,6 +119,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       mcpServers: config.mcpServers,
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,
+      clientCapabilities: config.clientCapabilities,
       logger: config.logger,
     });
   }
@@ -200,6 +211,15 @@ export class AgentSession implements AgentClient, Bridgeable {
       onChunk: (chunk) => {
         chunks.push(chunk);
         item.handlers?.onChunk?.(chunk);
+      },
+      onActivity: (event) => {
+        if (this.transcriptActivity) {
+          // Fire and forget: activity is observational, and appendTranscript already
+          // serializes writes — blocking the agent's update stream on disk would stall
+          // streaming for the caller.
+          void this.appendTranscript({ v: 1, t: "activity", ts: Date.now(), ...event });
+        }
+        item.handlers?.onActivity?.(event);
       },
     };
 

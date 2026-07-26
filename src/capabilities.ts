@@ -56,14 +56,41 @@ export interface AgentCapabilities {
   };
 }
 
-/** The client capabilities we always advertise. Kept in one place. */
+/**
+ * What the caller lets us do on the agent's behalf. Advertising a capability is a
+ * PROMISE to implement it — an agent that believes we have terminals will route every
+ * shell command through `terminal/create` and render nothing if we can't answer. So
+ * these flags gate the handlers and the advertisement together.
+ */
+export interface ClientCapabilityConfig {
+  fs?: { readTextFile?: boolean; writeTextFile?: boolean };
+  terminal?: boolean;
+}
+
+/** The client capabilities we advertise by default — everything we implement. */
 export const CLIENT_CAPABILITIES: ClientCapabilities = {
   fs: { readTextFile: true, writeTextFile: true },
   terminal: true,
 };
 
+/** Resolve caller overrides against the defaults. Omitted = default (enabled). */
+export function buildClientCapabilities(
+  config?: ClientCapabilityConfig,
+): ClientCapabilities {
+  return {
+    fs: {
+      readTextFile: config?.fs?.readTextFile ?? CLIENT_CAPABILITIES.fs.readTextFile,
+      writeTextFile: config?.fs?.writeTextFile ?? CLIENT_CAPABILITIES.fs.writeTextFile,
+    },
+    terminal: config?.terminal ?? CLIENT_CAPABILITIES.terminal,
+  };
+}
+
 /** Parse a raw InitializeResponse into our nested Capabilities model. */
-export function parseCapabilities(init: schema.InitializeResponse): Capabilities {
+export function parseCapabilities(
+  init: schema.InitializeResponse,
+  client: ClientCapabilities = CLIENT_CAPABILITIES,
+): Capabilities {
   const a = (init.agentCapabilities ?? {}) as Record<string, any>;
   const prompt = a.promptCapabilities ?? {};
   const mcp = a.mcpCapabilities ?? {};
@@ -73,7 +100,7 @@ export function parseCapabilities(init: schema.InitializeResponse): Capabilities
   return {
     protocolVersion: init.protocolVersion,
     agentInfo,
-    client: CLIENT_CAPABILITIES,
+    client,
     agent: {
       loadSession: a.loadSession === true,
       promptCapabilities: {

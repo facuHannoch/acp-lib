@@ -38,6 +38,8 @@ export interface AgentControllerConfig {
   mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
   clientInfo?: AcpClientConfig["clientInfo"];
+  /** What we let the agent do through us (terminals, filesystem). All on by default. */
+  clientCapabilities?: AcpClientConfig["clientCapabilities"];
   logger?: Logger;
 }
 
@@ -369,6 +371,7 @@ export class AgentController implements AgentClient {
       sessionId,
       defaultPermission: this.config.defaultPermission,
       clientInfo: this.config.clientInfo,
+      clientCapabilities: this.config.clientCapabilities,
       logger: this.config.logger,
     });
     // connect() is fatal (no connection = nothing to do). startSession() is NOT: an

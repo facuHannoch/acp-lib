@@ -95,13 +95,61 @@ await agent.stop();
 ```ts
 await agent.prompt("Find and fix the failing test.", {
   onChunk: (text) => process.stdout.write(text),         // response text as it streams
-  onActivity: (event) => console.error("·", event.type), // thinking / tool calls / plan
+  onActivity: (event) => render(event),                  // thinking / tool calls / plan / …
+  onUpdate: (raw) => log(raw),                           // every raw session/update, unmapped
   onPermissionRequest: (req) => ({ outcome: "selected", optionId: req.options[0].optionId }),
 });
 ```
 
 If you omit `onPermissionRequest`, the client falls back to the controller's
 `defaultPermission` (`"approve"` / `"cancel"`).
+
+Every session update except the response text reaches `onActivity`, discriminated by
+`kind`: `thinking`, `user_message`, `tool`, `tool_update`, `plan`, `plan_update`,
+`plan_removed`, `commands`, `mode`, `usage`, `session_info`, `config`, and `unknown` for
+anything the protocol adds later (the raw payload rides along on `raw`).
+
+**Tool calls arrive incrementally, and you must merge them.** Agents announce a call
+before they know much about it and fill it in afterwards, so the command, the diff and
+the output usually land on a later `tool_update` — not on the initial `tool`:
+
+```ts
+const calls = new Map<string, ToolActivity>();
+
+onActivity: (event) => {
+  if (event.kind === "tool") calls.set(event.toolCallId, event);
+  if (event.kind === "tool_update") {
+    // Only the fields the agent CHANGED are present. Absent means unchanged —
+    // spreading is exactly right, and `content`/`locations` replace wholesale.
+    const call = calls.get(event.toolCallId);
+    if (call) calls.set(event.toolCallId, { ...call, ...event, kind: "tool" });
+  }
+}
+```
+
+`event.content` is where the output lives — `{type:"content"}` (with `text` pre-extracted
+for text blocks), `{type:"diff"}`, `{type:"terminal"}`, or `{type:"other"}` with the raw
+payload for shapes we don't model.
+
+### Terminals and filesystem access
+
+The client advertises the `terminal` and `fs` client capabilities and implements them:
+agents route their shell commands through `terminal/create` and read/write files through
+`fs/read_text_file` and `fs/write_text_file` on us. Terminal tool calls carry only a
+`terminalId` over the wire; the client resolves the live output before handing you the
+event, so `content` entries of type `terminal` come with `output`, `truncated` and
+`exitStatus` filled in.
+
+Commands run as child processes of your app, with your environment. To opt out — letting
+the agent fall back to its own implementation — turn the capability off, which also stops
+us advertising it:
+
+```ts
+new AcpClient({
+  adapter: ADAPTERS.codex,
+  clientCapabilities: { terminal: false, fs: { writeTextFile: false } },
+});
+```
 
 ### Durable sessions with a catalog
 
@@ -141,8 +189,10 @@ chat transcript that can be read later without starting the agent. `transcriptPa
 exact file path chosen by the caller; `transcriptDir` lets the library write
 `<agentSessionId>.jsonl` inside that directory. Supplying both is a config error.
 
-The transcript stores user messages and final assistant replies only; tool calls,
-thinking, plans, and raw protocol replay remain in the harness session.
+The transcript stores user messages and final assistant replies. Set
+`transcriptActivity: true` to also record tool calls, thinking and plans as `t:"activity"`
+lines — `readTranscript()` still returns messages only, so read those back with
+`readTranscriptLines()`.
 
 ```ts
 import { AgentSession, ADAPTERS, readTranscript } from "@qlairoslabs/acp-client";

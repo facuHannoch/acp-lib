@@ -7,6 +7,17 @@ import * as acp from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 import { ProcessCrashError } from "../errors.ts";
 
+/** The five `terminal/*` methods a client that advertises `terminal: true` must serve. */
+export interface TerminalHandlers {
+  create(params: schema.CreateTerminalRequest): Promise<schema.CreateTerminalResponse>;
+  output(params: schema.TerminalOutputRequest): Promise<schema.TerminalOutputResponse>;
+  waitForExit(
+    params: schema.WaitForTerminalExitRequest,
+  ): Promise<schema.WaitForTerminalExitResponse>;
+  kill(params: schema.KillTerminalRequest): Promise<void>;
+  release(params: schema.ReleaseTerminalRequest): Promise<void>;
+}
+
 export interface AcpTransportOptions {
   /** Full command to spawn: [...execPrefix, ...adapter.command]. */
   command: string[];
@@ -14,7 +25,11 @@ export interface AcpTransportOptions {
   cwd?: string;
   env?: Record<string, string>;
 
-  /** A session/update notification arrived. */
+  /**
+   * A session/update notification arrived, exactly as the agent sent it — the transport
+   * takes these off the wire itself rather than going through the SDK. See
+   * `interceptUpdates` for why.
+   */
   onUpdate?: (notification: schema.SessionNotification) => void;
   /** The agent asked for permission (blocking — must resolve to an outcome). */
   onPermissionRequest?: (
@@ -28,6 +43,12 @@ export interface AcpTransportOptions {
   onWriteTextFile?: (
     params: schema.WriteTextFileRequest,
   ) => Promise<schema.WriteTextFileResponse>;
+  /**
+   * `terminal/*`. Supplied together or not at all — the SDK answers an unimplemented
+   * terminal method with a null result rather than an error, which reads to the agent
+   * as a malformed response, so a partial implementation is worse than none.
+   */
+  terminals?: TerminalHandlers;
   /** A line of stderr from the process. */
   onStderr?: (line: string) => void;
   /** The process exited unexpectedly (not via stop()). */
@@ -59,7 +80,9 @@ export class AcpTransport {
 
     const stream = acp.ndJsonStream(
       stdinTransform.writable,
-      proc.stdout as ReadableStream<Uint8Array>,
+      interceptUpdates(proc.stdout as ReadableStream<Uint8Array>, (m) =>
+        this.opts.onUpdate?.(m.params as schema.SessionNotification),
+      ),
     );
     const handler = new ClientHandler(this.opts);
     this.connection = new acp.ClientSideConnection(() => handler, stream);
@@ -162,10 +185,90 @@ export class AcpTransport {
   }
 }
 
-/** Routes SDK client-side callbacks to the transport's option handlers. */
-class ClientHandler implements acp.Client {
-  constructor(private opts: AcpTransportOptions) {}
+/**
+ * Split the agent's ndjson into `session/update` (ours) and everything else (the SDK's).
+ *
+ * Updates are handed to `onMessage` verbatim and NOT forwarded downstream: the SDK
+ * validates them against a zod copy of the update union, so anything newer than the
+ * installed SDK is rejected outright with a console.error, and unmodelled fields on
+ * known updates are stripped. Notifications carry no response, so intercepting them is
+ * invisible to the agent — every request/response line still flows through untouched.
+ */
+function interceptUpdates(
+  source: ReadableStream<Uint8Array>,
+  onMessage: (message: Record<string, any>) => void,
+): ReadableStream<Uint8Array> {
+  const dec = new TextDecoder();
+  const enc = new TextEncoder();
+  let buf = "";
 
+  // Re-emits the ORIGINAL line text — reserializing risks mangling numbers we never read.
+  const handle = (line: string, controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (!line) return;
+    let message: Record<string, any> | undefined;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      /* not JSON — let the SDK report it */
+    }
+    if (message?.method === "session/update" && message.id === undefined) {
+      onMessage(message);
+      return;
+    }
+    controller.enqueue(enc.encode(`${line}\n`));
+  };
+
+  return source.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        buf += dec.decode(chunk, { stream: true });
+        let i: number;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          handle(line, controller);
+        }
+      },
+      flush(controller) {
+        buf += dec.decode();
+        handle(buf.trim(), controller);
+        buf = "";
+      },
+    }),
+  );
+}
+
+/**
+ * Routes SDK client-side callbacks to the transport's option handlers.
+ *
+ * Methods are attached in the CONSTRUCTOR rather than declared, because the SDK probes
+ * `client.method?.()` — a declared-but-stubbed method makes us look capable while
+ * answering with nonsense. Absent is the honest signal for "not implemented".
+ */
+class ClientHandler implements acp.Client {
+  createTerminal?: acp.Client["createTerminal"];
+  terminalOutput?: acp.Client["terminalOutput"];
+  waitForTerminalExit?: acp.Client["waitForTerminalExit"];
+  killTerminal?: acp.Client["killTerminal"];
+  releaseTerminal?: acp.Client["releaseTerminal"];
+  readTextFile?: acp.Client["readTextFile"];
+  writeTextFile?: acp.Client["writeTextFile"];
+
+  constructor(private opts: AcpTransportOptions) {
+    if (opts.onReadTextFile) this.readTextFile = (p) => opts.onReadTextFile!(p);
+    if (opts.onWriteTextFile) this.writeTextFile = (p) => opts.onWriteTextFile!(p);
+
+    const terminals = opts.terminals;
+    if (terminals) {
+      this.createTerminal = (p) => terminals.create(p);
+      this.terminalOutput = (p) => terminals.output(p);
+      this.waitForTerminalExit = (p) => terminals.waitForExit(p);
+      this.killTerminal = (p) => terminals.kill(p);
+      this.releaseTerminal = (p) => terminals.release(p);
+    }
+  }
+
+  /** Safety net: `interceptUpdates` normally takes these before the SDK sees them. */
   async sessionUpdate(params: schema.SessionNotification): Promise<void> {
     this.opts.onUpdate?.(params);
   }
@@ -175,19 +278,5 @@ class ClientHandler implements acp.Client {
   ): Promise<schema.RequestPermissionResponse> {
     if (this.opts.onPermissionRequest) return this.opts.onPermissionRequest(params);
     return { outcome: { outcome: "cancelled" } };
-  }
-
-  async readTextFile(
-    params: schema.ReadTextFileRequest,
-  ): Promise<schema.ReadTextFileResponse> {
-    if (this.opts.onReadTextFile) return this.opts.onReadTextFile(params);
-    return { content: "" };
-  }
-
-  async writeTextFile(
-    params: schema.WriteTextFileRequest,
-  ): Promise<schema.WriteTextFileResponse> {
-    if (this.opts.onWriteTextFile) return this.opts.onWriteTextFile(params);
-    return {};
   }
 }
