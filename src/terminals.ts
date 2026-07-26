@@ -50,6 +50,8 @@ interface Entry {
   id: string;
   proc: ReturnType<typeof Bun.spawn>;
   chunks: Chunk[];
+  /** Memoized `chunks.join("")`; nulled on every write. */
+  joined: string | null;
   totalBytes: number;
   limit: number | null;
   truncated: boolean;
@@ -96,6 +98,7 @@ export class TerminalRegistry {
       id,
       proc,
       chunks: [],
+      joined: null,
       totalBytes: 0,
       limit: params.outputByteLimit ?? null,
       truncated: false,
@@ -130,11 +133,19 @@ export class TerminalRegistry {
     return id;
   }
 
-  /** Current output and exit status. Returns immediately — never waits for the command. */
+  /**
+   * Current output and exit status. Fully synchronous — it reads a buffer the background
+   * pumps fill, and never waits on the process. That matters beyond convenience: this is
+   * called while dispatching session updates, so an await here would let one wedged
+   * command stall every subsequent update on the connection.
+   */
   output(terminalId: string): TerminalOutput {
     const entry = this.require(terminalId);
+    // Joining is O(buffered bytes) and a live terminal is read once per update that
+    // references it, so hold the result until the next write.
+    entry.joined ??= entry.chunks.map((c) => c.text).join("");
     return {
-      output: entry.chunks.map((c) => c.text).join(""),
+      output: entry.joined,
       truncated: entry.truncated,
       exitStatus: entry.exitStatus,
     };
@@ -207,6 +218,7 @@ export class TerminalRegistry {
 
   private append(entry: Entry, text: string): void {
     if (!text) return;
+    entry.joined = null;
     entry.chunks.push({ text, bytes: Buffer.byteLength(text, "utf8") });
     entry.totalBytes += Buffer.byteLength(text, "utf8");
     this.trim(entry);

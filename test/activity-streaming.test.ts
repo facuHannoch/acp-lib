@@ -81,6 +81,37 @@ describe("activity streaming", () => {
     expect(usage).toMatchObject({ kind: "usage", used: 120, size: 200000 });
   });
 
+  test("a permission request never overtakes its tool call", async () => {
+    // Updates are intercepted off the wire while requests go through the SDK, so the two
+    // paths can skew. This pins the DIRECTION: an update can only ever arrive earlier
+    // relative to a request, never later — so the chip always exists before the prompt
+    // for it does. (Agents normally block on the permission anyway; this batches all
+    // three lines into one write to force the worst case.)
+    const client = new AcpClient({
+      adapter: { command: ["bun", resolve(import.meta.dir, "fixtures/permission-order-agent.ts")] },
+      cwd: import.meta.dir,
+    });
+    await client.connect();
+    await client.startSession();
+
+    const seen: string[] = [];
+    try {
+      await client.prompt("go", {
+        onActivity: (e) => seen.push(e.kind === "tool" ? "tool" : `${e.kind}:${e.status}`),
+        onPermissionRequest: (req) => {
+          seen.push("permission");
+          return { outcome: "selected", optionId: req.options[0]!.optionId };
+        },
+      });
+    } finally {
+      await client.stop();
+    }
+
+    expect(seen.indexOf("tool")).toBe(0);
+    expect(seen.indexOf("tool")).toBeLessThan(seen.indexOf("permission"));
+    expect(seen).toContain("tool_update:completed");
+  });
+
   test("onUpdate sees every raw notification of the turn", async () => {
     const { raw } = await runTurn();
     const kinds = raw.map((n) => (n as any).update?.sessionUpdate);

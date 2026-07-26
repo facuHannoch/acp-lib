@@ -27,6 +27,7 @@ const session = await AgentSession.create({
   cwd: process.cwd(),
   transcriptPath,
   defaultPermission: "cancel",
+  transcriptActivity: true,
   logger: createConsoleLogger({ minLevel: "info" }),
 });
 

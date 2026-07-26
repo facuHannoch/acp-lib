@@ -120,7 +120,9 @@ onActivity: (event) => {
   if (event.kind === "tool") calls.set(event.toolCallId, event);
   if (event.kind === "tool_update") {
     // Only the fields the agent CHANGED are present. Absent means unchanged —
-    // spreading is exactly right, and `content`/`locations` replace wholesale.
+    // spreading is exactly right. `content` and `locations` REPLACE wholesale
+    // (the schema says "replace the content collection"): never concatenate them,
+    // agents that stream a growing tool input resend the whole value each time.
     const call = calls.get(event.toolCallId);
     if (call) calls.set(event.toolCallId, { ...call, ...event, kind: "tool" });
   }

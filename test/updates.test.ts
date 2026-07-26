@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { extractChunkText, toActivityEvent } from "../src/updates.ts";
+import type { ToolActivity, ToolUpdateActivity } from "../src/types.ts";
 
 describe("session updates", () => {
   test("extracts only agent text chunks", () => {
@@ -118,6 +119,71 @@ describe("session updates", () => {
 
     expect(event).toEqual({ kind: "tool_update", toolCallId: "tool-1" });
     expect(Object.keys(event!).sort()).toEqual(["kind", "toolCallId"]);
+  });
+
+  test("the documented merge preserves fields an update omits", () => {
+    // The README tells callers to merge with a spread. That is only safe if absent
+    // fields are ABSENT KEYS — a present `undefined` would clobber the good value.
+    const call = toActivityEvent({
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      title: "Bash",
+      kind: "execute",
+      status: "pending",
+      rawInput: { command: "ls" },
+      content: [{ type: "content", content: { type: "text", text: "partial" } }],
+    } as never) as ToolActivity;
+
+    // A bare update, and one that spells "unchanged" as an explicit null.
+    for (const update of [
+      { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" },
+      {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "t1",
+        status: "completed",
+        title: null,
+        kind: null,
+        rawInput: null,
+        content: null,
+        locations: null,
+      },
+    ]) {
+      const delta = toActivityEvent(update as never) as ToolUpdateActivity;
+      const merged = { ...call, ...delta, kind: "tool" as const };
+
+      expect(merged.status).toBe("completed");
+      expect(merged.title).toBe("Bash");
+      expect(merged.toolKind).toBe("execute");
+      expect(merged.rawInput).toEqual({ command: "ls" });
+      expect(merged.content).toEqual(call.content);
+    }
+  });
+
+  test("content REPLACES rather than accumulates", () => {
+    // The schema is explicit for ToolCallUpdate.content: "Replace the content
+    // collection." So a caller must overwrite, never concatenate — agents that stream a
+    // growing tool input resend the whole thing each time (Kimi: `{"command":"` →
+    // `{"command":"ls"}`). Concatenating would produce garbage; this pins the contract.
+    const first = toActivityEvent({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "t1",
+      content: [{ type: "content", content: { type: "text", text: '{"command":"' } }],
+    } as never) as ToolUpdateActivity;
+
+    const second = toActivityEvent({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "t1",
+      content: [{ type: "content", content: { type: "text", text: '{"command":"ls"}' } }],
+    } as never) as ToolUpdateActivity;
+
+    expect(second.content).toHaveLength(1);
+    expect(second.content?.[0]).toMatchObject({ text: '{"command":"ls"}' });
+
+    // Merging the second over the first yields the second's content verbatim — no
+    // trace of the earlier fragment.
+    const merged = { ...first, ...second };
+    expect(merged.content).toEqual(second.content);
+    expect(merged.content).not.toEqual(first.content);
   });
 
   test("maps the rest of the update union", () => {
