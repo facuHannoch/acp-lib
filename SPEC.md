@@ -98,7 +98,7 @@ Auth methods, capabilities, and features are NOT on the adapter; they come from
 ```ts
 const ADAPTERS = {
   kimi:   { command: ["kimi", "acp"] },
-  claude: { command: ["claude-agent-acp"] },
+  claude: { command: ["claude-code-acp"] },
   codex:  { command: ["codex-acp"] },
 }
 ```

@@ -58,7 +58,7 @@ const client = new AcpClient({
 ```js
 const ADAPTERS = {
   kimi:   { command: ["kimi", "acp"] },
-  claude: { command: ["claude-agent-acp"] },
+  claude: { command: ["claude-code-acp"] },
   codex:  { command: ["codex-acp"] },
 }
 
