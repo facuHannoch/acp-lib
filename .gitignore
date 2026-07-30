@@ -4,3 +4,6 @@ node_modules/
 .agents/.secrets/
 .agents/.workspaces/
 .agents/.artifacts/
+
+# Raw protocol dumps: full file contents and command output, hundreds of KB per run.
+*.wire.jsonl
