@@ -29,7 +29,7 @@ export type {
 } from "./controller.ts";
 
 export { AgentSession } from "./agent-session.ts";
-export type { AgentSessionConfig } from "./agent-session.ts";
+export type { AgentSessionConfig, TranscriptActivityConfig } from "./agent-session.ts";
 
 export type {
   AgentClient,
@@ -91,8 +91,10 @@ export type { MergedSession, SessionInput } from "./session-manager.ts";
 
 export {
   appendTranscriptLine,
+  readActivityRecords,
   readTranscript,
   readTranscriptLines,
+  toActivityRecord,
 } from "./transcript.ts";
 export type {
   ReadTranscriptOptions,

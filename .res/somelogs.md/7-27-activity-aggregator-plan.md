@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-27
 **Repo:** `@qlairoslabs/acp-client` (acp-lib)
-**Status:** step 1 implemented — **rev 6**
+**Status:** steps 1–4 implemented — **rev 7**
 **Requested by:** agents-core, via `.res/somelogs.md/7-27.md` (transcript activity format spec)
 
 ---
@@ -135,6 +135,35 @@ distinct from the replay contract.
 **Doc drift:** "one `ActivityAggregator` per turn per stream" corrected to **per stream**,
 and the "keeps a reference to the current turn's aggregator and clears it after flush"
 prose — rev 2–4's per-turn construction — removed.
+
+### 0.6 What changed in rev 7 — implementation
+
+Steps 2, 3 and 4 landed. 121 tests green, typecheck clean. Five departures from the plan,
+four of them found by writing the code:
+
+| # | Departure | Why |
+|---|---|---|
+| 1 | **`rawInput: {}` no longer counts as knowing the input.** New `hasInput()` treats `{}`, `[]`, `""`, `null` as the PLACEHOLDER they are. | The terminal fixture announces with `rawInput: {}` (so does Kimi). The old rule marked input as seen on the announce, so the `input` checkpoint never fired — and R4 lost the command for any turn that died after learning it. Only visible once a real agent ran through the writer. A fold-semantics change, so §3.4's row is now "first `rawInput` **with content in it**". |
+| 2 | **`flush()`'s records also go to `onRecord`**, as `{current: null, delta: null, emitted}`. | §3.5's snippet only wrote them to the transcript. A live subscriber watching a turn that was cancelled or crashed would then never learn the call ended, and its tool chip would spin forever. `wireFrames()` handles the shape unchanged. |
+| 3 | **`plan_update`/`plan_removed` added to the default `kinds`.** | §3.6 listed only `plan`. An agent that uses the per-plan extension instead of full snapshots would have had its plans dropped by default — neither "client state" nor "duplicates `t:"msg"`", which are the stated grounds for exclusion. |
+| 4 | **Shipped `toActivityRecord(line)` and `readActivityRecords(path, opts)`** in `transcript.ts`. | Not in §5's change list. Un-flattening a line into an `AggregatedRecord` needs a cast and two non-null assertions; every reader would write it, which is the "subtly wrong copies in the wild" failure R5 exists to prevent. `toActivityRecord` returns **null** for a 0.2.x raw line, which is §8.1's self-discriminating argument made executable. |
+| 5 | **`client.ts` untouched.** §5 predicted ~5 lines to pass `onRecord` through. | Unnecessary: `AgentSession` invokes `onRecord` from inside its own `onActivity` wrapper, so nothing below it needs to know the handler exists. |
+
+Also worth recording:
+
+- **Version: 0.3.0**, which is confirmed **unpublished** (registry latest is still `0.2.0`).
+  So the settled format ships in 0.3.0 and "pre-format" lines mean 0.2.x, not pre-0.4.
+- **`beginTurn()` does not silently drop leftovers.** `startTurn()` returns anything an
+  earlier turn failed to flush; the session logs `activity_turn_not_flushed` and writes
+  them anyway. Unreachable while both exit paths flush, which is what the ordering test
+  pins — but losing records to a bug in our own flushing is worse than a warning.
+- **`maxBytes` also caps the nested block.** `ToolContent` of type `content` carries the
+  text twice — our convenience `text` and the raw `content.text` — so capping only the
+  first saves nothing. Diff `oldText`/`newText` are capped for the same reason.
+- **The tail read cannot split a character by construction**, not just by care: the leading
+  fragment of each block is carried forward as raw BYTES and never decoded in the iteration
+  that read it. The boundary test proves it exercises the case by asserting a continuation
+  byte sits at the read offset, shimming the file a byte at a time until one does.
 
 ---
 
@@ -360,7 +389,7 @@ of it, and a persisted fold so trivial it cannot drift.**
 | `tool` | create/replace entry | `announced` |
 | `tool_update`, no entry yet | create from update; default `status:"in_progress"`, `toolKind:"other"` | `announced` |
 | `tool_update` | merge: spread; `content`/`locations` **replace** wholesale | — |
-| …first `rawInput` | | `input` (if `checkpointOnInput`) |
+| …first `rawInput` **with content in it** (`{}`/`[]`/`""` are placeholders — see §0.6) | | `input` (if `checkpointOnInput`) |
 | …status `completed` \| `failed` | | `settled`, once per id |
 | `thinking` | append to open block; return `delta` | — |
 | `messageId` changes, or any non-thinking event | close open block | `settled` **before** the triggering event's records |
@@ -447,7 +476,8 @@ groups turns by it.
 
 ```ts
 transcriptActivity?: boolean | {
-  kinds?: Array<ActivityEvent["kind"]>;  // default: tool, thinking, plan, usage, mode, unknown
+  // default: tool, thinking, plan, plan_update, plan_removed, usage, mode, unknown
+  kinds?: Array<ActivityEvent["kind"]>;
   checkpointOnInput?: boolean;           // default true
   rawOutput?: boolean;                   // default false
   maxBytes?: number;                     // per string field; default off
@@ -458,7 +488,9 @@ transcriptActivity?: boolean | {
 
 Defaults: `mode` **in** (rare; explains otherwise-inexplicable behaviour changes);
 `commands`/`config`/`session_info`/`user_message` **out** (client state, or duplicates
-`t:"msg"`); `unknown` **in** (rare by construction; matches "nothing is dropped").
+`t:"msg"`); `unknown` **in** (rare by construction; matches "nothing is dropped");
+`plan_update`/`plan_removed` **in** (§0.6 #3 — an agent that uses the per-plan extension
+instead of full snapshots would otherwise lose its plans).
 
 **`rawOutput` off** because it is usually a byte-identical duplicate of `content`.
 Measured on live Kimi: one event carried `rawOutput: "LICENSE\nREADME.md\n…"` *and*
@@ -547,26 +579,28 @@ gaining `types`/`import` beside the source path. Nothing in `src/` moves. A test
 
 | File | Status | Approx. |
 |---|---|---|
-| `src/activity.ts` | **new** — aggregator + `foldRecords`, zero runtime deps | ~230 |
+| `src/activity.ts` | **new** — aggregator + `foldRecords`, zero runtime deps | ~250 |
 | `src/types.ts` | changed — `onRecord` on `PromptHandlers`; `messageId?` on thinking/user_message | ~15 |
 | `src/updates.ts` | changed — carry `messageId` through from `ContentChunk` | ~5 |
-| `src/agent-session.ts` | changed — one aggregator per turn, config object, flush on both exits | ~35 |
-| `src/transcript.ts` | changed — `recordId`/`reason`, backwards tail read | ~80 |
-| `src/client.ts` | changed — pass `onRecord` through (no fold; `AgentSession` owns it) | ~5 |
-| `src/index.ts`, `package.json` | changed — exports + `./activity` subpath | ~12 |
-| `test/activity.test.ts` | **new** | ~200 |
-| `test/transcript.test.ts` | changed — tail read, pagination | ~70 |
+| `src/agent-session.ts` | changed — THE aggregator, turn boundaries, config object, writer, flush on both exits, `activitySnapshot()` | ~180 |
+| `src/transcript.ts` | changed — file contract, `recordId`/`reason`, `toActivityRecord`, `readActivityRecords`, backwards tail read | ~150 |
+| `src/index.ts`, `package.json` | changed — exports + `./activity` subpath | ~16 |
+| `README.md` | changed — `onRecord` replaces the hand-rolled merge snippet; wire/snapshot/read sections | ~90 |
+| `test/activity.test.ts` | **new** | ~230 |
+| `test/agent-session-transcript.test.ts` | changed — settled format, config axes, `onRecord`, snapshot, turn scoping, ordering | ~180 |
+| `test/transcript.test.ts` | changed — tail read, pagination, chunk-boundary character, torn line | ~90 |
 
-**Untouched:** `AcpClient`'s protocol path, `AgentController`, `transport/acp-transport.ts`,
-`SessionManager`, `terminals.ts`, `fs-access.ts`, the `onActivity` raw-delta contract, and
-`readTranscript`'s message projection.
+**Untouched:** `AcpClient`'s protocol path (§0.6 #5 — no `onRecord` passthrough needed),
+`AgentController`, `transport/acp-transport.ts`, `SessionManager`, `terminals.ts`,
+`fs-access.ts`, the `onActivity` raw-delta contract, and `readTranscript`'s message
+projection.
 
-**Status:** `src/activity.ts`, the `messageId` passthrough, `test/activity.test.ts` (24
-tests) and the `./activity` subpath are **done** — step 1 complete, 103 tests green,
-typecheck clean. Nothing else in the table is started.
+**Status: done.** Steps 1–4 complete, **121 tests green**, typecheck clean. See §0.6 for
+the five departures from this table.
 
-Step 2 must pass a per-turn `idPrefix` when constructing the aggregator (§0.3), stable
-across process restarts.
+`idPrefix` (§0.3) is `AgentSession.mintTurnId()` — `Date.now().toString(36)` plus four
+random characters, deliberately not a counter, so a resumed session cannot collide with
+ids already on disk.
 
 ### 5.1 agents-core deliverables
 
@@ -582,9 +616,13 @@ Not library work, listed so the seam is owned end to end:
    types-only plus the two functions if it folds client-side, or receives already-folded
    records if the hub folds.
 4. **Config passthrough** — `transcript_activity` in `agents.yaml` → `AgentSessionConfig`.
+   The boolean form still works; the object form (`kinds`/`checkpointOnInput`/`rawOutput`/
+   `maxBytes`) is where `maxBytes` should be set for a mobile client.
 5. **Read route** — `GET /api/agents/:id/chat-history` moves from `readTranscript` to
    `readTranscriptLines`, interleaving `msg` + `activity` by `ts`, passing `before`/`limit`
-   through.
+   through. Use **`toActivityRecord(line)`** per activity line (§0.6 #4) — it returns null
+   for a 0.2.x raw line, so no cast and no assumption about which format wrote the file.
+   `readActivityRecords(path, opts)` is the one-call version when messages aren't needed.
 
 ---
 
@@ -636,13 +674,17 @@ a reader does, and is the executable form of the file contract.
 
 ## 7. Sequencing
 
-1. ~~**`src/activity.ts` + folds + tests + subpath export.**~~ **DONE.** No behaviour
-   change yet — `transcriptActivity` still writes raw lines. Awaiting the consumer's
-   case-by-case diff against `chatStore.reduce` before step 2.
-2. **`onRecord` handler + writer rewire + config object.** Unblocks agents-core.
-3. **Bounded tail read.**
-4. **Document the file contract** in `transcript.ts`: fold last-wins on `recordId`; `msg`
-   delimits turns; a missing trailing assistant `msg` means the turn died in flight.
+1. ~~**`src/activity.ts` + folds + tests + subpath export.**~~ **DONE.**
+2. ~~**`onRecord` handler + writer rewire + config object.**~~ **DONE.** agents-core is
+   unblocked; the remaining work is theirs (§5.1).
+3. ~~**Bounded tail read.**~~ **DONE** — `readTranscriptLines(path, {limit})` reads
+   backwards in 64 KB chunks.
+4. ~~**Document the file contract** in `transcript.ts`.~~ **DONE** — module header, plus
+   `toActivityRecord`/`readActivityRecords` so the contract is executable rather than only
+   written down (§0.6 #4).
+
+Left for later, deliberately: a prefix-diff delta for terminal output (§3.1), and a build
+step for the package (§10).
 
 ---
 
@@ -675,8 +717,9 @@ Consequences:
 - The working tree's `package.json` said `0.2.0`, a version already on the registry.
   **Corrected to `0.3.0`** (done).
 - `0.3.0` carries today's breaking `ActivityEvent` changes (`tool_update.status` optional,
-  deltas instead of defaults). The aggregator work lands in `0.3.0` or `0.4.0` depending
-  on sequencing.
+  deltas instead of defaults). **The aggregator work lands in `0.3.0` too** — rechecked at
+  implementation time, `0.3.0` is still unpublished (registry latest `0.2.0`), so the
+  settled transcript format and the `ActivityEvent` changes ship together as one break.
 - Changing what `transcriptActivity` writes **is** a breaking change to a published
   feature. It is acceptable because the flag defaults **off**, and the only known consumer
   confirms it was never enabled — *not* because it was unreleased. Anyone reasoning from
@@ -694,7 +737,7 @@ Consequences:
 | Risk | Mitigation |
 |---|---|
 | A consumer builds a second aggregator anyway | Documented invariant; `onRecord` makes it unnecessary; `recordId` divergence is the symptom to watch |
-| Aggregator state leaks across turns | One instance per turn; `reset()`; flush on success **and** error paths |
+| Aggregator state leaks across turns | `startTurn()` clears per-turn state; flush on success **and** error paths, and a leftover is logged rather than dropped (§0.6) |
 | Thinking boundary heuristic wrong for some agent | Isolated, named; `messageId` preferred when available; changing it bumps `v` |
 | A reader concatenates `content` instead of replacing | Schema says "Replace the content collection"; pinned by an existing test; stated in the contract |
 | Runtime import sneaks into `activity.ts` | Import test |

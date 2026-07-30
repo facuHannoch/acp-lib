@@ -124,6 +124,22 @@ export interface ActivityAggregatorOptions {
 /** Statuses ACP defines as terminal. */
 const TERMINAL_STATUS = ["completed", "failed"];
 
+/**
+ * Whether a tool call actually knows its arguments yet.
+ *
+ * Agents announce a call with a PLACEHOLDER — `rawInput: {}` is common (both Kimi and the
+ * test fixture do it) — and fill the real arguments in later. Treating the placeholder as
+ * "input known" would skip the input checkpoint, so a turn that died between learning the
+ * command and finishing it would persist a record naming the tool but not what it ran.
+ */
+function hasInput(rawInput: unknown): boolean {
+  if (rawInput === undefined || rawInput === null) return false;
+  if (typeof rawInput === "string") return rawInput.length > 0;
+  if (Array.isArray(rawInput)) return rawInput.length > 0;
+  if (typeof rawInput === "object") return Object.keys(rawInput).length > 0;
+  return true;
+}
+
 export class ActivityAggregator {
   private checkpointOnInput: boolean;
   private idPrefix: string;
@@ -310,7 +326,7 @@ export class ActivityAggregator {
   ): ApplyResult {
     const call: ToolActivity = { ...event };
     this.calls.set(call.toolCallId, call);
-    if (call.rawInput !== undefined) this.inputSeen.add(call.toolCallId);
+    if (hasInput(call.rawInput)) this.inputSeen.add(call.toolCallId);
 
     const terminal = TERMINAL_STATUS.indexOf(call.status) >= 0;
     if (terminal) this.settled.add(call.toolCallId);
@@ -349,11 +365,7 @@ export class ActivityAggregator {
       reason = "settled";
     } else if (!previous) {
       reason = "announced"; // an update for a call we never saw announced
-    } else if (
-      this.checkpointOnInput &&
-      !this.inputSeen.has(id) &&
-      merged.rawInput !== undefined
-    ) {
+    } else if (this.checkpointOnInput && !this.inputSeen.has(id) && hasInput(merged.rawInput)) {
       this.inputSeen.add(id);
       reason = "input";
     }

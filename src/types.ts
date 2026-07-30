@@ -2,6 +2,8 @@
 // These are what every client (AcpClient, and later PtyClient) produces, so callers
 // render against these regardless of which mode is active. See SPEC.md.
 
+import type { ApplyResult } from "./activity.ts";
+
 /**
  * A slash command the AGENT itself exposes (e.g. codex /model, kimi /sessions), learned
  * from the `available_commands_update` notification. Invoke with the `//name` passthrough.
@@ -165,8 +167,18 @@ export interface PermissionRequest {
 export interface PromptHandlers {
   /** Partial response text (agent_message_chunk) as it streams. */
   onChunk?: (text: string) => void;
-  /** Observation-only activity (thinking, tool calls, plan). */
+  /** Observation-only activity (thinking, tool calls, plan) as RAW protocol deltas. */
   onActivity?: (event: ActivityEvent) => void;
+  /**
+   * The same activity, FOLDED into full-state records — see `src/activity.ts`. Prefer this
+   * over hand-rolling the merge: `current` is always complete state, `emitted` is the
+   * subset worth persisting, `delta` is the incremental piece for thinking.
+   *
+   * Only fires when prompting through `AgentSession`, which runs exactly one aggregator
+   * per session. A caller holding a raw `AcpClient` owns its own aggregator and calls
+   * `apply()` from `onActivity`.
+   */
+  onRecord?: (result: ApplyResult) => void;
   /**
    * Every raw `session/update` notification for this turn, before any mapping. The
    * escape hatch for protocol fields the ActivityEvent contract doesn't model yet.

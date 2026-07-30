@@ -109,29 +109,80 @@ Every session update except the response text reaches `onActivity`, discriminate
 `plan_removed`, `commands`, `mode`, `usage`, `session_info`, `config`, and `unknown` for
 anything the protocol adds later (the raw payload rides along on `raw`).
 
-**Tool calls arrive incrementally, and you must merge them.** Agents announce a call
-before they know much about it and fill it in afterwards, so the command, the diff and
-the output usually land on a later `tool_update` — not on the initial `tool`:
+**Tool calls arrive incrementally.** Agents announce a call before they know much about it
+and fill it in afterwards, so the command, the diff and the output usually land on a later
+`tool_update` — not on the initial `tool`. `event.content` is where the output lives —
+`{type:"content"}` (with `text` pre-extracted for text blocks), `{type:"diff"}`,
+`{type:"terminal"}`, or `{type:"other"}` with the raw payload for shapes we don't model.
+
+You don't have to merge that yourself. `onRecord` hands you **full state** on every event:
 
 ```ts
-const calls = new Map<string, ToolActivity>();
-
-onActivity: (event) => {
-  if (event.kind === "tool") calls.set(event.toolCallId, event);
-  if (event.kind === "tool_update") {
-    // Only the fields the agent CHANGED are present. Absent means unchanged —
-    // spreading is exactly right. `content` and `locations` REPLACE wholesale
-    // (the schema says "replace the content collection"): never concatenate them,
-    // agents that stream a growing tool input resend the whole value each time.
-    const call = calls.get(event.toolCallId);
-    if (call) calls.set(event.toolCallId, { ...call, ...event, kind: "tool" });
-  }
-}
+await session.prompt("Find and fix the failing test.", {
+  onRecord: ({ current, emitted }) => {
+    if (current) render(current.recordId, current.event);  // always complete, never a delta
+    // `emitted` is the subset worth keeping: announced → input → settled
+  },
+});
 ```
 
-`event.content` is where the output lives — `{type:"content"}` (with `text` pre-extracted
-for text blocks), `{type:"diff"}`, `{type:"terminal"}`, or `{type:"other"}` with the raw
-payload for shapes we don't model.
+`onRecord` is `AgentSession`-only, because the session runs exactly **one** aggregator for
+its lifetime and that is what makes `recordId`s stable. Holding a raw `AcpClient`? Build one
+aggregator per stream and feed it from `onActivity`:
+
+```ts
+import { ActivityAggregator } from "@qlairoslabs/acp-client/activity";
+
+const agg = new ActivityAggregator();
+onActivity: (event) => render(agg.apply(event));
+```
+
+If you do merge deltas by hand, two rules matter: absent fields mean *unchanged* (so
+spreading is right), and `content`/`locations` **replace** the previous collection wholesale
+— the schema says "replace the content collection", and agents that stream a growing tool
+input resend the whole value each time.
+
+### Sending activity over a wire
+
+For a hub forwarding activity to a browser, send `wireFrames(result)` and fold with
+`foldFrame`. Thinking crosses as an incremental `delta` (re-sending the accumulated block
+per chunk is quadratic — ~4 KB of text becomes ~800 KB over 400 chunks); everything else
+crosses as a full record.
+
+```ts
+// hub
+import { wireFrames } from "@qlairoslabs/acp-client/activity";
+onRecord: (result) => {
+  for (const frame of wireFrames(result)) socket.send(JSON.stringify(frame));
+}
+
+// browser
+import { foldFrame, type AggregatedRecord } from "@qlairoslabs/acp-client/activity";
+let records = new Map<string, AggregatedRecord>();
+socket.onmessage = (e) => { records = foldFrame(records, JSON.parse(e.data)); };
+```
+
+Send `wireFrames(result)`, not `delta ?? current`: when a thinking block ends because a tool
+call started, that close rides in `emitted` while `current` is the tool — a client sending
+only the latter never learns the block finished and renders a bubble that never stops.
+
+The `/activity` subpath has **no runtime imports**, so it is safe to pull into a browser
+bundle. Type-only imports work anywhere today; importing the *functions* needs a bundler
+that accepts `.ts` sources (Vite does; Next needs `transpilePackages`) since this package
+ships source rather than a build.
+
+A client that connects **mid-turn** needs the turn so far, or a thinking delta arrives with
+nothing to append to. Subscribe first, then replay, then filter by `seq`:
+
+```ts
+const snap = session.activitySnapshot();     // { active, seq, records }
+records = foldRecords(snap.records);
+// then drop any streamed frame with frame.seq <= snap.seq — already reflected above
+```
+
+`seq` never restarts, so that threshold stays valid across turns. Between turns
+`activitySnapshot()` reports `active: false` with no records: a settled turn belongs to the
+transcript, not to a replay.
 
 ### Terminals and filesystem access
 
@@ -195,6 +246,43 @@ The transcript stores user messages and final assistant replies. Set
 `transcriptActivity: true` to also record tool calls, thinking and plans as `t:"activity"`
 lines — `readTranscript()` still returns messages only, so read those back with
 `readTranscriptLines()`.
+
+Activity lines are **settled records, not raw deltas**: the session folds the stream and
+writes checkpoints, so one shell command costs ~3 lines instead of ~15. Each line is
+self-contained, and `reason` (`announced` / `input` / `settled` / `flushed` / `snapshot`)
+says where in its lifecycle it was. Read them back folded — the same `recordId` last-wins
+rule the live stream uses, so a reload shows what was watched:
+
+```ts
+import { readActivityRecords, readTranscriptLines, toActivityRecord } from "@qlairoslabs/acp-client";
+
+// just the activity state
+const records = await readActivityRecords(path, { limit: 200 });  // newest 200, read backwards
+for (const { recordId, reason, event } of records.values()) render(recordId, event);
+
+// or interleave activity with messages on one timeline
+for (const line of await readTranscriptLines(path, { limit: 200 })) {
+  if (line.t === "msg") renderMessage(line);
+  else if (line.t === "activity") renderActivity(toActivityRecord(line));
+}
+```
+
+With a `limit`, the file is read **backwards from the end in chunks**, so the cost is
+proportional to the page you asked for, not to the transcript's size. Page back by passing
+the oldest returned `ts` as the next `before`.
+
+`t:"msg"` delimits a turn (`msg(user) → activity… → msg(assistant)`), so a trailing user
+message with no reply after it means that turn died in flight — and `reason:"flushed"`
+records what it was doing when it did. Pass an object instead of `true` to tune it:
+
+```ts
+transcriptActivity: {
+  kinds: ["tool", "thinking"],   // default also includes plan, usage, mode, unknown
+  checkpointOnInput: true,       // default: an extra line once a call knows its arguments
+  rawOutput: false,              // default: it duplicates `content` byte for byte
+  maxBytes: 64_000,              // default off: cap each string field, mark the line
+}
+```
 
 ```ts
 import { AgentSession, ADAPTERS, readTranscript } from "@qlairoslabs/acp-client";
@@ -268,6 +356,7 @@ opt-in subpaths.
 | Import | Contents |
 |---|---|
 | `@qlairoslabs/acp-client` | Core: `AgentController`, `AgentSession`, `AcpClient`, `SessionManager`, `FileSessionStore`, `ADAPTERS`, loggers, types. |
+| `@qlairoslabs/acp-client/activity` | `ActivityAggregator`, `foldRecords`, `foldFrame`, `wireFrames` — the delta→full-state fold. No runtime imports, so it is safe to compile for a browser. |
 | `@qlairoslabs/acp-client/repl` | `runRepl`, `createAgentCommands` (interactive layer). |
 | `@qlairoslabs/acp-client/degraded` | The PTY fallback transport (`Bun.spawn({ terminal })` + xterm parsing). |
 | `@qlairoslabs/acp-client/parser` | Terminal-output parsers used by degraded mode. |

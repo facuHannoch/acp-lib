@@ -73,6 +73,23 @@ describe("ActivityAggregator — tool calls", () => {
     expect(pairs).toEqual(["t1:announced", "t1:settled"]);
   });
 
+  test("a placeholder rawInput does not count as knowing the input", () => {
+    // Agents announce with `rawInput: {}` and fill the real arguments in later (Kimi does,
+    // and so does the terminal fixture). Counting the placeholder would skip the
+    // checkpoint, so a turn dying after the command was known would not record it.
+    const { pairs } = run([
+      tool({ rawInput: {} }),
+      update({ rawInput: { command: "ls" } }),
+      update({ status: "completed" }),
+    ]);
+    expect(pairs).toEqual(["t1:announced", "t1:input", "t1:settled"]);
+  });
+
+  test("an empty string or array rawInput is a placeholder too", () => {
+    expect(run([tool({ rawInput: "" }), update({ rawInput: "ls" })]).pairs).toContain("t1:input");
+    expect(run([tool({ rawInput: [] }), update({ rawInput: ["ls"] })]).pairs).toContain("t1:input");
+  });
+
   test("settling and learning input in the same update emits only settled", () => {
     // The settled record is a superset — an extra `input` line would be pure duplication.
     const { pairs } = run([tool(), update({ rawInput: { command: "ls" }, status: "completed" })]);
