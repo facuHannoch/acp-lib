@@ -88,6 +88,12 @@ Two findings from actual runs, both invisible without it:
   side. The log showed Kimi sent `"."`, `"C"`, `"url"` as separate chunks: our
   concatenation is byte-faithful, the missing space is the agent's.
 
+## What it found
+
+Beyond the two wire-log findings above, the transcripts here surfaced a reader bug: `limit`
+counted lines while `readTranscript` returns messages, so asking for 5 gave 1 of 2 messages.
+Fixed with `types` on `ReadTranscriptOptions`; these files are the fixtures that showed it.
+
 ## Files
 
 `chats/` holds one transcript per run (`kimi-http-<stamp>.jsonl`), kept as format fixtures

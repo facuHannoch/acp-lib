@@ -318,8 +318,21 @@ for (const line of await readTranscriptLines(path, { limit: 200 })) {
 ```
 
 With a `limit`, the file is read **backwards from the end in chunks**, so the cost is
-proportional to the page you asked for, not to the transcript's size. Page back by passing
-the oldest returned `ts` as the next `before`.
+proportional to the page you asked for rather than to the transcript's size. Page back by
+passing the oldest returned `ts` as the next `before`.
+
+`limit` counts what you actually asked for, not raw lines — `readTranscript(path, {limit: 20})`
+is twenty **messages**, however many activity lines sit between them. Narrow it yourself with
+`types`, which is what makes the budget meaningful for an interleaved view:
+
+```ts
+// twenty things a chat UI would draw, with meta/raw noise excluded from the count
+const page = await readTranscriptLines(path, { types: ["msg", "activity"], limit: 20 });
+```
+
+The trade-off: on an activity-heavy transcript, twenty messages may span thousands of
+activity lines, so the read walks back further to find them — in the worst case to the start
+of the file. Cap what gets written with `transcriptActivity: { maxBytes }` if that matters.
 
 `t:"msg"` delimits a turn (`msg(user) → activity… → msg(assistant)`), so a trailing user
 message with no reply after it means that turn died in flight — and `reason:"flushed"`

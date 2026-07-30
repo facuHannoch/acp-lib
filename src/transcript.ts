@@ -102,11 +102,26 @@ export interface ReadTranscriptOptions {
   /** Return entries with `ts` lower than this cursor. */
   before?: number;
   /**
-   * Return at most this many entries, keeping the NEWEST matching ones. With a limit the
-   * file is read backwards from the end in chunks, so cost is proportional to what you
-   * asked for rather than to the transcript's size.
+   * Return at most this many entries, keeping the NEWEST matching ones.
+   *
+   * `limit` counts entries that SURVIVE `types` — ask for twenty messages and you get
+   * twenty messages, however many activity lines sit between them.
+   *
+   * With a limit the file is read backwards from EOF in chunks, so the cost is
+   * proportional to the region that holds `limit` matches rather than to the whole
+   * transcript. Narrow `types` on an activity-heavy file widens that region: twenty
+   * messages may span thousands of activity lines, and in the worst case the read reaches
+   * the start of the file — which is what every read did before the tail read existed.
    */
   limit?: number;
+  /**
+   * Keep only these line types. Omit for everything recognized.
+   *
+   * This is what makes `limit` mean what you asked for. `["msg", "activity"]` is the
+   * interleaved chat view; `meta` and `raw` are noise a renderer would discard anyway,
+   * and excluding them here stops them consuming the budget.
+   */
+  types?: Array<TranscriptLine["t"]>;
 }
 
 /** Backwards read granularity. Big enough that a typical page needs one or two reads. */
@@ -125,12 +140,18 @@ export async function appendTranscriptLine(
   await appendFile(path, `${JSON.stringify(line)}\n`, "utf8");
 }
 
-/** Read the message projection of a transcript. Meta/activity/raw lines are skipped. */
+/**
+ * Read the message projection of a transcript. Meta/activity/raw lines are skipped, and
+ * `limit` counts MESSAGES — the entries this returns — not lines.
+ *
+ * `types` is forced: this function is the message projection, so honouring a caller's
+ * `types` would be incoherent.
+ */
 export async function readTranscript(
   path: string,
   options: ReadTranscriptOptions = {},
 ): Promise<TranscriptEntry[]> {
-  const lines = await readTranscriptLines(path, options);
+  const lines = await readTranscriptLines(path, { ...options, types: ["msg"] });
   return lines.filter(isTranscriptMessageLine);
 }
 
@@ -144,7 +165,10 @@ export async function readTranscriptLines(
   path: string,
   options: ReadTranscriptOptions = {},
 ): Promise<TranscriptLine[]> {
-  if (options.limit != null && options.limit >= 0) return readTail(path, options.limit, options.before);
+  const types = options.types ? new Set<string>(options.types) : undefined;
+  if (options.limit != null && options.limit >= 0) {
+    return readTail(path, options.limit, options.before, types);
+  }
 
   let content: string;
   try {
@@ -155,7 +179,7 @@ export async function readTranscriptLines(
 
   const out: TranscriptLine[] = [];
   for (const raw of content.split(/\r?\n/)) {
-    const line = parseTranscriptLine(raw, options.before);
+    const line = parseTranscriptLine(raw, options.before, types);
     if (line) out.push(line);
   }
   return out;
@@ -187,7 +211,10 @@ export async function readActivityRecords(
   options: ReadTranscriptOptions = {},
 ): Promise<Map<string, AggregatedRecord>> {
   const records: AggregatedRecord[] = [];
-  for (const line of await readTranscriptLines(path, options)) {
+  // `types` forced for the same reason as readTranscript: `limit` should count the thing
+  // this returns. Note the newest N activity lines always carry the LATEST state of what
+  // they cover, since a later line supersedes an earlier one with the same `recordId`.
+  for (const line of await readTranscriptLines(path, { ...options, types: ["activity"] })) {
     if (line.t !== "activity") continue;
     const record = toActivityRecord(line);
     if (record) records.push(record);
@@ -207,6 +234,7 @@ async function readTail(
   path: string,
   limit: number,
   before?: number,
+  types?: Set<string>,
 ): Promise<TranscriptLine[]> {
   if (limit === 0) return [];
 
@@ -245,7 +273,7 @@ async function readTail(
 
       const raws = decoder.decode(body).split(/\r?\n/);
       for (let i = raws.length - 1; i >= 0 && newestFirst.length < limit; i--) {
-        const line = parseTranscriptLine(raws[i]!, before);
+        const line = parseTranscriptLine(raws[i]!, before, types);
         if (line) newestFirst.push(line);
       }
     }
@@ -256,12 +284,23 @@ async function readTail(
   }
 }
 
-/** One line → a recognized entry, or null (blank, malformed, unknown, or filtered out). */
-function parseTranscriptLine(raw: string, before?: number): TranscriptLine | null {
+/**
+ * One line → a recognized entry, or null (blank, malformed, unknown, or filtered out).
+ *
+ * Every rejection happens HERE, which is what makes `limit` count survivors: both read
+ * paths tally what this returns, so narrowing `types` narrows what the budget is spent on
+ * without either loop knowing about it.
+ */
+function parseTranscriptLine(
+  raw: string,
+  before?: number,
+  types?: Set<string>,
+): TranscriptLine | null {
   if (!raw.trim()) return null;
   try {
     const line = JSON.parse(raw) as unknown;
     if (!isTranscriptLine(line)) return null;
+    if (types && !types.has(line.t)) return null;
     if (before != null && line.ts >= before) return null;
     return line;
   } catch {

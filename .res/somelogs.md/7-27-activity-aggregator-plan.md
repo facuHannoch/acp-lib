@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-27
 **Repo:** `@qlairoslabs/acp-client` (acp-lib)
-**Status:** steps 1–4 implemented — **rev 7**
+**Status:** steps 1–4 implemented — **rev 8**
 **Requested by:** agents-core, via `.res/somelogs.md/7-27.md` (transcript activity format spec)
 
 ---
@@ -166,6 +166,42 @@ Also worth recording:
   fragment of each block is carried forward as raw BYTES and never decoded in the iteration
   that read it. The boundary test proves it exercises the case by asserting a continuation
   byte sits at the read offset, shimming the file a byte at a time until one does.
+
+### 0.7 What changed in rev 8
+
+**`limit` counted lines while `readTranscript` returns messages.** Found by measuring the
+shipped code against a real transcript from `smoke-tests/test2`: `readTranscript(path,
+{limit: 5})` returned **1 of 2** messages, because the activity lines between them ate the
+budget. Pagination was worse — walking back three at a time recovered 1 of 12 messages and
+silently dropped the rest.
+
+This was a **bug against the function's own contract**, not a design change: `readTranscript`
+returns `TranscriptEntry[]`, `TranscriptEntry = TranscriptMessageLine`, and `limit` is
+documented as *"return at most this many entries"*. It predates this plan; §3.8 made it
+matter by putting activity lines into the file in the first place, and §5.1 item 5 would
+have shipped it straight into agents-core's chat-history route.
+
+Fixed with `types` on `ReadTranscriptOptions`, applied in `parseTranscriptLine` — the single
+place both read paths already funnel through, so `limit` counts survivors with no new loop:
+
+| Reader | forces | `limit` now means |
+|---|---|---|
+| `readTranscript` | `types: ["msg"]` | N messages |
+| `readActivityRecords` | `types: ["activity"]` | N activity lines |
+| `readTranscriptLines` | caller's `types` | N of whatever you asked for |
+
+`["msg","activity"]` is the interleaved chat view, and excluding `meta`/`raw` stops noise a
+renderer would discard from consuming the budget.
+
+**The cost, accepted rather than fixed:** the tail read's guarantee weakens from *cost ∝
+`limit`* to *cost ∝ the region holding `limit` matches* — worst case, the whole file. That
+is exactly what every read did before §3.8 added the tail read, so it can never be slower
+than 0.2.0. A `maxScanBytes` cap was considered and rejected: it reintroduces "asked for 20,
+got 6", trading a clear cost for an unclear result. `transcriptActivity: { maxBytes }` is the
+lever for the real pathology, which is line SIZE, not line count — but note it is write-side
+and default off, so it does nothing for a transcript already on disk.
+
+Tests were verified to fail without the fix (four do, including the pagination one).
 
 ---
 
