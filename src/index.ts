@@ -110,6 +110,9 @@ export type {
 
 export { ProcessCrashError, NotConnectedError, TimeoutError } from "./errors.ts";
 
+export { createWireLog } from "./wire-log.ts";
+export type { WireLogOptions } from "./wire-log.ts";
+
 export { noopLogger, createConsoleLogger } from "./logger.ts";
 export type { Logger, LogLevel, ConsoleLoggerOptions } from "./logger.ts";
 
@@ -131,4 +134,5 @@ export type {
   SessionListEntry,
   SessionListPage,
   AgentCommand,
+  WireEntry,
 } from "./types.ts";

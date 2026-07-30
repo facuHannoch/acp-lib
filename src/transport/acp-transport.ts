@@ -6,6 +6,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 import { ProcessCrashError } from "../errors.ts";
+import type { WireEntry } from "../types.ts";
 
 /** The five `terminal/*` methods a client that advertises `terminal: true` must serve. */
 export interface TerminalHandlers {
@@ -51,6 +52,12 @@ export interface AcpTransportOptions {
   terminals?: TerminalHandlers;
   /** A line of stderr from the process. */
   onStderr?: (line: string) => void;
+  /**
+   * Every raw line in either direction, for debugging. This is the ONLY view of the
+   * traffic that is complete: `onUpdate` sees notifications after mapping, the logger sees
+   * our interpretation, and the SDK sees neither the lines we intercept nor what it wrote.
+   */
+  onWire?: (entry: WireEntry) => void;
   /** The process exited unexpectedly (not via stop()). */
   onCrash?: (code: number | null) => void;
 }
@@ -59,6 +66,7 @@ export class AcpTransport {
   private proc: ReturnType<typeof Bun.spawn> | null = null;
   private connection: acp.ClientSideConnection | null = null;
   private stopping = false;
+  private tap?: (dir: WireEntry["dir"], line: string) => void;
 
   constructor(private opts: AcpTransportOptions) {}
 
@@ -78,12 +86,19 @@ export class AcpTransport {
     });
     this.proc = proc;
 
+    const wire = this.opts.onWire;
+    const tap = wire ? (dir: WireEntry["dir"], line: string) => wire({ dir, ts: Date.now(), line }) : undefined;
+
     const stream = acp.ndJsonStream(
-      stdinTransform.writable,
-      interceptUpdates(proc.stdout as ReadableStream<Uint8Array>, (m) =>
-        this.opts.onUpdate?.(m.params as schema.SessionNotification),
+      // Outgoing bytes are forwarded untouched; the tap only reads them on the way past.
+      tap ? tapOutgoing(stdinTransform.writable, (line) => tap("out", line)) : stdinTransform.writable,
+      interceptUpdates(
+        proc.stdout as ReadableStream<Uint8Array>,
+        (m) => this.opts.onUpdate?.(m.params as schema.SessionNotification),
+        tap && ((line) => tap("in", line)),
       ),
     );
+    this.tap = tap;
     const handler = new ClientHandler(this.opts);
     this.connection = new acp.ClientSideConnection(() => handler, stream);
 
@@ -177,12 +192,48 @@ export class AcpTransport {
       while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
-        if (line) this.opts.onStderr?.(line);
+        if (line) this.emitStderr(line);
       }
     }
     const tail = buf.trim();
-    if (tail) this.opts.onStderr?.(tail);
+    if (tail) this.emitStderr(tail);
   }
+
+  private emitStderr(line: string): void {
+    this.tap?.("err", line);
+    this.opts.onStderr?.(line);
+  }
+}
+
+/**
+ * Wrap a writable so every line written through it is reported, then forwarded BYTE FOR
+ * BYTE. The SDK owns serialization; this only looks.
+ */
+function tapOutgoing(
+  target: WritableStream<Uint8Array>,
+  onLine: (line: string) => void,
+): WritableStream<Uint8Array> {
+  const writer = target.getWriter();
+  const dec = new TextDecoder();
+  let buf = "";
+  return new WritableStream<Uint8Array>({
+    async write(chunk) {
+      buf += dec.decode(chunk, { stream: true });
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) onLine(line);
+      }
+      await writer.write(chunk);
+    },
+    async close() {
+      await writer.close();
+    },
+    async abort(reason) {
+      await writer.abort(reason);
+    },
+  });
 }
 
 /**
@@ -197,6 +248,7 @@ export class AcpTransport {
 function interceptUpdates(
   source: ReadableStream<Uint8Array>,
   onMessage: (message: Record<string, any>) => void,
+  onLine?: (line: string) => void,
 ): ReadableStream<Uint8Array> {
   const dec = new TextDecoder();
   const enc = new TextEncoder();
@@ -205,6 +257,8 @@ function interceptUpdates(
   // Re-emits the ORIGINAL line text — reserializing risks mangling numbers we never read.
   const handle = (line: string, controller: TransformStreamDefaultController<Uint8Array>) => {
     if (!line) return;
+    // Before the split, so the debug view includes what we take off the wire ourselves.
+    onLine?.(line);
     let message: Record<string, any> | undefined;
     try {
       message = JSON.parse(line);

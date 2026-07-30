@@ -39,8 +39,10 @@ Two facts established while checking:
   than invented. **But it is optional, and Kimi sends none** (verified live: absent on
   every `agent_thought_chunk` and `agent_message_chunk`). So it is an opportunistic
   refinement; the heuristic remains the common path.
-- **The commit labelled "Bump version to 0.1.5" actually set 0.2.0**, and
-  `transcriptActivity` is in `HEAD`. The flag is published, not unreleased.
+- **0.2.0 was set by `269fe10` ("Implement terminal handlers and enhance activity
+  streaming"), not by a commit that says so**, and `transcriptActivity` is in `HEAD`. The
+  flag is published, not unreleased. (Rev 2 blamed `29c2ac8` "Bump version to 0.1.5" for
+  this; that commit did exactly what it says, 0.1.2 → 0.1.5. Corrected in rev 7.)
 
 ### 0.2 What changed in rev 3
 
@@ -708,8 +710,8 @@ step for the package (§10).
 ### 8.1 Version plan — corrected
 
 Rev 1 asserted "0.2.0 is unpublished, so it costs nothing." **That was wrong.** The
-registry lists `0.1.0, 0.1.1, 0.1.2, 0.1.5, 0.2.0` with `latest: 0.2.0`; the commit
-labelled *"Bump version to 0.1.5"* in fact set `0.2.0`, and `transcriptActivity` is in
+registry lists `0.1.0, 0.1.1, 0.1.2, 0.1.5, 0.2.0` with `latest: 0.2.0`; `0.2.0` was set
+by `269fe10`, whose subject mentions only terminal handlers, and `transcriptActivity` is in
 `HEAD`. **The flag is published.**
 
 Consequences:

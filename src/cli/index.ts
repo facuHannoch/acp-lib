@@ -6,16 +6,19 @@
 // Usage:
 //   acp-lib chat [SESSION_ID] [--adapter kimi] [--exec "docker exec -i <ctr>"]
 //                [--cwd /workspace] [--approve] [--verbose] [--debug]
-//                [--no-activity] [--degraded]
+//                [--no-activity] [--degraded] [--wire[=FILE]]
 //
 //   activity (thinking/tool markers) shows by DEFAULT; --no-activity disables it.
 //   --verbose (-v): lifecycle summaries (connect, session_new, prompt_end)
 //   --debug   (-d): the above PLUS raw protocol payloads (initialize/prompt/session_update)
+//   --wire       : dump every raw protocol line, both directions, to stderr
+//   --wire=FILE  : the same as ndjson in FILE (truncated per run) instead of stderr
 
 import {
   AgentController,
   ADAPTERS,
   createConsoleLogger,
+  createWireLog,
   type AdapterPreset,
 } from "../index.ts";
 import { createAgentCommands, runRepl } from "../repl/index.ts";
@@ -32,6 +35,8 @@ interface Args {
   verbose: boolean;
   debug: boolean;
   activity: boolean;
+  /** undefined = off, "" = stderr, otherwise a file path. */
+  wire?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -55,6 +60,8 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--verbose" || arg === "-v") a.verbose = true;
     else if (arg === "--debug" || arg === "-d") a.debug = true;
     else if (arg === "--no-activity" || arg === "--disable-activity") a.activity = false;
+    else if (arg === "--wire") a.wire = "";
+    else if (arg?.startsWith("--wire=")) a.wire = arg.slice("--wire=".length);
     else if (arg && !arg.startsWith("--")) a.sessionId = arg;
   }
   return a;
@@ -68,6 +75,16 @@ async function chat(args: Args): Promise<void> {
   const minLevel = args.debug ? "debug" : args.verbose ? "info" : "warn";
   const logger = createConsoleLogger({ minLevel });
 
+  // A wire dump to stderr would fight the spinner's \r and the streamed reply, so the
+  // file form is the usable one for a real conversation.
+  const wire =
+    args.wire === undefined
+      ? undefined
+      : args.wire === ""
+        ? createWireLog({ console: "stderr" })
+        : createWireLog({ path: args.wire });
+  if (args.wire) process.stderr.write(`wire log: ${args.wire}\n`);
+
   const controller = new AgentController({
     adapter: ADAPTERS[args.adapter],
     adapterId: args.adapter,
@@ -77,6 +94,7 @@ async function chat(args: Args): Promise<void> {
     sessionId: args.sessionId,
     defaultPermission: args.approve ? "approve" : "cancel",
     logger,
+    wire,
   });
 
   const { sessionId, resumed } = await controller.start();
@@ -94,8 +112,8 @@ async function chat(args: Args): Promise<void> {
   try {
     await runRepl(controller, {
       activity: args.activity,
-      // Suppress the spinner under --debug: raw session_update lines would fight its \r.
-      spinner: !args.debug,
+      // Suppress the spinner when raw lines are going to the terminal — they fight its \r.
+      spinner: !args.debug && args.wire !== "",
       intro,
       onSlashCommand: commands.onSlashCommand,
     });

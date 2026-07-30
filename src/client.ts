@@ -34,6 +34,7 @@ import type {
   SessionListPage,
   AgentCommand,
   ToolContent,
+  WireEntry,
 } from "./types.ts";
 
 export interface AcpClientConfig {
@@ -59,6 +60,12 @@ export interface AcpClientConfig {
   clientCapabilities?: ClientCapabilityConfig;
   /** Diagnostics sink. Omit for a silent library. */
   logger?: Logger;
+  /**
+   * Raw protocol traffic, every line in both directions — the debugging view. Off unless
+   * set; a wire log holds everything the agent said, file contents and command output
+   * included, so where it goes is the caller's call. `createWireLog()` builds a sink.
+   */
+  wire?: (entry: WireEntry) => void;
 }
 
 export interface StartSessionOptions {
@@ -207,6 +214,7 @@ export class AcpClient implements AgentClient {
           }
         : undefined,
       terminals: this.terminals ? this.terminalHandlers(this.terminals) : undefined,
+      onWire: this.config.wire,
       onStderr: (line) => {
         this.log.debug("agent_stderr", { line });
         this.authStderrSink?.(line);

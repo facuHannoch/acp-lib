@@ -184,6 +184,56 @@ records = foldRecords(snap.records);
 `activitySnapshot()` reports `active: false` with no records: a settled turn belongs to the
 transcript, not to a replay.
 
+### Debugging: the raw protocol
+
+When an agent does something inexplicable, `wire` gives you every line in both directions,
+verbatim — including the `session/update` notifications the transport takes off the wire
+before the SDK sees them, which no other hook can observe.
+
+```ts
+import { createWireLog } from "@qlairoslabs/acp-client";
+
+const session = await AgentSession.create({
+  adapter: ADAPTERS.kimi,
+  adapterId: "kimi",
+  wire: createWireLog({ path: "/tmp/acp-wire.jsonl" }),   // or { console: "stderr" }
+});
+```
+
+The file is ndjson, one `WireEntry` per line, truncated per run so a log is one run's:
+
+```bash
+# The conversation as a call sequence — the view that usually finds the problem
+jq -r 'select(.dir!="err") | (.line|fromjson) as $m
+       | [.dir, ($m.method // (if $m.error then "error" else "result" end)),
+          ($m.params.update.sessionUpdate // "")] | @tsv' /tmp/acp-wire.jsonl | uniq -c
+```
+
+```
+1 out  initialize
+1 in   result
+1 out  session/prompt
+1 in   session/update            tool_call
+161 in session/update            tool_call_update     ← one call, 161 resends
+1 in   session/request_permission
+1 out  result
+1 in   fs/write_text_file
+```
+
+That `161` is real, from a Kimi run: agents resend the whole growing tool input on every
+update, which is exactly what the activity fold exists to absorb.
+
+`dir` is `out` (to the agent's stdin), `in` (from its stdout) or `err` (its stderr). `line`
+is never reserialized, so what you read is exactly what crossed the pipe. Or from the CLI:
+
+```bash
+acp-client chat --wire                  # raw lines to stderr
+acp-client chat --wire=/tmp/wire.jsonl  # ndjson to a file (usable during a real conversation)
+```
+
+Off unless you set it, and the library never enables it on its own: a wire log contains
+everything the agent said, file contents and command output included.
+
 ### Terminals and filesystem access
 
 The client advertises the `terminal` and `fs` client capabilities and implements them:
@@ -341,7 +391,8 @@ acp-client chat --adapter codex       # pick an adapter
 acp-client chat --exec "docker exec -i my-container"   # talk to an agent in a container
 acp-client chat --cwd /workspace --approve             # auto-approve tool permissions
 acp-client chat --degraded            # force degraded (PTY) mode
-acp-client chat -v | -d               # verbose lifecycle / debug raw protocol
+acp-client chat -v | -d               # verbose lifecycle / debug payloads
+acp-client chat --wire[=FILE]         # dump every raw protocol line (stderr, or ndjson to FILE)
 ```
 
 Activity markers (thinking/tool) show by default; `--no-activity` disables them.

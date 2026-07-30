@@ -32,6 +32,7 @@ import type {
   PromptHandlers,
   PromptResult,
   SessionListEntry,
+  WireEntry,
 } from "./types.ts";
 
 interface QueueItem {
@@ -101,6 +102,8 @@ export interface AgentSessionConfig {
   /** What we let the agent do through us (terminals, filesystem). All on by default. */
   clientCapabilities?: AgentControllerConfig["clientCapabilities"];
   logger?: Logger;
+  /** Raw protocol traffic for debugging — see `AcpClientConfig.wire`. */
+  wire?: (entry: WireEntry) => void;
   /** Optional catalog. When present, the session records itself here. */
   sessions?: SessionManager;
   /** Absolute path to an append-only transcript file. Omitted means no transcript. */
@@ -191,6 +194,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       clientInfo: config.clientInfo,
       clientCapabilities: config.clientCapabilities,
       logger: config.logger,
+      wire: config.wire,
     });
   }
 

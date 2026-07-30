@@ -39,6 +39,20 @@ export interface PromptResult {
   usage: Usage | null;
 }
 
+/**
+ * One line of raw traffic between us and the agent process — the debugging view.
+ *
+ * `line` is the ndjson VERBATIM, never reserialized, so what you read is exactly what
+ * crossed the pipe (reserializing can mangle numbers we never parse). Notifications the
+ * transport intercepts before the SDK are included: this is the wire, not our model of it.
+ */
+export interface WireEntry {
+  /** `in` from the agent's stdout, `out` to its stdin, `err` from its stderr. */
+  dir: "in" | "out" | "err";
+  ts: number;
+  line: string;
+}
+
 /** A raw content block: "text" | "image" | "audio" | "resource" | "resource_link". */
 export interface ContentBlock {
   type: string;

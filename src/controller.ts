@@ -11,6 +11,7 @@ import type {
   PromptHandlers,
   PromptResult,
   SessionListPage,
+  WireEntry,
 } from "./types.ts";
 import { NotConnectedError } from "./errors.ts";
 
@@ -41,6 +42,8 @@ export interface AgentControllerConfig {
   /** What we let the agent do through us (terminals, filesystem). All on by default. */
   clientCapabilities?: AcpClientConfig["clientCapabilities"];
   logger?: Logger;
+  /** Raw protocol traffic for debugging — see `AcpClientConfig.wire`. */
+  wire?: (entry: WireEntry) => void;
 }
 
 export type ControllerCommandId =
@@ -373,6 +376,7 @@ export class AgentController implements AgentClient {
       clientInfo: this.config.clientInfo,
       clientCapabilities: this.config.clientCapabilities,
       logger: this.config.logger,
+      wire: this.config.wire,
     });
     // connect() is fatal (no connection = nothing to do). startSession() is NOT: an
     // unauthenticated agent may refuse session/new, but we keep the connection up so the
