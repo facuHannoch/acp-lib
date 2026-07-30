@@ -453,6 +453,15 @@ export class AgentSession implements AgentClient, Bridgeable {
   get configOptions(): ConfigOptions {
     return this.controller.configOptions;
   }
+  /**
+   * Set one of the agent's own session options — the `configOptions` it advertised on
+   * connect. This is where per-agent knobs live that are NOT launch flags and NOT
+   * environment: Codex exposes `reasoning_effort` (low…ultra), `model`, and `mode` this
+   * way, so it is the only route to them once the process is running.
+   */
+  setConfig(configId: string, value: unknown): Promise<void> {
+    return this.controller.setConfig(configId, value);
+  }
   get agentCommands(): AgentCommand[] {
     return this.controller.agentCommands;
   }
