@@ -347,6 +347,15 @@ export class ActivityAggregator {
     event: Extract<ActivityEvent, { kind: "tool" }>,
     emitted: AggregatedRecord[],
   ): ApplyResult {
+    // A RE-announcement is an update in disguise. Claude announces every call twice — once
+    // with `rawInput: {}`, then again with the real arguments, both as `tool_call` rather
+    // than `tool_call_update`. Taking the second as a fresh announce would replace the
+    // stored call (losing whatever the re-announce omits) and spend a second `announced`
+    // line where every other agent spends `input`.
+    if (this.calls.has(event.toolCallId)) {
+      return this.foldToolUpdate({ ...event, kind: "tool_update" }, emitted);
+    }
+
     const call: ToolActivity = { ...event };
     this.calls.set(call.toolCallId, call);
     if (hasInput(call.rawInput)) this.inputSeen.add(call.toolCallId);

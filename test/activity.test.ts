@@ -128,6 +128,38 @@ describe("ActivityAggregator — tool calls", () => {
     ]);
   });
 
+  test("a re-announced call is an update, not a second announcement", () => {
+    // Measured on live Claude (claude-code-acp): every call arrives as two `tool_call`
+    // notifications, the first with a placeholder input. Same three lines as an agent that
+    // uses `tool_call_update`, and one call — not two, and not four lines.
+    const { pairs, agg } = run([
+      tool({ rawInput: {} }),
+      tool({ rawInput: { command: "ls" }, title: "Running: ls" }),
+      update({ status: "completed" }),
+    ]);
+    expect(pairs).toEqual(["t1:announced", "t1:input", "t1:settled"]);
+    expect(agg.tools()).toHaveLength(1);
+    expect(agg.tool("t1")).toMatchObject({ title: "Running: ls", status: "completed" });
+  });
+
+  test("a re-announcement keeps a field it omits, rather than clearing it", () => {
+    const { agg } = run([
+      tool({ title: "Bash", locations: [{ path: "/tmp/a.txt" }] }),
+      // No title, no locations — replacing would drop both.
+      { kind: "tool", toolCallId: "t1", toolKind: "execute", status: "pending", rawInput: { command: "ls" } },
+    ]);
+    expect(agg.tool("t1")).toMatchObject({
+      title: "Bash",
+      locations: [{ path: "/tmp/a.txt" }],
+      rawInput: { command: "ls" },
+    });
+  });
+
+  test("a re-announcement with nothing new costs no line at all", () => {
+    const { pairs } = run([tool({ rawInput: { command: "ls" } }), tool({ rawInput: { command: "ls" } })]);
+    expect(pairs).toEqual(["t1:announced", "t1:flushed"]);
+  });
+
   test("checkpointOnInput: false drops the middle line", () => {
     const { pairs } = run(
       [tool(), update({ rawInput: { command: "ls" } }), update({ status: "completed" })],
