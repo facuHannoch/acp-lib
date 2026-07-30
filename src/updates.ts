@@ -36,14 +36,23 @@ export function toActivityEvent(update: schema.SessionUpdate): ActivityEvent | n
     case "agent_message_chunk":
       return null;
 
+    // `messageId` is optional in ContentChunk but authoritative when present: "a change
+    // in messageId indicates a new message has started". It is the only protocol-given
+    // way to bound a thinking block, so carry it through.
     case "agent_thought_chunk": {
       const text = blockText(u.content);
-      return text ? { kind: "thinking", text } : null;
+      if (!text) return null;
+      return u.messageId != null
+        ? { kind: "thinking", text, messageId: String(u.messageId) }
+        : { kind: "thinking", text };
     }
 
     case "user_message_chunk": {
       const text = blockText(u.content);
-      return text ? { kind: "user_message", text } : null;
+      if (!text) return null;
+      return u.messageId != null
+        ? { kind: "user_message", text, messageId: String(u.messageId) }
+        : { kind: "user_message", text };
     }
 
     case "tool_call": {

@@ -58,6 +58,23 @@ export type {
 } from "./terminals.ts";
 
 export { extractChunkText, toActivityEvent } from "./updates.ts";
+
+export {
+  ActivityAggregator,
+  foldRecords,
+  foldFrame,
+  wireFrames,
+  isActivityDelta,
+} from "./activity.ts";
+export type {
+  ActivityAggregatorOptions,
+  ActivityDelta,
+  ActivityFrame,
+  ActivitySnapshot,
+  AggregatedRecord,
+  ApplyResult,
+  EmitReason,
+} from "./activity.ts";
 export type {
   ConfigOption,
   ConfigOptions,

@@ -118,9 +118,9 @@ export interface ToolUpdateActivity {
  * a newer agent can never silently starve the caller of activity.
  */
 export type ActivityEvent =
-  | { kind: "thinking"; text: string }
+  | { kind: "thinking"; text: string; messageId?: string }
   /** The agent echoed back user input — session/load replay, or a queued message. */
-  | { kind: "user_message"; text: string }
+  | { kind: "user_message"; text: string; messageId?: string }
   | ToolActivity
   | ToolUpdateActivity
   /** Full plan snapshot: replaces any previous plan. */
