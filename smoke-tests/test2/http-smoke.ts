@@ -1,24 +1,31 @@
 #!/usr/bin/env bun
-// END-TO-END SMOKE TEST against real Kimi: make the agent stand up a Python HTTP server,
-// curl it, and report the status code. Small task, but it needs everything the library
-// promises for a working tool call — write a file, run commands, read their output back —
-// so the failure modes it catches are the ones that matter:
+// END-TO-END SMOKE TEST against a real agent: make it stand up a Python HTTP server, curl
+// it, and report the status code. Small task, but it needs everything the library promises
+// for a working tool call — write a file, run commands, read their output back — so the
+// failure modes it catches are the ones that matter:
 //
 //   - tool output never reaching the caller (the `{}` tool block bug)
 //   - a settled transcript that disagrees with what was streamed live (fold drift)
 //   - activity lines multiplying per notification instead of per lifecycle step
 //   - msg/activity ordering breaking the turn fences a reader groups by
+//   - a thinking block that only materializes when it closes (nothing streams)
 //
 // It checks the library, not the model: the pass condition is that OUR stream carried the
-// evidence, not that the agent phrased its answer nicely.
+// evidence, not that the agent phrased its answer nicely. That is also why it runs against
+// ANY adapter — one agent going quiet or losing its auth says nothing about the library,
+// and the quickest way to tell the two apart is to point it at a different agent.
 //
 // Usage:
-//   bun smoke-tests/test2/kimi-http-smoke.ts
-//   bun smoke-tests/test2/kimi-http-smoke.ts --wire          # raw protocol to a file
-//   bun smoke-tests/test2/kimi-http-smoke.ts --wire=stderr   # raw protocol to the console
-//   KIMI_SMOKE_TIMEOUT_MS=300000 bun smoke-tests/test2/kimi-http-smoke.ts
+//   bun smoke-tests/test2/http-smoke.ts                 # default: kimi
+//   bun smoke-tests/test2/http-smoke.ts claude
+//   bun smoke-tests/test2/http-smoke.ts codex --wire    # raw protocol to a file
+//   bun smoke-tests/test2/http-smoke.ts kimi --wire=stderr
+//   SMOKE_TIMEOUT_MS=300000 bun smoke-tests/test2/http-smoke.ts claude
 //
-// Requires `kimi` on PATH (an authenticated Kimi CLI), plus python3 and curl.
+// Exit codes: 0 all checks passed, 1 a check failed, 2 could not run (unknown agent,
+// binary missing, or the agent produced nothing at all — see "inconclusive" below).
+//
+// Requires the chosen agent's CLI on PATH and authenticated, plus python3 and curl.
 
 import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -35,30 +42,87 @@ import {
   readTranscriptLines,
   wireFrames,
   type AggregatedRecord,
+  type PromptResult,
   type ToolActivity,
+  type WireEntry,
 } from "../../src/index.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const timeoutMs = Number(process.env.KIMI_SMOKE_TIMEOUT_MS ?? 240_000);
+// KIMI_SMOKE_TIMEOUT_MS still works — it was the documented name while this was kimi-only.
+const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS ?? process.env.KIMI_SMOKE_TIMEOUT_MS ?? 240_000);
+
+// --- which agent ----------------------------------------------------------------------
+// Any preset works; nothing below is agent-specific. `kimi` is only the default because it
+// is what the checks were first measured against.
+const args = process.argv.slice(2);
+const requested =
+  args.find((a) => a.startsWith("--agent="))?.slice("--agent=".length) ??
+  args.find((a) => !a.startsWith("-")) ??
+  process.env.SMOKE_AGENT ??
+  "kimi";
+
+if (!(requested in ADAPTERS)) {
+  console.error(`unknown agent: ${requested}`);
+  console.error(`known: ${Object.keys(ADAPTERS).join(", ")}`);
+  process.exit(2);
+}
+const agentId = requested as keyof typeof ADAPTERS;
+const adapter = ADAPTERS[agentId];
+
+// Fail before spawning: a missing binary otherwise surfaces as a connect timeout, which
+// reads like a library problem.
+const binary = adapter.command[0]!;
+if (!Bun.which(binary)) {
+  console.error(`${agentId}: \`${binary}\` is not on PATH (adapter command: ${adapter.command.join(" ")})`);
+  console.error(`install it, or pick another: ${Object.keys(ADAPTERS).join(", ")}`);
+  process.exit(2);
+}
+
 const port = await freePort();
 
 const chatsDir = join(here, "chats");
 await mkdir(chatsDir, { recursive: true });
 const stamp = Date.now();
-const transcriptPath = join(chatsDir, `kimi-http-${stamp}.jsonl`);
+const transcriptPath = join(chatsDir, `${agentId}-http-${stamp}.jsonl`);
 
 // --wire dumps every raw protocol line. The file form is the useful one here: to stderr it
 // interleaves with the streamed reply.
-const wireArg = process.argv.find((a) => a === "--wire" || a.startsWith("--wire="));
-const wirePath = wireArg === "--wire" ? join(chatsDir, `kimi-http-${stamp}.wire.jsonl`) : null;
-const wire = !wireArg
+const wireArg = args.find((a) => a === "--wire" || a.startsWith("--wire="));
+const wirePath = wireArg === "--wire" ? join(chatsDir, `${agentId}-http-${stamp}.wire.jsonl`) : null;
+const sink = !wireArg
   ? undefined
   : wireArg === "--wire"
     ? createWireLog({ path: wirePath! })
     : createWireLog({ console: "stderr" });
 
+// Keep the agent's last stderr lines even without --wire. When a start fails, that is where
+// the reason is: claude-code-acp answers `session/new` with a bare "Internal error" and
+// explains itself only on stderr ("cannot be launched inside another Claude Code session").
+// Without this the script dies on an SDK stack trace that names nothing useful.
+const stderrTail: string[] = [];
+const wire = (entry: WireEntry) => {
+  if (entry.dir === "err") {
+    stderrTail.push(entry.line);
+    if (stderrTail.length > 25) stderrTail.shift();
+  }
+  sink?.(entry);
+};
+
+/** Report an agent that never got as far as talking to us, and say what it said. */
+function bail(what: string, err: unknown): never {
+  console.error(`\n${agentId}: ${what}`);
+  console.error(`  ${err instanceof Error ? err.message : String(err)}`);
+  if (stderrTail.length > 0) {
+    console.error(`\nwhat \`${adapter.command.join(" ")}\` wrote to stderr:`);
+    for (const line of stderrTail) console.error(`  ${line}`);
+  }
+  if (wirePath) console.error(`\nwirePath=${wirePath}`);
+  console.error(`\nSMOKE INCONCLUSIVE`);
+  process.exit(2);
+}
+
 // The agent works in a throwaway directory, never the repo.
-const workDir = await mkdtemp(join(tmpdir(), "kimi-http-smoke-"));
+const workDir = await mkdtemp(join(tmpdir(), `${agentId}-http-smoke-`));
 
 const prompt = [
   `Work in the current directory using shell commands.`,
@@ -72,38 +136,47 @@ const prompt = [
   `Then reply with one short sentence stating the HTTP status code curl printed and whether the server worked.`,
 ].join("\n");
 
+console.log(`agent=${adapter.displayName ?? agentId} (${adapter.command.join(" ")})`);
 console.log(`workDir=${workDir}`);
 console.log(`port=${port}`);
 console.log(`transcriptPath=${transcriptPath}\n`);
 
 const session = await AgentSession.create({
-  adapter: ADAPTERS.kimi,
-  adapterId: "kimi",
+  adapter,
+  adapterId: agentId,
   cwd: workDir,
   transcriptPath,
   transcriptActivity: true,
   defaultPermission: "approve",
   logger: createConsoleLogger({ minLevel: "warn" }),
   wire,
-});
+}).catch((err) => bail("could not start a session", err));
 
 /** Everything the LIVE stream said, folded exactly the way a browser client would. */
 const live = new Map<string, AggregatedRecord>();
 let rawEvents = 0;
 let permissions = 0;
 let terminalBacked = false;
+// Thinking is the one kind that crosses the wire incrementally, so it is the one kind a
+// subscriber can silently see NOTHING of while the model works. Count the chunks that went
+// in against the times the folded text actually grew.
+let thinkingChunks = 0;
+let thinkingSteps = 0;
+let thinkingChars = 0;
 
 const timer = setTimeout(() => {
   console.error(`\n[timeout] no result after ${timeoutMs}ms — interrupting`);
   session.interrupt({ clearQueue: true });
 }, timeoutMs);
 
-let result;
+let result: PromptResult | undefined;
+let failure: unknown;
 try {
   result = await session.prompt(prompt, {
     onChunk: (text) => process.stdout.write(text),
     onActivity: (event) => {
       rawEvents++;
+      if (event.kind === "thinking" && event.text.length > 0) thinkingChunks++;
       if (event.kind === "tool" || event.kind === "tool_update") {
         for (const entry of event.content ?? []) {
           if (entry.type === "terminal") terminalBacked = true;
@@ -112,6 +185,12 @@ try {
     },
     onRecord: (r) => {
       for (const frame of wireFrames(r)) foldFrame(live, frame);
+      // Exactly what a browser would have on screen at this instant.
+      const chars = thinkingTextOf(live).length;
+      if (chars > thinkingChars) {
+        thinkingChars = chars;
+        thinkingSteps++;
+      }
     },
     onPermissionRequest: (request) => {
       permissions++;
@@ -124,12 +203,36 @@ try {
       return { outcome: "selected", optionId: allow.optionId };
     },
   });
+} catch (err) {
+  failure = err;
 } finally {
+  // Stop first either way: it is what flushes the transcript we are about to read.
   clearTimeout(timer);
-  await session.stop();
+  await session.stop().catch(() => {});
+}
+
+if (!result) {
+  await killPort(port);
+  bail("the turn threw", failure);
 }
 
 if (!result.text.endsWith("\n")) process.stdout.write("\n");
+
+// An agent that says NOTHING — no activity, no text — fails every check below for one
+// reason that is not ours. Seen for real: Kimi accepted a prompt, sent its command list,
+// went silent for 243s, then answered our cancel in 11ms. The protocol layer was healthy
+// the whole time; the model never started. Report that as inconclusive, not as 12 failures.
+if (rawEvents === 0 && result.text.trim() === "") {
+  console.log(`\nThe agent produced nothing at all: 0 activity events, 0 text.`);
+  console.log(`stopReason=${result.stopReason} status=${result.status}`);
+  console.log(`The protocol layer is not implicated — it connected, prompted, and shut down.`);
+  console.log(`Check the agent: run \`${adapter.ptyCommand?.[0] ?? binary}\` interactively (quota, auth, backend),`);
+  console.log(`or point this at another one: ${Object.keys(ADAPTERS).filter((a) => a !== agentId).join(", ")}`);
+  if (wirePath) console.log(`wirePath=${wirePath}`);
+  await killPort(port);
+  console.log(`\nSMOKE INCONCLUSIVE`);
+  process.exit(2);
+}
 
 // --- what we can check without the model's cooperation ---------------------------------
 
@@ -188,6 +291,33 @@ check(
   activityLines.length > 0 && activityLines.every((l) => typeof l.recordId === "string" && typeof l.reason === "string"),
 );
 
+// Thinking: only checkable when the model actually thought, which is its call, not ours.
+const thinkLines = activityLines.filter((l) => l.kind === "thinking");
+const thinkBlocks = [...live.values()].filter((r) => r.event.kind === "thinking");
+if (thinkingChunks > 0) {
+  // The regression that prompted these: opening a block with a delta leaves the consumer
+  // with no base to append to, so the whole block appears at once when it CLOSES. Final
+  // state looks perfect; nothing streams. That failure shows up here as steps == blocks.
+  check(
+    "thinking was visible while it streamed, not only once the block closed",
+    thinkingSteps === thinkingChunks,
+    `${thinkingSteps} visible updates from ${thinkingChunks} chunks, ${thinkBlocks.length} blocks`,
+  );
+  check(
+    "each thinking block cost one line, not one per chunk",
+    thinkLines.length === thinkBlocks.length && thinkLines.length <= thinkingChunks,
+    `${thinkingChunks} chunks -> ${thinkLines.length} lines (${thinkBlocks.length} blocks)`,
+  );
+  check(
+    "the live and persisted thinking agree",
+    thinkBlocks.every(
+      (r) =>
+        (disk.get(r.recordId)?.event as { text?: string } | undefined)?.text ===
+        (r.event as { text: string }).text,
+    ),
+  );
+}
+
 // Turn fences: a reader groups by `msg(user) → activity… → msg(assistant)`.
 const shape = lines.filter((l) => l.t !== "meta").map((l) => (l.t === "msg" ? `msg:${l.role}` : l.t));
 check(
@@ -222,6 +352,11 @@ for (const [name, ok, detail] of checks) {
 
 console.log("");
 console.log(`tool transport: ${terminalBacked ? "our terminal/* handlers" : "the agent's own execution"}`);
+console.log(
+  thinkingChunks === 0
+    ? "thinking: none this run — the streaming checks were skipped, not passed"
+    : `thinking: ${thinkingChunks} chunks -> ${thinkBlocks.length} blocks -> ${thinkLines.length} lines`,
+);
 console.log(`permission requests: ${permissions}`);
 // The wire carries every kind; the transcript carries the `kinds` subset. Name what was
 // filtered, so the two counts don't read as a discrepancy.
@@ -247,6 +382,15 @@ function toolsOf(records: Map<string, AggregatedRecord>): ToolActivity[] {
   return [...records.values()]
     .map((r) => r.event)
     .filter((e): e is ToolActivity => e.kind === "tool");
+}
+
+/** Everything the model has thought so far, as a subscriber would have it on screen. */
+function thinkingTextOf(records: Map<string, AggregatedRecord>): string {
+  return [...records.values()]
+    .map((r) => r.event)
+    .filter((e): e is Extract<typeof e, { kind: "thinking" }> => e.kind === "thinking")
+    .map((e) => e.text)
+    .join("");
 }
 
 /** Every string a tool call surfaced — text blocks, terminal output, raw output. */

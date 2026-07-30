@@ -1,7 +1,9 @@
 # test2 — live HTTP round-trip against a real agent
 
 ```bash
-bun smoke-tests/test2/kimi-http-smoke.ts
+bun smoke-tests/test2/http-smoke.ts          # default: kimi
+bun smoke-tests/test2/http-smoke.ts claude
+bun smoke-tests/test2/http-smoke.ts codex --wire
 ```
 
 Makes a real agent stand up a Python HTTP server, `curl` it, and report the status code.
@@ -12,9 +14,26 @@ back. That is the surface where the interesting bugs live.
 Unlike `bun test`, this talks to an actual agent over an actual pipe. It is not part of the
 suite: it costs tokens, needs an authenticated CLI, and its timing depends on a model.
 
+## Choosing the agent
+
+Any key of `ADAPTERS` — `kimi`, `claude`, `codex`, `gemini`, `copilot`, `opencode` — as the
+first argument, `--agent=NAME`, or `SMOKE_AGENT`. Nothing in the script is agent-specific.
+
+Swapping agents is also the diagnostic. Every check here is about **our** stream, so when a
+run fails the first question is whether the library broke or the agent did — and the fastest
+answer is the same task against a different one. The script helps rather than making you
+read a wall of red:
+
+- the binary is checked with `Bun.which` **before** spawning, so a missing CLI says so
+  instead of surfacing as a connect timeout;
+- an agent that emits no activity and no text at all exits `2` / `SMOKE INCONCLUSIVE`
+  rather than failing twelve checks for one reason that isn't ours;
+- a session that fails to start prints the agent's last stderr lines — kept even without
+  `--wire`, since a refusing agent usually explains itself there and nowhere else.
+
 ## Requirements
 
-- `kimi` on `PATH`, authenticated (`ADAPTERS.kimi` → `kimi acp`)
+- the chosen agent's CLI on `PATH`, authenticated (e.g. `ADAPTERS.kimi` → `kimi acp`)
 - `python3` and `curl`
 - a free TCP port (picked automatically by binding `:0` and releasing it)
 
@@ -22,9 +41,13 @@ suite: it costs tokens, needs an authenticated CLI, and its timing depends on a 
 
 | | |
 |---|---|
-| `--wire` | Also dump every raw protocol line to `chats/<stamp>.wire.jsonl` |
+| `<agent>`, `--agent=NAME`, `SMOKE_AGENT` | Which adapter preset to run. Default `kimi` |
+| `--wire` | Also dump every raw protocol line to `chats/<agent>-http-<stamp>.wire.jsonl` |
 | `--wire=stderr` | The same, to the console (interleaves with the streamed reply) |
-| `KIMI_SMOKE_TIMEOUT_MS` | Give up and interrupt after this long. Default 240000 |
+| `SMOKE_TIMEOUT_MS` | Give up and interrupt after this long. Default 240000 (`KIMI_SMOKE_TIMEOUT_MS` still honoured) |
+
+Exit codes: `0` all checks passed, `1` a check failed, `2` could not run — unknown agent,
+missing binary, or an agent that produced nothing.
 
 ## What it checks
 
@@ -45,6 +68,20 @@ anything — so the load-bearing check is that a tool call's *output* contained 
 | the snapshot is idle after the turn | the between-turns replay contract |
 | the reply is a real sentence | a reply so short that "answered" and "said nothing" look identical |
 | the transcript kept the assistant reply | the persisted reply drifting from what streamed |
+| thinking was visible while it streamed | the opening chunk of a block going out as a delta, which `foldFrame` drops for want of a base — the block then appears only when it *closes*, so final state looks perfect and nothing streams |
+| each thinking block cost one line | thinking persisted per chunk instead of per block |
+| the live and persisted thinking agree | fold drift, on the one kind that crosses incrementally |
+
+The three thinking checks only run when the model actually thought — that is its choice, not
+ours. When it doesn't, the report says so explicitly rather than passing them silently.
+
+Absent thinking usually means it is switched off, not unsupported. `claude-code-acp` maps
+Claude's `thinking`/`thinking_delta` blocks to `agent_thought_chunk`, but only enables
+extended thinking when `MAX_THINKING_TOKENS` is set in its environment:
+
+```bash
+MAX_THINKING_TOKENS=4000 env -u CLAUDECODE bun smoke-tests/test2/http-smoke.ts claude
+```
 
 It also **reports without asserting**: which transport the agent used (our `terminal/*`
 handlers or its own execution), how many permission requests it made, and which record
@@ -60,8 +97,37 @@ reaps whatever is still listening via `lsof`.
 PASS  the transcript folded the delta stream down  — 700 raw events -> 20 lines (18 tool, 6 calls)
 ```
 
-Measured on real runs: **253 → 7** lines for two tool calls, **700 → 20** for six. Both
-show exactly 3 lines per call (`announced → input → settled`).
+Measured on real runs: **253 → 7** lines for two tool calls, **700 → 20** for six (Kimi),
+**32 → 15** for five (Codex). All show at most 3 lines per call
+(`announced → input → settled`); Codex settles some calls in one step, so it lands under.
+
+Agents differ in ways worth knowing before reading a number as a regression:
+
+| | Kimi | Codex | Claude (`claude-code-acp`) |
+|---|---|---|---|
+| tool input | resent whole on every update (161 for one call) | terse | announced **twice**, placeholder then real |
+| thinking | yes, no `messageId` → minted `think-1` | yes, `messageId` → `think-rs_…` | only with `MAX_THINKING_TOKENS` set |
+| usage | yes | yes | none observed |
+| tool transport | our `terminal/*` handlers | our `terminal/*` handlers | its own execution |
+
+The fold absorbs all of it, and every one of those rows cost a code change or a test to
+learn. Claude's double announcement is the sharpest: it arrives as two `tool_call`
+notifications, not `tool_call` + `tool_call_update`, so the aggregator treats a re-announce
+as an update — merging rather than replacing, and spending `input` rather than a second
+`announced`. Measured before and after on the same task: `14 announced + 7 settled` became
+`7 announced + 7 input + 7 settled`.
+
+### `claude-code-acp` will not start inside Claude Code
+
+```
+err  Error: Claude Code cannot be launched inside another Claude Code session.
+err  To bypass this check, unset the CLAUDECODE environment variable.
+```
+
+`session/new` fails with a bare `-32603 Internal error`; the reason is only on stderr. Run
+`env -u CLAUDECODE bun smoke-tests/test2/http-smoke.ts claude`. The script keeps the agent's
+last 25 stderr lines even without `--wire` and prints them on a start failure, because that
+is the one place the answer lives.
 
 `--wire` is the tool for "did the agent do that, or did we?". This one command usually
 answers it:
@@ -94,10 +160,19 @@ Beyond the two wire-log findings above, the transcripts here surfaced a reader b
 counted lines while `readTranscript` returns messages, so asking for 5 gave 1 of 2 messages.
 Fixed with `types` on `ReadTranscriptOptions`; these files are the fixtures that showed it.
 
+It also confirmed the thinking-stream fix against a live agent — Codex: 8 thought chunks,
+8 visible updates. Under the bug, 4 (one per block, at close) was the ceiling.
+
+And it settled an "is it us?" the fast way. Kimi accepted a prompt, sent its command list,
+went silent for 243 s, then answered our `session/cancel` in 11 ms — the same wire log that
+showed the silence showed the protocol layer was healthy throughout. The same task against
+Codex passed 18/18 minutes later. Hence `SMOKE INCONCLUSIVE`: that run had nothing to say
+about the library, and shouldn't have looked like it did.
+
 ## Files
 
-`chats/` holds one transcript per run (`kimi-http-<stamp>.jsonl`), kept as format fixtures
-the way `test1/chats` is.
+`chats/` holds one transcript per run (`<agent>-http-<stamp>.jsonl`), kept as format
+fixtures the way `test1/chats` is.
 
 `*.wire.jsonl` is **gitignored**: a wire log contains everything the agent said, file
 contents and command output included, and runs to hundreds of kilobytes.
