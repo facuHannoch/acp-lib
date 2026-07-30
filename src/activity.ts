@@ -52,6 +52,10 @@ export interface AggregatedRecord {
  * agent resends the whole `content` each time — so a full record costs no more than the
  * raw event. Thinking arrives as many small chunks, where re-sending the accumulated
  * block per chunk is quadratic: ~4 KB of text becomes ~800 KB over 400 chunks.
+ *
+ * Never produced for the chunk that OPENS a block: a delta is an increment on state the
+ * consumer already has, and on the opening chunk there is none. That chunk's `current` is
+ * the base record, and it is exactly as small as the delta would have been.
  */
 export interface ActivityDelta {
   recordId: string;
@@ -66,7 +70,11 @@ export type ActivityFrame = AggregatedRecord | ActivityDelta;
 export interface ApplyResult {
   /** Full state of whatever this event touched. Null only if it produced no record. */
   current: AggregatedRecord | null;
-  /** Set for accumulating kinds. When present, prefer it over `current` on the wire. */
+  /**
+   * Set for accumulating kinds, EXCEPT on the event that opens the record. When present,
+   * prefer it over `current` on the wire; when null, `current` is what has to go, or the
+   * consumer never gets a base to append to.
+   */
   delta: ActivityDelta | null;
   /** Checkpoints worth persisting. Usually empty. */
   emitted: AggregatedRecord[];
@@ -75,10 +83,13 @@ export interface ApplyResult {
 /** Everything known about the turn IN FLIGHT — for replaying to a late subscriber. */
 export interface ActivitySnapshot {
   /**
-   * Whether a turn is in flight. False between turns, when `records` is empty.
+   * Whether a turn is in flight. False before the first one and between turns, when
+   * `records` is empty.
    *
    * Distinguishes "no turn running" from "a turn that has not produced anything yet" —
-   * both return no records, but only the second means frames are coming.
+   * both return no records, but only the second means frames are coming. It reflects what
+   * this aggregator has been told: a caller that knows more (a hub tracking which sessions
+   * are busy, say) should trust itself over this.
    */
   active: boolean;
   /**
@@ -143,7 +154,10 @@ function hasInput(rawInput: unknown): boolean {
 export class ActivityAggregator {
   private checkpointOnInput: boolean;
   private idPrefix: string;
-  private turnOpen = true;
+  // False until the first event or `startTurn()`. A freshly constructed aggregator has not
+  // seen a turn, and saying otherwise puts a spinner in front of any client that connects
+  // while the session is still coming up — with no `flush()` ever coming to end it.
+  private turnOpen = false;
   private seq = 0;
   private records = new Map<string, AggregatedRecord>();
   private calls = new Map<string, ToolActivity>();
@@ -161,6 +175,8 @@ export class ActivityAggregator {
   /** Fold one live event. */
   apply(event: ActivityEvent): ApplyResult {
     this.seq++;
+    this.turnOpen = true; // an event IS a turn in flight, `startTurn()` or not
+
     const emitted: AggregatedRecord[] = [];
 
     // A thinking block ends when something else happens. Emit its close BEFORE the
@@ -273,7 +289,7 @@ export class ActivityAggregator {
   reset(): void {
     this.clearTurn();
     this.seq = 0;
-    this.turnOpen = true;
+    this.turnOpen = false;
   }
 
   private clearTurn(): void {
@@ -292,6 +308,11 @@ export class ActivityAggregator {
     event: Extract<ActivityEvent, { kind: "thinking" }>,
     emitted: AggregatedRecord[],
   ): ApplyResult {
+    // The opening chunk sends the RECORD, not a delta. A delta is an increment on state
+    // the consumer already has, and here it has none: `foldFrame` correctly drops a delta
+    // whose base it never saw, so opening with one means the whole block streams to
+    // nobody — it only appears once it closes and the settled record goes out.
+    const opening = !this.thinking;
     if (!this.thinking) {
       // `messageId` identifies the block when the agent sends one — most don't, so fall
       // back to a per-turn counter. This is the instance-local id the one-aggregator
@@ -310,12 +331,14 @@ export class ActivityAggregator {
 
     return {
       current: this.put(this.thinking.recordId, "announced", full),
-      delta: {
-        recordId: this.thinking.recordId,
-        seq: this.seq,
-        kind: "thinking",
-        append: event.text,
-      },
+      delta: opening
+        ? null
+        : {
+            recordId: this.thinking.recordId,
+            seq: this.seq,
+            kind: "thinking",
+            append: event.text,
+          },
       emitted,
     };
   }
@@ -504,6 +527,10 @@ export function foldFrame(
  * `delta ?? current` alone is not enough: when a thinking block closes because a tool
  * call arrived, the close is in `emitted` while `current` is the tool — a subscriber
  * would never learn the block ended. Records already in `emitted` are not repeated.
+ *
+ * Never sends a record and a delta for the same `recordId` in one call: `foldFrame` has
+ * no seq guard, so the consumer would apply the same text twice. The opening chunk of a
+ * thinking block is a record (`delta` is null there); every chunk after it is a delta.
  */
 export function wireFrames(result: ApplyResult): ActivityFrame[] {
   const frames: ActivityFrame[] = [...result.emitted];

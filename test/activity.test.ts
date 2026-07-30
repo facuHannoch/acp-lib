@@ -173,15 +173,17 @@ describe("ActivityAggregator — thinking", () => {
     let rebuilt = "";
     for (let i = 0; i < chunks; i++) {
       const result = agg.apply(think(chunk));
-      expect(result.delta).not.toBeNull();
-      deltaBytes += result.delta!.append.length;
-      rebuilt += result.delta!.append;
+      // The opening chunk carries the base record instead — same bytes, and without it
+      // the consumer has nothing to append to.
+      expect(result.delta === null).toBe(i === 0);
+      deltaBytes += result.delta?.append.length ?? 0;
+      rebuilt += result.delta?.append ?? (result.current!.event as { text: string }).text;
       currentBytes += (result.current!.event as { text: string }).text.length;
     }
 
     const total = chunk.length * chunks;
     expect(rebuilt).toBe(agg.snapshot().records[0]!.event.text as unknown as string);
-    expect(deltaBytes).toBe(total); // linear
+    expect(deltaBytes).toBe(total - chunk.length); // linear
     expect(currentBytes).toBeGreaterThan(total * 100); // quadratic — what we avoid sending
   });
 });
@@ -248,6 +250,32 @@ describe("snapshot + seq — the mid-turn join", () => {
     expect(late.get("t1")!.event).toEqual(live.get("t1")!.event);
   });
 
+  test("a live subscriber sees thinking WHILE it streams, not only when it closes", () => {
+    const agg = new ActivityAggregator({ idPrefix: "turn" });
+    const live = new Map<string, AggregatedRecord>();
+    const seen: string[] = [];
+
+    for (const text of ["let me ", "check ", "that"]) {
+      for (const f of wireFrames(agg.apply(think(text)))) foldFrame(live, f);
+      // The whole point: state after EVERY chunk, not just after the block settles.
+      seen.push((live.get("turn:think-1")?.event as { text: string } | undefined)?.text ?? "");
+    }
+
+    expect(seen).toEqual(["let me ", "let me check ", "let me check that"]);
+  });
+
+  test("a fresh aggregator is not in a turn", () => {
+    // `active` drives the spinner. Claiming a turn before one has started leaves a client
+    // that connects while the session is coming up waiting for a flush that never comes.
+    const agg = new ActivityAggregator();
+    expect(agg.snapshot()).toEqual({ active: false, seq: 0, records: [] });
+
+    agg.apply(think("now we are"));
+    expect(agg.snapshot().active).toBe(true);
+    agg.flush();
+    expect(agg.snapshot().active).toBe(false);
+  });
+
   test("a delta with no base is dropped rather than guessed at", () => {
     const map = new Map<string, AggregatedRecord>();
     foldFrame(map, { recordId: "think-1", seq: 5, kind: "thinking", append: "orphan" });
@@ -274,9 +302,32 @@ describe("wireFrames", () => {
     expect(isActivityDelta(frames[0]!)).toBe(false);
   });
 
+  test("opens a thinking block with the record, then streams deltas", () => {
+    const agg = new ActivityAggregator();
+
+    // The opening chunk MUST be a record: `foldFrame` drops a delta whose base it never
+    // saw, so opening with a delta streams the block to nobody.
+    const open = wireFrames(agg.apply(think("a")));
+    expect(open).toHaveLength(1);
+    expect(isActivityDelta(open[0]!)).toBe(false);
+
+    const next = wireFrames(agg.apply(think("b")));
+    expect(next).toHaveLength(1);
+    expect(isActivityDelta(next[0]!)).toBe(true);
+  });
+
+  test("never sends a record and a delta for the same id — that would double-append", () => {
+    const agg = new ActivityAggregator();
+    for (const e of [think("a"), think("b"), think("c", "m2"), tool()]) {
+      const ids = wireFrames(agg.apply(e)).map((f) => f.recordId);
+      expect(new Set(ids).size).toBe(ids.length);
+    }
+  });
+
   test("prefers the delta and never duplicates a record", () => {
     const agg = new ActivityAggregator();
-    const frames = wireFrames(agg.apply(think("a")));
+    agg.apply(think("a"));
+    const frames = wireFrames(agg.apply(think("b")));
     expect(frames).toHaveLength(1);
     expect(isActivityDelta(frames[0]!)).toBe(true);
 
@@ -445,7 +496,7 @@ describe("seq outlives the turn", () => {
     // place activity in its log before chat-history loads the messages around it. The
     // transcript already owns everything settled.
     const agg = new ActivityAggregator();
-    expect(agg.snapshot()).toMatchObject({ active: true, records: [] }); // fresh, nothing yet
+    expect(agg.snapshot()).toMatchObject({ active: false, records: [] }); // fresh, no turn yet
 
     agg.apply(think("reasoning"));
     agg.apply(tool());

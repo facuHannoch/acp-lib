@@ -3,6 +3,10 @@
 // run the command through the CLIENT's terminal, then fill the call in with
 // tool_call_update. Exercises the terminal/* methods AND the update passthrough.
 
+// Not exported — importing this file would start its stdin loop. The thinking test
+// hardcodes the same chunks; keep them in step.
+const THOUGHT_CHUNKS = ["let ", "me ", "check ", "that"];
+
 let nextId = 1000;
 const pending = new Map<number, (result: unknown) => void>();
 
@@ -72,6 +76,16 @@ async function runTurn(message: any): Promise<void> {
   const sessionId = message.params?.sessionId ?? "sess-1";
   const update = (u: unknown) =>
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: u } });
+
+  // 0. Thought chunks, but only when the prompt asks — the other tests pin an exact line
+  //    sequence and thinking would add to it. Real agents stream a block a few words at a
+  //    time (live Kimi: 8 notifications for one block), which is the shape the fold has to
+  //    survive: many chunks in, one settled record out.
+  if (JSON.stringify(message.params?.prompt ?? "").includes("think")) {
+    for (const text of THOUGHT_CHUNKS) {
+      update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text } });
+    }
+  }
 
   // 1. The call is announced with nothing useful in it — this alone is what the old
   //    mapping forwarded, hence a tool block that renders as `{}`.

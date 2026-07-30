@@ -187,6 +187,47 @@ describe("AgentSession transcript config", () => {
     });
   });
 
+  test("thinking streams to a live subscriber, and lands as ONE transcript line", async () => {
+    // The regression this pins: `wireFrames` used to open a block with a delta, which
+    // `foldFrame` drops for want of a base — so a browser client saw nothing until the
+    // block closed and the settled record went out. Final state was right, which is
+    // exactly why the round-trip tests missed it. Assert the intermediate states.
+    const session = await AgentSession.create({
+      adapter: terminalAdapter(),
+      adapterId: "fake",
+      agentSessionId: "thinking",
+      transcriptDir: dir,
+      transcriptActivity: true,
+    });
+    const live = new Map<string, AggregatedRecord>();
+    const seen: string[] = [];
+    try {
+      await session.prompt("think, then run it", {
+        onRecord: (result) => {
+          for (const frame of wireFrames(result)) foldFrame(live, frame);
+          const block = [...live.values()].find((r) => r.event.kind === "thinking");
+          if (block) seen.push((block.event as { text: string }).text);
+        },
+      });
+    } finally {
+      await session.stop();
+    }
+
+    // Four chunks from the fixture, so the subscriber saw four growing prefixes.
+    expect(seen.length).toBeGreaterThan(1);
+    expect(seen[0]).toBe("let ");
+    expect(seen.at(-1)).toBe("let me check that");
+    expect(seen.every((text, i) => i === 0 || text.startsWith(seen[i - 1]!))).toBe(true);
+
+    // …and the file has one line for the block, not one per chunk.
+    const thinking = (await activityLines(join(dir, "thinking.jsonl"))).filter(
+      (l) => l.kind === "thinking",
+    );
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]!.text).toBe("let me check that");
+    expect(thinking[0]!.reason).toBe("settled");
+  });
+
   test("a snapshot mid-turn replays the turn so far", async () => {
     const session = await AgentSession.create({
       adapter: terminalAdapter(),

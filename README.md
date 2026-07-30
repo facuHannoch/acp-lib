@@ -145,9 +145,10 @@ input resend the whole value each time.
 ### Sending activity over a wire
 
 For a hub forwarding activity to a browser, send `wireFrames(result)` and fold with
-`foldFrame`. Thinking crosses as an incremental `delta` (re-sending the accumulated block
-per chunk is quadratic — ~4 KB of text becomes ~800 KB over 400 chunks); everything else
-crosses as a full record.
+`foldFrame`. Thinking crosses as a full record on the chunk that OPENS a block and as an
+incremental `delta` for every chunk after it (re-sending the accumulated block per chunk is
+quadratic — ~4 KB of text becomes ~800 KB over 400 chunks); everything else crosses as a
+full record.
 
 ```ts
 // hub
@@ -162,9 +163,16 @@ let records = new Map<string, AggregatedRecord>();
 socket.onmessage = (e) => { records = foldFrame(records, JSON.parse(e.data)); };
 ```
 
-Send `wireFrames(result)`, not `delta ?? current`: when a thinking block ends because a tool
-call started, that close rides in `emitted` while `current` is the tool — a client sending
-only the latter never learns the block finished and renders a bubble that never stops.
+Send `wireFrames(result)`, not `delta ?? current`, and don't reach past it into `result`:
+
+- When a thinking block ends because a tool call started, that close rides in `emitted`
+  while `current` is the tool — a client sending only the latter never learns the block
+  finished and renders a bubble that never stops.
+- `foldFrame` drops a delta whose base it has never seen (guessing at one is how you get
+  text stitched onto the wrong block). `wireFrames` sends the base first, so that never
+  happens on a subscriber who has been listening from the start.
+- It never sends a record and a delta for the same `recordId` in one call. `foldFrame` has
+  no seq guard, so a consumer would append the same text twice.
 
 The `/activity` subpath has **no runtime imports**, so it is safe to pull into a browser
 bundle. Type-only imports work anywhere today; importing the *functions* needs a bundler
@@ -180,9 +188,10 @@ records = foldRecords(snap.records);
 // then drop any streamed frame with frame.seq <= snap.seq — already reflected above
 ```
 
-`seq` never restarts, so that threshold stays valid across turns. Between turns
-`activitySnapshot()` reports `active: false` with no records: a settled turn belongs to the
-transcript, not to a replay.
+`seq` never restarts, so that threshold stays valid across turns. Before the first turn and
+between turns `activitySnapshot()` reports `active: false` with no records: a settled turn
+belongs to the transcript, not to a replay. `active` only knows what the aggregator has
+been told — a hub that separately tracks which sessions are busy should trust itself.
 
 ### Debugging: the raw protocol
 
