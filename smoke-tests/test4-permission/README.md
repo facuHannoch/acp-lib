@@ -85,10 +85,12 @@ internally, so `defaultPermission` is dead code for them and a consumer relying 
 permission prompt to gate these agents would be relying on nothing. Reported as `skipped`,
 never as passed.
 
-### A separate bug this turned up: `terminal/create` is not run through a shell
+### A separate bug this turned up: `terminal/create` was not run through a shell
 
-The `shell` scenario fails, and not on permissions — all five of its requests were approved
-with `allow_once`. `claude-code-acp` routes its Bash tool through ACP terminals and sends:
+**Fixed in 0.3.3.** Kept here because the scenario exists to keep it fixed.
+
+The `shell` scenario failed, and not on permissions — all five of its requests were approved
+with `allow_once`. `claude-code-acp` routes its Bash tool through ACP terminals and sent:
 
 ```json
 {"command": "printf 'ran' > shell.txt", "outputByteLimit": 32000, "env": [...]}
@@ -101,8 +103,14 @@ The whole shell line arrives in `command`, with **no `args`**. `src/terminals.ts
 Executable not found in $PATH: "printf 'ran' > shell.txt"
 ```
 
-Every shell tool call from `claude-code-acp` fails this way. The ACP schema is ambiguous —
-"The command to execute" plus an optional "Array of command arguments" — but the agent's
-behaviour is the de-facto contract, and it puts a shell line there. Tracked separately from
-the permission work; the fix is to run through a shell when `args` is absent or empty and
-keep direct spawning when it is present.
+Every shell tool call from `claude-code-acp` failed this way. The model retried five times
+with different phrasings — all five approved — then delegated to a subagent that reported
+success without having written anything. From outside, that reads as "the agent is broken"
+or "permissions are broken", which is why it is worth naming.
+
+The ACP schema is ambiguous — "The command to execute" plus an optional "Array of command
+arguments" — but the agent's behaviour is the de-facto contract, and it puts a shell line
+there. `src/terminals.ts` now spawns directly when `args` is present (those arguments are
+already final, and re-splitting would turn one argument containing a space into two) and
+runs `command` through a shell when it is not. After the fix this scenario takes ONE
+permission request instead of five, and `shell.txt` exists.

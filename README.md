@@ -263,9 +263,14 @@ agents route their shell commands through `terminal/create` and read/write files
 event, so `content` entries of type `terminal` come with `output`, `truncated` and
 `exitStatus` filled in.
 
-Commands run as child processes of your app, with your environment. To opt out — letting
-the agent fall back to its own implementation — turn the capability off, which also stops
-us advertising it:
+Commands run as child processes of your app, with your environment. When the agent sends
+`args`, they are spawned exactly as given; when it sends none, `command` is treated as a
+shell line and run through `bash` (or `/bin/sh`), because that is how agents use it —
+`claude-code-acp` puts its whole Bash command line, redirections and all, in `command`.
+Set `ACP_TERMINAL_SHELL` to choose a different shell.
+
+To opt out — letting the agent fall back to its own implementation — turn the capability
+off, which also stops us advertising it:
 
 ```ts
 new AcpClient({

@@ -68,6 +68,39 @@ interface Entry {
  */
 const DRAIN_GRACE_MS = 250;
 
+/**
+ * The shell used when the agent hands us a command LINE.
+ *
+ * NOT `$SHELL`: that is the user's INTERACTIVE shell, which may be fish or nushell, and
+ * agents generate bash/POSIX syntax — `printf x >&2` is a syntax error in fish. Prefer
+ * bash, because agents write bashisms (`[[ ]]`, arrays) and `/bin/sh` is dash on Debian
+ * and Ubuntu, where those fail. Fall back to `/bin/sh`, which always exists.
+ */
+const SHELL = process.env.ACP_TERMINAL_SHELL || Bun.which("bash") || "/bin/sh";
+
+/**
+ * Turn a `terminal/create` request into an argv.
+ *
+ * The spec is ambiguous — "The command to execute" plus an optional "Array of command
+ * arguments" — and agents read it both ways. `claude-code-acp` puts its ENTIRE Bash command
+ * line in `command` and sends no `args` at all, so spawning `command` as an executable path
+ * failed every shell tool call it made: `Executable not found in $PATH: "printf 'ran' >
+ * shell.txt"`. Redirections, pipes and `&&` were unreachable, and so was a plain command
+ * that merely carried its own arguments.
+ *
+ * So: with `args`, the agent has already done the splitting and its arguments are final —
+ * spawn directly, because re-splitting would turn one argument containing a space into two.
+ * Without them, `command` is a line for a shell. The two readings never overlap, and for a
+ * bare program name they agree (`sh -c "ls"` and spawning `ls` do the same thing).
+ *
+ * The cost: a command line is subject to word splitting, so an agent sending an unquoted
+ * executable path containing spaces and no `args` would break. That shape is much rarer
+ * than the one this fixes, and quoting it here would corrupt every genuine command line.
+ */
+function toArgv(params: CreateTerminalParams): string[] {
+  return params.args?.length ? [params.command, ...params.args] : [SHELL, "-c", params.command];
+}
+
 export class TerminalRegistry {
   private readonly terminals = new Map<string, Entry>();
   private seq = 0;
@@ -86,7 +119,7 @@ export class TerminalRegistry {
     };
     for (const v of params.env ?? []) env[v.name] = v.value;
 
-    const proc = Bun.spawn([params.command, ...(params.args ?? [])], {
+    const proc = Bun.spawn(toArgv(params), {
       cwd: params.cwd ?? this.options.cwd,
       env,
       stdin: "ignore",
