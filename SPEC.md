@@ -97,16 +97,19 @@ Auth methods, capabilities, and features are NOT on the adapter; they come from
 
 ```ts
 const ADAPTERS = {
-  kimi:        { command: ["kimi", "acp"] },
-  claude:      { command: ["claude-code-acp"] },                            // Zed's bridge
-  claudeAgent: { command: ["bunx", "@agentclientprotocol/claude-agent-acp"] }, // the ACP project's
-  codex:       { command: ["codex-acp"] },
+  kimi:       { command: ["kimi", "acp"] },
+  claude:     { command: ["claude-agent-acp"] },   // @agentclientprotocol/claude-agent-acp
+  claudeCode: { command: ["claude-code-acp"] },    // deprecated: the same bridge, old name
+  codex:      { command: ["codex-acp"] },
 }
 ```
 
-The two Claude entries are different programs, not a rename. They differ in behaviour a
-caller can observe — notably the ORDER of the permission options they offer, which is
-reversed between them.
+`claudeCode` is the pre-rename package (`@zed-industries/claude-code-acp`), kept only so an
+existing install keeps working — it is frozen at 0.16.x against the current 0.64.x and npm
+marks it renamed. It is not redirected to `claude`, because a preset names a program to
+spawn and launching a different binary than the key says is the harder failure to diagnose.
+The versions differ in observable behaviour, notably the ORDER of the permission options
+they offer, which is reversed between them.
 
 `ADAPTERS.*` are convenient presets. The caller can also pass a raw adapter inline:
 

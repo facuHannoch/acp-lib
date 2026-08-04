@@ -21,29 +21,34 @@ export interface Adapter {
  * nothing about what the agent supports.
  *
  * A wrong command here surfaces as a connect timeout, which reads like a library fault, so
- * the marked entries are the ones actually spawned and verified. The `claude` CLI itself
- * speaks no ACP; there are TWO separate bridges and they are not interchangeable — see the
- * `claude` and `claudeAgent` entries. Check `which <command>` before assuming the library
- * is at fault.
+ * the marked entries are the ones actually spawned and verified. Check `which <command>`
+ * before assuming the library is at fault.
  */
 export const ADAPTERS = {
   kimi: { command: ["kimi", "acp"], ptyCommand: ["kimi"], displayName: "Kimi" }, // verified
-  // verified — @zed-industries/claude-code-acp, Zed's bridge. Installs a global binary.
-  claude: { command: ["claude-code-acp"], ptyCommand: ["claude"], displayName: "Claude" },
+  // verified — @agentclientprotocol/claude-agent-acp. Not the `claude` CLI, which speaks no
+  // ACP. If the binary isn't on PATH: `npm i -g @agentclientprotocol/claude-agent-acp`, or
+  // pass `{ command: ["bunx", "@agentclientprotocol/claude-agent-acp"] }` and skip installing.
+  claude: { command: ["claude-agent-acp"], ptyCommand: ["claude"], displayName: "Claude" },
   /**
-   * verified — @agentclientprotocol/claude-agent-acp, the ACP project's own Claude agent.
-   * A DIFFERENT program from `claude-code-acp` above, not a rename of it, and it ships no
-   * global binary (hence `bunx`).
+   * @deprecated The same bridge under its old name. npm marks it renamed to
+   * `@agentclientprotocol/claude-agent-acp`, and it has been left far behind (0.16.x against
+   * 0.64.x), so it is frozen rather than merely older. Use `claude` above.
    *
-   * They differ in ways that reach the caller. Most sharply: this one orders its permission
-   * options `reject_once` first, where `claude-code-acp` puts `allow_always` first — so a
-   * client choosing an option by POSITION auto-refuses everything here and silently grants
-   * standing permission there. Both are covered by smoke-tests/test4-permission.
+   * Kept, and NOT quietly redirected, because a preset names a program to spawn: silently
+   * launching a different binary than the key says would be the harder failure to diagnose
+   * of the two. It is here so an existing install keeps working while it is migrated.
+   *
+   * The versions behave differently in ways that reach the caller. Most sharply, the ORDER
+   * of the permission options they offer is reversed — `allow_always` first here,
+   * `reject_once` first in the current package — so a client that picked an option by
+   * POSITION granted standing permission against one and refused everything against the
+   * other. Both are covered by smoke-tests/test4-permission.
    */
-  claudeAgent: {
-    command: ["bunx", "@agentclientprotocol/claude-agent-acp"],
+  claudeCode: {
+    command: ["claude-code-acp"],
     ptyCommand: ["claude"],
-    displayName: "Claude Agent",
+    displayName: "Claude (deprecated bridge)",
   },
   // verified — @agentclientprotocol/codex-acp. The `codex` CLI has no `acp` subcommand.
   codex: { command: ["codex-acp"], ptyCommand: ["codex"], displayName: "Codex" },

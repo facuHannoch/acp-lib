@@ -36,7 +36,7 @@ treat third-party tools quite unlike its own, and testing only the built-in path
 proved the wrong thing. The two MCP scenarios differ in who binds the server: a server the
 agent discovers for itself is trusted on the agent's own terms, and that decision could in
 principle never cross ACP at all — in which case `defaultPermission` could not reach it,
-whatever it was set to. Measured below: for `claude-code-acp` it makes no difference.
+whatever it was set to. Measured below: for the Claude bridge it makes no difference.
 
 Each scenario ends with a check that the side effect is **visible on disk**. Protocol traffic
 can look like a clean approval while the call never happened; the filesystem is the only
@@ -54,17 +54,19 @@ outgoing requests use a separate id space and the numbers collide.)
 
 ## Measured, 2026-08-04
 
-### The two Claude bridges order their options in OPPOSITE directions
+### The Claude bridge REVERSED its option order across the rename
 
-This is the finding. `claude` and `claudeAgent` in `ADAPTERS` are different programs, not a
-rename, and a client that picks an option by position gets opposite behaviour from each:
+This is the finding. `@zed-industries/claude-code-acp` was renamed to
+`@agentclientprotocol/claude-agent-acp`, and somewhere across that move the permission
+options flipped end to end — so a client that picks by position gets opposite behaviour from
+the two, with no error either way:
 
 | adapter | package | `options[0]` | what 0.3.1 did |
 |---|---|---|---|
-| `claude` | `@zed-industries/claude-code-acp` | `allow_always` | granted **standing** permission, silently |
-| `claudeAgent` | `@agentclientprotocol/claude-agent-acp` | `reject_once` | **refused everything** |
+| `claudeCode` | `@zed-industries/claude-code-acp` 0.16.x (deprecated) | `allow_always` | granted **standing** permission, silently |
+| `claude` | `@agentclientprotocol/claude-agent-acp` 0.64.x | `reject_once` | **refused everything** |
 
-`claudeAgent`, the one that produced the original bug report, sends:
+`claude`, the current package and the one that produced the original bug report, sends:
 
 ```
 kind="reject_once"   optionId="reject"        name="Deny"
@@ -83,7 +85,7 @@ accepting it writes a `persistent` / `project_local` policy rule. That is the du
 concern made explicit by the agent itself, and it is why `allow_once` is preferred rather
 than merely accepted.
 
-### `claude-code-acp` — kinds are standard, the ORDER is the other way round
+### `claudeCode` (the deprecated bridge) — kinds are standard, order is the other way round
 
 Identical across all four scenarios — including both MCP binding paths — 8 requests observed:
 
@@ -93,13 +95,13 @@ kind="allow_once"    optionId="allow"         name="Allow"
 kind="reject_once"   optionId="reject"        name="Reject"
 ```
 
-Two things follow, and the second corrects the bug report that started this work.
+Two things follow.
 
 **The kinds are exactly the four ACP names.** Selecting by `kind` is sound for this agent.
 Selecting by `name` would not be — "Always Allow" and "Allow" differ by one word, and nothing
 in the protocol makes that prose stable.
 
-**`allow_always` is first. `reject_once` is last** — the reverse of `claudeAgent` above. What
+**`allow_always` is first. `reject_once` is last** — the reverse of `claude` above. What
 0.3.1 did here was select `options[0]` = **"Always Allow"**: it granted permission, durably,
 writing a standing rule into the agent's own settings on every auto-approval. Silent, and it
 persists.

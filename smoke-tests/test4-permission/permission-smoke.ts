@@ -276,7 +276,27 @@ for (const name of requested) {
   }
 }
 const candidates = (requested.length > 0 ? requested : Object.keys(ADAPTERS)) as AgentId[];
-const available = candidates.filter((id) => Bun.which(ADAPTERS[id].command[0]!) !== null);
+/**
+ * npm package behind an adapter whose binary is often not installed globally. Lets the test
+ * run an agent the machine hasn't got, via `bunx`, instead of skipping it — which for
+ * `claude` matters, since it is the agent the permission bug was reported against and a
+ * skip would read as a pass.
+ */
+const NPM_PACKAGE: Partial<Record<AgentId, string>> = {
+  claude: "@agentclientprotocol/claude-agent-acp",
+};
+
+/** The adapter as configured, or a `bunx` equivalent when its binary isn't on PATH. */
+function resolve(id: AgentId): (typeof ADAPTERS)[AgentId] | null {
+  const adapter = ADAPTERS[id];
+  if (Bun.which(adapter.command[0]!) !== null) return adapter;
+  const pkg = NPM_PACKAGE[id];
+  if (pkg && Bun.which("bunx") !== null) return { ...adapter, command: ["bunx", pkg] };
+  return null;
+}
+
+const resolved = new Map(candidates.map((id) => [id, resolve(id)] as const));
+const available = candidates.filter((id) => resolved.get(id) != null);
 const missing = candidates.filter((id) => !available.includes(id));
 
 if (available.length === 0) {
@@ -342,7 +362,7 @@ async function run(agent: AgentId, scenario: Scenario): Promise<Report> {
   let session: AgentSession;
   try {
     session = await AgentSession.create({
-      adapter: ADAPTERS[agent],
+      adapter: resolved.get(agent)!,
       adapterId: agent,
       cwd: workDir,
       transcriptPath,
