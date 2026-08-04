@@ -110,12 +110,44 @@ Two agents from the same vendor, opposite orderings, opposite failure modes from
 line of code. Nothing in the protocol makes either order wrong, which is the whole argument
 for keying on `kind`.
 
-### `codex-acp` and `kimi` — never asked
+### `kimi` — same kinds, completely different option IDs
 
-Neither routed a file write through `session/request_permission` at all. Both decide
-internally, so `defaultPermission` is dead code for them and a consumer relying on a
-permission prompt to gate these agents would be relying on nothing. Reported as `skipped`,
-never as passed.
+Kimi never asked about its own file write, but it gates MCP tools, and when it asks it sends:
+
+```
+kind="allow_once"    optionId="approve_once"    name="Approve once"
+kind="allow_always"  optionId="approve_always"  name="Approve for this session"
+kind="reject_once"   optionId="reject"          name="Reject"
+```
+
+`approve_once`, not `allow`. The **kinds** match the schema exactly; the **ids** share
+nothing with Claude's. So a client keying on `optionId` would work against Claude and fail
+against Kimi, silently, and a client keying on `name` would fail against both the moment
+either reworded a button. `kind` is the only field that is the same thing everywhere — this
+is the case that makes it more than a stylistic preference.
+
+Note also that `allow_always` means "for this session" here and a persistent project rule in
+Claude. Same kind, very different blast radius, which is the other reason to prefer
+`allow_once` rather than treat the two as interchangeable.
+
+### `codex-acp` — never asks, and ignores `.mcp.json`
+
+Codex routed nothing through `session/request_permission` in any scenario: it decides
+internally, so `defaultPermission` is dead code for it and a consumer relying on a permission
+prompt to gate Codex would be relying on nothing. Reported as `skipped`, never as passed.
+
+It also does not read a project-scoped `.mcp.json` — in that scenario the tool simply never
+ran. MCP servers reach Codex only when the client binds them over ACP (`mcpServers` at
+`session/new`), which is why the skipped path still reports whether the side effect landed:
+"never asked" and "never ran" are different findings and would otherwise look identical.
+
+### Who asks, and how MCP servers get in
+
+| agent | asks permission? | MCP bound over ACP | MCP from `.mcp.json` |
+|---|---|---|---|
+| `claude` | yes | works | works |
+| `kimi` | MCP tools yes, own writes no | works | works |
+| `codex` | never | works | **never runs** |
 
 ### A separate bug this turned up: `terminal/create` was not run through a shell
 
