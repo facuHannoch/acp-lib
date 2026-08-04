@@ -112,8 +112,9 @@ const result = await client.prompt("hello", {
     onChunk: (text) => ...,
     onActivity: (event) => ...  // thinking, tool calls, etc.
     onPermissionRequest: (request) => {
-        // caller decides
-        return { outcome: "selected", optionId: "approve" }
+        // caller decides — always by `kind`, never by position (Claude lists reject first)
+        const allow = request.options.find((o) => o.kind === "allow_once")
+        return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" }
     }
 })
 

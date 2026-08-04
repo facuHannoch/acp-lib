@@ -97,12 +97,23 @@ await agent.prompt("Find and fix the failing test.", {
   onChunk: (text) => process.stdout.write(text),         // response text as it streams
   onActivity: (event) => render(event),                  // thinking / tool calls / plan / …
   onUpdate: (raw) => log(raw),                           // every raw session/update, unmapped
-  onPermissionRequest: (req) => ({ outcome: "selected", optionId: req.options[0].optionId }),
+  onPermissionRequest: (req) => {                        // blocking — the agent waits
+    const allow = req.options.find((o) => o.kind === "allow_once");
+    return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
+  },
 });
 ```
 
+Always pick a permission option by **`kind`**, never by position or name. Option ids are
+the agent's own strings, the order is the agent's choice — Claude lists its reject option
+first — and `name` is prose meant for a human. The four kinds are `allow_once`,
+`allow_always`, `reject_once`, `reject_always`; treat the `_always` pair as policy, since
+they persist into the agent's settings and outlive the session.
+
 If you omit `onPermissionRequest`, the client falls back to the controller's
-`defaultPermission` (`"approve"` / `"cancel"`).
+`defaultPermission` (`"approve"` / `"cancel"`). `"approve"` selects `allow_once`, or
+`allow_always` if that is the only grant offered, and cancels if it finds neither — it
+never guesses.
 
 Every session update except the response text reaches `onActivity`, discriminated by
 `kind`: `thinking`, `user_message`, `tool`, `tool_update`, `plan`, `plan_update`,

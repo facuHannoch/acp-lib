@@ -673,11 +673,20 @@ export class AcpClient implements AgentClient {
   }
 
   private defaultOutcome(request: PermissionRequest): PermissionOutcome {
-    if ((this.config.defaultPermission ?? "cancel") === "approve") {
-      const first = request.options[0];
-      if (first) return { outcome: "selected", optionId: first.optionId };
-    }
-    return { outcome: "cancelled" };
+    if ((this.config.defaultPermission ?? "cancel") !== "approve") return { outcome: "cancelled" };
+
+    // By KIND, never by position. Agents order their options differently and Claude leads
+    // with reject, so taking `options[0]` auto-REFUSED every call it meant to approve.
+    //
+    // `allow_once` first is deliberate: `allow_always` writes a rule into the agent's own
+    // settings that outlives this session, and an auto-approver must not quietly make
+    // policy on the user's behalf. It is the fallback, never the preference.
+    const allow =
+      request.options.find((o) => o.kind === "allow_once") ??
+      request.options.find((o) => o.kind === "allow_always");
+
+    // Nothing recognizable to approve: refuse rather than guess. Guessing is the bug above.
+    return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
   }
 }
 

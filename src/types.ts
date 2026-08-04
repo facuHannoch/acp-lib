@@ -168,11 +168,27 @@ export type PermissionOutcome =
   | { outcome: "selected"; optionId: string }
   | { outcome: "cancelled" };
 
+/**
+ * What an option DOES, independent of what it is called or where it sits in the list.
+ * The only safe thing to branch on: `name` is prose and the order is the agent's whim
+ * (Claude puts its reject option first). `allow_always` and `reject_always` persist into
+ * the agent's own settings and outlive the session — treat them as policy, not answers.
+ *
+ * The open arm keeps a kind we don't know yet from failing to typecheck; branch with a
+ * fallback rather than assuming the four.
+ */
+export type PermissionOptionKind =
+  | "allow_once"
+  | "allow_always"
+  | "reject_once"
+  | "reject_always"
+  | (string & {});
+
 /** A permission request surfaced to the caller. The agent BLOCKS until this resolves. */
 export interface PermissionRequest {
   toolCallId: string;
   title?: string;
-  options: Array<{ optionId: string; name: string; kind: string }>;
+  options: Array<{ optionId: string; name: string; kind: PermissionOptionKind }>;
   /** The raw SDK request, for callers that need fields we haven't surfaced. */
   raw: unknown;
 }

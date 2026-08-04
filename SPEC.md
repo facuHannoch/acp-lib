@@ -161,7 +161,8 @@ const result = await client.prompt("hello", {
   onChunk: (text) => process.stdout.write(text),   // agent_message_chunk (response text)
   onActivity: (event) => { ... },                  // thought chunks, tool calls, plan, etc.
   onPermissionRequest: (request) => {              // session/request_permission (blocking)
-    return { outcome: "selected", optionId: "approve" }
+    const allow = request.options.find((o) => o.kind === "allow_once")
+    return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" }
   },
 })
 ```
@@ -172,6 +173,11 @@ const result = await client.prompt("hello", {
 - **`onPermissionRequest`** — a *request*, not an observation. The agent **blocks**
   until the client responds. Must return an outcome. If not provided, the library
   falls back to `defaultPermission` ("approve" or "cancel").
+  Select by **`kind`** (`allow_once` | `allow_always` | `reject_once` | `reject_always`),
+  never by position: option ids are agent-specific and the ordering is the agent's own —
+  Claude lists reject first. `defaultPermission: "approve"` prefers `allow_once`, takes
+  `allow_always` only when no `allow_once` is offered (it writes a durable rule into the
+  agent's settings), and cancels when neither is present rather than guessing.
 
 ### PromptResult
 

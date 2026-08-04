@@ -129,6 +129,7 @@ export type {
   PlanEntry,
   PermissionRequest,
   PermissionOutcome,
+  PermissionOptionKind,
   Usage,
   Attachment,
   SessionListEntry,
