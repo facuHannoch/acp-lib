@@ -97,11 +97,16 @@ Auth methods, capabilities, and features are NOT on the adapter; they come from
 
 ```ts
 const ADAPTERS = {
-  kimi:   { command: ["kimi", "acp"] },
-  claude: { command: ["claude-code-acp"] },
-  codex:  { command: ["codex-acp"] },
+  kimi:        { command: ["kimi", "acp"] },
+  claude:      { command: ["claude-code-acp"] },                            // Zed's bridge
+  claudeAgent: { command: ["bunx", "@agentclientprotocol/claude-agent-acp"] }, // the ACP project's
+  codex:       { command: ["codex-acp"] },
 }
 ```
+
+The two Claude entries are different programs, not a rename. They differ in behaviour a
+caller can observe — notably the ORDER of the permission options they offer, which is
+reversed between them.
 
 `ADAPTERS.*` are convenient presets. The caller can also pass a raw adapter inline:
 

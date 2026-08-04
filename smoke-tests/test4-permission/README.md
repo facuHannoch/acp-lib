@@ -54,7 +54,36 @@ outgoing requests use a separate id space and the numbers collide.)
 
 ## Measured, 2026-08-04
 
-### `claude-code-acp` — kinds are standard, the ORDER is not what was assumed
+### The two Claude bridges order their options in OPPOSITE directions
+
+This is the finding. `claude` and `claudeAgent` in `ADAPTERS` are different programs, not a
+rename, and a client that picks an option by position gets opposite behaviour from each:
+
+| adapter | package | `options[0]` | what 0.3.1 did |
+|---|---|---|---|
+| `claude` | `@zed-industries/claude-code-acp` | `allow_always` | granted **standing** permission, silently |
+| `claudeAgent` | `@agentclientprotocol/claude-agent-acp` | `reject_once` | **refused everything** |
+
+`claudeAgent`, the one that produced the original bug report, sends:
+
+```
+kind="reject_once"   optionId="reject"        name="Deny"
+kind="allow_once"    optionId="allow"         name="Allow Once"
+kind="allow_always"  optionId="allow_always"  name="Always Allow"
+```
+
+Against 0.3.1 that is `options[0]` = `reject`, and every tool call in the session comes back
+`User refused permission to run tool` — with the agent, not the client, appearing to be the
+one refusing. Confirmed against a production log where `permission_request` and
+`permission_response outcome={"outcome":"selected","optionId":"reject"}` are one millisecond
+apart.
+
+Its `allow_always` option also carries `_meta.permission.changes`, spelling out that
+accepting it writes a `persistent` / `project_local` policy rule. That is the durable-grant
+concern made explicit by the agent itself, and it is why `allow_once` is preferred rather
+than merely accepted.
+
+### `claude-code-acp` — kinds are standard, the ORDER is the other way round
 
 Identical across all four scenarios — including both MCP binding paths — 8 requests observed:
 
@@ -70,13 +99,14 @@ Two things follow, and the second corrects the bug report that started this work
 Selecting by `name` would not be — "Always Allow" and "Allow" differ by one word, and nothing
 in the protocol makes that prose stable.
 
-**`allow_always` is first. `reject_once` is last.** So the reported failure mode — "the
-harness presents reject first, and approve becomes a refusal" — is *not* what this agent
-does. What 0.3.1 actually did here was select `options[0]` = **"Always Allow"**: it granted
-permission, durably, writing a standing rule into the agent's own settings on every
-auto-approval. That is still a real bug, and arguably a worse one than a refusal, because it
-is silent and it persists. But it is a different bug, and a refusal observed in production
-needs another explanation.
+**`allow_always` is first. `reject_once` is last** — the reverse of `claudeAgent` above. What
+0.3.1 did here was select `options[0]` = **"Always Allow"**: it granted permission, durably,
+writing a standing rule into the agent's own settings on every auto-approval. Silent, and it
+persists.
+
+Two agents from the same vendor, opposite orderings, opposite failure modes from the same
+line of code. Nothing in the protocol makes either order wrong, which is the whole argument
+for keying on `kind`.
 
 ### `codex-acp` and `kimi` — never asked
 
