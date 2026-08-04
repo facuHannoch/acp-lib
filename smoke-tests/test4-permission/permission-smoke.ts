@@ -30,7 +30,7 @@
 //
 // Exit codes: 0 all checks passed, 1 a check failed, 2 nothing could run.
 
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,8 +70,10 @@ interface ScenarioContext {
 interface Scenario {
   id: string;
   label: string;
-  /** Bind the MCP server for this scenario. */
+  /** Bind the MCP server over ACP, at session/new. */
   mcp: boolean;
+  /** Instead, drop a project-scoped `.mcp.json` in the workspace and bind nothing. */
+  mcpJson?: boolean;
   prompt: (ctx: ScenarioContext) => string;
   /** Ground truth: did the tool's side effect actually land? */
   verify: (ctx: ScenarioContext) => Promise<{ ok: boolean; detail: string }>;
@@ -121,6 +123,26 @@ const SCENARIOS: Scenario[] = [
     id: "mcp",
     label: "a tool from a bound MCP server",
     mcp: true,
+    prompt: () =>
+      `Use the record_marker tool to record the marker value ${MARKER_VALUE}.\n` +
+      `Do not ask me anything first. Use the tool — do not just describe it.`,
+    verify: async ({ markerPath }) => {
+      try {
+        const content = await readFile(markerPath, "utf8");
+        return { ok: content.includes(MARKER_VALUE), detail: JSON.stringify(content.trim()) };
+      } catch {
+        return { ok: false, detail: "the MCP tool never ran" };
+      }
+    },
+  },
+  {
+    id: "mcp-json",
+    label: "an MCP server from a project-scoped .mcp.json (bound by the AGENT, not by us)",
+    mcp: false,
+    mcpJson: true,
+    // The configuration a consumer actually ships. A server the agent discovers for itself
+    // is trusted on the agent's own terms, and that decision may never cross ACP at all —
+    // in which case `defaultPermission` cannot reach it, whatever it is set to.
     prompt: () =>
       `Use the record_marker tool to record the marker value ${MARKER_VALUE}.\n` +
       `Do not ask me anything first. Use the tool — do not just describe it.`,
@@ -277,6 +299,26 @@ async function run(agent: AgentId, scenario: Scenario): Promise<Report> {
 
   const workDir = await mkdtemp(join(tmpdir(), `${agent}-${scenario.id}-`));
   const ctx: ScenarioContext = { workDir, markerPath: join(workDir, "marker.txt") };
+
+  if (scenario.mcpJson) {
+    await writeFile(
+      join(workDir, ".mcp.json"),
+      JSON.stringify(
+        {
+          mcpServers: {
+            marker: {
+              command: process.execPath,
+              args: [MCP_SERVER],
+              env: { MCP_MARKER_FILE: ctx.markerPath },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
 
   const { wire: watch, exchanges, stderr } = makeWireWatcher();
   const sink = wirePath ? createWireLog({ path: wirePath }) : undefined;

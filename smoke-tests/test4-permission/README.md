@@ -22,17 +22,21 @@ bun smoke-tests/test4-permission/permission-smoke.ts --wire     # keep raw proto
 
 Exit codes: `0` all checks passed, `1` a check failed, `2` nothing could run.
 
-## Three scenarios, because agents gate tools differently
+## Four scenarios, because agents gate tools differently
 
 | id | tool |
 |---|---|
 | `builtin` | the agent's own file-write tool |
 | `shell` | the agent's shell/execute tool |
-| `mcp` | a tool from `marker-mcp-server.ts`, bound at `session/new` |
+| `mcp` | a tool from `marker-mcp-server.ts`, bound by US at `session/new` |
+| `mcp-json` | the same server, discovered by the AGENT from a project-scoped `.mcp.json` |
 
-The `mcp` one exists because that is the path the original bug was reported on. An agent may
+The MCP ones exist because that is the path the original bug was reported on. An agent may
 treat third-party tools quite unlike its own, and testing only the built-in path would have
-proved the wrong thing.
+proved the wrong thing. The two MCP scenarios differ in who binds the server: a server the
+agent discovers for itself is trusted on the agent's own terms, and that decision could in
+principle never cross ACP at all — in which case `defaultPermission` could not reach it,
+whatever it was set to. Measured below: for `claude-code-acp` it makes no difference.
 
 Each scenario ends with a check that the side effect is **visible on disk**. Protocol traffic
 can look like a clean approval while the call never happened; the filesystem is the only
@@ -52,7 +56,7 @@ outgoing requests use a separate id space and the numbers collide.)
 
 ### `claude-code-acp` — kinds are standard, the ORDER is not what was assumed
 
-Identical across all three scenarios, 7 requests observed:
+Identical across all four scenarios — including both MCP binding paths — 8 requests observed:
 
 ```
 kind="allow_always"  optionId="allow_always"  name="Always Allow"
