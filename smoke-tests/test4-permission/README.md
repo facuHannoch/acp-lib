@@ -178,3 +178,33 @@ there. `src/terminals.ts` now spawns directly when `args` is present (those argu
 already final, and re-splitting would turn one argument containing a space into two) and
 runs `command` through a shell when it is not. After the fix this scenario takes ONE
 permission request instead of five, and `shell.txt` exists.
+
+
+
+
+
+# Different agents using mcp
+
+| agent    | asks permission?             | MCP bound over ACP | MCP from `.mcp.json` |
+| -------- | ---------------------------- | ------------------ | -------------------- |
+| `claude` | yes                          | works              | works                |
+| `kimi`   | MCP tools yes, own writes no | works              | works                |
+| `codex`  | **never**                    | works              | **never runs**       |
+
+**Codex works with MCP, but only when *we* bind the server** — `mcpServers` at `session/new`. It ignores a project-scoped `.mcp.json` entirely: the tool never ran, and Codex never said anything about it. If any of your Codex agents rely on `.mcp.json` the way your Claude ones do, those tools are silently absent.
+
+Codex also never asks for permission in any scenario, so `defaultPermission` is dead code for it — worth knowing if you were counting on it as a gate.
+
+**And Kimi turned up exactly the thing you warned me about.** It gates MCP tools, and its options are:
+
+```
+kind="allow_once"    optionId="approve_once"     name="Approve once"
+kind="allow_always"  optionId="approve_always"   name="Approve for this session"
+kind="reject_once"   optionId="reject"           name="Reject"
+```
+
+`approve_once`, not `allow`. The **kinds** match the schema exactly; the **ids** share nothing with Claude's. So keying on `optionId` would work against Claude and fail silently against Kimi — which is your "it could have another name" concern, landing on the id field rather than the kind field. `kind` is the only thing that means the same thing across all three agents.
+
+One more difference hiding under the same kind: Kimi's `allow_always` is *"Approve for this session"*, while Claude's writes a persistent project-local rule. Same `kind`, very different blast radius — another reason `allow_once` is preferred rather than the two being treated as interchangeable.
+
+Committed as `7388d6e`. That's 10 commits on the branch now.
