@@ -37,6 +37,8 @@ export type {
   AgentSessionEvent,
   AgentSessionNotification,
   AgentSessionListener,
+  HandoffOptions,
+  HandoffResult,
 } from "./agent-session.ts";
 
 export type {
@@ -113,6 +115,7 @@ export type {
   TranscriptMetaLine,
   TranscriptPermissionLine,
   TranscriptRawLine,
+  TranscriptHandoffLine,
   TranscriptRole,
 } from "./transcript.ts";
 

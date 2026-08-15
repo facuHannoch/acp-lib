@@ -35,7 +35,7 @@ import type {
   WireEntry,
 } from "./types.ts";
 
-interface QueueItem {
+interface PromptQueueItem {
   kind: "prompt";
   turnId: string;
   text: string;
@@ -45,7 +45,17 @@ interface QueueItem {
   reject: (e: unknown) => void;
 }
 
-/** What the stable logical session is doing right now. `handoff` is used by the next part. */
+interface HandoffQueueItem {
+  kind: "handoff";
+  handoffId: string;
+  options: HandoffOptions;
+  resolve: (result: HandoffResult) => void;
+  reject: (error: unknown) => void;
+}
+
+type QueueItem = PromptQueueItem | HandoffQueueItem;
+
+/** What the stable logical session is doing right now. */
 export type AgentSessionPhase = "idle" | "prompting" | "handoff" | "stopped";
 
 /** Authoritative, immutable point-in-time state for orchestration consumers. */
@@ -61,6 +71,19 @@ export interface AgentSessionState {
   readonly mode: AgentMode;
 }
 
+export interface HandoffOptions {
+  /** Portable continuation context. When omitted, the current thread generates it. */
+  readonly summary?: string;
+}
+
+export interface HandoffResult {
+  readonly handoffId: string;
+  readonly agentSessionId: string;
+  readonly fromInternalSessionId: string | null;
+  readonly toInternalSessionId: string;
+  readonly summary: string;
+}
+
 /** Session-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
 export type AgentSessionEvent =
   | { kind: "state_changed"; state: AgentSessionState }
@@ -68,7 +91,20 @@ export type AgentSessionEvent =
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
   | { kind: "turn_failed"; turnId: string; error: string }
   /** The active ACP harness changed the slash commands it advertises. */
-  | { kind: "agent_commands_changed"; commands: readonly AgentCommand[] };
+  | { kind: "agent_commands_changed"; commands: readonly AgentCommand[] }
+  | {
+      kind: "handoff_started";
+      handoffId: string;
+      fromInternalSessionId: string | null;
+    }
+  | { kind: "handoff_completed"; result: HandoffResult }
+  | {
+      kind: "handoff_failed";
+      handoffId: string;
+      fromInternalSessionId: string | null;
+      toInternalSessionId?: string;
+      error: string;
+    };
 
 /** Ordered envelope delivered to every AgentSession subscriber. */
 export interface AgentSessionNotification {
@@ -121,6 +157,21 @@ const DEFAULT_ACTIVITY_KINDS: Array<ActivityEvent["kind"]> = [
   "mode",
   "unknown",
 ];
+
+const HANDOFF_SUMMARY_PROMPT = [
+  "Create portable continuation context for a new agent thread.",
+  "Summarize the objective, decisions, completed work, current state, important files or identifiers,",
+  "and concrete next steps. Preserve unresolved risks and constraints. Return only the continuation context.",
+].join(" ");
+
+function continuationPrompt(summary: string): string {
+  return [
+    "Continue this conversation using the following portable continuation context.",
+    "Treat it as prior context, not as a new user request. Confirm internally and continue from this state.",
+    "",
+    summary,
+  ].join("\n");
+}
 
 export interface AgentSessionConfig {
   /** The resolved adapter this conversation talks to. */
@@ -356,26 +407,59 @@ export class AgentSession implements AgentClient, Bridgeable {
     return this.prompt(`/${command}${suffix}`, handlers);
   }
 
+  /**
+   * Replace the underlying ACP thread while preserving this logical AgentSession object
+   * and id. The operation is serialized with prompts, so consumers never have to
+   * coordinate a handoff against in-flight work themselves.
+   */
+  handoff(options: HandoffOptions = {}): Promise<HandoffResult> {
+    return new Promise<HandoffResult>((resolve, reject) => {
+      if (this.phase === "stopped") {
+        reject(new Error("AgentSession is stopped"));
+        return;
+      }
+      this.queue.push({
+        kind: "handoff",
+        handoffId: this.mintOperationId(),
+        // A queued operation owns its arguments. Do not let a caller mutate the object
+        // while it waits behind an active prompt and silently change the handoff.
+        options: Object.freeze({ ...options }),
+        resolve,
+        reject,
+      });
+      this.emitStateIfChanged();
+      void this.pump();
+    });
+  }
+
   private async pump(): Promise<void> {
     if (this.pumping) return;
     this.pumping = true;
     try {
       while (this.queue.length > 0) {
         const item = this.queue.shift()!;
-        this.phase = "prompting";
+        this.phase = item.kind === "prompt" ? "prompting" : "handoff";
         this.emitStateIfChanged();
-        this.emit({ kind: "turn_started", turnId: item.turnId });
-        try {
-          const result = await this.runPrompt(item);
-          this.emit({
-            kind: "turn_completed",
-            turnId: item.turnId,
-            result: copyPromptResult(result),
-          });
-          item.resolve(result);
-        } catch (err) {
-          this.emit({ kind: "turn_failed", turnId: item.turnId, error: String(err) });
-          item.reject(err);
+        if (item.kind === "prompt") {
+          this.emit({ kind: "turn_started", turnId: item.turnId });
+          try {
+            const result = await this.runPrompt(item);
+            this.emit({
+              kind: "turn_completed",
+              turnId: item.turnId,
+              result: copyPromptResult(result),
+            });
+            item.resolve(result);
+          } catch (err) {
+            this.emit({ kind: "turn_failed", turnId: item.turnId, error: String(err) });
+            item.reject(err);
+          }
+        } else {
+          try {
+            item.resolve(await this.runHandoff(item));
+          } catch (err) {
+            item.reject(err);
+          }
         }
       }
     } finally {
@@ -385,7 +469,114 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
   }
 
-  private async runPrompt(item: QueueItem): Promise<PromptResult> {
+  private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
+    const fromInternalSessionId = this._internalSessionId;
+    let toInternalSessionId: string | undefined;
+    let summary: string | undefined;
+    this.emit({
+      kind: "handoff_started",
+      handoffId: item.handoffId,
+      fromInternalSessionId,
+    });
+    await this.appendTranscript({
+      v: 1,
+      t: "handoff",
+      event: "start",
+      ts: Date.now(),
+      handoffId: item.handoffId,
+      fromInternalSessionId,
+      ...(item.options.summary !== undefined ? { summary: item.options.summary } : {}),
+    });
+
+    try {
+      if (this.controller.isDegraded) {
+        throw new Error("handoff requires ACP (normal) mode");
+      }
+
+      if (item.options.summary !== undefined) {
+        if (!item.options.summary.trim()) throw new Error("handoff summary cannot be blank");
+        summary = item.options.summary;
+      } else {
+        const generated = await this.controller.prompt(HANDOFF_SUMMARY_PROMPT);
+        if (generated.status !== "completed" || !generated.text.trim()) {
+          throw new Error(`handoff summary generation ${generated.status}`);
+        }
+        summary = generated.text.trim();
+      }
+
+      const created = await this.controller.newSession();
+      if (!created.sessionId) throw new Error("harness returned no session id for handoff");
+      toInternalSessionId = created.sessionId;
+      this._internalSessionId = toInternalSessionId;
+      this.emitStateIfChanged();
+      await this.persist();
+
+      if (toInternalSessionId === fromInternalSessionId) {
+        throw new Error("harness did not replace the internal session during handoff");
+      }
+
+      const seeded = await this.controller.prompt(continuationPrompt(summary));
+      if (seeded.status !== "completed") {
+        throw new Error(`handoff continuation seeding ${seeded.status}`);
+      }
+
+      const result: HandoffResult = Object.freeze({
+        handoffId: item.handoffId,
+        agentSessionId: this.agentSessionId,
+        fromInternalSessionId,
+        toInternalSessionId,
+        summary,
+      });
+      await this.appendTranscript({
+        v: 1,
+        t: "handoff",
+        event: "complete",
+        ts: Date.now(),
+        handoffId: item.handoffId,
+        fromInternalSessionId,
+        toInternalSessionId,
+        summary,
+      });
+      this.emit({ kind: "handoff_completed", result });
+      return result;
+    } catch (err) {
+      // Once session/new succeeds the controller really is on the new thread. Keep the
+      // public id and catalog truthful even when continuation seeding subsequently fails.
+      const actualSessionId = this.controller.currentSessionId;
+      if (actualSessionId && actualSessionId !== this._internalSessionId) {
+        this._internalSessionId = actualSessionId;
+        toInternalSessionId = actualSessionId;
+        this.emitStateIfChanged();
+        try {
+          await this.persist();
+        } catch (persistError) {
+          this.log.warn("handoff_failure_persist_failed", { error: String(persistError) });
+        }
+      }
+      const error = String(err);
+      await this.appendTranscript({
+        v: 1,
+        t: "handoff",
+        event: "failed",
+        ts: Date.now(),
+        handoffId: item.handoffId,
+        fromInternalSessionId,
+        ...(toInternalSessionId ? { toInternalSessionId } : {}),
+        ...(summary !== undefined ? { summary } : {}),
+        error,
+      });
+      this.emit({
+        kind: "handoff_failed",
+        handoffId: item.handoffId,
+        fromInternalSessionId,
+        ...(toInternalSessionId ? { toInternalSessionId } : {}),
+        error,
+      });
+      throw err;
+    }
+  }
+
+  private async runPrompt(item: PromptQueueItem): Promise<PromptResult> {
     this.beginTurn(item.turnId);
     await this.appendTranscript({
       v: 1,
@@ -498,6 +689,10 @@ export class AgentSession implements AgentClient, Bridgeable {
    * random suffix covers two turns in the same millisecond.
    */
   private mintTurnId(): string {
+    return this.mintOperationId();
+  }
+
+  private mintOperationId(): string {
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   }
 
@@ -542,7 +737,11 @@ export class AgentSession implements AgentClient, Bridgeable {
     if (options?.clearQueue) {
       const dropped = this.queue.splice(0);
       for (const item of dropped) {
-        item.resolve({ text: "", stopReason: "cancelled", status: "cancelled", usage: null });
+        if (item.kind === "prompt") {
+          item.resolve({ text: "", stopReason: "cancelled", status: "cancelled", usage: null });
+        } else {
+          item.reject(new Error("handoff cancelled before it started"));
+        }
       }
       this.emitStateIfChanged();
     }

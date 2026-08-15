@@ -21,6 +21,10 @@
 //   written final line (torn write) costs that line only.
 // - `ts` is wall-clock milliseconds and is the ordering key ACROSS types, so a reader can
 //   interleave `msg` and `activity` on one timeline.
+// - `t:"handoff"` marks one logical AgentSession replacing its provider thread. Internal
+//   summary/continuation prompts are not `msg` lines, so they cannot be mistaken for user
+//   conversation. A start followed by failed is an attempted boundary; start followed by
+//   complete is a committed handoff.
 //
 // Any future change to fold semantics or line meaning bumps `v`.
 
@@ -89,12 +93,30 @@ export interface TranscriptRawLine {
   data: unknown;
 }
 
+/**
+ * A stable AgentSession replacing its underlying ACP thread. Library-generated summary
+ * and continuation prompts are represented by this boundary, never as user-authored
+ * `t:"msg"` lines.
+ */
+export interface TranscriptHandoffLine {
+  v: 1;
+  t: "handoff";
+  event: "start" | "complete" | "failed";
+  ts: number;
+  handoffId: string;
+  fromInternalSessionId: string | null;
+  toInternalSessionId?: string;
+  summary?: string;
+  error?: string;
+}
+
 export type TranscriptLine =
   | TranscriptMetaLine
   | TranscriptMessageLine
   | TranscriptActivityLine
   | TranscriptPermissionLine
-  | TranscriptRawLine;
+  | TranscriptRawLine
+  | TranscriptHandoffLine;
 
 export type TranscriptEntry = TranscriptMessageLine;
 
@@ -345,6 +367,15 @@ function isTranscriptLine(value: unknown): value is TranscriptLine {
       return true;
     case "raw":
       return typeof value.protocol === "string" && typeof value.event === "string";
+    case "handoff":
+      return (
+        (value.event === "start" || value.event === "complete" || value.event === "failed") &&
+        typeof value.handoffId === "string" &&
+        (value.fromInternalSessionId === null || typeof value.fromInternalSessionId === "string") &&
+        (value.toInternalSessionId === undefined || typeof value.toInternalSessionId === "string") &&
+        (value.summary === undefined || typeof value.summary === "string") &&
+        (value.error === undefined || typeof value.error === "string")
+      );
     default:
       return false;
   }

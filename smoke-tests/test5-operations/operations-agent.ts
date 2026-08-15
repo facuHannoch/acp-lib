@@ -94,6 +94,14 @@ function handleMessage(message: any): void {
       case "session/prompt": {
         const sessionId = String(message.params?.sessionId ?? currentSessionId ?? "unknown");
         const text = promptText(message.params?.prompt);
+        if (label === "fail-seed" && text.startsWith("Continue this conversation")) {
+          send({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32000, message: "deterministic continuation seed failure" },
+          });
+          break;
+        }
         if (!advertisedUsage) {
           advertisedUsage = true;
           // A late notification for another session must never replace the active

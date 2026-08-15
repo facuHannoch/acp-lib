@@ -445,3 +445,207 @@ The `AgentSession` command tests cover:
   typecheck and test validations above passed.
 - Subprocess tests and the smoke were run outside the managed sandbox so their local fake
   ACP processes could communicate. No network service or real harness was used.
+
+## Part 4 — Stable logical identity handoff and transcript boundaries
+
+Completed on 2026-08-15 on branch `feat/agent-session-operations`.
+
+### Goal and invariant
+
+Handoff is implemented as an operation on the existing `AgentSession`, not as creation of
+a replacement logical session. The invariant is:
+
+```text
+AgentSession object:       unchanged
+agentSessionId:            unchanged
+internalSessionId:         old ACP thread -> new ACP thread
+catalog key:               unchanged
+logical transcript path:  unchanged
+```
+
+This lets an orchestration consumer retain one durable reference while the library moves
+the conversation to a fresh provider context behind it.
+
+### Public API
+
+The new consumer-facing shapes are exported from the package root:
+
+```ts
+interface HandoffOptions {
+  readonly summary?: string;
+}
+
+interface HandoffResult {
+  readonly handoffId: string;
+  readonly agentSessionId: string;
+  readonly fromInternalSessionId: string | null;
+  readonly toInternalSessionId: string;
+  readonly summary: string;
+}
+
+session.handoff(options?): Promise<HandoffResult>
+```
+
+When a nonblank `summary` is supplied, handoff uses it verbatim. When it is omitted, the
+old thread is prompted to generate portable continuation context covering objectives,
+decisions, completed work, current state, important identifiers, next steps, constraints,
+and unresolved risks.
+
+The queued options object is copied and frozen when `handoff()` is called. A consumer
+cannot mutate a waiting handoff while it sits behind an active operation.
+
+The returned result is frozen and reports both provider thread ids alongside the stable
+logical id.
+
+### One serialized operation queue
+
+The old prompt-only queue is now a discriminated union of `prompt` and `handoff`
+operations. Both use the same pump, so:
+
+- A handoff waits for an active or earlier queued prompt.
+- A prompt submitted after a handoff waits for the new thread to be ready.
+- `queuedOperationCount` covers both operation kinds.
+- During execution `state.phase` is `handoff` and `isBusy` is true.
+- There is no false idle transition between adjacent operations.
+- `interrupt({ clearQueue: true })` rejects a handoff that has not started rather than
+  inventing a prompt-shaped cancellation result.
+- Stopped sessions reject new handoffs just as they reject new prompts.
+
+Summary generation and continuation seeding call the controller inside the outer handoff
+operation. They do not re-enter the AgentSession queue and cannot interleave with consumer
+prompts.
+
+### Handoff lifecycle
+
+The operation executes in this order:
+
+1. Capture the current internal session id.
+2. Publish `handoff_started` and append the start transcript boundary.
+3. Validate the supplied summary or generate one on the old thread.
+4. Call ACP `session/new` through `AgentController.newSession()`.
+5. Immediately update the AgentSession's `internalSessionId`, state snapshot, and existing
+   catalog record to the new thread.
+6. Seed the new thread with the portable continuation context.
+7. Append the completion boundary, publish `handoff_completed`, and resolve with the
+   frozen result.
+
+Starting a fresh thread naturally goes through the Part 3 command-transition machinery,
+so `agentCommands` clears and then adopts the new thread's advertised command set without
+special handoff code.
+
+Handoff is intentionally unavailable in degraded PTY mode because there is no ACP
+session identity or `session/new` operation to replace safely.
+
+### Notifications
+
+The existing ordered `AgentSessionNotification` stream now includes:
+
+```ts
+{ kind: "handoff_started", handoffId, fromInternalSessionId }
+{ kind: "handoff_completed", result }
+{ kind: "handoff_failed", handoffId, fromInternalSessionId, toInternalSessionId?, error }
+```
+
+These share the same stable `agentSessionId`, monotonic sequence counter, timestamp,
+listener ordering, listener exception isolation, and frozen event envelope as turn,
+state, and command notifications.
+
+### Transcript contract
+
+The recognized transcript union now includes `TranscriptHandoffLine`:
+
+```ts
+{
+  v: 1,
+  t: "handoff",
+  event: "start" | "complete" | "failed",
+  ts,
+  handoffId,
+  fromInternalSessionId,
+  toInternalSessionId?,
+  summary?,
+  error?,
+}
+```
+
+The reader validates and returns these records, and `ReadTranscriptOptions.types` can
+select `"handoff"` like any other recognized line type.
+
+Library-generated summary and continuation prompts are deliberately not written as
+`t:"msg"` lines. They are implementation traffic rather than user-authored conversation.
+The logical transcript instead records their effect as a typed boundary:
+
+- `start -> complete` means the provider-thread transition committed.
+- `start -> failed` means a handoff was attempted but did not complete.
+
+The completed record contains the portable summary, making the boundary self-describing
+without fabricating a user turn. The transcript remains one append-only file named from
+the stable `agentSessionId` across every internal thread.
+
+### Partial failure semantics
+
+Failures before `session/new` succeeds leave the old provider session active.
+
+The important partial-failure case is continuation seeding failing after the harness has
+already switched to the new thread. The implementation does not claim transactional
+rollback that ACP cannot guarantee. Instead it:
+
+- Keeps the stable logical identity.
+- Reports the new internal id because that is what the controller actually uses.
+- Persists that truthful id to the same catalog record.
+- Writes a failed boundary containing both old and new ids plus the error.
+- Publishes `handoff_failed` with the new id.
+- Rejects the handoff promise so the consumer knows continuation was not seeded.
+
+This avoids the worse outcome of exposing the old id while subsequent prompts actually
+go to the new thread. A future opt-in rollback policy could use `session/load` where a
+harness supports it, but rollback is not required for truthful base semantics.
+
+### Deterministic failure fixture
+
+The Part 1 fake harness accepts a `fail-seed` label. In that mode it successfully creates
+the new provider thread and then returns a JSON-RPC error for the continuation prompt.
+This pins the post-switch failure behavior rather than testing only failures that occur
+before any state changes.
+
+### Files changed
+
+- `src/agent-session.ts`
+- `src/transcript.ts`
+- `src/index.ts`
+- `smoke-tests/test5-operations/operations-agent.ts`
+- `test/agent-session-handoff.test.ts` (new)
+
+### Tests added
+
+The focused handoff suite verifies:
+
+- The same object and stable id survive handoff.
+- The internal provider id changes.
+- The frozen result reports the exact old and new ids.
+- Supplied summary preservation.
+- Generated summary behavior on the old thread.
+- Serialization behind an active prompt.
+- `handoff` phase and busy state during the operation.
+- Turn completion occurs before a queued handoff starts.
+- Command discovery follows the new internal thread.
+- The existing catalog record is updated in place.
+- The transcript contains start and complete boundaries.
+- Internal prompts do not appear as user message lines.
+- Ordered started/completed notifications.
+- Post-switch continuation failure keeps public state, controller state, catalog,
+  notification, and failed transcript boundary consistent.
+
+### Verification
+
+- `bun run check` passed: TypeScript plus the complete test suite.
+- Full suite: 173 passed, 0 failed, 981 expectations across 17 files.
+- Focused handoff suite: 3 passed, 0 failed, 31 expectations.
+- `git diff --check` passed.
+- `bun run pack:dry` succeeded and included the changed public source files.
+- The operations smoke now reports 18/19 checks passing. Handoff exposure, stable logical
+  identity, changed internal id, catalog update, lifecycle notification, and transcript
+  boundary are all green.
+- The only remaining smoke failure is `AgentSession.restore()`, which belongs to Part 5.
+- Subprocess tests and smoke verification used only the local deterministic ACP fixture;
+  no network service or real harness was used.
