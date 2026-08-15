@@ -2,7 +2,8 @@
 
 This is the executable contract for the three levels an `acp-lib` consumer uses:
 
-1. **Catalog management** — create, list, stop, and restore logical `AgentSession`s.
+1. **Catalog management** — create, list, stop, and reopen logical `AgentSession`s using
+   consumer-owned composition over the catalog primitives.
 2. **Stable session control** — observe busy/finished state and hand off to a fresh
    internal thread without replacing the consumer's `AgentSession` identity.
 3. **Harness commands** — inspect commands advertised over ACP and invoke one explicitly.
@@ -49,7 +50,10 @@ The smoke test pins this consumer-facing shape. Exact implementation details rem
 internal.
 
 ```ts
-const session = await AgentSession.create({ ... });
+const session = await AgentSession.create({
+  ...,
+  providerSession: { kind: "new" },
+});
 
 const unsubscribe = session.subscribe((notification) => {
   // state_changed, turn_started/completed/failed,
@@ -73,10 +77,20 @@ handoff.toInternalSessionId === session.internalSessionId;
 
 await session.stop();
 
-const restored = await AgentSession.restore({
-  agentSessionId: session.agentSessionId,
+// Reopening is highest-layer consumer composition, not another core primitive.
+const record = await sessions.get(session.agentSessionId);
+if (!record) throw new Error("logical session missing from catalog");
+const reopened = await AgentSession.create({
+  adapter: await resolveAdapter(record.adapter),
+  adapterId: record.adapter,
+  agentSessionId: record.agentSessionId,
+  providerSession: record.internalSessionId
+    ? { kind: "load", internalSessionId: record.internalSessionId, onFailure: "error" }
+    : { kind: "new" },
+  mode: record.mode,
+  cwd: record.cwd,
+  title: record.title,
   sessions,
-  resolveAdapter,
   transcriptDir,
 });
 ```

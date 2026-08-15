@@ -71,6 +71,7 @@ describe("AgentSession handoff", () => {
 
     const record = await sessions.get("stable-logical-id");
     expect(record?.internalSessionId).toBe(session.internalSessionId);
+    expect(record?.transcriptPath).toBe(transcriptPath);
 
     const lines = await readTranscriptLines(transcriptPath);
     const boundaries = lines.filter((line) => line.t === "handoff");

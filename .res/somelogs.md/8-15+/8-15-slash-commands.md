@@ -2402,3 +2402,263 @@ The opinionated multi-session managed CLI remains a later layer. We can sketch i
 - Replacing the consumer’s own UI/session selection model.
 
 The first concrete part is therefore `test5-operations`: README, deterministic fake harness, and the consumer scenario that pins stable identity, notifications, command discovery, handoff, catalog behavior, and restoration.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# AgentSession
+
+
+Yes—there are currently four independent concepts presented as if they might all mean “load,” which is the confusing part.
+
+### What `SessionManager.get()` does
+
+```ts
+const record = await sessions.get(agentSessionId);
+```
+
+It only retrieves routing metadata:
+
+```ts
+{
+  agentSessionId,
+  internalSessionId,
+  adapter,
+  mode,
+  cwd,
+  title,
+  createdAt,
+  updatedAt,
+}
+```
+
+It does not:
+
+- Start an `AgentSession`.
+- Read a transcript.
+- Resolve an adapter.
+- Contact the ACP harness.
+- Load the internal ACP session.
+
+With `FileSessionStore`, it reads `<encoded-agentSessionId>.json`. Currently, missing files, malformed JSON, and read errors all produce `null`; that conflation is worth fixing eventually.
+
+### What the inputs currently mean
+
+| Input | Current effect |
+|---|---|
+| `agentSessionId` | Sets the stable logical identity. A UUID is generated when omitted. |
+| `internalSessionId` | Asks the ACP harness to load that provider thread. |
+| `transcriptPath` | Chooses an exact append-only output file. It is never read during creation. |
+| `transcriptDir` | Derives `<encoded-agentSessionId>.jsonl`. It is never searched during creation. |
+| `sessions` | Records routing metadata. It is never queried automatically by `AgentSession.create()`. |
+
+`agentSessionId` is always available afterward:
+
+```ts
+const session = await AgentSession.create(...);
+session.agentSessionId;
+```
+
+If supplied, the property contains that value. If omitted, it contains the generated UUID.
+
+### Current startup matrix
+
+| `agentSessionId` | `internalSessionId` | Current result |
+|---|---|---|
+| omitted | omitted | New logical ID, new ACP thread |
+| supplied | omitted | Supplied logical ID, new ACP thread |
+| omitted | supplied | New logical ID wrapping the requested existing ACP thread |
+| supplied | supplied | Supplied logical ID wrapping the requested existing ACP thread |
+
+Transcript existence has no effect on this matrix.
+
+There is also an important hidden policy: if `internalSessionId` is supplied but loading fails, `AcpClient.startSession()` currently falls back to creating a fresh internal session. That new ID is then persisted. This is convenient, but it is also a potentially surprising and destructive ambiguity.
+
+### Should an existing transcript implicitly load a session?
+
+I would not make `transcriptPath` or `transcriptDir` implicitly select the ACP session.
+
+A transcript is currently a history projection, not a complete session manifest. In particular:
+
+- An explicit transcript filename does not identify an `agentSessionId`.
+- It may contain several internal session IDs because of handoffs.
+- It does not contain all runtime information needed to reconnect.
+- The provider thread might no longer exist.
+- A valid transcript could intentionally be reused while starting a new provider thread.
+- A malformed transcript should not silently change whether a new harness session is created.
+
+Making file existence control startup would couple two independent decisions:
+
+```text
+Where should history be written?
+Which provider thread should be opened?
+```
+
+Those should remain separate.
+
+If we eventually want “open this session file,” that should be an explicit recovery API operating on a richer session bundle or manifest—not an implicit side effect of `transcriptPath`.
+
+### Proposed model
+
+I think we should treat configuration as four independent axes:
+
+```text
+Logical identity     agentSessionId
+Provider backing     new thread or load specific internalSessionId
+Catalog persistence  SessionManager
+History persistence  transcript path/store
+```
+
+The provider choice should become explicit and discriminated:
+
+```ts
+providerSession:
+  | { kind: "new" }
+  | {
+      kind: "load";
+      internalSessionId: string;
+      onFailure?: "error" | "new";
+    }
+```
+
+For example:
+
+```ts
+await AgentSession.create({
+  adapter,
+  adapterId: "codex",
+  providerSession: { kind: "new" },
+});
+```
+
+versus:
+
+```ts
+await AgentSession.create({
+  adapter,
+  adapterId: record.adapter,
+  agentSessionId: record.agentSessionId,
+  providerSession: {
+    kind: "load",
+    internalSessionId: record.internalSessionId,
+    onFailure: "error",
+  },
+});
+```
+
+My preferred defaults:
+
+- No `providerSession`: `{ kind: "new" }`.
+- Loading defaults to `onFailure: "error"`.
+- Falling back to a new thread must be explicitly requested.
+- Keep `internalSessionId` temporarily as a deprecated shorthand for compatibility.
+
+That eliminates precedence: there is one authoritative provider-session selector.
+
+### Transcript semantics
+
+I would define these strictly:
+
+- No transcript option: no transcript is written.
+- `transcriptPath`: append to exactly that file.
+- `transcriptDir`: derive the filename from `agentSessionId`.
+- Both: configuration error.
+- Existing valid file: append another `open` record.
+- Missing file/directory: create it on the first write.
+- Malformed existing lines: readers skip malformed lines, but creation does not reinterpret or repair the file.
+- Transcript selection never determines whether the ACP thread is new or loaded.
+
+No transcript does not remove AgentSession capabilities. Prompting, handoff, state, listeners, commands, and catalog operations still work. What is lost is persistent library-owned conversation history and handoff boundaries.
+
+No `SessionManager` means the stable identity exists only while the consumer retains it. A transcript may still persist content, but there is no durable adapter/internal-session routing record.
+
+### Listing transcript directories
+
+Allowing consumers to discover transcripts in a directory is reasonable, but I would not treat filenames as a second session catalog.
+
+Better possibilities:
+
+1. Continue listing logical sessions through `SessionManager`, and store the transcript location in its `SessionRecord`.
+2. Later introduce a `TranscriptStore` abstraction with `list()`, `read()`, and `append()`.
+3. Add a recovery scanner only as a repair/import tool.
+
+The first option fits the architecture best:
+
+```ts
+SessionRecord {
+  agentSessionId,
+  internalSessionId,
+  adapter,
+  mode,
+  transcript?: {
+    kind: "file";
+    path: string;
+  }
+}
+```
+
+Then `SessionManager.list()` remains the authoritative way to discover logical conversations, while the transcript remains their history.
+
+### Recommended next part
+
+Before implementing more lifecycle methods, I would make Part 5 an identity/startup-semantics pass:
+
+1. Replace the smoke test’s proposed `restore()` with a consumer-owned load helper.
+2. Introduce an explicit new/load provider-session choice.
+3. Define load-failure policy instead of silently falling back.
+4. Keep transcript location independent from startup intent.
+5. Review catalog collisions when a supplied `agentSessionId` already exists.
+6. Decide whether transcript location belongs in `SessionRecord`.
+7. Document the complete precedence—or preferably, the absence of precedence because the axes are independent.
+
+The central rule should be:
+
+> `agentSessionId` selects logical identity, provider-session configuration selects the ACP thread, and transcript configuration only selects history storage. None implicitly overrides another.

@@ -25,9 +25,10 @@ export interface SessionRecord {
   mode: "normal" | "degraded";
   cwd?: string;
   title?: string;
+  /** Resolved logical transcript location, when history persistence is enabled. */
+  transcriptPath?: string;
   createdAt: string;
   updatedAt: string;
-  // (transcript storage slots in here later without breaking the schema.)
 }
 
 export interface SessionStore {

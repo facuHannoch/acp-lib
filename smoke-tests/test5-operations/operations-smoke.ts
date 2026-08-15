@@ -66,15 +66,6 @@ interface DesiredSessionSurface {
   }>;
 }
 
-interface DesiredRestoreSurface {
-  restore(options: {
-    agentSessionId: string;
-    sessions: SessionManager;
-    resolveAdapter: (adapterId: string) => Adapter | Promise<Adapter>;
-    transcriptDir: string;
-  }): Promise<AgentSession>;
-}
-
 async function runConsumer(): Promise<void> {
   const debugWire = process.env.OPERATIONS_DEBUG === "1"
     ? (entry: { dir: string; line: string }) => process.stderr.write(`${entry.dir} ${entry.line}\n`)
@@ -115,6 +106,7 @@ async function runConsumer(): Promise<void> {
       adapter: adapterA,
       adapterId: "fake-a",
       agentSessionId: "consumer-a",
+      providerSession: { kind: "new" },
       sessions,
       transcriptDir,
       wire: debugWire,
@@ -205,6 +197,7 @@ async function runConsumer(): Promise<void> {
       adapter: adapterB,
       adapterId: "fake-b",
       agentSessionId: "consumer-b",
+      providerSession: { kind: "new" },
       sessions,
       transcriptDir,
       wire: debugWire,
@@ -227,22 +220,20 @@ async function runConsumer(): Promise<void> {
     await first.stop();
     first = null;
 
-    const restoreSurface = AgentSession as unknown as Partial<DesiredRestoreSurface>;
-    const hasRestore = typeof restoreSurface.restore === "function";
-    check(checks, "catalog", "AgentSession restoration is exposed", hasRestore,
-      hasRestore ? "AgentSession.restore(options) is present" : "missing AgentSession.restore(options)");
-    if (hasRestore) {
-      restored = await restoreSurface.restore!({
-        agentSessionId: "consumer-a",
-        sessions,
-        resolveAdapter,
-        transcriptDir,
-      });
-      const record = await sessions.get("consumer-a");
-      check(checks, "catalog", "restoration retains logical and internal identity",
-        restored.agentSessionId === "consumer-a" && restored.internalSessionId === record?.internalSessionId,
-        `restored=${restored.agentSessionId}/${restored.internalSessionId} catalog=${record?.internalSessionId}`);
-    }
+    restored = await loadAgentSession({
+      agentSessionId: "consumer-a",
+      sessions,
+      resolveAdapter,
+      transcriptDir,
+      wire: debugWire,
+    });
+    const record = await sessions.get("consumer-a");
+    check(checks, "catalog", "consumer composes catalog metadata into a live AgentSession",
+      restored.agentSessionId === "consumer-a" && restored.internalSessionId === record?.internalSessionId,
+      `loaded=${restored.agentSessionId}/${restored.internalSessionId} catalog=${record?.internalSessionId}`);
+    const continued = await restored.prompt("after consumer-owned load");
+    check(checks, "session", "loaded logical session remains usable",
+      continued.text.includes("after consumer-owned load"), JSON.stringify(continued.text));
   } catch (error) {
     if (!first && checks.length === 0) bootstrapError = String(error);
     else check(checks, "session", "scenario completed without an unexpected exception", false, String(error));
@@ -253,6 +244,39 @@ async function runConsumer(): Promise<void> {
 
   clearTimeout(watchdog);
   await report(checks, root, bootstrapError);
+}
+
+/**
+ * Highest-layer policy belongs to the consumer: the catalog supplies routing metadata,
+ * the consumer resolves its adapter, and AgentSession.create performs the explicit
+ * provider-thread load. No separate restore primitive is needed in the library.
+ */
+async function loadAgentSession(options: {
+  agentSessionId: string;
+  sessions: SessionManager;
+  resolveAdapter: (adapterId: string) => Adapter | Promise<Adapter>;
+  transcriptDir: string;
+  wire?: (entry: { dir: string; line: string }) => void;
+}): Promise<AgentSession> {
+  const record = await options.sessions.get(options.agentSessionId);
+  if (!record) throw new Error(`unknown logical session: ${options.agentSessionId}`);
+  const adapter = await options.resolveAdapter(record.adapter);
+  return AgentSession.create({
+    adapter,
+    adapterId: record.adapter,
+    agentSessionId: record.agentSessionId,
+    providerSession: record.internalSessionId
+      ? { kind: "load", internalSessionId: record.internalSessionId, onFailure: "error" }
+      : { kind: "new" },
+    mode: record.mode,
+    cwd: record.cwd,
+    title: record.title,
+    sessions: options.sessions,
+    ...(record.transcriptPath
+      ? { transcriptPath: record.transcriptPath }
+      : { transcriptDir: options.transcriptDir }),
+    wire: options.wire,
+  });
 }
 
 function fakeAdapter(label: string): Adapter {

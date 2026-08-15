@@ -1,4 +1,10 @@
-import { AcpClient, type AcpClientConfig, type ConnectResult, type SwitchSessionOptions } from "./client.ts";
+import {
+  AcpClient,
+  type AcpClientConfig,
+  type ConnectResult,
+  type SessionLoadFailure,
+  type SwitchSessionOptions,
+} from "./client.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import type { Adapter } from "./adapters.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
@@ -37,6 +43,8 @@ export interface AgentControllerConfig {
   cwd?: string;
   /** Session id to load on start(). */
   sessionId?: string;
+  /** Policy when sessionId cannot be loaded. Default "new" for compatibility. */
+  sessionLoadFailure?: SessionLoadFailure;
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
   mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
@@ -389,6 +397,7 @@ export class AgentController implements AgentClient {
       env: this.config.env,
       cwd: this.config.cwd,
       sessionId,
+      sessionLoadFailure: this.config.sessionLoadFailure,
       defaultPermission: this.config.defaultPermission,
       clientInfo: this.config.clientInfo,
       clientCapabilities: this.config.clientCapabilities,
@@ -406,8 +415,15 @@ export class AgentController implements AgentClient {
     }
     let result: ConnectResult;
     try {
-      result = await client.startSession({ mcpServers: this.config.mcpServers });
+      result = await client.startSession({
+        mcpServers: this.config.mcpServers,
+        loadFailure: this.config.sessionLoadFailure,
+      });
     } catch (err) {
+      if (sessionId && this.config.sessionLoadFailure === "error") {
+        await client.stop();
+        throw err;
+      }
       this.config.logger?.warn("session_start_failed", { error: String(err) });
       result = { sessionId: "", resumed: false };
     }

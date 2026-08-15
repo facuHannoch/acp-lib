@@ -71,6 +71,14 @@ function handleMessage(message: any): void {
 
       case "session/load": {
         const requested = String(message.params?.sessionId ?? "");
+        if (label === "fail-load") {
+          send({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32001, message: `deterministic load failure: ${requested}` },
+          });
+          break;
+        }
         currentSessionId = requested;
         if (!sessions.has(requested)) sessions.set(requested, { seeded: true });
         send({ jsonrpc: "2.0", id: message.id, result: { configOptions: [] } });

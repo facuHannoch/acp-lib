@@ -173,6 +173,16 @@ function continuationPrompt(summary: string): string {
   ].join("\n");
 }
 
+/** Explicit selection of the provider thread backing a newly opened AgentSession. */
+export type ProviderSession =
+  | { readonly kind: "new" }
+  | {
+      readonly kind: "load";
+      readonly internalSessionId: string;
+      /** Default "error": never silently replace a requested thread. */
+      readonly onFailure?: "error" | "new";
+    };
+
 export interface AgentSessionConfig {
   /** The resolved adapter this conversation talks to. */
   adapter: Adapter;
@@ -194,9 +204,15 @@ export interface AgentSessionConfig {
   wire?: (entry: WireEntry) => void;
   /** Optional catalog. When present, the session records itself here. */
   sessions?: SessionManager;
-  /** Absolute path to an append-only transcript file. Omitted means no transcript. */
+  /**
+   * Absolute path to an append-only transcript file. This selects history storage only;
+   * file existence never selects the provider thread. Omitted means no transcript.
+   */
   transcriptPath?: string;
-  /** Directory for a library-named transcript file: `<agentSessionId>.jsonl`. */
+  /**
+   * Directory for `<encoded-agentSessionId>.jsonl`. This selects history storage only;
+   * the directory is not a session catalog and is not scanned during creation.
+   */
   transcriptDir?: string;
   /**
    * Also record activity (thinking, tool calls and their output, plans) as `t:"activity"`
@@ -209,9 +225,14 @@ export interface AgentSessionConfig {
    * `recordId`. `true` selects the defaults below.
    */
   transcriptActivity?: boolean | TranscriptActivityConfig;
-  /** Our stable AgentSession id. Minted if omitted; pass a record's agentSessionId to resume. */
+  /** Stable logical identity. Minted if omitted; always available on the created object. */
   agentSessionId?: string;
-  /** ACP/harness session to load on start (resume an existing provider conversation). */
+  /** Provider-thread startup intent. Default `{ kind: "new" }`. */
+  providerSession?: ProviderSession;
+  /**
+   * @deprecated Use `providerSession: { kind: "load", internalSessionId, onFailure }`.
+   * Retains the historical fallback-to-new behavior for compatibility.
+   */
   internalSessionId?: string;
   title?: string;
 }
@@ -223,7 +244,7 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   private readonly controller: AgentController;
   private readonly sessions?: SessionManager;
-  private readonly transcriptPath?: string;
+  private readonly _transcriptPath?: string;
   private readonly transcriptActivity: boolean;
   private readonly activityKinds: Set<string>;
   private readonly activityRawOutput: boolean;
@@ -252,10 +273,32 @@ export class AgentSession implements AgentClient, Bridgeable {
     if (config.transcriptPath && config.transcriptDir) {
       throw new Error("AgentSessionConfig cannot specify both transcriptPath and transcriptDir");
     }
+    if (config.providerSession && config.internalSessionId !== undefined) {
+      throw new Error("AgentSessionConfig cannot specify both providerSession and internalSessionId");
+    }
+    if (config.agentSessionId !== undefined && !config.agentSessionId.trim()) {
+      throw new Error("AgentSessionConfig.agentSessionId cannot be blank");
+    }
+    const providerSession: ProviderSession = config.providerSession ??
+      (config.internalSessionId !== undefined
+        ? { kind: "load", internalSessionId: config.internalSessionId, onFailure: "new" }
+        : { kind: "new" });
+    if (providerSession.kind === "load" && !providerSession.internalSessionId.trim()) {
+      throw new Error("providerSession.internalSessionId cannot be blank");
+    }
+    if ((config.mode ?? "normal") === "degraded" && providerSession.kind === "load") {
+      throw new Error("providerSession.kind=load requires ACP (normal) mode");
+    }
+    const requestedInternalSessionId = providerSession.kind === "load"
+      ? providerSession.internalSessionId
+      : undefined;
+
+    // IDs are opaque provider/consumer values. Validate blankness above, but never
+    // normalize a nonblank identifier and accidentally select a different session.
     this.agentSessionId = config.agentSessionId ?? crypto.randomUUID();
     this.adapterId = config.adapterId;
     this.sessions = config.sessions;
-    this.transcriptPath =
+    this._transcriptPath =
       config.transcriptPath ??
       (config.transcriptDir
         ? join(config.transcriptDir, `${encodeURIComponent(this.agentSessionId)}.jsonl`)
@@ -272,7 +315,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     this._mode = config.mode ?? "normal";
     this._cwd = config.cwd;
     this._title = config.title;
-    this._internalSessionId = config.internalSessionId ?? null;
+    this._internalSessionId = requestedInternalSessionId ?? null;
     this.controller = new AgentController({
       adapter: config.adapter,
       adapterId: config.adapterId,
@@ -280,7 +323,10 @@ export class AgentSession implements AgentClient, Bridgeable {
       execPrefix: config.execPrefix,
       env: config.env,
       cwd: config.cwd,
-      sessionId: config.internalSessionId,
+      sessionId: requestedInternalSessionId,
+      sessionLoadFailure: providerSession.kind === "load"
+        ? providerSession.onFailure ?? "error"
+        : undefined,
       mcpServers: config.mcpServers,
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,
@@ -294,9 +340,10 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
 
   /**
-   * Start a conversation. A FRESH one if no `agentSessionId`/`internalSessionId`; a RESUMED one if
-   * `internalSessionId` is given (the controller loads it). To resume from the catalog, the
-   * caller resolves the record's adapter and passes the record's fields here.
+   * Open a logical conversation. `agentSessionId` selects stable identity;
+   * `providerSession` independently selects a new or existing provider thread; transcript
+   * options independently select history storage. No catalog or transcript is read
+   * implicitly. Consumers compose a catalog record back into this method when reopening.
    */
   static async create(config: AgentSessionConfig): Promise<AgentSession> {
     const session = new AgentSession(config);
@@ -330,6 +377,10 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
   get title(): string | undefined {
     return this._title;
+  }
+  /** Resolved history destination, configured directly or derived from transcriptDir. */
+  get transcriptPath(): string | undefined {
+    return this._transcriptPath;
   }
   /** Immutable current state. Late subscribers read this before listening for deltas. */
   get state(): AgentSessionState {
@@ -704,7 +755,7 @@ export class AgentSession implements AgentClient, Bridgeable {
    * holds without blocking the agent's update stream on disk.
    */
   private writeActivity(record: AggregatedRecord): void {
-    if (!this.transcriptPath) return;
+    if (!this._transcriptPath) return;
     if (!this.activityKinds.has(record.event.kind)) return;
     void this.appendTranscript(this.toActivityLine(record));
   }
@@ -836,19 +887,20 @@ export class AgentSession implements AgentClient, Bridgeable {
       mode: this._mode,
       cwd: this._cwd,
       title: this._title,
+      transcriptPath: this._transcriptPath,
     });
   }
 
   private async appendTranscript(line: TranscriptLine): Promise<void> {
-    if (!this.transcriptPath) return;
+    if (!this._transcriptPath) return;
     this.transcriptWrite = this.transcriptWrite
       .catch(() => {})
       .then(async () => {
         try {
-          await appendTranscriptLine(this.transcriptPath!, line);
+          await appendTranscriptLine(this._transcriptPath!, line);
         } catch (err) {
           this.log.warn("transcript_write_failed", {
-            path: this.transcriptPath,
+            path: this._transcriptPath,
             error: String(err),
           });
         }

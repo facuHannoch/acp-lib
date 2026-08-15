@@ -46,8 +46,10 @@ export interface AcpClientConfig {
   env?: Record<string, string>;
   /** Agent workspace — passed to session/new. Also the spawn cwd unless using docker exec. */
   cwd?: string;
-  /** Resume this session id on connect() (falls back to a new session on failure). */
+  /** Resume this session id when startSession() is called. */
   sessionId?: string;
+  /** Policy when config.sessionId cannot be loaded. Default "new" for compatibility. */
+  sessionLoadFailure?: SessionLoadFailure;
   /** Fallback when a prompt has no onPermissionRequest handler. Default "cancel". */
   defaultPermission?: "approve" | "cancel";
   /** Identification sent in initialize. */
@@ -69,11 +71,15 @@ export interface AcpClientConfig {
 }
 
 export interface StartSessionOptions {
-  /** Resume this session (falls back to a new one on failure). Defaults to config.sessionId. */
+  /** Resume this session. Defaults to config.sessionId. */
   sessionId?: string;
+  /** What to do when the requested session cannot be loaded. Default config policy, then "new". */
+  loadFailure?: SessionLoadFailure;
   /** MCP servers bound at session creation. */
   mcpServers?: schema.McpServer[];
 }
+
+export type SessionLoadFailure = "error" | "new";
 
 export interface ListSessionsOptions {
   /** Filter by working directory. Defaults to config.cwd. */
@@ -266,14 +272,16 @@ export class AcpClient implements AgentClient {
   }
 
   /**
-   * Create a new session, or resume one (sessionId from the option or config). On resume
-   * failure, falls back to a new session. Populates `configOptions`.
+   * Create a new session, or load one selected by sessionId. `loadFailure` controls
+   * whether a failed/unsupported load rejects or explicitly falls back to session/new.
+   * Populates `configOptions`.
    */
   async startSession(options: StartSessionOptions = {}): Promise<ConnectResult> {
     const transport = this.requireTransport();
     const mcpServers = options.mcpServers ?? [];
     const cwd = this.config.cwd ?? process.cwd();
     const resumeId = options.sessionId ?? this.config.sessionId;
+    const loadFailure = options.loadFailure ?? this.config.sessionLoadFailure ?? "new";
 
     let resumed = false;
     let sessionId: string;
@@ -290,8 +298,11 @@ export class AcpClient implements AgentClient {
       } catch (err) {
         this.abortCommandTransition();
         this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
+        if (loadFailure === "error") throw err;
         sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
       }
+    } else if (resumeId && loadFailure === "error") {
+      throw new Error("agent does not advertise session/load for the requested internal session");
     } else {
       sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
     }

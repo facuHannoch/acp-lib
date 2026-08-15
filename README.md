@@ -297,6 +297,7 @@ const sessions = new SessionManager(new FileSessionStore()); // ~/.acp-lib/sessi
 const session = await AgentSession.create({
   adapter: ADAPTERS.codex,
   adapterId: "codex",
+  providerSession: { kind: "new" },
   sessions,                 // ← records itself to the catalog on start & each prompt
 });
 
@@ -310,12 +311,48 @@ for (const s of await session.listSessions()) {
 await session.stop();
 ```
 
+Logical identity and provider-thread selection are independent. `agentSessionId` is the
+stable consumer handle (a UUID is minted when omitted); `providerSession` explicitly
+chooses a fresh ACP thread or loads an existing one:
+
+```ts
+const record = await sessions.get(agentSessionId); // metadata only; starts nothing
+if (!record) throw new Error("unknown logical session");
+
+const reopened = await AgentSession.create({
+  adapter: await resolveAdapter(record.adapter),
+  adapterId: record.adapter,
+  agentSessionId: record.agentSessionId,
+  providerSession: record.internalSessionId
+    ? { kind: "load", internalSessionId: record.internalSessionId } // fails closed
+    : { kind: "new" },
+  mode: record.mode,
+  cwd: record.cwd,
+  title: record.title,
+  sessions,
+  ...(record.transcriptPath ? { transcriptPath: record.transcriptPath } : {}),
+});
+```
+
+Loading defaults to `onFailure: "error"`. Use `onFailure: "new"` only when silently
+replacing a missing provider thread is the intended policy. The legacy flat
+`internalSessionId` option remains as a deprecated compatibility shorthand and retains
+its historical fallback-to-new behavior.
+
 ### Optional chat transcript
 
 Pass `transcriptPath` or `transcriptDir` to `AgentSession` to append a lightweight JSONL
 chat transcript that can be read later without starting the agent. `transcriptPath` is an
 exact file path chosen by the caller; `transcriptDir` lets the library write
 `<agentSessionId>.jsonl` inside that directory. Supplying both is a config error.
+The resolved location is available as `session.transcriptPath` and is recorded in the
+session catalog when one is attached.
+
+Transcript configuration controls history storage only. Existing transcript contents,
+filenames, and directories never decide whether ACP creates or loads a provider thread.
+An existing file is appended to; a missing directory/file is created on first write; and
+malformed lines are skipped by readers. Omit both options to disable transcript writes—
+prompting, handoff, notifications, harness commands, and catalog metadata still work.
 
 The transcript stores user messages and final assistant replies. Set
 `transcriptActivity: true` to also record tool calls, thinking and plans as `t:"activity"`

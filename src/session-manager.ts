@@ -18,6 +18,7 @@ export interface MergedSession {
   mode?: "normal" | "degraded";
   cwd?: string;
   title?: string;
+  transcriptPath?: string;
   updatedAt?: string;
   source: "catalog" | "agent" | "both";
 }
@@ -91,6 +92,7 @@ export function mergeSessions(
         mode: rec.mode,
         cwd: e.cwd ?? rec.cwd,
         title: e.title ?? rec.title,
+        transcriptPath: rec.transcriptPath,
         updatedAt: e.updatedAt ?? rec.updatedAt,
         source: "both",
       });
@@ -117,6 +119,7 @@ export function mergeSessions(
       mode: r.mode,
       cwd: r.cwd,
       title: r.title,
+      transcriptPath: r.transcriptPath,
       updatedAt: r.updatedAt,
       source: "catalog",
     });

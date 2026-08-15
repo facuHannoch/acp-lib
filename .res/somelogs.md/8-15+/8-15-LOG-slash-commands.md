@@ -649,3 +649,247 @@ The focused handoff suite verifies:
 - The only remaining smoke failure is `AgentSession.restore()`, which belongs to Part 5.
 - Subprocess tests and smoke verification used only the local deterministic ACP fixture;
   no network service or real harness was used.
+
+## Part 5 — Explicit startup identity, transcript independence, and consumer-owned reopening
+
+Completed on 2026-08-15 on branch `feat/agent-session-operations`.
+
+### Architectural correction
+
+The originally planned `AgentSession.restore()` was not added. It would only have hidden
+consumer policy behind a second factory: catalog lookup, adapter resolution, transcript
+location policy, and translation back into `AgentSession.create()`.
+
+The implemented lifecycle is instead:
+
+```text
+SessionManager.get(agentSessionId)   -> routing/history metadata only
+consumer.resolveAdapter(adapterId)   -> consumer-owned runtime dependency
+AgentSession.create(config)          -> opens the live logical session
+```
+
+`SessionManager.get()` does not start a process, contact ACP, read a transcript, or
+resolve an adapter. With `FileSessionStore` it reads the catalog JSON record keyed by the
+encoded stable id and returns `SessionRecord | null`.
+
+### Four independent axes
+
+The startup model is now explicitly documented as four independent decisions:
+
+1. `agentSessionId` — stable logical identity.
+2. `providerSession` — whether ACP creates a new provider thread or loads a specific one.
+3. `sessions` — optional routing metadata persistence.
+4. `transcriptPath` / `transcriptDir` — optional logical history persistence.
+
+There is deliberately no precedence between catalog, transcript, and provider identity:
+they do different jobs. Neither transcript file existence nor an attached SessionManager
+is consulted implicitly during `AgentSession.create()`.
+
+### Stable logical id semantics
+
+`agentSessionId` is always exposed as `session.agentSessionId`:
+
+- A supplied value is retained exactly.
+- When omitted, the library mints a UUID.
+- A blank supplied id is rejected.
+- Nonblank ids are opaque values and are not trimmed or otherwise normalized.
+
+The id determines the catalog key and, with `transcriptDir`, the encoded transcript
+filename. It does not decide whether the provider thread is new or loaded.
+
+### Explicit provider-thread selector
+
+The package now exports:
+
+```ts
+type ProviderSession =
+  | { readonly kind: "new" }
+  | {
+      readonly kind: "load";
+      readonly internalSessionId: string;
+      readonly onFailure?: "error" | "new";
+    };
+```
+
+`AgentSessionConfig.providerSession` is the authoritative startup intent:
+
+```ts
+providerSession: { kind: "new" }
+```
+
+always requests ACP `session/new`, while:
+
+```ts
+providerSession: {
+  kind: "load",
+  internalSessionId,
+  onFailure: "error",
+}
+```
+
+requests the exact existing provider thread.
+
+The rules are:
+
+- Omitted `providerSession` means `{ kind: "new" }`.
+- A load defaults to `onFailure: "error"`; a requested thread is never silently replaced.
+- `onFailure: "new"` explicitly permits fallback to ACP `session/new` when load fails or
+  the harness does not advertise load support.
+- Blank internal ids are rejected.
+- Internal ids are opaque and are not normalized.
+- Loading is rejected in degraded PTY mode because there is no ACP provider-session
+  identity to load.
+- Supplying both `providerSession` and the legacy `internalSessionId` is a configuration
+  error rather than a precedence decision.
+
+### Compatibility path
+
+The flat `AgentSessionConfig.internalSessionId` remains temporarily available and is
+marked deprecated. It translates to:
+
+```ts
+{
+  kind: "load",
+  internalSessionId,
+  onFailure: "new",
+}
+```
+
+This preserves the previous fallback behavior for existing consumers while new code gets
+the safer fail-closed default.
+
+The lower layers gained the same explicit policy:
+
+- `SessionLoadFailure = "error" | "new"`.
+- `AcpClientConfig.sessionLoadFailure`.
+- `StartSessionOptions.loadFailure`.
+- `AgentControllerConfig.sessionLoadFailure`.
+
+`AcpClient.startSession()` now rejects a strict load both when the load RPC fails and when
+the harness does not support `session/load`. `AgentController` propagates strict startup
+failure and tears down the partially opened client instead of converting it into a
+connected object with no usable session. Its existing unauthenticated-new-session behavior
+remains unchanged for non-strict startup.
+
+### Transcript path and directory semantics
+
+Transcript configuration now has an explicit storage-only contract:
+
+- No `transcriptPath` or `transcriptDir`: no library history file is created.
+- `transcriptPath`: append to exactly that file.
+- `transcriptDir`: derive `<encodeURIComponent(agentSessionId)>.jsonl` in that directory.
+- Both supplied: configuration error.
+- Missing directory/file: created by the first append (the initial open record).
+- Existing valid file: append another open record and preserve earlier history.
+- Existing malformed lines: leave them in place, append valid new records, and let the
+  tolerant transcript reader skip malformed lines.
+- File contents and filenames never select a provider thread.
+- A directory is not scanned as an implicit catalog during session creation.
+
+Omitting transcript persistence does not remove live AgentSession functionality. Prompt,
+handoff, state, notifications, harness commands, and catalog routing still work. It only
+removes library-owned persistent conversation history and handoff boundaries.
+
+The resolved path is now public as:
+
+```ts
+session.transcriptPath: string | undefined
+```
+
+It is also stored as optional `SessionRecord.transcriptPath` and carried through merged
+catalog results. This lets a consumer reopen the same logical history without remembering
+whether the original caller supplied a direct path or a directory. It avoids treating a
+filesystem scan as a second session catalog.
+
+Transcript-directory discovery/recovery was deliberately not added in this part. A future
+feature should be an explicit transcript-store or repair/import operation, not an implicit
+side effect of constructing an AgentSession.
+
+### Consumer-owned reopen flow
+
+The operations smoke now implements its own small helper:
+
+```ts
+const record = await sessions.get(agentSessionId);
+if (!record) throw new Error("unknown logical session");
+
+const session = await AgentSession.create({
+  adapter: await resolveAdapter(record.adapter),
+  adapterId: record.adapter,
+  agentSessionId: record.agentSessionId,
+  providerSession: record.internalSessionId
+    ? { kind: "load", internalSessionId: record.internalSessionId, onFailure: "error" }
+    : { kind: "new" },
+  mode: record.mode,
+  cwd: record.cwd,
+  title: record.title,
+  sessions,
+  ...(record.transcriptPath ? { transcriptPath: record.transcriptPath } : {}),
+});
+```
+
+This is intentionally ordinary consumer code. Different orchestration libraries remain
+free to resolve adapters, credentials, missing provider threads, duplicate live objects,
+and transcript storage according to their own policies.
+
+### Deterministic load failure fixture
+
+The Part 1 fake harness accepts a `fail-load` label. It initializes successfully but
+rejects `session/load`, allowing tests to distinguish:
+
+- Strict default load rejection.
+- Explicit `onFailure: "new"` fallback.
+- Deprecated `internalSessionId` compatibility fallback.
+
+### Files changed
+
+- `src/agent-session.ts`
+- `src/client.ts`
+- `src/controller.ts`
+- `src/index.ts`
+- `src/session-manager.ts`
+- `src/session-store.ts`
+- `README.md`
+- `smoke-tests/test5-operations/README.md`
+- `smoke-tests/test5-operations/operations-smoke.ts`
+- `smoke-tests/test5-operations/operations-agent.ts`
+- `test/agent-session-startup.test.ts` (new)
+- `test/agent-session-handoff.test.ts` (catalog transcript-path assertion)
+
+### Tests added
+
+The startup matrix suite verifies:
+
+- Existing transcript metadata cannot override explicit new-provider intent.
+- Supplied logical id and loaded provider id remain independent and stable.
+- Explicit load fails closed by default.
+- Fallback creates a new thread only when requested.
+- Deprecated `internalSessionId` retains compatibility fallback.
+- Competing selectors are rejected.
+- Provider load in degraded mode is rejected.
+- A malformed transcript receives a valid appended suffix but does not select startup.
+- Omitting transcript options creates no library history storage.
+- Resolved transcript path is observable.
+- Supplied and minted logical ids are always returned on the live object.
+- Catalog records retain the resolved transcript path across handoff.
+
+### Verification
+
+- `bun run check` passed: TypeScript plus the complete test suite.
+- Full suite: 182 passed, 0 failed, 1002 expectations across 18 files.
+- Focused startup/handoff/transcript suites passed.
+- `git diff --check` passed.
+- `bun run pack:dry` succeeded with the new public types and source changes.
+- The operations smoke is fully green: 20/20 checks passed.
+- The smoke reopens the handed-off logical session through consumer composition, retains
+  both stable and internal ids, reuses the cataloged transcript path, and successfully
+  prompts the loaded provider thread.
+- Subprocess tests and smoke verification used only local deterministic fixtures; no
+  network service or real harness was used.
+
+### Known later concern
+
+`FileSessionStore.get()` currently returns `null` for both a missing catalog file and a
+malformed/unreadable one. Transcript readers already recover by skipping malformed lines,
+but catalog corruption needs a separate explicit error/recovery policy in a later storage
+pass rather than being silently inferred during AgentSession startup.

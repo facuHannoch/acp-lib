@@ -10,6 +10,7 @@ export type {
   ListSessionsOptions,
   SwitchSessionOptions,
   ConnectResult,
+  SessionLoadFailure,
 } from "./client.ts";
 
 export {
@@ -39,6 +40,7 @@ export type {
   AgentSessionListener,
   HandoffOptions,
   HandoffResult,
+  ProviderSession,
 } from "./agent-session.ts";
 
 export type {
