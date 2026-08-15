@@ -261,3 +261,187 @@ The five expected remaining red checks belong to later parts:
 - `agent_commands_changed` notification.
 - `executeAgentCommand()`.
 - Handoff transcript boundary.
+
+## Part 3 — ACP harness command discovery, observation, and execution
+
+Completed on 2026-08-15 on branch `feat/agent-session-operations`.
+
+### Goal and boundary
+
+This part implements the third operation layer: commands owned by the active ACP
+harness. It does not turn library/session-management operations into slash commands and
+does not modify the REPL command-routing policy yet. The consumer now has a typed API to:
+
+1. Read the harness's current advertised command snapshot.
+2. Observe semantic changes to that snapshot through `AgentSession` notifications.
+3. Intentionally execute a harness command through the same queue and lifecycle as an
+   ordinary prompt.
+
+ACP itself represents a harness slash command as ordinary prompt text. The library now
+makes that wire fact explicit without pretending it is a separate ACP RPC.
+
+### Command metadata contract
+
+`AgentCommand` is now an immutable public shape and preserves ACP's optional unstructured
+input hint:
+
+```ts
+interface AgentCommand {
+  readonly name: string;
+  readonly description: string;
+  readonly input?: {
+    readonly kind: "unstructured";
+    readonly hint: string;
+  };
+}
+```
+
+`toAgentCommands()` is the normalization boundary. It:
+
+- Returns a frozen array containing frozen command objects.
+- Trims command names.
+- Drops entries with missing, non-string, or blank names.
+- Keeps the first command when a payload repeats a name.
+- Defaults a missing/non-string description to an empty string.
+- Preserves a string `input.hint` as `{ kind: "unstructured", hint }`.
+- Omits malformed input metadata rather than exposing a misleading partial object.
+
+The corresponding `commands` activity event now also uses a readonly collection.
+
+### Session-aware command ownership in `AcpClient`
+
+Command state belongs to the currently selected internal ACP session. The client now
+publishes it through:
+
+```ts
+client.agentCommands
+client.subscribeAgentCommands(listener)
+```
+
+Updates are accepted only when their notification session id matches the active internal
+session. This prevents a late update from an old or unrelated ACP session from replacing
+the visible command palette.
+
+Session creation/load/resume/fork has an extra timing problem: an ACP harness may send an
+`available_commands_update` for the new session before returning the RPC response that
+tells the client which session was selected. Each transition now:
+
+1. Saves the previous visible snapshot and clears the visible commands.
+2. Buffers command snapshots keyed by their wire `sessionId`.
+3. Commits only the snapshot belonging to the session id returned by the successful RPC.
+4. Restores the previous snapshot if the transition fails.
+
+This is deliberately internal to `AcpClient`: `AgentSession` should not have to reason
+about ACP notification/RPC ordering.
+
+Semantically identical command arrays are deduplicated before publication. The comparison
+includes name, description, input kind, and input hint. Every published collection is a
+fresh frozen snapshot, including empty snapshots used during transitions and shutdown.
+Command-listener exceptions are caught and logged; they cannot break protocol handling.
+
+Crash and stop clear both the current command set and any in-progress transition buffer,
+so a dead or degraded connection never retains a stale harness palette.
+
+### Propagation through `AgentController`
+
+`AgentController` now exposes a readonly `agentCommands` snapshot and a
+`subscribeAgentCommands()` stream that survives replacement of its internal leaf. On
+start and mode changes it detaches from the old ACP client, attaches to the new one, and
+publishes the new snapshot. In degraded PTY mode the snapshot is the shared immutable
+empty collection because no ACP command-advertisement surface exists.
+
+This keeps the controller useful as the live control-plane boundary without forcing an
+orchestration consumer to reach into `currentClient`.
+
+### `AgentSession` consumer API
+
+`AgentSession.agentCommands` is now explicitly a readonly immutable snapshot.
+
+Future semantic changes are delivered through the existing ordered notification stream:
+
+```ts
+{
+  kind: "agent_commands_changed",
+  commands: readonly AgentCommand[]
+}
+```
+
+The initial command set can arrive while `AgentSession.create()` is still starting, before
+an external subscriber can exist. The contract is therefore the same snapshot-plus-delta
+pattern as session state: read `agentCommands` after creation, then subscribe for future
+changes. No artificial historical event is replayed.
+
+The explicit execution API is:
+
+```ts
+session.executeAgentCommand(name, input?, handlers?)
+```
+
+It serializes to `/${name}` or `/${name} ${input}` and delegates to `prompt()`. As a result,
+command execution participates in the same operation queue, `isBusy` state, turn ids,
+notifications, activity handlers, transcript messages, persistence, cancellation, and
+error behavior as an ordinary turn.
+
+The method rejects blank names, names containing whitespace, and names that include the
+leading slash. It intentionally does not enforce the advertised snapshot as an allow-list:
+advertisement is discoverability, and harnesses may accept valid commands before or
+without advertising them.
+
+### Adversarial smoke fixture behavior
+
+The deterministic Part 1 harness now does more than publish a happy-path update. During
+the first prompt it sends:
+
+- A command update labelled for `stale-session`, which must be ignored by command state.
+- A valid active-session update adding `usage` with input hint `optional scope`.
+- The same valid update a second time, which must not produce another
+  `agent_commands_changed` notification.
+
+It continues to answer `/status` and `/usage ...` as ordinary ACP prompts. This makes the
+smoke test representative of the actual ACP transport semantics.
+
+### Files changed
+
+- `src/types.ts`
+- `src/updates.ts`
+- `src/client.ts`
+- `src/controller.ts`
+- `src/agent-session.ts`
+- `src/index.ts`
+- `src/repl/commands.ts` (readonly type compatibility only; routing is deferred)
+- `smoke-tests/test5-operations/operations-agent.ts`
+- `test/updates.test.ts`
+- `test/agent-session-commands.test.ts` (new)
+
+### Tests added
+
+The normalization tests cover metadata preservation, invalid entries, name trimming,
+duplicate-name policy, malformed input omission, and immutability.
+
+The `AgentSession` command tests cover:
+
+- Initial command discovery at session creation.
+- Frozen command collections and input metadata.
+- Future `agent_commands_changed` delivery.
+- Ignoring a stale-session update.
+- Deduplicating repeated semantic updates.
+- Executing a command with and without raw input.
+- Command execution producing normal turn lifecycle events.
+- Rejecting ambiguous command names without starting a turn.
+
+### Verification
+
+- `bun run typecheck` passed.
+- `git diff --check` passed.
+- Focused update/state/command tests: 20 passed, 0 failed, 81 expectations.
+- Full suite: 170 passed, 0 failed, 950 expectations across 16 files.
+- The Part 1 operations smoke reports 12/15 checks passing. All harness-command checks
+  are now green: initial discovery, updated discovery, change notification, explicit
+  execution API, and delivery to the fake harness.
+- The remaining smoke failures are exactly the later-part work: `AgentSession.handoff()`,
+  its transcript boundary, and `AgentSession.restore()`.
+- `npm run build` was attempted but this package defines no `build` script. Its available
+  validation scripts are `typecheck`, `test`, `check`, and `pack:dry`; the relevant
+  typecheck and test validations above passed.
+- Subprocess tests and the smoke were run outside the managed sandbox so their local fake
+  ACP processes could communicate. No network service or real harness was used.

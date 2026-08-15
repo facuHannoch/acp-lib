@@ -121,12 +121,27 @@ export function toActivityEvent(update: schema.SessionUpdate): ActivityEvent | n
 }
 
 /** Slash commands from an available_commands_update payload. */
-export function toAgentCommands(raw: unknown): AgentCommand[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((c: Record<string, any>) => ({
-    name: c?.name,
-    description: c?.description ?? "",
-  }));
+export function toAgentCommands(raw: unknown): readonly AgentCommand[] {
+  if (!Array.isArray(raw)) return Object.freeze([]);
+  const commands: AgentCommand[] = [];
+  const names = new Set<string>();
+  for (const item of raw) {
+    const c = item as Record<string, unknown> | null;
+    if (!c || typeof c.name !== "string" || c.name.trim() === "") continue;
+    const name = c.name.trim();
+    if (names.has(name)) continue;
+    names.add(name);
+    const input = c.input as Record<string, unknown> | null | undefined;
+    const command: AgentCommand = {
+      name,
+      description: typeof c.description === "string" ? c.description : "",
+      ...(input && typeof input.hint === "string"
+        ? { input: Object.freeze({ kind: "unstructured" as const, hint: input.hint }) }
+        : {}),
+    };
+    commands.push(Object.freeze(command));
+  }
+  return Object.freeze(commands);
 }
 
 /** Normalize a ToolCallContent[] — keeping unrecognized shapes verbatim. */

@@ -15,6 +15,8 @@ import type {
 } from "./types.ts";
 import { NotConnectedError } from "./errors.ts";
 
+const NO_AGENT_COMMANDS: readonly AgentCommand[] = Object.freeze([]);
+
 /**
  * How the controller talks to the agent. Orthogonal to `adapter` (which agent):
  *   - "normal"   → AcpClient: full ACP JSON-RPC (capabilities, config, sessions).
@@ -90,6 +92,10 @@ export class AgentController implements AgentClient {
   private current: AgentClient | null = null;
   private acp: AcpClient | null = null;
   private mode: AgentMode;
+  private readonly agentCommandListeners = new Set<
+    (commands: readonly AgentCommand[]) => void
+  >();
+  private detachAgentCommands: (() => void) | null = null;
 
   constructor(private readonly config: AgentControllerConfig) {
     this.mode = config.mode ?? "normal";
@@ -131,9 +137,15 @@ export class AgentController implements AgentClient {
     return this.acp?.authMethods ?? [];
   }
 
-  /** Slash commands the agent exposes (ACP mode only). Reach them via the `//name` passthrough. */
-  get agentCommands(): AgentCommand[] {
-    return this.acp?.agentCommands ?? [];
+  /** Slash commands the active ACP harness exposes. */
+  get agentCommands(): readonly AgentCommand[] {
+    return this.acp?.agentCommands ?? NO_AGENT_COMMANDS;
+  }
+
+  /** Observe future command-set changes across ACP leaf and mode replacements. */
+  subscribeAgentCommands(listener: (commands: readonly AgentCommand[]) => void): () => void {
+    this.agentCommandListeners.add(listener);
+    return () => this.agentCommandListeners.delete(listener);
   }
 
   async start(): Promise<ConnectResult> {
@@ -143,6 +155,7 @@ export class AgentController implements AgentClient {
     const brought = await this.bringUp(this.mode, this.config.sessionId);
     this.current = brought.client;
     this.acp = brought.acp;
+    this.attachAgentCommandSource();
     return brought.result;
   }
 
@@ -190,6 +203,9 @@ export class AgentController implements AgentClient {
     const client = this.current;
     this.current = null;
     this.acp = null;
+    this.detachAgentCommands?.();
+    this.detachAgentCommands = null;
+    this.emitAgentCommands(NO_AGENT_COMMANDS);
     if (client) await client.stop();
   }
 
@@ -207,6 +223,7 @@ export class AgentController implements AgentClient {
     this.current = brought.client;
     this.acp = brought.acp;
     this.mode = mode;
+    this.attachAgentCommandSource();
     if (previous) await previous.stop();
     return brought.result;
   }
@@ -408,6 +425,25 @@ export class AgentController implements AgentClient {
       throw new Error("operation requires ACP (normal) mode — the controller is degraded (pty)");
     }
     return this.acp;
+  }
+
+  private attachAgentCommandSource(): void {
+    this.detachAgentCommands?.();
+    this.detachAgentCommands = this.acp?.subscribeAgentCommands((commands) =>
+      this.emitAgentCommands(commands)) ?? null;
+    this.emitAgentCommands(this.acp?.agentCommands ?? NO_AGENT_COMMANDS);
+  }
+
+  private emitAgentCommands(commands: readonly AgentCommand[]): void {
+    for (const listener of [...this.agentCommandListeners]) {
+      try {
+        listener(commands);
+      } catch (err) {
+        this.config.logger?.warn("controller_agent_commands_listener_failed", {
+          error: String(err),
+        });
+      }
+    }
   }
 }
 

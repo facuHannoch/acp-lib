@@ -105,11 +105,20 @@ interface QueueItem {
   reject: (e: unknown) => void;
 }
 
+export type AgentCommandsListener = (commands: readonly AgentCommand[]) => void;
+
+interface CommandTransition {
+  previous: readonly AgentCommand[];
+  bySession: Map<string, readonly AgentCommand[]>;
+}
+
 export class AcpClient implements AgentClient {
   private transport: AcpTransport | null = null;
   private _capabilities: Capabilities | null = null;
   private _configOptions: ConfigOptions = new Map();
-  private _agentCommands: AgentCommand[] = [];
+  private _agentCommands: readonly AgentCommand[] = Object.freeze([]);
+  private readonly agentCommandListeners = new Set<AgentCommandsListener>();
+  private commandTransition: CommandTransition | null = null;
   private _sessionId: string | null = null;
 
   // Per-turn streaming state (only the in-flight turn).
@@ -157,9 +166,14 @@ export class AcpClient implements AgentClient {
   get authMethods(): Capabilities["authMethods"] {
     return this._capabilities?.authMethods ?? [];
   }
-  /** Slash commands the agent exposes (from available_commands_update). Reach via `//name`. */
-  get agentCommands(): AgentCommand[] {
+  /** Slash commands the active harness exposes (from available_commands_update). */
+  get agentCommands(): readonly AgentCommand[] {
     return this._agentCommands;
+  }
+  /** Observe future command-set changes. Read agentCommands first for the current snapshot. */
+  subscribeAgentCommands(listener: AgentCommandsListener): () => void {
+    this.agentCommandListeners.add(listener);
+    return () => this.agentCommandListeners.delete(listener);
   }
   get currentSessionId(): string | null {
     return this._sessionId;
@@ -222,6 +236,8 @@ export class AcpClient implements AgentClient {
       onCrash: (code) => {
         this.transport = null;
         this._sessionId = null;
+        this.commandTransition = null;
+        this.setAgentCommands([]);
         this.log.error("process_exit", { code });
       },
     });
@@ -263,12 +279,16 @@ export class AcpClient implements AgentClient {
     let sessionId: string;
 
     if (resumeId && this.capabilities.agent.loadSession) {
+      this.beginCommandTransition();
       try {
         await transport.loadSession({ sessionId: resumeId, cwd, mcpServers } as schema.LoadSessionRequest);
         sessionId = resumeId;
+        this._sessionId = sessionId;
+        this.finishCommandTransition(sessionId);
         resumed = true;
         this.log.info("session_loaded", { sessionId });
       } catch (err) {
+        this.abortCommandTransition();
         this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
         sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
       }
@@ -276,7 +296,6 @@ export class AcpClient implements AgentClient {
       sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
     }
 
-    this._sessionId = sessionId;
     return { sessionId, resumed };
   }
 
@@ -289,6 +308,7 @@ export class AcpClient implements AgentClient {
     if (!this.capabilities.agent.loadSession) {
       throw new Error("agent does not advertise session/load (loadSession)");
     }
+    this.beginCommandTransition();
     this.replay = { sessionId, onUpdate: options.onUpdate };
     let res: schema.LoadSessionResponse;
     try {
@@ -298,10 +318,14 @@ export class AcpClient implements AgentClient {
         mcpServers: options.mcpServers ?? [],
         additionalDirectories: options.additionalDirectories,
       } as schema.LoadSessionRequest);
+    } catch (err) {
+      this.abortCommandTransition();
+      throw err;
     } finally {
       this.replay = null;
     }
     this._sessionId = sessionId;
+    this.finishCommandTransition(sessionId);
     this._configOptions = parseConfigOptions(res.configOptions);
     this.log.info("session_loaded", {
       sessionId,
@@ -320,6 +344,7 @@ export class AcpClient implements AgentClient {
     if (!this.capabilities.agent.sessionCapabilities.resume) {
       throw new Error("agent does not advertise session/resume (sessionCapabilities.resume)");
     }
+    this.beginCommandTransition();
     this.replay = { sessionId, onUpdate: options.onUpdate };
     let res: schema.ResumeSessionResponse;
     try {
@@ -329,10 +354,14 @@ export class AcpClient implements AgentClient {
         mcpServers: options.mcpServers ?? [],
         additionalDirectories: options.additionalDirectories,
       } as schema.ResumeSessionRequest);
+    } catch (err) {
+      this.abortCommandTransition();
+      throw err;
     } finally {
       this.replay = null;
     }
     this._sessionId = sessionId;
+    this.finishCommandTransition(sessionId);
     this._configOptions = parseConfigOptions(res.configOptions);
     this.log.info("session_resumed", {
       sessionId,
@@ -351,6 +380,7 @@ export class AcpClient implements AgentClient {
     if (!this.capabilities.agent.sessionCapabilities.fork) {
       throw new Error("agent does not advertise session/fork (sessionCapabilities.fork)");
     }
+    this.beginCommandTransition();
     this.replay = { sessionId, onUpdate: options.onUpdate };
     let res: schema.ForkSessionResponse;
     try {
@@ -360,10 +390,14 @@ export class AcpClient implements AgentClient {
         mcpServers: options.mcpServers ?? [],
         additionalDirectories: options.additionalDirectories,
       } as schema.ForkSessionRequest);
+    } catch (err) {
+      this.abortCommandTransition();
+      throw err;
     } finally {
       this.replay = null;
     }
     this._sessionId = res.sessionId;
+    this.finishCommandTransition(res.sessionId);
     this._configOptions = parseConfigOptions(res.configOptions);
     this.log.info("session_forked", {
       fromSessionId: sessionId,
@@ -432,7 +466,6 @@ export class AcpClient implements AgentClient {
     const transport = this.requireTransport();
     const cwd = this.config.cwd ?? process.cwd();
     const sessionId = await this.newSessionInternal(transport, cwd, options.mcpServers ?? []);
-    this._sessionId = sessionId;
     return { sessionId, resumed: false };
   }
 
@@ -441,8 +474,16 @@ export class AcpClient implements AgentClient {
     cwd: string,
     mcpServers: schema.McpServer[],
   ): Promise<string> {
-    this._agentCommands = []; // re-populated by the agent's available_commands_update
-    const res = await transport.newSession({ cwd, mcpServers } as schema.NewSessionRequest);
+    this.beginCommandTransition();
+    let res: schema.NewSessionResponse;
+    try {
+      res = await transport.newSession({ cwd, mcpServers } as schema.NewSessionRequest);
+    } catch (err) {
+      this.abortCommandTransition();
+      throw err;
+    }
+    this._sessionId = res.sessionId;
+    this.finishCommandTransition(res.sessionId);
     this._configOptions = parseConfigOptions(res.configOptions);
     this.log.info("session_new", {
       sessionId: res.sessionId,
@@ -466,6 +507,8 @@ export class AcpClient implements AgentClient {
     const t = this.transport;
     this.transport = null;
     this._sessionId = null;
+    this.commandTransition = null;
+    this.setAgentCommands([]);
     this.terminals?.releaseAll();
     this.terminals = null;
     if (t) await t.stop();
@@ -607,7 +650,16 @@ export class AcpClient implements AgentClient {
       this._configOptions = parseConfigOptions((update as Record<string, any>).configOptions);
     }
     if (kind === "available_commands_update") {
-      this._agentCommands = toAgentCommands((update as Record<string, any>).availableCommands);
+      const commands = toAgentCommands((update as Record<string, any>).availableCommands);
+      const sessionId = notification.sessionId || "";
+      if (this.commandTransition) {
+        // A session/new notification can precede its response, so the target id is not
+        // necessarily known yet. Buffer by wire session id and commit only the response's
+        // selected id when the transition finishes.
+        if (sessionId) this.commandTransition.bySession.set(sessionId, commands);
+      } else if (!sessionId || sessionId === this._sessionId) {
+        this.setAgentCommands(commands);
+      }
     }
 
     if (!this.active) {
@@ -688,6 +740,56 @@ export class AcpClient implements AgentClient {
     // Nothing recognizable to approve: refuse rather than guess. Guessing is the bug above.
     return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
   }
+
+  private beginCommandTransition(): void {
+    // Session operations are serialized by their callers. Preserve the last snapshot so
+    // a failed load/new can roll back without leaving an unrelated empty command palette.
+    this.commandTransition = { previous: this._agentCommands, bySession: new Map() };
+    this.setAgentCommands([]);
+  }
+
+  private finishCommandTransition(sessionId: string): void {
+    const transition = this.commandTransition;
+    this.commandTransition = null;
+    this.setAgentCommands(transition?.bySession.get(sessionId) ?? []);
+  }
+
+  private abortCommandTransition(): void {
+    const transition = this.commandTransition;
+    this.commandTransition = null;
+    if (transition) this.setAgentCommands(transition.previous);
+  }
+
+  private setAgentCommands(commands: readonly AgentCommand[]): void {
+    if (sameAgentCommands(this._agentCommands, commands)) return;
+    // Never expose the mutable transition scratch arrays used internally. Command
+    // objects come from toAgentCommands() frozen; the copy makes the collection itself
+    // immutable as well, including the empty snapshots published between sessions.
+    const snapshot: readonly AgentCommand[] = Object.freeze([...commands]);
+    this._agentCommands = snapshot;
+    for (const listener of [...this.agentCommandListeners]) {
+      try {
+        listener(snapshot);
+      } catch (err) {
+        this.log.warn("agent_commands_listener_failed", { error: String(err) });
+      }
+    }
+  }
+}
+
+function sameAgentCommands(
+  a: readonly AgentCommand[],
+  b: readonly AgentCommand[],
+): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((command, index) => {
+    const other = b[index];
+    return other != null &&
+      command.name === other.name &&
+      command.description === other.description &&
+      command.input?.kind === other.input?.kind &&
+      command.input?.hint === other.input?.hint;
+  });
 }
 
 function toPermissionRequest(

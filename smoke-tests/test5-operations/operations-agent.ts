@@ -96,23 +96,44 @@ function handleMessage(message: any): void {
         const text = promptText(message.params?.prompt);
         if (!advertisedUsage) {
           advertisedUsage = true;
+          // A late notification for another session must never replace the active
+          // command palette.
+          send({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId: "stale-session",
+              update: {
+                sessionUpdate: "available_commands_update",
+                availableCommands: [{ name: "stale", description: "Must be ignored." }],
+              },
+            },
+          });
+          const commandUpdate = {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              { name: "status", description: "Return deterministic fake status.", input: null },
+              {
+                name: "usage",
+                description: "Return deterministic fake usage.",
+                input: { hint: "optional scope" },
+              },
+            ],
+          };
           send({
             jsonrpc: "2.0",
             method: "session/update",
             params: {
               sessionId,
-              update: {
-                sessionUpdate: "available_commands_update",
-                availableCommands: [
-                  { name: "status", description: "Return deterministic fake status.", input: null },
-                  {
-                    name: "usage",
-                    description: "Return deterministic fake usage.",
-                    input: { hint: "optional scope" },
-                  },
-                ],
-              },
+              update: commandUpdate,
             },
+          });
+          // Identical semantic updates are legal and should not create duplicate
+          // AgentSession notifications.
+          send({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: { sessionId, update: commandUpdate },
           });
         }
 

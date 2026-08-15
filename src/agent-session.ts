@@ -66,7 +66,9 @@ export type AgentSessionEvent =
   | { kind: "state_changed"; state: AgentSessionState }
   | { kind: "turn_started"; turnId: string }
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
-  | { kind: "turn_failed"; turnId: string; error: string };
+  | { kind: "turn_failed"; turnId: string; error: string }
+  /** The active ACP harness changed the slash commands it advertises. */
+  | { kind: "agent_commands_changed"; commands: readonly AgentCommand[] };
 
 /** Ordered envelope delivered to every AgentSession subscriber. */
 export interface AgentSessionNotification {
@@ -235,6 +237,9 @@ export class AgentSession implements AgentClient, Bridgeable {
       logger: config.logger,
       wire: config.wire,
     });
+    this.controller.subscribeAgentCommands((commands) => {
+      this.emit({ kind: "agent_commands_changed", commands });
+    });
   }
 
   /**
@@ -327,6 +332,28 @@ export class AgentSession implements AgentClient, Bridgeable {
       this.emitStateIfChanged();
       void this.pump();
     });
+  }
+
+  /**
+   * Execute one command advertised by the active ACP harness. ACP represents slash
+   * commands as ordinary prompt text; this method makes that intentional and keeps the
+   * operation in the same queue, lifecycle events, and transcript as every other turn.
+   * Advertisement is discoverability, not an allow-list: a harness may accept commands
+   * that it did not advertise yet.
+   */
+  executeAgentCommand(
+    name: string,
+    input?: string,
+    handlers?: PromptHandlers,
+  ): Promise<PromptResult> {
+    const command = name.trim();
+    if (!command || command.startsWith("/") || /\s/.test(command)) {
+      return Promise.reject(
+        new Error("agent command name must be non-empty, contain no whitespace, and omit the leading slash"),
+      );
+    }
+    const suffix = input == null || input.length === 0 ? "" : ` ${input}`;
+    return this.prompt(`/${command}${suffix}`, handlers);
   }
 
   private async pump(): Promise<void> {
@@ -558,7 +585,8 @@ export class AgentSession implements AgentClient, Bridgeable {
   setConfig(configId: string, value: unknown): Promise<void> {
     return this.controller.setConfig(configId, value);
   }
-  get agentCommands(): AgentCommand[] {
+  /** Immutable snapshot of commands advertised by the active ACP harness. */
+  get agentCommands(): readonly AgentCommand[] {
     return this.controller.agentCommands;
   }
   get isDegraded(): boolean {

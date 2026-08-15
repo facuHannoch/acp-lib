@@ -143,5 +143,6 @@ export type {
   SessionListEntry,
   SessionListPage,
   AgentCommand,
+  AgentCommandInput,
   WireEntry,
 } from "./types.ts";

@@ -38,7 +38,7 @@ export interface InteractiveAgentClient extends AgentClient, Bridgeable {
   readonly isDegraded: boolean;
   readonly capabilities: Capabilities;
   readonly authMethods: AuthMethod[];
-  readonly agentCommands: AgentCommand[];
+  readonly agentCommands: readonly AgentCommand[];
   readonly configOptions: ConfigOptions;
 
   getCommands(): ControllerCommand[];

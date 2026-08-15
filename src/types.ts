@@ -9,8 +9,16 @@ import type { ApplyResult } from "./activity.ts";
  * from the `available_commands_update` notification. Invoke with the `//name` passthrough.
  */
 export interface AgentCommand {
-  name: string;
-  description: string;
+  readonly name: string;
+  readonly description: string;
+  /** ACP currently defines command input as unstructured text after the command name. */
+  readonly input?: AgentCommandInput;
+}
+
+export interface AgentCommandInput {
+  readonly kind: "unstructured";
+  /** Placeholder/help text supplied by the harness. */
+  readonly hint: string;
 }
 
 /** Token accounting for a turn. Nullable per-field — not all providers report all of it. */
@@ -145,7 +153,7 @@ export type ActivityEvent =
   | { kind: "plan_update"; planId: string; plan: unknown }
   | { kind: "plan_removed"; planId: string }
   /** The agent's slash commands changed; also reflected in `client.agentCommands`. */
-  | { kind: "commands"; commands: AgentCommand[] }
+  | { kind: "commands"; commands: readonly AgentCommand[] }
   /** The agent switched session mode. */
   | { kind: "mode"; modeId: string }
   /** Context-window accounting. `used`/`size` are tokens. */

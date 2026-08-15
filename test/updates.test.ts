@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractChunkText, toActivityEvent } from "../src/updates.ts";
+import { extractChunkText, toActivityEvent, toAgentCommands } from "../src/updates.ts";
 import type { ToolActivity, ToolUpdateActivity } from "../src/types.ts";
 
 describe("session updates", () => {
@@ -209,6 +209,43 @@ describe("session updates", () => {
 
     expect(toActivityEvent({ sessionUpdate: "plan_removed", id: "plan-1" } as never))
       .toEqual({ kind: "plan_removed", planId: "plan-1" });
+  });
+
+  test("normalizes command metadata into immutable, deduplicated snapshots", () => {
+    const commands = toAgentCommands([
+      {
+        name: " usage ",
+        description: "Show usage",
+        input: { hint: "optional scope" },
+      },
+      { name: "usage", description: "duplicate is ignored" },
+      { name: "status" },
+      { name: "   " },
+      { description: "missing name" },
+      null,
+    ]);
+
+    expect(commands).toEqual([
+      {
+        name: "usage",
+        description: "Show usage",
+        input: { kind: "unstructured", hint: "optional scope" },
+      },
+      { name: "status", description: "" },
+    ]);
+    expect(Object.isFrozen(commands)).toBe(true);
+    expect(commands.every(Object.isFrozen)).toBe(true);
+    expect(Object.isFrozen(commands[0]!.input!)).toBe(true);
+  });
+
+  test("omits malformed command input metadata", () => {
+    expect(toAgentCommands([
+      { name: "one", input: { hint: 42 } },
+      { name: "two", input: "not an input object" },
+    ])).toEqual([
+      { name: "one", description: "" },
+      { name: "two", description: "" },
+    ]);
   });
 
   test("surfaces unmodelled updates instead of dropping them", () => {
