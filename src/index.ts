@@ -29,7 +29,15 @@ export type {
 } from "./controller.ts";
 
 export { AgentSession } from "./agent-session.ts";
-export type { AgentSessionConfig, TranscriptActivityConfig } from "./agent-session.ts";
+export type {
+  AgentSessionConfig,
+  TranscriptActivityConfig,
+  AgentSessionPhase,
+  AgentSessionState,
+  AgentSessionEvent,
+  AgentSessionNotification,
+  AgentSessionListener,
+} from "./agent-session.ts";
 
 export type {
   AgentClient,

@@ -36,12 +36,47 @@ import type {
 } from "./types.ts";
 
 interface QueueItem {
+  kind: "prompt";
+  turnId: string;
   text: string;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
   resolve: (r: PromptResult) => void;
   reject: (e: unknown) => void;
 }
+
+/** What the stable logical session is doing right now. `handoff` is used by the next part. */
+export type AgentSessionPhase = "idle" | "prompting" | "handoff" | "stopped";
+
+/** Authoritative, immutable point-in-time state for orchestration consumers. */
+export interface AgentSessionState {
+  readonly phase: AgentSessionPhase;
+  /** True only while an operation is executing; queued work is reported separately. */
+  readonly isBusy: boolean;
+  /** Operations waiting behind the active one. Does not count the active operation. */
+  readonly queuedOperationCount: number;
+  readonly agentSessionId: string;
+  readonly internalSessionId: string | null;
+  readonly adapterId: string;
+  readonly mode: AgentMode;
+}
+
+/** Session-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
+export type AgentSessionEvent =
+  | { kind: "state_changed"; state: AgentSessionState }
+  | { kind: "turn_started"; turnId: string }
+  | { kind: "turn_completed"; turnId: string; result: PromptResult }
+  | { kind: "turn_failed"; turnId: string; error: string };
+
+/** Ordered envelope delivered to every AgentSession subscriber. */
+export interface AgentSessionNotification {
+  readonly seq: number;
+  readonly ts: number;
+  readonly agentSessionId: string;
+  readonly event: AgentSessionEvent;
+}
+
+export type AgentSessionListener = (notification: AgentSessionNotification) => void;
 
 /** What to record when `transcriptActivity` is on. */
 export interface TranscriptActivityConfig {
@@ -151,6 +186,10 @@ export class AgentSession implements AgentClient, Bridgeable {
   private transcriptWrite: Promise<void> = Promise.resolve();
   private queue: QueueItem[] = [];
   private pumping = false;
+  private phase: AgentSessionPhase = "idle";
+  private notificationSeq = 0;
+  private readonly listeners = new Set<AgentSessionListener>();
+  private lastStateKey = "";
   private _internalSessionId: string | null;
   private _mode: AgentMode;
   private _cwd?: string;
@@ -236,6 +275,30 @@ export class AgentSession implements AgentClient, Bridgeable {
   get title(): string | undefined {
     return this._title;
   }
+  /** Immutable current state. Late subscribers read this before listening for deltas. */
+  get state(): AgentSessionState {
+    return Object.freeze({
+      phase: this.phase,
+      isBusy: this.isBusy,
+      queuedOperationCount: this.queuedOperationCount,
+      agentSessionId: this.agentSessionId,
+      internalSessionId: this._internalSessionId,
+      adapterId: this.adapterId,
+      mode: this._mode,
+    });
+  }
+  /** True while one operation is executing. Queued work is exposed independently. */
+  get isBusy(): boolean {
+    return this.phase === "prompting" || this.phase === "handoff";
+  }
+  get queuedOperationCount(): number {
+    return this.queue.length;
+  }
+  /** Subscribe to future lifecycle changes. The current snapshot is available via state. */
+  subscribe(listener: AgentSessionListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
   /** Escape hatch to the live control plane (config, caps, getCommands, login, …). */
   get connection(): AgentController {
     return this.controller;
@@ -248,7 +311,20 @@ export class AgentSession implements AgentClient, Bridgeable {
     attachments?: Attachment[],
   ): Promise<PromptResult> {
     return new Promise<PromptResult>((resolve, reject) => {
-      this.queue.push({ text, handlers, attachments, resolve, reject });
+      if (this.phase === "stopped") {
+        reject(new Error("AgentSession is stopped"));
+        return;
+      }
+      this.queue.push({
+        kind: "prompt",
+        turnId: this.mintTurnId(),
+        text,
+        handlers,
+        attachments,
+        resolve,
+        reject,
+      });
+      this.emitStateIfChanged();
       void this.pump();
     });
   }
@@ -259,19 +335,31 @@ export class AgentSession implements AgentClient, Bridgeable {
     try {
       while (this.queue.length > 0) {
         const item = this.queue.shift()!;
+        this.phase = "prompting";
+        this.emitStateIfChanged();
+        this.emit({ kind: "turn_started", turnId: item.turnId });
         try {
-          item.resolve(await this.runPrompt(item));
+          const result = await this.runPrompt(item);
+          this.emit({
+            kind: "turn_completed",
+            turnId: item.turnId,
+            result: copyPromptResult(result),
+          });
+          item.resolve(result);
         } catch (err) {
+          this.emit({ kind: "turn_failed", turnId: item.turnId, error: String(err) });
           item.reject(err);
         }
       }
     } finally {
       this.pumping = false;
+      if (this.phase !== "stopped") this.phase = "idle";
+      this.emitStateIfChanged();
     }
   }
 
   private async runPrompt(item: QueueItem): Promise<PromptResult> {
-    this.beginTurn();
+    this.beginTurn(item.turnId);
     await this.appendTranscript({
       v: 1,
       t: "msg",
@@ -354,10 +442,10 @@ export class AgentSession implements AgentClient, Bridgeable {
     return this.aggregator.snapshot();
   }
 
-  private beginTurn(): void {
+  private beginTurn(turnId: string): void {
     // A correct caller always gets an empty array back — both exit paths flush. If one
     // ever doesn't, keeping the records (loudly) beats dropping them.
-    const leftover = this.aggregator.startTurn(this.mintTurnId());
+    const leftover = this.aggregator.startTurn(turnId);
     if (leftover.length > 0) {
       this.log.warn("activity_turn_not_flushed", { records: leftover.length });
       if (this.transcriptActivity) for (const record of leftover) this.writeActivity(record);
@@ -429,11 +517,19 @@ export class AgentSession implements AgentClient, Bridgeable {
       for (const item of dropped) {
         item.resolve({ text: "", stopReason: "cancelled", status: "cancelled", usage: null });
       }
+      this.emitStateIfChanged();
     }
     this.controller.interrupt(options);
   }
 
   async stop(): Promise<void> {
+    if (this.phase === "stopped") return;
+    // Stop is terminal for this stable object. Drop work that never started, interrupt the
+    // active turn, and publish stopped before awaiting process teardown so a concurrent
+    // prompt cannot slip into a controller that is going away.
+    this.interrupt({ clearQueue: true });
+    this.phase = "stopped";
+    this.emitStateIfChanged();
     await this.controller.stop();
   }
 
@@ -532,6 +628,49 @@ export class AgentSession implements AgentClient, Bridgeable {
       });
     await this.transcriptWrite;
   }
+
+  /** Emit only when a field in the public snapshot changed. */
+  private emitStateIfChanged(): void {
+    const state = this.state;
+    const key = [
+      state.phase,
+      state.queuedOperationCount,
+      state.internalSessionId ?? "",
+      state.adapterId,
+      state.mode,
+    ].join("\u0000");
+    if (key === this.lastStateKey) return;
+    this.lastStateKey = key;
+    this.emit({ kind: "state_changed", state });
+  }
+
+  /** Listener failures are observation failures, never session-operation failures. */
+  private emit(event: AgentSessionEvent): void {
+    const notification: AgentSessionNotification = Object.freeze({
+      seq: ++this.notificationSeq,
+      ts: Date.now(),
+      agentSessionId: this.agentSessionId,
+      event: Object.freeze(event),
+    });
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(notification);
+      } catch (err) {
+        this.log.warn("agent_session_listener_failed", {
+          kind: event.kind,
+          error: String(err),
+        });
+      }
+    }
+  }
+}
+
+/** Do not let one notification observer mutate the PromptResult another observer sees. */
+function copyPromptResult(result: PromptResult): PromptResult {
+  return Object.freeze({
+    ...result,
+    usage: result.usage ? Object.freeze({ ...result.usage }) : null,
+  });
 }
 
 const encoder = new TextEncoder();

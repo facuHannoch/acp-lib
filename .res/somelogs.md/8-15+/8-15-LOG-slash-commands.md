@@ -100,3 +100,164 @@ Bun.
 - Restoration helpers.
 - REPL or slash-command changes.
 
+## Part 2 — AgentSession state and lifecycle notifications
+
+Status: complete
+
+### Purpose
+
+Give orchestration consumers an authoritative, reactive view of a stable
+`AgentSession`. Consumers should be able to render busy/idle state, observe turn
+completion, monitor queue depth, and react to failures without polling private fields or
+wrapping every prompt call themselves.
+
+### Public API added
+
+`AgentSession` now exposes:
+
+```ts
+session.state
+session.isBusy
+session.queuedOperationCount
+
+const unsubscribe = session.subscribe(listener)
+```
+
+New exported types:
+
+- `AgentSessionPhase`
+- `AgentSessionState`
+- `AgentSessionEvent`
+- `AgentSessionNotification`
+- `AgentSessionListener`
+
+The initial phase union is:
+
+```ts
+"idle" | "prompting" | "handoff" | "stopped"
+```
+
+`handoff` is reserved now so Part 4 can use the state model without changing its public
+shape.
+
+### State semantics
+
+- `isBusy` means an operation is actively executing.
+- `queuedOperationCount` counts operations waiting behind the active operation and never
+  counts the active operation itself.
+- `state` is a frozen point-in-time snapshot containing phase, busy/queue state, stable
+  and internal ids, adapter id, and mode.
+- Late subscribers read `state` first, then subscribe to future deltas. Subscription does
+  not replay historical events.
+- State notifications are emitted only when a public snapshot field changes.
+- Adjacent queued prompts do not emit a false idle transition between turns.
+- `stopped` is terminal for an `AgentSession` object. New prompts reject immediately.
+- Stopping clears queued work, interrupts the active turn, publishes stopped before
+  process teardown, and cannot later transition back to prompting or idle from a pump
+  `finally` block.
+
+### Notification contract
+
+Every notification carries:
+
+```ts
+{
+  seq,
+  ts,
+  agentSessionId,
+  event,
+}
+```
+
+`seq` is strictly monotonic for the lifetime of the stable `AgentSession`. The first
+event set is:
+
+- `state_changed`
+- `turn_started`
+- `turn_completed`
+- `turn_failed`
+
+Turn ids are minted when a prompt is enqueued. The same turn id now namespaces the
+activity aggregator for that turn, aligning public lifecycle identity with persisted
+activity record ids.
+
+`turn_completed` is emitted after `runPrompt()` finishes its transcript and catalog work
+and immediately before the prompt promise resolves. `turn_failed` is emitted before the
+promise rejects.
+
+The notification envelope, event, state snapshots, and copied completion result are
+frozen. The completion result's usage object is copied and frozen too, preventing one
+observer from mutating what another observer sees.
+
+Listeners run synchronously in registration order, but are observational only. Listener
+exceptions are caught and logged as `agent_session_listener_failed`; they cannot reject a
+prompt, stop delivery to other listeners, or corrupt session state. Emission iterates over
+a listener snapshot, so subscribe/unsubscribe during a callback does not perturb the
+current delivery pass.
+
+### Queue preparation for handoff
+
+The prompt queue item now has an explicit operation discriminator and stable turn id:
+
+```ts
+{
+  kind: "prompt",
+  turnId,
+  ...
+}
+```
+
+It remains prompt-only in this part, but is ready to become a prompt/handoff operation
+union. Queue transitions are now the single source of truth for phase and queue-depth
+notifications.
+
+### Files changed
+
+- `src/agent-session.ts`
+- `src/index.ts`
+- `test/agent-session-state.test.ts` (new)
+- `smoke-tests/test5-operations/operations-smoke.ts` (its existing Part 2 checks now run
+  against the real API; no contract rewrite was needed)
+
+### Tests added
+
+The new focused test suite verifies:
+
+- The initial immutable idle state.
+- Busy state during a turn.
+- Ordered `turn_started` and `turn_completed` delivery.
+- Monotonically increasing sequence numbers.
+- Frozen completion results and usage.
+- Queue depth while a second prompt waits.
+- No idle transition between adjacent queued turns.
+- Listener exception isolation.
+- Unsubscribe behavior.
+- `turn_failed` when the live controller disappears.
+- Terminal stopped state and rejection of later prompts.
+- Stop clearing queued work without a later transition out of stopped.
+
+### Verification
+
+- `bun run typecheck` passed.
+- `git diff --check` passed.
+- Focused state tests: 5 passed, 0 failed, 32 expectations.
+- Full suite: 165 passed, 0 failed, 930 expectations.
+- Subprocess tests were run outside the managed sandbox because the sandbox prevents the
+  fake ACP processes from communicating; no network or external agent was used.
+
+The operations smoke now reaches the fake ACP harness and reports 9/14 checks passing.
+All Part 2 checks are green:
+
+- Notification listener exposed.
+- State and busy/queue getters exposed.
+- Ordinary prompt still works.
+- Turn lifecycle notified.
+- Notification envelope ordering correct.
+
+The five expected remaining red checks belong to later parts:
+
+- `AgentSession.restore()`.
+- `AgentSession.handoff()`.
+- `agent_commands_changed` notification.
+- `executeAgentCommand()`.
+- Handoff transcript boundary.
