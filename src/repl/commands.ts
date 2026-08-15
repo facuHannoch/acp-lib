@@ -21,7 +21,7 @@ import type {
   SwitchSessionOptions,
 } from "../index.ts";
 import type {
-  AgentCommand,
+  InternalSessionCommand,
   SessionListEntry,
   SessionListPage,
 } from "../types.ts";
@@ -38,7 +38,7 @@ export interface InteractiveAgentClient extends AgentClient, Bridgeable {
   readonly isDegraded: boolean;
   readonly capabilities: Capabilities;
   readonly authMethods: AuthMethod[];
-  readonly agentCommands: readonly AgentCommand[];
+  readonly availableCommands: readonly InternalSessionCommand[];
   readonly configOptions: ConfigOptions;
 
   getCommands(): ControllerCommand[];
@@ -118,11 +118,11 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
           `commands: /help ${client.getCommands().map((c) => c.usage).join(" ")} ` +
             `/degrade /upgrade /exit`,
         );
-        const agentCmds = client.agentCommands;
-        if (agentCmds.length > 0) {
-          note(`agent commands (send with //name): ${agentCmds.map((c: AgentCommand) => `/${c.name}`).join(" ")}`);
+        const availableCommands = client.availableCommands;
+        if (availableCommands.length > 0) {
+          note(`internal session commands (send with //name): ${availableCommands.map((c: InternalSessionCommand) => `/${c.name}`).join(" ")}`);
         } else if (!client.isDegraded) {
-          note("agent commands: (none advertised) — //name still forwards a /name to the agent");
+          note("internal session commands: (none advertised) — //name still forwards a /name to the agent");
         } else {
           note("//name forwards a /name slash command to the agent's TUI");
         }

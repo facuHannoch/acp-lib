@@ -70,7 +70,7 @@ function makeClient(opts: FakeClientOptions = {}): InteractiveAgentClient {
     isDegraded: false,
     capabilities: opts.capabilities ?? caps(),
     authMethods: [],
-    agentCommands: [],
+    availableCommands: [],
     configOptions: new Map(),
     // control plane
     getCommands: () => [],
@@ -149,10 +149,10 @@ describe("createAgentCommands · introspection", () => {
     expect(out).toContain("/upgrade");
   });
 
-  test("/help lists controller command usages and agent commands", async () => {
+  test("/help lists controller usages and internal-session commands", async () => {
     const client = makeClient({
       getCommands: () => [{ id: "new", usage: "/new" } as never],
-      agentCommands: [{ name: "compact" } as never],
+      availableCommands: [{ name: "compact" } as never],
     });
     const { out } = await run(client, "help");
     expect(out).toContain("/new");

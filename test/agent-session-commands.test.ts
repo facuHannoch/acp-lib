@@ -22,16 +22,16 @@ async function createSession(): Promise<AgentSession> {
 describe("AgentSession harness commands", () => {
   test("exposes immutable metadata and notifies only semantic active-session changes", async () => {
     const session = await createSession();
-    expect(session.agentCommands).toEqual([
+    expect(session.internalSessionCommands).toEqual([
       { name: "status", description: "Return deterministic fake status." },
     ]);
-    expect(Object.isFrozen(session.agentCommands)).toBe(true);
+    expect(Object.isFrozen(session.internalSessionCommands)).toBe(true);
 
     const notifications: AgentSessionNotification[] = [];
     session.subscribe((notification) => notifications.push(notification));
     await session.prompt("advertise more commands");
 
-    expect(session.agentCommands).toEqual([
+    expect(session.internalSessionCommands).toEqual([
       { name: "status", description: "Return deterministic fake status." },
       {
         name: "usage",
@@ -39,15 +39,15 @@ describe("AgentSession harness commands", () => {
         input: { kind: "unstructured", hint: "optional scope" },
       },
     ]);
-    expect(session.agentCommands.some((command) => command.name === "stale")).toBe(false);
-    expect(Object.isFrozen(session.agentCommands[1]!.input!)).toBe(true);
+    expect(session.internalSessionCommands.some((command) => command.name === "stale")).toBe(false);
+    expect(Object.isFrozen(session.internalSessionCommands[1]!.input!)).toBe(true);
 
     const changes = notifications.filter((notification) =>
-      notification.event.kind === "agent_commands_changed");
+      notification.event.kind === "internal_session_commands_changed");
     expect(changes).toHaveLength(1);
     expect(changes[0]!.event).toMatchObject({
-      kind: "agent_commands_changed",
-      commands: session.agentCommands,
+      kind: "internal_session_commands_changed",
+      commands: session.internalSessionCommands,
     });
   });
 
@@ -56,10 +56,10 @@ describe("AgentSession harness commands", () => {
     const kinds: string[] = [];
     session.subscribe((notification) => kinds.push(notification.event.kind));
 
-    await expect(session.executeAgentCommand("status")).resolves.toMatchObject({
+    await expect(session.executeInternalSessionCommand("status")).resolves.toMatchObject({
       text: expect.stringContaining("FAKE_STATUS"),
     });
-    await expect(session.executeAgentCommand("usage", "workspace")).resolves.toMatchObject({
+    await expect(session.executeInternalSessionCommand("usage", "workspace")).resolves.toMatchObject({
       text: expect.stringContaining("FAKE_USAGE"),
     });
 
@@ -69,9 +69,9 @@ describe("AgentSession harness commands", () => {
 
   test("rejects ambiguous command names without contacting the harness", async () => {
     const session = await createSession();
-    await expect(session.executeAgentCommand("")).rejects.toThrow("agent command name");
-    await expect(session.executeAgentCommand("/status")).rejects.toThrow("leading slash");
-    await expect(session.executeAgentCommand("bad name")).rejects.toThrow("whitespace");
+    await expect(session.executeInternalSessionCommand("")).rejects.toThrow("internal session command name");
+    await expect(session.executeInternalSessionCommand("/status")).rejects.toThrow("leading slash");
+    await expect(session.executeInternalSessionCommand("bad name")).rejects.toThrow("whitespace");
     expect(session.state.phase).toBe("idle");
   });
 });

@@ -27,7 +27,7 @@ import {
 } from "./transcript.ts";
 import type {
   ActivityEvent,
-  AgentCommand,
+  InternalSessionCommand,
   Attachment,
   PromptHandlers,
   PromptResult,
@@ -91,7 +91,7 @@ export type AgentSessionEvent =
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
   | { kind: "turn_failed"; turnId: string; error: string }
   /** The active ACP harness changed the slash commands it advertises. */
-  | { kind: "agent_commands_changed"; commands: readonly AgentCommand[] }
+  | { kind: "internal_session_commands_changed"; commands: readonly InternalSessionCommand[] }
   | {
       kind: "handoff_started";
       handoffId: string;
@@ -334,8 +334,8 @@ export class AgentSession implements AgentClient, Bridgeable {
       logger: config.logger,
       wire: config.wire,
     });
-    this.controller.subscribeAgentCommands((commands) => {
-      this.emit({ kind: "agent_commands_changed", commands });
+    this.controller.subscribeAvailableCommands((commands) => {
+      this.emit({ kind: "internal_session_commands_changed", commands });
     });
   }
 
@@ -443,7 +443,7 @@ export class AgentSession implements AgentClient, Bridgeable {
    * Advertisement is discoverability, not an allow-list: a harness may accept commands
    * that it did not advertise yet.
    */
-  executeAgentCommand(
+  executeInternalSessionCommand(
     name: string,
     input?: string,
     handlers?: PromptHandlers,
@@ -451,7 +451,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     const command = name.trim();
     if (!command || command.startsWith("/") || /\s/.test(command)) {
       return Promise.reject(
-        new Error("agent command name must be non-empty, contain no whitespace, and omit the leading slash"),
+        new Error("internal session command name must be non-empty, contain no whitespace, and omit the leading slash"),
       );
     }
     const suffix = input == null || input.length === 0 ? "" : ` ${input}`;
@@ -836,8 +836,8 @@ export class AgentSession implements AgentClient, Bridgeable {
     return this.controller.setConfig(configId, value);
   }
   /** Immutable snapshot of commands advertised by the active ACP harness. */
-  get agentCommands(): readonly AgentCommand[] {
-    return this.controller.agentCommands;
+  get internalSessionCommands(): readonly InternalSessionCommand[] {
+    return this.controller.availableCommands;
   }
   get isDegraded(): boolean {
     return this.controller.isDegraded;

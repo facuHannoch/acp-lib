@@ -67,7 +67,7 @@ describe("AgentSession handoff", () => {
     expect(session.internalSessionId).not.toBe(fromInternalSessionId);
     expect(session.state.phase).toBe("idle");
     expect(busyAtStart).toBe(true);
-    expect(session.agentCommands.map((command) => command.name)).toContain("status");
+    expect(session.internalSessionCommands.map((command) => command.name)).toContain("status");
 
     const record = await sessions.get("stable-logical-id");
     expect(record?.internalSessionId).toBe(session.internalSessionId);

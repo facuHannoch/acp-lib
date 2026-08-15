@@ -57,15 +57,15 @@ const session = await AgentSession.create({
 
 const unsubscribe = session.subscribe((notification) => {
   // state_changed, turn_started/completed/failed,
-  // agent_commands_changed, handoff_started/completed/failed
+  // internal_session_commands_changed, handoff_started/completed/failed
 });
 
 session.state;
 session.isBusy;
 session.queuedOperationCount;
 
-session.agentCommands;
-await session.executeAgentCommand("status");
+session.internalSessionCommands;
+await session.executeInternalSessionCommand("status");
 
 const before = session.internalSessionId;
 const handoff = await session.handoff({ summary: "portable continuation context" });

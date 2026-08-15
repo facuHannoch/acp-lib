@@ -11,7 +11,7 @@
 import type * as schema from "@agentclientprotocol/sdk";
 import type {
   ActivityEvent,
-  AgentCommand,
+  InternalSessionCommand,
   ContentBlock,
   PlanEntry,
   ToolActivity,
@@ -94,7 +94,7 @@ export function toActivityEvent(update: schema.SessionUpdate): ActivityEvent | n
       return { kind: "plan_removed", planId: u.id };
 
     case "available_commands_update":
-      return { kind: "commands", commands: toAgentCommands(u.availableCommands) };
+      return { kind: "commands", commands: toAvailableCommands(u.availableCommands) };
     case "current_mode_update":
       return { kind: "mode", modeId: u.currentModeId };
     case "config_option_update":
@@ -121,9 +121,9 @@ export function toActivityEvent(update: schema.SessionUpdate): ActivityEvent | n
 }
 
 /** Slash commands from an available_commands_update payload. */
-export function toAgentCommands(raw: unknown): readonly AgentCommand[] {
+export function toAvailableCommands(raw: unknown): readonly InternalSessionCommand[] {
   if (!Array.isArray(raw)) return Object.freeze([]);
-  const commands: AgentCommand[] = [];
+  const commands: InternalSessionCommand[] = [];
   const names = new Set<string>();
   for (const item of raw) {
     const c = item as Record<string, unknown> | null;
@@ -132,7 +132,7 @@ export function toAgentCommands(raw: unknown): readonly AgentCommand[] {
     if (names.has(name)) continue;
     names.add(name);
     const input = c.input as Record<string, unknown> | null | undefined;
-    const command: AgentCommand = {
+    const command: InternalSessionCommand = {
       name,
       description: typeof c.description === "string" ? c.description : "",
       ...(input && typeof input.hint === "string"

@@ -5,17 +5,17 @@
 import type { ApplyResult } from "./activity.ts";
 
 /**
- * A slash command the AGENT itself exposes (e.g. codex /model, kimi /sessions), learned
- * from the `available_commands_update` notification. Invoke with the `//name` passthrough.
+ * A slash command exposed by the replaceable ACP-backed internal session (e.g. codex
+ * /model, kimi /sessions), learned from `available_commands_update`.
  */
-export interface AgentCommand {
+export interface InternalSessionCommand {
   readonly name: string;
   readonly description: string;
   /** ACP currently defines command input as unstructured text after the command name. */
-  readonly input?: AgentCommandInput;
+  readonly input?: InternalSessionCommandInput;
 }
 
-export interface AgentCommandInput {
+export interface InternalSessionCommandInput {
   readonly kind: "unstructured";
   /** Placeholder/help text supplied by the harness. */
   readonly hint: string;
@@ -152,8 +152,8 @@ export type ActivityEvent =
   /** Per-plan update (experimental protocol extension). */
   | { kind: "plan_update"; planId: string; plan: unknown }
   | { kind: "plan_removed"; planId: string }
-  /** The agent's slash commands changed; also reflected in `client.agentCommands`. */
-  | { kind: "commands"; commands: readonly AgentCommand[] }
+  /** ACP available commands changed; also reflected in `client.availableCommands`. */
+  | { kind: "commands"; commands: readonly InternalSessionCommand[] }
   /** The agent switched session mode. */
   | { kind: "mode"; modeId: string }
   /** Context-window accounting. `used`/`size` are tokens. */

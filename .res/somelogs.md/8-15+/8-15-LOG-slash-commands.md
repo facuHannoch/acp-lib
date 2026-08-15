@@ -893,3 +893,111 @@ The startup matrix suite verifies:
 malformed/unreadable one. Transcript readers already recover by skipping malformed lines,
 but catalog corruption needs a separate explicit error/recovery policy in a later storage
 pass rather than being silently inferred during AgentSession startup.
+
+## Part 5.1 — Internal-session command terminology cleanup
+
+Completed on 2026-08-15 on branch `feat/agent-session-operations`, before beginning the
+single-AgentSession REPL pass.
+
+### Reason
+
+The Part 3 names `agentCommands`, `executeAgentCommand()`, and
+`agent_commands_changed` incorrectly suggested that the commands belonged to the stable
+high-level `AgentSession`. They actually come from ACP's replaceable provider backing and
+can change whenever `internalSessionId` changes.
+
+The terminology is now aligned with the identity model:
+
+```text
+AgentSession
+  stable consumer-facing logical conversation
+  agentSessionId remains fixed
+
+internal session
+  replaceable harness/provider thread
+  internalSessionId can change
+  internalSessionCommands belong here
+```
+
+### Layer-specific names
+
+At the ACP protocol boundary, the library now mirrors ACP terminology:
+
+```ts
+client.availableCommands
+client.subscribeAvailableCommands(listener)
+```
+
+The corresponding exported listener type is `AvailableCommandsListener`, normalization
+is performed by `toAvailableCommands()`, and internal comparison/publication helpers use
+the same name.
+
+`AgentController` also exposes `availableCommands` and
+`subscribeAvailableCommands()`, because it is the live connection/control-plane layer
+directly forwarding the active ACP leaf.
+
+At the stable logical-session boundary, ownership is made explicit:
+
+```ts
+session.internalSessionCommands
+session.executeInternalSessionCommand(name, input?, handlers?)
+```
+
+and command changes use:
+
+```ts
+{
+  kind: "internal_session_commands_changed",
+  commands,
+}
+```
+
+The command metadata types are now:
+
+```ts
+InternalSessionCommand
+InternalSessionCommandInput
+```
+
+The generic activity event remains `kind: "commands"`, since it is a direct normalized
+ACP update inside the prompt activity stream and already sits below AgentSession lifecycle
+terminology.
+
+### Clean migration policy
+
+No deprecated aliases were retained for the Part 3 names. These APIs were introduced on
+this feature branch and had not formed a released compatibility contract; keeping aliases
+would preserve exactly the ownership ambiguity this cleanup removes.
+
+The existing `createAgentCommands()` name in the REPL submodule was not changed in this
+checkpoint. It names the legacy factory that creates a set of local interactive command
+handlers, rather than the ACP-advertised command snapshot. Its naming and responsibility
+belong to the next REPL architecture pass.
+
+### Files changed
+
+- `src/types.ts`
+- `src/updates.ts`
+- `src/client.ts`
+- `src/controller.ts`
+- `src/agent-session.ts`
+- `src/index.ts`
+- `src/repl/commands.ts` (dependency surface and help wording only)
+- `test/updates.test.ts`
+- `test/commands.test.ts`
+- `test/agent-session-commands.test.ts`
+- `test/agent-session-handoff.test.ts`
+- `smoke-tests/test5-operations/operations-smoke.ts`
+- `smoke-tests/test5-operations/README.md`
+
+### Verification
+
+- `bun run check` passed.
+- Full suite: 182 passed, 0 failed, 1002 expectations across 18 files.
+- Operations smoke: 20/20 checks passed.
+- The smoke observes `internal_session_commands_changed`, reads
+  `internalSessionCommands`, and executes `executeInternalSessionCommand()` against the
+  deterministic harness.
+- `git diff --check` passed.
+- `bun run pack:dry` succeeded with the renamed public surface.
+- No network service or real harness was used.

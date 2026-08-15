@@ -18,7 +18,7 @@ import {
   type ClientCapabilityConfig,
 } from "./capabilities.ts";
 import { parseConfigOptions, type ConfigOptions } from "./config-options.ts";
-import { extractChunkText, toActivityEvent, toAgentCommands } from "./updates.ts";
+import { extractChunkText, toActivityEvent, toAvailableCommands } from "./updates.ts";
 import { TerminalRegistry } from "./terminals.ts";
 import { readTextFile, writeTextFile } from "./fs-access.ts";
 import { NotConnectedError } from "./errors.ts";
@@ -32,7 +32,7 @@ import type {
   PermissionOutcome,
   Attachment,
   SessionListPage,
-  AgentCommand,
+  InternalSessionCommand,
   ToolContent,
   WireEntry,
 } from "./types.ts";
@@ -111,19 +111,19 @@ interface QueueItem {
   reject: (e: unknown) => void;
 }
 
-export type AgentCommandsListener = (commands: readonly AgentCommand[]) => void;
+export type AvailableCommandsListener = (commands: readonly InternalSessionCommand[]) => void;
 
 interface CommandTransition {
-  previous: readonly AgentCommand[];
-  bySession: Map<string, readonly AgentCommand[]>;
+  previous: readonly InternalSessionCommand[];
+  bySession: Map<string, readonly InternalSessionCommand[]>;
 }
 
 export class AcpClient implements AgentClient {
   private transport: AcpTransport | null = null;
   private _capabilities: Capabilities | null = null;
   private _configOptions: ConfigOptions = new Map();
-  private _agentCommands: readonly AgentCommand[] = Object.freeze([]);
-  private readonly agentCommandListeners = new Set<AgentCommandsListener>();
+  private _availableCommands: readonly InternalSessionCommand[] = Object.freeze([]);
+  private readonly availableCommandListeners = new Set<AvailableCommandsListener>();
   private commandTransition: CommandTransition | null = null;
   private _sessionId: string | null = null;
 
@@ -173,13 +173,13 @@ export class AcpClient implements AgentClient {
     return this._capabilities?.authMethods ?? [];
   }
   /** Slash commands the active harness exposes (from available_commands_update). */
-  get agentCommands(): readonly AgentCommand[] {
-    return this._agentCommands;
+  get availableCommands(): readonly InternalSessionCommand[] {
+    return this._availableCommands;
   }
-  /** Observe future command-set changes. Read agentCommands first for the current snapshot. */
-  subscribeAgentCommands(listener: AgentCommandsListener): () => void {
-    this.agentCommandListeners.add(listener);
-    return () => this.agentCommandListeners.delete(listener);
+  /** Observe future command-set changes. Read availableCommands first for the current snapshot. */
+  subscribeAvailableCommands(listener: AvailableCommandsListener): () => void {
+    this.availableCommandListeners.add(listener);
+    return () => this.availableCommandListeners.delete(listener);
   }
   get currentSessionId(): string | null {
     return this._sessionId;
@@ -243,7 +243,7 @@ export class AcpClient implements AgentClient {
         this.transport = null;
         this._sessionId = null;
         this.commandTransition = null;
-        this.setAgentCommands([]);
+        this.setAvailableCommands([]);
         this.log.error("process_exit", { code });
       },
     });
@@ -519,7 +519,7 @@ export class AcpClient implements AgentClient {
     this.transport = null;
     this._sessionId = null;
     this.commandTransition = null;
-    this.setAgentCommands([]);
+    this.setAvailableCommands([]);
     this.terminals?.releaseAll();
     this.terminals = null;
     if (t) await t.stop();
@@ -661,7 +661,7 @@ export class AcpClient implements AgentClient {
       this._configOptions = parseConfigOptions((update as Record<string, any>).configOptions);
     }
     if (kind === "available_commands_update") {
-      const commands = toAgentCommands((update as Record<string, any>).availableCommands);
+      const commands = toAvailableCommands((update as Record<string, any>).availableCommands);
       const sessionId = notification.sessionId || "";
       if (this.commandTransition) {
         // A session/new notification can precede its response, so the target id is not
@@ -669,7 +669,7 @@ export class AcpClient implements AgentClient {
         // selected id when the transition finishes.
         if (sessionId) this.commandTransition.bySession.set(sessionId, commands);
       } else if (!sessionId || sessionId === this._sessionId) {
-        this.setAgentCommands(commands);
+        this.setAvailableCommands(commands);
       }
     }
 
@@ -755,42 +755,42 @@ export class AcpClient implements AgentClient {
   private beginCommandTransition(): void {
     // Session operations are serialized by their callers. Preserve the last snapshot so
     // a failed load/new can roll back without leaving an unrelated empty command palette.
-    this.commandTransition = { previous: this._agentCommands, bySession: new Map() };
-    this.setAgentCommands([]);
+    this.commandTransition = { previous: this._availableCommands, bySession: new Map() };
+    this.setAvailableCommands([]);
   }
 
   private finishCommandTransition(sessionId: string): void {
     const transition = this.commandTransition;
     this.commandTransition = null;
-    this.setAgentCommands(transition?.bySession.get(sessionId) ?? []);
+    this.setAvailableCommands(transition?.bySession.get(sessionId) ?? []);
   }
 
   private abortCommandTransition(): void {
     const transition = this.commandTransition;
     this.commandTransition = null;
-    if (transition) this.setAgentCommands(transition.previous);
+    if (transition) this.setAvailableCommands(transition.previous);
   }
 
-  private setAgentCommands(commands: readonly AgentCommand[]): void {
-    if (sameAgentCommands(this._agentCommands, commands)) return;
+  private setAvailableCommands(commands: readonly InternalSessionCommand[]): void {
+    if (sameAvailableCommands(this._availableCommands, commands)) return;
     // Never expose the mutable transition scratch arrays used internally. Command
-    // objects come from toAgentCommands() frozen; the copy makes the collection itself
+    // objects come from toAvailableCommands() frozen; the copy makes the collection itself
     // immutable as well, including the empty snapshots published between sessions.
-    const snapshot: readonly AgentCommand[] = Object.freeze([...commands]);
-    this._agentCommands = snapshot;
-    for (const listener of [...this.agentCommandListeners]) {
+    const snapshot: readonly InternalSessionCommand[] = Object.freeze([...commands]);
+    this._availableCommands = snapshot;
+    for (const listener of [...this.availableCommandListeners]) {
       try {
         listener(snapshot);
       } catch (err) {
-        this.log.warn("agent_commands_listener_failed", { error: String(err) });
+        this.log.warn("available_commands_listener_failed", { error: String(err) });
       }
     }
   }
 }
 
-function sameAgentCommands(
-  a: readonly AgentCommand[],
-  b: readonly AgentCommand[],
+function sameAvailableCommands(
+  a: readonly InternalSessionCommand[],
+  b: readonly InternalSessionCommand[],
 ): boolean {
   if (a.length !== b.length) return false;
   return a.every((command, index) => {

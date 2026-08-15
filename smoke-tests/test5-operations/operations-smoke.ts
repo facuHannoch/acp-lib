@@ -56,7 +56,7 @@ interface DesiredSessionSurface {
   readonly isBusy: boolean;
   readonly queuedOperationCount: number;
   subscribe(listener: (notification: NotificationEnvelope) => void): () => void;
-  executeAgentCommand(name: string, input?: string): Promise<{ text: string }>;
+  executeInternalSessionCommand(name: string, input?: string): Promise<{ text: string }>;
   handoff(options?: { summary?: string }): Promise<{
     handoffId: string;
     agentSessionId: string;
@@ -131,7 +131,7 @@ async function runConsumer(): Promise<void> {
         ? `phase=${desired.state!.phase} busy=${desired.isBusy} queued=${desired.queuedOperationCount}`
         : "missing state, isBusy, or queuedOperationCount");
 
-    const initialCommands = first.agentCommands.map((command) => command.name);
+    const initialCommands = first.internalSessionCommands.map((command) => command.name);
     check(checks, "harness", "commands advertised at session creation are readable",
       initialCommands.includes("status"), initialCommands.join(", ") || "none");
 
@@ -139,7 +139,7 @@ async function runConsumer(): Promise<void> {
     check(checks, "session", "ordinary prompt works", firstTurn.text.includes("first ordinary turn"),
       JSON.stringify(firstTurn.text));
 
-    const commandsAfterTurn = first.agentCommands.map((command) => command.name);
+    const commandsAfterTurn = first.internalSessionCommands.map((command) => command.name);
     check(checks, "harness", "command updates remain readable",
       commandsAfterTurn.includes("status") && commandsAfterTurn.includes("usage"),
       commandsAfterTurn.join(", ") || "none");
@@ -150,18 +150,20 @@ async function runConsumer(): Promise<void> {
         kinds.includes("turn_started") && kinds.includes("turn_completed"),
         kinds.join(" -> ") || "no notifications");
       check(checks, "harness", "command changes are notified",
-        kinds.includes("agent_commands_changed"), kinds.join(" -> ") || "no notifications");
+        kinds.includes("internal_session_commands_changed"), kinds.join(" -> ") || "no notifications");
       check(checks, "session", "notification envelopes are ordered",
         notifications.every((n, i) =>
           n.agentSessionId === "consumer-a" && n.ts > 0 && (i === 0 || n.seq > notifications[i - 1]!.seq)),
         notifications.map((n) => String(n.seq)).join(", ") || "no notifications");
     }
 
-    const hasExecute = typeof desired.executeAgentCommand === "function";
+    const hasExecute = typeof desired.executeInternalSessionCommand === "function";
     check(checks, "harness", "explicit harness command execution is exposed", hasExecute,
-      hasExecute ? "executeAgentCommand(name, input?) is present" : "missing executeAgentCommand");
+      hasExecute
+        ? "executeInternalSessionCommand(name, input?) is present"
+        : "missing executeInternalSessionCommand");
     if (hasExecute) {
-      const status = await desired.executeAgentCommand!("status");
+      const status = await desired.executeInternalSessionCommand!("status");
       check(checks, "harness", "advertised command reaches the harness",
         status.text.includes("FAKE_STATUS"), JSON.stringify(status.text));
     }

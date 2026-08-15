@@ -12,7 +12,7 @@ import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { Logger } from "./logger.ts";
 import type {
-  AgentCommand,
+  InternalSessionCommand,
   Attachment,
   PromptHandlers,
   PromptResult,
@@ -21,7 +21,7 @@ import type {
 } from "./types.ts";
 import { NotConnectedError } from "./errors.ts";
 
-const NO_AGENT_COMMANDS: readonly AgentCommand[] = Object.freeze([]);
+const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([]);
 
 /**
  * How the controller talks to the agent. Orthogonal to `adapter` (which agent):
@@ -100,10 +100,10 @@ export class AgentController implements AgentClient {
   private current: AgentClient | null = null;
   private acp: AcpClient | null = null;
   private mode: AgentMode;
-  private readonly agentCommandListeners = new Set<
-    (commands: readonly AgentCommand[]) => void
+  private readonly availableCommandListeners = new Set<
+    (commands: readonly InternalSessionCommand[]) => void
   >();
-  private detachAgentCommands: (() => void) | null = null;
+  private detachAvailableCommands: (() => void) | null = null;
 
   constructor(private readonly config: AgentControllerConfig) {
     this.mode = config.mode ?? "normal";
@@ -146,14 +146,16 @@ export class AgentController implements AgentClient {
   }
 
   /** Slash commands the active ACP harness exposes. */
-  get agentCommands(): readonly AgentCommand[] {
-    return this.acp?.agentCommands ?? NO_AGENT_COMMANDS;
+  get availableCommands(): readonly InternalSessionCommand[] {
+    return this.acp?.availableCommands ?? NO_AVAILABLE_COMMANDS;
   }
 
   /** Observe future command-set changes across ACP leaf and mode replacements. */
-  subscribeAgentCommands(listener: (commands: readonly AgentCommand[]) => void): () => void {
-    this.agentCommandListeners.add(listener);
-    return () => this.agentCommandListeners.delete(listener);
+  subscribeAvailableCommands(
+    listener: (commands: readonly InternalSessionCommand[]) => void,
+  ): () => void {
+    this.availableCommandListeners.add(listener);
+    return () => this.availableCommandListeners.delete(listener);
   }
 
   async start(): Promise<ConnectResult> {
@@ -163,7 +165,7 @@ export class AgentController implements AgentClient {
     const brought = await this.bringUp(this.mode, this.config.sessionId);
     this.current = brought.client;
     this.acp = brought.acp;
-    this.attachAgentCommandSource();
+    this.attachAvailableCommandSource();
     return brought.result;
   }
 
@@ -211,9 +213,9 @@ export class AgentController implements AgentClient {
     const client = this.current;
     this.current = null;
     this.acp = null;
-    this.detachAgentCommands?.();
-    this.detachAgentCommands = null;
-    this.emitAgentCommands(NO_AGENT_COMMANDS);
+    this.detachAvailableCommands?.();
+    this.detachAvailableCommands = null;
+    this.emitAvailableCommands(NO_AVAILABLE_COMMANDS);
     if (client) await client.stop();
   }
 
@@ -231,7 +233,7 @@ export class AgentController implements AgentClient {
     this.current = brought.client;
     this.acp = brought.acp;
     this.mode = mode;
-    this.attachAgentCommandSource();
+    this.attachAvailableCommandSource();
     if (previous) await previous.stop();
     return brought.result;
   }
@@ -443,19 +445,19 @@ export class AgentController implements AgentClient {
     return this.acp;
   }
 
-  private attachAgentCommandSource(): void {
-    this.detachAgentCommands?.();
-    this.detachAgentCommands = this.acp?.subscribeAgentCommands((commands) =>
-      this.emitAgentCommands(commands)) ?? null;
-    this.emitAgentCommands(this.acp?.agentCommands ?? NO_AGENT_COMMANDS);
+  private attachAvailableCommandSource(): void {
+    this.detachAvailableCommands?.();
+    this.detachAvailableCommands = this.acp?.subscribeAvailableCommands((commands) =>
+      this.emitAvailableCommands(commands)) ?? null;
+    this.emitAvailableCommands(this.acp?.availableCommands ?? NO_AVAILABLE_COMMANDS);
   }
 
-  private emitAgentCommands(commands: readonly AgentCommand[]): void {
-    for (const listener of [...this.agentCommandListeners]) {
+  private emitAvailableCommands(commands: readonly InternalSessionCommand[]): void {
+    for (const listener of [...this.availableCommandListeners]) {
       try {
         listener(commands);
       } catch (err) {
-        this.config.logger?.warn("controller_agent_commands_listener_failed", {
+        this.config.logger?.warn("controller_available_commands_listener_failed", {
           error: String(err),
         });
       }

@@ -147,7 +147,7 @@ export type {
   Attachment,
   SessionListEntry,
   SessionListPage,
-  AgentCommand,
-  AgentCommandInput,
+  InternalSessionCommand,
+  InternalSessionCommandInput,
   WireEntry,
 } from "./types.ts";

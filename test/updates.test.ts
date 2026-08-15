@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractChunkText, toActivityEvent, toAgentCommands } from "../src/updates.ts";
+import { extractChunkText, toActivityEvent, toAvailableCommands } from "../src/updates.ts";
 import type { ToolActivity, ToolUpdateActivity } from "../src/types.ts";
 
 describe("session updates", () => {
@@ -212,7 +212,7 @@ describe("session updates", () => {
   });
 
   test("normalizes command metadata into immutable, deduplicated snapshots", () => {
-    const commands = toAgentCommands([
+    const commands = toAvailableCommands([
       {
         name: " usage ",
         description: "Show usage",
@@ -239,7 +239,7 @@ describe("session updates", () => {
   });
 
   test("omits malformed command input metadata", () => {
-    expect(toAgentCommands([
+    expect(toAvailableCommands([
       { name: "one", input: { hint: 42 } },
       { name: "two", input: "not an input object" },
     ])).toEqual([
