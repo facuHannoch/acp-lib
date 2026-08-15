@@ -426,34 +426,31 @@ const messages = await readTranscript("/absolute/path/to/chats/conv-123.jsonl");
 
 ### Interactive REPL
 
-The REPL and its slash-commands (`/help`, `/new`, `/sessions`, `/load`, `/config`,
-`/degrade`, …) are reusable. Wire them to your own UI, or just run them.
+For one stable `AgentSession`, use the opinionated session REPL. Local `/...` commands
+control that logical session; explicit `//...` commands go to its active internal session;
+an unknown `/...` command is reported locally and is never silently sent to the harness.
 
 ```ts
-import { runRepl, createAgentCommands } from "@qlairoslabs/acp-client/repl";
-import { AgentController, ADAPTERS } from "@qlairoslabs/acp-client";
+import { runAgentSessionRepl } from "@qlairoslabs/acp-client/repl";
+import { AgentSession, ADAPTERS } from "@qlairoslabs/acp-client";
 
-const agent = new AgentController({ adapter: ADAPTERS.codex, adapterId: "codex" });
-const { sessionId, resumed } = await agent.start();
-
-const commands = createAgentCommands({
-  client: agent,
-  note: (msg) => process.stderr.write(msg + "\n"),
-  color: true,
-  // sessionManager + adapterId here to persist /new, /load, /fork to a catalog
+const session = await AgentSession.create({
+  adapter: ADAPTERS.codex,
+  adapterId: "codex",
+  providerSession: { kind: "new" },
 });
 
 try {
-  await runRepl(agent, {
-    intro: `${resumed ? "resumed" : "new"} session ${sessionId}`,
-    activity: true,
-    spinner: true,
-    onSlashCommand: commands.onSlashCommand,
-  });
+  await runAgentSessionRepl(session, { activity: true, spinner: true });
 } finally {
-  await agent.stop();
+  await session.stop();
 }
 ```
+
+The older low-level controller REPL remains available as `runRepl()` plus
+`createControllerCommands()`. Its `/new`, `/load`, `/resume`, and `/fork` commands replace
+the `AgentController`'s ACP provider session directly; they do not manage multiple stable
+`AgentSession` objects. A consumer-owned managed CLI belongs above both command sets.
 
 ### CLI
 
@@ -483,7 +480,7 @@ opt-in subpaths.
 |---|---|
 | `@qlairoslabs/acp-client` | Core: `AgentController`, `AgentSession`, `AcpClient`, `SessionManager`, `FileSessionStore`, `ADAPTERS`, loggers, types. |
 | `@qlairoslabs/acp-client/activity` | `ActivityAggregator`, `foldRecords`, `foldFrame`, `wireFrames` — the delta→full-state fold. No runtime imports, so it is safe to compile for a browser. |
-| `@qlairoslabs/acp-client/repl` | `runRepl`, `createAgentCommands` (interactive layer). |
+| `@qlairoslabs/acp-client/repl` | `runAgentSessionRepl`, `createAgentSessionCommands`, plus low-level `runRepl` and `createControllerCommands`. |
 | `@qlairoslabs/acp-client/degraded` | The PTY fallback transport (`Bun.spawn({ terminal })` + xterm parsing). |
 | `@qlairoslabs/acp-client/parser` | Terminal-output parsers used by degraded mode. |
 | `@qlairoslabs/acp-client/cli` | The CLI entry point. |

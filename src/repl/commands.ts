@@ -3,7 +3,7 @@
 // interactive consumer (CLI, hub terminal mode, etc).
 //
 // Usage:
-//   const { onSlashCommand } = createAgentCommands({ client, note, color });
+//   const { onSlashCommand } = createControllerCommands({ client, note, color });
 //   await runRepl(client, { onSlashCommand });
 
 import type {
@@ -28,7 +28,7 @@ import type {
 import type { SessionManager, MergedSession } from "../session-manager.ts";
 
 /** The control-plane surface required by the reusable slash commands. */
-export interface InteractiveAgentClient extends AgentClient, Bridgeable {
+export interface InteractiveControllerClient extends AgentClient, Bridgeable {
   /** Optional durable AgentSession identity, when the client is session-backed. */
   readonly agentSessionId?: string;
   readonly currentAdapterId: string;
@@ -71,9 +71,9 @@ export interface InteractiveAgentClient extends AgentClient, Bridgeable {
   ): Promise<SetConfigFromStringResult>;
 }
 
-export interface CommandHandlerDeps {
+export interface ControllerCommandHandlerDeps {
   /** Prompt client plus the interactive control-plane operations used by commands. */
-  client: InteractiveAgentClient;
+  client: InteractiveControllerClient;
   /** Output sink for command responses. */
   note: (msg: string) => void;
   /** Whether to emit color codes. Default false. */
@@ -84,16 +84,18 @@ export interface CommandHandlerDeps {
   adapterId?: string;
 }
 
-/** Return value from createAgentCommands. */
-export interface AgentCommands {
+/** Local command handlers for the low-level AgentController REPL. */
+export interface ControllerCommandHandlers {
   onSlashCommand: (command: string, args: string[]) => Promise<boolean>;
 }
 
 /**
- * Create a reusable slash-command handler for interactive REPL sessions.
- * Handles /help, /login, /new, /sessions, /load, etc.
+ * Create the legacy low-level AgentController command set. It changes ACP provider
+ * sessions directly (/new, /load, /resume, /fork); it does not manage AgentSessions.
  */
-export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
+export function createControllerCommands(
+  deps: ControllerCommandHandlerDeps,
+): ControllerCommandHandlers {
   const { client, note, color = false, sessionManager, adapterId } = deps;
 
   const recordSession = async (internalSessionId: string | null): Promise<void> => {
@@ -340,7 +342,7 @@ export function createAgentCommands(deps: CommandHandlerDeps): AgentCommands {
         return true;
       }
       default:
-        return false; // unknown → treat as a normal prompt
+        return false; // generic REPL reports an unknown local command
     }
   };
 

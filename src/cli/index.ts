@@ -21,7 +21,7 @@ import {
   createWireLog,
   type AdapterPreset,
 } from "../index.ts";
-import { createAgentCommands, runRepl } from "../repl/index.ts";
+import { createControllerCommands, runRepl } from "../repl/index.ts";
 import { DIM, colorEnabled, paint } from "../repl/colors.ts";
 
 interface Args {
@@ -107,7 +107,7 @@ async function chat(args: Args): Promise<void> {
   const color = colorEnabled(process.stderr);
   const note = (s: string) => process.stderr.write(paint(color, DIM, s) + "\n");
 
-  const commands = createAgentCommands({ client: controller, note, color });
+  const commands = createControllerCommands({ client: controller, note, color });
 
   try {
     await runRepl(controller, {

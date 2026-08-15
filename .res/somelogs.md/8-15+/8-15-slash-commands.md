@@ -2662,3 +2662,235 @@ Before implementing more lifecycle methods, I would make Part 5 an identity/star
 The central rule should be:
 
 > `agentSessionId` selects logical identity, provider-session configuration selects the ACP thread, and transcript configuration only selects history storage. None implicitly overrides another.
+
+
+
+
+
+
+
+# 0.4.0 release
+
+
+Yes—the consumer-facing core is ready for integration testing in the orchestration library.
+
+I would consider it a `0.4.0` release candidate, but not publish the current working tree verbatim yet because Part 6 is still uncommitted and the package version remains `0.3.4`. Before publishing:
+
+- Commit the Part 6 REPL changes.
+- Bump the package to `0.4.0`.
+- Run an external package-consumer test against the packed tarball.
+- Add brief migration notes for renamed command APIs.
+
+The implementation itself is healthy: 192 tests pass, the consumer operations smoke test passes 20/20, and the package dry-run succeeds.
+
+## What consumers can do now
+
+### 1. Manage logical sessions
+
+The consumer owns the collection of `AgentSession` objects. The library provides:
+
+```ts
+const store = new FileSessionStore(path);
+const sessions = new SessionManager(store);
+
+await sessions.get(agentSessionId);
+await sessions.list();
+await sessions.delete(agentSessionId);
+await sessions.record(record);
+await sessions.listMerged(agentSessions, adapterId);
+```
+
+`AgentSession.create()` automatically records and updates its catalog entry when given `sessions`.
+
+Creating a logical session:
+
+```ts
+const session = await AgentSession.create({
+  adapter,
+  adapterId: "codex",
+  sessions,
+  providerSession: { kind: "new" },
+  transcriptDir,
+});
+```
+
+Reopening one:
+
+```ts
+const record = await sessions.get(agentSessionId);
+if (!record) throw new Error("Session not found");
+
+const session = await AgentSession.create({
+  adapter: resolveAdapter(record.adapter),
+  adapterId: record.adapter,
+  agentSessionId: record.agentSessionId,
+  providerSession: record.internalSessionId
+    ? {
+        kind: "load",
+        internalSessionId: record.internalSessionId,
+        onFailure: "error",
+      }
+    : { kind: "new" },
+  mode: record.mode,
+  cwd: record.cwd,
+  title: record.title,
+  transcriptPath: record.transcriptPath,
+  sessions,
+});
+```
+
+There is intentionally no `SessionManager.load()` returning a live session. The manager stores routing metadata; the consumer resolves the adapter and constructs the live `AgentSession`.
+
+### 2. Control one stable `AgentSession`
+
+The session now supports:
+
+```ts
+session.agentSessionId;          // stable consumer identity
+session.internalSessionId;       // replaceable harness thread
+session.state;
+session.isBusy;
+session.queuedOperationCount;
+
+await session.prompt(text, handlers, attachments);
+session.interrupt({ clearQueue: true });
+await session.stop();
+
+await session.handoff();
+await session.handoff({ summary });
+
+await session.bridge();
+await session.setMode("normal" | "degraded");
+```
+
+Prompts and handoffs are serialized through the same operation queue.
+
+The consumer can react without polling:
+
+```ts
+const unsubscribe = session.subscribe((notification) => {
+  console.log(notification.seq, notification.event);
+});
+```
+
+Events include:
+
+- `state_changed`
+- `turn_started`
+- `turn_completed`
+- `turn_failed`
+- `handoff_started`
+- `handoff_completed`
+- `handoff_failed`
+- `internal_session_commands_changed`
+
+Handoff preserves both the object and `agentSessionId`, while replacing `internalSessionId`. It optionally generates the continuation summary, starts a fresh harness thread, and seeds it with that context.
+
+### 3. Work with the active ACP harness
+
+Consumers can discover and execute harness-advertised commands:
+
+```ts
+session.internalSessionCommands;
+
+await session.executeInternalSessionCommand("usage");
+await session.executeInternalSessionCommand("status", "verbose");
+```
+
+Command advertisement is for discovery, not validation; execution still uses ACP’s ordinary prompt mechanism.
+
+The underlying controller is available when lower-level access is needed:
+
+```ts
+session.connection
+```
+
+That exposes:
+
+- ACP capabilities
+- Authentication methods
+- Session configuration options
+- `setConfig()`
+- Provider `new`, `load`, `resume`, `fork`, and list operations
+- Available-command subscriptions
+- Raw connection/session information
+
+### 4. Persist transcripts and activity
+
+Consumers can configure:
+
+```ts
+transcriptPath
+transcriptDir
+transcriptActivity
+```
+
+The library supports:
+
+- User and assistant messages
+- Usage data
+- Optional settled tool/thinking/plan activity
+- Handoff start/completion/failure boundaries
+- Reading raw transcript lines
+- Reading logical messages
+- Folding activity records
+
+Transcript storage is independent from provider-session selection. An existing transcript never implicitly selects or restores a harness thread.
+
+### 5. Use custom adapters
+
+Custom adapters already work without registering a preset:
+
+```ts
+const adapter = {
+  command: ["my-agent", "--acp"],
+  ptyCommand: ["my-agent"],
+  displayName: "My Agent",
+};
+
+await AgentSession.create({
+  adapter,
+  adapterId: "my-agent",
+  providerSession: { kind: "new" },
+});
+```
+
+The orchestration library can therefore resolve adapters however it wants.
+
+### 6. Use the REPL primitives
+
+The new single-session REPL is available from the subpath:
+
+```ts
+import {
+  runAgentSessionRepl,
+  createAgentSessionCommands,
+  parseReplInput,
+  dispatchReplInput,
+} from "@qlairoslabs/acp-client/repl";
+```
+
+Its routing is explicit:
+
+```text
+ordinary text  -> AgentSession prompt
+/command       -> local AgentSession command
+//command      -> active harness command
+```
+
+Unknown `/commands` never leak to the harness.
+
+## Important current limitations
+
+These are not blockers for starting orchestration integration, but they should be understood:
+
+- There is no managed multi-session runtime. Your orchestration library owns the map of live `AgentSession` objects.
+- There is no `restoreSession()` convenience method. Reopening is deliberate consumer composition using `SessionManager.get()` and `AgentSession.create()`.
+- `FileSessionStore.get()` currently treats missing, malformed, and unreadable records alike by returning `null`.
+- Transcript files are history/audit storage, not replay input for the harness.
+- Handoff requires normal ACP mode; it cannot operate in degraded PTY mode.
+- The managed multi-`AgentSession` CLI has not been implemented.
+- The existing executable remains the lower-level controller CLI.
+- The Part 6 changes currently need to be committed before merging.
+
+My recommendation: finish the release housekeeping, publish `0.4.0-beta.0`, exercise it from the orchestration library, and promote the same API to `0.4.0` once the external-consumer ergonomics have been validated.

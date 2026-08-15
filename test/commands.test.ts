@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createAgentCommands } from "../src/repl/commands.ts";
-import type { InteractiveAgentClient } from "../src/repl/commands.ts";
+import { createControllerCommands } from "../src/repl/commands.ts";
+import type { InteractiveControllerClient } from "../src/repl/commands.ts";
 import { SessionManager } from "../src/session-manager.ts";
 import type { SessionRecord, SessionStore } from "../src/session-store.ts";
 import type { Capabilities } from "../src/capabilities.ts";
@@ -47,14 +47,14 @@ function caps(overrides: Partial<Capabilities["agent"]> = {}): Capabilities {
   };
 }
 
-interface FakeClientOptions extends Partial<InteractiveAgentClient> {
+interface FakeClientOptions extends Partial<InteractiveControllerClient> {
   capabilities?: Capabilities;
 }
 
-/** A configurable InteractiveAgentClient that records calls and returns canned results. */
-function makeClient(opts: FakeClientOptions = {}): InteractiveAgentClient {
+/** A configurable InteractiveControllerClient that records calls and returns canned results. */
+function makeClient(opts: FakeClientOptions = {}): InteractiveControllerClient {
   const connect = (sessionId: string): ConnectResult => ({ sessionId, resumed: false });
-  const base: InteractiveAgentClient = {
+  const base: InteractiveControllerClient = {
     // AgentClient
     prompt: async () => ({ text: "", stopReason: "end_turn", status: "completed", usage: null }),
     interrupt: () => {},
@@ -89,15 +89,15 @@ function makeClient(opts: FakeClientOptions = {}): InteractiveAgentClient {
 
 /** Collects note() output and runs a single command. */
 async function run(
-  client: InteractiveAgentClient,
+  client: InteractiveControllerClient,
   command: string,
   args: string[] = [],
-  extra: Parameters<typeof createAgentCommands>[0] extends infer D
+  extra: Parameters<typeof createControllerCommands>[0] extends infer D
     ? Partial<Omit<NonNullable<D>, "client" | "note">>
     : never = {},
 ): Promise<{ handled: boolean; out: string }> {
   const lines: string[] = [];
-  const { onSlashCommand } = createAgentCommands({
+  const { onSlashCommand } = createControllerCommands({
     client,
     note: (msg) => lines.push(msg),
     ...extra,
@@ -108,8 +108,8 @@ async function run(
 
 // --- dispatch ----------------------------------------------------------------
 
-describe("createAgentCommands · dispatch", () => {
-  test("unknown command is NOT handled (falls through to prompt)", async () => {
+describe("createControllerCommands · dispatch", () => {
+  test("unknown command is returned to the generic router as unhandled", async () => {
     const { handled } = await run(makeClient(), "definitely-not-a-command");
     expect(handled).toBe(false);
   });
@@ -124,7 +124,7 @@ describe("createAgentCommands · dispatch", () => {
 
 // --- introspection commands --------------------------------------------------
 
-describe("createAgentCommands · introspection", () => {
+describe("createControllerCommands · introspection", () => {
   test("/session shows id, adapter and mode", async () => {
     const { out } = await run(makeClient(), "session");
     expect(out).toContain("sess-1");
@@ -163,7 +163,7 @@ describe("createAgentCommands · introspection", () => {
 
 // --- mode swap ---------------------------------------------------------------
 
-describe("createAgentCommands · degrade/upgrade", () => {
+describe("createControllerCommands · degrade/upgrade", () => {
   test("/degrade short-circuits when already degraded", async () => {
     let called = false;
     const client = makeClient({
@@ -193,7 +193,7 @@ describe("createAgentCommands · degrade/upgrade", () => {
 
 // --- session lifecycle + catalog persistence ---------------------------------
 
-describe("createAgentCommands · sessions + catalog", () => {
+describe("createControllerCommands · sessions + catalog", () => {
   test("/new reports the session and records it to the catalog", async () => {
     const store = new MemorySessionStore();
     const manager = new SessionManager(store);
@@ -288,7 +288,7 @@ describe("createAgentCommands · sessions + catalog", () => {
 
 // --- config ------------------------------------------------------------------
 
-describe("createAgentCommands · config", () => {
+describe("createControllerCommands · config", () => {
   test("/config with no args lists options", async () => {
     const client = makeClient({
       configOptions: new Map([
@@ -337,7 +337,7 @@ describe("createAgentCommands · config", () => {
 
 // --- login --------------------------------------------------------------------
 
-describe("createAgentCommands · login", () => {
+describe("createControllerCommands · login", () => {
   test("refuses in degraded mode", async () => {
     const { out } = await run(makeClient({ isDegraded: true }), "login");
     expect(out).toContain("unavailable in degraded mode");

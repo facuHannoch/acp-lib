@@ -19,7 +19,12 @@
 //     and a fresh-per-line interface there would drop buffered lines.
 
 import * as readline from "node:readline";
-import type { AgentClient, ActivityEvent } from "../index.ts";
+import type {
+  AgentClient,
+  ActivityEvent,
+  PromptHandlers,
+  PromptResult,
+} from "../index.ts";
 import { BOLD, CYAN, DIM, colorEnabled, paint } from "./colors.ts";
 
 const ESC = 0x1b;
@@ -34,14 +39,83 @@ export interface ReplOptions {
   /** Optional line printed (stderr) before the loop starts. Styled by the REPL. */
   intro?: string;
   /**
-   * Handle a `/slash` command. Return true if handled (the loop continues without
-   * prompting the agent); return false to treat the line as a normal prompt.
+   * Handle a local `/slash` command. Return true if handled. Returning false reports an
+   * unknown local command; slash-prefixed input is never silently treated as a prompt.
    * `/exit` and `/quit` are always handled by the REPL itself.
    *
    * Extension seam for consumers (e.g. the orchestration hub's direct mode): add
    * `/new`, `/model`, `/switch`, etc. without forking the REPL.
    */
   onSlashCommand?: (command: string, args: string[]) => boolean | Promise<boolean>;
+  /**
+   * Execute an explicit `//name [input]` command against the active internal session.
+   * When omitted, the generic REPL sends the equivalent `/name [input]` prompt directly.
+   * `runAgentSessionRepl()` supplies this using executeInternalSessionCommand().
+   */
+  onInternalSessionCommand?: (
+    command: string,
+    input: string | undefined,
+    handlers: PromptHandlers,
+  ) => Promise<PromptResult>;
+}
+
+export type ReplInput =
+  | { kind: "exit" }
+  | { kind: "prompt"; text: string }
+  | { kind: "local_command"; command: string; args: string[] }
+  | { kind: "internal_session_command"; command: string; input?: string };
+
+/** Pure syntax split used by both interactive paths and pinned independently in tests. */
+export function parseReplInput(raw: string): ReplInput {
+  const line = raw.trim();
+  if (line === "/exit" || line === "/quit") return { kind: "exit" };
+  if (line.startsWith("//")) {
+    const body = line.slice(2).trim();
+    const separator = body.search(/\s/);
+    if (separator < 0) return { kind: "internal_session_command", command: body };
+    const input = body.slice(separator).trim();
+    return {
+      kind: "internal_session_command",
+      command: body.slice(0, separator),
+      ...(input ? { input } : {}),
+    };
+  }
+  if (line.startsWith("/")) {
+    const [command = "", ...args] = line.slice(1).split(/\s+/);
+    return { kind: "local_command", command, args };
+  }
+  return { kind: "prompt", text: line };
+}
+
+export interface ReplInputActions {
+  prompt(text: string): Promise<void>;
+  localCommand(command: string, args: string[]): Promise<boolean>;
+  internalSessionCommand(command: string, input: string | undefined): Promise<void>;
+  unknownLocalCommand(command: string): void;
+  missingInternalSessionCommand(): void;
+}
+
+/** Execute one classified input without any terminal dependency. Returns false on exit. */
+export async function dispatchReplInput(
+  input: ReplInput,
+  actions: ReplInputActions,
+): Promise<boolean> {
+  switch (input.kind) {
+    case "exit":
+      return false;
+    case "prompt":
+      await actions.prompt(input.text);
+      return true;
+    case "internal_session_command":
+      if (!input.command) actions.missingInternalSessionCommand();
+      else await actions.internalSessionCommand(input.command, input.input);
+      return true;
+    case "local_command":
+      if (!await actions.localCommand(input.command, input.args)) {
+        actions.unknownLocalCommand(input.command);
+      }
+      return true;
+  }
 }
 
 export async function runRepl(
@@ -63,28 +137,38 @@ export async function runRepl(
   let busy = false;
 
   // ---- handle one accepted line; returns true to keep looping, false to exit ----
-  const handleLine = async (line: string): Promise<boolean> => {
-    if (line === "/exit" || line === "/quit") return false;
-    // `//foo` = verbatim passthrough: send `/foo` to the AGENT as a prompt (its own slash
-    // command), bypassing our handlers. The escape hatch for name clashes like /sessions.
-    if (line.startsWith("//")) {
-      await runTurn(line.slice(1));
-      return true;
-    }
-    if (line.startsWith("/") && options.onSlashCommand) {
-      const [command = "", ...rest] = line.slice(1).split(/\s+/);
-      try {
-        if (await options.onSlashCommand(command, rest)) return true;
-      } catch (e) {
-        // A failing command (e.g. /load on a session with no rollout) must not crash the REPL.
-        err(paint(color, DIM, `(/${command} failed: ${String(e)})`) + "\n");
-        return true;
-      }
-      // not handled → fall through and send it as a normal prompt
-    }
-    await runTurn(line);
-    return true;
-  };
+  const handleLine = (line: string): Promise<boolean> =>
+    dispatchReplInput(parseReplInput(line), {
+      prompt: (text) => runTurn(text),
+      internalSessionCommand: (command, input) => {
+        const promptText = `/${command}${input ? ` ${input}` : ""}`;
+        return runTurn(
+          promptText,
+          options.onInternalSessionCommand
+            ? (handlers) => options.onInternalSessionCommand!(command, input, handlers)
+            : undefined,
+        );
+      },
+      missingInternalSessionCommand: () => {
+        err(paint(color, DIM, "(internal session command name is required after //)") + "\n");
+      },
+      localCommand: async (command, args) => {
+        try {
+          return await options.onSlashCommand?.(command, args) === true;
+        } catch (e) {
+          // A failing command must not crash the REPL or become a harness prompt.
+          err(paint(color, DIM, `(/${command} failed: ${String(e)})`) + "\n");
+          return true;
+        }
+      },
+      unknownLocalCommand: (command) => err(
+        paint(
+          color,
+          DIM,
+          `(unknown local command: /${command || "(empty)"}; use //name for an internal-session command)`,
+        ) + "\n",
+      ),
+    });
 
   try {
     if (interactive) await runInteractive(prompt, handleLine);
@@ -174,7 +258,10 @@ export async function runRepl(
   }
 
   // ---- one turn ------------------------------------------------------------------
-  async function runTurn(text: string): Promise<void> {
+  async function runTurn(
+    text: string,
+    execute?: (handlers: PromptHandlers) => Promise<PromptResult>,
+  ): Promise<void> {
     let wroteLabel = false;
     let lastMarker = "";
     let sawActivity = false;
@@ -220,7 +307,8 @@ export async function runRepl(
 
     busy = true;
     try {
-      const result = await client.prompt(text, { onChunk, onActivity });
+      const handlers: PromptHandlers = { onChunk, onActivity };
+      const result = await (execute ? execute(handlers) : client.prompt(text, handlers));
       spinner?.stop();
 
       if (wroteLabel) {

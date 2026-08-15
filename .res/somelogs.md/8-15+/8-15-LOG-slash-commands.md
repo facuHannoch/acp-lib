@@ -1001,3 +1001,137 @@ belong to the next REPL architecture pass.
 - `git diff --check` passed.
 - `bun run pack:dry` succeeded with the renamed public surface.
 - No network service or real harness was used.
+
+## Part 6 — Explicit REPL routing and the single-AgentSession CLI layer
+
+Part 6 turns the three operation layers into an unambiguous input contract for an
+interactive consumer. The previous REPL treated an unrecognized `/command` as an ordinary
+prompt. That made a local command such as `/usage` travel through ACP to the harness when
+the local handler did not recognize it—the failure that motivated this work.
+
+The input namespaces are now:
+
+```text
+ordinary text     -> prompt the stable AgentSession
+/command          -> local command for the current AgentSession
+//command [input] -> command for the active internal/harness session
+```
+
+An unknown `/command` is rejected locally. It can never fall through into
+`AgentClient.prompt()`. Harness command execution therefore requires the explicit `//`
+namespace.
+
+### Pure routing contract
+
+`src/repl/repl.ts` now exports two terminal-independent helpers:
+
+```ts
+parseReplInput(raw): ReplInput
+dispatchReplInput(input, actions): Promise<boolean>
+```
+
+`ReplInput` distinguishes `prompt`, `local_command`, `internal_session_command`, and
+`exit`. Keeping parsing and dispatch independent of readline lets consumers reuse and test
+the command policy without running an interactive terminal.
+
+`ReplOptions` now has two separate extension points:
+
+```ts
+onSlashCommand(command, args)
+onInternalSessionCommand(command, input, handlers)
+```
+
+Returning `false` from `onSlashCommand` now means “unknown local command,” not “send this
+to the agent.” The generic `runRepl()` preserves the `//` escape hatch by sending the
+equivalent `/name [input]` prompt when no explicit internal-session executor was supplied.
+The higher-level session REPL supplies that executor directly.
+
+### Opinionated single-AgentSession REPL
+
+The new `src/repl/agent-session-commands.ts` exports:
+
+```ts
+createAgentSessionCommands(...)
+runAgentSessionRepl(session, options?)
+```
+
+Its built-in local commands operate on exactly one stable logical session:
+
+```text
+/help
+/session
+/state
+/commands
+/handoff [SUMMARY]
+/bridge
+/exit
+```
+
+`/session` displays both `agentSessionId` and `internalSessionId`; `/state` exposes the
+authoritative busy/queue/session snapshot; `/commands` renders ACP-advertised command
+metadata as explicit `//name` invocations. `/handoff` calls the stable AgentSession method,
+so the logical identity remains unchanged while its internal session is replaced.
+
+`runAgentSessionRepl()` routes `//name [input]` through
+`session.executeInternalSessionCommand(name, input, handlers)`. This is semantically the
+same ACP prompt mechanism but gives consumers and tests a named, explicit operation and
+keeps output streaming/activity rendering intact.
+
+The one-session command set deliberately contains no `/new`, `/load`, `/sessions`, or
+`/switch`. Those commands select or create logical AgentSessions and therefore belong to a
+managed consumer/CLI above this layer. A consumer may add its own local commands through
+the optional `onSlashCommand` extension without replacing the built-ins.
+
+### Low-level controller REPL terminology
+
+The pre-existing command factory directly mutates an `AgentController`'s ACP provider
+session through `/new`, `/load`, `/resume`, and `/fork`. Calling it
+`createAgentCommands()` obscured that lower-level responsibility, so it is now named:
+
+```ts
+createControllerCommands(...)
+```
+
+The related public types are now `InteractiveControllerClient`,
+`ControllerCommandHandlerDeps`, and `ControllerCommandHandlers`. No compatibility aliases
+were retained because the rename is occurring on the unreleased feature branch and the old
+name preserved the architectural ambiguity being removed. The current CLI continues to be
+the low-level controller CLI, now using the accurately named factory.
+
+### Documentation and package surface
+
+The README's interactive example now constructs an `AgentSession` and runs
+`runAgentSessionRepl()`. It documents `/` versus `//`, the rejection of unknown local
+commands, the continued availability of low-level `runRepl()` plus
+`createControllerCommands()`, and the fact that a managed multi-AgentSession CLI is still a
+separate layer.
+
+The `@qlairoslabs/acp-client/repl` entry point exports the parser/dispatcher, both REPL
+layers, their factories, and their structural consumer types.
+
+### Files changed
+
+- `src/repl/repl.ts`
+- `src/repl/agent-session-commands.ts` (new)
+- `src/repl/commands.ts`
+- `src/repl/index.ts`
+- `src/cli/index.ts`
+- `README.md`
+- `test/repl-routing.test.ts` (new)
+- `test/commands.test.ts`
+
+### Verification
+
+- `bun run check` passed.
+- Full suite: 192 passed, 0 failed, 1029 expectations across 19 files.
+- Routing tests prove `/usage` invokes only the local/unknown actions and never the prompt
+  action.
+- Routing tests prove `//usage workspace` invokes only the internal-session action.
+- Single-session command tests cover help boundaries, both identities, state, advertised
+  command rendering, summary forwarding during handoff, and unknown-command behavior.
+- Operations smoke: 20/20 checks passed.
+- `bun run pack:dry` succeeded and includes `src/repl/agent-session-commands.ts`.
+- The terminology audit found no stale `createAgentCommands`, `executeAgentCommand`, or
+  old advertised-command names in source, tests, smoke tests, or README.
+- `git diff --check` passed.
+- No network service or real harness was used.
