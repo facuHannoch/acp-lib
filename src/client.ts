@@ -287,16 +287,11 @@ export class AcpClient implements AgentClient {
     let sessionId: string;
 
     if (resumeId && this.capabilities.agent.loadSession) {
-      this.beginCommandTransition();
       try {
-        await transport.loadSession({ sessionId: resumeId, cwd, mcpServers } as schema.LoadSessionRequest);
-        sessionId = resumeId;
-        this._sessionId = sessionId;
-        this.finishCommandTransition(sessionId);
-        resumed = true;
-        this.log.info("session_loaded", { sessionId });
+        const result = await this.loadSessionInternal(transport, resumeId, { mcpServers });
+        sessionId = result.sessionId;
+        resumed = result.resumed;
       } catch (err) {
-        this.abortCommandTransition();
         this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
         if (loadFailure === "error") throw err;
         sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
@@ -319,6 +314,14 @@ export class AcpClient implements AgentClient {
     if (!this.capabilities.agent.loadSession) {
       throw new Error("agent does not advertise session/load (loadSession)");
     }
+    return this.loadSessionInternal(transport, sessionId, options);
+  }
+
+  private async loadSessionInternal(
+    transport: AcpTransport,
+    sessionId: string,
+    options: SwitchSessionOptions = {},
+  ): Promise<ConnectResult> {
     this.beginCommandTransition();
     this.replay = { sessionId, onUpdate: options.onUpdate };
     let res: schema.LoadSessionResponse;
@@ -335,12 +338,13 @@ export class AcpClient implements AgentClient {
     } finally {
       this.replay = null;
     }
+    const configOptions = parseConfigOptions(res.configOptions);
     this._sessionId = sessionId;
+    this._configOptions = configOptions;
     this.finishCommandTransition(sessionId);
-    this._configOptions = parseConfigOptions(res.configOptions);
     this.log.info("session_loaded", {
       sessionId,
-      configOptions: [...this._configOptions.keys()],
+      configOptions: [...configOptions.keys()],
     });
     this.log.debug("session_load_response", { response: res });
     return { sessionId, resumed: true };
