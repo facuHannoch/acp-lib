@@ -1205,3 +1205,89 @@ installed/npm package instead of only in the repository.
 - `bun run pack:dry` succeeded.
 - The dry-run includes `CONSUMER_GUIDE.md` in the package (38 total files).
 - `git diff --check` passed.
+
+## Part 8 — Pi preset and custom-adapter CLI wiring
+
+Confirmed the architectural boundary before implementation: the core library was already
+adapter-agnostic. `Adapter` contains launch information only (`command`, optional
+`ptyCommand`, and an optional display label), while capabilities, authentication,
+configuration, session support, and harness commands are discovered after ACP
+initialization. The hardcoded restriction existed only in the executable CLI, which typed
+`--adapter` as `keyof ADAPTERS` and indexed the preset map directly.
+
+### Pi convenience preset
+
+Added:
+
+```ts
+ADAPTERS.pi = {
+  command: ["pi-acp"],
+  ptyCommand: ["pi"],
+  displayName: "Pi",
+};
+```
+
+The selected harness is `@automatalabs/pi-acp`, which embeds Pi through its published SDK
+and speaks ACP over stdio. The npm package inspected during this work was version 0.6.3;
+its published executable is `pi-acp`. The preset encodes only that launch mechanism; Pi's
+actual ACP surface remains dynamically discovered. The native `pi` executable remains the
+interactive PTY command used by bridge/degraded mode.
+
+### Generic CLI adapter resolution
+
+Added `src/cli/adapter.ts` with pure, tested helpers:
+
+```ts
+resolveCliAdapter(selection)
+parseCommandArg(value, flag)
+```
+
+The CLI continues accepting presets:
+
+```bash
+acp-client chat --adapter pi
+```
+
+It now also accepts any custom ACP process:
+
+```bash
+acp-client chat \
+  --adapter private \
+  --adapter-command '["private-agent","serve","--acp"]' \
+  --pty-command '["private-agent","chat"]' \
+  --adapter-name "Private Agent"
+```
+
+`--adapter-command` and `--pty-command` accept a plain executable or an exact JSON argv
+array. JSON arrays avoid lossy whitespace splitting and preserve paths/arguments containing
+spaces. When a custom command omits `--adapter`, the CLI derives an id from the executable
+basename. Unknown preset ids fail with the known preset list and custom-adapter guidance.
+
+The resolved `adapterId` is also supplied to the existing controller command factory,
+keeping catalog metadata coherent when that optional integration is used.
+
+### Documentation
+
+README now includes Pi in the supported/convenience list, shows both Pi and custom CLI
+invocations, and states explicitly that presets are launch shortcuts rather than provider
+feature definitions. The consumer guide includes `ADAPTERS.pi` in its resolver example and
+explains the Pi RPC-to-ACP bridge.
+
+### Files changed
+
+- `src/adapters.ts`
+- `src/cli/adapter.ts` (new)
+- `src/cli/index.ts`
+- `test/cli-adapter.test.ts` (new)
+- `README.md`
+- `CONSUMER_GUIDE.md`
+
+### Verification
+
+- `bun run check` passed.
+- Full suite: 205 passed, 0 failed, 1055 expectations across 22 files.
+- Focused CLI/adapter suite: 11 passed, 0 failed.
+- Tests cover Pi preset resolution, the existing Kimi default, custom adapters, derived
+  ids, unknown presets, exact JSON argv, and malformed/empty values.
+- `git diff --check` passed.
+- Pi itself is installed locally, but `pi-acp` is not; no live Pi ACP conversation was run.

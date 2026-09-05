@@ -1,7 +1,7 @@
 # @qlairoslabs/acp-client
 
 An embeddable, model-agnostic **Agent Client Protocol (ACP)** client: talk to AI coding
-agents (Codex, Claude, Kimi, Gemini, Copilot, OpenCode, …) over JSON-RPC 2.0, with a
+agents (Codex, Claude, Kimi, Pi, Gemini, Copilot, OpenCode, …) over JSON-RPC 2.0, with a
 **degraded PTY fallback** for agents that don't speak ACP.
 
 ```ts
@@ -61,7 +61,7 @@ bun add -g @qlairoslabs/acp-client
 | **`AgentController`** | The control plane for **one** agent process: start/stop, prompt, interrupt, switch sessions, swap mode (normal ⇄ degraded), introspect capabilities & config. |
 | **`AgentSession`** | A **durable conversation** with a stable identity that survives reconnects and mode-swaps. Wraps an `AgentController` and (optionally) records itself to a catalog. The front face for consumers that want persistence. |
 | **`SessionManager` + `SessionStore`** | The session **catalog**: routing metadata (which adapter/mode/cwd a session belongs to), *not* conversation content. Merges your catalog with the agent's live `session/list`. Ships a `FileSessionStore`; inject your own (e.g. a database) for custom backends. |
-| **Adapter** | Just how to *launch* an agent: the spawn command. `ADAPTERS` has presets (`codex`, `claude`, `kimi`, `gemini`, `copilot`, `opencode`); you can also pass a raw `{ command: [...] }`. |
+| **Adapter** | Just how to *launch* an agent: the spawn command. `ADAPTERS` has convenience presets (`codex`, `claude`, `kimi`, `pi`, `gemini`, `copilot`, `opencode`); you can also pass a raw `{ command: [...] }`. Capabilities and commands are discovered after ACP initialization. |
 | **Mode** | `"normal"` (real ACP over JSON-RPC) or `"degraded"` (drive the native CLI through a PTY and parse it). Both implement the same `AgentClient` output contract. |
 
 ---
@@ -464,6 +464,9 @@ A thin wrapper over the library is exposed as `acp-client`:
 acp-client chat                       # new chat with the default adapter
 acp-client chat <SESSION_ID>          # resume a session
 acp-client chat --adapter codex       # pick an adapter
+acp-client chat --adapter pi          # @automatalabs/pi-acp (the pi-acp binary)
+acp-client chat --adapter private --adapter-command '["private-agent","--acp"]'
+acp-client chat --adapter private --adapter-command private-acp --pty-command private-agent
 acp-client chat --exec "docker exec -i my-container"   # talk to an agent in a container
 acp-client chat --cwd /workspace --approve             # auto-approve tool permissions
 acp-client chat --degraded            # force degraded (PTY) mode
@@ -472,6 +475,24 @@ acp-client chat --wire[=FILE]         # dump every raw protocol line (stderr, or
 ```
 
 Activity markers (thinking/tool) show by default; `--no-activity` disables them.
+
+Presets are launch shortcuts, not provider definitions. For a custom harness,
+`--adapter-command` accepts either one executable or a JSON argv array; `--pty-command`
+optionally supplies its interactive/degraded counterpart, and `--adapter-name` sets a
+display label. After launch, auth methods, capabilities, configuration, session support,
+and harness commands are discovered over ACP exactly as they are for a preset.
+
+The Pi preset expects the `pi-acp` executable installed by:
+
+```bash
+npm install -g @automatalabs/pi-acp
+```
+
+Alternatively, run it without a global install as a custom adapter:
+
+```bash
+acp-client chat --adapter pi --adapter-command '["npx","-y","@automatalabs/pi-acp"]'
+```
 
 ---
 

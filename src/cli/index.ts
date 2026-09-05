@@ -4,9 +4,11 @@
 // See SPEC.md "library first, CLI second".
 //
 // Usage:
-//   acp-lib chat [SESSION_ID] [--adapter kimi] [--exec "docker exec -i <ctr>"]
+//   acp-client chat [SESSION_ID] [--adapter kimi] [--exec "docker exec -i <ctr>"]
 //                [--cwd /workspace] [--approve] [--verbose] [--debug]
 //                [--no-activity] [--degraded] [--wire[=FILE]]
+//   acp-client chat [--adapter ID] --adapter-command '["agent","--acp"]'
+//                [--pty-command '["agent"]'] [--adapter-name "My Agent"]
 //
 //   activity (thinking/tool markers) shows by DEFAULT; --no-activity disables it.
 //   --verbose (-v): lifecycle summaries (connect, session_new, prompt_end)
@@ -16,18 +18,21 @@
 
 import {
   AgentController,
-  ADAPTERS,
   createConsoleLogger,
   createWireLog,
-  type AdapterPreset,
+  type Adapter,
 } from "../index.ts";
 import { createControllerCommands, runRepl } from "../repl/index.ts";
 import { DIM, colorEnabled, paint } from "../repl/colors.ts";
+import { parseCommandArg, resolveCliAdapter } from "./adapter.ts";
 
 interface Args {
   command: string;
   sessionId?: string;
-  adapter: AdapterPreset;
+  adapterId?: string;
+  adapterCommand?: string[];
+  ptyCommand?: string[];
+  adapterName?: string;
   execPrefix: string[];
   cwd?: string;
   degraded: boolean;
@@ -42,7 +47,6 @@ interface Args {
 function parseArgs(argv: string[]): Args {
   const a: Args = {
     command: argv[0] ?? "chat",
-    adapter: "kimi",
     execPrefix: [],
     degraded: false,
     approve: false,
@@ -52,7 +56,14 @@ function parseArgs(argv: string[]): Args {
   };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--adapter") a.adapter = argv[++i] as AdapterPreset;
+    if (arg === "--adapter") a.adapterId = argv[++i];
+    else if (arg === "--adapter-command") {
+      a.adapterCommand = parseCommandArg(argv[++i], "--adapter-command");
+    }
+    else if (arg === "--pty-command") {
+      a.ptyCommand = parseCommandArg(argv[++i], "--pty-command");
+    }
+    else if (arg === "--adapter-name") a.adapterName = argv[++i];
     else if (arg === "--exec") a.execPrefix = (argv[++i] ?? "").split(" ").filter(Boolean);
     else if (arg === "--cwd") a.cwd = argv[++i];
     else if (arg === "--degraded") a.degraded = true;
@@ -85,9 +96,16 @@ async function chat(args: Args): Promise<void> {
         : createWireLog({ path: args.wire });
   if (args.wire) process.stderr.write(`wire log: ${args.wire}\n`);
 
+  const resolved = resolveCliAdapter({
+    adapterId: args.adapterId,
+    command: args.adapterCommand,
+    ptyCommand: args.ptyCommand,
+    displayName: args.adapterName,
+  });
+  const adapter: Adapter = resolved.adapter;
   const controller = new AgentController({
-    adapter: ADAPTERS[args.adapter],
-    adapterId: args.adapter,
+    adapter,
+    adapterId: resolved.adapterId,
     mode: args.degraded ? "degraded" : "normal",
     execPrefix: args.execPrefix,
     cwd: args.cwd,
@@ -98,7 +116,7 @@ async function chat(args: Args): Promise<void> {
   });
 
   const { sessionId, resumed } = await controller.start();
-  const label = ADAPTERS[args.adapter].displayName ?? args.adapter;
+  const label = adapter.displayName ?? resolved.adapterId;
   const intro = controller.isDegraded
     ? `degraded (pty) session (${label}) — no ACP capabilities · /exit to quit, Ctrl-C to interrupt`
     : `${resumed ? "resumed" : "new"} session ${sessionId} (${label}) — ` +
@@ -107,7 +125,12 @@ async function chat(args: Args): Promise<void> {
   const color = colorEnabled(process.stderr);
   const note = (s: string) => process.stderr.write(paint(color, DIM, s) + "\n");
 
-  const commands = createControllerCommands({ client: controller, note, color });
+  const commands = createControllerCommands({
+    client: controller,
+    note,
+    color,
+    adapterId: resolved.adapterId,
+  });
 
   try {
     await runRepl(controller, {

@@ -52,6 +52,9 @@ export const ADAPTERS = {
   },
   // verified — @agentclientprotocol/codex-acp. The `codex` CLI has no `acp` subcommand.
   codex: { command: ["codex-acp"], ptyCommand: ["codex"], displayName: "Codex" },
+  // @automatalabs/pi-acp embeds Pi through its SDK and publishes the `pi-acp` binary.
+  // Pi itself remains the interactive PTY command for bridge/degraded mode.
+  pi: { command: ["pi-acp"], ptyCommand: ["pi"], displayName: "Pi" },
   // Below: from each project's docs, not spawned here. Correct at time of writing, unverified.
   gemini: { command: ["gemini", "--acp", "--stdio"], ptyCommand: ["gemini"], displayName: "Gemini" },
   copilot: { command: ["copilot", "--acp", "--stdio"], ptyCommand: ["copilot"], displayName: "Copilot" },
