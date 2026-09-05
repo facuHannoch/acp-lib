@@ -53,6 +53,7 @@ describe("AgentSession transcript config", () => {
     try {
       const result = await session.prompt("hello");
       expect(result.text).toBe("fake reply to: hello");
+      expect(result.messages).toEqual([{ text: "fake reply to: hello" }]);
     } finally {
       await session.stop();
     }
@@ -65,6 +66,7 @@ describe("AgentSession transcript config", () => {
         t: "msg",
         role: "assistant",
         text: "fake reply to: hello",
+        messages: [{ text: "fake reply to: hello" }],
         ts: expect.any(Number),
         usage: { inputTokens: 2, outputTokens: 4 },
         stopReason: "end_turn",

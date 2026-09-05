@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { extractChunkText, toActivityEvent, toAvailableCommands } from "../src/updates.ts";
+import {
+  extractChunkText,
+  extractResponseChunk,
+  toActivityEvent,
+  toAvailableCommands,
+} from "../src/updates.ts";
 import type { ToolActivity, ToolUpdateActivity } from "../src/types.ts";
 
 describe("session updates", () => {
@@ -16,6 +21,13 @@ describe("session updates", () => {
         content: { type: "text", text: "thinking" },
       } as never),
     ).toBe("");
+    expect(
+      extractResponseChunk({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "message-1",
+        content: { type: "text", text: "hello" },
+      } as never),
+    ).toEqual({ text: "hello", messageId: "message-1" });
   });
 
   test("maps tool and plan activity", () => {

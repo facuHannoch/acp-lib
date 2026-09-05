@@ -1135,3 +1135,73 @@ layers, their factories, and their structural consumer types.
   old advertised-command names in source, tests, smoke tests, or README.
 - `git diff --check` passed.
 - No network service or real harness was used.
+
+## Part 7 — Consumer integration guide
+
+Added `CONSUMER_GUIDE.md` as the orchestration-oriented entry point for consumers. The
+guide describes the library as three deliberately separate operation layers rather than
+presenting slash commands as the architecture:
+
+1. Consumer-owned logical session management through `SessionManager`, a consumer-owned
+   map of live objects, and explicit `AgentSession.create()` composition.
+2. Stable `AgentSession` operations such as prompt, state observation, interrupt, stop,
+   bridge, and same-harness handoff.
+3. Active internal/harness session discovery and execution through
+   `internalSessionCommands`, `internal_session_commands_changed`, and
+   `executeInternalSessionCommand()`.
+
+The guide includes complete patterns for adapter resolution, custom adapters, catalog and
+live-registry ownership, new logical sessions, reopening from catalog metadata, session
+listing/selection, streaming prompts, permission handling, notification-driven scheduling,
+shutdown, transcripts, harness commands, the low-level controller escape hatch, and a
+custom non-readline command router.
+
+### AgentSession command exposure
+
+The guide answers the command-reuse question explicitly. Consumers can import from the
+`@qlairoslabs/acp-client/repl` subpath:
+
+```ts
+createAgentSessionCommands(...)
+runAgentSessionRepl(...)
+parseReplInput(...)
+dispatchReplInput(...)
+```
+
+`createAgentSessionCommands()` exposes the same handler used by the opinionated
+single-session REPL. It currently handles `/help`, `/session`, `/state`, `/commands`,
+`/handoff`, and `/bridge`; `/exit` belongs to the REPL loop.
+
+The current asymmetry is documented rather than hidden: internal/harness commands expose
+structured metadata through `session.internalSessionCommands`, while local AgentSession
+commands currently expose only an executable handler, not a public metadata array. A
+consumer can reuse the handler directly, but must presently define its own labels and
+descriptions for a graphical command palette.
+
+### Handoff boundary
+
+The guide records the current handoff contract following the cross-harness design review:
+handoff preserves the logical id but only creates a new thread on the current adapter. A
+provided summary can bypass generation, but the summary-generation and continuation
+prompts are otherwise fixed; the continuation is a user prompt, and ACP `session/new` has
+no portable system-prompt field. Cross-adapter handoff and independent prompt policies are
+identified as future API work.
+
+### Publication
+
+The README now links to the consumer guide near the start of Usage. The package `files`
+list includes `CONSUMER_GUIDE.md`, ensuring that the relative README link resolves in an
+installed/npm package instead of only in the repository.
+
+### Files changed
+
+- `CONSUMER_GUIDE.md` (new)
+- `README.md`
+- `package.json` (published-files list)
+
+### Verification
+
+- `bun run typecheck` passed.
+- `bun run pack:dry` succeeded.
+- The dry-run includes `CONSUMER_GUIDE.md` in the package (38 total files).
+- `git diff --check` passed.

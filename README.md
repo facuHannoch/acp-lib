@@ -68,6 +68,10 @@ bun add -g @qlairoslabs/acp-client
 
 ## Usage
 
+For an orchestration-oriented walkthrough covering catalog ownership, reopening logical
+sessions, lifecycle listeners, handoff, harness commands, and reusable command routing,
+see the [consumer guide](./CONSUMER_GUIDE.md).
+
 ### One-shot prompt
 
 ```ts

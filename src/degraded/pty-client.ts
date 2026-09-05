@@ -277,12 +277,16 @@ export class PtyClient implements AgentClient, Bridgeable {
     }
 
     const status = turn.cancelled ? "cancelled" : "completed";
-    if (text) turn.handlers?.onChunk?.(text);
+    const messages = text ? Object.freeze([{ text }]) : Object.freeze([]);
+    if (text) {
+      turn.handlers?.onResponseChunk?.({ text, startsMessage: true });
+      turn.handlers?.onChunk?.(text);
+    }
     this.log[text.length === 0 && !turn.cancelled ? "warn" : "info"]("pty_turn_end", {
       status,
       chars: text.length,
     });
-    turn.resolve({ text, stopReason, status, usage: null });
+    turn.resolve({ text, messages, stopReason, status, usage: null });
   }
 
   /** Resolve once the screen has been idle for settleMs (used to drain the banner). */

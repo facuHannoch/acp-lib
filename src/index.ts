@@ -69,7 +69,7 @@ export type {
   TerminalRegistryOptions,
 } from "./terminals.ts";
 
-export { extractChunkText, toActivityEvent } from "./updates.ts";
+export { extractChunkText, extractResponseChunk, toActivityEvent } from "./updates.ts";
 
 export {
   ActivityAggregator,
@@ -132,6 +132,8 @@ export type { Logger, LogLevel, ConsoleLoggerOptions } from "./logger.ts";
 export type {
   PromptResult,
   PromptHandlers,
+  ResponseChunk,
+  ResponseMessage,
   ActivityEvent,
   ToolActivity,
   ToolUpdateActivity,

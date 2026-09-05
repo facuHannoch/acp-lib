@@ -18,14 +18,26 @@ import type {
   ToolContent,
   ToolLocation,
   ToolUpdateActivity,
+  ResponseChunk,
 } from "./types.ts";
 
-/** Response text from an agent_message_chunk, or "" for any other update. */
-export function extractChunkText(update: schema.SessionUpdate): string {
+/** A response delta preserving its ACP message id, or null for any other update. */
+export function extractResponseChunk(
+  update: schema.SessionUpdate,
+): Omit<ResponseChunk, "startsMessage"> | null {
   const u = update as Record<string, any>;
-  if (u.sessionUpdate !== "agent_message_chunk") return "";
+  if (u.sessionUpdate !== "agent_message_chunk") return null;
   const content = u.content;
-  return content?.type === "text" ? (content.text ?? "") : "";
+  const text = content?.type === "text" ? (content.text ?? "") : "";
+  if (!text) return null;
+  return u.messageId == null
+    ? { text }
+    : { text, messageId: String(u.messageId) };
+}
+
+/** @deprecated Prefer `extractResponseChunk` when message boundaries matter. */
+export function extractChunkText(update: schema.SessionUpdate): string {
+  return extractResponseChunk(update)?.text ?? "";
 }
 
 /** Map an update to an ActivityEvent, or null if it carries no observable activity. */

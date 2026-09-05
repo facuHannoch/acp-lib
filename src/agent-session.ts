@@ -19,6 +19,7 @@ import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
+import { ResponseAccumulator } from "./response.ts";
 import type { SessionManager, MergedSession } from "./session-manager.ts";
 import {
   appendTranscriptLine,
@@ -638,6 +639,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     });
 
     const chunks: string[] = [];
+    const response = new ResponseAccumulator();
     const wrappedHandlers: PromptHandlers = {
       ...item.handlers,
       // Fired from here, from the one aggregator this session owns — nothing below needs
@@ -646,6 +648,10 @@ export class AgentSession implements AgentClient, Bridgeable {
       onChunk: (chunk) => {
         chunks.push(chunk);
         item.handlers?.onChunk?.(chunk);
+      },
+      onResponseChunk: (chunk) => {
+        response.append(chunk);
+        item.handlers?.onResponseChunk?.(chunk);
       },
       onActivity: (event) => {
         const result = this.aggregator.apply(event);
@@ -673,6 +679,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         t: "msg",
         role: "assistant",
         text: res.text,
+        messages: res.messages,
         ts: Date.now(),
         usage: res.usage,
         stopReason: res.stopReason,
@@ -683,11 +690,19 @@ export class AgentSession implements AgentClient, Bridgeable {
       // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
       // what it was doing, at its real status.
       this.endTurn(item.handlers);
+      const text = chunks.join("");
+      const structured = response.snapshot();
+      const messages = structured.length > 0
+        ? structured
+        : text
+          ? Object.freeze([{ text }])
+          : Object.freeze([]);
       await this.appendTranscript({
         v: 1,
         t: "msg",
         role: "assistant",
-        text: chunks.join(""),
+        text,
+        messages,
         ts: Date.now(),
         stopReason: "error",
         status: "error",
@@ -789,7 +804,13 @@ export class AgentSession implements AgentClient, Bridgeable {
       const dropped = this.queue.splice(0);
       for (const item of dropped) {
         if (item.kind === "prompt") {
-          item.resolve({ text: "", stopReason: "cancelled", status: "cancelled", usage: null });
+          item.resolve({
+            text: "",
+            messages: Object.freeze([]),
+            stopReason: "cancelled",
+            status: "cancelled",
+            usage: null,
+          });
         } else {
           item.reject(new Error("handoff cancelled before it started"));
         }
@@ -946,8 +967,12 @@ export class AgentSession implements AgentClient, Bridgeable {
 
 /** Do not let one notification observer mutate the PromptResult another observer sees. */
 function copyPromptResult(result: PromptResult): PromptResult {
+  const messages = result.messages ?? (result.text ? [{ text: result.text }] : []);
   return Object.freeze({
     ...result,
+    messages: Object.freeze(
+      messages.map((message) => Object.freeze({ ...message })),
+    ),
     usage: result.usage ? Object.freeze({ ...result.usage }) : null,
   });
 }

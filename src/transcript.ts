@@ -7,7 +7,8 @@
 // - `t:"msg"` DELIMITS A TURN. A turn is `msg(user) → activity… → msg(assistant)`; writes
 //   serialize in call order, so that nesting always holds. A trailing user message with no
 //   assistant message after it means the turn DIED IN FLIGHT (crash, kill, cancel) — the
-//   activity lines inside it are the record of what it was doing.
+//   activity lines inside it are the record of what it was doing. Assistant lines retain
+//   their legacy flat `text` and may also carry structured `messages` with ACP boundaries.
 // - `t:"activity"` lines are SETTLED RECORDS, not raw deltas. FOLD THEM LAST-WINS ON
 //   `recordId` — `foldRecords()` from `./activity.ts` is exactly that, and is the only
 //   supported way to read them. A tool call normally writes 2–3 lines (announced → input →
@@ -31,7 +32,7 @@
 import { appendFile, mkdir, open, readFile, type FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
 import { foldRecords, type AggregatedRecord, type EmitReason } from "./activity.ts";
-import type { ActivityEvent, PromptResult, Usage } from "./types.ts";
+import type { ActivityEvent, PromptResult, ResponseMessage, Usage } from "./types.ts";
 
 export type TranscriptRole = "user" | "assistant";
 
@@ -49,6 +50,8 @@ export interface TranscriptMessageLine {
   t: "msg";
   role: TranscriptRole;
   text: string;
+  /** Assistant-message boundaries when supplied by the live client. */
+  messages?: readonly ResponseMessage[];
   ts: number;
   usage?: Usage | null;
   stopReason?: string;
@@ -359,7 +362,9 @@ function isTranscriptLine(value: unknown): value is TranscriptLine {
     case "msg":
       return (
         (value.role === "user" || value.role === "assistant") &&
-        typeof value.text === "string"
+        typeof value.text === "string" &&
+        (value.messages === undefined ||
+          (Array.isArray(value.messages) && value.messages.every(isResponseMessage)))
       );
     case "activity":
       return typeof value.kind === "string";
@@ -379,6 +384,14 @@ function isTranscriptLine(value: unknown): value is TranscriptLine {
     default:
       return false;
   }
+}
+
+function isResponseMessage(value: unknown): value is ResponseMessage {
+  return (
+    isRecord(value) &&
+    typeof value.text === "string" &&
+    (value.messageId === undefined || typeof value.messageId === "string")
+  );
 }
 
 function isTranscriptMessageLine(value: TranscriptLine): value is TranscriptMessageLine {

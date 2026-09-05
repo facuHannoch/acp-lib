@@ -39,12 +39,28 @@ export interface Usage {
  * call RESOLVES (not rejects) with whatever partial text arrived.
  */
 export interface PromptResult {
-  /** Accumulated response text (partial if cancelled). */
+  /** Legacy flattened projection of `messages` (partial if cancelled). */
   text: string;
+  /** Assistant messages in protocol order, preserving ACP `messageId` boundaries. */
+  messages: readonly ResponseMessage[];
   /** Raw protocol stop reason: "end_turn" | "cancelled" | "max_tokens" | ... */
   stopReason: string;
   status: "completed" | "cancelled" | "error";
   usage: Usage | null;
+}
+
+/** One boundary-aware delta from an ACP `agent_message_chunk`. */
+export interface ResponseChunk {
+  text: string;
+  messageId?: string;
+  /** True when this chunk begins a new assistant message. */
+  startsMessage: boolean;
+}
+
+/** One assistant message assembled from consecutive ACP response chunks. */
+export interface ResponseMessage {
+  messageId?: string;
+  text: string;
 }
 
 /**
@@ -203,8 +219,10 @@ export interface PermissionRequest {
 
 /** Per-prompt callbacks. All optional. */
 export interface PromptHandlers {
-  /** Partial response text (agent_message_chunk) as it streams. */
+  /** Legacy text-only response stream. Prefer `onResponseChunk` when boundaries matter. */
   onChunk?: (text: string) => void;
+  /** Boundary-aware response stream preserving ACP `messageId`. */
+  onResponseChunk?: (chunk: ResponseChunk) => void;
   /** Observation-only activity (thinking, tool calls, plan) as RAW protocol deltas. */
   onActivity?: (event: ActivityEvent) => void;
   /**

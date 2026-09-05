@@ -18,7 +18,8 @@ import {
   type ClientCapabilityConfig,
 } from "./capabilities.ts";
 import { parseConfigOptions, type ConfigOptions } from "./config-options.ts";
-import { extractChunkText, toActivityEvent, toAvailableCommands } from "./updates.ts";
+import { extractResponseChunk, toActivityEvent, toAvailableCommands } from "./updates.ts";
+import { ResponseAccumulator } from "./response.ts";
 import { TerminalRegistry } from "./terminals.ts";
 import { readTextFile, writeTextFile } from "./fs-access.ts";
 import { NotConnectedError } from "./errors.ts";
@@ -129,7 +130,7 @@ export class AcpClient implements AgentClient {
 
   // Per-turn streaming state (only the in-flight turn).
   private active: {
-    chunks: string[];
+    response: ResponseAccumulator;
     handlers?: PromptHandlers;
     cancelled: boolean;
   } | null = null;
@@ -592,7 +593,11 @@ export class AcpClient implements AgentClient {
     }
     if (contentBlocks.length === 0) contentBlocks.push({ type: "text", text: "" });
 
-    this.active = { chunks: [], handlers: item.handlers, cancelled: false };
+    this.active = {
+      response: new ResponseAccumulator(),
+      handlers: item.handlers,
+      cancelled: false,
+    };
     const t0 = Date.now();
     this.log.debug("prompt_start", { chars: item.text.length });
     this.log.debug("prompt_request", { sessionId: this._sessionId, prompt: contentBlocks });
@@ -604,7 +609,8 @@ export class AcpClient implements AgentClient {
       this.log.debug("prompt_response", { response: res });
 
       const cancelled = this.active.cancelled;
-      const text = this.active.chunks.join("");
+      const text = this.active.response.text;
+      const messages = this.active.response.snapshot();
       this.log[text.length === 0 && !cancelled ? "warn" : "info"]("prompt_end", {
         stopReason: res.stopReason,
         status: cancelled ? "cancelled" : "completed",
@@ -613,6 +619,7 @@ export class AcpClient implements AgentClient {
       });
       return {
         text,
+        messages,
         stopReason: res.stopReason,
         status: cancelled ? "cancelled" : "completed",
         usage: (res.usage ?? null) as PromptResult["usage"],
@@ -626,7 +633,13 @@ export class AcpClient implements AgentClient {
     if (options.clearQueue) {
       const dropped = this.queue.splice(0);
       for (const item of dropped) {
-        item.resolve({ text: "", stopReason: "cancelled", status: "cancelled", usage: null });
+        item.resolve({
+          text: "",
+          messages: Object.freeze([]),
+          stopReason: "cancelled",
+          status: "cancelled",
+          usage: null,
+        });
       }
     }
     if (this.active && this.transport && this._sessionId) {
@@ -687,10 +700,11 @@ export class AcpClient implements AgentClient {
 
     this.active.handlers?.onUpdate?.(notification);
 
-    const text = extractChunkText(update);
-    if (text) {
-      this.active.chunks.push(text);
-      this.active.handlers?.onChunk?.(text);
+    const responseChunk = extractResponseChunk(update);
+    if (responseChunk) {
+      const chunk = this.active.response.append(responseChunk);
+      this.active.handlers?.onResponseChunk?.(chunk);
+      this.active.handlers?.onChunk?.(chunk.text);
     }
     const activity = toActivityEvent(update);
     if (activity) this.active.handlers?.onActivity?.(this.enrich(activity));

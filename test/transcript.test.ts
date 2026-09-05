@@ -56,6 +56,42 @@ describe("transcript", () => {
     ]);
   });
 
+  test("round-trips assistant message boundaries while accepting legacy text-only entries", async () => {
+    await appendTranscriptLine(path, {
+      v: 1,
+      t: "msg",
+      role: "assistant",
+      text: "firstsecond",
+      messages: [
+        { messageId: "m1", text: "first" },
+        { messageId: "m2", text: "second" },
+      ],
+      ts: 100,
+    });
+    await appendTranscriptLine(path, {
+      v: 1,
+      t: "msg",
+      role: "assistant",
+      text: "legacy",
+      ts: 200,
+    });
+
+    expect(await readTranscript(path)).toEqual([
+      {
+        v: 1,
+        t: "msg",
+        role: "assistant",
+        text: "firstsecond",
+        messages: [
+          { messageId: "m1", text: "first" },
+          { messageId: "m2", text: "second" },
+        ],
+        ts: 100,
+      },
+      { v: 1, t: "msg", role: "assistant", text: "legacy", ts: 200 },
+    ]);
+  });
+
   test("message projection skips meta and keeps all recognized lines available", async () => {
     await appendTranscriptLine(path, {
       v: 1,
