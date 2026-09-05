@@ -56,6 +56,10 @@ export const ADAPTERS = {
   gemini: { command: ["gemini", "--acp", "--stdio"], ptyCommand: ["gemini"], displayName: "Gemini" },
   copilot: { command: ["copilot", "--acp", "--stdio"], ptyCommand: ["copilot"], displayName: "Copilot" },
   opencode: { command: ["opencode", "acp"], ptyCommand: ["opencode"], displayName: "OpenCode" },
+  // verified with pi-acp 0.0.33 and @earendil-works/pi-coding-agent 0.85.1.
+  // Capability limitations (including no delegated fs/terminal and no wired MCP
+  // params) are discovered from the adapter/protocol, not encoded in this preset.
+  pi: { command: ["pi-acp"], ptyCommand: ["pi"], displayName: "Pi" },
 } satisfies Record<string, Adapter>;
 
 export type AdapterPreset = keyof typeof ADAPTERS;

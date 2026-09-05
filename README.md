@@ -61,7 +61,7 @@ bun add -g @qlairoslabs/acp-client
 | **`AgentController`** | The control plane for **one** agent process: start/stop, prompt, interrupt, switch sessions, swap mode (normal ⇄ degraded), introspect capabilities & config. |
 | **`AgentSession`** | A **durable conversation** with a stable identity that survives reconnects and mode-swaps. Wraps an `AgentController` and (optionally) records itself to a catalog. The front face for consumers that want persistence. |
 | **`SessionManager` + `SessionStore`** | The session **catalog**: routing metadata (which adapter/mode/cwd a session belongs to), *not* conversation content. Merges your catalog with the agent's live `session/list`. Ships a `FileSessionStore`; inject your own (e.g. a database) for custom backends. |
-| **Adapter** | Just how to *launch* an agent: the spawn command. `ADAPTERS` has presets (`codex`, `claude`, `kimi`, `gemini`, `copilot`, `opencode`); you can also pass a raw `{ command: [...] }`. |
+| **Adapter** | Just how to *launch* an agent: the spawn command. `ADAPTERS` has presets (`codex`, `claude`, `kimi`, `gemini`, `copilot`, `opencode`, `pi`); you can also pass a raw `{ command: [...] }`. |
 | **Mode** | `"normal"` (real ACP over JSON-RPC) or `"degraded"` (drive the native CLI through a PTY and parse it). Both implement the same `AgentClient` output contract. |
 
 ---
@@ -460,6 +460,7 @@ A thin wrapper over the library is exposed as `acp-client`:
 acp-client chat                       # new chat with the default adapter
 acp-client chat <SESSION_ID>          # resume a session
 acp-client chat --adapter codex       # pick an adapter
+acp-client chat --adapter pi          # pi-acp (Pi's ACP bridge)
 acp-client chat --exec "docker exec -i my-container"   # talk to an agent in a container
 acp-client chat --cwd /workspace --approve             # auto-approve tool permissions
 acp-client chat --degraded            # force degraded (PTY) mode

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { buildPtyCommand, buildSpawnCommand } from "../src/adapters.ts";
+import { ADAPTERS, buildPtyCommand, buildSpawnCommand } from "../src/adapters.ts";
+
+test("Pi preset launches pi-acp and degrades to the native Pi CLI", () => {
+  expect(ADAPTERS.pi).toEqual({ command: ["pi-acp"], ptyCommand: ["pi"], displayName: "Pi" });
+  expect(buildSpawnCommand(ADAPTERS.pi, ["docker", "exec", "-i", "agent"])).toEqual([
+    "docker", "exec", "-i", "agent", "pi-acp",
+  ]);
+  expect(buildPtyCommand(ADAPTERS.pi)).toEqual(["pi"]);
+});
 
 describe("adapter commands", () => {
   test("prepends an execution prefix to an ACP command", () => {
