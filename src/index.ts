@@ -132,6 +132,34 @@ export {
 } from "./metering/money.ts";
 export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
 export { normalizeTokenUsage } from "./metering/usage.ts";
+export { baselineMatches, calculateDelta } from "./metering/delta.ts";
+export type { DeltaResult } from "./metering/delta.ts";
+export { rateDelta, selectSchedule, unpricedUsage } from "./metering/rating.ts";
+export type {
+  AttributableUsage,
+  BillingFacts,
+  PricedTokenAmount,
+  RatingResult,
+  ScheduleSelection,
+} from "./metering/rating.ts";
+export {
+  METERING_STATE_VERSION,
+  accrueOperation,
+  accumulateByCurrency,
+  emptyMeteringState,
+  restoreMeteringState,
+} from "./metering/state.ts";
+export type {
+  AgentSessionMeteringState,
+  AggregateUsageTotal,
+  CategoryCoverage,
+  MeteringBaseline,
+  OperationAccrual,
+  StateRestoration,
+  UnallocatedUsageState,
+  UsageCategoryTotal,
+  UsageTotals,
+} from "./metering/state.ts";
 export {
   contextWindowChanged,
   parseContextWindow,
