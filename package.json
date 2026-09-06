@@ -32,7 +32,8 @@
     "access": "public"
   },
   "files": [
-    "src"
+    "src",
+    "CHANGELOG-metering.md"
   ],
   "exports": {
     ".": "./src/index.ts",
