@@ -133,6 +133,17 @@ export {
 export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
 export { normalizeTokenUsage } from "./metering/usage.ts";
 export {
+  contextWindowChanged,
+  parseContextWindow,
+  parseProviderCost,
+  providerCostChanged,
+} from "./metering/context.ts";
+export type {
+  ContextWindowStatus,
+  ProviderCostSnapshot,
+  ProviderCostUpdate,
+} from "./metering/context.ts";
+export {
   TOKEN_CATEGORIES,
   pricedCategories,
   validatePricingPolicy,

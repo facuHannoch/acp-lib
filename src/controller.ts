@@ -104,6 +104,10 @@ export class AgentController implements AgentClient {
     (commands: readonly InternalSessionCommand[]) => void
   >();
   private detachAvailableCommands: (() => void) | null = null;
+  private readonly usageUpdateListeners = new Set<
+    (update: unknown, sessionId: string | null) => void
+  >();
+  private detachUsageUpdates: (() => void) | null = null;
 
   constructor(private readonly config: AgentControllerConfig) {
     this.mode = config.mode ?? "normal";
@@ -156,6 +160,16 @@ export class AgentController implements AgentClient {
   ): () => void {
     this.availableCommandListeners.add(listener);
     return () => this.availableCommandListeners.delete(listener);
+  }
+
+  /**
+   * Observe raw ACP `usage_update` notifications (context window, provider cost).
+   *
+   * Degraded (pty) mode has no ACP notifications, so this simply never fires there.
+   */
+  subscribeUsageUpdate(listener: (update: unknown, sessionId: string | null) => void): () => void {
+    this.usageUpdateListeners.add(listener);
+    return () => this.usageUpdateListeners.delete(listener);
   }
 
   async start(): Promise<ConnectResult> {
@@ -215,6 +229,8 @@ export class AgentController implements AgentClient {
     this.acp = null;
     this.detachAvailableCommands?.();
     this.detachAvailableCommands = null;
+    this.detachUsageUpdates?.();
+    this.detachUsageUpdates = null;
     this.emitAvailableCommands(NO_AVAILABLE_COMMANDS);
     if (client) await client.stop();
   }
@@ -450,6 +466,20 @@ export class AgentController implements AgentClient {
     this.detachAvailableCommands = this.acp?.subscribeAvailableCommands((commands) =>
       this.emitAvailableCommands(commands)) ?? null;
     this.emitAvailableCommands(this.acp?.availableCommands ?? NO_AVAILABLE_COMMANDS);
+
+    this.detachUsageUpdates?.();
+    this.detachUsageUpdates =
+      this.acp?.subscribeUsageUpdate((update, sessionId) => {
+        for (const listener of [...this.usageUpdateListeners]) {
+          try {
+            listener(update, sessionId);
+          } catch (err) {
+            this.config.logger?.warn("controller_usage_update_listener_failed", {
+              error: String(err),
+            });
+          }
+        }
+      }) ?? null;
   }
 
   private emitAvailableCommands(commands: readonly InternalSessionCommand[]): void {

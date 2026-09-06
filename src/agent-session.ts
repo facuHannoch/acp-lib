@@ -20,6 +20,14 @@ import type { ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import { ResponseAccumulator } from "./response.ts";
+import {
+  contextWindowChanged,
+  parseContextWindow,
+  parseProviderCost,
+  providerCostChanged,
+  type ContextWindowStatus,
+  type ProviderCostSnapshot,
+} from "./metering/context.ts";
 import type { SessionManager, MergedSession } from "./session-manager.ts";
 import {
   appendTranscriptLine,
@@ -105,7 +113,11 @@ export type AgentSessionEvent =
       fromInternalSessionId: string | null;
       toInternalSessionId?: string;
       error: string;
-    };
+    }
+  /** Latest context-window observation for the ACTIVE provider thread, or null. */
+  | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
+  /** Latest cumulative provider-reported cost. Telemetry, never asserted to be an invoice. */
+  | { kind: "provider_cost_changed"; providerCost: ProviderCostSnapshot | null };
 
 /** Ordered envelope delivered to every AgentSession subscriber. */
 export interface AgentSessionNotification {
@@ -266,6 +278,16 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly listeners = new Set<AgentSessionListener>();
   private lastStateKey = "";
   private _internalSessionId: string | null;
+  private _contextWindow: ContextWindowStatus | null = null;
+  private _providerCost: ProviderCostSnapshot | null = null;
+  /**
+   * A usage update that arrived before the provider thread id was known.
+   *
+   * A harness may notify immediately after session/new, before that response resolves.
+   * Dropping the update would lose the observation; applying it without a thread id would
+   * attribute it to nothing. Hold the latest one and attribute it on assignment.
+   */
+  private pendingUsageUpdate: { update: unknown; sessionId: string | null } | null = null;
   private _mode: AgentMode;
   private _cwd?: string;
   private _title?: string;
@@ -338,6 +360,9 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.controller.subscribeAvailableCommands((commands) => {
       this.emit({ kind: "internal_session_commands_changed", commands });
     });
+    this.controller.subscribeUsageUpdate((update, sessionId) => {
+      this.applyUsageUpdate(update, sessionId);
+    });
   }
 
   /**
@@ -354,7 +379,7 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   private async start(): Promise<void> {
     const result = await this.controller.start();
-    this._internalSessionId = result.sessionId || this._internalSessionId;
+    this.setInternalSessionId(result.sessionId || this._internalSessionId);
     await this.persist();
     await this.appendTranscript({
       v: 1,
@@ -369,6 +394,27 @@ export class AgentSession implements AgentClient, Bridgeable {
   // --- identity ----------------------------------------------------------------
   get internalSessionId(): string | null {
     return this._internalSessionId;
+  }
+
+  /**
+   * Latest context-window observation for the ACTIVE provider thread, or null.
+   *
+   * Context does not aggregate across threads: after a handoff or any other thread
+   * replacement this is null until the new thread reports, because the old thread's
+   * occupancy says nothing about the new one's.
+   */
+  get contextWindow(): ContextWindowStatus | null {
+    return this._contextWindow;
+  }
+
+  /**
+   * Latest cumulative provider-reported cost for the active thread, or null.
+   *
+   * Provider telemetry, kept distinct from locally rated cost and never asserted to be an
+   * invoice — a subscription harness may report an API-equivalent figure.
+   */
+  get providerCost(): ProviderCostSnapshot | null {
+    return this._providerCost;
   }
   get mode(): AgentMode {
     return this._mode;
@@ -559,7 +605,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       const created = await this.controller.newSession();
       if (!created.sessionId) throw new Error("harness returned no session id for handoff");
       toInternalSessionId = created.sessionId;
-      this._internalSessionId = toInternalSessionId;
+      this.setInternalSessionId(toInternalSessionId);
       this.emitStateIfChanged();
       await this.persist();
 
@@ -596,7 +642,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       // public id and catalog truthful even when continuation seeding subsequently fails.
       const actualSessionId = this.controller.currentSessionId;
       if (actualSessionId && actualSessionId !== this._internalSessionId) {
-        this._internalSessionId = actualSessionId;
+        this.setInternalSessionId(actualSessionId);
         toInternalSessionId = actualSessionId;
         this.emitStateIfChanged();
         try {
@@ -672,7 +718,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         this._title = item.text.trim().replace(/\s+/g, " ").slice(0, 60);
       }
       // A session may have been created lazily on first prompt (degraded has none).
-      this._internalSessionId = this.controller.currentSessionId ?? this._internalSessionId;
+      this.setInternalSessionId(this.controller.currentSessionId ?? this._internalSessionId);
       await this.persist();
       await this.appendTranscript({
         v: 1,
@@ -835,7 +881,8 @@ export class AgentSession implements AgentClient, Bridgeable {
   async setMode(mode: AgentMode): Promise<ConnectResult> {
     const result = await this.controller.setMode(mode);
     this._mode = this.controller.currentMode;
-    this._internalSessionId = result.sessionId || null; // the ACP/harness session changes on swap
+    // The ACP/harness session changes on swap, so context/cost reset with it.
+    this.setInternalSessionId(result.sessionId || null);
     await this.persist();
     return result;
   }
@@ -927,6 +974,74 @@ export class AgentSession implements AgentClient, Bridgeable {
         }
       });
     await this.transcriptWrite;
+  }
+
+  /**
+   * Replace the active provider thread id, resetting observations that belong to it.
+   *
+   * Every reassignment goes through here so the reset cannot be forgotten at one of the
+   * several sites that swap threads (handoff, mode swap, load/resume, lazy creation).
+   * Carrying a stale context window across a thread change would misreport the new
+   * thread's occupancy as the old thread's.
+   */
+  private setInternalSessionId(next: string | null): void {
+    if (next === this._internalSessionId) return;
+    this._internalSessionId = next;
+    if (this._contextWindow !== null) {
+      this._contextWindow = null;
+      this.emit({ kind: "context_window_changed", contextWindow: null });
+    }
+    if (this._providerCost !== null) {
+      this._providerCost = null;
+      this.emit({ kind: "provider_cost_changed", providerCost: null });
+    }
+    const pending = this.pendingUsageUpdate;
+    this.pendingUsageUpdate = null;
+    // An update buffered before the thread was named belongs to it only if it named the
+    // same thread, or named none at all.
+    if (pending && next && (!pending.sessionId || pending.sessionId === next)) {
+      this.applyUsageUpdate(pending.update, pending.sessionId);
+    }
+  }
+
+  /**
+   * Apply a raw ACP `usage_update`.
+   *
+   * Updates naming a different provider thread are ignored: ACP gives no ordering
+   * guarantee, so a late notification from a replaced thread can arrive after the swap and
+   * must not overwrite current state.
+   */
+  private applyUsageUpdate(update: unknown, sessionId: string | null): void {
+    const active = this._internalSessionId;
+    if (!active) {
+      this.pendingUsageUpdate = { update, sessionId };
+      return;
+    }
+    if (sessionId && sessionId !== active) return;
+
+    const observedAt = Date.now();
+    const context = parseContextWindow(update, active, observedAt);
+    if (context && contextWindowChanged(this._contextWindow, context)) {
+      this._contextWindow = context;
+      this.emit({ kind: "context_window_changed", contextWindow: context });
+    }
+
+    const cost = parseProviderCost(update);
+    if (cost.kind === "invalid") {
+      // Provider cost is optional telemetry: malformed data is dropped with a diagnostic
+      // and never implicitly clears a previously valid value.
+      this.log.warn("provider_cost_invalid", { reason: cost.reason });
+      return;
+    }
+    if (cost.kind === "unchanged") return;
+    const next: ProviderCostSnapshot | null =
+      cost.kind === "cleared"
+        ? null
+        : Object.freeze({ internalSessionId: active, cumulative: cost.cumulative, observedAt });
+    if (providerCostChanged(this._providerCost, next)) {
+      this._providerCost = next;
+      this.emit({ kind: "provider_cost_changed", providerCost: next });
+    }
   }
 
   /** Emit only when a field in the public snapshot changed. */
