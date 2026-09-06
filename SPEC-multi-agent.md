@@ -1,3 +1,9 @@
+- mcp tool must be able to locate agent -> we must add searching capabilities, maybe a small cli
+  - we probably need to register the conversations in ~/.library -> optional argument when creating a new session to
+
+
+
+
 # ACP Client Library — Multi-Agent (deferred)
 
 Exploratory design for multi-agent capabilities built on top of the core `AcpClient`
@@ -169,3 +175,8 @@ limits / cycle detection — a guardrail layered on top, not a change to the pri
 - **Recursion** is the foundation: agent-as-tool means the library calls itself; humans
   and agents drive the same primitive. Keeping `AcpClient` clean and embeddable is what
   makes the whole orchestration layer possible.
+
+
+
+# Part 2 - multi identity
+
