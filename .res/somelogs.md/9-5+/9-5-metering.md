@@ -3710,3 +3710,9 @@ Plus one I introduced and caught: `validatePricingPolicy` accepted `"1e-6"` as a
 **3. One spec deviation:** `AgentSessionPromptResult.metering` is nullable. §16 says a prompt cancelled before dispatch produces no record, but the result type demanded one. Null is the honest encoding — minting a record would be a fabricated ledger entry — but it's a type change you should ratify.
 
 Two smaller notes: `tsconfig.json` includes only `src/**`, so test files aren't typechecked (I found the nullable-metering fallout by hand); and §7 still has no `thoughtOutputConvention` analogous to `cacheInputConvention`, which will bite on the 149 models.dev models that price `reasoning` separately.
+
+
+
+
+
+

@@ -109,6 +109,15 @@ export interface MeteringConfig {
   readonly enforcement?: MeteringEnforcement;
   readonly pricing?: PricingConfiguration;
   readonly initialState?: AgentSessionMeteringState;
+  /**
+   * Override how this harness's ACP counters are read.
+   *
+   * Defaults to the adapter's measured evidence. Supply it when you know your harness
+   * version reports differently than the library has recorded — it is evidence you are
+   * asserting, and it is stamped into every record's provenance. The library never infers
+   * it at runtime (§4).
+   */
+  readonly counterInterpretation?: "cumulative" | "per_turn";
 }
 
 export interface AgentSessionMeteringSnapshot extends AgentSessionMeteringState {
@@ -119,14 +128,26 @@ export interface AgentSessionMeteringSnapshot extends AgentSessionMeteringState 
   readonly lastOperation: OperationMeteringRecord | null;
 }
 
-/** Provenance for an ordinary ACP-derived record. */
-export const ACP_PROVENANCE: MeteringProvenance = Object.freeze({
-  source: "acp_usage",
-  measurement: "acp_derived",
-  routing: "unknown",
-  attribution: "partial",
-  counterInterpretation: "cumulative",
-});
+/**
+ * Provenance for an ACP-derived record.
+ *
+ * The interpretation is stamped in rather than assumed, so a stored record says how its
+ * counters were read — the one thing ACP itself does not settle.
+ */
+export function acpProvenance(
+  counterInterpretation: "cumulative" | "per_turn",
+): MeteringProvenance {
+  return Object.freeze({
+    source: "acp_usage",
+    measurement: "acp_derived",
+    routing: "unknown",
+    attribution: "partial",
+    counterInterpretation,
+  });
+}
+
+/** Provenance for an ordinary cumulative ACP-derived record. */
+export const ACP_PROVENANCE: MeteringProvenance = acpProvenance("cumulative");
 
 /** Provenance for an operation whose usage could not be established at all. */
 export const UNAVAILABLE_PROVENANCE: MeteringProvenance = Object.freeze({

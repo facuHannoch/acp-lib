@@ -153,6 +153,26 @@ Two ways forward:
 
 Option 1 is the only one that makes the intended certified route usable.
 
+### Resolved — the per-turn interpreter is implemented
+
+`counterInterpretationForAdapter()` records the evidence (OpenCode → `per_turn`,
+everything else → `cumulative` until measured), `MeteringConfig.counterInterpretation`
+lets a consumer override it for a version they know differs, and the interpretation is
+stamped into every record's provenance. For a per-turn harness the delta *is* the report:
+no baseline is needed, and no counter reset is possible, because a counter that
+"decreased" only means this turn was smaller than the last.
+
+Re-measured on `opencode/big-pickle` after the change:
+
+```
+metered  interp=per_turn  attributed=9998
+metered  interp=per_turn  attributed=10009
+metered  interp=per_turn  attributed=10020
+totals: 30027 tokens, coverage=complete, metered=3/3
+```
+
+Previously: one attributed turn and two `counter_reset`s.
+
 ## Still unanswered — needs the prompting pass on other harnesses
 
 The question the whole ACP-derived backend rests on is **cumulative versus per-turn**, and

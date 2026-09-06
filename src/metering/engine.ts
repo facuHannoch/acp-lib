@@ -18,7 +18,7 @@ import {
   type MeteringUsageResult,
   type OperationMeteringRecord,
   type OperationOutcome,
-  ACP_PROVENANCE,
+  acpProvenance,
   UNAVAILABLE_PROVENANCE,
 } from "./record.ts";
 import type {
@@ -30,6 +30,7 @@ import type {
   TokenCategory,
 } from "./pricing.ts";
 import { validatePricingPolicy } from "./pricing.ts";
+import { counterInterpretationForAdapter, type CounterInterpretation } from "./provider.ts";
 import { rateDelta, selectSchedule, unpricedUsage, type AttributableUsage, type BillingFacts } from "./rating.ts";
 import {
   accrueOperation,
@@ -48,6 +49,12 @@ export interface MeteringEngineOptions {
   readonly initialState?: AgentSessionMeteringState;
   /** True when the library created the active provider thread, so counters began at zero. */
   readonly createdActiveThread: boolean;
+  /**
+   * How to read this harness's counters. Defaults to the adapter's measured evidence.
+   * A consumer may override when it knows its harness version; it is never guessed at
+   * runtime, because §4 forbids switching interpretations mid-session.
+   */
+  readonly counterInterpretation?: CounterInterpretation;
 }
 
 /** A rating unit opened before dispatch and closed after the operation finishes. */
@@ -89,6 +96,7 @@ export class MeteringEngine {
   /** Whether the active thread's counters are known to have started at zero. */
   private trustedZeroBaseline: boolean;
   private baseline: MeteringBaseline | null;
+  private readonly interpretation: CounterInterpretation;
 
   constructor(private readonly options: MeteringEngineOptions) {
     const restoration = restoreMeteringState(options.initialState, options.agentSessionId);
@@ -99,6 +107,8 @@ export class MeteringEngine {
         : emptyMeteringState(options.agentSessionId);
     this.baseline = restoration.status === "restored" ? this.state.activeBaseline : null;
     this.trustedZeroBaseline = options.createdActiveThread;
+    this.interpretation =
+      options.counterInterpretation ?? counterInterpretationForAdapter(options.adapterId);
 
     if (restoration.status === "ignored" && options.enforcement !== "best_effort") {
       throw new MeteringPreflightError(
@@ -131,6 +141,9 @@ export class MeteringEngine {
   }
   get lastOperation(): OperationMeteringRecord | null {
     return this._lastOperation;
+  }
+  get counterInterpretation(): CounterInterpretation {
+    return this.interpretation;
   }
 
   /**
@@ -178,7 +191,13 @@ export class MeteringEngine {
         "degraded (pty) mode cannot supply structured metering",
       );
     }
-    if (strict && !this.trustedZeroBaseline && !this.baseline) {
+    // A per-turn harness needs no baseline: each report already describes one operation.
+    if (
+      strict &&
+      this.interpretation === "cumulative" &&
+      !this.trustedZeroBaseline &&
+      !this.baseline
+    ) {
       throw new MeteringPreflightError(
         "no trusted baseline for the active provider thread; restore prior metering state",
       );
@@ -269,7 +288,7 @@ export class MeteringEngine {
     }
 
     const provenance: MeteringProvenance =
-      usage.status === "metered" ? ACP_PROVENANCE : UNAVAILABLE_PROVENANCE;
+      usage.status === "metered" ? acpProvenance(this.interpretation) : UNAVAILABLE_PROVENANCE;
 
     this.state = accrueOperation(this.state, {
       attributable,
@@ -355,6 +374,7 @@ export class MeteringEngine {
 
     const delta = calculateDelta(usableBaseline, reported, {
       trustedZeroBaseline: this.trustedZeroBaseline && !usableBaseline,
+      interpretation: this.interpretation,
     });
 
     const nextBaseline: MeteringBaseline | null = open.internalSessionId

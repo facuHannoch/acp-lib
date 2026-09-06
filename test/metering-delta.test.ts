@@ -132,3 +132,46 @@ describe("restored baseline matching", () => {
     expect(baselineMatches(baseline, { adapterId: "claude", internalSessionId: null })).toBe(false);
   });
 });
+
+describe("per-turn harnesses", () => {
+  const perTurn = { trustedZeroBaseline: false, interpretation: "per_turn" as const };
+
+  test("the report IS the delta — nothing is subtracted", () => {
+    const report = usage(9996, 5897, 3, { cachedReadTokens: 4096 });
+    expect(attributable(calculateDelta(null, report, perTurn))).toEqual(report);
+  });
+
+  test("needs no baseline at all", () => {
+    // Each report already describes one operation, so there is nothing to trust.
+    const result = calculateDelta(null, usage(100, 60, 40), perTurn);
+    expect(result.kind).toBe("attributable");
+  });
+
+  test("a smaller turn is not a counter reset", () => {
+    // OpenCode's inputTokens fell 5897 -> 20 between turns; under the cumulative reading
+    // that is a reset, under the per-turn reading it just means a shorter turn.
+    const previous = usage(9996, 5897, 3, { cachedReadTokens: 4096 });
+    const next = usage(10024, 20, 20, { cachedReadTokens: 9984 });
+    expect(calculateDelta(previous, next, { ...perTurn }).kind).toBe("attributable");
+    // The same pair under the cumulative reading is a reset.
+    expect(
+      calculateDelta(previous, next, { trustedZeroBaseline: false }).kind,
+    ).toBe("counter_reset");
+  });
+
+  test("successive turns each attribute their own usage", () => {
+    // The three turns actually measured on opencode/big-pickle.
+    const turns = [
+      usage(9996, 5897, 3, { cachedReadTokens: 4096 }),
+      usage(10024, 20, 20, { cachedReadTokens: 9984 }),
+      usage(10035, 48, 3, { cachedReadTokens: 9984 }),
+    ];
+    let baseline: (typeof turns)[number] | null = null;
+    const attributed: number[] = [];
+    for (const turn of turns) {
+      attributed.push(attributable(calculateDelta(baseline, turn, perTurn)).totalTokens);
+      baseline = turn;
+    }
+    expect(attributed).toEqual([9996, 10024, 10035]);
+  });
+});

@@ -135,6 +135,7 @@ export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
 export { normalizeTokenUsage } from "./metering/usage.ts";
 export {
   ACP_PROVENANCE,
+  acpProvenance,
   AgentSessionHandoffError,
   AgentSessionOperationError,
   MeteringPreflightError,
@@ -155,7 +156,12 @@ export type {
 } from "./metering/record.ts";
 export { MeteringEngine } from "./metering/engine.ts";
 export type { MeteringEngineOptions, OpenOperation } from "./metering/engine.ts";
-export { activeModel, providerIdForAdapter } from "./metering/provider.ts";
+export {
+  activeModel,
+  counterInterpretationForAdapter,
+  providerIdForAdapter,
+} from "./metering/provider.ts";
+export type { CounterInterpretation } from "./metering/provider.ts";
 export { baselineMatches, calculateDelta } from "./metering/delta.ts";
 export type { DeltaResult } from "./metering/delta.ts";
 export { rateDelta, selectSchedule, unpricedUsage } from "./metering/rating.ts";

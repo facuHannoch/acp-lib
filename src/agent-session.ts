@@ -399,6 +399,9 @@ export class AgentSession implements AgentClient, Bridgeable {
       // Absence selects the pinned catalog; `false` is how a consumer says "no rating".
       pricing: config.metering?.pricing ?? createModelsDevResolver(),
       initialState: config.metering?.initialState,
+      ...(config.metering?.counterInterpretation
+        ? { counterInterpretation: config.metering.counterInterpretation }
+        : {}),
       // A thread we are about to create has counters starting at zero; one we load does
       // not, and needs restored state to be attributable.
       createdActiveThread: providerSession.kind === "new",

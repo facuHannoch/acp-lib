@@ -8,6 +8,7 @@
 // cumulative figure as if one operation had incurred it.
 
 import type { TokenUsage } from "../types.ts";
+import type { CounterInterpretation } from "./provider.ts";
 
 /** Optional counters, which may legitimately appear and disappear between reports. */
 const OPTIONAL_KEYS = ["cachedReadTokens", "cachedWriteTokens", "thoughtTokens"] as const;
@@ -29,8 +30,19 @@ export type DeltaResult =
 export function calculateDelta(
   baseline: TokenUsage | null,
   current: TokenUsage,
-  options: { readonly trustedZeroBaseline: boolean },
+  options: {
+    readonly trustedZeroBaseline: boolean;
+    /** Defaults to cumulative — see counterInterpretationForAdapter. */
+    readonly interpretation?: CounterInterpretation;
+  },
 ): DeltaResult {
+  // A per-turn harness already reports exactly this operation's usage. There is nothing
+  // to subtract, no baseline to trust, and no such thing as a counter reset: a counter
+  // that "decreased" just means this turn was smaller than the last one.
+  if (options.interpretation === "per_turn") {
+    return { kind: "attributable", delta: Object.freeze({ ...current }) };
+  }
+
   if (!baseline && !options.trustedZeroBaseline) {
     return {
       kind: "baseline_required",

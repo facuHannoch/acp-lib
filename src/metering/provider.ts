@@ -36,3 +36,37 @@ export function activeModel(options: ConfigOptions): string | null {
   }
   return null;
 }
+
+/**
+ * How a harness's ACP token counters should be read.
+ *
+ * ACP does not say. The SDK documents `PromptResponse.usage` as usage "for this turn"
+ * while documenting the `Usage` fields as totals across the session, and exposes no
+ * discriminator — so this is adapter- and version-scoped EVIDENCE, never a runtime guess.
+ * §4 forbids switching interpretations mid-session, because a first report that happens
+ * to look like one shape would silently relabel every later record.
+ */
+export type CounterInterpretation = "cumulative" | "per_turn";
+
+/**
+ * Harnesses measured to report per-turn counters.
+ *
+ * OpenCode: three consecutive turns on opencode/big-pickle each satisfied
+ * `totalTokens === inputTokens + outputTokens + cachedReadTokens` within a SINGLE report,
+ * and `inputTokens` fell 5897 → 20 between turns. Totals still rose turn over turn
+ * (every turn re-reads the same cached context), which is why comparing totals is not a
+ * valid test and reported "cumulative" until the components were checked.
+ * See .res/somelogs.md/9-5+/9-6-harness-matrix-findings.md, Finding 5.
+ */
+const PER_TURN_ADAPTERS: ReadonlySet<string> = new Set(["opencode"]);
+
+/**
+ * The interpretation to apply for an adapter.
+ *
+ * Defaults to cumulative — the reading the field-level SDK docs describe and the only one
+ * that makes `totalTokens` ("sum of all token types across session") coherent. An adapter
+ * is moved out of the default only on measurement.
+ */
+export function counterInterpretationForAdapter(adapterId: string): CounterInterpretation {
+  return PER_TURN_ADAPTERS.has(adapterId) ? "per_turn" : "cumulative";
+}
