@@ -132,6 +132,30 @@ export {
 } from "./metering/money.ts";
 export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
 export { normalizeTokenUsage } from "./metering/usage.ts";
+export {
+  TOKEN_CATEGORIES,
+  pricedCategories,
+  validatePricingPolicy,
+} from "./metering/pricing.ts";
+export type {
+  CacheInputConvention,
+  CategoryApplicability,
+  PolicyValidation,
+  PricingCondition,
+  PricingConfiguration,
+  PricingContext,
+  PricingPolicy,
+  PricingResolver,
+  PricingSchedule,
+  PricingSource,
+  TokenCategory,
+} from "./metering/pricing.ts";
+export {
+  MODELS_DEV_SOURCE,
+  catalogProviderIds,
+  createModelsDevResolver,
+  verifyCatalogIntegrity,
+} from "./metering/catalog/index.ts";
 export type { UsageNormalization } from "./metering/usage.ts";
 
 export { ProcessCrashError, NotConnectedError, TimeoutError } from "./errors.ts";
