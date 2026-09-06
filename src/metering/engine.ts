@@ -139,9 +139,19 @@ export class MeteringEngine {
    * The new thread's counters restart, so the old baseline is meaningless. A thread the
    * library created has a trusted zero baseline; one it merely loaded does not.
    */
-  onThreadReplaced(created: boolean): void {
-    this.baseline = null;
-    this.trustedZeroBaseline = created;
+  onThreadReplaced(internalSessionId: string | null, created: boolean): void {
+    // A restored baseline that names the thread we just activated is still valid — that
+    // is the whole point of restoring it. Only a baseline for some OTHER thread is stale.
+    const keep =
+      this.baseline &&
+      internalSessionId &&
+      baselineMatches(this.baseline, {
+        adapterId: this.options.adapterId,
+        internalSessionId,
+      });
+    if (!keep) this.baseline = null;
+    // A thread we created has counters starting at zero; one we merely loaded does not.
+    this.trustedZeroBaseline = created && !keep;
   }
 
   /**

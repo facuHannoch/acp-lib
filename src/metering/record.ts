@@ -168,3 +168,25 @@ export class AgentSessionOperationError extends Error {
     this.metering = metering;
   }
 }
+
+/**
+ * Thrown when a handoff fails, carrying the records it produced before and during failure.
+ *
+ * A rejected handoff cannot return a HandoffResult, but the summary and seed prompts it
+ * already ran consumed real tokens, so their records must still reach the caller.
+ */
+export class AgentSessionHandoffError extends Error {
+  readonly handoffId: string;
+  readonly meteringRecords: readonly OperationMeteringRecord[];
+
+  constructor(
+    handoffId: string,
+    meteringRecords: readonly OperationMeteringRecord[],
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "AgentSessionHandoffError";
+    this.handoffId = handoffId;
+    this.meteringRecords = Object.freeze([...meteringRecords]);
+  }
+}

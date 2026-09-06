@@ -135,6 +135,7 @@ export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
 export { normalizeTokenUsage } from "./metering/usage.ts";
 export {
   ACP_PROVENANCE,
+  AgentSessionHandoffError,
   AgentSessionOperationError,
   MeteringPreflightError,
   UNAVAILABLE_PROVENANCE,

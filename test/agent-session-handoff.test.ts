@@ -62,7 +62,11 @@ describe("AgentSession handoff", () => {
       fromInternalSessionId,
       toInternalSessionId: session.internalSessionId,
       summary: "portable continuation context",
+      // A supplied summary removes the generation operation, so only seeding is metered.
+      meteringRecords: result.meteringRecords,
     });
+    expect(result.meteringRecords.map((record) => record.operationKind)).toEqual(["handoff_seed"]);
+    expect(result.meteringRecords[0]?.operationId).toBe(`${result.handoffId}:seed`);
     expect(Object.isFrozen(result)).toBe(true);
     expect(session.internalSessionId).not.toBe(fromInternalSessionId);
     expect(session.state.phase).toBe("idle");

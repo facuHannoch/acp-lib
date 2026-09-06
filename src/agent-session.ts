@@ -22,6 +22,7 @@ import { noopLogger, type Logger } from "./logger.ts";
 import { ResponseAccumulator } from "./response.ts";
 import { MeteringEngine, type OpenOperation } from "./metering/engine.ts";
 import {
+  AgentSessionHandoffError,
   AgentSessionOperationError,
   type AgentSessionMeteringSnapshot,
   type MeteredOperationKind,
@@ -31,7 +32,7 @@ import {
 } from "./metering/record.ts";
 import { createModelsDevResolver } from "./metering/catalog/index.ts";
 import { activeModel, providerIdForAdapter } from "./metering/provider.ts";
-import type { AgentSessionMeteringState } from "./metering/state.ts";
+import { restoreMeteringState, type AgentSessionMeteringState } from "./metering/state.ts";
 import {
   contextWindowChanged,
   parseContextWindow,
@@ -106,6 +107,8 @@ export interface HandoffResult {
   readonly fromInternalSessionId: string | null;
   readonly toInternalSessionId: string;
   readonly summary: string;
+  /** One record per token-consuming operation the handoff performed, in order. */
+  readonly meteringRecords: readonly OperationMeteringRecord[];
 }
 
 /** Session-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
@@ -128,6 +131,8 @@ export type AgentSessionEvent =
       fromInternalSessionId: string | null;
       toInternalSessionId?: string;
       error: string;
+      /** Records produced before and during the failure. */
+      meteringRecords: readonly OperationMeteringRecord[];
     }
   /** Latest context-window observation for the ACTIVE provider thread, or null. */
   | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
@@ -438,7 +443,9 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   private async start(): Promise<void> {
     const result = await this.controller.start();
-    this.setInternalSessionId(result.sessionId || this._internalSessionId);
+    // A resumed thread's counters did not start at zero, so it needs restored state to
+    // be attributable.
+    this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
     await this.persist();
     await this.appendTranscript({
       v: 1,
@@ -669,6 +676,9 @@ export class AgentSession implements AgentClient, Bridgeable {
     const fromInternalSessionId = this._internalSessionId;
     let toInternalSessionId: string | undefined;
     let summary: string | undefined;
+    // Records accumulate as they complete, so a handoff that fails partway still reports
+    // the operations it already paid for.
+    const records: OperationMeteringRecord[] = [];
     this.emit({
       kind: "handoff_started",
       handoffId: item.handoffId,
@@ -691,9 +701,16 @@ export class AgentSession implements AgentClient, Bridgeable {
 
       if (item.options.summary !== undefined) {
         if (!item.options.summary.trim()) throw new Error("handoff summary cannot be blank");
+        // A supplied summary removes the generation operation entirely, so no
+        // `:summary` record is ever minted for it.
         summary = item.options.summary;
       } else {
-        const generated = await this.controller.prompt(HANDOFF_SUMMARY_PROMPT);
+        const generated = await this.meteredInternalPrompt(
+          `${item.handoffId}:summary`,
+          "handoff_summary",
+          HANDOFF_SUMMARY_PROMPT,
+          records,
+        );
         if (generated.status !== "completed" || !generated.text.trim()) {
           throw new Error(`handoff summary generation ${generated.status}`);
         }
@@ -711,7 +728,12 @@ export class AgentSession implements AgentClient, Bridgeable {
         throw new Error("harness did not replace the internal session during handoff");
       }
 
-      const seeded = await this.controller.prompt(continuationPrompt(summary));
+      const seeded = await this.meteredInternalPrompt(
+        `${item.handoffId}:seed`,
+        "handoff_seed",
+        continuationPrompt(summary),
+        records,
+      );
       if (seeded.status !== "completed") {
         throw new Error(`handoff continuation seeding ${seeded.status}`);
       }
@@ -722,6 +744,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         fromInternalSessionId,
         toInternalSessionId,
         summary,
+        meteringRecords: Object.freeze([...records]),
       });
       await this.appendTranscript({
         v: 1,
@@ -767,8 +790,11 @@ export class AgentSession implements AgentClient, Bridgeable {
         fromInternalSessionId,
         ...(toInternalSessionId ? { toInternalSessionId } : {}),
         error,
+        meteringRecords: Object.freeze([...records]),
       });
-      throw err;
+      // A rejected handoff cannot return a HandoffResult, but the summary/seed prompts it
+      // already ran consumed real tokens; their records travel on the error.
+      throw new AgentSessionHandoffError(item.handoffId, records, err);
     }
   }
 
@@ -867,6 +893,82 @@ export class AgentSession implements AgentClient, Bridgeable {
       // the rejection rather than only reaching event subscribers.
       const record = this.closeOperation(operation, "error", null, String(err));
       throw new AgentSessionOperationError(item.turnId, record, err);
+    }
+  }
+
+  /**
+   * Replace metering state after an out-of-band reconciliation, and clear any block.
+   *
+   * The recovery path for a strict mode that stopped on a metering failure, without the
+   * unrecorded "assume zero" reset §12 rejects. Deliberately mints no operation record:
+   * the adjustment is an accounting correction, not provider usage, and pretending
+   * otherwise would put a fabricated operation in the consumer's ledger.
+   */
+  async reconcileMetering(reconciliation: MeteringReconciliation): Promise<{
+    before: AgentSessionMeteringState;
+    after: AgentSessionMeteringState;
+  }> {
+    if (this.isBusy || this.queue.length > 0) {
+      throw new Error("reconcileMetering requires an idle session with no queued operations");
+    }
+    if (!reconciliation.reason?.trim()) {
+      throw new Error("reconcileMetering requires a non-blank reason");
+    }
+    const restoration = restoreMeteringState(reconciliation.state, this.agentSessionId);
+    if (restoration.status !== "restored") {
+      throw new Error(
+        `reconcileMetering state rejected: ${
+          restoration.status === "ignored" ? restoration.reason : "no state supplied"
+        }`,
+      );
+    }
+    const wasBlocked = this.metering.blocked;
+    // Validated first: state is replaced atomically or not at all.
+    const { before } = this.metering.reconcile(restoration.state);
+    const after = this.metering.currentState;
+    this.emit({
+      kind: "metering_reconciled",
+      before,
+      after,
+      reason: reconciliation.reason,
+      ...(reconciliation.reference ? { reference: reconciliation.reference } : {}),
+      reconciledAt: Date.now(),
+    });
+    if (wasBlocked) this.emit({ kind: "metering_unblocked" });
+    return { before, after };
+  }
+
+  /**
+   * Run a library-internal prompt through the same metering primitive as a user prompt.
+   *
+   * Handoff summary generation and continuation seeding consume real tokens. Calling
+   * `controller.prompt()` directly for them would spend a consumer's money invisibly, so
+   * that path is not permitted any more (§16).
+   *
+   * Operation ids are deterministic children of the handoff id rather than freshly
+   * minted, so a consumer can tie both halves back to the handoff that caused them.
+   */
+  private async meteredInternalPrompt(
+    operationId: string,
+    operationKind: MeteredOperationKind,
+    text: string,
+    records: OperationMeteringRecord[],
+  ): Promise<PromptResult> {
+    const operation = await this.metering.open({
+      operationId,
+      operationKind,
+      internalSessionId: this._internalSessionId,
+      providerId: this.providerId,
+      model: this.model,
+      degraded: this.controller.isDegraded,
+    });
+    try {
+      const result = await this.controller.prompt(text);
+      records.push(this.closeOperation(operation, result.status, result.usage));
+      return result;
+    } catch (err) {
+      records.push(this.closeOperation(operation, "error", null, String(err)));
+      throw err;
     }
   }
 
@@ -1128,9 +1230,11 @@ export class AgentSession implements AgentClient, Bridgeable {
    * Carrying a stale context window across a thread change would misreport the new
    * thread's occupancy as the old thread's.
    */
-  private setInternalSessionId(next: string | null): void {
+  private setInternalSessionId(next: string | null, created = true): void {
     if (next === this._internalSessionId) return;
     this._internalSessionId = next;
+    // The new thread's counters restart, so the old baseline no longer describes them.
+    this.metering.onThreadReplaced(next, created);
     if (this._contextWindow !== null) {
       this._contextWindow = null;
       this.emit({ kind: "context_window_changed", contextWindow: null });
