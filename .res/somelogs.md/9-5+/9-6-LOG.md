@@ -367,3 +367,132 @@ exposed `notApplicableOperationCount` and `coverage: "not_applicable"`. Added th
 unavailable operations with only complete/partial/none coverage. Category totals retain
 the richer applicability shape. The test plan now pins the impossible states out of the
 public type.
+
+## Part 10 — Persistence and transcript specification
+
+Status: specification complete; implementation pending.
+
+Created `9-6-SPEC-persistence-transcripts.md` as the implementation contract for logical
+session persistence, transcript security policy, restoration, crash recovery, and
+pagination. The existing `9-6-transcript-policy.md` discussion record was preserved.
+
+### Persistence model and defaults
+
+- Consolidated persistence under one `persistence` configuration with independently
+  disableable registry and transcript facilities.
+- Defined the default root precedence as explicit root, `ACP_CLIENT_HOME`, then
+  `~/.acp-client`.
+- Defined the default layout as one authoritative `agent-sessions.json` registry plus
+  one transcript per stable `agentSessionId` under `transcripts/`; no second metadata
+  file is created per session.
+- Made persistence enabled by default with the `activity` transcript preset and retained
+  `persistence: false` as the complete opt-out.
+- Fixed path semantics: existing directory derives a filename, existing file is exact,
+  nonexistent path is an exact future file, and non-regular filesystem objects fail.
+  Paths are absolute and the default store rejects symlink destinations.
+
+### Creation, loading, and registry
+
+- Separated `AgentSession.create()` from `AgentSession.open()` so path, ID, checkpoint,
+  and internal-thread inputs no longer form an implicit precedence chain.
+- Defined consistent-candidate selection across consumer, registry, and transcript
+  checkpoints; equal-revision conflicts fail rather than choosing one arbitrarily.
+- Added the externally discoverable `SessionManager.open()` shape and the explicit
+  `listAgentSessions()` name, plus optional manager factories which return live sessions
+  without retaining ownership of them.
+- Defined a central versioned JSON registry with record revisions, stable/current
+  internal-session identity, structured internal-session history, model, negotiated
+  protocol, transcript configuration, checkpoint, and consumer metadata.
+- Replaced unsafe read-modify-save storage with a per-record CAS contract suitable for
+  both the default JSON implementation and database-backed consumer stores.
+- Specified cross-process exclusion, temp-file synchronization, atomic replacement,
+  backup recovery, corruption visibility, and pagination behavior under concurrent
+  registry mutation.
+
+### Transcript security and v2 format
+
+- Finalized the preset ladder as `conversation`, `activity`, `detailed`, and
+  `diagnostic`, backed by an explicit component policy.
+- `activity` stores user-facing operational metadata without arguments, commands, paths,
+  outputs, diffs, reasoning, raw errors, or unknown payloads. Filtering occurs before
+  persistence. Diagnostic selection itself authorizes sensitive raw ACP capture; logger
+  debug level remains unrelated.
+- Defined mandatory content-free structural records so a transcript can remain a
+  restoration artifact even under a minimal capture policy.
+- Defined the v2 JSONL envelope, strict sequence ordering, transcript identity and
+  generation, headers, checkpoints, operations, messages, activities, permissions,
+  transitions, metering references, lifecycle, raw, and unknown-record behavior.
+- Preserved activity lifecycle checkpoints and last-write-wins folding. Announced,
+  input/progress, settled, and nonterminal flushed records remain separate immutable
+  full-state revisions and may be separated by large portions of the transcript.
+- Distinguished the existing live `activitySnapshot()` from offline folded
+  `PersistedActivityState`; an old open record is historical evidence, not proof that a
+  tool remains executing after restart.
+
+### Checkpoints, durability, and recovery
+
+- Defined one versioned `AgentSessionCheckpoint` containing the current routing state,
+  internal-session history, transcript boundary, metering restore state, and clean versus
+  in-flight boundary.
+- Checkpoint revisions are compared by an RFC 8785 canonical-JSON SHA-256 digest. This is
+  corruption/conflict detection, not tamper-resistant billing storage.
+- Checkpoints are written initially, after every reached-harness operation, and whenever
+  handoff/switch/model/mode/reconciliation state changes.
+- Added a write-ahead rule: captured input and an operation-start marker are durably
+  synchronized, and every enabled continuation store records in-flight state, before
+  provider work is dispatched.
+- Defined clean and active stop ordering, transcript-lifetime writer ownership, and the
+  limitations of `SIGKILL`, power loss, and external tool side effects.
+- Restoration evaluates the checkpoint plus its journal tail. Dirty boundaries block new
+  work while the library attempts adapter-assisted recovery.
+- Only a certified adapter replay contract can prove reconciliation; generic ACP load
+  replay is observable evidence but remains uncertain. Consumers can explicitly accept
+  the harness state, start a new internal session with continuation context, or abort.
+
+### Pagination and migration
+
+- Replaced timestamp-only pagination with opaque, query-bound cursors carrying a stable
+  high-water mark, byte/sequence boundaries, generation, and boundary validation.
+- Added `conversation`, `timeline`, and `records` projections; pages start from the newest
+  region but return items oldest-to-newest. Limits count projected items, not physical
+  lines.
+- Defined deterministic older/newer navigation, cursor invalidation, partial-final-line
+  handling, typed v2 corruption, bounded iteration, and a future-compatible path to
+  disposable indexes and segmented transcripts.
+- Kept v1 readers and their permissive behavior during migration. A v2 upgrade header can
+  follow a validated v1 prefix without rewriting history, while v2 corruption rules are
+  determined by the recorded byte boundary.
+- Deprecated the old transcript/session configuration while preserving its historical
+  no-implicit-restore behavior and preventing legacy options from unexpectedly enabling
+  the new default registry.
+
+### Verification and implementation boundary
+
+- The specification includes configuration, security, concurrent-registry, durability,
+  simulated power-loss, recovery, lifecycle, pagination, and migration test matrices.
+- Markdown code fences are balanced and whitespace checks pass.
+- No runtime source, tests, dependencies, or metering specification were changed in this
+  part.
+
+### ACP session-configuration correction
+
+A follow-up review identified that storing only the normalized `model` was insufficient:
+successful ACP `setConfig()` calls can also change reasoning effort, mode, and arbitrary
+harness-defined session state. The specification now includes
+`SessionConfigurationCheckpoint` in the registry, current checkpoint, and each historical
+internal-session descriptor.
+
+The checkpoint distinguishes explicitly desired selections from the latest effective
+values returned by the harness and preserves application order. Default persistence is
+limited to advertised select/boolean values; consumers can exclude IDs, include specific
+unknown IDs, persist all JSON-compatible values with the documented sensitivity risk, or
+disable config-value persistence.
+
+On reopen, the newly announced harness catalog remains authoritative for what is valid.
+Persisted desired selections are validated and reapplied in order before prompting. A
+missing, invalid, rejected, or deliberately omitted value produces visible
+`configuration_mismatch` recovery instead of silently changing model behavior.
+Same-adapter handoff carries desired selections before seeding; cross-adapter switching
+requires an explicit mapping. Policy-visible selection records are distinct from full
+announced definitions, which are retained only by the diagnostic-level configuration
+policy.
