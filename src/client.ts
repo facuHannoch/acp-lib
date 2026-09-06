@@ -20,6 +20,7 @@ import {
 import { parseConfigOptions, type ConfigOptions } from "./config-options.ts";
 import { extractResponseChunk, toActivityEvent, toAvailableCommands } from "./updates.ts";
 import { ResponseAccumulator } from "./response.ts";
+import { normalizeTokenUsage } from "./metering/usage.ts";
 import { TerminalRegistry } from "./terminals.ts";
 import { readTextFile, writeTextFile } from "./fs-access.ts";
 import { NotConnectedError } from "./errors.ts";
@@ -114,6 +115,15 @@ interface QueueItem {
 
 export type AvailableCommandsListener = (commands: readonly InternalSessionCommand[]) => void;
 
+/**
+ * A raw ACP `usage_update`, with the session it named.
+ *
+ * Delivered raw rather than as an ActivityEvent because metering needs two things the
+ * folded event discards: ACP's absent-versus-null `cost`, and un-coerced counters (the
+ * activity projection defaults them to zero).
+ */
+export type UsageUpdateListener = (update: unknown, sessionId: string | null) => void;
+
 interface CommandTransition {
   previous: readonly InternalSessionCommand[];
   bySession: Map<string, readonly InternalSessionCommand[]>;
@@ -125,6 +135,15 @@ export class AcpClient implements AgentClient {
   private _configOptions: ConfigOptions = new Map();
   private _availableCommands: readonly InternalSessionCommand[] = Object.freeze([]);
   private readonly availableCommandListeners = new Set<AvailableCommandsListener>();
+  private readonly usageUpdateListeners = new Set<UsageUpdateListener>();
+  /**
+   * Latest usage_update seen, replayed to a late subscriber.
+   *
+   * Listeners are attached after connect + session/new, so a harness that notifies during
+   * startup would otherwise be unobserved. Mirrors how `availableCommands` is cached and
+   * re-emitted on attach.
+   */
+  private lastUsageUpdate: { update: unknown; sessionId: string | null } | null = null;
   private commandTransition: CommandTransition | null = null;
   private _sessionId: string | null = null;
 
@@ -181,6 +200,26 @@ export class AcpClient implements AgentClient {
   subscribeAvailableCommands(listener: AvailableCommandsListener): () => void {
     this.availableCommandListeners.add(listener);
     return () => this.availableCommandListeners.delete(listener);
+  }
+  /**
+   * Observe `usage_update` notifications — context window and provider cost.
+   *
+   * Session-scoped rather than per-turn: ACP gives no ordering guarantee between a
+   * prompt response and the usage update describing it, so an update can arrive well
+   * after the turn's handlers are gone. Routing these only through PromptHandlers would
+   * drop exactly the observations metering needs.
+   */
+  subscribeUsageUpdate(listener: UsageUpdateListener): () => void {
+    this.usageUpdateListeners.add(listener);
+    const buffered = this.lastUsageUpdate;
+    if (buffered) {
+      try {
+        listener(buffered.update, buffered.sessionId);
+      } catch (err) {
+        this.log.warn("usage_update_listener_failed", { error: String(err) });
+      }
+    }
+    return () => this.usageUpdateListeners.delete(listener);
   }
   get currentSessionId(): string | null {
     return this._sessionId;
@@ -611,6 +650,10 @@ export class AcpClient implements AgentClient {
       const cancelled = this.active.cancelled;
       const text = this.active.response.text;
       const messages = this.active.response.snapshot();
+      // ACP usage is optional and experimental: validate rather than cast. An
+      // unavailable report is logged and surfaced as null — never zero-filled.
+      const usage = normalizeTokenUsage(res.usage);
+      if (!usage.ok) this.log.debug("prompt_usage_unavailable", { reason: usage.reason });
       this.log[text.length === 0 && !cancelled ? "warn" : "info"]("prompt_end", {
         stopReason: res.stopReason,
         status: cancelled ? "cancelled" : "completed",
@@ -622,7 +665,7 @@ export class AcpClient implements AgentClient {
         messages,
         stopReason: res.stopReason,
         status: cancelled ? "cancelled" : "completed",
-        usage: (res.usage ?? null) as PromptResult["usage"],
+        usage: usage.ok ? usage.usage : null,
       };
     } finally {
       this.active = null;
@@ -687,6 +730,19 @@ export class AcpClient implements AgentClient {
         if (sessionId) this.commandTransition.bySession.set(sessionId, commands);
       } else if (!sessionId || sessionId === this._sessionId) {
         this.setAvailableCommands(commands);
+      }
+    }
+
+    if (kind === "usage_update") {
+      // Fired before the active-turn gate: a usage update is session state, and dropping
+      // it between turns would lose the context/cost observation entirely.
+      this.lastUsageUpdate = { update, sessionId: notification.sessionId ?? null };
+      for (const listener of [...this.usageUpdateListeners]) {
+        try {
+          listener(update, notification.sessionId ?? null);
+        } catch (err) {
+          this.log.warn("usage_update_listener_failed", { error: String(err) });
+        }
       }
     }
 

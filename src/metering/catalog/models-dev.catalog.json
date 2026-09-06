@@ -1,0 +1,2530 @@
+{
+  "currency": "USD",
+  "perTokens": 1000000,
+  "providers": {
+    "anthropic": {
+      "cacheInputConvention": {
+        "cachedRead": "excluded_from_input",
+        "cachedWrite": "excluded_from_input"
+      },
+      "conventionEvidence": "Anthropic Messages API reports cache_read_input_tokens and cache_creation_input_tokens as counters separate from input_tokens; total input is their sum.",
+      "models": {
+        "claude-sonnet-4-6": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "3.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-opus-5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "6.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-opus-4-5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "6.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-fable-5-1": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "50",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "12.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-opus-4-6": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "6.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-sonnet-4-5-20250929": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "3.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-opus-4-7": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "6.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-haiku-4-5-20251001": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-fable-5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "50",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "12.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-haiku-4-5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-sonnet-4-5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "3.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-opus-4-8": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "6.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-sonnet-5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "claude-opus-4-5-20251101": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "not_applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "6.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        }
+      }
+    },
+    "openai": {
+      "cacheInputConvention": {
+        "cachedRead": "included_in_input",
+        "cachedWrite": "included_in_input"
+      },
+      "conventionEvidence": "OpenAI usage.prompt_tokens includes cached input; cached tokens are itemized under prompt_tokens_details.cached_tokens rather than counted separately.",
+      "models": {
+        "gpt-5-nano": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.05",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.005",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4.1-nano": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.025",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4o-2024-05-13": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "15",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "120",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.6-sol": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "20",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "30",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4o-2024-08-06": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-6-astra": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "50",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "12.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "20",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "75",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.2-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "21",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "168",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.3-codex-spark": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "14",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.175",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4.1-mini": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.4": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "22.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4-turbo": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "30",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.1": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.125",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "o1": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "60",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "7.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4o": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.6-luna": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.02",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "0.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.04",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.3-codex": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "14",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.175",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4o-mini": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.075",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "o1-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "150",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "600",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4.1": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "text-embedding-ada-002": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.4-nano": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.02",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.5-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "30",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "180",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "60",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "270",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.4-mini": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.075",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-image-2": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "30",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-3.5-turbo": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.6": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "20",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "30",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "text-embedding-3-small": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.02",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5-mini": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.025",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.4-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "30",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "180",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "60",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "270",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "text-embedding-3-large": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "0.13",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.6-terra": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "12",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "18",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "30",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "60",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.2": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "14",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.175",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.125",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.2-chat-latest": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "14",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.175",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "o4-mini": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.275",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-realtime-2.1": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "24",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "o3-mini": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.55",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "o3": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "o3-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "unknown",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "20",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "80",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.3-chat-latest": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "1.75",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "14",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.175",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "30",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "45",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "1",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-4o-2024-11-20": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "unknown"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "included_in_input",
+                "cachedWrite": "included_in_input"
+              },
+              "input": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "10",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "1.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

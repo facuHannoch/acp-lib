@@ -38,6 +38,7 @@ export type {
   AgentSessionEvent,
   AgentSessionNotification,
   AgentSessionListener,
+  AgentSessionPromptResult,
   HandoffOptions,
   HandoffResult,
   ProviderSession,
@@ -121,6 +122,105 @@ export type {
   TranscriptRole,
 } from "./transcript.ts";
 
+export {
+  MAX_SCALE,
+  addMoney,
+  canonicalizeMoney,
+  decimalFromNumber,
+  isValidMoney,
+  rateTokens,
+  sumMoneyByCurrency,
+} from "./metering/money.ts";
+export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
+export { normalizeTokenUsage } from "./metering/usage.ts";
+export {
+  ACP_PROVENANCE,
+  AgentSessionHandoffError,
+  AgentSessionOperationError,
+  MeteringPreflightError,
+  UNAVAILABLE_PROVENANCE,
+} from "./metering/record.ts";
+export type {
+  AgentSessionMeteringSnapshot,
+  MeteredOperationKind,
+  MeteringConfig,
+  MeteringEnforcement,
+  MeteringPricingStatus,
+  MeteringProvenance,
+  MeteringReconciliation,
+  MeteringUsageResult,
+  OperationMeteringRecord,
+  OperationOutcome,
+  ProviderIdentitySnapshot,
+} from "./metering/record.ts";
+export { MeteringEngine } from "./metering/engine.ts";
+export type { MeteringEngineOptions, OpenOperation } from "./metering/engine.ts";
+export { activeModel, providerIdForAdapter } from "./metering/provider.ts";
+export { baselineMatches, calculateDelta } from "./metering/delta.ts";
+export type { DeltaResult } from "./metering/delta.ts";
+export { rateDelta, selectSchedule, unpricedUsage } from "./metering/rating.ts";
+export type {
+  AttributableUsage,
+  BillingFacts,
+  PricedTokenAmount,
+  RatingResult,
+  ScheduleSelection,
+} from "./metering/rating.ts";
+export {
+  METERING_STATE_VERSION,
+  accrueOperation,
+  accumulateByCurrency,
+  emptyMeteringState,
+  restoreMeteringState,
+} from "./metering/state.ts";
+export type {
+  AgentSessionMeteringState,
+  AggregateUsageTotal,
+  CategoryCoverage,
+  MeteringBaseline,
+  OperationAccrual,
+  StateRestoration,
+  UnallocatedUsageState,
+  UsageCategoryTotal,
+  UsageTotals,
+} from "./metering/state.ts";
+export {
+  contextWindowChanged,
+  parseContextWindow,
+  parseProviderCost,
+  providerCostChanged,
+} from "./metering/context.ts";
+export type {
+  ContextWindowStatus,
+  ProviderCostSnapshot,
+  ProviderCostUpdate,
+} from "./metering/context.ts";
+export {
+  TOKEN_CATEGORIES,
+  pricedCategories,
+  validatePricingPolicy,
+} from "./metering/pricing.ts";
+export type {
+  CacheInputConvention,
+  CategoryApplicability,
+  PolicyValidation,
+  PricingCondition,
+  PricingConfiguration,
+  PricingContext,
+  PricingPolicy,
+  PricingResolver,
+  PricingSchedule,
+  PricingSource,
+  TokenCategory,
+} from "./metering/pricing.ts";
+export {
+  MODELS_DEV_SOURCE,
+  catalogProviderIds,
+  createModelsDevResolver,
+  verifyCatalogIntegrity,
+} from "./metering/catalog/index.ts";
+export type { UsageNormalization } from "./metering/usage.ts";
+
 export { ProcessCrashError, NotConnectedError, TimeoutError } from "./errors.ts";
 
 export { createWireLog } from "./wire-log.ts";
@@ -145,6 +245,8 @@ export type {
   PermissionRequest,
   PermissionOutcome,
   PermissionOptionKind,
+  TokenUsage,
+  /** @deprecated alias of TokenUsage */
   Usage,
   Attachment,
   SessionListEntry,

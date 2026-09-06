@@ -134,10 +134,16 @@ async function runTurn(message: any): Promise<void> {
 
   // 4. An update kind the library does not model — must still reach the caller.
   update({ sessionUpdate: "some_future_update", payload: { hello: "world" } });
-  update({ sessionUpdate: "usage_update", used: 120, size: 200000 });
+  update({
+    sessionUpdate: "usage_update",
+    used: 120,
+    size: 200000,
+    cost: { amount: 0.0125, currency: "USD" },
+  });
 
   update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } });
   send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+
 }
 
 function request(method: string, params: unknown): Promise<unknown> {

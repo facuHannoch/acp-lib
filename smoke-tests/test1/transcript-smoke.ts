@@ -104,7 +104,9 @@ async function handleMessage(message: any): Promise<void> {
         id: message.id,
         result: {
           stopReason: "end_turn",
-          usage: { inputTokens: 2, outputTokens: 4 },
+          // A valid ACP Usage: totalTokens is required and the cache fields use the
+          // ACP `cached*` names. Counters are cumulative across the session.
+          usage: { totalTokens: 6, inputTokens: 2, outputTokens: 4 },
         },
       });
       return;
