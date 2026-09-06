@@ -30,7 +30,11 @@ const onlyArg = process.argv.find((arg) => arg.startsWith("--only="));
 const ONLY = onlyArg ? new Set(onlyArg.slice("--only=".length).split(",")) : null;
 
 /** Two short prompts: the second one is what reveals cumulative-vs-per-turn counters. */
-const PROBE_PROMPTS = ["Reply with the single word: ok", "Reply with the single word: done"];
+const PROBE_PROMPTS = [
+  "Reply with the single word: ok",
+  "Reply with the single word: done",
+  "Reply with the single word: bye",
+];
 
 interface Observation {
   preset: string;
@@ -78,10 +82,17 @@ async function probe(preset: AdapterPreset): Promise<Observation> {
       adapter,
       adapterId: preset,
       agentSessionId: `harness-matrix-${preset}`,
+      // Claude's CLI refuses to launch inside another Claude Code session, which makes
+      // session/new fail with an internal error and leaves the session with no config
+      // options — indistinguishable from a harness that advertises none unless cleared.
+      env: { CLAUDECODE: "" },
       // No pricing: this probe records protocol facts, not costs.
       metering: { pricing: false },
     });
-    observation.connected = true;
+    // A failed session/new can still leave a constructed object, so "connected" must mean
+    // a provider thread actually exists — otherwise an errored handshake reads as a
+    // harness that simply advertises nothing.
+    observation.connected = session.internalSessionId !== null;
     observation.providerId = session.providerId;
 
     // Give any post-session/new notification a moment to arrive.
@@ -117,15 +128,36 @@ async function probe(preset: AdapterPreset): Promise<Observation> {
     observation.usagePresent = "yes";
     observation.categories = Object.keys(first).sort().join(",");
 
-    if (!second) {
+    // Growth of `totalTokens` is NOT a valid test. OpenCode reports per-turn counters
+    // whose totals still rise turn over turn, because each turn re-reads the same cached
+    // context — it read as "cumulative" until the components were checked.
+    //
+    // The decisive evidence is the component-sum identity: when totalTokens equals
+    // input + output + cache for a SINGLE report, that report describes one turn.
+    const componentSum = (r: Record<string, number | undefined>): number =>
+      (r.inputTokens ?? 0) +
+      (r.outputTokens ?? 0) +
+      (r.cachedReadTokens ?? 0) +
+      (r.cachedWriteTokens ?? 0) +
+      (r.thoughtTokens ?? 0);
+
+    const perTurnEvidence = reports.filter((r) => componentSum(r) === (r.totalTokens ?? -1));
+    const decreasing = second
+      ? (["inputTokens", "outputTokens"] as const).some(
+          (key) => (second[key] ?? 0) < (first[key] ?? 0),
+        )
+      : false;
+
+    if (perTurnEvidence.length === reports.length && reports.length > 1) {
+      observation.counterSemantics = `PER-TURN (totals = component sum in every report)`;
+    } else if (decreasing) {
+      observation.counterSemantics = `PER-TURN (a component counter decreased)`;
+    } else if (!second) {
       observation.counterSemantics = "indeterminate — only one report";
     } else if ((second.totalTokens ?? 0) > (first.totalTokens ?? 0)) {
-      // Growing totals across turns is what the field-level docs describe.
       observation.counterSemantics = `cumulative (${first.totalTokens} → ${second.totalTokens})`;
     } else {
-      // Non-growing means the property doc's "for this turn" reading, which the delta
-      // algorithm must NOT be applied to.
-      observation.counterSemantics = `PER-TURN (${first.totalTokens} → ${second.totalTokens})`;
+      observation.counterSemantics = `indeterminate (${first.totalTokens} → ${second.totalTokens})`;
     }
   } catch (err) {
     observation.error = String(err).slice(0, 160);

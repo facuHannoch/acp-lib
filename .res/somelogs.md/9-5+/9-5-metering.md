@@ -3664,3 +3664,49 @@ I agree with the seven points, amended as follows:
 9. The gateway remains a separate future subsystem.
 
 So yes: we should now revise the existing ACP metering spec and create a separate OpenCode certified-metering spec. This is a much more defensible design than trying to make experimental ACP usage carry production billing guarantees.
+
+
+
+
+
+----------
+
+
+
+Implementation complete. Ten commits on `aiagent/e-0001`, 361 tests passing (up from 226), both smoke tests green, tree clean.
+
+## What shipped, against §22's sequence
+
+Steps 1–11 are done. Step 12 (`billing_required`) is deliberately not: it needs the certified OpenCode integration, so the engine rejects that mode at construction rather than pretending.
+
+| Step | Landed as                                                                       |
+| ---- | ------------------------------------------------------------------------------- |
+| 1    | `metering/usage.ts` — normalization replacing the blind cast at `client.ts:625` |
+| 2    | `metering/money.ts` — BigInt decimals, scale 12, half-even                      |
+| 3    | `metering/catalog/` + `scripts/generate-pricing-catalog.ts`                     |
+| 4    | context/cost live state on `AgentSession`                                       |
+| 5    | `delta.ts`, `rating.ts`, `state.ts`                                             |
+| 6–7  | `record.ts`, `engine.ts`, records + events + `AgentSessionPromptResult`         |
+| 8–9  | handoff metering, enforcement, `reconcileMetering()`                            |
+| 10   | `smoke-tests/test6-metering/` — 12/12                                           |
+| 11   | harness matrix probe + findings doc                                             |
+
+## Bugs found in existing code
+
+Three were real defects the metering work exposed, not new-code problems:
+
+- **`usage_update` outside a turn was dropped entirely** (`client.ts` early-returned with no active turn) — the observations metering most needs.
+- **The controller attaches listeners after `connect` + `session/new`**, so startup notifications were never seen. `availableCommands` hid this by replaying a cached value; usage had no equivalent.
+- **A fixture called a turn-scoped `update()` from the `session/new` branch**, throwing inside the agent process where nothing surfaced it.
+
+Plus one I introduced and caught: `validatePricingPolicy` accepted `"1e-6"` as a unit price — it checked that `amount` was a *string*, not a valid decimal.
+
+## Three things needing your decision
+
+**1. `claude-code-acp` cannot be priced.** It advertises *no* config options, so `session.model` is `null` and the catalog returns nothing. The one adapter with both a provider mapping and full Anthropic coverage is unpriceable through ACP alone. Worth retesting against `@agentclientprotocol/claude-agent-acp` (only the deprecated bridge is installed here) — otherwise Anthropic pricing needs the model supplied out of band.
+
+**2. The cumulative-vs-per-turn question is still unanswered.** The probe's `--prompt` mode answers it but spends real tokens against your credentials, so I didn't run it. Until then `counterInterpretation: "cumulative"` records an interpretation the library *applied*, not one any harness has been observed to have.
+
+**3. One spec deviation:** `AgentSessionPromptResult.metering` is nullable. §16 says a prompt cancelled before dispatch produces no record, but the result type demanded one. Null is the honest encoding — minting a record would be a fabricated ledger entry — but it's a type change you should ratify.
+
+Two smaller notes: `tsconfig.json` includes only `src/**`, so test files aren't typechecked (I found the nullable-metering fallout by hand); and §7 still has no `thoughtOutputConvention` analogous to `cacheInputConvention`, which will bite on the 149 models.dev models that price `reasoning` separately.
