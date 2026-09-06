@@ -272,10 +272,12 @@ export class MeteringEngine {
    */
   close(open: OpenOperation, input: CloseOperationInput): OperationMeteringRecord {
     const strict = this.options.enforcement !== "best_effort";
-    const { usage, attributable, applicability, nextBaseline } = this.measure(open, input);
+    const { usage, attributable, applicability, nextBaseline, ratingFailureReason } =
+      this.measure(open, input);
 
     let pricingStatus: MeteringPricingStatus;
-    let pricingFailureReason = open.pricingFailureReason ?? undefined;
+    // A post-operation rating failure is more specific than a preflight one, so it wins.
+    let pricingFailureReason = ratingFailureReason ?? open.pricingFailureReason ?? undefined;
 
     if (usage.status !== "metered") {
       pricingStatus = "not_attributable";
@@ -345,6 +347,7 @@ export class MeteringEngine {
     attributable: AttributableUsage | null;
     applicability: Readonly<Record<TokenCategory, CategoryApplicability>> | null;
     nextBaseline: MeteringBaseline | null;
+    ratingFailureReason?: string;
   } {
     const applicability = open.policy?.categoryApplicability ?? null;
     const keepBaseline = this.baseline;
@@ -409,6 +412,9 @@ export class MeteringEngine {
       attributable: attributable.usage,
       applicability: applicability ?? UNKNOWN_APPLICABILITY,
       nextBaseline,
+      // Why rating fell back to unpriced. Without this the record says
+      // "pricing_unavailable" with no way to find out why.
+      ...(attributable.reason ? { ratingFailureReason: attributable.reason } : {}),
     };
   }
 

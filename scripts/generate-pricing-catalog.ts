@@ -71,6 +71,30 @@ const CONVENTIONS: Readonly<Record<string, ProviderConvention>> = {
     // invalidates the record rather than silently inflating it.
     thought: "not_applicable",
   },
+  // OpenCode's Zen gateway. It multiplexes many upstream providers but NORMALIZES their
+  // counters itself, so the convention is a property of OpenCode, not of the model behind
+  // it — which is what makes one entry legitimate for all 102 of its models.
+  //
+  // Measured, not assumed: across four distinct underlying providers (big-pickle, Ling,
+  // MiMo, Nemotron), eight consecutive reports every one satisfied
+  //   totalTokens === inputTokens + outputTokens + cachedReadTokens + thoughtTokens
+  // within a single report. Disjoint terms mean cache is excluded from input and thought
+  // is excluded from output, so pricing each separately double-counts nothing.
+  // See .res/somelogs.md/9-5+/9-6-harness-matrix-findings.md, Findings 5-6.
+  opencode: {
+    cacheInputConvention: {
+      cachedRead: "excluded_from_input",
+      cachedWrite: "excluded_from_input",
+    },
+    evidence:
+      "Measured on opencode ACP: totalTokens equals the exact sum of inputTokens, " +
+      "outputTokens, cachedReadTokens and thoughtTokens within each single report, " +
+      "across four underlying providers.",
+    // Thought is a disjoint term in that identity, so where the catalog prices reasoning
+    // it can be charged on its own. Where it does not, applicability stays unknown rather
+    // than being asserted either way.
+    thought: "unknown",
+  },
   openai: {
     cacheInputConvention: {
       cachedRead: "included_in_input",

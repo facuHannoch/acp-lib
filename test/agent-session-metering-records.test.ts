@@ -447,3 +447,44 @@ describe("operation kinds and undispatched work", () => {
     }
   });
 });
+
+describe("rating failure reporting", () => {
+  test("a reported category with no price records WHY it could not be rated", async () => {
+    // Measured on opencode/ling-3.0-flash-fin-free: the harness reports thoughtTokens but
+    // the catalog carries no reasoning price, so rating is unavailable. Without the reason
+    // the record says "pricing_unavailable" with no way to find out why.
+    const { session } = await openSession({
+      metering: {
+        pricing: () => ({
+          ...TEST_POLICY,
+          categoryApplicability: { ...TEST_POLICY.categoryApplicability, thought: "unknown" },
+        }),
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      // The fixture reports cachedRead, which TEST_POLICY prices; drop that price instead.
+      expect(result.metering!.pricingStatus).toBe("priced");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("an unpriceable reported category names the category in the reason", async () => {
+    const { session } = await openSession({
+      metering: {
+        pricing: () => ({
+          ...TEST_POLICY,
+          schedules: [{ ...TEST_POLICY.schedules[0]!, cachedRead: undefined }],
+        }),
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.pricingStatus).toBe("pricing_unavailable");
+      expect(result.metering!.pricingFailureReason).toContain("cached_read");
+    } finally {
+      await session.stop();
+    }
+  });
+});

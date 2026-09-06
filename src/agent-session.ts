@@ -31,7 +31,7 @@ import {
   type OperationMeteringRecord,
 } from "./metering/record.ts";
 import { createModelsDevResolver } from "./metering/catalog/index.ts";
-import { activeModel, providerIdForAdapter } from "./metering/provider.ts";
+import { activeModel, resolveModelReference } from "./metering/provider.ts";
 import { restoreMeteringState, type AgentSessionMeteringState } from "./metering/state.ts";
 import {
   contextWindowChanged,
@@ -473,15 +473,28 @@ export class AgentSession implements AgentClient, Bridgeable {
    * occupancy says nothing about the new one's.
    */
   /**
-   * models.dev provider key for this adapter, or null when it cannot be established.
-   * Never guessed from a model string — see metering/provider.ts.
+   * models.dev provider key for the active route, or null when it cannot be established.
+   *
+   * Comes from a tested adapter mapping, or — for a harness whose model string is
+   * `<provider>/<model>` — from that string. Never guessed: see metering/provider.ts.
    */
   get providerId(): string | null {
-    return providerIdForAdapter(this.adapterId);
+    return resolveModelReference(this.adapterId, this.advertisedModel)?.providerId ?? null;
   }
 
-  /** Plain advertised model string from harness config options, or null. */
+  /**
+   * Model key for catalog lookup, or null.
+   *
+   * For a harness that advertises `<provider>/<model>`, this is the model half — the
+   * provider prefix is routing, not part of the model's name. The raw advertised string
+   * remains available through `configOptions`.
+   */
   get model(): string | null {
+    return resolveModelReference(this.adapterId, this.advertisedModel)?.modelId ?? this.advertisedModel;
+  }
+
+  /** Exactly what the harness advertises, before any provider/model split. */
+  get advertisedModel(): string | null {
     return activeModel(this.controller.configOptions);
   }
 

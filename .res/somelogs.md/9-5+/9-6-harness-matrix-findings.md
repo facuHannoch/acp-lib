@@ -173,6 +173,68 @@ totals: 30027 tokens, coverage=complete, metered=3/3
 
 Previously: one attributed turn and two `counter_reset`s.
 
+## Finding 6 — OpenCode normalizes counters into DISJOINT categories
+
+Measured across four distinct underlying providers behind the Zen gateway (big-pickle,
+Ling, MiMo, Nemotron), eight consecutive reports. Every single one satisfied:
+
+```
+totalTokens === inputTokens + outputTokens + cachedReadTokens + thoughtTokens
+```
+
+Disjoint terms settle both conventions §7 requires and cannot infer:
+
+- **cache is excluded from input** — cached reads are their own term, so pricing input at
+  the full reported figure does not double-charge them.
+- **thought is excluded from output** — the gap §7 has no field for. For this route,
+  pricing reasoning separately double-counts nothing.
+
+Because the identity holds across four different upstream providers, the convention is a
+property of OpenCode's own normalization rather than of the model behind it. That is what
+makes one catalog entry legitimate for all 102 of its models.
+
+## Finding 7 — the OpenCode route prices end to end
+
+models.dev carries an `opencode` provider (102 models) with Zen's own prices, which
+differ from the upstream provider's. OpenCode advertises models as
+`opencode/<models.dev key>`, so the two halves are exactly the catalog lookup keys.
+
+The split is adapter-scoped and validated, not a general heuristic. Other harnesses use
+the same shape with a first segment that is not a catalog provider —
+`openai-codex/gpt-5.5`, `kimi-code/kimi-for-coding` — and a first segment that merely
+looked like a provider would price a proxied route at the upstream provider's rates.
+
+Live result:
+
+```
+advertised=opencode/mimo-v2.5-free  provider=opencode  model=mimo-v2.5-free
+status=priced  delta={total:9988, input:53, output:15, cachedRead:9920}  rated=0
+```
+
+Rated 0 because the model is free — models.dev prices it at zero, and the pipeline
+carries that through honestly rather than treating a zero price as a missing one.
+
+A model that reports a category the catalog cannot price stays unpriced, with the reason
+recorded:
+
+```
+opencode/ling-3.0-flash-fin-free  →  pricing_unavailable
+  "schedule default has no thought unit price"   (the harness reports thoughtTokens=18)
+```
+
+That is §7 behaving as designed: a reported category with no price makes rating
+unavailable rather than being silently dropped from the total. It also surfaced a real
+bug — the reason was computed and then discarded, so records said
+`pricing_unavailable` with no way to find out why. Fixed.
+
+### Not yet verified: non-zero rating against a live harness
+
+The Zen account has **insufficient balance**, so every paid model returns
+`Internal error: Insufficient balance`. Only zero-cost models could be exercised, which
+proves the pipeline end to end but always rates to `0`. Non-zero arithmetic is covered by
+unit tests and by the codex route resolving against the catalog, but has not been
+confirmed against a live billed turn.
+
 ## Still unanswered — needs the prompting pass on other harnesses
 
 The question the whole ACP-derived backend rests on is **cumulative versus per-turn**, and

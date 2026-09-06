@@ -160,8 +160,9 @@ export {
   activeModel,
   counterInterpretationForAdapter,
   providerIdForAdapter,
+  resolveModelReference,
 } from "./metering/provider.ts";
-export type { CounterInterpretation } from "./metering/provider.ts";
+export type { CounterInterpretation, ModelReference } from "./metering/provider.ts";
 export { baselineMatches, calculateDelta } from "./metering/delta.ts";
 export type { DeltaResult } from "./metering/delta.ts";
 export { rateDelta, selectSchedule, unpricedUsage } from "./metering/rating.ts";
