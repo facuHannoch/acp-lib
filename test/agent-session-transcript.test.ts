@@ -68,7 +68,7 @@ describe("AgentSession transcript config", () => {
         text: "fake reply to: hello",
         messages: [{ text: "fake reply to: hello" }],
         ts: expect.any(Number),
-        usage: { inputTokens: 2, outputTokens: 4 },
+        usage: { totalTokens: 6, inputTokens: 2, outputTokens: 4 },
         stopReason: "end_turn",
         status: "completed",
       },

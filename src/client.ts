@@ -20,6 +20,7 @@ import {
 import { parseConfigOptions, type ConfigOptions } from "./config-options.ts";
 import { extractResponseChunk, toActivityEvent, toAvailableCommands } from "./updates.ts";
 import { ResponseAccumulator } from "./response.ts";
+import { normalizeTokenUsage } from "./metering/usage.ts";
 import { TerminalRegistry } from "./terminals.ts";
 import { readTextFile, writeTextFile } from "./fs-access.ts";
 import { NotConnectedError } from "./errors.ts";
@@ -611,6 +612,10 @@ export class AcpClient implements AgentClient {
       const cancelled = this.active.cancelled;
       const text = this.active.response.text;
       const messages = this.active.response.snapshot();
+      // ACP usage is optional and experimental: validate rather than cast. An
+      // unavailable report is logged and surfaced as null — never zero-filled.
+      const usage = normalizeTokenUsage(res.usage);
+      if (!usage.ok) this.log.debug("prompt_usage_unavailable", { reason: usage.reason });
       this.log[text.length === 0 && !cancelled ? "warn" : "info"]("prompt_end", {
         stopReason: res.stopReason,
         status: cancelled ? "cancelled" : "completed",
@@ -622,7 +627,7 @@ export class AcpClient implements AgentClient {
         messages,
         stopReason: res.stopReason,
         status: cancelled ? "cancelled" : "completed",
-        usage: (res.usage ?? null) as PromptResult["usage"],
+        usage: usage.ok ? usage.usage : null,
       };
     } finally {
       this.active = null;

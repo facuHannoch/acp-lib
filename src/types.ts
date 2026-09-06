@@ -21,15 +21,34 @@ export interface InternalSessionCommandInput {
   readonly hint: string;
 }
 
-/** Token accounting for a turn. Nullable per-field — not all providers report all of it. */
-export interface Usage {
+/**
+ * Normalized ACP token counters, using the ACP field names verbatim.
+ *
+ * These are NOT guaranteed per-turn. The ACP SDK documents `PromptResponse.usage` as
+ * usage "for this turn" while documenting the individual fields as totals across all
+ * turns/the session, and exposes no discriminator. The library reads them as cumulative
+ * internal-session counters and stamps that choice into metering provenance; callers
+ * must not sum successive reports. See 9-6-SPEC-metering.md §4.
+ *
+ * An absent optional counter means the harness did not report the category. It does NOT
+ * mean the category was zero.
+ */
+export interface TokenUsage {
+  totalTokens: number;
   inputTokens: number;
   outputTokens: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
   /** Only providers that do extended thinking report this. */
   thoughtTokens?: number;
 }
+
+/**
+ * @deprecated Renamed to {@link TokenUsage}. The old shape used non-ACP field names
+ * (`cacheReadTokens`/`cacheWriteTokens`), omitted `totalTokens`, and was described as
+ * per-turn. Pre-1.0 rename — see the changelog.
+ */
+export type Usage = TokenUsage;
 
 /**
  * The result of a single prompt turn.
@@ -46,7 +65,11 @@ export interface PromptResult {
   /** Raw protocol stop reason: "end_turn" | "cancelled" | "max_tokens" | ... */
   stopReason: string;
   status: "completed" | "cancelled" | "error";
-  usage: Usage | null;
+  /**
+   * Normalized cumulative counters, or null when the harness reported none or reported
+   * something malformed. Null is "unknown", never "zero".
+   */
+  usage: TokenUsage | null;
 }
 
 /** One boundary-aware delta from an ACP `agent_message_chunk`. */
