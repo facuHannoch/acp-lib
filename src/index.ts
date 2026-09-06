@@ -121,6 +121,19 @@ export type {
   TranscriptRole,
 } from "./transcript.ts";
 
+export {
+  MAX_SCALE,
+  addMoney,
+  canonicalizeMoney,
+  decimalFromNumber,
+  isValidMoney,
+  rateTokens,
+  sumMoneyByCurrency,
+} from "./metering/money.ts";
+export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
+export { normalizeTokenUsage } from "./metering/usage.ts";
+export type { UsageNormalization } from "./metering/usage.ts";
+
 export { ProcessCrashError, NotConnectedError, TimeoutError } from "./errors.ts";
 
 export { createWireLog } from "./wire-log.ts";
@@ -145,6 +158,8 @@ export type {
   PermissionRequest,
   PermissionOutcome,
   PermissionOptionKind,
+  TokenUsage,
+  /** @deprecated alias of TokenUsage */
   Usage,
   Attachment,
   SessionListEntry,
