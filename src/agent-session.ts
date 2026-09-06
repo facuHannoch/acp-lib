@@ -20,6 +20,18 @@ import type { ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import { ResponseAccumulator } from "./response.ts";
+import { MeteringEngine, type OpenOperation } from "./metering/engine.ts";
+import {
+  AgentSessionOperationError,
+  type AgentSessionMeteringSnapshot,
+  type MeteredOperationKind,
+  type MeteringConfig,
+  type MeteringReconciliation,
+  type OperationMeteringRecord,
+} from "./metering/record.ts";
+import { createModelsDevResolver } from "./metering/catalog/index.ts";
+import { activeModel, providerIdForAdapter } from "./metering/provider.ts";
+import type { AgentSessionMeteringState } from "./metering/state.ts";
 import {
   contextWindowChanged,
   parseContextWindow,
@@ -41,16 +53,19 @@ import type {
   PromptHandlers,
   PromptResult,
   SessionListEntry,
+  TokenUsage,
   WireEntry,
 } from "./types.ts";
 
 interface PromptQueueItem {
   kind: "prompt";
   turnId: string;
+  /** How this operation is classified in its metering record. */
+  operationKind: MeteredOperationKind;
   text: string;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
-  resolve: (r: PromptResult) => void;
+  resolve: (r: AgentSessionPromptResult) => void;
   reject: (e: unknown) => void;
 }
 
@@ -117,7 +132,33 @@ export type AgentSessionEvent =
   /** Latest context-window observation for the ACTIVE provider thread, or null. */
   | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
   /** Latest cumulative provider-reported cost. Telemetry, never asserted to be an invoice. */
-  | { kind: "provider_cost_changed"; providerCost: ProviderCostSnapshot | null };
+  | { kind: "provider_cost_changed"; providerCost: ProviderCostSnapshot | null }
+  /** One immutable record per observed operation, emitted before its turn completes. */
+  | { kind: "metering_recorded"; record: OperationMeteringRecord }
+  /** A strict mode detected a metering failure; later token-consuming work will reject. */
+  | { kind: "metering_blocked"; reason: string }
+  | { kind: "metering_unblocked" }
+  | {
+      kind: "metering_reconciled";
+      before: AgentSessionMeteringState;
+      after: AgentSessionMeteringState;
+      reason: string;
+      reference?: string;
+      reconciledAt: number;
+    };
+
+/** A prompt result enriched with the operation's metering record. */
+export interface AgentSessionPromptResult extends PromptResult {
+  readonly operationId: string;
+  /**
+   * The operation's record, or null when the operation never reached the provider.
+   *
+   * Null happens only for a queued prompt cancelled before dispatch (§16). Such an
+   * operation consumed nothing, and minting a record for it would put a fabricated
+   * entry in the consumer's ledger — so the field is honestly empty instead.
+   */
+  readonly metering: OperationMeteringRecord | null;
+}
 
 /** Ordered envelope delivered to every AgentSession subscriber. */
 export interface AgentSessionNotification {
@@ -243,6 +284,12 @@ export interface AgentSessionConfig {
   /** Provider-thread startup intent. Default `{ kind: "new" }`. */
   providerSession?: ProviderSession;
   /**
+   * Token/cost metering policy. Optional: omitting it selects best-effort enforcement
+   * with the pinned models.dev catalog and no restored state. Metering is not something a
+   * consumer must turn on merely to see protocol facts.
+   */
+  metering?: MeteringConfig;
+  /**
    * @deprecated Use `providerSession: { kind: "load", internalSessionId, onFailure }`.
    * Retains the historical fallback-to-new behavior for compatibility.
    */
@@ -278,6 +325,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly listeners = new Set<AgentSessionListener>();
   private lastStateKey = "";
   private _internalSessionId: string | null;
+  private readonly metering: MeteringEngine;
   private _contextWindow: ContextWindowStatus | null = null;
   private _providerCost: ProviderCostSnapshot | null = null;
   /**
@@ -339,6 +387,17 @@ export class AgentSession implements AgentClient, Bridgeable {
     this._cwd = config.cwd;
     this._title = config.title;
     this._internalSessionId = requestedInternalSessionId ?? null;
+    this.metering = new MeteringEngine({
+      agentSessionId: this.agentSessionId,
+      adapterId: config.adapterId,
+      enforcement: config.metering?.enforcement ?? "best_effort",
+      // Absence selects the pinned catalog; `false` is how a consumer says "no rating".
+      pricing: config.metering?.pricing ?? createModelsDevResolver(),
+      initialState: config.metering?.initialState,
+      // A thread we are about to create has counters starting at zero; one we load does
+      // not, and needs restored state to be attributable.
+      createdActiveThread: providerSession.kind === "new",
+    });
     this.controller = new AgentController({
       adapter: config.adapter,
       adapterId: config.adapterId,
@@ -403,6 +462,35 @@ export class AgentSession implements AgentClient, Bridgeable {
    * replacement this is null until the new thread reports, because the old thread's
    * occupancy says nothing about the new one's.
    */
+  /**
+   * models.dev provider key for this adapter, or null when it cannot be established.
+   * Never guessed from a model string — see metering/provider.ts.
+   */
+  get providerId(): string | null {
+    return providerIdForAdapter(this.adapterId);
+  }
+
+  /** Plain advertised model string from harness config options, or null. */
+  get model(): string | null {
+    return activeModel(this.controller.configOptions);
+  }
+
+  /** Bounded metering state, enforcement policy, and the last operation record. */
+  get meteringSnapshot(): AgentSessionMeteringSnapshot {
+    const restoration = this.metering.restoration;
+    return Object.freeze({
+      ...this.metering.currentState,
+      enforcement: this.metering.enforcement,
+      restoration:
+        restoration.status === "restored"
+          ? { status: "restored" as const, version: 2 as const }
+          : restoration,
+      blocked: this.metering.blocked,
+      blockedReason: this.metering.blockedReason,
+      lastOperation: this.metering.lastOperation,
+    });
+  }
+
   get contextWindow(): ContextWindowStatus | null {
     return this._contextWindow;
   }
@@ -463,8 +551,17 @@ export class AgentSession implements AgentClient, Bridgeable {
     text: string,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
-  ): Promise<PromptResult> {
-    return new Promise<PromptResult>((resolve, reject) => {
+  ): Promise<AgentSessionPromptResult> {
+    return this.enqueuePrompt(text, "prompt", handlers, attachments);
+  }
+
+  private enqueuePrompt(
+    text: string,
+    operationKind: MeteredOperationKind,
+    handlers?: PromptHandlers,
+    attachments?: Attachment[],
+  ): Promise<AgentSessionPromptResult> {
+    return new Promise<AgentSessionPromptResult>((resolve, reject) => {
       if (this.phase === "stopped") {
         reject(new Error("AgentSession is stopped"));
         return;
@@ -472,6 +569,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       this.queue.push({
         kind: "prompt",
         turnId: this.mintTurnId(),
+        operationKind,
         text,
         handlers,
         attachments,
@@ -494,7 +592,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     name: string,
     input?: string,
     handlers?: PromptHandlers,
-  ): Promise<PromptResult> {
+  ): Promise<AgentSessionPromptResult> {
     const command = name.trim();
     if (!command || command.startsWith("/") || /\s/.test(command)) {
       return Promise.reject(
@@ -502,7 +600,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       );
     }
     const suffix = input == null || input.length === 0 ? "" : ` ${input}`;
-    return this.prompt(`/${command}${suffix}`, handlers);
+    return this.enqueuePrompt(`/${command}${suffix}`, "internal_command", handlers);
   }
 
   /**
@@ -674,7 +772,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
   }
 
-  private async runPrompt(item: PromptQueueItem): Promise<PromptResult> {
+  private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
     this.beginTurn(item.turnId);
     await this.appendTranscript({
       v: 1,
@@ -709,6 +807,17 @@ export class AgentSession implements AgentClient, Bridgeable {
       },
     };
 
+    // Opened BEFORE dispatch so a strict mode fails preflight rather than after the
+    // provider has already been paid, and so the price in force at start is what applies.
+    const operation = await this.metering.open({
+      operationId: item.turnId,
+      operationKind: item.operationKind,
+      internalSessionId: this._internalSessionId,
+      providerId: this.providerId,
+      model: this.model,
+      degraded: this.controller.isDegraded,
+    });
+
     try {
       const res = await this.controller.prompt(item.text, wrappedHandlers, item.attachments);
       // Before the assistant msg: `msg` delimits a turn, so anything still open has to
@@ -731,7 +840,8 @@ export class AgentSession implements AgentClient, Bridgeable {
         stopReason: res.stopReason,
         status: res.status,
       });
-      return res;
+      const record = this.closeOperation(operation, res.status, res.usage);
+      return Object.freeze({ ...res, operationId: item.turnId, metering: record });
     } catch (err) {
       // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
       // what it was doing, at its real status.
@@ -753,8 +863,38 @@ export class AgentSession implements AgentClient, Bridgeable {
         stopReason: "error",
         status: "error",
       });
-      throw err;
+      // A failed operation may still have consumed tokens, so its record has to survive
+      // the rejection rather than only reaching event subscribers.
+      const record = this.closeOperation(operation, "error", null, String(err));
+      throw new AgentSessionOperationError(item.turnId, record, err);
     }
+  }
+
+  /**
+   * Close a rating unit, emit its record, and surface a strict-mode block.
+   *
+   * `contextAfter`/`providerCostAfter` are the latest observations seen by completion.
+   * ACP gives no ordering guarantee, so neither is asserted to describe THIS operation.
+   */
+  private closeOperation(
+    operation: OpenOperation,
+    outcome: "completed" | "cancelled" | "error",
+    reportedCumulative: TokenUsage | null,
+    usageFailureReason?: string,
+  ): OperationMeteringRecord {
+    const wasBlocked = this.metering.blocked;
+    const record = this.metering.close(operation, {
+      outcome,
+      reportedCumulative,
+      ...(usageFailureReason ? { usageFailureReason } : {}),
+      contextAfter: this._contextWindow,
+      providerCostAfter: this._providerCost,
+    });
+    this.emit({ kind: "metering_recorded", record });
+    if (!wasBlocked && this.metering.blocked) {
+      this.emit({ kind: "metering_blocked", reason: this.metering.blockedReason ?? "unknown" });
+    }
+    return record;
   }
 
   // --- activity ----------------------------------------------------------------
@@ -850,12 +990,16 @@ export class AgentSession implements AgentClient, Bridgeable {
       const dropped = this.queue.splice(0);
       for (const item of dropped) {
         if (item.kind === "prompt") {
+          // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
+          // metering record is minted (§16).
           item.resolve({
             text: "",
             messages: Object.freeze([]),
             stopReason: "cancelled",
             status: "cancelled",
             usage: null,
+            operationId: item.turnId,
+            metering: null,
           });
         } else {
           item.reject(new Error("handoff cancelled before it started"));

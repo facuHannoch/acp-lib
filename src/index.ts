@@ -38,6 +38,7 @@ export type {
   AgentSessionEvent,
   AgentSessionNotification,
   AgentSessionListener,
+  AgentSessionPromptResult,
   HandoffOptions,
   HandoffResult,
   ProviderSession,
@@ -132,6 +133,28 @@ export {
 } from "./metering/money.ts";
 export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
 export { normalizeTokenUsage } from "./metering/usage.ts";
+export {
+  ACP_PROVENANCE,
+  AgentSessionOperationError,
+  MeteringPreflightError,
+  UNAVAILABLE_PROVENANCE,
+} from "./metering/record.ts";
+export type {
+  AgentSessionMeteringSnapshot,
+  MeteredOperationKind,
+  MeteringConfig,
+  MeteringEnforcement,
+  MeteringPricingStatus,
+  MeteringProvenance,
+  MeteringReconciliation,
+  MeteringUsageResult,
+  OperationMeteringRecord,
+  OperationOutcome,
+  ProviderIdentitySnapshot,
+} from "./metering/record.ts";
+export { MeteringEngine } from "./metering/engine.ts";
+export type { MeteringEngineOptions, OpenOperation } from "./metering/engine.ts";
+export { activeModel, providerIdForAdapter } from "./metering/provider.ts";
 export { baselineMatches, calculateDelta } from "./metering/delta.ts";
 export type { DeltaResult } from "./metering/delta.ts";
 export { rateDelta, selectSchedule, unpricedUsage } from "./metering/rating.ts";

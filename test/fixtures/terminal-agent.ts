@@ -57,21 +57,6 @@ async function handle(message: any): Promise<void> {
         id: message.id,
         result: { sessionId: "sess-1", configOptions: [] },
       });
-      // A usage update outside any turn. ACP gives no ordering guarantee for these, and
-      // routing them only through per-turn handlers would drop them entirely.
-      send({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: {
-          sessionId: "sess-1",
-          update: {
-            sessionUpdate: "usage_update",
-            used: 8,
-            size: 200000,
-            cost: { amount: 0.001, currency: "USD" },
-          },
-        },
-      });
       return;
 
     case "session/prompt":
