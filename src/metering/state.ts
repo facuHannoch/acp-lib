@@ -146,6 +146,19 @@ export function emptyMeteringState(agentSessionId: string): AgentSessionMetering
   });
 }
 
+/**
+ * One piece of observed work that no operation can claim.
+ *
+ * Carries its cost and the reason it went unattributed: a consumer reconciling against a
+ * provider invoice needs the amount, and anyone debugging a gap needs to know whether it
+ * was a replaced thread, background activity, or a lost report.
+ */
+export interface UnallocatedUsageAccrual {
+  readonly usage: TokenUsage;
+  readonly ratedCost: Money | null;
+  readonly reason: string;
+}
+
 export interface OperationAccrual {
   /** Attributable usage, or null when the operation could not be measured. */
   readonly attributable: AttributableUsage | null;
@@ -153,7 +166,7 @@ export interface OperationAccrual {
   readonly applicability: Readonly<Record<TokenCategory, CategoryApplicability>> | null;
   readonly baseline: MeteringBaseline | null;
   /** Usage observed but belonging to no operation — never merged into totals. */
-  readonly unallocated?: readonly TokenUsage[];
+  readonly unallocated?: readonly UnallocatedUsageAccrual[];
 }
 
 /**
@@ -230,11 +243,16 @@ export function accrueOperation(
  */
 function accrueUnallocated(
   previous: UnallocatedUsageState,
-  additions: readonly TokenUsage[],
+  additions: readonly UnallocatedUsageAccrual[],
 ): UnallocatedUsageState {
   if (additions.length === 0) return previous;
   const known: Partial<TokenUsage> = { ...previous.knownTokens };
-  for (const usage of additions) {
+  let ratedCosts = previous.ratedCosts;
+  for (const { usage, ratedCost } of additions) {
+    if (ratedCost) {
+      const accumulated = accumulateByCurrency(ratedCosts, ratedCost);
+      if (accumulated.ok) ratedCosts = accumulated.value;
+    }
     for (const key of [
       "totalTokens",
       "inputTokens",
@@ -251,7 +269,7 @@ function accrueUnallocated(
   return Object.freeze({
     recordCount: previous.recordCount + additions.length,
     knownTokens: Object.freeze(known),
-    ratedCosts: previous.ratedCosts,
+    ratedCosts,
   });
 }
 

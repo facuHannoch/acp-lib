@@ -12,6 +12,7 @@ import {
   certificationFor,
 } from "../src/metering/certification.ts";
 import type { PricingPolicy, PricingResolver } from "../src/metering/pricing.ts";
+import { addMoney, rateTokens } from "../src/metering/money.ts";
 
 function usageAdapter() {
   return { command: ["bun", resolve(import.meta.dir, "fixtures/usage-agent.ts")] };
@@ -880,6 +881,12 @@ describe("second-round review fixes", () => {
       if (usage.status !== "metered") return;
       const attributable = usage.attributable;
 
+      // A fully rated multi-model operation is PRICED. Using the aggregate pricingSource
+      // as the signal marked it pricing_unavailable and blocked strict mode on correctly
+      // priced work.
+      expect(result.metering!.pricingStatus).toBe("priced");
+      expect(result.metering!.nextState.ratedCosts).toEqual([attributable.ratedTotal!]);
+
       expect(attributable.lineItems).toHaveLength(2);
       expect(attributable.lineItems!.map((item) => item.modelId).sort()).toEqual([
         "cheap-model",
@@ -888,11 +895,24 @@ describe("second-round review fixes", () => {
       // No single rate applies, so none is engraved at the top level.
       expect(attributable.input.pricing).toBeNull();
       expect(attributable.pricingKey).toBeNull();
-      // Each line item is individually recomputable, and they sum to the total.
+      // Each line item must be RECOMPUTABLE, not merely carry a price: recompute every
+      // subtotal from its own tokens and rate, and check the items sum to the total.
+      let summed = { amount: "0", currency: "USD" };
       for (const item of attributable.lineItems!) {
-        expect(item.input.pricing?.unitPrice).toBeDefined();
+        for (const category of ["input", "output", "cachedRead", "cachedWrite", "thought"] as const) {
+          const amount = item[category];
+          if (!amount?.pricing) continue;
+          const recomputed = rateTokens(amount.pricedTokens!, amount.pricing.unitPrice);
+          expect(recomputed.ok).toBe(true);
+          if (!recomputed.ok) return;
+          expect(recomputed.value.amount).toBe(amount.pricing.ratedCost.amount);
+        }
+        const total = addMoney(summed, item.ratedTotal!);
+        expect(total.ok).toBe(true);
+        if (!total.ok) return;
+        summed = total.value;
       }
-      expect(attributable.ratedTotal).not.toBeNull();
+      expect(summed.amount).toBe(attributable.ratedTotal!.amount);
     } finally {
       await session.stop();
     }
@@ -917,6 +937,114 @@ describe("a persistence failure must not double-count", () => {
       expect(events.filter((event) => event.kind === "metering_recorded")).toHaveLength(1);
     } finally {
       await session.stop().catch(() => {});
+    }
+  });
+});
+
+describe("billing_required blocks on attribution gaps", () => {
+  const inference = (over: Record<string, unknown> = {}) =>
+    ({
+      sequence: null,
+      messageID: `m${Math.random()}`,
+      sessionID: "s",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+      summary: false,
+      completedAt: Date.now(),
+      cost: 0,
+      tokens: { totalTokens: 100, inputTokens: 60, outputTokens: 40 },
+      ...over,
+    }) as never;
+
+  test("a lost report preserves the operation but blocks the next", async () => {
+    // Detecting that billable work went unmeasured and then carrying on is the failure
+    // this mode exists to prevent.
+    let lost = 0;
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        enforcement: "billing_required",
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => {
+            lost = 1;
+            return [inference()] as never;
+          },
+          lostReportCount: () => lost,
+        },
+      },
+    });
+    try {
+      const first = (await session.prompt("one")) as AgentSessionPromptResult;
+      // The completed response and its record survive — the provider was already paid.
+      expect(first.metering!.provenance.attribution).toBe("partial");
+      expect(first.metering!.usage.status).toBe("metered");
+      // But nothing further is dispatched.
+      await expect(session.prompt("two")).rejects.toThrow(/blocked/);
+      expect(session.meteringSnapshot.blockedReason).toContain("lost inference reports");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("unallocated work blocks too, and says how much", async () => {
+    let swept = false;
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        enforcement: "billing_required",
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => [inference()] as never,
+          drainForeign: () => {
+            if (swept) return [] as never;
+            swept = true;
+            return [inference({ sessionID: "other", cost: 0.5 })] as never;
+          },
+        },
+      },
+    });
+    try {
+      await session.prompt("one");
+      expect(session.meteringSnapshot.blockedReason).toContain("another provider thread");
+      // Preserved, not discarded: it is real spend, with the provider's own cost.
+      const unallocated = session.meteringSnapshot.unallocatedUsage;
+      expect(unallocated.recordCount).toBe(1);
+      expect(unallocated.ratedCosts).toEqual([{ amount: "0.5", currency: "USD" }]);
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("telemetry_required is NOT held to certified attribution", async () => {
+    // It is strict handling of ACP telemetry and never claimed to account for hidden
+    // inferences; blocking it on that would be a promise it did not make.
+    let lost = 0;
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        enforcement: "telemetry_required",
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => {
+            lost = 1;
+            return [inference()] as never;
+          },
+          lostReportCount: () => lost,
+        },
+      },
+    });
+    try {
+      await session.prompt("one");
+      expect(session.meteringSnapshot.blocked).toBe(false);
+    } finally {
+      await session.stop();
     }
   });
 });

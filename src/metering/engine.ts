@@ -72,7 +72,7 @@ import {
   type BillingFacts,
   type PricedTokenAmount,
 } from "./rating.ts";
-import { addMoney, ratioOf, subtractMoney, type Money } from "./money.ts";
+import { addMoney, decimalFromNumber, ratioOf, subtractMoney, type Money } from "./money.ts";
 import {
   accrueOperation,
   emptyMeteringState,
@@ -80,6 +80,7 @@ import {
   type AgentSessionMeteringState,
   type MeteringBaseline,
   type StateRestoration,
+  type UnallocatedUsageAccrual,
 } from "./state.ts";
 
 export interface MeteringEngineOptions {
@@ -333,22 +334,32 @@ export class MeteringEngine {
     const strict = this.options.enforcement !== "best_effort";
     const source = this.options.inferenceSource;
     const certified = source ? await this.measureCertified(source, open, input) : null;
-    const { usage, attributable, applicability, nextBaseline, ratingFailureReason } =
+    const { usage, attributable, applicability, nextBaseline, ratingFailureReason, ratingComplete } =
       certified ?? this.measure(open, input);
 
     let pricingStatus: MeteringPricingStatus;
     // A post-operation rating failure is more specific than a preflight one, so it wins.
     let pricingFailureReason = ratingFailureReason ?? open.pricingFailureReason ?? undefined;
 
+    // `pricingSource` describes PROVENANCE and is legitimately null on a multi-model
+    // operation, where each model's source is engraved in its line item instead. Using it
+    // as the "was this priced" signal marked fully-rated multi-model operations
+    // pricing_unavailable and blocked strict mode on correctly priced work.
     if (usage.status !== "metered") {
       pricingStatus = "not_attributable";
     } else if (this.options.pricing === false) {
       pricingStatus = "not_configured";
-    } else if (attributable?.pricingSource) {
+    } else if (ratingComplete) {
       pricingStatus = "priced";
     } else {
       pricingStatus = "pricing_unavailable";
     }
+
+    // Swept before provenance so the attribution claim and the blocking decision are made
+    // from the same facts, not from two separate reads of a moving source.
+    const foreign = source?.drainForeign?.(open.internalSessionId) ?? [];
+    const lostDuringOperation =
+      (source?.lostReportCount?.() ?? 0) > open.lostReportsAtOpen;
 
     const provenance: MeteringProvenance =
       usage.status !== "metered"
@@ -365,21 +376,18 @@ export class MeteringEngine {
               // complete attribution would be exactly the overstatement this design
               // refuses everywhere else.
               attribution:
-                (source!.lostReportCount?.() ?? 0) > open.lostReportsAtOpen
+                lostDuringOperation || foreign.length > 0
                   ? ("partial" as const)
                   : ("complete" as const),
               certificationId: source!.certificationId,
             })
           : acpProvenance(this.interpretation);
 
-    // Sweep work from other provider threads into unallocated usage. It is real spend the
-    // harness incurred; stranding it in a pending map would understate the session.
-    const foreign = source?.drainForeign?.(open.internalSessionId) ?? [];
     this.state = accrueOperation(this.state, {
       attributable,
       applicability,
       baseline: nextBaseline,
-      ...(foreign.length > 0 ? { unallocated: foreign.map((i) => i.tokens) } : {}),
+      ...(foreign.length > 0 ? { unallocated: foreign.map(toUnallocated) } : {}),
     });
     this.baseline = nextBaseline;
     if (nextBaseline) this.trustedZeroBaseline = false;
@@ -418,6 +426,24 @@ export class MeteringEngine {
       } else if (pricingStatus !== "priced") {
         this.block(
           `operation ${open.operationId}: ${pricingFailureReason ?? "rated cost unavailable"}`,
+        );
+      }
+    }
+
+    // Attribution gaps block billing_required only. telemetry_required is strict handling
+    // of ACP telemetry and never claimed to account for every hidden inference, so holding
+    // it to that standard would be a promise it was explicitly not making.
+    if (this.options.enforcement === "billing_required" && !this._blocked) {
+      if (lostDuringOperation) {
+        this.block(
+          `operation ${open.operationId}: certified source lost inference reports, so some ` +
+            `billable work was never measured`,
+        );
+      } else if (foreign.length > 0) {
+        this.block(
+          `operation ${open.operationId}: observed ${foreign.length} inference(s) from ` +
+            `another provider thread; usage was preserved as unallocated but cannot be ` +
+            `attributed`,
         );
       }
     }
@@ -476,6 +502,7 @@ export class MeteringEngine {
       attributable: rated.usage,
       applicability: open.policy?.categoryApplicability ?? UNKNOWN_APPLICABILITY,
       nextBaseline: this.baseline,
+      ratingComplete: rated.complete,
       ...(rated.reason ? { ratingFailureReason: rated.reason } : {}),
     };
   }
@@ -489,6 +516,8 @@ export class MeteringEngine {
     applicability: Readonly<Record<TokenCategory, CategoryApplicability>> | null;
     nextBaseline: MeteringBaseline | null;
     ratingFailureReason?: string;
+    /** Whether every reported category was actually rated. */
+    ratingComplete?: boolean;
   } {
     const applicability = open.policy?.categoryApplicability ?? null;
     const keepBaseline = this.baseline;
@@ -553,6 +582,7 @@ export class MeteringEngine {
       attributable: attributable.usage,
       applicability: applicability ?? UNKNOWN_APPLICABILITY,
       nextBaseline,
+      ratingComplete: attributable.complete,
       // Why rating fell back to unpriced. Without this the record says
       // "pricing_unavailable" with no way to find out why.
       ...(attributable.reason ? { ratingFailureReason: attributable.reason } : {}),
@@ -575,7 +605,7 @@ export class MeteringEngine {
     open: OpenOperation,
     inferences: readonly ProviderInference[],
     facts: BillingFacts,
-  ): Promise<{ usage: AttributableUsage; reason?: string }> {
+  ): Promise<{ usage: AttributableUsage; complete: boolean; reason?: string }> {
     const groups = new Map<string, ProviderInference[]>();
     for (const inference of inferences) {
       const key = `${inference.providerID}\u0000${inference.modelID}`;
@@ -624,7 +654,10 @@ export class MeteringEngine {
     }
 
     const combined = combineAttributable(parts);
-    return reason ? { usage: combined, reason } : { usage: combined };
+    // Complete only when EVERY model group rated. One unpriceable model makes the
+    // operation's total an understatement, whatever the others managed.
+    const complete = parts.every((part) => part.usage.ratedTotal !== null);
+    return reason ? { usage: combined, complete, reason } : { usage: combined, complete };
   }
 
   /** Resolve a policy for a model the operation did not anticipate. */
@@ -652,15 +685,17 @@ export class MeteringEngine {
     open: OpenOperation,
     delta: TokenUsage,
     facts: BillingFacts,
-  ): { usage: AttributableUsage; reason?: string } {
-    if (!open.policy) return { usage: unpricedUsage(delta) };
+  ): { usage: AttributableUsage; complete: boolean; reason?: string } {
+    if (!open.policy) return { usage: unpricedUsage(delta), complete: false };
 
     const selected = selectSchedule(open.policy, facts);
-    if (!selected.ok) return { usage: unpricedUsage(delta), reason: selected.reason };
+    if (!selected.ok) {
+      return { usage: unpricedUsage(delta), complete: false, reason: selected.reason };
+    }
 
     const rated = rateDelta(delta, open.policy, selected.schedule);
-    if (!rated.ok) return { usage: unpricedUsage(delta), reason: rated.reason };
-    return { usage: rated.usage };
+    if (!rated.ok) return { usage: unpricedUsage(delta), complete: false, reason: rated.reason };
+    return { usage: rated.usage, complete: true };
   }
 
   /**
@@ -855,4 +890,23 @@ function combineAttributable(
     ratedTotal,
     lineItems: Object.freeze(lineItems),
   });
+}
+
+/**
+ * Describe an inference no operation can claim.
+ *
+ * Uses the harness's own cost rather than rating it here: pricing would need a policy for
+ * a model no operation selected, and the provider has already priced the work. A cost that
+ * cannot be represented becomes null — never zero, which would understate a reconciliation
+ * against an invoice.
+ */
+function toUnallocated(inference: ProviderInference): UnallocatedUsageAccrual {
+  const decimal = inference.cost === null ? null : decimalFromNumber(inference.cost);
+  return {
+    usage: inference.tokens,
+    // OpenCode reports cost in USD; the currency travels with the figure so a consumer
+    // never has to infer it.
+    ratedCost: decimal?.ok ? { amount: decimal.value, currency: "USD" } : null,
+    reason: `inference from provider thread ${inference.sessionID}`,
+  };
 }

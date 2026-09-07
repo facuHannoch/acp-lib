@@ -216,6 +216,7 @@ export type {
   MeteringBaseline,
   OperationAccrual,
   StateRestoration,
+  UnallocatedUsageAccrual,
   UnallocatedUsageState,
   UsageCategoryTotal,
   UsageTotals,

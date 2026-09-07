@@ -143,6 +143,12 @@ export class OpencodeMeteringChannel {
    *
    * Non-zero means measurement is incomplete, and any operation covering that span must
    * not claim complete attribution.
+   *
+   * LIMITATION: gaps are only visible once a LATER report arrives. A lost final report —
+   * including the last of a session — is undetectable this way, so an operation can claim
+   * complete attribution despite having lost its final inference. Sequence numbers detect
+   * observed discontinuities; they do not prove delivery. Closing that gap needs a
+   * plugin-to-parent finalization fence, which this version does not have.
    */
   get lostReportCount(): number {
     return this._lostReports;
