@@ -3866,3 +3866,48 @@ Two things worth flagging:
 **The two runs rated differently** — `0.00341144` vs `0.00347164`. That's not a pricing discrepancy; it's two different turns with different token counts. Same prices, same `dataUpdated`.
 
 `bun run pricing:list` now shows the capture time in its header and a per-model `data updated` column. 394 tests passing.
+
+
+
+
+
+
+
+# prod ready ? 
+
+**No — and I have to correct what I told you earlier.**
+
+When I said the exact reconciliation was "encouraging evidence against" the hidden-inference worry, I was over-reading three turns that happened to have no tool calls. Running the test I'd offered changes the answer:
+
+| tool calls | our rated cost | provider actual | captured |
+| ---------- | -------------- | --------------- | -------- |
+| 0          | 0.00346359     | 0.00346359      | **100%** |
+| 1          | 0.00262617     | 0.00532939      | 49%      |
+| 3          | 0.00269497     | 0.00924448      | **29%**  |
+
+ACP's `PromptResponse.usage` reports **one inference**. The provider bills roughly **tool calls + 1** — each tool result is another round trip re-sending the whole context. For a coding agent that's not an edge case, it's every turn.
+
+**The silence was the real defect.** The record said `pricingStatus: "priced"`, `unallocated: 0`, `coverage: "complete"`. Nothing hinted at a 2.7× gap. Provenance did carry `attribution: "partial"` — technically honest, practically useless, because nobody reads a qualitative enum and infers a factor of three.
+
+## What I changed
+
+Every record now carries `costReconciliation`, comparing the rated total against the rise in the harness's own cumulative cost for that operation:
+
+```
+"Reply with exactly: ok"              status=checked  matches=true   ratio=1
+"Read a.txt and b.txt, use tools"     status=checked  matches=false  ratio=2.032221
+```
+
+That doesn't *fix* the gap — those tokens stay invisible to ACP — but it turns an undetectable billing error into a detectable, quantified one. That's the difference between unusable and usable-with-a-guard.
+
+## The answer, concretely
+
+**Don't bill from `attributable.ratedTotal`.** On any tool-using harness it under-bills by 2–3×.
+
+**Do bill from `costReconciliation.providerDelta`** where the harness reports cost — that's the provider's own number and it captures every hidden inference. Use the rated total as the cross-check: a ratio far from 1 means hidden inferences, a stale price, or a convention drift, and now you can alert on it.
+
+**Where the harness reports no cost, ACP-derived metering cannot support billing at all** — only observability. Of the harnesses here, only OpenCode reported cost.
+
+This also vindicates the spec's own architecture. §13 keeps provider-reported cost strictly separate from locally rated cost and refuses to merge them; that separation is exactly what made the discrepancy visible instead of averaged away. And the earlier critique's insistence that `routing`/`attribution` be evidence rather than configuration was right for precisely this reason — I just didn't have the measurement to see how large the gap was.
+
+413 tests passing. If you want to go further on the vendor case, the next step isn't more ACP work — it's the certified OpenCode plugin, which sees each inference directly and is the only thing that closes the gap rather than measuring it.
