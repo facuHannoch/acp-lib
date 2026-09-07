@@ -184,7 +184,26 @@ An unhealthy channel or zero observed inferences reports `usage_unavailable` and
 `routing` remains `"observed"` even here: the plugin reports what the harness ran, but a
 library cannot prove no model call bypassed it.
 
-## 10. Metering state starts at version 2
+## 10. How an unrepresentable cost is reported
+
+Nothing in the metering path turns an unknown cost into zero. Each place says so
+differently, and the difference matters when reconciling against an invoice:
+
+| where | what a consumer sees |
+|---|---|
+| a category could not be rated | `pricingStatus: "pricing_unavailable"` plus `pricingFailureReason` naming the category |
+| one category of a priced operation | `PricedTokenAmount.pricing: null` with `reportedTokens` still present |
+| a multi-model operation | top-level `pricing: null`; each rate lives in its own `lineItems` entry |
+| the harness reported a malformed cost | the inference record is rejected outright; nothing partial is stored |
+| the harness reported no cost | `ProviderInference.cost: null` — tokens are still recorded |
+| unallocated work | `uncostedRecordCount` > 0 marks `ratedCosts` as a **lower bound** |
+| provider cost vs our rating | `costReconciliation.status: "unavailable"` with a reason |
+
+The unallocated case is the one to watch: `ratedCosts` is only a complete figure when
+`uncostedRecordCount` is zero. A silently skipped cost would otherwise be
+indistinguishable from work that genuinely cost nothing.
+
+## 11. Metering state starts at version 2
 
 There is no version 1 on disk — pricing provenance and unallocated usage are part of the
 initial persisted shape. Restoration validates `version` before reading any

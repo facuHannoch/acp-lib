@@ -49,9 +49,20 @@ export interface UsageTotals {
 export interface UnallocatedUsageState {
   /** Number of observed inference records not assigned to an operation. */
   readonly recordCount: number;
+  /** Records whose cost is included in `ratedCosts`. */
+  readonly costedRecordCount: number;
+  /**
+   * Records whose cost could not be included — absent, unrepresentable, or in a currency
+   * that could not be combined.
+   *
+   * Non-zero means `ratedCosts` is a LOWER BOUND. Without this a silently skipped cost is
+   * indistinguishable from one that was genuinely zero, which is the "partial total looks
+   * complete" failure the per-category coverage counters exist to prevent.
+   */
+  readonly uncostedRecordCount: number;
   /** Known unallocated tokens. Absent categories remain absent, never zero-filled. */
   readonly knownTokens: Partial<TokenUsage>;
-  /** Rated unallocated amounts, accumulated separately by currency. */
+  /** Rated unallocated amounts by currency. A lower bound when uncostedRecordCount > 0. */
   readonly ratedCosts: readonly Money[];
 }
 
@@ -139,6 +150,8 @@ export function emptyMeteringState(agentSessionId: string): AgentSessionMetering
     ratedCosts: Object.freeze([]),
     unallocatedUsage: Object.freeze({
       recordCount: 0,
+      costedRecordCount: 0,
+      uncostedRecordCount: 0,
       knownTokens: Object.freeze({}),
       ratedCosts: Object.freeze([]),
     }),
@@ -248,10 +261,21 @@ function accrueUnallocated(
   if (additions.length === 0) return previous;
   const known: Partial<TokenUsage> = { ...previous.knownTokens };
   let ratedCosts = previous.ratedCosts;
+  let costed = 0;
+  let uncosted = 0;
   for (const { usage, ratedCost } of additions) {
-    if (ratedCost) {
+    // A cost that cannot be accumulated is COUNTED, not dropped. Skipping it silently
+    // would make ratedCosts read as complete while understating the total.
+    if (!ratedCost) {
+      uncosted += 1;
+    } else {
       const accumulated = accumulateByCurrency(ratedCosts, ratedCost);
-      if (accumulated.ok) ratedCosts = accumulated.value;
+      if (accumulated.ok) {
+        ratedCosts = accumulated.value;
+        costed += 1;
+      } else {
+        uncosted += 1;
+      }
     }
     for (const key of [
       "totalTokens",
@@ -268,6 +292,8 @@ function accrueUnallocated(
   }
   return Object.freeze({
     recordCount: previous.recordCount + additions.length,
+    costedRecordCount: previous.costedRecordCount + costed,
+    uncostedRecordCount: previous.uncostedRecordCount + uncosted,
     knownTokens: Object.freeze(known),
     ratedCosts,
   });
@@ -358,6 +384,18 @@ function isStructurallyValid(state: AgentSessionMeteringState): boolean {
     if (!isCategoryTotal(totals[key])) return false;
   }
   if (!Array.isArray(state.ratedCosts) || !state.ratedCosts.every(isValidMoney)) return false;
+
+  const unallocated = state.unallocatedUsage as unknown as Record<string, unknown> | undefined;
+  if (
+    !unallocated ||
+    !isCount(unallocated.recordCount) ||
+    !isCount(unallocated.costedRecordCount) ||
+    !isCount(unallocated.uncostedRecordCount) ||
+    !Array.isArray(unallocated.ratedCosts) ||
+    !(unallocated.ratedCosts as unknown[]).every((cost) => isValidMoney(cost as Money))
+  ) {
+    return false;
+  }
 
   const baseline = state.activeBaseline;
   if (baseline !== null) {

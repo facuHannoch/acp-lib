@@ -248,3 +248,64 @@ describe("structural validation of restored state", () => {
     expect(result.status).toBe("restored");
   });
 });
+
+describe("unallocated cost that cannot be represented", () => {
+  const accrueUnallocated = (
+    state: AgentSessionMeteringState,
+    entries: readonly { usage: TokenUsage; ratedCost: { amount: string; currency: string } | null }[],
+  ) =>
+    accrueOperation(state, {
+      attributable: null,
+      applicability: null,
+      baseline: null,
+      unallocated: entries.map((entry) => ({ ...entry, reason: "test" })),
+    });
+
+  test("a record with no usable cost is counted, not silently skipped", () => {
+    // Otherwise `ratedCosts: []` with `recordCount: 1` is indistinguishable from a record
+    // that genuinely cost nothing — a partial total that looks complete.
+    const state = accrueUnallocated(emptyMeteringState("agent-1"), [
+      { usage: delta(), ratedCost: null },
+    ]);
+    const unallocated = state.unallocatedUsage;
+    expect(unallocated.recordCount).toBe(1);
+    expect(unallocated.costedRecordCount).toBe(0);
+    expect(unallocated.uncostedRecordCount).toBe(1);
+    expect(unallocated.ratedCosts).toEqual([]);
+  });
+
+  test("a cost that cannot be combined is counted as uncosted, not dropped", () => {
+    // Two currencies cannot be summed, so the second is not in ratedCosts — but the record
+    // must still say so, or the total reads as covering both.
+    let state = accrueUnallocated(emptyMeteringState("agent-1"), [
+      { usage: delta(), ratedCost: { amount: "0.5", currency: "USD" } },
+    ]);
+    state = accrueUnallocated(state, [
+      { usage: delta(), ratedCost: { amount: "bogus", currency: "USD" } },
+    ]);
+    const unallocated = state.unallocatedUsage;
+    expect(unallocated.recordCount).toBe(2);
+    expect(unallocated.costedRecordCount).toBe(1);
+    expect(unallocated.uncostedRecordCount).toBe(1);
+    // A lower bound, and the counters say by how many records.
+    expect(unallocated.ratedCosts).toEqual([{ amount: "0.5", currency: "USD" }]);
+  });
+
+  test("fully costed records leave nothing uncounted", () => {
+    const state = accrueUnallocated(emptyMeteringState("agent-1"), [
+      { usage: delta(), ratedCost: { amount: "0.25", currency: "USD" } },
+      { usage: delta(), ratedCost: { amount: "0.25", currency: "USD" } },
+    ]);
+    expect(state.unallocatedUsage.uncostedRecordCount).toBe(0);
+    expect(state.unallocatedUsage.ratedCosts).toEqual([{ amount: "0.5", currency: "USD" }]);
+  });
+
+  test("tokens are still recorded even when the cost is not", () => {
+    const state = accrueUnallocated(emptyMeteringState("agent-1"), [
+      { usage: delta(), ratedCost: null },
+    ]);
+    expect(state.unallocatedUsage.knownTokens.totalTokens).toBe(100);
+    // And it never leaks into the attributed totals.
+    expect(state.totals.total.knownTokens).toBe(0);
+  });
+});
