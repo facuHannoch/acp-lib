@@ -507,6 +507,40 @@ describe("provider cost reconciliation", () => {
     }
   });
 
+  test("float artifacts in provider cost do not read as a discrepancy", async () => {
+    // Provider cost arrives as a JSON number, so a cumulative subtraction yields values
+    // like 0.002577469999999998 against an exact 0.00257747 — observed live. Judging
+    // agreement on the ratio rather than string equality keeps that from flagging.
+    const { session } = await openSession({
+      metering: {
+        pricing: () => ({
+          ...TEST_POLICY,
+          schedules: [
+            {
+              ...TEST_POLICY.schedules[0]!,
+              // Rates chosen so the fixture's 60/40/10 delta rates to exactly 0.001,
+              // matching the fixture's reported provider cost.
+              input: { amount: "10", currency: "USD", perTokens: 1_000_000 },
+              output: { amount: "10", currency: "USD", perTokens: 1_000_000 },
+              cachedRead: { amount: "0", currency: "USD", perTokens: 1_000_000 },
+            },
+          ],
+        }),
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      const reconciliation = result.metering!.costReconciliation;
+      expect(reconciliation.status).toBe("checked");
+      if (reconciliation.status !== "checked") return;
+      expect(reconciliation.ratedTotal.amount).toBe("0.001");
+      expect(reconciliation.ratio).toBe("1");
+      expect(reconciliation.matches).toBe(true);
+    } finally {
+      await session.stop();
+    }
+  });
+
   test("a second operation reconciles against the RISE, not the cumulative figure", async () => {
     // Provider cost is cumulative; only the delta belongs to this operation.
     const { session } = await openSession({ metering: { pricing: fixedPricing } });

@@ -561,12 +561,18 @@ export class MeteringEngine {
     if (delta.currency !== rated.currency) {
       return { status: "unavailable", reason: "provider and rated currencies differ" };
     }
+    // Agreement is judged on the ratio, not on string equality. Provider cost arrives as
+    // a JSON float, so subtracting two cumulative values yields artifacts like
+    // 0.002577469999999998 against an exact 0.00257747 — the same number, and an exact
+    // comparison would report a discrepancy on every operation. The ratio rounds at scale
+    // 6, which is far tighter than any real undercount (the measured ones were 2x-3.4x).
+    const ratio = ratioOf(delta, rated);
     return {
       status: "checked",
       providerDelta: delta,
       ratedTotal: rated,
-      ratio: ratioOf(delta, rated),
-      matches: delta.amount === rated.amount,
+      ratio,
+      matches: ratio === "1",
     };
   }
 

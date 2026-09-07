@@ -377,6 +377,52 @@ failure the path exists to prevent. In `billing_required` that blocks the sessio
 - `billing_required` needs BOTH a registry entry and a live source presenting the matching
   `certificationId`. A registry entry alone would make the gate decorative.
 
+## Finding 11 — a realistic workflow reconciles against OpenCode's own database
+
+Every earlier check compared our figure against `usage_update.cost`, which is still
+OpenCode reporting over the same channel. This one uses an independent source.
+
+Five turns of ordinary work in a scratch project — list files, read a CSV, write a summary,
+run `wc -l`, ask a follow-up — with `billing_required` and the certified channel:
+
+```
+ # tools    tokens          rated       provider   ratio  source
+ 1      1     17475     0.00567841     0.00567841       1  certified
+ 2      1     17775     0.00441259     0.00441259       1  certified
+ 3      1     18059     0.00456039     0.00456039       1  certified
+ 4      1     18250     0.00474794     0.00474794       1  certified
+ 5      0      9214     0.00257747     0.00257747       1  certified
+
+our session total    0.0219768
+unattributed         0 inference(s)
+blocked              false
+```
+
+Then `opencode export <sessionID>`, read from OpenCode's own database rather than the ACP
+stream:
+
+| | OpenCode's export | ours |
+|---|---|---|
+| cost | 0.02197680 | 0.0219768 |
+| tokens | 80773 | 80773 |
+| inferences | 9 | — |
+
+Exact on both, from a source the library never touches. **9 inferences across 5 operations
+with 4 tool calls = 5 + 4**, which is the arithmetic Finding 9 predicted from the ratios.
+
+Nothing was unattributed: no background inference, title generation, or compaction escaped
+the operation windows during this session. That is evidence for the drain-based
+attribution, though a session long enough to trigger auto-compaction has still not been
+run.
+
+### Fix this surfaced: agreement must be judged on the ratio
+
+Turn 5's provider delta came through as `0.002577469999999998` against an exact
+`0.00257747`. Provider cost arrives as a JSON float, so subtracting two cumulative values
+leaves artifacts, and `matches` compared strings — it would have reported a discrepancy on
+almost every operation. Agreement is now the ratio rounding to `1` at scale 6, which is
+far tighter than any real undercount (the measured ones were 2x-3.4x).
+
 ## Still unanswered — needs the prompting pass on other harnesses
 
 The question the whole ACP-derived backend rests on is **cumulative versus per-turn**, and

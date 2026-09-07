@@ -3998,3 +3998,50 @@ Does *every* OpenCode model call produce an assistant message? Compaction does (
 
 That's a cheap experiment: run a turn, dump every assistant message across all sessions, and compare the summed cost against the workspace billing delta. Want me to run it, or move straight to writing the certified-integration spec?
 
+
+
+
+
+# 
+
+Integrated and tested live. **It works.**
+
+The same tool-calling turn that under-reported by 2.51× an hour ago:
+
+| turn                | provenance         | rated      | provider   | ratio |
+| ------------------- | ------------------ | ---------- | ---------- | ----- |
+| plain               | certified/complete | 0.00182167 | 0.00182167 | 1     |
+| **with tool calls** | certified/complete | 0.00472139 | 0.00472139 | **1** |
+
+Session `0.00654306` = provider `0.00654306`. Exact, on a billed route, with `enforcement: "billing_required"` actually engaged.
+
+## Usage
+
+```ts
+const metering = await createOpencodeMetering();
+const session = await AgentSession.create({
+  adapter: ADAPTERS.opencode, adapterId: "opencode",
+  env: metering.env,
+  metering: { enforcement: "billing_required", inferenceSource: metering.inferenceSource },
+});
+await metering.waitForPlugin();
+```
+
+## Decisions I'd flag for review
+
+**The managed profile merges your config, not replaces it.** `OPENCODE_CONFIG` is a *replacement* env var, so the obvious temp-file approach would silently drop the user's model choice and custom providers. Metering must not change which model answers. Nothing is written into the consumer's repo.
+
+**The channel is narrow by construction** — telemetry only. No proxying, no credentials, no prompt or response text, loopback with a per-session token. Anything on loopback could otherwise post fabricated usage into a billing ledger.
+
+**`routing` stays `"observed"`, never `"enforced"`.** The plugin reports what the harness ran; a library spawning a subprocess cannot prove no model call bypassed it. That ceiling is honest and I didn't raise it.
+
+**An unhealthy channel fails closed** — `usage_unavailable`, and in `billing_required` it blocks. Falling back to ACP would silently resume undercounting, which is precisely the failure this exists to prevent.
+
+**`billing_required` needs both** a registry entry *and* a live source with the matching `certificationId`. A registry entry alone would make the gate decorative — that's tested.
+
+## One fix it forced
+
+OpenCode reports `cache.write` on every inference, usually **0**, and most catalog entries have no cache-write price — so the "reported category with no price refuses to rate" rule blocked *every* operation. Zero tokens cost zero at any rate, so an explicit zero no longer needs a price. A non-zero unpriced category still refuses.
+
+435 tests, 18 commits. The honest remaining caveat is the one I raised before and still haven't tested: whether *every* OpenCode model call produces an assistant message. Compaction does (`summary: true`); title generation I haven't verified. If some call type is invisible to the `event` hook, the plugin has a smaller version of the same blind spot — which is exactly why `routing` says `observed`.
+
