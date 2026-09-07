@@ -100,7 +100,28 @@ no local rating sets `pricing: false` — which is distinct from rating that *fa
 
 Refresh the pinned catalog at release time with `bun run generate:pricing`.
 
-## 7. Metering state starts at version 2
+## 7. Pricing sources carry two different dates
+
+A record can now answer both "when did we capture these prices" and "how old is the price
+itself" — different questions that a single timestamp conflates.
+
+```ts
+pricingCapturedAt(record.usage.attributable.pricingSource)
+// pinned → generatedAt   live → fetchedAt   consumer override → null
+
+record.usage.attributable.pricingKey.modelLastUpdated
+// "2026-04-21" — when that model's entry last changed upstream
+```
+
+A catalog fetched a second ago can still carry a year-old rate, which is why the upstream
+entry date is engraved beside the lookup key rather than inferred from the source.
+
+`PricingSource` gains a third variant, `models.dev_live`, carrying `artifactSha256` and
+`fetchedAt`. Exhaustive switches over the union need a new case. Live prices deliberately
+do NOT use `kind: "models.dev"`: that shape promises an immutable upstream commit, and a
+runtime fetch has verified none.
+
+## 8. Metering state starts at version 2
 
 There is no version 1 on disk — pricing provenance and unallocated usage are part of the
 initial persisted shape. Restoration validates `version` before reading any

@@ -37,7 +37,18 @@ export interface AttributableUsage {
   readonly reportedDelta: TokenUsage;
   readonly pricingSource: PricingSource | null;
   readonly pricingKey:
-    | { readonly providerId: string; readonly modelId: string; readonly tier: string }
+    | {
+        readonly providerId: string;
+        readonly modelId: string;
+        readonly tier: string;
+        /**
+         * ISO date this model's catalog entry was last changed upstream, when known.
+         *
+         * Answers "how old is this price", which the source timestamp cannot: a catalog
+         * fetched a minute ago can still carry a year-old rate.
+         */
+        readonly modelLastUpdated?: string;
+      }
     | null;
   readonly cacheInputConvention: PricingSchedule["cacheInputConvention"] | null;
   readonly totalTokens: number;
@@ -228,6 +239,7 @@ export function rateDelta(
         providerId: policy.providerId,
         modelId: policy.modelId,
         tier: schedule.tier,
+        ...(policy.modelLastUpdated ? { modelLastUpdated: policy.modelLastUpdated } : {}),
       }),
       cacheInputConvention: convention,
       totalTokens: delta.totalTokens,

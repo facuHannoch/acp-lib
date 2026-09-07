@@ -32,13 +32,45 @@ export type PricingSource =
       readonly commit: string;
       /** SHA-256 of the exact generated catalog artifact shipped by the library. */
       readonly artifactSha256: string;
+      /** When the shipped artifact was generated (epoch ms). */
       readonly generatedAt: number;
+    }
+  | {
+      /**
+       * Prices fetched at runtime rather than shipped.
+       *
+       * Distinct from `models.dev` because that shape promises an immutable upstream
+       * commit, and a live fetch has verified none — the digest and the fetch time are
+       * what this run can honestly assert about the prices it used.
+       */
+      readonly kind: "models.dev_live";
+      /** SHA-256 of the catalog built from the fetched payload. */
+      readonly artifactSha256: string;
+      /** When the payload was fetched (epoch ms). */
+      readonly fetchedAt: number;
     }
   | {
       readonly kind: "consumer_override";
       /** Stable identifier meaningful to the consumer, not a mutable display label. */
       readonly version: string;
     };
+
+/**
+ * When the prices behind a source were captured, in epoch ms.
+ *
+ * A consumer asking "how old is this number" should not have to know which variant it is
+ * holding. Returns null for a consumer override, whose freshness only the consumer knows.
+ */
+export function pricingCapturedAt(source: PricingSource): number | null {
+  switch (source.kind) {
+    case "models.dev":
+      return source.generatedAt;
+    case "models.dev_live":
+      return source.fetchedAt;
+    case "consumer_override":
+      return null;
+  }
+}
 
 export interface CacheInputConvention {
   readonly cachedRead: "included_in_input" | "excluded_from_input";
@@ -96,6 +128,15 @@ export interface PricingPolicy {
   readonly modelId: string;
   /** Applicability is independent from whether a price happens to be present. */
   readonly categoryApplicability: Readonly<Record<TokenCategory, CategoryApplicability>>;
+  /**
+   * When this model's catalog entry was last changed upstream (ISO date, e.g.
+   * "2026-03-13"), when the source records it.
+   *
+   * Distinct from the source timestamp: that says when WE captured the catalog, this says
+   * how current the data itself is. A freshly fetched catalog can still carry a
+   * year-old price.
+   */
+  readonly modelLastUpdated?: string;
   readonly schedules: readonly PricingSchedule[];
 }
 

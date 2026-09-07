@@ -56,6 +56,7 @@ interface CachedCatalog {
 
 interface CatalogModel {
   readonly categoryApplicability: Readonly<Record<string, string>>;
+  readonly lastUpdated?: string;
   readonly schedules: readonly PricingSchedule[];
 }
 
@@ -95,12 +96,13 @@ export function createLiveModelsDevResolver(options: LiveCatalogOptions = {}): P
 
         cached = {
           providers: catalog.providers as CachedCatalog["providers"],
+          // Not `kind: "models.dev"`: that shape promises an upstream commit, and a
+          // live fetch has verified none. The digest and the fetch time are what this run
+          // can honestly assert about the prices it used.
           source: Object.freeze({
-            kind: "consumer_override",
-            // Not `kind: "models.dev"`: that shape promises an upstream commit, and a
-            // live fetch has not verified one. The digest is what this run can honestly
-            // assert about the prices it used.
-            version: `models.dev-live@${artifactSha256.slice(0, 16)}`,
+            kind: "models.dev_live",
+            artifactSha256,
+            fetchedAt: Date.now(),
           }),
           fetchedAt: Date.now(),
         };
@@ -133,6 +135,7 @@ export function createLiveModelsDevResolver(options: LiveCatalogOptions = {}): P
       categoryApplicability: entry.categoryApplicability as Readonly<
         Record<TokenCategory, CategoryApplicability>
       >,
+      ...(entry.lastUpdated ? { modelLastUpdated: entry.lastUpdated } : {}),
       schedules: entry.schedules,
     };
     return validatePricingPolicy(policy).ok ? policy : null;

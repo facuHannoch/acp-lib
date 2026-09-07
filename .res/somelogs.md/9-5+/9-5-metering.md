@@ -3799,3 +3799,70 @@ Also: §19 doesn't guarantee exactly-once across a process crash.
 For your own price book and markup, `PricingResolver` with a `consumer_override` source is exactly the intended hook.
 
 The cheapest next step toward the vendor case is a **multi-inference turn** — give OpenCode a task that forces tool calls, then check whether our rated cost still equals the provider's cost delta. If it does, the hidden-inference worry largely evaporates for this route. Want me to run that?
+
+
+
+
+# catalog
+
+Both now exist. 389 tests passing.
+
+## Yes — build time, by design
+
+`bun run generate:pricing` fetches `models.dev/api.json` at release, converts every JSON float to a canonical decimal string, resolves the mutable branch to a **fixed commit SHA**, and writes the artifact plus its SHA-256. That's what makes a two-year-old record recomputable.
+
+I pulled up the site to check the claim, and it reinforces the choice: models.dev publishes **no versioning scheme and no update-frequency guarantee**, and the `/api.json` endpoint I depend on isn't even documented on the page. Pinning isn't paranoia — it's the only way to know which prices a record used.
+
+## And now live, as an opt-in
+
+```ts
+import { createLiveModelsDevResolver } from "@qlairoslabs/acp-client";
+
+metering: { pricing: createLiveModelsDevResolver() }   // never automatic
+```
+
+Measured just now: **206 ms** first fetch, **0 ms** cached, and the schedules come back byte-identical to the pinned ones.
+
+The design point worth flagging: live trades reproducibility for currency, so the record has to say *which* prices it used. Every live policy engraves the SHA-256 of the catalog it was built from — `models.dev-live@04306ae792902a13` — and that digest matches the pinned artifact's, which is how I know both paths agree. It deliberately does **not** claim `kind: "models.dev"`, because that shape promises an upstream commit and a live fetch has verified none.
+
+Operationally: concurrent prompts share one in-flight request rather than each pulling ~250 KiB; a fetch failure defaults to *unpriced* so best-effort metering keeps recording real tokens, or can `throw` so a strict mode rejects at preflight before any provider work is dispatched.
+
+## The refactor that made it safe
+
+The conventions and transform lived only in the build script, so a live path would have meant reimplementing them — a second set of conventions to drift. That is precisely the bug class that crashed the resolver an hour ago, when validation and rating each had their own copy of the price lookup.
+
+They now live in `src/metering/catalog/build.ts`, shared by both. Proof it's equivalent: I regenerated the artifact after the move and got the **identical digest** `04306ae79290…`, and a test asserts a live policy equals the pinned one for an unchanged model.
+
+## Which to use
+
+Pinned for billing and anything auditable — a record's cost stays recomputable from the record alone. Live if you're driving a dashboard where a stale price is worse than an unreproducible one, or if you want new models priced without a release. You can also mix: a consumer resolver that tries live and delegates to `createModelsDevResolver()` on failure, since the default resolver is exported for exactly that.
+
+
+
+Done, and it turned out to be **two** dates, not one — they answer different questions.
+
+Verified on a live billed `opencode-go/kimi-k2.6` turn through both resolvers:
+
+```
+pinned  source=models.dev
+        captured=2026-09-07T12:35:01.527Z
+        dataUpdated=2026-04-21   rated=0.00341144
+
+live    source=models.dev_live
+        captured=2026-09-07T12:36:24.601Z
+        dataUpdated=2026-04-21   rated=0.00347164
+```
+
+**`pricingCapturedAt(source)`** — when *we* snapshotted the catalog. `generatedAt` for the pinned artifact, `fetchedAt` for a live fetch, `null` for a consumer override whose freshness only the consumer knows. One call, no need to know which variant you're holding.
+
+**`pricingKey.modelLastUpdated`** — when that model's entry last changed *upstream*. models.dev carries `last_updated` on all 199 catalogued models, so this is now engraved beside the lookup key on every record.
+
+The reason both are needed: a catalog fetched one second ago can still carry a year-old rate. The live run above proves it — captured *now*, data unchanged since April.
+
+Two things worth flagging:
+
+**`PricingSource` gains a third variant, `models.dev_live`** (`artifactSha256` + `fetchedAt`). That's a change to a type §7 specifies as a two-variant union, so exhaustive switches need a new case — it's in the changelog. The live resolver previously stuffed the digest into a `consumer_override` version string, which made the timestamp unreadable without parsing. It still deliberately avoids `kind: "models.dev"`, because that shape promises an immutable upstream commit and a runtime fetch has verified none.
+
+**The two runs rated differently** — `0.00341144` vs `0.00347164`. That's not a pricing discrepancy; it's two different turns with different token counts. Same prices, same `dataUpdated`.
+
+`bun run pricing:list` now shows the capture time in its header and a per-model `data updated` column. 394 tests passing.

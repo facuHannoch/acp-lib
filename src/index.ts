@@ -205,6 +205,8 @@ export type {
 export {
   TOKEN_CATEGORIES,
   pricedCategories,
+  pricingCapturedAt,
+  unitPriceFor,
   validatePricingPolicy,
 } from "./metering/pricing.ts";
 export type {

@@ -16,6 +16,7 @@ import {
   createModelsDevResolver,
   verifyCatalogIntegrity,
 } from "../src/metering/catalog/index.ts";
+import { pricingCapturedAt } from "../src/metering/pricing.ts";
 import type { PricingPolicy } from "../src/metering/pricing.ts";
 
 const args = process.argv.slice(2);
@@ -56,6 +57,7 @@ interface Row {
   cachedWrite: string;
   thought: string;
   tiers: string;
+  updated: string;
 }
 
 function rowsFor(providerId: string): Row[] {
@@ -80,6 +82,8 @@ function rowsFor(providerId: string): Row[] {
           ? `= output`
           : "—",
       tiers: extra.length > 0 ? extra.join(", ") : "—",
+      // When the DATA changed upstream, which the catalog timestamp does not tell you.
+      updated: policy.modelLastUpdated ?? "—",
     });
   }
   return rows;
@@ -93,11 +97,15 @@ if (asJson) {
 } else {
   const lines: string[] = [""];
   const source = MODELS_DEV_SOURCE;
+  const capturedAt = pricingCapturedAt(source);
   lines.push(
     source.kind === "models.dev"
-      ? `catalog  models.dev@${source.commit.slice(0, 12)}  sha256:${source.artifactSha256.slice(0, 12)}`
-      : `catalog  ${source.kind}`,
-    "prices are USD per 1,000,000 tokens",
+      ? `catalog   models.dev@${source.commit.slice(0, 12)}  sha256:${source.artifactSha256.slice(0, 12)}`
+      : `catalog   ${source.kind}`,
+    // Two different questions: when we snapshotted the catalog, and when each model's
+    // entry last changed upstream. A fresh snapshot can carry year-old prices.
+    `captured  ${capturedAt ? new Date(capturedAt).toISOString() : "unknown"}`,
+    "prices are USD per 1,000,000 tokens; 'data updated' is the upstream entry date",
     "",
   );
 
@@ -121,6 +129,7 @@ if (asJson) {
       ["cache wr", "cachedWrite"],
       ["thought", "thought"],
       ["extra tiers", "tiers"],
+      ["data updated", "updated"],
     ];
     const widths = columns.map(([header, key]) =>
       Math.max(header.length, ...rows.map((row) => String(row[key]).length)),

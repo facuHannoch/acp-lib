@@ -25,6 +25,7 @@ import { validatePricingPolicy } from "../pricing.ts";
 
 interface CatalogModel {
   readonly categoryApplicability: Readonly<Record<string, string>>;
+  readonly lastUpdated?: string;
   readonly schedules: readonly PricingSchedule[];
 }
 
@@ -107,6 +108,7 @@ export function createModelsDevResolver(): PricingResolver {
       categoryApplicability: entry.categoryApplicability as Readonly<
         Record<TokenCategory, CategoryApplicability>
       >,
+      ...(entry.lastUpdated ? { modelLastUpdated: entry.lastUpdated } : {}),
       schedules: entry.schedules,
     };
 

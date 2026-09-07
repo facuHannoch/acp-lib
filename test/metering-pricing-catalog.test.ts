@@ -7,6 +7,7 @@ import {
 } from "../src/metering/catalog/index.ts";
 import {
   TOKEN_CATEGORIES,
+  pricingCapturedAt,
   validatePricingPolicy,
   type PricingContext,
   type PricingPolicy,
@@ -216,5 +217,25 @@ describe("policy validation", () => {
       schedules: [rest as PricingSchedule],
     });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("pricing data freshness", () => {
+  test("the pinned source records when the artifact was generated", () => {
+    expect(MODELS_DEV_SOURCE.kind).toBe("models.dev");
+    if (MODELS_DEV_SOURCE.kind !== "models.dev") return;
+    expect(pricingCapturedAt(MODELS_DEV_SOURCE)).toBe(MODELS_DEV_SOURCE.generatedAt);
+    expect(MODELS_DEV_SOURCE.generatedAt).toBeGreaterThan(Date.parse("2024-01-01"));
+  });
+
+  test("a policy carries how current its model entry is upstream", () => {
+    // Distinct from the source timestamp: the artifact was built today, but this model's
+    // prices may not have changed in a year.
+    const policy = policyFor();
+    expect(policy.modelLastUpdated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  test("a consumer override has no captured-at date the library can vouch for", () => {
+    expect(pricingCapturedAt({ kind: "consumer_override", version: "mine-1" })).toBeNull();
   });
 });

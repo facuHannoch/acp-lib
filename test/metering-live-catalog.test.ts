@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createLiveModelsDevResolver } from "../src/metering/catalog/live.ts";
 import { createModelsDevResolver } from "../src/metering/catalog/index.ts";
+import { pricingCapturedAt } from "../src/metering/pricing.ts";
 import type { PricingContext, PricingPolicy } from "../src/metering/pricing.ts";
 
 /** A models.dev-shaped payload, trimmed to the providers the library has conventions for. */
@@ -10,6 +11,7 @@ const PAYLOAD = {
     models: {
       "kimi-k2.6": {
         id: "kimi-k2.6",
+        last_updated: "2026-05-21",
         cost: { input: 0.95, output: 4, cache_read: 0.16 },
       },
       "no-price": { id: "no-price" },
@@ -76,9 +78,29 @@ describe("live models.dev resolver", () => {
     const policy = (await createLiveModelsDevResolver({ url: `${base}/api.json` })(
       context(),
     )) as PricingPolicy;
-    expect(policy.source.kind).toBe("consumer_override");
-    if (policy.source.kind !== "consumer_override") return;
-    expect(policy.source.version).toMatch(/^models\.dev-live@[0-9a-f]{16}$/);
+    expect(policy.source.kind).toBe("models.dev_live");
+    if (policy.source.kind !== "models.dev_live") return;
+    expect(policy.source.artifactSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("records when the prices were fetched", async () => {
+    const before = Date.now();
+    const policy = (await createLiveModelsDevResolver({ url: `${base}/api.json`, ttlMs: 0 })(
+      context(),
+    )) as PricingPolicy;
+    expect(policy.source.kind).toBe("models.dev_live");
+    if (policy.source.kind !== "models.dev_live") return;
+    expect(policy.source.fetchedAt).toBeGreaterThanOrEqual(before);
+    expect(pricingCapturedAt(policy.source)).toBe(policy.source.fetchedAt);
+  });
+
+  test("surfaces how current the DATA is, not just when it was fetched", async () => {
+    // A catalog fetched a second ago can still carry a year-old price, so the two dates
+    // answer different questions.
+    const policy = (await createLiveModelsDevResolver({ url: `${base}/api.json` })(
+      context(),
+    )) as PricingPolicy;
+    expect(policy.modelLastUpdated).toBe("2026-05-21");
   });
 
   test("does not claim an upstream commit it never verified", async () => {

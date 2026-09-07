@@ -120,6 +120,8 @@ export interface RawCost {
 export interface RawModel {
   id?: string;
   name?: string;
+  /** ISO date the upstream entry was last changed, e.g. "2026-03-13". */
+  last_updated?: string;
   cost?: RawCost;
 }
 
@@ -258,6 +260,10 @@ export function buildCatalog(raw: Record<string, RawProvider>): {
       }
       models[modelId] = {
         categoryApplicability: buildApplicability(cost, convention),
+        // How current the DATA is, as opposed to when we captured it.
+        ...(typeof model.last_updated === "string" && model.last_updated
+          ? { lastUpdated: model.last_updated }
+          : {}),
         schedules: usable,
       };
       modelCount += 1;
