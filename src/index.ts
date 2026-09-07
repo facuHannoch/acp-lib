@@ -220,6 +220,8 @@ export type {
   PricingSource,
   TokenCategory,
 } from "./metering/pricing.ts";
+export { createLiveModelsDevResolver } from "./metering/catalog/live.ts";
+export type { LiveCatalogOptions } from "./metering/catalog/live.ts";
 export {
   MODELS_DEV_SOURCE,
   catalogProviderIds,

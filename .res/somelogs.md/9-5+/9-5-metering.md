@@ -3749,3 +3749,53 @@ So the auth you added is a Zen gateway key, and Zen is prepaid. Two ways forward
 **Or add a direct provider key** — `opencode auth login` → Anthropic or OpenAI with your own API key, which bypasses Zen. That's arguably the better test: the model string becomes `anthropic/claude-sonnet-4-5`, so the split resolves to provider `anthropic` and exercises a *different* catalog entry with its own prices, rather than Zen's resale rates. It also cross-checks whether OpenCode's disjoint-counter normalization still holds when it talks to a provider directly instead of through the gateway — which is the one assumption behind the single `opencode` catalog entry I'd most like to see confirmed.
 
 Either way I'm ready to re-run immediately; tell me which and I'll go.
+
+
+
+# state
+
+Yes to the price list — `bun run pricing:list` now exists. Taking your three questions in reverse order, because the last two set up the first.
+
+## The model/price list
+
+195 models across 4 providers, read from the pinned artifact (not the network), so it shows exactly what a record engraved today would be rated against:
+
+```
+catalog  models.dev@c12e91757aa9  sha256:04306ae79290
+
+  anthropic        14 models
+  opencode        102 models
+  opencode-go      35 models
+  openai           44 models
+```
+
+`bun run pricing:list opencode-go` gives per-model rates; `--json` for machine use. `= output` in the thought column means reasoning is priced at the output rate rather than being unpriceable — that distinction is now visible rather than a blank.
+
+## How models.dev relates to providers
+
+models.dev is a catalog of **~213 providers → models → costs**. It is not OpenCode's list; it's an independent community catalog that happens to include OpenCode's gateways as providers in their own right, with Zen/Go's *resale* prices (which differ from the upstream provider's — `opencode/claude-sonnet-4-5` is Zen's rate for Claude, not Anthropic's).
+
+So there are two different "provider lists":
+
+- **What OpenCode can route to** — `opencode models` (96 here: 69 `opencode/`, 27 `opencode-go/`). Add your own Anthropic key and `anthropic/*` models appear too.
+- **What the library can price** — the 4 providers above. That's deliberately much smaller: a provider only ships when its counter convention is backed by evidence, because guessing it double-counts cache or reasoning.
+
+The gap is the honest part. OpenCode can route to 75+ providers; we can price 4.
+
+## Is it reliable enough to bill your own customers?
+
+**For internal cost accounting and observability: yes.** For billing end customers unattended: **not yet**, and I'd be misleading you if I said otherwise. Three specific reasons.
+
+**1. `billing_required` does not exist.** The engine rejects it at construction. The strongest mode available is `telemetry_required`, and the spec itself says that is explicitly *not* a billing guarantee. That mode was designed to need a certified integration precisely because ACP alone can't carry the claim.
+
+**2. Hidden inferences.** ACP-derived metering sees one record per *ACP operation*, not per model call. If OpenCode does a compaction pass, a retry, or a title-generation call, the provider bills it and we don't see it — you'd under-bill. My exact reconciliation is genuinely encouraging evidence *against* this, but it was three trivial single-inference turns. **A turn with tool calls or compaction is untested**, and that's the case that matters.
+
+**3. Unpriceable holes that fail closed.** A turn above 200k on a tiered model resolves to `pricing_unavailable` (no trusted context size), and `cachedWrite` has never been observed in any live turn. Failing closed is right for correctness, but for a vendor it means turns you cannot bill.
+
+Also: §19 doesn't guarantee exactly-once across a process crash.
+
+**What I would actually do if you're reselling inference:** use `providerCostAfter` deltas as the billing source — that's the provider's own number, which you now have — and use our rated cost as the *cross-check*. The fact that they matched to the last digit across three turns makes the library an excellent anomaly detector: a divergence means a hidden inference, a stale price, or a convention drift. That's a strong position, and it doesn't require trusting our arithmetic to be the invoice.
+
+For your own price book and markup, `PricingResolver` with a `consumer_override` source is exactly the intended hook.
+
+The cheapest next step toward the vendor case is a **multi-inference turn** — give OpenCode a task that forces tool calls, then check whether our rated cost still equals the provider's cost delta. If it does, the hidden-inference worry largely evaporates for this route. Want me to run that?
