@@ -18,6 +18,7 @@ import {
   type MeteringUsageResult,
   type OperationMeteringRecord,
   type OperationOutcome,
+  type CostReconciliation,
   acpProvenance,
   UNAVAILABLE_PROVENANCE,
 } from "./record.ts";
@@ -32,6 +33,7 @@ import type {
 import { validatePricingPolicy } from "./pricing.ts";
 import { counterInterpretationForAdapter, type CounterInterpretation } from "./provider.ts";
 import { rateDelta, selectSchedule, unpricedUsage, type AttributableUsage, type BillingFacts } from "./rating.ts";
+import { ratioOf, subtractMoney, type Money } from "./money.ts";
 import {
   accrueOperation,
   emptyMeteringState,
@@ -97,6 +99,8 @@ export class MeteringEngine {
   private trustedZeroBaseline: boolean;
   private baseline: MeteringBaseline | null;
   private readonly interpretation: CounterInterpretation;
+  /** Provider cumulative cost as of the previous close, for per-operation deltas. */
+  private lastProviderCost: Money | null = null;
 
   constructor(private readonly options: MeteringEngineOptions) {
     const restoration = restoreMeteringState(options.initialState, options.agentSessionId);
@@ -319,8 +323,10 @@ export class MeteringEngine {
       ...(pricingFailureReason ? { pricingFailureReason } : {}),
       contextAfter: input.contextAfter,
       providerCostAfter: input.providerCostAfter,
+      costReconciliation: this.reconcileCost(attributable, input.providerCostAfter),
       nextState: this.state,
     });
+    this.lastProviderCost = input.providerCostAfter?.cumulative ?? this.lastProviderCost;
 
     this._lastOperation = record;
 
@@ -431,6 +437,46 @@ export class MeteringEngine {
     const rated = rateDelta(delta, open.policy, selected.schedule);
     if (!rated.ok) return { usage: unpricedUsage(delta), reason: rated.reason };
     return { usage: rated.usage };
+  }
+
+  /**
+   * Compare our rated cost with the provider's own for this operation.
+   *
+   * The provider's cumulative cost is the only visibility the ACP-derived backend has into
+   * inferences it never saw — retries, compaction, and above all tool-call round trips. A
+   * divergence here is not a rounding question; it means real spend went unaccounted.
+   */
+  private reconcileCost(
+    attributable: AttributableUsage | null,
+    providerCostAfter: ProviderCostSnapshot | null,
+  ): CostReconciliation {
+    const rated = attributable?.ratedTotal;
+    if (!rated) return { status: "unavailable", reason: "operation was not rated" };
+    if (!providerCostAfter) {
+      return { status: "unavailable", reason: "harness reported no provider cost" };
+    }
+    const previous = this.lastProviderCost;
+    const current = providerCostAfter.cumulative;
+    if (previous && previous.currency !== current.currency) {
+      return { status: "unavailable", reason: "provider cost changed currency" };
+    }
+
+    // Provider cost is cumulative, so this operation's share is the rise since the last
+    // close. Operations are serialized, which is what makes that difference attributable.
+    const delta = previous ? subtractMoney(current, previous) : current;
+    if (!delta) {
+      return { status: "unavailable", reason: "provider cost decreased" };
+    }
+    if (delta.currency !== rated.currency) {
+      return { status: "unavailable", reason: "provider and rated currencies differ" };
+    }
+    return {
+      status: "checked",
+      providerDelta: delta,
+      ratedTotal: rated,
+      ratio: ratioOf(delta, rated),
+      matches: delta.amount === rated.amount,
+    };
   }
 
   private block(reason: string): void {

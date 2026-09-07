@@ -276,6 +276,57 @@ falls (2475 → 443). §13 already treats provider cost as cumulative and §4 tr
 counters as an open question — this route is per-turn for tokens and cumulative for cost
 at the same time.
 
+## Finding 9 — tool calls break the reconciliation, by 2-3x
+
+**The most important finding in this document, and it reverses Finding 8's optimism.**
+
+Finding 8 reconciled exactly on three turns. Those turns had no tool calls. Repeating the
+measurement on a turn that uses tools, in a scratch directory, on the same route:
+
+| turn | tool calls | our rated cost | provider actual | captured |
+|---|---|---|---|---|
+| 1 | 3 | 0.00269497 | 0.00924448 | 29% |
+| 2 | 1 | 0.00262617 | 0.00532939 | 49% |
+
+Session: ours `0.00532114` against an actual `0.01457387` — **under-reporting by 2.7x**.
+
+The ratios are the explanation. 0 tool calls → 1.00x, 1 tool call → 2.03x, 3 tool calls
+→ 3.43x. ACP's `PromptResponse.usage` reports **one inference**; the provider bills
+roughly **tool calls + 1**, because each tool result is another round trip that re-sends
+the whole context. §1's "an ACP prompt may hide retries, compaction, or multiple model
+calls" is not an edge case — for a coding agent it is the normal case.
+
+### The dangerous part was the silence
+
+The record said `pricingStatus: "priced"`, `unallocatedUsage.recordCount: 0`, and
+`coverage: "complete"`. Nothing indicated a 3x gap. Provenance did carry
+`attribution: "partial"`, which was technically honest and practically useless — no
+consumer reads a qualitative enum and infers a factor of three.
+
+### Mitigation: reconcile against the provider's own cost
+
+Every record now carries `costReconciliation`, comparing the rated total against the rise
+in the harness-reported cumulative cost across that operation. Provider cost is the only
+visibility the ACP-derived backend has into inferences it never saw.
+
+Measured after the change, same route:
+
+```
+"Reply with exactly: ok"                    status=checked matches=true  ratio=1
+"Read a.txt and b.txt ... use your tools"   status=checked matches=false ratio=2.032221
+```
+
+A silent 3x under-count is now a loud, quantified one. It does not FIX the gap — the
+tokens are still invisible — but it converts an undetectable billing error into a
+detectable one, which is the difference between unusable and usable-with-a-guard.
+
+### What this means for billing
+
+Do not bill from `attributable.ratedTotal` on any harness that uses tools. Bill from
+`costReconciliation.providerDelta` where the harness reports cost, and treat the rated
+total as the cross-check. Where the harness reports no cost, ACP-derived metering cannot
+support billing at all — only observability.
+
 ## Still unanswered — needs the prompting pass on other harnesses
 
 The question the whole ACP-derived backend rests on is **cumulative versus per-turn**, and

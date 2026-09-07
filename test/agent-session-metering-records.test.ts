@@ -488,3 +488,50 @@ describe("rating failure reporting", () => {
     }
   });
 });
+
+describe("provider cost reconciliation", () => {
+  test("checks the rated cost against the provider's own figure", async () => {
+    // The one signal the ACP-derived backend has for inferences it never saw: a turn with
+    // tool calls bills for several, while PromptResponse.usage reports one.
+    const { session } = await openSession({ metering: { pricing: fixedPricing } });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      const reconciliation = result.metering!.costReconciliation;
+      expect(reconciliation.status).toBe("checked");
+      if (reconciliation.status !== "checked") return;
+      // Fixture: provider cost 0.001, rated 0.000783 from the priced delta.
+      expect(reconciliation.providerDelta).toEqual({ amount: "0.001", currency: "USD" });
+      expect(reconciliation.ratedTotal).toEqual({ amount: "0.000783", currency: "USD" });
+      expect(reconciliation.matches).toBe(false);
+      expect(reconciliation.ratio).toBe("1.277139");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("a second operation reconciles against the RISE, not the cumulative figure", async () => {
+    // Provider cost is cumulative; only the delta belongs to this operation.
+    const { session } = await openSession({ metering: { pricing: fixedPricing } });
+    try {
+      await session.prompt("one");
+      const second = (await session.prompt("two")) as AgentSessionPromptResult;
+      const reconciliation = second.metering!.costReconciliation;
+      expect(reconciliation.status).toBe("checked");
+      if (reconciliation.status !== "checked") return;
+      // The fixture never raises its cost again, so the second operation's share is zero.
+      expect(reconciliation.providerDelta).toEqual({ amount: "0", currency: "USD" });
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("an unrated operation has nothing to reconcile", async () => {
+    const { session } = await openSession({ metering: { pricing: false } });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.costReconciliation.status).toBe("unavailable");
+    } finally {
+      await session.stop();
+    }
+  });
+});

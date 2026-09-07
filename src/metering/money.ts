@@ -196,6 +196,44 @@ export function sumMoneyByCurrency(values: readonly Money[]): MoneyResult<readon
 }
 
 /**
+ * Subtract `b` from `a`, or null when the result would be negative or currencies differ.
+ *
+ * Null rather than a negative: a cumulative provider figure that went DOWN is not a
+ * refund, it is a counter that restarted, and treating it as arithmetic would hide that.
+ */
+export function subtractMoney(a: Money, b: Money): Money | null {
+  if (a.currency !== b.currency) return null;
+  const left = parseDecimal(a.amount);
+  const right = parseDecimal(b.amount);
+  if (!left || !right) return null;
+  const aligned = align(left, right);
+  if (aligned.a < aligned.b) return null;
+  return Object.freeze({
+    amount: formatDecimal({ units: aligned.a - aligned.b, scale: aligned.scale }),
+    currency: a.currency,
+  });
+}
+
+/**
+ * Ratio of two same-currency amounts, as a decimal string at scale 6.
+ *
+ * Used to express how far a rated cost is from the provider's own figure: "3.43" means
+ * the provider charged 3.43x what we accounted for. Returns null when the denominator is
+ * zero or the currencies differ — a ratio against nothing is not a number.
+ */
+export function ratioOf(numerator: Money, denominator: Money): string | null {
+  if (numerator.currency !== denominator.currency) return null;
+  const top = parseDecimal(numerator.amount);
+  const bottom = parseDecimal(denominator.amount);
+  if (!top || !bottom || bottom.units === 0n) return null;
+  const RATIO_SCALE = 6;
+  // (top.units / 10^top.scale) / (bottom.units / 10^bottom.scale), at RATIO_SCALE
+  const scaled = top.units * pow10(bottom.scale) * pow10(RATIO_SCALE);
+  const units = divideRoundHalfEven(scaled, bottom.units * pow10(top.scale));
+  return formatDecimal({ units, scale: RATIO_SCALE });
+}
+
+/**
  * Convert an ACP-reported JSON number cost into a canonical decimal string.
  *
  * `String(n)` is already the shortest round-trippable representation; this only expands

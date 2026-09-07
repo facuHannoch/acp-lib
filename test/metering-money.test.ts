@@ -6,6 +6,8 @@ import {
   decimalFromNumber,
   isValidMoney,
   rateTokens,
+  ratioOf,
+  subtractMoney,
   sumMoneyByCurrency,
   type Money,
   type TokenUnitPrice,
@@ -267,5 +269,37 @@ describe("provider-reported JSON number costs", () => {
     for (const input of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
       expect(decimalFromNumber(input).ok).toBe(false);
     }
+  });
+});
+
+describe("reconciliation arithmetic", () => {
+  test("subtracts same-currency amounts exactly", () => {
+    expect(subtractMoney({ amount: "0.00533386", currency: "USD" }, { amount: "0.00348629", currency: "USD" }))
+      .toEqual({ amount: "0.00184757", currency: "USD" });
+  });
+
+  test("a cumulative figure that went down is null, not a negative", () => {
+    // A provider counter that decreased restarted; treating it as arithmetic hides that.
+    expect(subtractMoney({ amount: "1", currency: "USD" }, { amount: "2", currency: "USD" })).toBeNull();
+  });
+
+  test("refuses to subtract across currencies", () => {
+    expect(subtractMoney({ amount: "2", currency: "USD" }, { amount: "1", currency: "EUR" })).toBeNull();
+  });
+
+  test("expresses how far a rated cost is from the provider's own figure", () => {
+    // The measured tool-call turns: 3 tool calls under-reported by 3.43x, 1 by 2.03x.
+    expect(ratioOf({ amount: "0.00924448", currency: "USD" }, { amount: "0.00269497", currency: "USD" }))
+      .toBe("3.430272");
+    expect(ratioOf({ amount: "0.00532939", currency: "USD" }, { amount: "0.00262617", currency: "USD" }))
+      .toBe("2.029339");
+    // A turn with no hidden inferences reconciles to exactly 1.
+    expect(ratioOf({ amount: "0.00348629", currency: "USD" }, { amount: "0.00348629", currency: "USD" }))
+      .toBe("1");
+  });
+
+  test("a ratio against nothing is not a number", () => {
+    expect(ratioOf({ amount: "1", currency: "USD" }, { amount: "0", currency: "USD" })).toBeNull();
+    expect(ratioOf({ amount: "1", currency: "USD" }, { amount: "1", currency: "EUR" })).toBeNull();
   });
 });

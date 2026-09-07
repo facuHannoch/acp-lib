@@ -11,6 +11,7 @@
 
 import type { TokenUsage } from "../types.ts";
 import type { ContextWindowStatus, ProviderCostSnapshot } from "./context.ts";
+import type { Money } from "./money.ts";
 import type { AttributableUsage } from "./rating.ts";
 import type { AgentSessionMeteringState, StateRestoration } from "./state.ts";
 import type { PricingConfiguration } from "./pricing.ts";
@@ -67,6 +68,34 @@ export interface MeteringProvenance {
   readonly certificationId?: string;
 }
 
+/**
+ * Our rated cost checked against the provider's own reported cost for the same operation.
+ *
+ * The ACP-derived backend sees one record per ACP operation, but a harness may run SEVERAL
+ * model inferences inside one — measured on OpenCode, a turn with N tool calls bills for
+ * roughly N+1 inferences while `PromptResponse.usage` reports one. Token math alone cannot
+ * detect that; the provider's own cumulative cost can.
+ *
+ * `ratio` is providerDelta / ratedTotal. 1 means we accounted for everything; 3.43 means
+ * the provider charged 3.43x what we saw. Consumers choose their own tolerance — a
+ * scale-12 rounding difference is not the same as a missing inference.
+ */
+export type CostReconciliation =
+  | {
+      readonly status: "checked";
+      /** Provider cumulative cost consumed by this operation. */
+      readonly providerDelta: Money;
+      readonly ratedTotal: Money;
+      /** providerDelta / ratedTotal at scale 6, or null when it cannot be formed. */
+      readonly ratio: string | null;
+      /** True only when the two agree exactly. */
+      readonly matches: boolean;
+    }
+  | {
+      readonly status: "unavailable";
+      readonly reason: string;
+    };
+
 export interface OperationMeteringRecord {
   readonly operationId: string;
   readonly operationKind: MeteredOperationKind;
@@ -86,6 +115,12 @@ export interface OperationMeteringRecord {
   readonly contextAfter: ContextWindowStatus | null;
   /** Latest cumulative provider observation; not asserted to be an invoice. */
   readonly providerCostAfter: ProviderCostSnapshot | null;
+  /**
+   * Our rated cost against the provider's own, when both are available.
+   *
+   * The only signal the ACP-derived backend has for inferences it could not see.
+   */
+  readonly costReconciliation: CostReconciliation;
 
   /** State the consumer can persist and pass to a reopened AgentSession. */
   readonly nextState: AgentSessionMeteringState;
