@@ -402,6 +402,9 @@ export class AgentSession implements AgentClient, Bridgeable {
       ...(config.metering?.counterInterpretation
         ? { counterInterpretation: config.metering.counterInterpretation }
         : {}),
+      ...(config.metering?.inferenceSource
+        ? { inferenceSource: config.metering.inferenceSource }
+        : {}),
       // A thread we are about to create has counters starting at zero; one we load does
       // not, and needs restored state to be attributable.
       createdActiveThread: providerSession.kind === "new",

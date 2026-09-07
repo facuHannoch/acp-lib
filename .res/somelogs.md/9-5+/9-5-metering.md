@@ -3961,3 +3961,40 @@ Two inferences. **ACP reported only the last one and silently dropped the first.
 The earlier design critique claimed `http.request`/`http.response` hooks with `event.kind` of `primary | compaction | title | generate`. Those exist only in **v2** docs. The installed `@opencode-ai/plugin` is **1.18.10** and has no such hooks — but it doesn't need them. The `event` hook is available today and is sufficient, which makes the certified path nearer than the critique assumed.
 
 I committed the probe and its measurement as `smoke-tests/test6-metering/opencode-plugin/`. It is explicitly not production code — it doesn't attribute inferences to an `AgentSession` operation, handle the channel dropping, pin a version, or fail closed. That's the substance of the certified integration, and it's now a well-specified piece of work rather than a hypothesis.
+
+
+
+
+
+
+
+
+Gate is in — `src/metering/certification.ts`, library-owned, empty, and the refusal now tells you why:
+
+```
+billing_required needs a certified metering integration for adapter "opencode" —
+no integrations are certified yet. ACP usage alone cannot satisfy it: a prompt
+reports one inference while a tool-using turn bills several.
+```
+
+## On "can we use this"
+
+The plugin *mechanism* works — I proved it. But nothing is billing-ready yet, including OpenCode, because the probe isn't an integration. What's missing is the part that makes it trustworthy rather than merely informative:
+
+- **Attribution** — mapping assistant messages to an `AgentSession` operation. Right now I have `sessionID` and `messageID` on one side and `operationId` on the other, with no join.
+- **A verified channel** — the plugin writes to a file in my probe. A real one needs an authenticated loopback channel and a startup handshake, so "plugin didn't load" is distinguishable from "no inferences happened."
+- **Fail-closed** — if the channel drops mid-session, records must go unavailable, not silently revert to ACP's undercount.
+- **Version pinning** — the plugin API is a moving target; 1.18.10 has no `http.*` hooks that v2 documents.
+
+## On "only OpenCode"
+
+Correct as far as the evidence goes, with one caveat worth stating precisely: OpenCode is the only harness I found with an in-process hook exposing per-inference usage. `claude-agent-acp` and `codex-acp` have no equivalent — for those, the ceiling is ACP's one-inference-per-prompt report, which we now know undercounts on any tool-using turn.
+
+But "only OpenCode *can* be certified" isn't quite "only OpenCode is prod-ready" — it's "OpenCode is the only one where the work is possible." That's still a real conclusion, and it makes the certified-integration spec the correct next thing rather than one option among several.
+
+## One thing I'd verify before certifying
+
+Does *every* OpenCode model call produce an assistant message? Compaction does (`summary: true`). Title generation might happen in a different session, and I haven't checked whether it surfaces at all. If some call type is invisible to the `event` hook, the plugin has the same class of blind spot as ACP — smaller, but the same kind — and `routing: "observed"` would be the honest ceiling rather than anything stronger.
+
+That's a cheap experiment: run a turn, dump every assistant message across all sessions, and compare the summed cost against the workspace billing delta. Want me to run it, or move straight to writing the certified-integration spec?
+

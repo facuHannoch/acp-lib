@@ -348,3 +348,30 @@ describe("thought convention", () => {
     expect(result.usage.thought?.pricing?.ratedCost.amount).toBe("0.5");
   });
 });
+
+describe("unpriced zero categories", () => {
+  test("an explicit zero needs no price and does not block the operation", () => {
+    // OpenCode reports cache.write on every inference, usually 0, and most catalog entries
+    // carry no cache-write price. Zero tokens cost zero at any rate.
+    const result = rateDelta(
+      delta({ inputTokens: 100, cachedWriteTokens: 0 }),
+      policy(),
+      schedule({ cachedWrite: undefined }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.usage.cachedWrite?.reportedTokens).toBe(0);
+    // Reported, but explicitly not priced — no rate was invented for it.
+    expect(result.usage.cachedWrite?.pricing).toBeNull();
+    expect(result.usage.cachedWrite?.pricedTokens).toBeNull();
+  });
+
+  test("a non-zero unpriced category still refuses to rate", () => {
+    const result = rateDelta(
+      delta({ cachedWriteTokens: 1 }),
+      policy(),
+      schedule({ cachedWrite: undefined }),
+    );
+    expect(result.ok).toBe(false);
+  });
+});

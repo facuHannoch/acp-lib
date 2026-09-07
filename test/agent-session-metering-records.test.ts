@@ -535,15 +535,17 @@ describe("provider cost reconciliation", () => {
 });
 
 describe("billing_required certification gate", () => {
-  test("is refused for every adapter, because none is certified yet", async () => {
-    for (const adapterId of ["opencode", "claude", "codex", "anything"]) {
+  test("an uncertified adapter is refused outright", async () => {
+    for (const adapterId of ["claude", "codex", "kimi", "anything"]) {
       await expect(
         openSession({ adapterId, metering: { enforcement: "billing_required" } }),
-      ).rejects.toThrow(/certified metering integration/);
+      ).rejects.toThrow(/needs a certified metering integration/);
     }
   });
 
-  test("the refusal names the adapter and says why ACP cannot satisfy it", async () => {
+  test("a certified adapter is still refused without a LIVE channel", async () => {
+    // A registry entry says the mechanism was measured, not that it is running. Being on
+    // the list must not be enough, or the gate is decorative.
     let caught: unknown;
     try {
       await openSession({ adapterId: "opencode", metering: { enforcement: "billing_required" } });
@@ -551,16 +553,164 @@ describe("billing_required certification gate", () => {
       caught = err;
     }
     const message = String(caught);
-    expect(message).toContain('"opencode"');
-    expect(message).toContain("no integrations are certified yet");
-    // The reason a consumer most needs: one inference reported, several billed.
-    expect(message).toContain("tool-using turn bills several");
+    expect(message).toContain("opencode-plugin@1");
+    expect(message).toContain("createOpencodeMetering");
+    expect(message).toContain("one inference per prompt");
   });
 
-  test("certification cannot be granted from consumer configuration", () => {
-    // A flag on the consumer-constructible Adapter object would let a caller assert the
-    // very thing this mode exists to verify (§9).
-    expect(certificationFor("opencode")).toBeNull();
-    expect(CERTIFIED_INTEGRATIONS).toEqual([]);
+  test("a live source with the matching certification opens the gate", async () => {
+    const session = await openSession({
+      adapterId: "opencode",
+      metering: {
+        enforcement: "billing_required",
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => [],
+        },
+      },
+    });
+    await session.session.stop();
+  });
+
+  test("a source claiming the wrong certification does not open it", async () => {
+    // The id is checked, not merely the presence of a source: otherwise any object with
+    // the right shape would qualify.
+    await expect(
+      openSession({
+        adapterId: "opencode",
+        metering: {
+          enforcement: "billing_required",
+          inferenceSource: {
+            certificationId: "something-else@9",
+            isHealthy: () => true,
+            drain: () => [],
+          },
+        },
+      }),
+    ).rejects.toThrow(/needs a live opencode-plugin@1/);
+  });
+
+  test("the registry names what it certifies and against which versions", () => {
+    expect(certificationFor("opencode")?.certificationId).toBe("opencode-plugin@1");
+    expect(certificationFor("claude")).toBeNull();
+    expect(CERTIFIED_INTEGRATIONS.map((entry) => entry.adapterId)).toEqual(["opencode"]);
+    // A version range, not a boolean: the plugin API differs across majors.
+    expect(certificationFor("opencode")?.supportedHarnessVersions).toEqual(["1.18"]);
+  });
+});
+
+describe("certified inference source", () => {
+  const inference = (over: Record<string, unknown> = {}) =>
+    ({
+      messageID: `m${Math.random()}`,
+      sessionID: "s",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+      summary: false,
+      completedAt: Date.now(),
+      cost: 0,
+      tokens: { totalTokens: 100, inputTokens: 60, outputTokens: 40 },
+      ...over,
+    }) as never;
+
+  function source(records: () => readonly unknown[], healthy = true) {
+    return {
+      certificationId: "opencode-plugin@1",
+      isHealthy: () => healthy,
+      drain: () => records() as never,
+    };
+  }
+
+  test("measures from summed inferences, not from ACP usage", async () => {
+    // The fixture's ACP report says 100 tokens for the turn; the source says two
+    // inferences totalling 200. The certified measurement must win — that difference is
+    // exactly what a tool-using turn looks like.
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: fixedPricing,
+        inferenceSource: source(() => [inference(), inference()]),
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.usage.status).toBe("metered");
+      if (result.metering!.usage.status !== "metered") return;
+      expect(result.metering!.usage.attributable.totalTokens).toBe(200);
+      expect(result.metering!.provenance).toEqual({
+        source: "certified",
+        measurement: "provider_normalized",
+        routing: "observed",
+        attribution: "complete",
+        certificationId: "opencode-plugin@1",
+      });
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("routing stays 'observed' — a library cannot prove nothing bypassed it", async () => {
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: { pricing: fixedPricing, inferenceSource: source(() => [inference()]) },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.provenance.routing).toBe("observed");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("an unhealthy channel reports unavailable rather than falling back", async () => {
+    // Falling back to ACP would silently resume undercounting — the exact failure the
+    // certified path exists to prevent.
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: { pricing: fixedPricing, inferenceSource: source(() => [], false) },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.usage.status).toBe("usage_unavailable");
+      if (result.metering!.usage.status === "metered") return;
+      expect(result.metering!.usage.reason).toContain("not healthy");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("zero observed inferences is a failure, not a free operation", async () => {
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: { pricing: fixedPricing, inferenceSource: source(() => []) },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.usage.status).toBe("usage_unavailable");
+      if (result.metering!.usage.status === "metered") return;
+      expect(result.metering!.usage.reason).toContain("no inferences");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("billing_required blocks after an unhealthy channel", async () => {
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        enforcement: "billing_required",
+        pricing: fixedPricing,
+        inferenceSource: source(() => [], false),
+      },
+    });
+    try {
+      await session.prompt("hello");
+      expect(session.meteringSnapshot.blocked).toBe(true);
+      await expect(session.prompt("again")).rejects.toThrow(/blocked/);
+    } finally {
+      await session.stop();
+    }
   });
 });

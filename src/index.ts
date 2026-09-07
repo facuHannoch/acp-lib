@@ -159,12 +159,26 @@ export type {
 } from "./metering/record.ts";
 export {
   CERTIFIED_INTEGRATIONS,
+  OPENCODE_PLUGIN_CERTIFICATION,
   billingRefusalReason,
   certificationFor,
 } from "./metering/certification.ts";
+export {
+  OpencodeMeteringChannel,
+  createOpencodeMetering,
+  meteringPluginPath,
+  writeManagedProfile,
+} from "./metering/opencode/index.ts";
+export type {
+  ChannelHandshake,
+  ManagedProfile,
+  OpencodeMetering,
+  OpencodeMeteringOptions,
+  ProviderInference,
+} from "./metering/opencode/index.ts";
 export type { CertificationRequirements } from "./metering/certification.ts";
-export { MeteringEngine } from "./metering/engine.ts";
-export type { MeteringEngineOptions, OpenOperation } from "./metering/engine.ts";
+export { MeteringEngine, sumInferenceTokens } from "./metering/engine.ts";
+export type { InferenceSource, MeteringEngineOptions, OpenOperation } from "./metering/engine.ts";
 export {
   activeModel,
   counterInterpretationForAdapter,

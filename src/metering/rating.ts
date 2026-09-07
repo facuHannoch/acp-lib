@@ -203,6 +203,18 @@ export function rateDelta(
     }
     const unitPrice = unitPriceFor(schedule, category);
     if (!unitPrice) {
+      // An explicit zero needs no price: zero tokens cost zero at any rate, so refusing
+      // here would block a whole operation over a category that contributed nothing.
+      // OpenCode reports cache.write on every inference, usually as 0, and most catalog
+      // entries carry no cache-write price.
+      if (reportedTokens === 0) {
+        amounts[category] = Object.freeze({
+          reportedTokens: 0,
+          pricedTokens: null,
+          pricing: null,
+        });
+        continue;
+      }
       return { ok: false, reason: `schedule ${schedule.tier} has no ${category} unit price` };
     }
     const pricedTokens = category === "input" ? adjustedInput : reportedTokens;

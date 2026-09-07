@@ -33,6 +33,22 @@ import type {
 import { validatePricingPolicy } from "./pricing.ts";
 import { counterInterpretationForAdapter, type CounterInterpretation } from "./provider.ts";
 import { billingRefusalReason, certificationFor } from "./certification.ts";
+import type { ProviderInference } from "./opencode/channel.ts";
+
+/**
+ * A source of per-inference records from inside the harness.
+ *
+ * The ACP-derived backend sees one inference per prompt; a certified source sees them all,
+ * which is the whole difference between observability and billing.
+ */
+export interface InferenceSource {
+  /** Certification this source claims, engraved into every record it produces. */
+  readonly certificationId: string;
+  /** False when the channel never handshook or has since failed. */
+  isHealthy(): boolean;
+  /** Records completed since the last drain. */
+  drain(): readonly ProviderInference[];
+}
 import { rateDelta, selectSchedule, unpricedUsage, type AttributableUsage, type BillingFacts } from "./rating.ts";
 import { ratioOf, subtractMoney, type Money } from "./money.ts";
 import {
@@ -58,6 +74,8 @@ export interface MeteringEngineOptions {
    * runtime, because §4 forbids switching interpretations mid-session.
    */
   readonly counterInterpretation?: CounterInterpretation;
+  /** When present and healthy, replaces ACP usage as the measurement. */
+  readonly inferenceSource?: InferenceSource;
 }
 
 /** A rating unit opened before dispatch and closed after the operation finishes. */
@@ -120,7 +138,11 @@ export class MeteringEngine {
         `metering initialState rejected: ${restoration.reason}`,
       );
     }
-    if (options.enforcement === "billing_required" && !certificationFor(options.adapterId)) {
+    const certification = certificationFor(options.adapterId);
+    if (
+      options.enforcement === "billing_required" &&
+      (!certification || options.inferenceSource?.certificationId !== certification.certificationId)
+    ) {
       // Refused at construction rather than at the first prompt: a consumer asking for
       // billing-grade metering should learn it is unavailable before any work is queued,
       // not after a turn has already been paid for.
@@ -276,8 +298,10 @@ export class MeteringEngine {
    */
   close(open: OpenOperation, input: CloseOperationInput): OperationMeteringRecord {
     const strict = this.options.enforcement !== "best_effort";
+    const source = this.options.inferenceSource;
+    const certified = source ? this.measureCertified(source, open, input) : null;
     const { usage, attributable, applicability, nextBaseline, ratingFailureReason } =
-      this.measure(open, input);
+      certified ?? this.measure(open, input);
 
     let pricingStatus: MeteringPricingStatus;
     // A post-operation rating failure is more specific than a preflight one, so it wins.
@@ -294,7 +318,19 @@ export class MeteringEngine {
     }
 
     const provenance: MeteringProvenance =
-      usage.status === "metered" ? acpProvenance(this.interpretation) : UNAVAILABLE_PROVENANCE;
+      usage.status !== "metered"
+        ? UNAVAILABLE_PROVENANCE
+        : certified
+          ? Object.freeze({
+              source: "certified" as const,
+              measurement: "provider_normalized" as const,
+              // Still "observed", never "enforced": the plugin reports what the harness
+              // ran, but a library cannot prove no model call bypassed it.
+              routing: "observed" as const,
+              attribution: "complete" as const,
+              certificationId: source!.certificationId,
+            })
+          : acpProvenance(this.interpretation);
 
     this.state = accrueOperation(this.state, {
       attributable,
@@ -343,6 +379,61 @@ export class MeteringEngine {
     }
 
     return record;
+  }
+
+  /**
+   * Measure an operation from per-inference records instead of ACP usage.
+   *
+   * Returns null when there is no certified measurement to make, so the caller falls back
+   * to the ACP path — except in a strict mode, where an unhealthy source is a failure
+   * rather than a silent downgrade to a backend known to undercount.
+   */
+  private measureCertified(
+    source: InferenceSource,
+    open: OpenOperation,
+    input: CloseOperationInput,
+  ): ReturnType<MeteringEngine["measure"]> | null {
+    if (!source.isHealthy()) {
+      return {
+        usage: {
+          status: "usage_unavailable",
+          reason: "certified metering channel is not healthy",
+        },
+        attributable: null,
+        applicability: open.policy?.categoryApplicability ?? null,
+        nextBaseline: this.baseline,
+      };
+    }
+
+    const inferences = source.drain();
+    if (inferences.length === 0) {
+      // A prompt that reached the provider ran at least one inference. None means the
+      // channel missed them, which is exactly the silent undercount this path exists to
+      // prevent — so it is reported unavailable rather than as a free operation.
+      return {
+        usage: {
+          status: "usage_unavailable",
+          reason: "certified channel reported no inferences for this operation",
+        },
+        attributable: null,
+        applicability: open.policy?.categoryApplicability ?? null,
+        nextBaseline: this.baseline,
+      };
+    }
+
+    const summed = sumInferenceTokens(inferences);
+    const rated = this.rate(open, summed, input.billingFacts ?? {});
+    return {
+      usage: {
+        status: "metered",
+        reportedCumulative: summed,
+        attributable: rated.usage,
+      },
+      attributable: rated.usage,
+      applicability: open.policy?.categoryApplicability ?? UNKNOWN_APPLICABILITY,
+      nextBaseline: this.baseline,
+      ...(rated.reason ? { ratingFailureReason: rated.reason } : {}),
+    };
   }
 
   private measure(
@@ -500,4 +591,40 @@ export class MeteringEngine {
     this._blockedReason = null;
     return { before };
   }
+}
+
+/**
+ * Sum the token counts of every inference in an operation.
+ *
+ * OpenCode's categories are disjoint — measured across five providers, input + output +
+ * reasoning + cache equals its reported total exactly — so summing them per category and
+ * recomputing the total is faithful rather than an approximation.
+ *
+ * A category absent from EVERY inference stays absent: a model that never reported cache
+ * has told us nothing, and zero-filling would claim it cached nothing.
+ */
+export function sumInferenceTokens(inferences: readonly ProviderInference[]): TokenUsage {
+  let input = 0;
+  let output = 0;
+  let cachedRead: number | null = null;
+  let cachedWrite: number | null = null;
+  let thought: number | null = null;
+
+  for (const inference of inferences) {
+    const tokens = inference.tokens;
+    input += tokens.inputTokens;
+    output += tokens.outputTokens;
+    if (tokens.cachedReadTokens !== undefined) cachedRead = (cachedRead ?? 0) + tokens.cachedReadTokens;
+    if (tokens.cachedWriteTokens !== undefined) cachedWrite = (cachedWrite ?? 0) + tokens.cachedWriteTokens;
+    if (tokens.thoughtTokens !== undefined) thought = (thought ?? 0) + tokens.thoughtTokens;
+  }
+
+  return Object.freeze({
+    totalTokens: input + output + (cachedRead ?? 0) + (cachedWrite ?? 0) + (thought ?? 0),
+    inputTokens: input,
+    outputTokens: output,
+    ...(cachedRead !== null ? { cachedReadTokens: cachedRead } : {}),
+    ...(cachedWrite !== null ? { cachedWriteTokens: cachedWrite } : {}),
+    ...(thought !== null ? { thoughtTokens: thought } : {}),
+  });
 }

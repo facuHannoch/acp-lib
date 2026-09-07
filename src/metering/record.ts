@@ -15,6 +15,7 @@ import type { Money } from "./money.ts";
 import type { AttributableUsage } from "./rating.ts";
 import type { AgentSessionMeteringState, StateRestoration } from "./state.ts";
 import type { PricingConfiguration } from "./pricing.ts";
+import type { InferenceSource } from "./engine.ts";
 
 export type MeteredOperationKind =
   | "prompt"
@@ -153,6 +154,13 @@ export interface MeteringConfig {
    * it at runtime (§4).
    */
   readonly counterInterpretation?: "cumulative" | "per_turn";
+  /**
+   * A certified per-inference source, replacing ACP usage as the measurement.
+   *
+   * Required by `billing_required`: ACP reports one inference per prompt while a
+   * tool-using turn bills several. See `createOpencodeMetering()`.
+   */
+  readonly inferenceSource?: InferenceSource;
 }
 
 export interface AgentSessionMeteringSnapshot extends AgentSessionMeteringState {

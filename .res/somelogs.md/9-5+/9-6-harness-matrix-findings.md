@@ -327,6 +327,56 @@ Do not bill from `attributable.ratedTotal` on any harness that uses tools. Bill 
 total as the cross-check. Where the harness reports no cost, ACP-derived metering cannot
 support billing at all — only observability.
 
+## Finding 10 — the certified OpenCode integration closes the gap
+
+Finding 9 measured a 2-3x undercount on tool-using turns and added a reconciliation check
+that could DETECT it. The plugin integration removes it.
+
+Same route, same tool-calling prompt, `enforcement: "billing_required"` with a live
+channel:
+
+| turn | provenance | rated | provider | ratio |
+|---|---|---|---|---|
+| plain | certified/complete | 0.00182167 | 0.00182167 | 1 |
+| **with tool calls** | certified/complete | 0.00472139 | 0.00472139 | **1** |
+
+Session total `0.00654306` against a provider cumulative of `0.00654306`. The tool-calling
+turn measured `ratio 2.51` through ACP an hour earlier; through the plugin it is exactly 1.
+
+### How it is wired
+
+- `createOpencodeMetering()` starts a loopback channel, writes a managed profile, and
+  returns the env to merge plus an `InferenceSource`.
+- The plugin ships as plain JS (OpenCode loads it, not us) and posts one record per
+  completed assistant message.
+- `OPENCODE_CONFIG` loads the plugin from an absolute path, so nothing is written into the
+  consumer's repository. The managed config MERGES the user's own — it is a replacement
+  env var, so a naive temp file would silently drop their model choice and providers.
+- Attribution is drain-based: `AgentSession` serializes operations, so everything drained
+  at the close of one belongs to it. Simpler and safer than timestamp windows, which would
+  misattribute an inference completing as the next operation opens.
+
+### What it deliberately does not claim
+
+`routing` stays `"observed"`, never `"enforced"`. The plugin reports what the harness ran;
+a library spawning a subprocess cannot prove no model call bypassed it. Network isolation
+remains a deployment property.
+
+### Failure behaviour
+
+An unhealthy channel or zero observed inferences reports `usage_unavailable` rather than
+falling back to ACP — falling back would silently resume undercounting, which is the exact
+failure the path exists to prevent. In `billing_required` that blocks the session.
+
+### Two fixes this surfaced
+
+- A category reported as exactly **0** with no catalog price no longer refuses to rate.
+  OpenCode reports `cache.write` on every inference, usually zero, and most catalog entries
+  carry no cache-write price, so the strict rule blocked every operation. Zero tokens cost
+  zero at any rate; a non-zero unpriced category still refuses.
+- `billing_required` needs BOTH a registry entry and a live source presenting the matching
+  `certificationId`. A registry entry alone would make the gate decorative.
+
 ## Still unanswered — needs the prompting pass on other harnesses
 
 The question the whole ACP-derived backend rests on is **cumulative versus per-turn**, and
