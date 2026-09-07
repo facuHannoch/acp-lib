@@ -37,6 +37,11 @@ async function post(body) {
   }
 }
 
+// A per-session counter so the parent can tell a quiet channel from a lossy one. Without
+// it a dropped POST is indistinguishable from an inference that never happened, and the
+// operation would still be reported as completely attributed.
+const sequence = new Map();
+
 export const AcpMeteringPlugin = async ({ directory, worktree }) => {
   // Announced at startup so the parent can tell "plugin never loaded" from "no inferences
   // happened yet" — the distinction billing-grade metering depends on.
@@ -51,8 +56,12 @@ export const AcpMeteringPlugin = async ({ directory, worktree }) => {
       // state carries final token counts. Earlier ones report zeros and would understate.
       if (!info.time?.completed) return;
 
+      const next = (sequence.get(info.sessionID) ?? 0) + 1;
+      sequence.set(info.sessionID, next);
+
       await post({
         type: "inference",
+        sequence: next,
         messageID: info.id,
         sessionID: info.sessionID,
         providerID: info.providerID,

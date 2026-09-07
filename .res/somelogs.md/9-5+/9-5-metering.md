@@ -4112,3 +4112,101 @@ For **OpenCode on a certified channel**, the honest answer is now yes. Exact rec
 For **every other harness**, still no. ACP undercounts any tool-using turn by 2–3×; `costReconciliation` makes that detectable where the harness reports cost, but detection isn't billing.
 
 441 tests, 28 commits. Two loose ends I'd flag rather than leave implied: the prompting pass never ran against claude/codex/kimi/pi, so their counter semantics are still assumed rather than measured; and `--fill-kb` is now near-useless given the truncation finding — it survives as a knob that doesn't do much, which is worth removing on a tidy-up pass.
+
+
+
+
+
+
+
+---
+
+# On billing_required and certificating adapters to use for this mode
+
+
+Yes, testing every model would be excessive. I made the certification boundary too narrow.
+
+The certification should cover the metering path and provider route, not individual models.
+
+For example:
+
+```text
+OpenCode 1.18.x
++ bundled plugin version/digest
++ message.updated completion hook
++ Anthropic provider implementation
++ Anthropic Messages protocol
++ API-key authentication
++ verified token normalization semantics
+```
+
+Then the actual model is checked dynamically against the pricing catalog:
+
+```text
+Certification question:
+“Can this OpenCode/Anthropic route reliably observe and normalize every inference?”
+
+Pricing question:
+“Do we have a complete, unambiguous price schedule for claude-sonnet-X?”
+```
+
+A newly released Anthropic model could therefore work immediately when:
+
+- It travels through the already-certified Anthropic route.
+- OpenCode returns the same normalized token structure.
+- The pinned or consumer-supplied catalog has an exact entry for it.
+- Its pricing does not introduce unsupported semantics.
+
+It should fail `billing_required` only if its pricing or token behavior is structurally novel—not because nobody ran a dedicated smoke test against that exact model.
+
+A better manifest is therefore:
+
+```ts
+interface RouteCertification {
+  id: string;
+
+  openCodeVersions: readonly string[];
+  pluginDigest: string;
+
+  providerId: string;
+  providerPackage: string;
+  providerPackageVersions: readonly string[];
+  protocol: "anthropic_messages";
+  authentication: "api_key";
+
+  tokenSemantics: {
+    input: "exclusive_of_cache";
+    cacheRead: "separate";
+    cacheWrite: "separate";
+    reasoning: "not_applicable";
+  };
+}
+```
+
+The model remains runtime evidence:
+
+```ts
+interface InferenceEvidence {
+  providerId: string;
+  modelId: string;
+  certificationId: string;
+  pricingPolicyDigest: string;
+}
+```
+
+I would test:
+
+- Each certified provider/runtime route.
+- Representative models exercising each token feature.
+- Exceptional pricing shapes such as long-context tiers and cache writes.
+- Catalog-level validation for every model entry.
+
+So the scalable unit is not “every model.” It is:
+
+```text
+provider runtime route × token/pricing behavior
+```
+
+If 40 Anthropic models all use the same route and semantics, one route certification covers them, while exact pricing is validated mechanically per catalog entry. Models with genuinely different behavior become explicit exceptions.
+
+

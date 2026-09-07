@@ -32,6 +32,30 @@ export interface PricedTokenAmount {
     | null;
 }
 
+/**
+ * One model's share of an operation, rated under its own policy.
+ *
+ * A turn can run several models — compaction and title generation often use a cheaper one
+ * than the prompt. Flattening those into a single set of category amounts destroys
+ * auditability: the engraved unit price belongs to one model while the cost is a sum
+ * across several, so `tokens x unitPrice` no longer reproduces `ratedCost`. Line items
+ * keep each rate with the tokens it actually priced.
+ */
+export interface RatedLineItem {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly tier: string;
+  readonly pricingSource: PricingSource | null;
+  readonly cacheInputConvention: PricingSchedule["cacheInputConvention"] | null;
+  readonly totalTokens: number;
+  readonly input: PricedTokenAmount;
+  readonly output: PricedTokenAmount;
+  readonly cachedRead?: PricedTokenAmount;
+  readonly cachedWrite?: PricedTokenAmount;
+  readonly thought?: PricedTokenAmount;
+  readonly ratedTotal: Money | null;
+}
+
 export interface AttributableUsage {
   /** Unpriced attributable usage before cache-convention adjustment. */
   readonly reportedDelta: TokenUsage;
@@ -58,6 +82,14 @@ export interface AttributableUsage {
   readonly cachedWrite?: PricedTokenAmount;
   readonly thought?: PricedTokenAmount;
   readonly ratedTotal: Money | null;
+  /**
+   * Per-model breakdown, present only when an operation spanned more than one model.
+   *
+   * When present, the top-level per-category `pricing` is null: there is no single rate to
+   * engrave, and showing one model's would misrepresent the total. The line items are then
+   * the auditable record, and their rated totals sum to `ratedTotal`.
+   */
+  readonly lineItems?: readonly RatedLineItem[];
 }
 
 export type RatingResult =

@@ -198,6 +198,7 @@ export type {
   AttributableUsage,
   BillingFacts,
   PricedTokenAmount,
+  RatedLineItem,
   RatingResult,
   ScheduleSelection,
 } from "./metering/rating.ts";

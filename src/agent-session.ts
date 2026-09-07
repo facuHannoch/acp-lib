@@ -876,6 +876,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       degraded: this.controller.isDegraded,
     });
 
+    let closed: OperationMeteringRecord | null = null;
     try {
       const res = await this.controller.prompt(item.text, wrappedHandlers, item.attachments);
       // Before the assistant msg: `msg` delimits a turn, so anything still open has to
@@ -890,7 +891,12 @@ export class AgentSession implements AgentClient, Bridgeable {
       // has already told us what it charged; letting a transcript or catalog write failure
       // send us down the catch path would discard usage we are holding and, in a strict
       // mode, block the session over a local disk problem.
+      //
+      // `closed` then guards the catch path. Closing twice would accrue the operation
+      // twice and emit a second record for it — double-counting tokens and cost, which is
+      // a worse failure than the one closing early prevents.
       const record = await this.closeOperation(operation, res.status, res.usage);
+      closed = record;
       await this.persist();
       await this.appendTranscript({
         v: 1,
@@ -927,7 +933,9 @@ export class AgentSession implements AgentClient, Bridgeable {
       });
       // A failed operation may still have consumed tokens, so its record has to survive
       // the rejection rather than only reaching event subscribers.
-      const record = await this.closeOperation(operation, "error", null, String(err));
+      // Already metered: the failure happened after the operation closed (a transcript or
+      // catalog write), so the record stands and must not be minted a second time.
+      const record = closed ?? (await this.closeOperation(operation, "error", null, String(err)));
       throw new AgentSessionOperationError(item.turnId, record, err);
     }
   }
@@ -998,12 +1006,16 @@ export class AgentSession implements AgentClient, Bridgeable {
       model: this.model,
       degraded: this.controller.isDegraded,
     });
+    let closed = false;
     try {
       const result = await this.controller.prompt(text);
       records.push(await this.closeOperation(operation, result.status, result.usage));
+      closed = true;
       return result;
     } catch (err) {
-      records.push(await this.closeOperation(operation, "error", null, String(err)));
+      if (!closed) {
+        records.push(await this.closeOperation(operation, "error", null, String(err)));
+      }
       throw err;
     }
   }

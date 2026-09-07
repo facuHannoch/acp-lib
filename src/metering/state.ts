@@ -152,6 +152,8 @@ export interface OperationAccrual {
   /** Applicability from the resolved policy; unknown when no policy was resolved. */
   readonly applicability: Readonly<Record<TokenCategory, CategoryApplicability>> | null;
   readonly baseline: MeteringBaseline | null;
+  /** Usage observed but belonging to no operation — never merged into totals. */
+  readonly unallocated?: readonly TokenUsage[];
 }
 
 /**
@@ -214,7 +216,42 @@ export function accrueOperation(
       thought: categoryTotals.thought!,
     }),
     ratedCosts,
+    unallocatedUsage: accrueUnallocated(previous.unallocatedUsage, accrual.unallocated ?? []),
     activeBaseline: accrual.baseline,
+  });
+}
+
+/**
+ * Fold observed-but-unattributed usage into its own bucket.
+ *
+ * Kept strictly apart from `totals`: §11 requires that late or background work is never
+ * charged to the next operation, and a consumer must be able to see that it happened.
+ * Absent categories stay absent rather than being zero-filled.
+ */
+function accrueUnallocated(
+  previous: UnallocatedUsageState,
+  additions: readonly TokenUsage[],
+): UnallocatedUsageState {
+  if (additions.length === 0) return previous;
+  const known: Partial<TokenUsage> = { ...previous.knownTokens };
+  for (const usage of additions) {
+    for (const key of [
+      "totalTokens",
+      "inputTokens",
+      "outputTokens",
+      "cachedReadTokens",
+      "cachedWriteTokens",
+      "thoughtTokens",
+    ] as const) {
+      const value = usage[key];
+      if (value === undefined) continue;
+      known[key] = (known[key] ?? 0) + value;
+    }
+  }
+  return Object.freeze({
+    recordCount: previous.recordCount + additions.length,
+    knownTokens: Object.freeze(known),
+    ratedCosts: previous.ratedCosts,
   });
 }
 

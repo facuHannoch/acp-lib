@@ -12,6 +12,8 @@ import type { TokenUsage } from "../../types.ts";
 
 /** One model inference, as OpenCode itself accounted for it. */
 export interface ProviderInference {
+  /** Per-session counter assigned by the plugin, used to detect dropped reports. */
+  readonly sequence: number | null;
   readonly messageID: string;
   readonly sessionID: string;
   readonly providerID: string;
@@ -31,6 +33,7 @@ export interface ChannelHandshake {
 }
 
 interface RawInference {
+  sequence?: unknown;
   messageID?: unknown;
   sessionID?: unknown;
   providerID?: unknown;
@@ -88,6 +91,7 @@ function normalizeInference(raw: RawInference): ProviderInference | null {
   }
 
   return Object.freeze({
+    sequence: counter(raw.sequence),
     messageID,
     sessionID,
     providerID,
@@ -118,6 +122,9 @@ export class OpencodeMeteringChannel {
   private readonly pending = new Map<string, ProviderInference>();
   private _handshake: ChannelHandshake | null = null;
   private _rejected = 0;
+  /** Highest sequence seen per session, and how many were skipped. */
+  private readonly highestSequence = new Map<string, number>();
+  private _lostReports = 0;
 
   readonly token: string = crypto.randomUUID();
 
@@ -130,6 +137,15 @@ export class OpencodeMeteringChannel {
   /** Posts refused for a bad token or malformed body. Non-zero means something is wrong. */
   get rejectedCount(): number {
     return this._rejected;
+  }
+  /**
+   * Reports the plugin sent that never arrived, detected by gaps in its sequence.
+   *
+   * Non-zero means measurement is incomplete, and any operation covering that span must
+   * not claim complete attribution.
+   */
+  get lostReportCount(): number {
+    return this._lostReports;
   }
   get url(): string {
     if (!this.server) throw new Error("metering channel is not started");
@@ -175,7 +191,22 @@ export class OpencodeMeteringChannel {
           }
           // Keyed by messageID: a message can be reported more than once, and the same
           // inference counted twice would inflate a bill.
+          const firstSighting = !this.pending.has(inference.messageID);
           this.pending.set(inference.messageID, inference);
+          if (firstSighting && inference.sequence !== null) {
+            // A gap means a POST was lost. Silence and loss look identical without this,
+            // and an operation would still claim complete attribution.
+            const previous = this.highestSequence.get(inference.sessionID) ?? 0;
+            if (inference.sequence > previous + 1) {
+              this._lostReports += inference.sequence - previous - 1;
+              this.options.onWarning?.(
+                `metering channel lost ${inference.sequence - previous - 1} report(s)`,
+              );
+            }
+            if (inference.sequence > previous) {
+              this.highestSequence.set(inference.sessionID, inference.sequence);
+            }
+          }
           return new Response("ok");
         }
 
@@ -198,6 +229,18 @@ export class OpencodeMeteringChannel {
     const drained: ProviderInference[] = [];
     for (const [messageId, inference] of this.pending) {
       if (sessionId && inference.sessionID !== sessionId) continue;
+      drained.push(inference);
+      this.pending.delete(messageId);
+    }
+    return Object.freeze(drained);
+  }
+
+  /** Take records belonging to any thread OTHER than the one named. */
+  drainForeign(sessionId: string | null): readonly ProviderInference[] {
+    if (!sessionId) return Object.freeze([]);
+    const drained: ProviderInference[] = [];
+    for (const [messageId, inference] of this.pending) {
+      if (inference.sessionID === sessionId) continue;
       drained.push(inference);
       this.pending.delete(messageId);
     }

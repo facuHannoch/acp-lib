@@ -22,6 +22,13 @@ export interface OpencodeMeteringOptions {
    * the plugin API may differ. Only set this to explore a new version deliberately.
    */
   readonly allowUnverifiedVersion?: boolean;
+  /**
+   * Proceed even when the user's OpenCode config cannot be parsed.
+   *
+   * Off by default: OPENCODE_CONFIG replaces that config, so continuing without it changes
+   * which model answers — and a metering channel must not alter what it meters.
+   */
+  readonly allowUnreadableConfig?: boolean;
 }
 
 export interface OpencodeMetering {
@@ -80,18 +87,32 @@ export async function createOpencodeMetering(
 
   const channel = new OpencodeMeteringChannel({ onWarning: options.onWarning });
   channel.start();
+  // Fail closed. Proceeding without the user's config would silently change which model
+  // answers, and a certified metering channel that alters what it is metering is worse
+  // than no metering. `allowUnreadableConfig` is the deliberate override.
   const profile = await writeManagedProfile(meteringPluginPath(), {
-    onUnreadableConfig: (path) =>
-      options.onWarning?.(
-        `could not parse ${path}; proceeding WITHOUT your OpenCode config, so the model ` +
-          `and providers it selects will not apply`,
-      ),
+    onUnreadableConfig: (path) => {
+      if (options.allowUnreadableConfig) {
+        options.onWarning?.(
+          `could not parse ${path}; proceeding WITHOUT your OpenCode config, so the model ` +
+            `and providers it selects will not apply`,
+        );
+        return;
+      }
+      throw new Error(
+        `could not parse your OpenCode config at ${path}. Metering would have to run ` +
+          `without it, which changes the model and providers in use. Fix the config, or ` +
+          `pass allowUnreadableConfig to proceed anyway.`,
+      );
+    },
   });
 
   const inferenceSource: InferenceSource = {
     certificationId: OPENCODE_PLUGIN_CERTIFICATION.certificationId,
     isHealthy: () => channel.handshake !== null,
     drain: (internalSessionId) => channel.drain(internalSessionId),
+    drainForeign: (internalSessionId) => channel.drainForeign(internalSessionId),
+    lostReportCount: () => channel.lostReportCount,
   };
 
   return {

@@ -48,6 +48,21 @@ export interface InferenceSource {
   isHealthy(): boolean;
   /** Records completed since the last drain, for the named provider thread. */
   drain(internalSessionId: string | null): readonly ProviderInference[];
+  /**
+   * Records for OTHER provider threads, swept so they are accounted rather than stranded.
+   *
+   * Work the harness did outside the active thread — a replaced thread after a handoff,
+   * or background activity — belongs in unallocated usage, not charged to whichever
+   * operation happens to drain next and not silently dropped.
+   */
+  drainForeign?(internalSessionId: string | null): readonly ProviderInference[];
+  /**
+   * Reports the source knows it lost, cumulative.
+   *
+   * Without this a dropped report is indistinguishable from an inference that never
+   * happened, and the operation would still claim complete attribution.
+   */
+  lostReportCount?(): number;
 }
 import {
   rateDelta,
@@ -95,6 +110,8 @@ export interface OpenOperation {
   readonly model: string | null;
   readonly policy: PricingPolicy | null;
   readonly pricingFailureReason: string | null;
+  /** Lost-report count when the operation opened, to detect loss during it. */
+  readonly lostReportsAtOpen: number;
 }
 
 export interface CloseOperationInput {
@@ -283,6 +300,7 @@ export class MeteringEngine {
       model: input.model,
       policy,
       pricingFailureReason,
+      lostReportsAtOpen: this.options.inferenceSource?.lostReportCount?.() ?? 0,
     });
   }
 
@@ -342,15 +360,26 @@ export class MeteringEngine {
               // Still "observed", never "enforced": the plugin reports what the harness
               // ran, but a library cannot prove no model call bypassed it.
               routing: "observed" as const,
-              attribution: "complete" as const,
+              // "complete" has to be EARNED. If the source lost a report while this
+              // operation ran, some inference happened that we never saw, and claiming
+              // complete attribution would be exactly the overstatement this design
+              // refuses everywhere else.
+              attribution:
+                (source!.lostReportCount?.() ?? 0) > open.lostReportsAtOpen
+                  ? ("partial" as const)
+                  : ("complete" as const),
               certificationId: source!.certificationId,
             })
           : acpProvenance(this.interpretation);
 
+    // Sweep work from other provider threads into unallocated usage. It is real spend the
+    // harness incurred; stranding it in a pending map would understate the session.
+    const foreign = source?.drainForeign?.(open.internalSessionId) ?? [];
     this.state = accrueOperation(this.state, {
       attributable,
       applicability,
       baseline: nextBaseline,
+      ...(foreign.length > 0 ? { unallocated: foreign.map((i) => i.tokens) } : {}),
     });
     this.baseline = nextBaseline;
     if (nextBaseline) this.trustedZeroBaseline = false;
@@ -564,7 +593,7 @@ export class MeteringEngine {
       }
     }
 
-    const parts: AttributableUsage[] = [];
+    const parts: { usage: AttributableUsage; sample: ProviderInference }[] = [];
     let reason: string | undefined;
     for (const group of groups.values()) {
       const sample = group[0]!;
@@ -576,22 +605,22 @@ export class MeteringEngine {
         : await this.resolveForInference(open, sample);
       if (!policy) {
         reason ??= `no pricing policy for ${sample.providerID}/${sample.modelID}`;
-        parts.push(unpricedUsage(tokens));
+        parts.push({ usage: unpricedUsage(tokens), sample });
         continue;
       }
       const selected = selectSchedule(policy, facts);
       if (!selected.ok) {
         reason ??= selected.reason;
-        parts.push(unpricedUsage(tokens));
+        parts.push({ usage: unpricedUsage(tokens), sample });
         continue;
       }
       const rated = rateDelta(tokens, policy, selected.schedule);
       if (!rated.ok) {
         reason ??= rated.reason;
-        parts.push(unpricedUsage(tokens));
+        parts.push({ usage: unpricedUsage(tokens), sample });
         continue;
       }
-      parts.push(rated.usage);
+      parts.push({ usage: rated.usage, sample });
     }
 
     const combined = combineAttributable(parts);
@@ -747,67 +776,83 @@ export function sumInferenceTokens(inferences: readonly ProviderInference[]): To
  * operation there is no single rate to show. `pricingKey` is kept only when every group
  * agreed, rather than presenting one model's key as if it covered the whole operation.
  */
-function combineAttributable(parts: readonly AttributableUsage[]): AttributableUsage {
-  if (parts.length === 1) return parts[0]!;
+/**
+ * Merge per-model ratings into one operation-level view WITHOUT inventing a blended rate.
+ *
+ * An earlier version kept the first group's unit price beside a cost summed across groups
+ * priced differently, so `tokens x unitPrice` did not reproduce `ratedCost` and the record
+ * could not be recomputed — the one property §6 and §8 exist to protect.
+ *
+ * Now the top level carries tokens and the exact total, per-category `pricing` is null
+ * because no single rate applies, and `lineItems` carries each model's own rated detail.
+ */
+function combineAttributable(
+  parts: readonly { usage: AttributableUsage; sample: ProviderInference }[],
+): AttributableUsage {
+  if (parts.length === 1) return parts[0]!.usage;
 
   const categories = ["input", "output", "cachedRead", "cachedWrite", "thought"] as const;
   const merged: Partial<Record<(typeof categories)[number], PricedTokenAmount>> = {};
   for (const category of categories) {
-    const present = parts.map((part) => part[category]).filter((amount) => amount !== undefined);
+    const present = parts
+      .map((part) => part.usage[category])
+      .filter((amount): amount is PricedTokenAmount => amount !== undefined);
     if (present.length === 0) continue;
-    let ratedCost: Money | null = null;
-    let unitPrice = present.find((amount) => amount!.pricing)?.pricing?.unitPrice ?? null;
-    let reported = 0;
-    let priced: number | null = null;
-    for (const amount of present) {
-      reported += amount!.reportedTokens;
-      if (amount!.pricedTokens !== null) priced = (priced ?? 0) + amount!.pricedTokens;
-      const cost = amount!.pricing?.ratedCost;
-      if (!cost) continue;
-      if (!ratedCost) {
-        ratedCost = cost;
-        continue;
-      }
-      const sum = addMoney(ratedCost, cost);
-      if (sum.ok) ratedCost = sum.value;
-    }
     merged[category] = Object.freeze({
-      reportedTokens: reported,
-      pricedTokens: priced,
-      pricing: ratedCost && unitPrice ? Object.freeze({ unitPrice, ratedCost }) : null,
+      reportedTokens: present.reduce((total, amount) => total + amount.reportedTokens, 0),
+      pricedTokens: present.every((amount) => amount.pricedTokens !== null)
+        ? present.reduce((total, amount) => total + (amount.pricedTokens ?? 0), 0)
+        : null,
+      // Deliberately null: several rates priced these tokens, and naming one would make
+      // the record look recomputable when it is not. See lineItems.
+      pricing: null,
     });
   }
 
   let ratedTotal: Money | null = null;
   for (const part of parts) {
-    if (!part.ratedTotal) continue;
+    if (!part.usage.ratedTotal) continue;
     if (!ratedTotal) {
-      ratedTotal = part.ratedTotal;
+      ratedTotal = part.usage.ratedTotal;
       continue;
     }
-    const sum = addMoney(ratedTotal, part.ratedTotal);
+    const sum = addMoney(ratedTotal, part.usage.ratedTotal);
     if (sum.ok) ratedTotal = sum.value;
   }
 
-  const sameKey = parts.every(
-    (part) =>
-      part.pricingKey?.providerId === parts[0]!.pricingKey?.providerId &&
-      part.pricingKey?.modelId === parts[0]!.pricingKey?.modelId,
+  const lineItems = parts.map((part) =>
+    Object.freeze({
+      providerId: part.sample.providerID,
+      modelId: part.sample.modelID,
+      tier: part.usage.pricingKey?.tier ?? "unrated",
+      pricingSource: part.usage.pricingSource,
+      cacheInputConvention: part.usage.cacheInputConvention,
+      totalTokens: part.usage.totalTokens,
+      input: part.usage.input,
+      output: part.usage.output,
+      ...(part.usage.cachedRead ? { cachedRead: part.usage.cachedRead } : {}),
+      ...(part.usage.cachedWrite ? { cachedWrite: part.usage.cachedWrite } : {}),
+      ...(part.usage.thought ? { thought: part.usage.thought } : {}),
+      ratedTotal: part.usage.ratedTotal,
+    }),
   );
 
   return Object.freeze({
     reportedDelta: sumInferenceTokens(
-      parts.map((part) => ({ tokens: part.reportedDelta }) as ProviderInference),
+      parts.map((part) => ({ tokens: part.usage.reportedDelta }) as ProviderInference),
     ),
-    pricingSource: parts.find((part) => part.pricingSource)?.pricingSource ?? null,
-    pricingKey: sameKey ? parts[0]!.pricingKey : null,
-    cacheInputConvention: parts[0]!.cacheInputConvention,
-    totalTokens: parts.reduce((total, part) => total + part.totalTokens, 0),
+    // Source and key describe ONE model; with several there is no single answer, and the
+    // line items carry the per-model identities instead.
+    pricingSource: null,
+    pricingKey: null,
+    cacheInputConvention: null,
+    totalTokens: parts.reduce((total, part) => total + part.usage.totalTokens, 0),
     input: merged.input!,
     output: merged.output!,
     ...(merged.cachedRead ? { cachedRead: merged.cachedRead } : {}),
     ...(merged.cachedWrite ? { cachedWrite: merged.cachedWrite } : {}),
     ...(merged.thought ? { thought: merged.thought } : {}),
     ratedTotal,
+    lineItems: Object.freeze(lineItems),
   });
 }

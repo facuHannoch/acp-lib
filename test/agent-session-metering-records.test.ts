@@ -751,3 +751,172 @@ describe("certified inference source", () => {
     }
   });
 });
+
+describe("second-round review fixes", () => {
+  const inference = (over: Record<string, unknown> = {}) =>
+    ({
+      sequence: null,
+      messageID: `m${Math.random()}`,
+      sessionID: "s",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+      summary: false,
+      completedAt: Date.now(),
+      cost: 0,
+      tokens: { totalTokens: 100, inputTokens: 60, outputTokens: 40 },
+      ...over,
+    }) as never;
+
+  test("attribution drops to partial when the channel lost a report", async () => {
+    // "complete" must be earned. A lost report means an inference happened that we never
+    // saw, and claiming complete attribution would be the overstatement this design
+    // refuses everywhere else.
+    let lost = 0;
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => {
+            lost = 1; // a report went missing while this operation ran
+            return [inference()] as never;
+          },
+          lostReportCount: () => lost,
+        },
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.provenance.attribution).toBe("partial");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("attribution stays complete when nothing was lost", async () => {
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => [inference()] as never,
+          lostReportCount: () => 0,
+        },
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.provenance.attribution).toBe("complete");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("work from another provider thread lands in unallocated, not in totals", async () => {
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => [inference()] as never,
+          drainForeign: () =>
+            [inference({ sessionID: "other", tokens: { totalTokens: 500, inputTokens: 500, outputTokens: 0 } })] as never,
+        },
+      },
+    });
+    try {
+      await session.prompt("hello");
+      const snapshot = session.meteringSnapshot;
+      // Charged to no operation, but visible rather than stranded.
+      expect(snapshot.totals.total.knownTokens).toBe(100);
+      expect(snapshot.unallocatedUsage.recordCount).toBe(1);
+      expect(snapshot.unallocatedUsage.knownTokens.totalTokens).toBe(500);
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("a multi-model operation keeps auditable per-model line items", async () => {
+    // Flattening several rates into one engraved unit price made records unrecomputable:
+    // tokens x unitPrice no longer equalled ratedCost.
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: (context) =>
+          context.model === "cheap-model"
+            ? {
+                ...TEST_POLICY,
+                modelId: "cheap-model",
+                schedules: [
+                  {
+                    ...TEST_POLICY.schedules[0]!,
+                    input: { amount: "1", currency: "USD", perTokens: 1_000_000 },
+                    output: { amount: "1", currency: "USD", perTokens: 1_000_000 },
+                  },
+                ],
+              }
+            : TEST_POLICY,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () =>
+            [
+              inference(),
+              inference({ modelID: "cheap-model" }),
+            ] as never,
+        },
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      const usage = result.metering!.usage;
+      expect(usage.status).toBe("metered");
+      if (usage.status !== "metered") return;
+      const attributable = usage.attributable;
+
+      expect(attributable.lineItems).toHaveLength(2);
+      expect(attributable.lineItems!.map((item) => item.modelId).sort()).toEqual([
+        "cheap-model",
+        "claude-sonnet-4-5",
+      ]);
+      // No single rate applies, so none is engraved at the top level.
+      expect(attributable.input.pricing).toBeNull();
+      expect(attributable.pricingKey).toBeNull();
+      // Each line item is individually recomputable, and they sum to the total.
+      for (const item of attributable.lineItems!) {
+        expect(item.input.pricing?.unitPrice).toBeDefined();
+      }
+      expect(attributable.ratedTotal).not.toBeNull();
+    } finally {
+      await session.stop();
+    }
+  });
+});
+
+describe("a persistence failure must not double-count", () => {
+  test("an operation already closed is not closed a second time", async () => {
+    // Closing metering before persistence fixed a usage-loss bug and introduced a worse
+    // one: a transcript write failure sent the catch path into closing the SAME operation
+    // again, accruing it twice and emitting a second record.
+    const { session, events } = await openSession({
+      metering: { pricing: fixedPricing },
+      // An unwritable transcript path makes persistence throw after the provider answered.
+      transcriptPath: "/proc/definitely-not-writable/transcript.jsonl",
+    });
+    try {
+      await session.prompt("hello").catch(() => {});
+      const snapshot = session.meteringSnapshot;
+      expect(snapshot.operationCount).toBe(1);
+      expect(snapshot.totals.total.knownTokens).toBe(100);
+      expect(events.filter((event) => event.kind === "metering_recorded")).toHaveLength(1);
+    } finally {
+      await session.stop().catch(() => {});
+    }
+  });
+});
