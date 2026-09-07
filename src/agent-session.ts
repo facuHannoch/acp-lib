@@ -249,7 +249,11 @@ export interface AgentSessionConfig {
   adapterId: string;
   /** Talk over ACP ("normal") or scrape a pty ("degraded"). Default "normal". */
   mode?: AgentMode;
+  /** Runtime-specific launcher shared by normal ACP and degraded PTY modes. */
+  launcher?: AgentControllerConfig["launcher"];
+  /** @deprecated Use launcher. */
   execPrefix?: string[];
+  /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
   cwd?: string;
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
@@ -258,6 +262,8 @@ export interface AgentSessionConfig {
   clientInfo?: { name: string; title?: string; version?: string };
   /** What we let the agent do through us (terminals, filesystem). All on by default. */
   clientCapabilities?: AgentControllerConfig["clientCapabilities"];
+  /** Client-side ACP implementations; their presence determines advertisement. */
+  clientHandlers?: AgentControllerConfig["clientHandlers"];
   logger?: Logger;
   /** Raw protocol traffic for debugging — see `AcpClientConfig.wire`. */
   wire?: (entry: WireEntry) => void;
@@ -413,6 +419,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       adapter: config.adapter,
       adapterId: config.adapterId,
       mode: this._mode,
+      launcher: config.launcher,
       execPrefix: config.execPrefix,
       env: config.env,
       cwd: config.cwd,
@@ -424,6 +431,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,
       clientCapabilities: config.clientCapabilities,
+      clientHandlers: config.clientHandlers,
       logger: config.logger,
       wire: config.wire,
     });
@@ -443,8 +451,13 @@ export class AgentSession implements AgentClient, Bridgeable {
    */
   static async create(config: AgentSessionConfig): Promise<AgentSession> {
     const session = new AgentSession(config);
-    await session.start();
-    return session;
+    try {
+      await session.start();
+      return session;
+    } catch (error) {
+      await session.stop().catch(() => {});
+      throw error;
+    }
   }
 
   private async start(): Promise<void> {

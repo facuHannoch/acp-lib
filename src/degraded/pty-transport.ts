@@ -8,11 +8,16 @@
 // event callbacks. Everything above stays pty-plumbing-agnostic.
 
 import { ProcessCrashError } from "../errors.ts";
+import { onceDispose, type PreparedLaunch } from "../launcher.ts";
 
 export interface PtyTransportOptions {
-  /** The interactive command (argv) to run inside the pty, e.g. ["codex"] (exec-prefixed). */
-  command: string[];
+  /** Exact host-side process launch, already resolved by the caller's launcher. */
+  launch?: PreparedLaunch;
+  /** @deprecated Pass launch. */
+  command?: string[];
+  /** @deprecated Pass launch.spawnCwd. */
   cwd?: string;
+  /** @deprecated Pass launch.spawnEnv. Legacy values overlay process.env. */
   env?: Record<string, string>;
   cols?: number;
   rows?: number;
@@ -35,39 +40,67 @@ export class PtyTransport {
   private proc: ReturnType<typeof Bun.spawn> | null = null;
   private terminal: BunTerminal | null = null;
   private stopping = false;
+  private readonly disposeLaunch: () => Promise<void>;
+  private readonly launch: PreparedLaunch;
 
-  constructor(private opts: PtyTransportOptions) {}
+  constructor(private opts: PtyTransportOptions) {
+    if (opts.launch) {
+      this.launch = opts.launch;
+    } else {
+      if (!opts.command?.length) throw new Error("PtyTransport requires launch or command");
+      this.launch = {
+        command: opts.command,
+        spawnCwd: opts.cwd,
+        spawnEnv: {
+          ...(process.env as Record<string, string>),
+          ...(opts.env ?? {}),
+          TERM: opts.env?.TERM ?? "xterm-color",
+        },
+      };
+    }
+    this.disposeLaunch = onceDispose(this.launch.dispose);
+  }
 
   async start(): Promise<void> {
     if (this.proc) return;
     const dec = new TextDecoder();
 
-    const proc = Bun.spawn(this.opts.command, {
-      cwd: this.opts.cwd,
-      env: {
-        ...process.env,
-        ...(this.opts.env ?? {}),
-        TERM: this.opts.env?.TERM ?? "xterm-color",
-      },
-      terminal: {
-        cols: this.opts.cols ?? 80,
-        rows: this.opts.rows ?? 24,
-        data: (_term: unknown, data: Uint8Array) => {
-          const text = dec.decode(data, { stream: true });
-          if (text) this.opts.onData?.(text);
+    let proc: ReturnType<typeof Bun.spawn>;
+    try {
+      proc = Bun.spawn(this.launch.command, {
+        cwd: this.launch.spawnCwd,
+        env: this.launch.spawnEnv,
+        terminal: {
+          cols: this.opts.cols ?? 80,
+          rows: this.opts.rows ?? 24,
+          data: (_term: unknown, data: Uint8Array) => {
+            const text = dec.decode(data, { stream: true });
+            if (text) this.opts.onData?.(text);
+          },
         },
-      },
-    } as Parameters<typeof Bun.spawn>[1]);
+      } as Parameters<typeof Bun.spawn>[1]);
+    } catch (error) {
+      await this.disposeLaunch().catch(() => {});
+      throw error;
+    }
 
     this.proc = proc;
     this.terminal = (proc as unknown as { terminal: BunTerminal }).terminal ?? null;
 
     proc.exited
-      .then((code) => {
+      .then(async (code) => {
         if (this.proc === proc && !this.stopping) {
           this.proc = null;
           this.terminal = null;
+          await this.disposeLaunch().catch(() => {});
           this.opts.onExit?.(code ?? null);
+        }
+      }, async () => {
+        if (this.proc === proc && !this.stopping) {
+          this.proc = null;
+          this.terminal = null;
+          await this.disposeLaunch().catch(() => {});
+          this.opts.onExit?.(null);
         }
       })
       .catch(() => {});
@@ -120,8 +153,10 @@ export class PtyTransport {
         } catch {
           /* gone */
         }
+        await proc.exited.catch(() => {});
       }
     }
+    await this.disposeLaunch();
   }
 
   get running(): boolean {
