@@ -23,13 +23,13 @@ import type {
 } from "../pricing.ts";
 import { validatePricingPolicy } from "../pricing.ts";
 
-interface CatalogModel {
+export interface CatalogModel {
   readonly categoryApplicability: Readonly<Record<string, string>>;
   readonly lastUpdated?: string;
   readonly schedules: readonly PricingSchedule[];
 }
 
-interface CatalogProvider {
+export interface CatalogProvider {
   readonly cacheInputConvention: CacheInputConvention;
   readonly conventionEvidence: string;
   readonly models: Readonly<Record<string, CatalogModel>>;
@@ -73,6 +73,100 @@ export function verifyCatalogIntegrity(): void {
     );
   }
   integrityChecked = true;
+}
+
+/** One priceable model, with everything needed to display or re-derive its rates. */
+export interface CatalogEntry {
+  readonly providerId: string;
+  readonly modelId: string;
+  /** ISO date the upstream entry last changed, when the source records it. */
+  readonly modelLastUpdated?: string;
+  readonly categoryApplicability: Readonly<Record<TokenCategory, CategoryApplicability>>;
+  readonly schedules: readonly PricingSchedule[];
+}
+
+export interface CatalogProviderInfo {
+  readonly providerId: string;
+  readonly cacheInputConvention: CacheInputConvention;
+  /** Why the library believes that convention — auditable, not folklore. */
+  readonly conventionEvidence: string;
+  readonly modelCount: number;
+}
+
+/**
+ * A readable view of a pricing catalog.
+ *
+ * The resolver answers "what does THIS model cost"; this answers "what can you price, and
+ * at what rates" — needed to build a price list, a model picker, or a markup table without
+ * reaching into the library's files.
+ */
+export interface PricingCatalog {
+  readonly source: PricingSource;
+  readonly providers: readonly CatalogProviderInfo[];
+  /** Every priceable model, or just one provider's. */
+  entries(providerId?: string): readonly CatalogEntry[];
+  get(providerId: string, modelId: string): CatalogEntry | null;
+}
+
+/**
+ * Wrap raw catalog providers in the readable view.
+ *
+ * Shared with the live resolver so both catalogs expose exactly the same surface.
+ */
+export function makeCatalog(
+  providers: Readonly<Record<string, CatalogProvider>>,
+  source: PricingSource,
+): PricingCatalog {
+  const toEntry = (providerId: string, modelId: string, model: CatalogModel): CatalogEntry =>
+    Object.freeze({
+      providerId,
+      modelId,
+      ...(model.lastUpdated ? { modelLastUpdated: model.lastUpdated } : {}),
+      categoryApplicability: model.categoryApplicability as Readonly<
+        Record<TokenCategory, CategoryApplicability>
+      >,
+      schedules: model.schedules,
+    });
+
+  return Object.freeze({
+    source,
+    providers: Object.freeze(
+      Object.entries(providers).map(([providerId, provider]) =>
+        Object.freeze({
+          providerId,
+          cacheInputConvention: provider.cacheInputConvention,
+          conventionEvidence: provider.conventionEvidence,
+          modelCount: Object.keys(provider.models).length,
+        }),
+      ),
+    ),
+    entries(providerId?: string) {
+      const wanted = providerId ? { [providerId]: providers[providerId] } : providers;
+      const out: CatalogEntry[] = [];
+      for (const [id, provider] of Object.entries(wanted)) {
+        if (!provider) continue;
+        for (const modelId of Object.keys(provider.models).sort()) {
+          out.push(toEntry(id, modelId, provider.models[modelId]!));
+        }
+      }
+      return Object.freeze(out);
+    },
+    get(providerId: string, modelId: string) {
+      const model = providers[providerId]?.models[modelId];
+      return model ? toEntry(providerId, modelId, model) : null;
+    },
+  });
+}
+
+/**
+ * The pinned catalog the library ships, as a readable view.
+ *
+ * Verifies the artifact digest first, so a listing cannot show prices the library would
+ * refuse to rate with.
+ */
+export function loadPinnedCatalog(): PricingCatalog {
+  verifyCatalogIntegrity();
+  return makeCatalog(catalog.providers, MODELS_DEV_SOURCE);
 }
 
 /** Providers this catalog can price, i.e. those with a documented counter convention. */

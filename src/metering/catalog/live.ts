@@ -18,6 +18,7 @@ import {
   serializeCatalog,
   type RawProvider,
 } from "./build.ts";
+import { makeCatalog, type CatalogProvider, type PricingCatalog } from "./index.ts";
 import type {
   CategoryApplicability,
   PricingContext,
@@ -49,7 +50,7 @@ export interface LiveCatalogOptions {
 }
 
 interface CachedCatalog {
-  readonly providers: Record<string, { models: Record<string, unknown> }>;
+  readonly providers: Readonly<Record<string, CatalogProvider>>;
   readonly source: PricingSource;
   readonly fetchedAt: number;
 }
@@ -125,7 +126,7 @@ export function createLiveModelsDevResolver(options: LiveCatalogOptions = {}): P
     const catalog = await load();
     if (!catalog) return null;
 
-    const entry = catalog.providers[providerId]?.models[model] as CatalogModel | undefined;
+    const entry = catalog.providers[providerId]?.models[model];
     if (!entry) return null;
 
     const policy: PricingPolicy = {
@@ -140,4 +141,31 @@ export function createLiveModelsDevResolver(options: LiveCatalogOptions = {}): P
     };
     return validatePricingPolicy(policy).ok ? policy : null;
   };
+}
+
+/**
+ * Fetch models.dev and return it as a readable catalog.
+ *
+ * The counterpart to `loadPinnedCatalog()` for consumers who want the current price list
+ * rather than the shipped one — to render a model picker, build a markup table, or diff
+ * against the pinned artifact to see what upstream changed.
+ *
+ * Unlike the resolver this does not cache: it is a deliberate one-shot fetch, so a caller
+ * showing a price list decides its own refresh policy.
+ */
+export async function fetchLiveCatalog(
+  options: Pick<LiveCatalogOptions, "url"> = {},
+): Promise<PricingCatalog> {
+  const response = await fetch(options.url ?? CATALOG_URL);
+  if (!response.ok) throw new Error(`models.dev returned ${response.status}`);
+  const raw = (await response.json()) as Record<string, RawProvider>;
+  const { catalog } = buildCatalog(raw);
+  const artifactSha256 = createHash("sha256")
+    .update(serializeCatalog(catalog), "utf8")
+    .digest("hex");
+  return makeCatalog(catalog.providers as Readonly<Record<string, CatalogProvider>>, {
+    kind: "models.dev_live",
+    artifactSha256,
+    fetchedAt: Date.now(),
+  });
 }

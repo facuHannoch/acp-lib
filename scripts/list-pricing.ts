@@ -1,52 +1,32 @@
 #!/usr/bin/env bun
-// Print the pinned pricing catalog: what the library can price, and at what rates.
+// Print the pricing catalog: what the library can price, and at what rates.
 //
-// Reads the shipped artifact, not the network, so this is exactly what a record engraved
-// today would be rated against — including the catalog identity a stored record carries.
+// Uses only the library's PUBLIC API — the same `loadPinnedCatalog()` / `fetchLiveCatalog()`
+// a consumer would call. That is deliberate: it was previously deep-importing the catalog
+// JSON, a path no consumer can take, so the tool worked while the capability did not exist.
 //
 // Usage:
-//   bun run scripts/list-pricing.ts                    # provider summary
-//   bun run scripts/list-pricing.ts opencode-go        # one provider's models
-//   bun run scripts/list-pricing.ts --all              # every model
-//   bun run scripts/list-pricing.ts --json opencode    # machine-readable
+//   bun run pricing:list                      # provider summary (pinned)
+//   bun run pricing:list opencode-go          # one provider's models
+//   bun run pricing:list --all                # every model
+//   bun run pricing:list --live opencode-go   # current upstream prices
+//   bun run pricing:list --json opencode      # machine-readable
 
 import {
-  MODELS_DEV_SOURCE,
-  catalogProviderIds,
-  createModelsDevResolver,
-  verifyCatalogIntegrity,
-} from "../src/metering/catalog/index.ts";
-import { pricingCapturedAt } from "../src/metering/pricing.ts";
-import type { PricingPolicy } from "../src/metering/pricing.ts";
+  fetchLiveCatalog,
+  loadPinnedCatalog,
+  pricingCapturedAt,
+  type CatalogEntry,
+  type PricingCatalog,
+} from "../src/index.ts";
 
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const all = args.includes("--all");
+const live = args.includes("--live");
 const wanted = args.filter((arg) => !arg.startsWith("--"));
 
-verifyCatalogIntegrity();
-const resolve = createModelsDevResolver();
-
-const catalog = (await import("../src/metering/catalog/models-dev.catalog.json", {
-  with: { type: "json" },
-})).default as {
-  providers: Record<string, { conventionEvidence: string; models: Record<string, unknown> }>;
-};
-
-function policyFor(providerId: string, modelId: string): PricingPolicy | null {
-  const policy = resolve({
-    scope: "operation",
-    agentSessionId: "-",
-    internalSessionId: null,
-    operationId: "-",
-    adapterId: "-",
-    providerId,
-    model: modelId,
-    operationKind: "prompt",
-    at: Date.now(),
-  });
-  return policy instanceof Promise ? null : policy;
-}
+const catalog: PricingCatalog = live ? await fetchLiveCatalog() : loadPinnedCatalog();
 
 interface Row {
   provider: string;
@@ -60,66 +40,61 @@ interface Row {
   updated: string;
 }
 
-function rowsFor(providerId: string): Row[] {
-  const rows: Row[] = [];
-  for (const modelId of Object.keys(catalog.providers[providerId]?.models ?? {}).sort()) {
-    const policy = policyFor(providerId, modelId);
-    if (!policy) continue;
-    const base = policy.schedules.find((s) => s.tier === "default") ?? policy.schedules[0]!;
-    const extra = policy.schedules.filter((s) => s.tier !== "default").map((s) => s.tier);
-    rows.push({
-      provider: providerId,
-      model: modelId,
-      input: base.input.amount,
-      output: base.output.amount,
-      cachedRead: base.cachedRead?.amount ?? "—",
-      cachedWrite: base.cachedWrite?.amount ?? "—",
-      // A model with no separate reasoning price still prices reasoning when the provider
-      // bills it as output; showing which is the point.
-      thought: base.thought
-        ? base.thought.amount
-        : base.thoughtConvention === "billed_as_output"
-          ? `= output`
-          : "—",
-      tiers: extra.length > 0 ? extra.join(", ") : "—",
-      // When the DATA changed upstream, which the catalog timestamp does not tell you.
-      updated: policy.modelLastUpdated ?? "—",
-    });
-  }
-  return rows;
+function toRow(entry: CatalogEntry): Row {
+  const base = entry.schedules.find((s) => s.tier === "default") ?? entry.schedules[0]!;
+  const extra = entry.schedules.filter((s) => s.tier !== "default").map((s) => s.tier);
+  return {
+    provider: entry.providerId,
+    model: entry.modelId,
+    input: base.input.amount,
+    output: base.output.amount,
+    cachedRead: base.cachedRead?.amount ?? "—",
+    cachedWrite: base.cachedWrite?.amount ?? "—",
+    // A model with no separate reasoning price is still priceable when the provider bills
+    // reasoning as output; showing which is the point.
+    thought: base.thought
+      ? base.thought.amount
+      : base.thoughtConvention === "billed_as_output"
+        ? "= output"
+        : "—",
+    tiers: extra.length > 0 ? extra.join(", ") : "—",
+    // When the DATA changed upstream — a different question from when we captured it.
+    updated: entry.modelLastUpdated ?? "—",
+  };
 }
 
-const providers = wanted.length > 0 ? wanted : catalogProviderIds();
+const selected = wanted.length > 0 ? wanted.flatMap((id) => catalog.entries(id)) : catalog.entries();
 
 if (asJson) {
-  const out = providers.flatMap(rowsFor);
-  process.stdout.write(`${JSON.stringify({ source: MODELS_DEV_SOURCE, models: out }, null, 2)}\n`);
+  process.stdout.write(
+    `${JSON.stringify({ source: catalog.source, models: selected.map(toRow) }, null, 2)}\n`,
+  );
 } else {
-  const lines: string[] = [""];
-  const source = MODELS_DEV_SOURCE;
+  const source = catalog.source;
   const capturedAt = pricingCapturedAt(source);
-  lines.push(
+  const lines: string[] = [
+    "",
     source.kind === "models.dev"
       ? `catalog   models.dev@${source.commit.slice(0, 12)}  sha256:${source.artifactSha256.slice(0, 12)}`
-      : `catalog   ${source.kind}`,
-    // Two different questions: when we snapshotted the catalog, and when each model's
-    // entry last changed upstream. A fresh snapshot can carry year-old prices.
+      : source.kind === "models.dev_live"
+        ? `catalog   models.dev (live)  sha256:${source.artifactSha256.slice(0, 12)}`
+        : `catalog   ${source.kind}`,
+    // Two different questions: when we captured the catalog, and when each model's entry
+    // last changed upstream. A fresh capture can carry year-old prices.
     `captured  ${capturedAt ? new Date(capturedAt).toISOString() : "unknown"}`,
     "prices are USD per 1,000,000 tokens; 'data updated' is the upstream entry date",
     "",
-  );
+  ];
 
   if (wanted.length === 0 && !all) {
     lines.push("PROVIDERS THE LIBRARY CAN PRICE", "");
-    for (const providerId of providers) {
-      const rows = rowsFor(providerId);
-      lines.push(`  ${providerId.padEnd(14)} ${String(rows.length).padStart(4)} models`);
-      lines.push(`  ${" ".repeat(14)} ${catalog.providers[providerId]!.conventionEvidence}`);
-      lines.push("");
+    for (const provider of catalog.providers) {
+      lines.push(`  ${provider.providerId.padEnd(14)} ${String(provider.modelCount).padStart(4)} models`);
+      lines.push(`  ${" ".repeat(14)} ${provider.conventionEvidence}`, "");
     }
-    lines.push("Pass a provider id for its models, or --all for everything.", "");
+    lines.push("Pass a provider id for its models, --all for everything, --live for current prices.", "");
   } else {
-    const rows = (all ? catalogProviderIds() : providers).flatMap(rowsFor);
+    const rows = (all ? catalog.entries() : selected).map(toRow);
     const columns: Array<[string, keyof Row]> = [
       ["provider", "provider"],
       ["model", "model"],

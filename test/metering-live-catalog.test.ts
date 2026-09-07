@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { createLiveModelsDevResolver } from "../src/metering/catalog/live.ts";
+import { createLiveModelsDevResolver, fetchLiveCatalog } from "../src/metering/catalog/live.ts";
 import { createModelsDevResolver } from "../src/metering/catalog/index.ts";
 import { pricingCapturedAt } from "../src/metering/pricing.ts";
 import type { PricingContext, PricingPolicy } from "../src/metering/pricing.ts";
@@ -161,5 +161,22 @@ describe("live models.dev resolver", () => {
       // A second call retries rather than serving a poisoned cache entry.
       await expect(resolve(context())).rejects.toThrow();
     });
+  });
+});
+
+describe("fetchLiveCatalog", () => {
+  test("returns the same readable shape as the pinned catalog", async () => {
+    const live = await fetchLiveCatalog({ url: `${base}/api.json` });
+    expect(live.source.kind).toBe("models.dev_live");
+    const entry = live.get("opencode-go", "kimi-k2.6");
+    expect(entry?.schedules[0]!.input.amount).toBe("0.95");
+    expect(entry?.modelLastUpdated).toBe("2026-05-21");
+    expect(live.entries("opencode-go").map((e) => e.modelId)).toEqual(["kimi-k2.6"]);
+  });
+
+  test("surfaces a fetch failure rather than returning an empty catalog", async () => {
+    // An empty catalog would read as "nothing is priceable", which is a different and
+    // much quieter failure than "the catalog could not be fetched".
+    await expect(fetchLiveCatalog({ url: `${base}/fail` })).rejects.toThrow(/503/);
   });
 });

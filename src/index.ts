@@ -222,13 +222,19 @@ export type {
   PricingSource,
   TokenCategory,
 } from "./metering/pricing.ts";
-export { createLiveModelsDevResolver } from "./metering/catalog/live.ts";
+export { createLiveModelsDevResolver, fetchLiveCatalog } from "./metering/catalog/live.ts";
 export type { LiveCatalogOptions } from "./metering/catalog/live.ts";
 export {
   MODELS_DEV_SOURCE,
   catalogProviderIds,
   createModelsDevResolver,
+  loadPinnedCatalog,
   verifyCatalogIntegrity,
+} from "./metering/catalog/index.ts";
+export type {
+  CatalogEntry,
+  CatalogProviderInfo,
+  PricingCatalog,
 } from "./metering/catalog/index.ts";
 export type { UsageNormalization } from "./metering/usage.ts";
 
