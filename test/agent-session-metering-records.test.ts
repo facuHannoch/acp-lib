@@ -7,6 +7,10 @@ import {
   type AgentSessionPromptResult,
 } from "../src/agent-session.ts";
 import { AgentSessionOperationError } from "../src/metering/record.ts";
+import {
+  CERTIFIED_INTEGRATIONS,
+  certificationFor,
+} from "../src/metering/certification.ts";
 import type { PricingPolicy, PricingResolver } from "../src/metering/pricing.ts";
 
 function usageAdapter() {
@@ -360,12 +364,6 @@ describe("telemetry_required enforcement", () => {
     }
   });
 
-  test("billing_required is refused until a certified integration exists", async () => {
-    await expect(
-      openSession({ metering: { enforcement: "billing_required" } }),
-    ).rejects.toThrow(/certified metering integration/);
-  });
-
   test("a foreign restored state fails preflight in a strict mode", async () => {
     await expect(
       openSession({
@@ -533,5 +531,36 @@ describe("provider cost reconciliation", () => {
     } finally {
       await session.stop();
     }
+  });
+});
+
+describe("billing_required certification gate", () => {
+  test("is refused for every adapter, because none is certified yet", async () => {
+    for (const adapterId of ["opencode", "claude", "codex", "anything"]) {
+      await expect(
+        openSession({ adapterId, metering: { enforcement: "billing_required" } }),
+      ).rejects.toThrow(/certified metering integration/);
+    }
+  });
+
+  test("the refusal names the adapter and says why ACP cannot satisfy it", async () => {
+    let caught: unknown;
+    try {
+      await openSession({ adapterId: "opencode", metering: { enforcement: "billing_required" } });
+    } catch (err) {
+      caught = err;
+    }
+    const message = String(caught);
+    expect(message).toContain('"opencode"');
+    expect(message).toContain("no integrations are certified yet");
+    // The reason a consumer most needs: one inference reported, several billed.
+    expect(message).toContain("tool-using turn bills several");
+  });
+
+  test("certification cannot be granted from consumer configuration", () => {
+    // A flag on the consumer-constructible Adapter object would let a caller assert the
+    // very thing this mode exists to verify (§9).
+    expect(certificationFor("opencode")).toBeNull();
+    expect(CERTIFIED_INTEGRATIONS).toEqual([]);
   });
 });

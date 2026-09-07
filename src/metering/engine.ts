@@ -32,6 +32,7 @@ import type {
 } from "./pricing.ts";
 import { validatePricingPolicy } from "./pricing.ts";
 import { counterInterpretationForAdapter, type CounterInterpretation } from "./provider.ts";
+import { billingRefusalReason, certificationFor } from "./certification.ts";
 import { rateDelta, selectSchedule, unpricedUsage, type AttributableUsage, type BillingFacts } from "./rating.ts";
 import { ratioOf, subtractMoney, type Money } from "./money.ts";
 import {
@@ -119,12 +120,11 @@ export class MeteringEngine {
         `metering initialState rejected: ${restoration.reason}`,
       );
     }
-    if (options.enforcement === "billing_required") {
-      // No certified integration is registered yet, and plain ACP usage can never satisfy
-      // this mode. Failing at construction is the honest answer.
-      throw new MeteringPreflightError(
-        "billing_required needs a certified metering integration; none is registered",
-      );
+    if (options.enforcement === "billing_required" && !certificationFor(options.adapterId)) {
+      // Refused at construction rather than at the first prompt: a consumer asking for
+      // billing-grade metering should learn it is unavailable before any work is queued,
+      // not after a turn has already been paid for.
+      throw new MeteringPreflightError(billingRefusalReason(options.adapterId));
     }
   }
 

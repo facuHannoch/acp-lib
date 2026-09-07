@@ -3911,3 +3911,53 @@ That doesn't *fix* the gap — those tokens stay invisible to ACP — but it tur
 This also vindicates the spec's own architecture. §13 keeps provider-reported cost strictly separate from locally rated cost and refuses to merge them; that separation is exactly what made the discrepancy visible instead of averaged away. And the earlier critique's insistence that `routing`/`attribution` be evidence rather than configuration was right for precisely this reason — I just didn't have the measurement to see how large the gap was.
 
 413 tests passing. If you want to go further on the vendor case, the next step isn't more ACP work — it's the certified OpenCode plugin, which sees each inference directly and is the only thing that closes the gap rather than measuring it.
+
+
+
+
+
+
+
+
+I built one and ran it against the exact turn that under-reported. It closes the question completely.
+
+## The mechanism
+
+A plugin is a JS file in `.opencode/plugin/` (project) or `~/.config/opencode/plugin/` (global), auto-loaded at startup. It exports a function returning hooks. The one that matters is `event` — and specifically `message.updated` for assistant messages, because **each assistant message is one inference**, carrying:
+
+```ts
+{ id, sessionID, providerID, modelID, summary,
+  cost: number,
+  tokens: { input, output, reasoning, cache: { read, write } } }
+```
+
+## What it measured
+
+Same tool-calling turn, side by side:
+
+```
+plugin   msg …nsIApcUigt   cost 0.00251802   tokens 8840
+         msg …SFA5bqoqKL   cost 0.00239172   tokens 9118
+         sum               0.00490974
+
+ACP rated (one inference)  0.00239172
+provider's actual cost     0.00490974   ← equals the plugin sum, exactly
+```
+
+Two inferences. **ACP reported only the last one and silently dropped the first.** The plugin saw both, and their costs sum to the provider's own figure to the digit. That's where the missing 2–3× went.
+
+## Three details a real integration must handle
+
+**Dedupe by `messageID`.** `message.updated` fired **12 times for 2 inferences** — it streams. Only the state with `time.completed` set is final; the earlier ones carry zeroed tokens and would sum to nonsense.
+
+**The categories are disjoint.** `input + output + reasoning + cache.read + cache.write` equals `tokens.total` exactly — independently confirming the convention I derived through ACP. Cache excluded from input, reasoning from output.
+
+**`providerID` is reported per message.** That's the structured provider evidence §7 asks for. It removes the model-string splitting I had to do, and it's what would let OpenCode price correctly across all 200+ providers rather than the two gateway namespaces.
+
+`summary: true` marks a compaction message — an inference no user prompt asked for, and exactly the kind ACP hides.
+
+## One correction
+
+The earlier design critique claimed `http.request`/`http.response` hooks with `event.kind` of `primary | compaction | title | generate`. Those exist only in **v2** docs. The installed `@opencode-ai/plugin` is **1.18.10** and has no such hooks — but it doesn't need them. The `event` hook is available today and is sufficient, which makes the certified path nearer than the critique assumed.
+
+I committed the probe and its measurement as `smoke-tests/test6-metering/opencode-plugin/`. It is explicitly not production code — it doesn't attribute inferences to an `AgentSession` operation, handle the channel dropping, pin a version, or fail closed. That's the substance of the certified integration, and it's now a well-specified piece of work rather than a hypothesis.

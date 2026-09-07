@@ -157,6 +157,12 @@ export type {
   OperationOutcome,
   ProviderIdentitySnapshot,
 } from "./metering/record.ts";
+export {
+  CERTIFIED_INTEGRATIONS,
+  billingRefusalReason,
+  certificationFor,
+} from "./metering/certification.ts";
+export type { CertificationRequirements } from "./metering/certification.ts";
 export { MeteringEngine } from "./metering/engine.ts";
 export type { MeteringEngineOptions, OpenOperation } from "./metering/engine.ts";
 export {
