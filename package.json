@@ -51,7 +51,8 @@
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test",
     "pack:dry": "bun pm pack --dry-run",
-    "generate:pricing": "bun run scripts/generate-pricing-catalog.ts"
+    "generate:pricing": "bun run scripts/generate-pricing-catalog.ts",
+    "pricing:list": "bun run scripts/list-pricing.ts"
   },
   "engines": {
     "bun": ">=1.3.5"
