@@ -22,17 +22,19 @@
 //   1  a check failed — see the report
 //   2  inconclusive: the harness never compacted, or the fixture could not start
 //
-// Two ways to make compaction happen:
-//   forced (default)  shrink the usable window with `compaction.reserved`, so it triggers
-//                     within a few turns for pennies. Fast, but it changes harness config,
-//                     so it is testing OpenCode under an unusual setting.
-//   --natural         leave config alone and just keep talking until it fires. Slower and
-//                     costs more, but it is the behaviour real consumers will hit.
+// Compaction is triggered HONESTLY: the harness's own settings are left alone and context
+// is filled with real reads until OpenCode decides to compact.
 //
-// If the forced mode stalls, the window is too small — the harness compacts repeatedly
-// without making progress. LOWER --reserved, which holds back fewer tokens and therefore
-// leaves MORE usable context. Observed: 250000 against a 256k model leaves ~6k usable and
-// never completes a turn.
+// An earlier version forced it with OpenCode's `compaction.reserved`, on the assumption
+// that it holds tokens back from the model's limit. That reading was wrong. At
+// reserved=200000 against a 256k model the window should have been ~56k and never
+// compacted; instead the harness compacted 19 times in 120s without completing a single
+// turn, while natural runs on the same model used only 10k of 256k and finished cleanly.
+// Whatever `reserved` means, forcing it produces a pathological loop rather than the
+// behaviour under test — so the knob is gone.
+//
+// The cost is bounded by prompt caching: after the first read, re-reads bill at the
+// cache-read rate, which is a fraction of input.
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,7 +51,7 @@ const has = (name: string) => process.argv.includes(`--${name}`);
 
 // Guard first: every other path in this file spends money, and an unrecognised flag
 // falling through to a live run is an expensive way to learn about a typo.
-const KNOWN = new Set(["--model", "--reserved", "--turns", "--timeout-ms", "--natural"]);
+const KNOWN = new Set(["--model", "--fill-kb", "--turns", "--timeout-ms"]);
 const unknown = process.argv.slice(2).filter(
   (arg, index, all) => arg.startsWith("--") && !KNOWN.has(arg) && all[index] === arg,
 );
@@ -58,21 +60,18 @@ if (has("help") || has("h") || unknown.length > 0) {
     (unknown.length > 0 ? `unknown flag: ${unknown.join(", ")}\n\n` : "") +
       "compaction-smoke — does the certified channel see compaction inferences?\n" +
       "SPENDS REAL TOKENS.\n\n" +
-      "  --model <id>       default opencode-go/hy3\n" +
-      "  --reserved <n>     tokens held back from the context limit (default 200000).\n" +
-      "                     LOWER it to leave more usable window if a turn stalls.\n" +
-      "  --turns <n>        default 6 forced, 25 natural\n" +
-      "  --timeout-ms <n>   per-turn stall timeout (default 120000)\n" +
-      "  --natural          do not touch compaction config; just keep talking\n",
+      "  --model <id>       default opencode-go/hy3 (256k context, cheap)\n" +
+      "  --fill-kb <n>      size of the file re-read each turn (default 120)\n" +
+      "  --turns <n>        default 12; raise if compaction never fires\n" +
+      "  --timeout-ms <n>   per-turn stall timeout (default 120000)\n",
   );
   process.exit(unknown.length > 0 ? 1 : 0);
 }
 
 const MODEL = flag("model") ?? "opencode-go/hy3";
-const NATURAL = has("natural");
-/** Tokens held back from the context limit. Higher = smaller usable window. */
-const RESERVED = Number(flag("reserved") ?? 200_000);
-const TURNS = Number(flag("turns") ?? (NATURAL ? 25 : 6));
+/** Approximate size of the file re-read each turn; this is what fills the window. */
+const FILL_KB = Number(flag("fill-kb") ?? 120);
+const TURNS = Number(flag("turns") ?? 12);
 /** A stalled turn is a result, not a reason to hang. */
 const TURN_TIMEOUT_MS = Number(flag("timeout-ms") ?? 120_000);
 
@@ -139,10 +138,15 @@ async function readExport(sessionId: string): Promise<ExportedAssistant[] | null
 
 async function main(): Promise<number> {
   const root = await mkdtemp(join(tmpdir(), "acp-compaction-"));
-  // Big enough to fill a shrunken window in a couple of reads; small enough to be cheap.
+  // Large enough that a handful of reads fill a real context window. Re-reading the same
+  // file is what makes this affordable: after the first turn it bills at the cache rate.
+  const perSection = 400;
+  const sectionCount = Math.max(1, Math.round((FILL_KB * 1024) / perSection));
   const sections = Array.from(
-    { length: 12 },
-    (_, index) => `## Section ${index + 1}\n` + `Notes about topic ${index + 1}. `.repeat(8),
+    { length: sectionCount },
+    (_, index) =>
+      `## Section ${index + 1}\n` +
+      `Notes about topic ${index + 1}. `.repeat(Math.round(perSection / 26)),
   ).join("\n\n");
   await writeFile(join(root, "notes.md"), `# Notes\n\n${sections}\n`, "utf8");
 
@@ -155,9 +159,8 @@ async function main(): Promise<number> {
       {
         $schema: "https://opencode.ai/config.json",
         plugin: [meteringPluginPath()],
-        // Natural mode leaves compaction settings alone, so the run exercises the harness
-        // as a real consumer would meet it.
-        ...(NATURAL ? {} : { compaction: { auto: true, reserved: RESERVED } }),
+        // Compaction settings are deliberately untouched: the run must exercise the
+        // harness as a real consumer meets it, not under a synthetic configuration.
       },
       null,
       2,
@@ -180,10 +183,13 @@ async function main(): Promise<number> {
 
   await session.setConfig("model", MODEL);
   console.log(
-    `mode ${NATURAL ? "natural" : `forced (reserved ${RESERVED.toLocaleString()})`}  ` +
-      `model ${session.advertisedModel}  turns ${TURNS}\n`,
+    `model ${session.advertisedModel}  fill ${FILL_KB}KB/turn  up to ${TURNS} turns\n`,
   );
 
+  // Every inference the channel saw, whether or not an operation claimed it. A stalled
+  // turn never closes, so nothing is drained into it — but the channel still SAW the work,
+  // and capture is the question this test exists to answer.
+  const attributed: { tokens: number; cost: number } = { tokens: 0, cost: 0 };
   const observed: ProviderInference[] = [];
   let stalled: string | null = null;
   let ratioFailures = 0;
@@ -209,6 +215,12 @@ async function main(): Promise<number> {
 
     const usage = record.usage;
     const reconciliation = record.costReconciliation;
+    if (usage.status === "metered") {
+      attributed.tokens += usage.attributable.totalTokens;
+      if (reconciliation.status === "checked") {
+        attributed.cost += Number(reconciliation.providerDelta.amount);
+      }
+    }
     if (usage.status !== "metered") unavailable += 1;
     if (reconciliation.status === "checked" && !reconciliation.matches) ratioFailures += 1;
 
@@ -230,8 +242,7 @@ async function main(): Promise<number> {
     check(
       "turns completed",
       false,
-      `stalled: ${stalled}. In forced mode this usually means the window is too small — ` +
-        `RAISE --reserved is wrong, LOWER it to leave more usable context.`,
+      `stalled: ${stalled}. Try a smaller --fill-kb, or a longer --timeout-ms.`,
     );
   }
 
@@ -247,9 +258,7 @@ async function main(): Promise<number> {
     check(
       "compaction occurred",
       null,
-      NATURAL
-        ? `no compaction in ${TURNS} turns — run with more --turns, or use forced mode`
-        : `no compaction at reserved=${RESERVED} — lower it to shrink the window further`,
+      `no compaction in ${TURNS} turns — raise --turns or --fill-kb to fill the window faster`,
     );
     return report(2);
   }
@@ -257,27 +266,38 @@ async function main(): Promise<number> {
 
   const exportedCost = exported.reduce((total, message) => total + message.cost, 0);
   const exportedTokens = exported.reduce((total, message) => total + message.tokens, 0);
+
+  // CAPTURE: did the channel see everything OpenCode charged for? This is the question,
+  // and it is independent of whether an operation ended up claiming the work.
+  const seenCost = observed.reduce((total, i) => total + i.cost, 0) + attributed.cost;
+  const seenTokens =
+    observed.reduce((total, i) => total + i.tokens.totalTokens, 0) + attributed.tokens;
+  const captureCost = Math.abs(exportedCost - seenCost) < 1e-9;
+  check(
+    "channel saw every inference OpenCode charged for",
+    captureCost,
+    `seen ${seenCost} vs export ${exportedCost}` +
+      (captureCost ? ` (${compactions} compaction inference(s) included)` : " — the gap went unbilled"),
+  );
+  check(
+    "channel saw every token OpenCode counted",
+    seenTokens === exportedTokens,
+    `seen ${seenTokens} vs export ${exportedTokens}`,
+  );
+
+  // ATTRIBUTION: separate question. A stalled turn captures work it never claims.
   const ourCost = Number(snapshot.ratedCosts[0]?.amount ?? 0);
   const ourTokens = snapshot.totals.total.knownTokens;
-
-  // Costs are floats on OpenCode's side; compare at the precision the API reports.
-  const costMatches = Math.abs(exportedCost - ourCost) < 1e-9;
   check(
-    "cost matches OpenCode's own record",
-    costMatches,
-    `ours ${ourCost} vs export ${exportedCost}`,
+    "attributed totals match OpenCode's own record",
+    Math.abs(exportedCost - ourCost) < 1e-9,
+    `attributed ${ourCost} vs export ${exportedCost}` +
+      (observed.length > 0 ? ` — ${observed.length} inference(s) never claimed by an operation` : ""),
   );
   check(
-    "tokens match OpenCode's own record",
+    "attributed tokens match OpenCode's own record",
     ourTokens === exportedTokens,
-    `ours ${ourTokens} vs export ${exportedTokens}`,
-  );
-  check(
-    "compaction inferences were captured",
-    costMatches,
-    costMatches
-      ? `totals agree with ${compactions} compaction inference(s) included`
-      : `totals differ — the gap is what the channel missed`,
+    `attributed ${ourTokens} vs export ${exportedTokens}`,
   );
   check(
     "every operation reconciled",
