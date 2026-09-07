@@ -11,7 +11,7 @@
 // answers. Credentials are unaffected either way: OpenCode keeps them in its data
 // directory, not its config.
 
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,15 +26,58 @@ function userConfigCandidates(): string[] {
   ].filter((path) => path.length > 0);
 }
 
-/** Strip comments and trailing commas so a `.jsonc` config can be merged. */
+/**
+ * Parse a possibly-JSONC config.
+ *
+ * Plain JSON is tried first, because that is what most configs are and it needs no
+ * rewriting at all. Only if that fails are comments and trailing commas stripped, and the
+ * stripping is string-aware: a naive regex mangles `"path": "a//b"` and anything
+ * containing a comment marker inside a string value.
+ */
 function parseJsonc(text: string): Record<string, unknown> | null {
+  const accept = (value: unknown): Record<string, unknown> | null =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+
   try {
-    const withoutComments = text
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|[^:])\/\/.*$/gm, "$1");
-    const withoutTrailingCommas = withoutComments.replace(/,(\s*[}\]])/g, "$1");
-    const parsed = JSON.parse(withoutTrailingCommas);
-    return typeof parsed === "object" && parsed !== null ? parsed : null;
+    return accept(JSON.parse(text));
+  } catch {
+    // Fall through to comment stripping.
+  }
+
+  let cleaned = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (inString) {
+      cleaned += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      cleaned += char;
+      continue;
+    }
+    if (char === "/" && text[index + 1] === "/") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      cleaned += "\n";
+      continue;
+    }
+    if (char === "/" && text[index + 1] === "*") {
+      const end = text.indexOf("*/", index + 2);
+      index = end === -1 ? text.length : end + 1;
+      continue;
+    }
+    cleaned += char;
+  }
+
+  try {
+    return accept(JSON.parse(cleaned.replace(/,(\s*[}\]])/g, "$1")));
   } catch {
     return null;
   }
@@ -45,6 +88,18 @@ export interface ManagedProfile {
   readonly configPath: string;
   /** True when an existing user config was found and carried forward. */
   readonly mergedUserConfig: boolean;
+  /** Remove the temporary profile directory. */
+  cleanup(): Promise<void>;
+}
+
+export interface ManagedProfileOptions {
+  /**
+   * Called when a user config exists but could not be parsed.
+   *
+   * OPENCODE_CONFIG replaces the user's config, so proceeding without theirs silently
+   * changes which model answers. The caller decides whether that is acceptable.
+   */
+  readonly onUnreadableConfig?: (path: string) => void;
 }
 
 /**
@@ -54,21 +109,30 @@ export interface ManagedProfile {
  * consumer's plugins are theirs, and silently disabling them to meter would be a worse
  * bug than not metering.
  */
-export async function writeManagedProfile(pluginPath: string): Promise<ManagedProfile> {
+export async function writeManagedProfile(
+  pluginPath: string,
+  options: ManagedProfileOptions = {},
+): Promise<ManagedProfile> {
   let base: Record<string, unknown> = {};
   let mergedUserConfig = false;
 
   for (const candidate of userConfigCandidates()) {
+    let text: string;
     try {
-      const parsed = parseJsonc(await readFile(candidate, "utf8"));
-      if (parsed) {
-        base = parsed;
-        mergedUserConfig = true;
-        break;
-      }
+      text = await readFile(candidate, "utf8");
     } catch {
-      // Missing or unreadable: try the next candidate. A user with no config is normal.
+      continue; // Missing: a user with no config is normal.
     }
+    const parsed = parseJsonc(text);
+    if (parsed) {
+      base = parsed;
+      mergedUserConfig = true;
+      break;
+    }
+    // Present but unparseable. Dropping it silently would change which model answers,
+    // so the caller is told rather than left to wonder.
+    options.onUnreadableConfig?.(candidate);
+    break;
   }
 
   const existing = Array.isArray(base.plugin) ? (base.plugin as unknown[]) : [];
@@ -81,7 +145,12 @@ export async function writeManagedProfile(pluginPath: string): Promise<ManagedPr
   const directory = await mkdtemp(join(tmpdir(), "acp-opencode-profile-"));
   const configPath = join(directory, "opencode.json");
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  return { configPath, mergedUserConfig };
+  return {
+    configPath,
+    mergedUserConfig,
+    // The profile lives in the OS temp dir; leaving one behind per session is a slow leak.
+    cleanup: () => rm(directory, { recursive: true, force: true }),
+  };
 }
 
 /** Absolute path of the plugin file shipped with the library. */

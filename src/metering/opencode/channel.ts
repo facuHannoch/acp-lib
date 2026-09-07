@@ -19,8 +19,8 @@ export interface ProviderInference {
   /** True for compaction summaries: an inference no user prompt asked for. */
   readonly summary: boolean;
   readonly completedAt: number;
-  /** OpenCode's own cost figure for this inference. */
-  readonly cost: number;
+  /** OpenCode's own cost figure, or null when it reported none. Never a fabricated zero. */
+  readonly cost: number | null;
   readonly tokens: TokenUsage;
 }
 
@@ -81,6 +81,12 @@ function normalizeInference(raw: RawInference): ProviderInference | null {
     ...(reasoning !== null ? { thoughtTokens: reasoning } : {}),
   };
 
+  // A malformed cost is NOT zero. Coercing it would put a fabricated zero into a billing
+  // ledger, which is the exact failure this design refuses everywhere else.
+  if (raw.cost !== undefined && raw.cost !== null) {
+    if (typeof raw.cost !== "number" || !Number.isFinite(raw.cost) || raw.cost < 0) return null;
+  }
+
   return Object.freeze({
     messageID,
     sessionID,
@@ -88,7 +94,8 @@ function normalizeInference(raw: RawInference): ProviderInference | null {
     modelID,
     summary: raw.summary === true,
     completedAt,
-    cost: typeof raw.cost === "number" && Number.isFinite(raw.cost) && raw.cost >= 0 ? raw.cost : 0,
+    // Absent cost is genuinely unknown; the record still carries its tokens.
+    cost: typeof raw.cost === "number" ? raw.cost : null,
     tokens: Object.freeze(tokens),
   });
 }
@@ -178,8 +185,27 @@ export class OpencodeMeteringChannel {
     });
   }
 
-  /** Take everything collected since the last drain. */
-  drain(): readonly ProviderInference[] {
+  /**
+   * Take the records collected for one provider thread since the last drain.
+   *
+   * Scoped deliberately. An unscoped drain charges the next operation for anything the
+   * harness did elsewhere — background work, or a late inference from a thread a handoff
+   * already replaced. Records for other threads stay pending and surface through
+   * `drainAll()` as unallocated rather than being attributed to work that did not cause
+   * them.
+   */
+  drain(sessionId?: string | null): readonly ProviderInference[] {
+    const drained: ProviderInference[] = [];
+    for (const [messageId, inference] of this.pending) {
+      if (sessionId && inference.sessionID !== sessionId) continue;
+      drained.push(inference);
+      this.pending.delete(messageId);
+    }
+    return Object.freeze(drained);
+  }
+
+  /** Take everything still pending, whatever thread it belongs to. */
+  drainAll(): readonly ProviderInference[] {
     const drained = Object.freeze([...this.pending.values()]);
     this.pending.clear();
     return drained;

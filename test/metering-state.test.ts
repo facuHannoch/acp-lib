@@ -204,3 +204,47 @@ describe("state restoration", () => {
     expect(result.reason).toBe("initial_state_version_unsupported");
   });
 });
+
+describe("structural validation of restored state", () => {
+  const corrupt = (mutate: (state: Record<string, any>) => void) => {
+    const state = structuredClone(emptyMeteringState("agent-1")) as Record<string, any>;
+    mutate(state);
+    return restoreMeteringState(state as AgentSessionMeteringState, "agent-1");
+  };
+
+  test("a matching version and id is not proof the rest survived", () => {
+    // This state comes back from a consumer's database and feeds totals a bill is drawn
+    // from, so a truncated write must be refused rather than absorbed.
+    for (const mutate of [
+      (s: Record<string, any>) => delete s.totals,
+      (s: Record<string, any>) => (s.totals.input = undefined),
+      (s: Record<string, any>) => (s.totals.total.knownTokens = -5),
+      (s: Record<string, any>) => (s.totals.output.knownTokens = "many"),
+      (s: Record<string, any>) => (s.operationCount = 1.5),
+      (s: Record<string, any>) => (s.ratedCosts = [{ amount: "1e6", currency: "USD" }]),
+      (s: Record<string, any>) => (s.activeBaseline = { adapterId: "x" }),
+      (s: Record<string, any>) =>
+        (s.activeBaseline = {
+          adapterId: "x",
+          internalSessionId: "y",
+          reportedUsage: { totalTokens: -1, inputTokens: 0, outputTokens: 0 },
+        }),
+    ]) {
+      const result = corrupt(mutate);
+      expect(result.status).toBe("ignored");
+      if (result.status !== "ignored") continue;
+      expect(result.reason).toBe("initial_state_malformed");
+    }
+  });
+
+  test("a well-formed state with a valid baseline still restores", () => {
+    const result = corrupt((state) => {
+      state.activeBaseline = {
+        adapterId: "claude",
+        internalSessionId: "sess-1",
+        reportedUsage: { totalTokens: 100, inputTokens: 60, outputTokens: 40 },
+      };
+    });
+    expect(result.status).toBe("restored");
+  });
+});

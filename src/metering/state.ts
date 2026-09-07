@@ -11,7 +11,7 @@
 // model simply does not use.
 
 import type { TokenUsage } from "../types.ts";
-import { addMoney, canonicalizeMoney, type Money } from "./money.ts";
+import { addMoney, canonicalizeMoney, isValidMoney, type Money } from "./money.ts";
 import type { CategoryApplicability, TokenCategory } from "./pricing.ts";
 import type { AttributableUsage } from "./rating.ts";
 
@@ -260,7 +260,10 @@ export type StateRestoration =
   | { readonly status: "restored"; readonly version: 2; readonly state: AgentSessionMeteringState }
   | {
       readonly status: "ignored";
-      readonly reason: "initial_state_version_unsupported" | "initial_state_identity_mismatch";
+      readonly reason:
+        | "initial_state_version_unsupported"
+        | "initial_state_identity_mismatch"
+        | "initial_state_malformed";
       readonly providedVersion?: number;
     };
 
@@ -271,6 +274,50 @@ export type StateRestoration =
  * line up between versions are the most dangerous kind of near-match, because the result
  * looks like a successful restore.
  */
+function isCount(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCategoryTotal(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const total = value as Record<string, unknown>;
+  return (
+    isCount(total.knownTokens) &&
+    isCount(total.attributedOperationCount) &&
+    isCount(total.unavailableOperationCount)
+  );
+}
+
+/** Check the shape a restored state must have before any of it is trusted. */
+function isStructurallyValid(state: AgentSessionMeteringState): boolean {
+  if (
+    !isCount(state.operationCount) ||
+    !isCount(state.meteredOperationCount) ||
+    !isCount(state.unmeteredOperationCount)
+  ) {
+    return false;
+  }
+  const totals = state.totals as unknown as Record<string, unknown> | undefined;
+  if (!totals) return false;
+  for (const key of ["total", "input", "output", "cachedRead", "cachedWrite", "thought"]) {
+    if (!isCategoryTotal(totals[key])) return false;
+  }
+  if (!Array.isArray(state.ratedCosts) || !state.ratedCosts.every(isValidMoney)) return false;
+
+  const baseline = state.activeBaseline;
+  if (baseline !== null) {
+    if (typeof baseline !== "object") return false;
+    if (typeof baseline.adapterId !== "string" || typeof baseline.internalSessionId !== "string") {
+      return false;
+    }
+    const usage = baseline.reportedUsage as unknown as Record<string, unknown> | undefined;
+    if (!usage || !isCount(usage.totalTokens) || !isCount(usage.inputTokens) || !isCount(usage.outputTokens)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function restoreMeteringState(
   provided: AgentSessionMeteringState | undefined,
   agentSessionId: string,
@@ -287,6 +334,12 @@ export function restoreMeteringState(
   }
   if (provided.agentSessionId !== agentSessionId) {
     return { status: "ignored", reason: "initial_state_identity_mismatch" };
+  }
+  // A matching version and id is not proof the rest is intact. This state comes back from
+  // a consumer's database or a JSON file and feeds straight into totals a bill is drawn
+  // from, so a truncated write or a hand-edit must be refused rather than absorbed.
+  if (!isStructurallyValid(provided)) {
+    return { status: "ignored", reason: "initial_state_malformed" };
   }
   return { status: "restored", version: METERING_STATE_VERSION, state: provided };
 }

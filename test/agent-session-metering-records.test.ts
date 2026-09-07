@@ -730,7 +730,10 @@ describe("certified inference source", () => {
     }
   });
 
-  test("billing_required blocks after an unhealthy channel", async () => {
+  test("billing_required refuses to dispatch when the channel is unhealthy", async () => {
+    // Preflight, not post-hoc. Letting the first operation through and blocking afterwards
+    // means the provider has already been paid for work that cannot be measured, which is
+    // the one thing this mode exists to prevent.
     const { session } = await openSession({
       adapterId: "opencode",
       metering: {
@@ -740,9 +743,9 @@ describe("certified inference source", () => {
       },
     });
     try {
-      await session.prompt("hello");
-      expect(session.meteringSnapshot.blocked).toBe(true);
-      await expect(session.prompt("again")).rejects.toThrow(/blocked/);
+      await expect(session.prompt("hello")).rejects.toThrow(/not healthy/);
+      // Nothing was dispatched, so nothing was metered.
+      expect(session.meteringSnapshot.operationCount).toBe(0);
     } finally {
       await session.stop();
     }

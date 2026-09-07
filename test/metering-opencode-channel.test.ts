@@ -162,3 +162,53 @@ describe("summing inferences into one operation", () => {
     expect(summed.cachedReadTokens).toBe(100);
   });
 });
+
+describe("review fixes", () => {
+  test("a malformed cost is rejected, not turned into zero", async () => {
+    // A fabricated zero in a billing ledger is the exact failure this design refuses
+    // everywhere else; it had leaked in here as `: 0`.
+    const target = start();
+    // Only values that survive JSON can arrive malformed: NaN and Infinity are serialized
+    // as null, which is the legitimate "not reported" case tested below.
+    for (const cost of ["free", -1, { amount: 1 }, true]) {
+      const response = await post(target, inference({ cost }));
+      expect(response.ok).toBe(false);
+    }
+    expect(target.drain(null)).toHaveLength(0);
+    expect(target.rejectedCount).toBe(4);
+  });
+
+  test("a cost that cannot survive JSON arrives as null, not as zero", async () => {
+    const target = start();
+    await post(target, inference({ cost: Number.NaN }));
+    expect(target.drain(null)[0]?.cost).toBeNull();
+  });
+
+  test("an absent cost is null, and the record still carries its tokens", async () => {
+    const target = start();
+    await post(target, inference({ cost: undefined }));
+    const [record] = target.drain(null);
+    expect(record?.cost).toBeNull();
+    expect(record?.tokens.totalTokens).toBe(8840);
+  });
+
+  test("drain is scoped to one provider thread", async () => {
+    // An unscoped drain charges the next operation for work another thread did — including
+    // late inferences from a thread a handoff already replaced.
+    const target = start();
+    await post(target, inference({ messageID: "a", sessionID: "ses_1" }));
+    await post(target, inference({ messageID: "b", sessionID: "ses_2" }));
+
+    const mine = target.drain("ses_1");
+    expect(mine.map((record) => record.messageID)).toEqual(["a"]);
+    // The other thread's record is still pending, not silently consumed.
+    expect(target.pendingCount).toBe(1);
+    expect(target.drainAll().map((record) => record.messageID)).toEqual(["b"]);
+  });
+
+  test("draining without a thread id takes everything", async () => {
+    const target = start();
+    await post(target, inference({ messageID: "a", sessionID: "ses_1" }));
+    expect(target.drain(null)).toHaveLength(1);
+  });
+});

@@ -886,6 +886,11 @@ export class AgentSession implements AgentClient, Bridgeable {
       }
       // A session may have been created lazily on first prompt (degraded has none).
       this.setInternalSessionId(this.controller.currentSessionId ?? this._internalSessionId);
+      // Metering closes BEFORE local persistence. The provider has already been paid and
+      // has already told us what it charged; letting a transcript or catalog write failure
+      // send us down the catch path would discard usage we are holding and, in a strict
+      // mode, block the session over a local disk problem.
+      const record = await this.closeOperation(operation, res.status, res.usage);
       await this.persist();
       await this.appendTranscript({
         v: 1,
@@ -898,7 +903,6 @@ export class AgentSession implements AgentClient, Bridgeable {
         stopReason: res.stopReason,
         status: res.status,
       });
-      const record = this.closeOperation(operation, res.status, res.usage);
       return Object.freeze({ ...res, operationId: item.turnId, metering: record });
     } catch (err) {
       // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
@@ -923,7 +927,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       });
       // A failed operation may still have consumed tokens, so its record has to survive
       // the rejection rather than only reaching event subscribers.
-      const record = this.closeOperation(operation, "error", null, String(err));
+      const record = await this.closeOperation(operation, "error", null, String(err));
       throw new AgentSessionOperationError(item.turnId, record, err);
     }
   }
@@ -996,10 +1000,10 @@ export class AgentSession implements AgentClient, Bridgeable {
     });
     try {
       const result = await this.controller.prompt(text);
-      records.push(this.closeOperation(operation, result.status, result.usage));
+      records.push(await this.closeOperation(operation, result.status, result.usage));
       return result;
     } catch (err) {
-      records.push(this.closeOperation(operation, "error", null, String(err)));
+      records.push(await this.closeOperation(operation, "error", null, String(err)));
       throw err;
     }
   }
@@ -1010,14 +1014,14 @@ export class AgentSession implements AgentClient, Bridgeable {
    * `contextAfter`/`providerCostAfter` are the latest observations seen by completion.
    * ACP gives no ordering guarantee, so neither is asserted to describe THIS operation.
    */
-  private closeOperation(
+  private async closeOperation(
     operation: OpenOperation,
     outcome: "completed" | "cancelled" | "error",
     reportedCumulative: TokenUsage | null,
     usageFailureReason?: string,
-  ): OperationMeteringRecord {
+  ): Promise<OperationMeteringRecord> {
     const wasBlocked = this.metering.blocked;
-    const record = this.metering.close(operation, {
+    const record = await this.metering.close(operation, {
       outcome,
       reportedCumulative,
       ...(usageFailureReason ? { usageFailureReason } : {}),

@@ -4077,3 +4077,38 @@ New flags: `--fill-kb` (default 120) and `--turns` (default 12). If it comes bac
 There's a general lesson worth stating: a test that reconfigures the harness risks measuring the reconfiguration instead of the thing. That's exactly what happened, and it cost two rounds to notice.
 
 
+
+
+
+
+**Answered.** The channel sees compaction.
+
+```
+PASS  compaction occurred — 16 compaction inference(s)
+PASS  channel saw every inference OpenCode charged for
+      seen 0.012488660000000002 vs export 0.012488660000000002
+PASS  channel saw every token OpenCode counted — seen 182783 vs export 182783
+```
+
+Exact on cost and tokens, 16 compaction inferences included, verified against OpenCode's own database. That was the last known blind spot for the certified path, and it isn't one.
+
+## What took five runs
+
+Triggering compaction on demand, not the metering. Four approaches, three dead ends:
+
+| approach                   | result                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| re-read one file each turn | context flat at ~25k/256k for 12 turns — OpenCode replaces prior tool output rather than stacking it          |
+| distinct file per turn     | context grew **~255 tokens per turn** despite 80KB reads — tool output is truncated and largely not retained  |
+| declare a smaller window   | context hit 11,079 against a declared 11,000 with **no compaction** — that setting doesn't drive the decision |
+| `compaction.reserved`      | compacts reliably, but as a runaway loop where turns never complete                                           |
+
+Only the last works, so it's kept as `--stress-compaction`, labelled pathological rather than dressed up as normal behaviour. In that mode turns stall by construction, so attribution checks are now *unscored* rather than reported as failures — otherwise three expected FAILs bury the one result the mode can produce.
+
+## Where this leaves the billing question
+
+For **OpenCode on a certified channel**, the honest answer is now yes. Exact reconciliation against an independent source across simple turns, tool-calling turns, a five-turn workflow, and compaction. `routing: "observed"` remains the ceiling — not because of a known gap, but because a library can't prove no call bypassed it.
+
+For **every other harness**, still no. ACP undercounts any tool-using turn by 2–3×; `costReconciliation` makes that detectable where the harness reports cost, but detection isn't billing.
+
+441 tests, 28 commits. Two loose ends I'd flag rather than leave implied: the prompting pass never ran against claude/codex/kimi/pi, so their counter semantics are still assumed rather than measured; and `--fill-kb` is now near-useless given the truncation finding — it survives as a knob that doesn't do much, which is worth removing on a tidy-up pass.

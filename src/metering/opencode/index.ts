@@ -80,12 +80,18 @@ export async function createOpencodeMetering(
 
   const channel = new OpencodeMeteringChannel({ onWarning: options.onWarning });
   channel.start();
-  const profile = await writeManagedProfile(meteringPluginPath());
+  const profile = await writeManagedProfile(meteringPluginPath(), {
+    onUnreadableConfig: (path) =>
+      options.onWarning?.(
+        `could not parse ${path}; proceeding WITHOUT your OpenCode config, so the model ` +
+          `and providers it selects will not apply`,
+      ),
+  });
 
   const inferenceSource: InferenceSource = {
     certificationId: OPENCODE_PLUGIN_CERTIFICATION.certificationId,
     isHealthy: () => channel.handshake !== null,
-    drain: () => channel.drain(),
+    drain: (internalSessionId) => channel.drain(internalSessionId),
   };
 
   return {
@@ -105,8 +111,11 @@ export async function createOpencodeMetering(
       }
       return false;
     },
-    drainUnattributed: () => channel.drain(),
-    stop: () => channel.stop(),
+    drainUnattributed: () => channel.drainAll(),
+    stop: async () => {
+      await channel.stop();
+      await profile.cleanup();
+    },
   };
 }
 

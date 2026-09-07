@@ -46,11 +46,18 @@ export interface InferenceSource {
   readonly certificationId: string;
   /** False when the channel never handshook or has since failed. */
   isHealthy(): boolean;
-  /** Records completed since the last drain. */
-  drain(): readonly ProviderInference[];
+  /** Records completed since the last drain, for the named provider thread. */
+  drain(internalSessionId: string | null): readonly ProviderInference[];
 }
-import { rateDelta, selectSchedule, unpricedUsage, type AttributableUsage, type BillingFacts } from "./rating.ts";
-import { ratioOf, subtractMoney, type Money } from "./money.ts";
+import {
+  rateDelta,
+  selectSchedule,
+  unpricedUsage,
+  type AttributableUsage,
+  type BillingFacts,
+  type PricedTokenAmount,
+} from "./rating.ts";
+import { addMoney, ratioOf, subtractMoney, type Money } from "./money.ts";
 import {
   accrueOperation,
   emptyMeteringState,
@@ -217,6 +224,14 @@ export class MeteringEngine {
         "degraded (pty) mode cannot supply structured metering",
       );
     }
+    // A certified source that is already unhealthy must fail BEFORE the provider is paid.
+    // Checking only afterwards let the first operation through, which defeats the point of
+    // a preflight in the one mode that exists to guarantee measurement.
+    if (strict && this.options.inferenceSource && !this.options.inferenceSource.isHealthy()) {
+      throw new MeteringPreflightError(
+        "certified metering channel is not healthy; refusing to dispatch billable work",
+      );
+    }
     // A per-turn harness needs no baseline: each report already describes one operation.
     if (
       strict &&
@@ -296,10 +311,10 @@ export class MeteringEngine {
    * done the work, and rejecting would risk a retry that duplicates cost. A strict mode
    * records the failure and blocks FUTURE operations instead.
    */
-  close(open: OpenOperation, input: CloseOperationInput): OperationMeteringRecord {
+  async close(open: OpenOperation, input: CloseOperationInput): Promise<OperationMeteringRecord> {
     const strict = this.options.enforcement !== "best_effort";
     const source = this.options.inferenceSource;
-    const certified = source ? this.measureCertified(source, open, input) : null;
+    const certified = source ? await this.measureCertified(source, open, input) : null;
     const { usage, attributable, applicability, nextBaseline, ratingFailureReason } =
       certified ?? this.measure(open, input);
 
@@ -388,11 +403,11 @@ export class MeteringEngine {
    * to the ACP path — except in a strict mode, where an unhealthy source is a failure
    * rather than a silent downgrade to a backend known to undercount.
    */
-  private measureCertified(
+  private async measureCertified(
     source: InferenceSource,
     open: OpenOperation,
     input: CloseOperationInput,
-  ): ReturnType<MeteringEngine["measure"]> | null {
+  ): Promise<ReturnType<MeteringEngine["measure"]> | null> {
     if (!source.isHealthy()) {
       return {
         usage: {
@@ -405,7 +420,7 @@ export class MeteringEngine {
       };
     }
 
-    const inferences = source.drain();
+    const inferences = source.drain(open.internalSessionId);
     if (inferences.length === 0) {
       // A prompt that reached the provider ran at least one inference. None means the
       // channel missed them, which is exactly the silent undercount this path exists to
@@ -422,7 +437,7 @@ export class MeteringEngine {
     }
 
     const summed = sumInferenceTokens(inferences);
-    const rated = this.rate(open, summed, input.billingFacts ?? {});
+    const rated = await this.ratePerInference(open, inferences, input.billingFacts ?? {});
     return {
       usage: {
         status: "metered",
@@ -513,6 +528,95 @@ export class MeteringEngine {
       // "pricing_unavailable" with no way to find out why.
       ...(attributable.reason ? { ratingFailureReason: attributable.reason } : {}),
     };
+  }
+
+  /**
+   * Rate a certified operation one MODEL GROUP at a time.
+   *
+   * §7 makes a certified backend's rating unit the physical inference, and it matters:
+   * a harness may run compaction or title generation on a different, cheaper model than
+   * the one answering the prompt. Summing every inference and applying the operation's
+   * model would price that work at the wrong rate, silently.
+   *
+   * The policy resolved at open() is reused for its own provider/model so the frozen price
+   * still governs the work the caller asked for; any other model is resolved here, because
+   * which models a turn would use cannot be known before it runs.
+   */
+  private async ratePerInference(
+    open: OpenOperation,
+    inferences: readonly ProviderInference[],
+    facts: BillingFacts,
+  ): Promise<{ usage: AttributableUsage; reason?: string }> {
+    const groups = new Map<string, ProviderInference[]>();
+    for (const inference of inferences) {
+      const key = `${inference.providerID}\u0000${inference.modelID}`;
+      const group = groups.get(key);
+      if (group) group.push(inference);
+      else groups.set(key, [inference]);
+    }
+
+    // One model: the operation's own policy applies, unchanged.
+    if (groups.size === 1) {
+      const [only] = [...groups.values()];
+      const first = only![0]!;
+      if (first.providerID === open.providerId && first.modelID === open.model) {
+        return this.rate(open, sumInferenceTokens(only!), facts);
+      }
+    }
+
+    const parts: AttributableUsage[] = [];
+    let reason: string | undefined;
+    for (const group of groups.values()) {
+      const sample = group[0]!;
+      const tokens = sumInferenceTokens(group);
+      const matchesOperation =
+        sample.providerID === open.providerId && sample.modelID === open.model;
+      const policy = matchesOperation
+        ? open.policy
+        : await this.resolveForInference(open, sample);
+      if (!policy) {
+        reason ??= `no pricing policy for ${sample.providerID}/${sample.modelID}`;
+        parts.push(unpricedUsage(tokens));
+        continue;
+      }
+      const selected = selectSchedule(policy, facts);
+      if (!selected.ok) {
+        reason ??= selected.reason;
+        parts.push(unpricedUsage(tokens));
+        continue;
+      }
+      const rated = rateDelta(tokens, policy, selected.schedule);
+      if (!rated.ok) {
+        reason ??= rated.reason;
+        parts.push(unpricedUsage(tokens));
+        continue;
+      }
+      parts.push(rated.usage);
+    }
+
+    const combined = combineAttributable(parts);
+    return reason ? { usage: combined, reason } : { usage: combined };
+  }
+
+  /** Resolve a policy for a model the operation did not anticipate. */
+  private async resolveForInference(
+    open: OpenOperation,
+    inference: ProviderInference,
+  ): Promise<PricingPolicy | null> {
+    if (this.options.pricing === false) return null;
+    const resolved = await this.resolvePolicy(this.options.pricing, {
+      scope: "inference",
+      agentSessionId: this.options.agentSessionId,
+      internalSessionId: open.internalSessionId,
+      operationId: open.operationId,
+      inferenceId: inference.messageID,
+      adapterId: this.options.adapterId,
+      providerId: inference.providerID,
+      model: inference.modelID,
+      operationKind: open.operationKind,
+      at: inference.completedAt,
+    });
+    return resolved.ok ? resolved.policy : null;
   }
 
   private rate(
@@ -632,5 +736,78 @@ export function sumInferenceTokens(inferences: readonly ProviderInference[]): To
     ...(cachedRead !== null ? { cachedReadTokens: cachedRead } : {}),
     ...(cachedWrite !== null ? { cachedWriteTokens: cachedWrite } : {}),
     ...(thought !== null ? { thoughtTokens: thought } : {}),
+  });
+}
+
+/**
+ * Merge per-model-group ratings into one operation-level view.
+ *
+ * Subtotals stay as each group rated them, so a record still adds up, but the engraved
+ * unit price belongs to whichever group priced that category — with several models in one
+ * operation there is no single rate to show. `pricingKey` is kept only when every group
+ * agreed, rather than presenting one model's key as if it covered the whole operation.
+ */
+function combineAttributable(parts: readonly AttributableUsage[]): AttributableUsage {
+  if (parts.length === 1) return parts[0]!;
+
+  const categories = ["input", "output", "cachedRead", "cachedWrite", "thought"] as const;
+  const merged: Partial<Record<(typeof categories)[number], PricedTokenAmount>> = {};
+  for (const category of categories) {
+    const present = parts.map((part) => part[category]).filter((amount) => amount !== undefined);
+    if (present.length === 0) continue;
+    let ratedCost: Money | null = null;
+    let unitPrice = present.find((amount) => amount!.pricing)?.pricing?.unitPrice ?? null;
+    let reported = 0;
+    let priced: number | null = null;
+    for (const amount of present) {
+      reported += amount!.reportedTokens;
+      if (amount!.pricedTokens !== null) priced = (priced ?? 0) + amount!.pricedTokens;
+      const cost = amount!.pricing?.ratedCost;
+      if (!cost) continue;
+      if (!ratedCost) {
+        ratedCost = cost;
+        continue;
+      }
+      const sum = addMoney(ratedCost, cost);
+      if (sum.ok) ratedCost = sum.value;
+    }
+    merged[category] = Object.freeze({
+      reportedTokens: reported,
+      pricedTokens: priced,
+      pricing: ratedCost && unitPrice ? Object.freeze({ unitPrice, ratedCost }) : null,
+    });
+  }
+
+  let ratedTotal: Money | null = null;
+  for (const part of parts) {
+    if (!part.ratedTotal) continue;
+    if (!ratedTotal) {
+      ratedTotal = part.ratedTotal;
+      continue;
+    }
+    const sum = addMoney(ratedTotal, part.ratedTotal);
+    if (sum.ok) ratedTotal = sum.value;
+  }
+
+  const sameKey = parts.every(
+    (part) =>
+      part.pricingKey?.providerId === parts[0]!.pricingKey?.providerId &&
+      part.pricingKey?.modelId === parts[0]!.pricingKey?.modelId,
+  );
+
+  return Object.freeze({
+    reportedDelta: sumInferenceTokens(
+      parts.map((part) => ({ tokens: part.reportedDelta }) as ProviderInference),
+    ),
+    pricingSource: parts.find((part) => part.pricingSource)?.pricingSource ?? null,
+    pricingKey: sameKey ? parts[0]!.pricingKey : null,
+    cacheInputConvention: parts[0]!.cacheInputConvention,
+    totalTokens: parts.reduce((total, part) => total + part.totalTokens, 0),
+    input: merged.input!,
+    output: merged.output!,
+    ...(merged.cachedRead ? { cachedRead: merged.cachedRead } : {}),
+    ...(merged.cachedWrite ? { cachedWrite: merged.cachedWrite } : {}),
+    ...(merged.thought ? { thought: merged.thought } : {}),
+    ratedTotal,
   });
 }
