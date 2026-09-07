@@ -47,9 +47,11 @@ continuation state at its revision. A transcript is authoritative for the events
 library persisted. None is an invoice, a tamper-resistant audit ledger, or proof that an
 external tool side effect did not occur.
 
-## 3. Public configuration
+## 3. Public configuration and ownership
 
-The new configuration is rooted under `persistence`:
+The registry belongs to `SessionManager`. Transcript and ACP configuration persistence
+belong to each individual `AgentSession`. A manager can supply session defaults, but it
+does not impose one transcript destination or capture policy on every session.
 
 ```ts
 type TranscriptPreset =
@@ -58,36 +60,42 @@ type TranscriptPreset =
   | "detailed"
   | "diagnostic";
 
-interface PersistenceConfig {
-  /** Default: ACP_CLIENT_HOME, otherwise ~/.acp-client. */
-  root?: string;
+interface TranscriptConfig {
+  path?: string;
+  preset?: TranscriptPreset;
+  capture?: Partial<TranscriptCapturePolicy>;
+}
 
-  /** Enabled with the default file store when omitted. */
-  registry?: false | {
-    store?: AgentSessionStore;
-  };
-
-  /** Enabled with the activity preset when omitted. */
-  transcript?: false | {
-    path?: string;
-    preset?: TranscriptPreset;
-    capture?: Partial<TranscriptCapturePolicy>;
-  };
-
+interface SessionConfigurationPersistenceConfig {
   /** Controls which ACP session-config values enter restoration state. */
-  sessionConfiguration?: {
-    /** Default: typed. */
-    values?: "none" | "typed" | "all";
-    /** Explicitly persist these IDs even when their type is unknown. */
-    include?: readonly string[];
-    /** Never persist these IDs; exclusion wins over inclusion. */
-    exclude?: readonly string[];
-  };
+  values?: "none" | "typed" | "all";
+  /** Explicitly persist these IDs even when their type is unknown. */
+  include?: readonly string[];
+  /** Never persist these IDs; exclusion wins over inclusion. */
+  exclude?: readonly string[];
+}
+
+interface AgentSessionPersistenceOptions {
+  /** Base for this session's default transcript path; never moves a manager registry. */
+  root?: string;
+  transcript?: false | TranscriptConfig;
+  sessionConfiguration?: SessionConfigurationPersistenceConfig;
 }
 
 interface AgentSessionConfig {
   // Existing runtime configuration...
-  persistence?: false | PersistenceConfig;
+  /** Direct AgentSession usage defaults to false. */
+  persistence?: false | AgentSessionPersistenceOptions;
+}
+
+interface SessionManagerConfig {
+  /** Registry/default-transcript root. */
+  root?: string;
+  /** Omit for the default central JSON registry. */
+  store?: AgentSessionStore;
+  resolveAdapter?: AdapterResolver;
+  /** Defaults only; every create call may override them. */
+  sessionDefaults?: AgentSessionPersistenceOptions;
 }
 
 interface JsonObject {
@@ -103,29 +111,48 @@ type JsonValue =
   | JsonObject;
 ```
 
-Defaults:
+Direct low-level usage performs no persistence unless explicitly requested:
+
+```ts
+await AgentSession.create({
+  adapter,
+  adapterId,
+  persistence: false,
+});
+```
+
+Managed creation through `SessionManager` always records the logical session in that
+manager's registry. Its default per-session persistence is:
 
 ```ts
 {
-  root: "~/.acp-client",
-  registry: {},
-  transcript: {
-    preset: "activity",
-  },
+  transcript: { preset: "activity" },
+  sessionConfiguration: { values: "typed" },
 }
 ```
 
-`persistence: false` disables both registry and transcript persistence. The two facilities
-can otherwise be disabled independently.
+For managed creation, effective session persistence is resolved in this order:
+
+1. The individual `createAgentSession()` option.
+2. `SessionManagerConfig.sessionDefaults`.
+3. The managed library default above.
+
+An explicit per-session `transcript: false` always wins. It disables that session's
+transcript without removing the session from the manager registry.
+
+V0 exposes no buffered durability option. Managed persistence uses durable operation
+boundaries; direct sessions with persistence disabled make no durability guarantee. The
+rationale and deferred weaker-mode design are recorded in `9-6-NOTE-durability.md`.
 
 Default persistence is intentionally visible in documentation because it writes
 conversation content to disk. Applications should normally set an application-specific
-root or inject their own store. Directories and files created by the default store must
-be owner-only where the platform supports permissions.
+root, define manager defaults, or choose transcript behavior for every session.
+Directories and files created by the default store must be owner-only where the platform
+supports permissions.
 
-The root is resolved in this order:
+The manager/default-transcript root is resolved in this order:
 
-1. `persistence.root`.
+1. `SessionManagerConfig.root` or the explicit direct-session transcript root.
 2. `ACP_CLIENT_HOME`.
 3. `<home>/.acp-client`.
 
@@ -172,7 +199,9 @@ nonexistent file, the nearest existing parent is resolved and checked before cre
 This prevents accidental ambiguity but is not a defense against a malicious actor who can
 concurrently replace directories owned by the consumer.
 
-If `path` is omitted, the library creates and uses the default `transcripts` directory.
+If `path` is omitted, the library creates and uses the `transcripts` directory under the
+effective per-session root. A managed session uses its own persistence root override,
+then the manager root, then the environment/home default.
 
 A transcript path does not, by itself, select or restore a provider thread. Restoration
 occurs only through the new persistence/checkpoint startup path described below. Legacy
@@ -198,16 +227,13 @@ await AgentSession.open({
 });
 ```
 
-`create()` always requests a new internal harness session. If its chosen
-`agentSessionId` already exists in the configured registry, or its resolved transcript
-belongs to another logical session, creation fails with `AgentSessionAlreadyExistsError`.
-It never silently resumes or appends to an unrelated transcript.
+Direct `create()` always requests a new internal harness session. If its resolved
+transcript belongs to another logical session, creation fails with
+`AgentSessionAlreadyExistsError`. It never silently resumes or appends to an unrelated
+transcript. Direct use has no implicit registry.
 
-`open()` always reconstructs an existing logical session. It gathers all explicitly
-available candidates—the consumer checkpoint, registry checkpoint, and latest valid
-transcript checkpoint—and applies the consistency rules in section 10. There is no
-“path beats ID” or “internal ID beats transcript” precedence. Consistent newer revisions
-win; same-revision disagreement fails.
+Direct `open()` reconstructs from an explicit consumer checkpoint and/or transcript. It
+applies the consistency rules in section 10 to those supplied artifacts.
 
 `open()` requires at least one unambiguous identity source: an `agentSessionId`, an
 explicit checkpoint, or an exact existing transcript file configured through
@@ -219,28 +245,52 @@ Built-in adapter IDs use the library's adapter resolver. Reopening a custom adap
 requires a consumer `resolveAdapter(adapterId)` callback. Persisted command lines are not
 blindly executed.
 
-`SessionManager` may expose `createAgentSession()` and `loadAgentSession()` as convenience
-factories, but it does not retain the returned live objects. The consumer remains their
-owner. Providing a bare `internalSessionId` is a lower-level provider-thread operation,
-not restoration of a logical `AgentSession`.
-
-The default manager is externally reachable rather than privately constructed inside
-each session:
+Managed creation and loading go through the manager:
 
 ```ts
-const sessions = await SessionManager.open(); // ~/.acp-client
+const sessions = await SessionManager.open({
+  root: "/absolute/path/to/acp-data",
+  resolveAdapter,
+  sessionDefaults: {
+    transcript: {
+      path: "/absolute/path/to/default-transcripts",
+      preset: "activity",
+    },
+  },
+});
+
 const page = await sessions.listAgentSessions();
 
-const created = await sessions.createAgentSession(config);
-const loaded = await sessions.loadAgentSession(agentSessionId, {
-  resolveAdapter,
+const created = await sessions.createAgentSession({
+  adapterId: "claude",
+  persistence: {
+    // Per-session choice overrides manager defaults.
+    transcript: {
+      path: "/customers/alice/transcripts",
+      preset: "detailed",
+    },
+  },
 });
+
+const registryOnly = await sessions.createAgentSession({
+  adapterId: "codex",
+  persistence: { transcript: false },
+});
+
+const loaded = await sessions.loadAgentSession(created.agentSessionId);
 ```
 
-`SessionManager.open({ root, store })` and `AgentSession` use the same configuration
-normalization. A consumer that creates an `AgentSession` directly can pass the manager;
-when it omits one, the library uses an equivalent default manager which remains
-discoverable later through `SessionManager.open()`.
+`SessionManager.createAgentSession()` resolves adapter and persistence inputs, calls the
+lower-level constructor, and records the resulting logical session. It does not retain
+the live object or proxy its methods; the consumer remains the owner. The manager owns
+the registry, while the returned session owns its transcript writer and effective
+capture policy.
+
+`loadAgentSession(agentSessionId)` reads that session's resolved transcript path and
+policy from its registry record. It does not accept a casual transcript override.
+Relocation is an explicit operation which creates a new checkpoint revision. Providing a
+bare `internalSessionId` remains a lower-level provider-thread operation, not restoration
+of a logical `AgentSession`.
 
 ## 6. Capture policy
 
@@ -1460,12 +1510,12 @@ reveal a `v` member.
 
 Supplying any deprecated transcript/session-store option selects compatibility
 normalization: only the facilities explicitly requested by legacy options are enabled;
-the new default registry is not added implicitly. Tests and applications relying on no
-persistence must adopt `persistence: false` before the new default behavior is released.
+the managed registry is not added implicitly.
 
-Because omitted persistence changes from no disk writes to default persistence, this
-configuration change must be prominently called out in release notes and versioned as a
-breaking behavioral change if semantic-versioning policy requires it.
+Omitted persistence on direct `AgentSession.create()` retains the historical no-write
+behavior. Default registry and transcript persistence begins only through the new
+`SessionManager.createAgentSession()` managed entry point, whose stateful behavior is part
+of that API's contract. Release notes must still make the distinction prominent.
 
 ## 24. Performance and bounded state
 
@@ -1505,8 +1555,13 @@ change the session state, or manufacture operation failure records.
 ### Configuration and capture
 
 - Default root, environment override, and explicit-root precedence.
-- `SessionManager.open()` sees sessions created directly through the equivalent default
-  configuration.
+- Direct `AgentSession.create()` with omitted persistence creates no files.
+- Managed creation with omitted per-session options writes the registry and that
+  session's default `activity` transcript.
+- `SessionManager.createAgentSession()` records the created session; direct
+  `AgentSession.create()` never appears in its registry implicitly.
+- Per-session transcript settings override manager defaults and explicit
+  `transcript: false` produces a registry-only managed session.
 - `create()` never restores and `open()` never creates a missing logical session.
 - Conflicting identity candidates fail instead of applying identifier/path precedence.
 - `persistence: false`, registry-only, transcript-only, and both-enabled behavior.

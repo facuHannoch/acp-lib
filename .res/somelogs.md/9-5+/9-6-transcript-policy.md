@@ -1775,3 +1775,1814 @@ So the rule is:
 - Never send another prompt while recovery remains unresolved.
 
 
+
+
+
+
+There is real value in the critique, but I would not accept all its conclusions. The strongest points are the authority model, unbounded history, configuration reapplication bound, and implementation scope. The default-transcript criticism identifies a real risk, but “therefore transcripts should default off everywhere” does not fit what this library is becoming.
+
+## 1. Default transcripts: the risk is real, but the conclusion is too broad
+
+A transcript is not merely optional logging in this design. It enables or strengthens:
+
+- restoring the logical `AgentSession`;
+- recovering after an unclean operation;
+- preserving activity and transition history;
+- reconstructing handoffs and switches;
+- paginating conversation state without asking the harness;
+- repairing the registry;
+- understanding what happened before an internal-session replacement.
+
+A handoff can technically happen live without a transcript, but durable continuity around it becomes much weaker.
+
+So I agree with you: defaulting to registry-only would quietly make the managed library much less capable.
+
+However, the critic is right that a low-level library call silently beginning to persist prompts after an upgrade is dangerous. I think the best answer is to reflect the two intended uses in the entry points:
+
+```ts
+// Low-level ACP transport/session use.
+// No persistence unless explicitly supplied.
+AgentSession.create({
+  adapter,
+});
+```
+
+```ts
+// Managed logical-session use.
+// Registry and transcript enabled by default.
+sessionManager.createAgentSession({
+  adapter,
+});
+```
+
+That gives us two coherent products:
+
+- Direct `AgentSession`: the original reverse-proxy-like primitive.
+- `SessionManager`-created session: the durable, higher-value managed abstraction.
+
+The CLI would use the managed path.
+
+This is better than one global default because the chosen entry point communicates intent. It also means an existing direct `AgentSession.create()` consumer does not unexpectedly start writing prompts after upgrading.
+
+If we insist on one universal default, I would keep transcripts enabled—but only in a breaking release with extremely prominent documentation. The managed/direct split is cleaner.
+
+## 2. Mandatory durability: valid criticism, but it is mostly caused by the current authority model
+
+The expensive part is not appending and syncing a small transcript record. Compared with a provider call, one or two transcript syncs are usually negligible.
+
+The problematic part is rewriting and synchronizing the complete registry before every prompt. That happens only because we currently require both transcript and registry to carry authoritative write-ahead state.
+
+If we fix point 3, the common managed path becomes:
+
+```text
+append operation start + input
+→ sync transcript
+→ dispatch
+→ append result + checkpoint
+→ sync transcript
+→ update registry projection
+```
+
+The registry no longer needs a full pre-dispatch rewrite whenever a transcript exists.
+
+I would still support a durability option, but I would not call it `best_effort`, because that phrase hides what is actually lost:
+
+```ts
+durability: "synchronous" | "buffered";
+```
+
+- `synchronous`: operation boundaries are synchronized before dispatch; power-loss ambiguity is detectable.
+- `buffered`: ordering is preserved, but sudden power loss may lose recent boundaries and restoration cannot claim power-loss safety.
+
+I would keep `synchronous` as the managed default. LLM operations are sufficiently slow that we should measure before optimizing away correctness. The interactive CLI could expose buffered mode, but I would not assume it needs it before benchmarking.
+
+## 3. Two authorities: this is the strongest criticism
+
+I think we should adopt a conditional-authority model.
+
+The registry has two conceptually different responsibilities:
+
+- Authoritative inventory: which logical sessions exist and where they are routed.
+- Continuation state: how a particular session resumes.
+
+Those do not need the same authority rules.
+
+### When a transcript exists
+
+- Registry is authoritative for discovery.
+- Transcript is authoritative for continuation and operation history.
+- Registry checkpoint fields are a rebuildable projection/cache.
+- A newer transcript repairs the registry.
+- A newer registry continuation checkpoint should not normally exist.
+- A missing/corrupt transcript is an explicit recovery problem, not an invitation to silently use the registry copy.
+
+### When transcripts are disabled
+
+- Registry is authoritative for both discovery and continuation.
+- It must carry the write-ahead in-flight checkpoint before dispatch.
+
+That removes most of the six-way conflict table:
+
+| Mode | Inventory authority | Continuation authority |
+|---|---|---|
+| Registry + transcript | Registry | Transcript |
+| Registry only | Registry | Registry |
+| Transcript only | Consumer/path | Transcript |
+| Neither | Consumer | Consumer checkpoint |
+
+This also substantially reduces registry writes and makes the design easier to test.
+
+There is still value in retaining the latest checkpoint projection in the registry—it makes listing cheap—but it should not compete with the transcript when the transcript is enabled.
+
+## 4. Certified replay: correct as future architecture, wrong as v1 implementation scope
+
+I agree with the critic here.
+
+The design is legitimate, but if no adapter currently qualifies, implementing the certified branch now would produce:
+
+- unreachable code;
+- untestable guarantees;
+- types shaped around hypothetical evidence;
+- considerable adapter machinery before we know what real replay looks like.
+
+For v1:
+
+```text
+dirty boundary
+→ attempt to load/resume
+→ collect whatever observable replay exists
+→ status remains uncertain
+→ consumer calls resolveRecovery()
+```
+
+We should retain a short “future certified reconciliation” section in the spec, but defer:
+
+- `replay: "certified"`;
+- automatic `reconciled`;
+- exact replay fingerprints;
+- completeness certification.
+
+When OpenCode or another pinned adapter genuinely provides the necessary evidence, we can specify the certified path from real observations.
+
+So: preserve the extension point conceptually, but do not ship dead runtime machinery.
+
+## 5. ACP configuration section
+
+### Reapplication termination
+
+This is a real hole and the fix is straightforward:
+
+1. Apply every desired configuration once, in stored ordinal order.
+2. Revalidate after every response.
+3. Never restart the sequence automatically.
+4. Compare final effective values with desired values.
+5. Any residual disagreement becomes `configuration_mismatch`.
+
+That prevents:
+
+```text
+A resets B
+B resets A
+A resets B
+...
+```
+
+The library must not search for a fixed point.
+
+### Schema digest explanation
+
+There is some value here, but the criticism slightly overstates the problem.
+
+If a desired option disappears, we already have:
+
+- the desired config ID in the checkpoint;
+- the newly announced config IDs after reopening.
+
+Therefore we can report exactly:
+
+```text
+Desired configuration "reasoning_effort" is no longer advertised.
+```
+
+We do not need the previous catalog to determine that.
+
+Likewise, if a desired value is no longer allowed, the new announcement tells us which current values are valid.
+
+However, retaining the prior announced ID set is cheap and makes offline inspection clearer:
+
+```ts
+interface SessionConfigurationCheckpoint {
+  schemaDigest: string | null;
+  announcedConfigIds: readonly string[];
+  desired: readonly PersistedSessionConfigSelection[];
+  effective: Readonly<Record<string, JsonValue>>;
+  omittedConfigIds: readonly string[];
+}
+```
+
+I would add it, but not because restoration is otherwise impossible. It improves diagnostics and lets us clearly label effective entries whose definitions belonged to an older schema.
+
+We should not retain descriptions, labels, or the complete options catalog in the checkpoint.
+
+## 6. Internal-session history inside every checkpoint
+
+Completely valid criticism.
+
+`internalSessionHistory` is not necessary to resume the current thread, and embedding it in every checkpoint causes:
+
+- checkpoint growth per transition;
+- O(history) canonicalization on every operation;
+- repeated transcript duplication;
+- repeated registry duplication.
+
+I would change the ownership:
+
+```ts
+interface AgentSessionCheckpoint {
+  internalSessionId: string | null;
+  internalSessionActivatedAt: string | null;
+
+  lastTransition?: {
+    transitionId: string;
+    kind: "handoff" | "switch" | "mode_change" | "replacement";
+  };
+
+  internalSessionHistoryRevision: number;
+  internalSessionHistoryDigest: string;
+}
+```
+
+The full history lives in:
+
+- immutable transcript transition records, when transcripts are enabled;
+- the registry record, for fast listing and registry-only sessions.
+
+The checkpoint only needs enough information to verify that it agrees with the expected history version. That keeps it bounded.
+
+Because the registry would no longer be rewritten on every transcript-backed prompt, storing the full transition history there is not a significant per-turn cost.
+
+## Smaller comments
+
+### `AgentSession.listSessions()`
+
+The spec should decide. My recommendation:
+
+- `sessionManager.listAgentSessions()` — logical library sessions.
+- `agentSession.listHarnessSessions()` — sessions reported by the active harness through ACP.
+- Deprecate `agentSession.listSessions()` and its implicit merged result.
+- If the CLI wants a merged display, make that CLI/consumer composition explicit.
+
+This reinforces the three-layer distinction we established earlier.
+
+### Message typing
+
+Correct criticism. It should use the actual versioned structured message type, not `JsonValue[]`:
+
+```ts
+interface TranscriptMessageRecord {
+  text: string;
+  messages?: readonly TranscriptResponseMessage[];
+}
+```
+
+The persisted type can mirror `ResponseMessage` while remaining versioned independently.
+
+### Timeline filtering
+
+Also valid. `types` should remain reserved for the physical `records` view, but timeline should get a projection-specific filter:
+
+```ts
+transcript.readPage({
+  view: "timeline",
+  include: ["message", "activity", "transition"],
+});
+```
+
+This avoids confusing physical record types with projected timeline categories.
+
+### V0 implementation scope
+
+Strong practical criticism. The current specification is an architectural target, not one reasonable implementation PR.
+
+I would define the first usable slice as:
+
+1. Unified persistence configuration and capture presets.
+2. Central registry and explicit managed/direct entry points.
+3. Transcript v2 envelope and typed paginated reads.
+4. Bounded checkpoints after settled operations.
+5. `create()`/`open()` for clean checkpoints.
+6. Configuration selection persistence and restoration.
+7. Dirty-boundary detection with manual `resolveRecovery()`.
+
+Defer initially:
+
+- certified automatic replay reconciliation;
+- elaborate cross-source checkpoint conflict machinery, which conditional authority mostly removes;
+- transcript generations created through compaction/redaction;
+- sparse indexes and segmented transcripts;
+- automatic repair tooling;
+- advanced retention/export/import behavior.
+
+I would not defer the operation-start marker entirely. It is cheap, and without it a mid-operation crash can look like a clean checkpoint. We can defer sophisticated automatic reconciliation while still detecting dirtiness correctly.
+
+## My net assessment
+
+I would adopt these changes:
+
+- Use different persistence defaults for direct `AgentSession` and managed `SessionManager` creation.
+- Make transcript the continuation authority whenever it exists.
+- Keep the registry authoritative for discovery and for continuation only in registry-only mode.
+- Add synchronous/buffered durability, probably with synchronous as the managed default.
+- Defer certified replay until a real adapter qualifies.
+- Make config restoration a single bounded pass.
+- Add announced config IDs for diagnostics.
+- Remove full internal-session history from checkpoints.
+- Decide the session-list naming now.
+- Restore strong structured-message typing.
+- Add timeline-specific filtering.
+- Define a deliberately smaller first implementation slice.
+
+I would reject only the blanket claim that transcript persistence should default off for the managed library. That would protect the lowest-level behavior by weakening the abstraction we are deliberately building. The better answer is to make “raw session” versus “managed session” explicit.
+
+
+
+
+
+
+
+
+
+
+
+Yes. For the managed use case, `SessionManager` should be the thing used to create and load `AgentSession`s.
+
+What exists currently is already close, but responsibility is fragmented:
+
+```text
+Consumer
+├── creates SessionManager
+├── chooses SessionStore
+├── resolves adapter
+├── chooses transcript directory
+├── injects everything into AgentSession
+├── remembers how to reconstruct it
+└── owns live AgentSession map
+```
+
+The manager currently provides only catalog operations. It does not define the complete persistence environment.
+
+The cleaner model is:
+
+```text
+Consumer
+├── configures SessionManager once
+├── asks it to create/load sessions
+└── owns live AgentSession map
+
+SessionManager
+├── registry/store
+├── transcript configuration
+├── adapter resolution
+├── checkpoint restoration
+└── creates configured AgentSession objects
+```
+
+For example:
+
+```ts
+const sessionManager = await SessionManager.open({
+  persistence: {
+    root: "/absolute/path/to/acp-data",
+
+    // Optional. Defaults to:
+    // /absolute/path/to/acp-data/agent-sessions.json
+    registry: {},
+
+    // Defaults to:
+    // /absolute/path/to/acp-data/transcripts/
+    transcript: {
+      preset: "activity",
+    },
+  },
+
+  resolveAdapter,
+});
+
+const liveSessions = new Map<string, AgentSession>();
+```
+
+Creation becomes:
+
+```ts
+async function createSession(adapterId: string): Promise<AgentSession> {
+  const session = await sessionManager.createAgentSession({
+    adapterId,
+    cwd: process.cwd(),
+    defaultPermission: "cancel",
+  });
+
+  liveSessions.set(session.agentSessionId, session);
+  return session;
+}
+```
+
+Loading becomes:
+
+```ts
+async function loadSession(agentSessionId: string): Promise<AgentSession> {
+  const session = await sessionManager.loadAgentSession(agentSessionId);
+
+  liveSessions.set(session.agentSessionId, session);
+  return session;
+}
+```
+
+And discovery:
+
+```ts
+const page = await sessionManager.listAgentSessions({
+  limit: 50,
+  order: "updated_desc",
+});
+```
+
+Once returned, it is still a normal `AgentSession`:
+
+```ts
+await session.prompt("Continue");
+await session.setConfig("model", "sonnet");
+await session.handoff();
+session.interrupt();
+await session.stop();
+```
+
+The manager does not proxy those methods and does not need to hold the live object. The consumer’s `Map<string, AgentSession>` remains appropriate.
+
+## Why this is not unwanted wrapping
+
+The concern before was that a higher-level object might have to reproduce the whole `AgentSession` interface:
+
+```ts
+manager.prompt(...)
+manager.bridge(...)
+manager.interrupt(...)
+```
+
+That would be unnecessary. The manager is only a factory, repository, and restoration coordinator:
+
+```text
+SessionManager --create/load--> AgentSession
+Consumer ---------------------> AgentSession methods
+```
+
+It wraps construction and persistence, not session operation.
+
+## Registry and transcripts should remain separate stores
+
+The current fragmentation is not that there are two kinds of storage. They genuinely have different behavior:
+
+- Registry: mutable records, lookup, concurrency, atomic replacement.
+- Transcript: append-only event stream, sequential reading, pagination.
+
+Combining them into one `SessionStore` abstraction would produce an awkward interface. The fragmentation is that the consumer currently configures them independently and must ensure they refer to the same session.
+
+`SessionManager` should coordinate both under one persistence configuration while retaining separate internal backends.
+
+A custom deployment could still do:
+
+```ts
+const sessionManager = await SessionManager.open({
+  persistence: {
+    registry: {
+      store: databaseSessionStore,
+    },
+    transcript: {
+      path: "/secure/transcripts",
+      preset: "activity",
+    },
+  },
+  resolveAdapter,
+});
+```
+
+The registry can live in a database while transcripts remain files. They are configured together but not forced into the same storage mechanism.
+
+## The lower-level path remains
+
+For the original “ACP reverse proxy” use case:
+
+```ts
+const session = await AgentSession.create({
+  adapter,
+  adapterId,
+  persistence: false,
+});
+```
+
+And a consumer that owns its continuation state could directly open from a checkpoint:
+
+```ts
+const session = await AgentSession.open({
+  adapter,
+  checkpoint,
+  persistence: false,
+});
+```
+
+That gives us a clear split:
+
+| Entry point | Purpose | Default persistence |
+|---|---|---|
+| `AgentSession.create/open` | Low-level consumer-controlled session | Off |
+| `SessionManager.createAgentSession/loadAgentSession` | Managed logical session | Registry + transcript |
+
+Transcript-only operation can still use a manager with the registry disabled:
+
+```ts
+const sessionManager = await SessionManager.open({
+  persistence: {
+    registry: false,
+    transcript: {
+      path: "/absolute/path/to/transcripts",
+    },
+  },
+  resolveAdapter,
+});
+```
+
+So yes: I think your example is showing the embryonic version of the right design. The missing step is making `SessionManager` own the unified persistence configuration and provide the creation/loading factories, instead of requiring every consumer to manually reconnect `SessionStore`, transcript location, adapter resolution, and `AgentSession.create()`.
+
+
+
+
+
+
+
+
+
+This critique is largely right. It also exposes that my last edit fixed the prose-level ownership but did not yet produce the clean type-level contract.
+
+One factual note: the exact “equivalent default manager” sentence has already been removed from the working copy. The current §5.1 says direct sessions have no implicit registry. But the underlying criticism still applies: the current types make direct explicit persistence less capable than managed persistence. That asymmetry should be fixed.
+
+## The configuration model
+
+I would adopt this shape:
+
+```ts
+interface PersistenceConfig {
+  /**
+   * Base for the default registry and transcript locations.
+   * Default: ACP_CLIENT_HOME, then ~/.acp-client.
+   */
+  root?: string;
+
+  /**
+   * Default: enabled with the central JSON registry.
+   */
+  registry?:
+    | false
+    | {
+        store?: AgentSessionStore;
+      };
+
+  /**
+   * Default: enabled with preset "activity".
+   */
+  transcript?:
+    | false
+    | TranscriptConfig;
+
+  /**
+   * Governs the persistence system as one durability boundary.
+   * Default: "synchronous".
+   */
+  durability?: "synchronous" | "buffered";
+
+  sessionConfiguration?: SessionConfigurationPersistenceConfig;
+}
+
+interface SessionManagerOptions {
+  /**
+   * Omission means the complete managed default.
+   */
+  persistence?: PersistenceConfig;
+
+  resolveAdapter?:
+    | ((adapterId: string) => Adapter)
+    | ((adapterId: string) => Promise<Adapter>);
+}
+
+interface AgentSessionConfig {
+  /**
+   * Direct default: false.
+   *
+   * Supplying an object explicitly opts into the same complete persistence
+   * semantics available through SessionManager.
+   */
+  persistence?: false | PersistenceConfig;
+}
+```
+
+The crucial expansion rules are:
+
+```text
+AgentSession.create({ persistence omitted })
+→ persistence disabled
+
+AgentSession.create({ persistence: false })
+→ persistence disabled
+
+AgentSession.create({ persistence: {} })
+→ complete persistence enabled:
+   registry + activity transcript + typed config + synchronous durability
+
+SessionManager.open({ persistence omitted })
+→ the same complete persistence environment
+
+manager.createAgentSession({ per-session overrides })
+→ manager environment plus allowed session overrides
+```
+
+That gives us the principle the critique identifies:
+
+> Persistence defaults differ by entry point; persistence capabilities do not.
+
+A direct caller can opt into the same exact machinery without going through a manager. Nothing silently appears merely because the package was upgraded.
+
+## Manager versus per-session authority
+
+I agree that the manager must own these:
+
+- `root`
+- `registry`
+- `durability`
+- adapter resolution
+
+A managed session must not redirect its registry or select another durability grade. Otherwise one manager could stop having one coherent inventory and persistence guarantee.
+
+But I disagree slightly with the critic’s proposed override list: per-session transcript `path` must remain configurable. That was the reason for the ownership correction in the first place.
+
+Allowed managed-session overrides should be:
+
+```ts
+interface ManagedSessionPersistenceOverrides {
+  transcript?:
+    | false
+    | {
+        path?: string;
+        preset?: TranscriptPreset;
+        capture?: Partial<TranscriptCapturePolicy>;
+      };
+
+  sessionConfiguration?: SessionConfigurationPersistenceConfig;
+}
+```
+
+Not allowed per session:
+
+```ts
+root
+registry
+durability
+```
+
+The transcript path does not split the manager inventory. The manager still records the resolved path in its one registry:
+
+```text
+manager registry
+├── session A → /customers/alice/a.jsonl
+├── session B → /secure/b.jsonl
+└── session C → default-root/transcripts/c.jsonl
+```
+
+So the exact precedence is:
+
+```text
+Per-session transcript/config override
+→ manager persistence defaults
+→ library managed defaults
+```
+
+For `root`, `registry`, and `durability`, there is no per-session precedence because they cannot be overridden.
+
+## Durability placement
+
+Agreed. It belongs at the top of `PersistenceConfig`.
+
+```ts
+durability: "synchronous" | "buffered";
+```
+
+It should govern the complete active continuation system. A single logical session should not claim that its transcript is power-loss-safe while its authoritative registry checkpoint is buffered.
+
+The grades need explicit guarantees:
+
+- `synchronous`: write-ahead state is synchronized before dispatch; dirty power-loss boundaries are detectable.
+- `buffered`: record order is maintained, but sudden power loss may erase recent boundaries; the library does not claim power-loss-safe restoration.
+
+Managed default should remain `synchronous` until measurements prove that unacceptable. Once we make the transcript authoritative when enabled, the pre-dispatch path is generally one small append and sync—not a complete registry rewrite.
+
+## `SessionManager` with registry disabled
+
+The critic is right about returning an empty page. It must fail visibly:
+
+```ts
+await sessionManager.listAgentSessions();
+// throws RegistryDisabledError
+```
+
+The same applies to registry-dependent operations:
+
+```ts
+sessionManager.listAgentSessions();
+sessionManager.getAgentSessionRecord(id);
+sessionManager.loadAgentSession(id);
+sessionManager.deleteAgentSession(id);
+```
+
+They throw `RegistryDisabledError` unless the operation receives an explicit checkpoint/transcript identity that makes registry lookup unnecessary.
+
+A registry-disabled manager can still be useful as a configured session factory:
+
+```ts
+const manager = await SessionManager.open({
+  persistence: {
+    registry: false,
+    transcript: {
+      path: "/transcripts",
+      preset: "activity",
+    },
+  },
+  resolveAdapter,
+});
+
+const session = await manager.createAgentSession({
+  adapterId: "claude",
+});
+```
+
+But it has no discoverable inventory. That limitation must be explicit in its capabilities:
+
+```ts
+manager.capabilities.registry === false;
+```
+
+Whether such an object deserves the name `SessionManager` is debatable, but supporting it is cheap and preserves all four §10 combinations.
+
+## Authority simplification
+
+This should be adopted too:
+
+| Configuration | Inventory authority | Continuation authority |
+|---|---|---|
+| Registry + transcript | Registry | Transcript |
+| Registry only | Registry | Registry |
+| Transcript only | Consumer/path | Transcript |
+| Neither | Consumer | Consumer checkpoint |
+
+When a transcript exists:
+
+- Its checkpoint and journal tail determine continuation.
+- Registry checkpoint fields are a projection for cheap listing.
+- Transcript-newer state repairs the registry.
+- Registry state never silently overrides the transcript.
+- Missing/corrupt transcript requires explicit recovery.
+
+That removes most symmetric two-authority reconciliation and the pre-prompt registry rewrite.
+
+## Migration consequence
+
+Agreed completely. Under the entry-point split, the change is additive:
+
+- Existing `AgentSession.create()` callers continue with no implicit persistence.
+- Existing legacy transcript options retain their existing explicit writes.
+- `SessionManager.createAgentSession()` is new and therefore has no existing callers whose behavior changes.
+- Direct `persistence: {}` is an explicit opt-in.
+
+The old warning that every test/application must add `persistence: false` should be removed.
+
+## CLI exposure and deletion
+
+Also correct.
+
+The managed CLI should print the resolved persistence location when starting:
+
+```text
+Session history: /home/user/.acp-client/transcripts/abc.jsonl
+```
+
+This is better than maintaining a separate “first run acknowledged” state. It remains visible and truthful if configuration changes.
+
+Manual deletion belongs in v0 even if automatic retention is deferred. At the library level:
+
+```ts
+await sessionManager.deleteAgentSession(agentSessionId, {
+  transcript: "keep", // default
+});
+```
+
+```ts
+await sessionManager.deleteAgentSession(agentSessionId, {
+  transcript: "delete",
+});
+```
+
+The CLI should expose both and require confirmation before deleting transcript content. Automatic age/size retention can remain deferred.
+
+## Timeline filtering
+
+I agree with the critic now.
+
+As long as timeline categories directly correspond to stored record types, reuse `types`:
+
+```ts
+await transcript.readPage({
+  view: "timeline",
+  types: ["message", "activity", "transition"],
+});
+```
+
+Validation rules:
+
+- `records`: accepts any known physical record type.
+- `timeline`: accepts only members of `TranscriptTimelineItem`.
+- `conversation`: either omits `types`, or accepts only `["message"]`.
+
+If we later introduce synthesized timeline entities such as `"turn"`, then a separate projection filter becomes justified. It is unnecessary today.
+
+## History digest
+
+Agreed, and the current spec still needs the actual bounded-history change.
+
+The checkpoint should contain:
+
+```ts
+interface AgentSessionCheckpoint {
+  internalSessionId: string | null;
+  internalSessionActivatedAt: string | null;
+
+  lastTransition?: {
+    transitionId: string;
+    kind: TransitionKind;
+  };
+
+  internalSessionHistoryRevision: number;
+  internalSessionHistoryDigest: string;
+
+  // No full internalSessionHistory.
+}
+```
+
+The complete history lives in:
+
+- transcript transition records;
+- the registry record for fast access and registry-only operation.
+
+The digest is only an internal consistency/corruption check:
+
+- Transcript mode: compare reconstructed transition history with the registry projection.
+- Registry-only mode: validate that the registry record’s history matches its checkpoint summary.
+
+It does not decide which side wins and does not participate in crash reconciliation.
+
+## Configuration refinements
+
+Both are worth adopting:
+
+- Reapply desired config exactly once in ordinal order.
+- Do not iterate toward a fixed point.
+- Compare final values after that one pass.
+- Remaining disagreement becomes `configuration_mismatch`.
+
+And add:
+
+```ts
+announcedConfigIds: readonly string[];
+```
+
+The critic overstates its necessity—we can already identify missing desired IDs by comparing `desired` with the new announcement—but the field is cheap and makes offline diagnostics and stale `effective` values clearer.
+
+## Certified replay and v0
+
+I agree with deferring certified automatic reconciliation.
+
+V0 should provide:
+
+- operation-start markers;
+- dirty-boundary detection;
+- `uncertain` recovery;
+- explicit `resolveRecovery()`.
+
+It should not implement a certified branch until a real pinned adapter satisfies the contract.
+
+The first implementation slice should include:
+
+1. Direct versus managed persistence defaults.
+2. Registry and per-session transcript ownership.
+3. Capture presets and v2 records.
+4. Typed pagination.
+5. Bounded checkpoints.
+6. Clean `create()`/`open()`/`loadAgentSession()`.
+7. ACP configuration persistence.
+8. Operation-start markers and manual uncertain recovery.
+9. Manual session/transcript deletion.
+
+Defer automatic replay reconciliation, automatic retention, compaction, segmentation, and sophisticated repair.
+
+So the critique is substantively good. The one adjustment I would make is preserving per-session `transcript.path`; manager ownership of the registry/root does not require all transcript files to share one directory. Everything else here makes the split more concrete and makes the initial implementation considerably smaller.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+----
+
+
+
+“Durability” here means: when the library says a transcript/checkpoint was written, has it actually reached persistent storage, or is it merely sitting in memory waiting for the operating system to write it later?
+
+For example:
+
+```text
+1. Library writes operation_started
+2. Library sends prompt to harness
+3. Electricity goes out
+```
+
+A normal `appendFile()` can complete while the data is still in the OS filesystem cache. After a power outage:
+
+- The harness/provider may have received and processed the prompt.
+- The supposedly written `operation_started` record may disappear.
+- On restart, the library sees the previous clean checkpoint.
+- It incorrectly believes no operation was in flight.
+
+To support the recovery guarantee we discussed, the order must be:
+
+```text
+write operation_started and captured prompt
+→ fsync/fdatasync
+→ send prompt to harness
+```
+
+After completion:
+
+```text
+write response, activity, terminal boundary, checkpoint
+→ fsync/fdatasync
+→ report the operation as durably persisted
+```
+
+That is what I meant by synchronous durability.
+
+The proposed `buffered` option would skip those filesystem synchronization calls:
+
+```text
+write into buffers
+→ immediately send prompt
+→ OS persists data eventually
+```
+
+It is faster, but it cannot reliably detect divergence after sudden power loss.
+
+## Do we actually need the option?
+
+On reflection, probably not in v0.
+
+A public durability mode creates two substantially different recovery contracts:
+
+- one where dirty operations are reliably detectable;
+- another where an apparently clean checkpoint may be wrong after power loss.
+
+That weakens the central promise of managed persistence and complicates documentation, checkpoints, tests, and recovery.
+
+I would simplify:
+
+- Direct `AgentSession` with persistence disabled: no durability guarantee, naturally.
+- Managed persistence: durable operation boundaries are mandatory.
+- Custom stores: must satisfy the same durable-commit contract.
+- Add a weaker buffered mode later only if measurements demonstrate a real need.
+
+The expensive concern raised in the review was primarily rewriting and synchronizing the complete registry before every prompt. Making the transcript authoritative for continuation avoids that in the normal managed configuration:
+
+```text
+small transcript append + sync
+→ provider operation
+→ small transcript append + sync
+→ registry updated as a projection
+```
+
+The registry-only configuration is inherently more expensive if it wants power-loss safety because the registry is then the only continuation source. That is an honest tradeoff of disabling transcripts.
+
+Given that model operations generally take seconds or minutes, a couple of small filesystem syncs should be measured before we introduce an option that invalidates power-loss recovery.
+
+So my current recommendation is: remove `durability: "synchronous" | "buffered"` from v0 and make durable boundaries part of the managed persistence contract.
+
+
+
+
+
+
+# undecided points
+
+Architecturally, yes. We have enough decisions to begin without inventing the design during implementation.
+
+I would not implement the entire current document literally yet, though. It still contains several stale clauses from before our latest decisions:
+
+- §3 does not yet give direct explicit persistence full parity with managed persistence.
+- §10 still contains the dual-authority reconciliation table; transcript-backed sessions should use the transcript as continuation authority.
+- `internalSessionHistory` is still embedded in every checkpoint instead of using a bounded revision/digest.
+- §20 still treats certified replay as a v0 implementation instead of a deferred extension.
+- Config restoration needs the single-pass termination rule.
+- `AgentSession.listSessions()` remains undecided.
+- Timeline filtering and structured message typing need their agreed corrections.
+- §27 needs a concrete v0 boundary.
+
+These are specification consistency fixes, not unresolved architectural questions. I would do that cleanup first and then implement v0 in parts:
+
+1. Configuration/default normalization and direct-versus-managed tests.
+2. Central registry and `SessionManager` creation/loading API.
+3. Per-session transcript configuration and v2 records.
+4. Cursor pagination and capture-policy filtering.
+5. Bounded checkpoints and clean restoration.
+6. ACP configuration restoration.
+7. Operation-start markers and manual uncertain recovery.
+8. Manual registry/transcript deletion.
+
+Automatic certified reconciliation, retention, segmentation, compaction, and buffered durability remain deferred.
+
+One practical consideration: this work will substantially touch `agent-session.ts`, where the metering implementation may also be making changes. We should make sure that work is incorporated or stabilized before the AgentSession integration portion. The registry/configuration foundations can begin independently.
+
+So: yes, ready to start—but first with a short spec normalization pass, then the narrow v0 rather than treating all 1,600 lines as one implementation task.
+
+
+
+
+
+
+
+
+
+
+
+There are no major architectural questions left. We mainly need to turn the decisions already made into exact, non-contradictory contracts in the specification.
+
+The remaining definitions are:
+
+1. Exact persistence types
+
+```ts
+interface PersistenceConfig {
+  root?: string;
+  registry?: false | {
+    store?: AgentSessionStore;
+  };
+  transcript?: false | TranscriptConfig;
+  sessionConfiguration?: SessionConfigurationPersistenceConfig;
+}
+
+interface SessionManagerOptions {
+  persistence?: PersistenceConfig;
+  resolveAdapter?: AdapterResolver;
+}
+
+interface AgentSessionConfig {
+  // Omitted means disabled for direct sessions.
+  persistence?: false | PersistenceConfig;
+}
+```
+
+Managed per-session overrides need a narrower type:
+
+```ts
+interface ManagedSessionPersistenceOverrides {
+  transcript?: false | TranscriptConfig;
+  sessionConfiguration?: SessionConfigurationPersistenceConfig;
+}
+```
+
+A managed session may override its transcript path, preset, capture policy, or disable it. It may not override the manager’s registry or root.
+
+Defaults:
+
+```text
+Direct AgentSession + omitted persistence → disabled
+Direct AgentSession + persistence: {}     → full persistence
+SessionManager + omitted persistence      → full managed persistence
+Managed per-session options               → override transcript/config only
+```
+
+2. Conditional authority
+
+This should replace the current six-way checkpoint competition:
+
+| Configuration | Discovery authority | Continuation authority |
+|---|---|---|
+| Registry + transcript | Registry | Transcript |
+| Registry only | Registry | Registry |
+| Transcript only | Consumer/path | Transcript |
+| Neither | Consumer | Consumer checkpoint |
+
+With transcripts enabled, registry checkpoint fields are a rebuildable listing projection. They do not compete with the transcript.
+
+3. Bounded checkpoint history
+
+Remove full `internalSessionHistory` from every checkpoint.
+
+```ts
+interface AgentSessionCheckpoint {
+  internalSessionId: string | null;
+  internalSessionActivatedAt: string | null;
+
+  lastTransition?: {
+    transitionId: string;
+    kind: TransitionKind;
+  };
+
+  internalSessionHistoryRevision: number;
+  internalSessionHistoryDigest: string;
+
+  // Other bounded continuation state...
+}
+```
+
+Full history remains in registry records and transcript transition events. The revision/digest detects corruption; it does not participate in recovery reconciliation.
+
+4. V0 recovery boundary
+
+For v0:
+
+```text
+clean checkpoint → restore normally
+
+dirty operation boundary
+→ load/resume harness if possible
+→ collect observable evidence
+→ remain uncertain
+→ consumer calls resolveRecovery()
+```
+
+Automatic certified replay reconciliation is deferred until an adapter genuinely qualifies. The extension can remain documented, but it should not be implemented in v0.
+
+5. Configuration restoration termination
+
+Configuration restoration is exactly one pass:
+
+```text
+apply desired selections once in ordinal order
+→ validate after each response
+→ compare final effective state
+→ residual mismatch becomes configuration_mismatch
+```
+
+No automatic retry loop or fixed-point search.
+
+Add `announcedConfigIds` to the checkpoint for better diagnostics.
+
+6. Session-listing names
+
+Following the terminology we established:
+
+```ts
+sessionManager.listAgentSessions();
+agentSession.listInternalSessions();
+```
+
+`listAgentSessions()` reads logical library sessions.
+
+`listInternalSessions()` invokes the active harness’s ACP session-list capability. It should not implicitly merge registry and harness results. The existing ambiguous `AgentSession.listSessions()` becomes deprecated.
+
+7. Transcript typing and filtering
+
+Replace:
+
+```ts
+messages?: JsonValue[];
+```
+
+with a real versioned type:
+
+```ts
+messages?: readonly TranscriptResponseMessage[];
+```
+
+Allow `types` on timeline pages when every requested type belongs to `TranscriptTimelineItem`:
+
+```ts
+transcript.readPage({
+  view: "timeline",
+  types: ["message", "activity", "transition"],
+});
+```
+
+Invalid combinations remain typed errors.
+
+8. Registry-disabled manager behavior
+
+If `registry: false`:
+
+```ts
+listAgentSessions()
+getAgentSessionRecord()
+loadAgentSession(id)
+deleteAgentSession(id)
+```
+
+must throw `RegistryDisabledError` when they require registry lookup. They must never return an empty result that looks like an empty inventory.
+
+Transcript-only creation remains supported.
+
+9. Manual deletion API
+
+Manual deletion belongs in v0:
+
+```ts
+sessionManager.deleteAgentSession(agentSessionId, {
+  transcript: "keep", // default
+});
+```
+
+or:
+
+```ts
+sessionManager.deleteAgentSession(agentSessionId, {
+  transcript: "delete",
+});
+```
+
+The CLI must expose this with confirmation for transcript deletion and display the resolved transcript path when opening a managed session.
+
+10. Explicit v0 scope
+
+The first implementation target should include:
+
+- Direct/managed configuration defaults
+- Registry and manager factories
+- Per-session transcript policy
+- JSONL v2
+- Pagination
+- Clean checkpoints and restoration
+- ACP configuration persistence
+- Dirty-operation detection
+- Manual uncertain recovery
+- Manual deletion
+
+Deferred:
+
+- Certified automatic reconciliation
+- Buffered durability
+- Automatic retention
+- Compaction/redaction
+- Segmentation and indexes
+- Automatic repair/import workflows
+
+So what remains is principally a consistency edit to the spec. The actual behavioral decisions are already available; we do not need another large design discussion unless you disagree with one of these exact contracts.
+
+
+
+
+
+
+The adapter should not belong to `SessionManager`. The manager stores `adapterId` as routing metadata, but the actual executable `Adapter` is runtime input supplied by the consumer.
+
+A manager-level adapter or resolver would be a convenience default, but it creates the wrong impression that one manager corresponds to one adapter. Our registry is explicitly meant to contain sessions across adapters, so I would remove `resolveAdapter` from `SessionManagerOptions`.
+
+## Adapter responsibility
+
+Creation remains explicit:
+
+```ts
+await sessionManager.createAgentSession({
+  adapterId: "claude",
+  adapter: resolveAdapter("claude"),
+});
+```
+
+Loading requires the consumer to supply the runtime adapter:
+
+```ts
+const record =
+  await sessionManager.getAgentSessionRecord(agentSessionId);
+
+const session = await sessionManager.loadAgentSession(agentSessionId, {
+  adapter: resolveAdapter(record.adapterId),
+});
+```
+
+Or, as a convenience without making it manager state:
+
+```ts
+const session = await sessionManager.loadAgentSession(agentSessionId, {
+  resolveAdapter,
+});
+```
+
+The callback belongs to that load operation, not the manager.
+
+The manager validates that loading is still for the persisted `adapterId`; it never stores or blindly executes an adapter command.
+
+A manager-level `defaultAdapter` could save a few characters for a single-adapter CLI, but the CLI/consumer can provide that default itself. I do not think it belongs in the core manager.
+
+## Internal-session history
+
+Agreed: remove it from checkpoints.
+
+The complete history lives in:
+
+- Transcript transition records when transcripts exist.
+- The registry record, especially in registry-only mode.
+
+The checkpoint needs only:
+
+```ts
+interface AgentSessionCheckpoint {
+  internalSessionId: string | null;
+  internalSessionActivatedAt: string | null;
+
+  lastTransition?: {
+    transitionId: string;
+    kind: TransitionKind;
+  };
+
+  internalSessionHistoryRevision: number;
+  internalSessionHistoryDigest: string;
+}
+```
+
+The revision/digest only detects corruption or inconsistent projections. It is not an input into recovery selection.
+
+## Recovery architecture
+
+Your three steps are the correct basic progression:
+
+```text
+checkpoint
+→ try loading internalSessionId
+→ if that cannot restore useful continuity, reconstruct from transcript
+```
+
+I would avoid calling the third step an ordinary handoff, though. A normal handoff has a live old thread which produces a summary. During recovery, that old thread may be unavailable or uncertain.
+
+It can reuse the handoff machinery, but should be recorded as a recovery transition:
+
+```text
+old internal session unavailable
+→ build continuation from persisted transcript
+→ create new internal session
+→ seed it with continuation
+→ preserve agentSessionId
+```
+
+The default recovery algorithm could be:
+
+1. Resolve the authoritative checkpoint.
+
+   This supplies the adapter ID, current `internalSessionId`, model/config state, and last clean transcript boundary.
+
+2. Attempt normal internal-session loading.
+
+   ```ts
+   providerSession: {
+     kind: "load",
+     internalSessionId,
+     onFailure: "error",
+   }
+   ```
+
+   No silent fallback to a new thread.
+
+3. Classify the result.
+
+   - Clean checkpoint + successful load: recovered normally.
+   - Dirty checkpoint + successful load: thread loaded, but interrupted work remains uncertain.
+   - Load failed: restoration requires another strategy.
+
+4. Optionally reconstruct from the transcript.
+
+   - Read the appropriate conversation/history window.
+   - Produce continuation context.
+   - Create a new internal session.
+   - Reapply compatible ACP configuration.
+   - Seed it with the continuation.
+   - Record a `recovery` transition.
+   - Keep the same `agentSessionId`.
+
+5. Otherwise return unresolved recovery to the consumer.
+
+The transcript strategy must be opt-in because it:
+
+- creates a new provider thread;
+- consumes tokens;
+- may send a large amount of persisted content;
+- cannot reproduce tool side effects;
+- may be unavailable under a transcript policy that omitted messages.
+
+## Making recovery extensible
+
+The recovery engine should be separate from `AgentSession` construction:
+
+```ts
+interface RecoveryContext {
+  checkpoint: AgentSessionCheckpoint;
+  transcript: TranscriptReader | null;
+  adapter: Adapter;
+  dirtyBoundary: DirtyBoundary | null;
+}
+
+interface RecoveryStrategy {
+  readonly kind: string;
+
+  attempt(
+    context: RecoveryContext,
+  ): Promise<RecoveryStrategyResult>;
+}
+```
+
+Possible results:
+
+```ts
+type RecoveryStrategyResult =
+  | {
+      kind: "recovered";
+      continuity: "exact" | "accepted" | "reconstructed";
+      internalSessionId: string;
+    }
+  | {
+      kind: "needs_confirmation";
+      reason: string;
+    }
+  | {
+      kind: "not_applicable";
+      reason: string;
+    }
+  | {
+      kind: "failed";
+      error: Error;
+    };
+```
+
+Initial built-ins:
+
+```ts
+{ kind: "load_internal_session" }
+```
+
+```ts
+{
+  kind: "new_from_transcript",
+  buildContinuation?: ContinuationBuilder,
+  introductionPrompt?: string,
+}
+```
+
+V0 does not necessarily need to expose arbitrary strategy plugins publicly. But implementing recovery internally around this boundary prevents it from becoming a hardcoded block inside `AgentSession.open()`.
+
+The default policy should attempt only normal load. Transcript reconstruction requires explicit consumer configuration or an explicit `resolveRecovery()` choice.
+
+The two prompts remain distinct:
+
+- Continuation builder prompt: produces the summary/context.
+- Introduction prompt: explains that context to the new thread.
+
+## Configuration restoration
+
+Agreed. One pass only:
+
+```text
+apply desired settings once in ordinal order
+→ revalidate after every result
+→ compare final state
+→ configuration_mismatch if anything remains inconsistent
+```
+
+No oscillating retries.
+
+## Listing names and transcript typing
+
+Agreed:
+
+```ts
+sessionManager.listAgentSessions();
+agentSession.listInternalSessions();
+```
+
+`listInternalSessions()` is the harness ACP operation. No implicit registry merge.
+
+Also:
+
+- Structured transcript messages get a real type.
+- `types` can filter timeline records when they are valid timeline members.
+- Registry-disabled registry operations throw `RegistryDisabledError`.
+
+## Deletion API
+
+I agree that the string-valued transcript option is unnecessarily verbose for v0. I would use a destructive positive boolean rather than `keepTranscript`:
+
+```ts
+await sessionManager.deleteAgentSession(agentSessionId, {
+  deleteTranscript: true,
+});
+```
+
+`deleteTranscript: true` is clearer and safer than `keepTranscript: false`, because the destructive action must be explicitly enabled.
+
+The default operation should tombstone the registry entry:
+
+```ts
+await sessionManager.deleteAgentSession(agentSessionId);
+```
+
+Result:
+
+```ts
+interface AgentSessionRecord {
+  status: "active" | "deleted";
+  deletedAt?: string;
+
+  transcript: null | {
+    path: string;
+    deletedAt?: string;
+    // ...
+  };
+}
+```
+
+Listing excludes tombstones by default:
+
+```ts
+sessionManager.listAgentSessions({
+  includeDeleted: true,
+});
+```
+
+If `deleteTranscript: true`, the transcript is removed and the tombstone records that fact.
+
+Whether the registry tombstone itself is retained can be another explicit option:
+
+```ts
+await sessionManager.deleteAgentSession(agentSessionId, {
+  deleteTranscript: true,
+  removeRegistryEntry: true,
+});
+```
+
+Defaults:
+
+```text
+deleteTranscript: false
+removeRegistryEntry: false
+```
+
+Therefore the default “delete” means:
+
+- mark logical session deleted;
+- retain its transcript;
+- retain a tombstone preventing accidental ID reuse;
+- exclude it from ordinary lists and loads.
+
+This is recoverable and auditable. Fully removing both requires two explicit destructive choices.
+
+So I would make all of these changes. The only semantic correction is naming transcript-based recovery as reconstruction rather than ordinary handoff, while allowing it to reuse handoff’s summary-and-seed machinery internally.
+
+
+
+
+We should distinguish “a different `Adapter` object” from “a different adapter identity.”
+
+A new adapter object or executable version with the same `adapterId` should normally be allowed. We should not over-engineer compatibility checks; after validating the persisted identity, try loading the `internalSessionId` and use the result as evidence.
+
+A genuinely different `adapterId` is different: internal session IDs are adapter-scoped and must not be assumed portable.
+
+## Normal loading
+
+The managed loading algorithm should be:
+
+```text
+1. Read registry record.
+2. If transcript was enabled, require and validate it.
+3. Read the authoritative checkpoint.
+4. Obtain the runtime Adapter from the consumer.
+5. Compare its requested adapterId with checkpoint.adapterId.
+6. Start that adapter and try loadSession(internalSessionId).
+7. Either it works or return the actual typed load failure.
+```
+
+The adapter remains consumer input:
+
+```ts
+const record =
+  await sessionManager.getAgentSessionRecord(agentSessionId);
+
+const session = await sessionManager.loadAgentSession(agentSessionId, {
+  adapter: resolveAdapter(record.adapterId),
+});
+```
+
+We should expect ordinary loading to work. The registry and checkpoint tell us what to attempt; they do not replace attempting it.
+
+## Same identity, different implementation
+
+This is valid:
+
+```text
+Persisted adapterId: "opencode"
+Runtime adapterId:   "opencode"
+Old executable:      opencode 1.2
+New executable:      opencode 1.3
+```
+
+The library should simply try loading the internal session.
+
+We should not compare adapter object identity, command arrays, package versions, or executable hashes unless an adapter later declares a specific incompatibility.
+
+The load result is authoritative:
+
+- Success: continue.
+- Session not found: typed load failure/recovery.
+- Unsupported load: typed capability failure.
+- Harness crash: transport failure.
+
+## Different adapter identity
+
+This should fail before attempting to load the old ID:
+
+```text
+Persisted adapterId: "opencode"
+Requested adapterId: "claude"
+```
+
+```ts
+throw new AdapterMismatchError({
+  expectedAdapterId: "opencode",
+  receivedAdapterId: "claude",
+});
+```
+
+Trying the same string ID against an unrelated adapter is dangerous:
+
+- IDs can accidentally collide.
+- The adapter may accept the ID but load an unrelated session.
+- Success would not prove that the conversation was transferred.
+
+Changing adapters is therefore an explicit recovery/switch operation:
+
+```ts
+await sessionManager.loadAgentSession(agentSessionId, {
+  adapter: claudeAdapter,
+  adapterId: "claude",
+
+  recovery: {
+    strategy: "new_from_transcript",
+  },
+});
+```
+
+That does not load the old internal ID. It:
+
+1. Reads the old transcript.
+2. Builds continuation context.
+3. Creates a new internal session with the new adapter.
+4. Seeds it with the continuation.
+5. Updates the same logical `agentSessionId`.
+6. Records the old internal session in history.
+7. Records a `recovery` or `switch` transition.
+
+If two differently named adapters are genuinely resume-compatible, that should be an explicit adapter migration declaration or explicit consumer recovery strategy—not an automatic guess.
+
+## Missing transcript
+
+Your instinct is correct: if a session record says a transcript exists and that transcript is the continuation authority, a missing file must not create a new session.
+
+It should fail before starting the harness:
+
+```ts
+throw new TranscriptNotFoundError({
+  agentSessionId,
+  path,
+});
+```
+
+Related failures should stay distinct:
+
+```text
+TranscriptNotFoundError
+TranscriptUnavailableError    // permissions/I/O
+TranscriptCorruptionError
+TranscriptIdentityError       // belongs to another AgentSession
+```
+
+The behavior depends on how the session was created:
+
+### Transcript-enabled session
+
+```text
+Registry says transcript exists
+→ transcript missing
+→ fail
+```
+
+Do not:
+
+- create an empty transcript;
+- load from a stale registry projection silently;
+- start a new internal session;
+- overwrite the missing path.
+
+The consumer can then repair the path, restore a backup, explicitly accept registry state, or supply external continuation.
+
+### Registry-only session
+
+```text
+Registry says transcript: null
+→ no transcript expected
+→ use registry checkpoint
+→ load internalSessionId
+```
+
+Absence is only an error when the persisted session claims it has a transcript.
+
+### Direct transcript open
+
+```ts
+await AgentSession.open({
+  persistence: {
+    registry: false,
+    transcript: {
+      path: "/expected/session.jsonl",
+    },
+  },
+  adapter,
+});
+```
+
+If the path does not exist, `open()` fails. Only `create()` may create a new transcript.
+
+## Is this already handled by `providerSession.kind: "load"`?
+
+Only partially.
+
+The current behavior already distinguishes provider-thread intent:
+
+```ts
+providerSession: {
+  kind: "load",
+  internalSessionId,
+  onFailure: "error",
+}
+```
+
+That correctly prevents a failed harness load from silently becoming a new harness session.
+
+However, current transcripts are history-only:
+
+- Their existence does not control loading.
+- A missing transcript is generally treated as an empty read.
+- The current `readTranscript()` path swallows missing/read errors and returns `[]`.
+
+Therefore, `kind: "load"` protects against a missing harness session, but it does not protect against a missing authoritative transcript. The new managed `open/loadAgentSession` behavior must add that check.
+
+The legacy option:
+
+```ts
+onFailure: "new"
+```
+
+may remain for compatibility with explicitly requested low-level behavior, but managed restoration must never select it automatically.
+
+## Extensible recovery order
+
+I would formalize recovery as ordered strategies:
+
+```text
+resolve_checkpoint
+→ load_internal_session
+→ new_from_transcript
+→ new_from_consumer_continuation
+→ unresolved
+```
+
+Not every strategy runs automatically:
+
+- `load_internal_session` is the default.
+- `new_from_transcript` requires explicit permission.
+- `new_from_consumer_continuation` requires supplied context.
+- Creating an empty replacement session is never an implicit recovery.
+
+This handles the difficult combination too:
+
+```text
+Different adapter + transcript missing
+```
+
+There is no automatic safe recovery. The consumer must provide continuation context or abort. Starting a blank session while preserving the old `agentSessionId` would falsely imply continuity that the library does not possess.

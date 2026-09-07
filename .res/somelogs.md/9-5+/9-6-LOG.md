@@ -496,3 +496,46 @@ Same-adapter handoff carries desired selections before seeding; cross-adapter sw
 requires an explicit mapping. Policy-visible selection records are distinct from full
 announced definitions, which are retained only by the diagnostic-level configuration
 policy.
+
+### Persistence ownership correction
+
+A design review found that placing transcript configuration on `SessionManager` as one
+manager-wide policy prevented natural per-session choices. The specification now assigns
+the registry to the manager and the transcript writer/effective capture policy to each
+individual `AgentSession`.
+
+`SessionManager` can provide session persistence defaults, but every
+`createAgentSession()` call can select its own transcript path, preset, capture overrides,
+configuration-value policy, or `transcript: false`. The resolved choice is stored on that
+session's registry record and reused by `loadAgentSession()`; changing it during load is
+not an ordinary override and requires an explicit transcript-relocation operation.
+
+The default behavior is now scoped by entry point:
+
+- Direct `AgentSession.create/open` remains the low-level consumer-controlled path and
+  performs no persistence unless explicitly configured.
+- `SessionManager.createAgentSession` is the managed path: it always records the logical
+  session in the manager registry and defaults that individual session to an `activity`
+  transcript plus typed ACP configuration persistence.
+
+The manager resolves construction and restoration but does not retain live session
+objects or proxy their operational methods. Consumers continue to own their live-session
+map and call `prompt`, `handoff`, `setConfig`, `interrupt`, and other methods directly on
+the returned `AgentSession`.
+
+### Durability decision note
+
+Added `9-6-NOTE-durability.md` to isolate the power-loss durability concern and preserve
+the deferred design without expanding the v0 API.
+
+V0 will not expose synchronous versus buffered durability modes. Managed persistence
+requires a durable operation-start/in-flight boundary before provider dispatch and a
+durable terminal checkpoint afterward. Direct sessions with persistence disabled make no
+such guarantee. Transcript-backed managed sessions synchronize the append-only
+continuation journal; registry-only sessions must instead publish the in-flight state to
+their registry before dispatch.
+
+The note retains the possible future buffered mode and its honest limitation: sudden
+power loss could erase recent boundaries and make an apparently clean checkpoint
+unreliable. It is deferred until measurements show synchronization latency is material
+relative to harness/model operations.
