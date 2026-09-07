@@ -45,6 +45,19 @@ export interface CacheInputConvention {
   readonly cachedWrite: "included_in_input" | "excluded_from_input";
 }
 
+/**
+ * How a harness's separately-reported reasoning tokens are charged.
+ *
+ * The counterpart to `cacheInputConvention` for the output side, and the same trap: a
+ * harness can report `thoughtTokens` as a disjoint counter while the provider bills them
+ * at the ordinary output rate. Pricing them at a separate rate — or refusing to price
+ * them — both get the total wrong.
+ *
+ * `billed_as_output` applies the schedule's OUTPUT unit price to thought tokens, and
+ * engraves that price, so a record shows exactly what rate was applied.
+ */
+export type ThoughtConvention = "separate_price" | "billed_as_output";
+
 export interface PricingSchedule {
   /** Stable identifier for this schedule within its policy. */
   readonly tier: string;
@@ -52,6 +65,11 @@ export interface PricingSchedule {
   readonly conditions: readonly PricingCondition[];
   /** Provider/harness counter convention used to avoid pricing cached input twice. */
   readonly cacheInputConvention: CacheInputConvention;
+  /**
+   * How separately-reported reasoning tokens are charged. Defaults to `separate_price`,
+   * which requires a `thought` unit price and otherwise makes rating unavailable.
+   */
+  readonly thoughtConvention?: ThoughtConvention;
   readonly input: TokenUnitPrice;
   readonly output: TokenUnitPrice;
   readonly cachedRead?: TokenUnitPrice;
@@ -117,12 +135,39 @@ function isUnitPrice(value: unknown): value is TokenUnitPrice {
   );
 }
 
+/**
+ * The unit price a schedule applies to a category, or undefined when it has none.
+ *
+ * The single source of truth for that mapping. It used to be duplicated between
+ * validation and rating, and the copies drifted the moment `billed_as_output` was added.
+ */
+export function unitPriceFor(
+  schedule: PricingSchedule,
+  category: TokenCategory,
+): TokenUnitPrice | undefined {
+  switch (category) {
+    case "input":
+      return schedule.input;
+    case "output":
+      return schedule.output;
+    case "cached_read":
+      return schedule.cachedRead;
+    case "cached_write":
+      return schedule.cachedWrite;
+    case "thought":
+      // Reasoning billed at the ordinary output rate is still priced — by the output
+      // price, which is what reproduces the provider's own figure.
+      if (schedule.thoughtConvention === "billed_as_output") return schedule.output;
+      return schedule.thought;
+  }
+}
+
 /** Categories a schedule carries a price for, in TokenCategory terms. */
 export function pricedCategories(schedule: PricingSchedule): ReadonlySet<TokenCategory> {
-  const priced = new Set<TokenCategory>(["input", "output"]);
-  if (schedule.cachedRead) priced.add("cached_read");
-  if (schedule.cachedWrite) priced.add("cached_write");
-  if (schedule.thought) priced.add("thought");
+  const priced = new Set<TokenCategory>();
+  for (const category of TOKEN_CATEGORIES) {
+    if (unitPriceFor(schedule, category)) priced.add(category);
+  }
   return priced;
 }
 
@@ -174,16 +219,7 @@ export function validatePricingPolicy(policy: PricingPolicy): PolicyValidation {
 
     const priced = pricedCategories(schedule);
     for (const category of TOKEN_CATEGORIES) {
-      const price =
-        category === "input"
-          ? schedule.input
-          : category === "output"
-            ? schedule.output
-            : category === "cached_read"
-              ? schedule.cachedRead
-              : category === "cached_write"
-                ? schedule.cachedWrite
-                : schedule.thought;
+      const price = unitPriceFor(schedule, category);
       if (price !== undefined && !isUnitPrice(price)) {
         return { ok: false, reason: `schedule ${schedule.tier} has an invalid ${category} unit price` };
       }
@@ -199,17 +235,7 @@ export function validatePricingPolicy(policy: PricingPolicy): PolicyValidation {
     // Mixed currency is invalid rather than partially summed (§7).
     const currencies = new Set<string>();
     for (const category of priced) {
-      const price =
-        category === "input"
-          ? schedule.input
-          : category === "output"
-            ? schedule.output
-            : category === "cached_read"
-              ? schedule.cachedRead!
-              : category === "cached_write"
-                ? schedule.cachedWrite!
-                : schedule.thought!;
-      currencies.add(price.currency);
+      currencies.add(unitPriceFor(schedule, category)!.currency);
     }
     if (currencies.size > 1) {
       return {

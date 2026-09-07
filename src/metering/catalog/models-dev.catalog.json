@@ -618,7 +618,7 @@
         "cachedRead": "excluded_from_input",
         "cachedWrite": "excluded_from_input"
       },
-      "conventionEvidence": "Measured on opencode ACP: totalTokens equals the exact sum of inputTokens, outputTokens, cachedReadTokens and thoughtTokens within each single report, across four underlying providers.",
+      "conventionEvidence": "Measured on opencode ACP: totalTokens equals the exact sum of inputTokens, outputTokens, cachedReadTokens and thoughtTokens within each single report, across five underlying providers. Reasoning is billed at the output rate, reconciled exactly against OpenCode's own reported cost on opencode-go/kimi-k2.6.",
       "models": {
         "claude-sonnet-4-6": {
           "categoryApplicability": {
@@ -626,7 +626,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -640,6 +640,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "3",
                 "currency": "USD",
@@ -669,7 +670,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -683,6 +684,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -707,7 +709,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -721,6 +723,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "2",
                 "currency": "USD",
@@ -749,6 +752,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "4",
                 "currency": "USD",
@@ -773,7 +777,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -787,6 +791,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.05",
                 "currency": "USD",
@@ -811,7 +816,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -825,6 +830,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.6",
                 "currency": "USD",
@@ -849,7 +855,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -863,6 +869,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -887,7 +894,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -901,6 +908,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.14",
                 "currency": "USD",
@@ -925,7 +933,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -939,6 +947,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -968,7 +977,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -982,6 +991,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.25",
                 "currency": "USD",
@@ -1006,7 +1016,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1020,6 +1030,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -1044,7 +1055,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1058,6 +1069,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.07",
                 "currency": "USD",
@@ -1082,7 +1094,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1096,6 +1108,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.25",
                 "currency": "USD",
@@ -1120,7 +1133,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1134,6 +1147,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.6",
                 "currency": "USD",
@@ -1158,7 +1172,7 @@
             "output": "applicable",
             "cached_read": "unknown",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1172,6 +1186,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -1191,7 +1206,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1205,6 +1220,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.3",
                 "currency": "USD",
@@ -1229,7 +1245,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1243,6 +1259,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -1267,7 +1284,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1281,6 +1298,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.25",
                 "currency": "USD",
@@ -1305,7 +1323,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1319,6 +1337,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.5",
                 "currency": "USD",
@@ -1348,7 +1367,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1362,6 +1381,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.07",
                 "currency": "USD",
@@ -1386,7 +1406,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1400,6 +1420,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "2",
                 "currency": "USD",
@@ -1433,6 +1454,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "4",
                 "currency": "USD",
@@ -1462,7 +1484,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1476,6 +1498,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "5",
                 "currency": "USD",
@@ -1505,7 +1528,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1519,6 +1542,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.3",
                 "currency": "USD",
@@ -1543,7 +1567,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1557,6 +1581,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.95",
                 "currency": "USD",
@@ -1581,7 +1606,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1595,6 +1620,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.75",
                 "currency": "USD",
@@ -1619,7 +1645,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1633,6 +1659,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -1657,7 +1684,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1671,6 +1698,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.4",
                 "currency": "USD",
@@ -1695,7 +1723,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1709,6 +1737,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "10",
                 "currency": "USD",
@@ -1742,6 +1771,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "20",
                 "currency": "USD",
@@ -1771,7 +1801,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1785,6 +1815,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "5",
                 "currency": "USD",
@@ -1814,7 +1845,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1828,6 +1859,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -1852,7 +1884,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1866,6 +1898,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.3",
                 "currency": "USD",
@@ -1890,7 +1923,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1904,6 +1937,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.3",
                 "currency": "USD",
@@ -1928,7 +1962,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1942,6 +1976,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -1966,7 +2001,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -1980,6 +2015,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.14",
                 "currency": "USD",
@@ -2004,7 +2040,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2018,6 +2054,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.95",
                 "currency": "USD",
@@ -2042,7 +2079,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2056,6 +2093,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.4",
                 "currency": "USD",
@@ -2080,7 +2118,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2094,6 +2132,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.75",
                 "currency": "USD",
@@ -2118,7 +2157,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2132,6 +2171,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "2",
                 "currency": "USD",
@@ -2160,6 +2200,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "4",
                 "currency": "USD",
@@ -2184,7 +2225,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2198,6 +2239,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.5",
                 "currency": "USD",
@@ -2222,7 +2264,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2236,6 +2278,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -2260,7 +2303,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2274,6 +2317,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "2.5",
                 "currency": "USD",
@@ -2302,6 +2346,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "5",
                 "currency": "USD",
@@ -2326,7 +2371,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2340,6 +2385,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1",
                 "currency": "USD",
@@ -2364,7 +2410,7 @@
             "output": "applicable",
             "cached_read": "unknown",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2378,6 +2424,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.45",
                 "currency": "USD",
@@ -2397,7 +2444,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2411,6 +2458,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "10",
                 "currency": "USD",
@@ -2440,7 +2488,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2454,6 +2502,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.07",
                 "currency": "USD",
@@ -2478,7 +2527,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2492,6 +2541,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.25",
                 "currency": "USD",
@@ -2516,7 +2566,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2530,6 +2580,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "5",
                 "currency": "USD",
@@ -2559,7 +2610,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2573,6 +2624,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.5",
                 "currency": "USD",
@@ -2597,7 +2649,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2611,6 +2663,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -2635,7 +2688,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2649,6 +2702,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -2673,7 +2727,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2687,6 +2741,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.2",
                 "currency": "USD",
@@ -2720,6 +2775,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.4",
                 "currency": "USD",
@@ -2749,7 +2805,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2763,6 +2819,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "5",
                 "currency": "USD",
@@ -2792,7 +2849,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2806,6 +2863,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "3",
                 "currency": "USD",
@@ -2830,7 +2888,7 @@
             "output": "applicable",
             "cached_read": "unknown",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2844,6 +2902,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -2863,7 +2922,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2877,6 +2936,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "2",
                 "currency": "USD",
@@ -2905,6 +2965,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "4",
                 "currency": "USD",
@@ -2929,7 +2990,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2943,6 +3004,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -2967,7 +3029,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -2981,6 +3043,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3005,7 +3068,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3019,6 +3082,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.75",
                 "currency": "USD",
@@ -3043,7 +3107,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3057,6 +3121,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3081,7 +3146,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3095,6 +3160,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.15",
                 "currency": "USD",
@@ -3119,7 +3185,7 @@
             "output": "applicable",
             "cached_read": "unknown",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3133,6 +3199,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3152,7 +3219,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3166,6 +3233,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "10",
                 "currency": "USD",
@@ -3195,7 +3263,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3209,6 +3277,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.3",
                 "currency": "USD",
@@ -3233,7 +3302,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3247,6 +3316,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3271,7 +3341,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3285,6 +3355,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.8",
                 "currency": "USD",
@@ -3314,7 +3385,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3328,6 +3399,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3352,7 +3424,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3366,6 +3438,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.2",
                 "currency": "USD",
@@ -3390,7 +3463,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3404,6 +3477,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "30",
                 "currency": "USD",
@@ -3428,7 +3502,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3442,6 +3516,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3471,7 +3546,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3485,6 +3560,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.75",
                 "currency": "USD",
@@ -3509,7 +3585,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3523,6 +3599,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3547,7 +3624,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3561,6 +3638,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.4",
                 "currency": "USD",
@@ -3585,7 +3663,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3599,6 +3677,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "2",
                 "currency": "USD",
@@ -3627,6 +3706,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "4",
                 "currency": "USD",
@@ -3651,7 +3731,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3665,6 +3745,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1",
                 "currency": "USD",
@@ -3694,7 +3775,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3708,6 +3789,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "3",
                 "currency": "USD",
@@ -3741,6 +3823,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "6",
                 "currency": "USD",
@@ -3770,7 +3853,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3784,6 +3867,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1",
                 "currency": "USD",
@@ -3808,7 +3892,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3822,6 +3906,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "15",
                 "currency": "USD",
@@ -3851,7 +3936,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3865,6 +3950,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.6",
                 "currency": "USD",
@@ -3889,7 +3975,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3903,6 +3989,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.4",
                 "currency": "USD",
@@ -3927,7 +4014,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3941,6 +4028,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3965,7 +4053,7 @@
             "output": "applicable",
             "cached_read": "unknown",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -3979,6 +4067,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -3998,7 +4087,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4012,6 +4101,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.5",
                 "currency": "USD",
@@ -4036,7 +4126,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4050,6 +4140,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "5",
                 "currency": "USD",
@@ -4079,7 +4170,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4093,6 +4184,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.74",
                 "currency": "USD",
@@ -4117,7 +4209,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4131,6 +4223,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "30",
                 "currency": "USD",
@@ -4155,7 +4248,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4169,6 +4262,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.5",
                 "currency": "USD",
@@ -4193,7 +4287,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4207,6 +4301,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -4231,7 +4326,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4245,6 +4340,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -4269,7 +4365,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4283,6 +4379,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "2.5",
                 "currency": "USD",
@@ -4316,6 +4413,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "5",
                 "currency": "USD",
@@ -4345,7 +4443,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4359,6 +4457,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.4",
                 "currency": "USD",
@@ -4383,7 +4482,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4397,6 +4496,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -4421,7 +4521,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4435,6 +4535,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.75",
                 "currency": "USD",
@@ -4459,7 +4560,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4473,6 +4574,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.5",
                 "currency": "USD",
@@ -4497,7 +4599,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4511,6 +4613,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "1.07",
                 "currency": "USD",
@@ -4535,7 +4638,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4549,6 +4652,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "3",
                 "currency": "USD",
@@ -4582,6 +4686,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "6",
                 "currency": "USD",
@@ -4611,7 +4716,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4625,6 +4730,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "2",
                 "currency": "USD",
@@ -4654,7 +4760,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4668,6 +4774,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -4692,7 +4799,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4706,6 +4813,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -4730,7 +4838,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4744,6 +4852,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -4768,7 +4877,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4782,6 +4891,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -4806,7 +4916,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "applicable",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4820,6 +4930,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0.2",
                 "currency": "USD",
@@ -4849,7 +4960,7 @@
             "output": "applicable",
             "cached_read": "applicable",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4863,6 +4974,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "5",
                 "currency": "USD",
@@ -4891,6 +5003,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "10",
                 "currency": "USD",
@@ -4915,7 +5028,7 @@
             "output": "applicable",
             "cached_read": "unknown",
             "cached_write": "unknown",
-            "thought": "unknown"
+            "thought": "applicable"
           },
           "schedules": [
             {
@@ -4929,6 +5042,7 @@
                 "cachedRead": "excluded_from_input",
                 "cachedWrite": "excluded_from_input"
               },
+              "thoughtConvention": "billed_as_output",
               "input": {
                 "amount": "0",
                 "currency": "USD",
@@ -4936,6 +5050,1633 @@
               },
               "output": {
                 "amount": "0",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        }
+      }
+    },
+    "opencode-go": {
+      "cacheInputConvention": {
+        "cachedRead": "excluded_from_input",
+        "cachedWrite": "excluded_from_input"
+      },
+      "conventionEvidence": "Measured on opencode ACP: totalTokens equals the exact sum of inputTokens, outputTokens, cachedReadTokens and thoughtTokens within each single report, across five underlying providers. Reasoning is billed at the output rate, reconciled exactly against OpenCode's own reported cost on opencode-go/kimi-k2.6.",
+      "models": {
+        "qwen3.7-max": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "7.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "3.125",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "longcat-2.0": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.006",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "deepseek-v4-flash-vision-exp": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.22",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.66",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.007",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "qwen3.6-plus": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.05",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "0.625",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_256000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 256000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "muse-spark-1.2-contributor": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.002",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "minimax-m2.7": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.06",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "kimi-k2.6": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.95",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.16",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "glm-5.2": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "1.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.26",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "minimax-m2.5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.03",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "minimax-m3": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.06",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_512000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 512000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "2.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.12",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "deepseek-v4-flash": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.22",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.66",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.007",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "kimi-k2.7-code": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.95",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.19",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "grok-4.5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_200000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 200000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "12",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.6",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "ox-alpha-free": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "hy3": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.14",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.58",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.035",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "hy4-preview": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.834",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "2.501",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.042",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "omen-alpha": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.66",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.04",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "gpt-5.6-luna": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.02",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "0.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_272000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 272000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.04",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "kimi-k3": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.3",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "glm-5.3-flash": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.075",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.015",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "muse-spark-1.3-contributor": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.002",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "mimo-v2-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_256000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 256000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "qwen3.8-flash": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.15",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.47",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.016",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "grok-4.6": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_200000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 200000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "12",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "1",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "glm-5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "1",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "3.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "mimo-v2-omni": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.08",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "qwen3.8-max": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.25",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "2.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "kimi-k2.5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "3",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.1",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "glm-5.1": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "1.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.26",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "qwen3.7-plus": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.6",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.04",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "0.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            },
+            {
+              "tier": "context_over_256000",
+              "conditions": [
+                {
+                  "kind": "context_tokens_at_least",
+                  "tokens": 256000
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "1.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4.8",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.12",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "1.5",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "deepseek-v4-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.66",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.98",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.022",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "glm-5.3": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "1.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "4.4",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.26",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "mimo-v2.5": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.14",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.28",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.0028",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "mimo-v2.5-pro": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "unknown",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.435",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "0.87",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.003625",
+                "currency": "USD",
+                "perTokens": 1000000
+              }
+            }
+          ]
+        },
+        "qwen3.5-plus": {
+          "categoryApplicability": {
+            "input": "applicable",
+            "output": "applicable",
+            "cached_read": "applicable",
+            "cached_write": "applicable",
+            "thought": "applicable"
+          },
+          "schedules": [
+            {
+              "tier": "default",
+              "conditions": [
+                {
+                  "kind": "default"
+                }
+              ],
+              "cacheInputConvention": {
+                "cachedRead": "excluded_from_input",
+                "cachedWrite": "excluded_from_input"
+              },
+              "thoughtConvention": "billed_as_output",
+              "input": {
+                "amount": "0.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "output": {
+                "amount": "1.2",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedRead": {
+                "amount": "0.02",
+                "currency": "USD",
+                "perTokens": 1000000
+              },
+              "cachedWrite": {
+                "amount": "0.25",
                 "currency": "USD",
                 "perTokens": 1000000
               }

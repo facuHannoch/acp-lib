@@ -3716,3 +3716,36 @@ Two smaller notes: `tsconfig.json` includes only `src/**`, so test files aren't 
 
 
 
+
+
+
+
+
+
+
+
+It did work — the library connected, set the model, sent the prompt, and OpenCode refused on billing. Here's exactly what I ran:
+
+```ts
+const s = await AgentSession.create({ adapter: ADAPTERS.opencode, adapterId: "opencode", ... });
+await s.setConfig("model", "opencode/claude-haiku-4-5");
+await s.prompt("Reply with exactly: one");
+// → RequestError: Internal error: Insufficient balance.
+```
+
+And the same thing with no library in the picture at all:
+
+| command                                         | result                        |
+| ----------------------------------------------- | ----------------------------- |
+| `opencode run -m opencode/claude-haiku-4-5 "…"` | `Error: Insufficient balance` |
+| `opencode run -m opencode/mimo-v2.5-free "…"`   | `ok`                          |
+
+Free model works, paid model doesn't, through OpenCode's own CLI. The integration is fine — it faithfully surfaced the harness's error rather than swallowing it. `auth list` still shows exactly one credential, **OpenCode Zen**, and that workspace has no credit.
+
+So the auth you added is a Zen gateway key, and Zen is prepaid. Two ways forward:
+
+**Top up the Zen workspace** at the billing URL it printed. Then `opencode/claude-sonnet-4-5` exercises real prices, the 200k context tier, and `cachedWrite` — none of which any free model produced.
+
+**Or add a direct provider key** — `opencode auth login` → Anthropic or OpenAI with your own API key, which bypasses Zen. That's arguably the better test: the model string becomes `anthropic/claude-sonnet-4-5`, so the split resolves to provider `anthropic` and exercises a *different* catalog entry with its own prices, rather than Zen's resale rates. It also cross-checks whether OpenCode's disjoint-counter normalization still holds when it talks to a provider directly instead of through the gateway — which is the one assumption behind the single `opencode` catalog entry I'd most like to see confirmed.
+
+Either way I'm ready to re-run immediately; tell me which and I'll go.

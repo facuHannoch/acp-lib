@@ -46,6 +46,12 @@ interface ProviderConvention {
   readonly evidence: string;
   /** Applicability for categories the price table cannot settle on its own. */
   readonly thought: Applicability;
+  /**
+   * How reasoning tokens are charged when the catalog carries no separate price.
+   * Omit when it is genuinely unknown — an unpriced reported category then makes rating
+   * unavailable, which is the honest default.
+   */
+  readonly thoughtWithoutPrice?: "billed_as_output";
 }
 
 /**
@@ -55,6 +61,21 @@ interface ProviderConvention {
  * harness normalization path; the real-harness matrix validates that per adapter and may
  * add adapter-level overrides on top of these defaults.
  */
+const OPENCODE_CONVENTION: ProviderConvention = {
+  cacheInputConvention: {
+    cachedRead: "excluded_from_input",
+    cachedWrite: "excluded_from_input",
+  },
+  evidence:
+    "Measured on opencode ACP: totalTokens equals the exact sum of inputTokens, " +
+    "outputTokens, cachedReadTokens and thoughtTokens within each single report, across " +
+    "five underlying providers. Reasoning is billed at the output rate, reconciled " +
+    "exactly against OpenCode's own reported cost on opencode-go/kimi-k2.6.",
+  // Reasoning is reported separately but charged as output, so it is always priceable.
+  thought: "applicable",
+  thoughtWithoutPrice: "billed_as_output",
+};
+
 const CONVENTIONS: Readonly<Record<string, ProviderConvention>> = {
   anthropic: {
     cacheInputConvention: {
@@ -71,30 +92,27 @@ const CONVENTIONS: Readonly<Record<string, ProviderConvention>> = {
     // invalidates the record rather than silently inflating it.
     thought: "not_applicable",
   },
-  // OpenCode's Zen gateway. It multiplexes many upstream providers but NORMALIZES their
-  // counters itself, so the convention is a property of OpenCode, not of the model behind
-  // it — which is what makes one entry legitimate for all 102 of its models.
+  // OpenCode's gateways. They multiplex many upstream providers but NORMALIZE the
+  // counters themselves, so the convention is a property of OpenCode, not of the model
+  // behind it — which is what makes one entry legitimate for all of a gateway's models.
   //
-  // Measured, not assumed: across four distinct underlying providers (big-pickle, Ling,
-  // MiMo, Nemotron), eight consecutive reports every one satisfied
+  // Measured, not assumed. Across five underlying providers (big-pickle, Ling, MiMo,
+  // Nemotron via Zen; Kimi via Go), ten consecutive reports every one satisfied
   //   totalTokens === inputTokens + outputTokens + cachedReadTokens + thoughtTokens
   // within a single report. Disjoint terms mean cache is excluded from input and thought
-  // is excluded from output, so pricing each separately double-counts nothing.
-  // See .res/somelogs.md/9-5+/9-6-harness-matrix-findings.md, Findings 5-6.
-  opencode: {
-    cacheInputConvention: {
-      cachedRead: "excluded_from_input",
-      cachedWrite: "excluded_from_input",
-    },
-    evidence:
-      "Measured on opencode ACP: totalTokens equals the exact sum of inputTokens, " +
-      "outputTokens, cachedReadTokens and thoughtTokens within each single report, " +
-      "across four underlying providers.",
-    // Thought is a disjoint term in that identity, so where the catalog prices reasoning
-    // it can be charged on its own. Where it does not, applicability stays unknown rather
-    // than being asserted either way.
-    thought: "unknown",
-  },
+  // is excluded from output.
+  //
+  // Reasoning is billed at the OUTPUT rate. Reconciled against OpenCode's own reported
+  // cumulative cost on opencode-go/kimi-k2.6, which prices no `reasoning` category:
+  //   turn 1  in 2475, out 3, cache 6144, thought 35  ->  computed 0.00348629
+  //                                                      reported 0.00348629
+  //   turn 2  in  443, out 3, cache 8192, thought 26  ->  computed 0.00184757
+  //                                                 reported delta 0.00184757
+  // The residual after pricing input/output/cache implied exactly 4.00 per 1M for
+  // thought, which is that model's output rate to the digit.
+  // See .res/somelogs.md/9-5+/9-6-harness-matrix-findings.md, Findings 5-8.
+  opencode: OPENCODE_CONVENTION,
+  "opencode-go": OPENCODE_CONVENTION,
   openai: {
     cacheInputConvention: {
       cachedRead: "included_in_input",
@@ -157,10 +175,17 @@ function buildSchedule(
   const cachedWrite = toUnitPrice(cost.cache_write, `${label}.cache_write`);
   const thought = toUnitPrice(cost.reasoning, `${label}.reasoning`);
 
+  // A model with its own reasoning price uses it; otherwise the provider convention says
+  // whether reasoning rides the output rate, and silence means we refuse to guess.
+  const thoughtConvention = thought
+    ? "separate_price"
+    : convention.thoughtWithoutPrice ?? undefined;
+
   return {
     tier,
     conditions,
     cacheInputConvention: convention.cacheInputConvention,
+    ...(thoughtConvention ? { thoughtConvention } : {}),
     input,
     output,
     ...(cachedRead ? { cachedRead } : {}),
@@ -186,7 +211,10 @@ function buildApplicability(
     output: "applicable",
     cached_read: cost.cache_read !== undefined ? "applicable" : "unknown",
     cached_write: cost.cache_write !== undefined ? "applicable" : "unknown",
-    thought: cost.reasoning !== undefined ? "applicable" : convention.thought,
+    thought:
+      cost.reasoning !== undefined || convention.thoughtWithoutPrice
+        ? "applicable"
+        : convention.thought,
   };
 }
 

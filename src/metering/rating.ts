@@ -12,6 +12,7 @@ import type { TokenUsage } from "../types.ts";
 import { addMoney, rateTokens, type Money, type TokenUnitPrice } from "./money.ts";
 import {
   TOKEN_CATEGORIES,
+  unitPriceFor,
   type PricingPolicy,
   type PricingSchedule,
   type PricingSource,
@@ -68,21 +69,6 @@ const DELTA_KEY: Readonly<Record<TokenCategory, keyof TokenUsage>> = Object.free
   cached_write: "cachedWriteTokens",
   thought: "thoughtTokens",
 });
-
-function priceFor(schedule: PricingSchedule, category: TokenCategory): TokenUnitPrice | undefined {
-  switch (category) {
-    case "input":
-      return schedule.input;
-    case "output":
-      return schedule.output;
-    case "cached_read":
-      return schedule.cachedRead;
-    case "cached_write":
-      return schedule.cachedWrite;
-    case "thought":
-      return schedule.thought;
-  }
-}
 
 export type ScheduleSelection =
   | { readonly ok: true; readonly schedule: PricingSchedule }
@@ -204,7 +190,7 @@ export function rateDelta(
         reason: `harness reported ${category} tokens for a model where it is not applicable`,
       };
     }
-    const unitPrice = priceFor(schedule, category);
+    const unitPrice = unitPriceFor(schedule, category);
     if (!unitPrice) {
       return { ok: false, reason: `schedule ${schedule.tier} has no ${category} unit price` };
     }

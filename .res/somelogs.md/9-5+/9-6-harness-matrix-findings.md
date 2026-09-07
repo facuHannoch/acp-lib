@@ -7,8 +7,8 @@ bun smoke-tests/test6-metering/harness-matrix.ts            # free, no prompt se
 bun smoke-tests/test6-metering/harness-matrix.ts --prompt   # SPENDS TOKENS
 ```
 
-Status: **connect-only pass complete. Prompting pass run against OpenCode only** (its
-free tier costs nothing). Other harnesses' prompting pass not run — it consumes
+Status: **connect-only pass complete. Prompting pass run against OpenCode**, on both the
+free Zen tier and the paid Go plan. Other harnesses' prompting pass not run — it consumes
 real tokens against whatever credentials each harness is configured with, which is the
 operator's call, not the library's.
 
@@ -227,13 +227,54 @@ unavailable rather than being silently dropped from the total. It also surfaced 
 bug — the reason was computed and then discarded, so records said
 `pricing_unavailable` with no way to find out why. Fixed.
 
-### Not yet verified: non-zero rating against a live harness
+## Finding 8 — rated cost reconciles EXACTLY with the provider's own cost
 
-The Zen account has **insufficient balance**, so every paid model returns
-`Internal error: Insufficient balance`. Only zero-cost models could be exercised, which
-proves the pipeline end to end but always rates to `0`. Non-zero arithmetic is covered by
-unit tests and by the codex route resolving against the catalog, but has not been
-confirmed against a live billed turn.
+The strongest result available: on a live billed route the library's independently
+computed cost equals what OpenCode itself reports, to the last digit.
+
+Route: `opencode-go/kimi-k2.6` (the OpenCode Go plan; the Zen workspace has no balance,
+so paid Zen models refuse). models.dev prices it input 0.95, output 4, cache_read 0.16
+per 1M — and no `reasoning` entry at all.
+
+| turn | our rated cost | provider cost delta | match |
+|---|---|---|---|
+| 1 | 0.00188837 | 0.00188837 | yes |
+| 2 | 0.00184357 | 0.00184357 | yes |
+| 3 | 0.00183077 | 0.00183077 | yes |
+
+Session total `0.00556271` equals the provider's reported cumulative `0.00556271`.
+
+That reconciliation simultaneously confirms four things that were previously assumptions:
+per-turn counters, cache excluded from input, the delta arithmetic, and the decimal
+rating path.
+
+### It also settled the thought question
+
+`kimi-k2.6` reports `thoughtTokens` while the catalog prices no reasoning category. Under
+the original rule — a reported category with no price makes rating unavailable — the whole
+route was unpriceable.
+
+Pricing input/output/cache alone left a residual of exactly `0.00014` against a reported
+35 thought tokens, i.e. **4.00 per 1M — that model's output rate to the digit**. Reasoning
+is reported as a disjoint counter but billed as output.
+
+This is the §7 gap flagged during implementation: there was a `cacheInputConvention` for
+the input side and nothing for the output side. `ThoughtConvention` now fills it:
+
+- `separate_price` (default) — use the schedule's own thought price, and refuse to rate
+  when a reported thought category has none. Still the honest default.
+- `billed_as_output` — apply the schedule's OUTPUT price, and engrave that price so the
+  record shows which rate was actually applied.
+
+Both live turns are pinned as regression tests against the measured figures.
+
+### Provider cost is cumulative while token counters are per-turn
+
+Worth noting because it is an easy trap: on the same route,
+`usage_update.cost` rises monotonically (0.00348629 → 0.00533386) while `inputTokens`
+falls (2475 → 443). §13 already treats provider cost as cumulative and §4 treats token
+counters as an open question — this route is per-turn for tokens and cumulative for cost
+at the same time.
 
 ## Still unanswered — needs the prompting pass on other harnesses
 

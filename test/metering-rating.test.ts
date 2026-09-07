@@ -269,3 +269,82 @@ describe("schedule selection", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe("thought convention", () => {
+  const kimi = (): PricingSchedule =>
+    schedule({
+      // opencode-go/kimi-k2.6 as models.dev prices it: no `reasoning` entry at all.
+      input: price("0.95"),
+      output: price("4"),
+      cachedRead: price("0.16"),
+      cachedWrite: undefined,
+      thought: undefined,
+      thoughtConvention: "billed_as_output",
+    });
+
+  const applicable = (): PricingPolicy =>
+    policy({
+      categoryApplicability: {
+        input: "applicable",
+        output: "applicable",
+        cached_read: "applicable",
+        cached_write: "unknown",
+        thought: "applicable",
+      },
+      schedules: [kimi()],
+    });
+
+  test("reproduces the provider's own cost exactly on a live billed turn", () => {
+    // Measured on opencode-go/kimi-k2.6. OpenCode reported cumulative cost 0.00348629
+    // after this turn, from zero. Reasoning is reported as a disjoint counter but billed
+    // at the output rate; pricing it any other way misses by exactly 35 * 4/1M.
+    const result = rateDelta(
+      delta({ totalTokens: 8657, inputTokens: 2475, outputTokens: 3, cachedReadTokens: 6144, thoughtTokens: 35 }),
+      applicable(),
+      kimi(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.usage.ratedTotal?.amount).toBe("0.00348629");
+  });
+
+  test("and on the following turn", () => {
+    const result = rateDelta(
+      delta({ totalTokens: 8664, inputTokens: 443, outputTokens: 3, cachedReadTokens: 8192, thoughtTokens: 26 }),
+      applicable(),
+      kimi(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.usage.ratedTotal?.amount).toBe("0.00184757");
+  });
+
+  test("engraves the output price as the rate actually applied to thought", () => {
+    // The record must show WHICH rate was used, not merely that a rate was used.
+    const result = rateDelta(delta({ thoughtTokens: 40 }), applicable(), kimi());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.usage.thought?.pricing?.unitPrice).toEqual(price("4"));
+  });
+
+  test("without the convention, an unpriced reported thought category refuses to rate", () => {
+    // The honest default: we do not know what reasoning costs, so we do not guess.
+    const noConvention = kimi();
+    const result = rateDelta(
+      delta({ thoughtTokens: 40 }),
+      applicable(),
+      { ...noConvention, thoughtConvention: undefined },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("thought");
+  });
+
+  test("a model with its own reasoning price uses that, not the output rate", () => {
+    const withOwnPrice = { ...kimi(), thought: price("0.5"), thoughtConvention: "separate_price" as const };
+    const result = rateDelta(delta({ thoughtTokens: 1_000_000 }), applicable(), withOwnPrice);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.usage.thought?.pricing?.ratedCost.amount).toBe("0.5");
+  });
+});

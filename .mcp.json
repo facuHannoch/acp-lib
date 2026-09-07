@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agents-hub": {
+      "type": "http",
+      "url": "http://localhost:3409/agent/mcp",
+      "headers": {
+        "Authorization": "Bearer 6c7d68b64f6202ddf4c0f742663aa965c74a3dfbf3301d7c8eb95a405af061b2"
+      }
+    }
+  }
+}
