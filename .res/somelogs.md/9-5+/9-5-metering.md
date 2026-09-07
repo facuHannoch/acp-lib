@@ -4045,3 +4045,35 @@ OpenCode reports `cache.write` on every inference, usually **0**, and most catal
 
 435 tests, 18 commits. The honest remaining caveat is the one I raised before and still haven't tested: whether *every* OpenCode model call produces an assistant message. Compaction does (`summary: true`); title generation I haven't verified. If some call type is invisible to the `event` hook, the plugin has a smaller version of the same blind spot — which is exactly why `routing` says `observed`.
 
+
+
+
+
+Fixed and committed. Ready to re-run:
+
+```bash
+bun run ./smoke-tests/test7-compaction/compaction-smoke.ts
+```
+
+## What your run actually established
+
+**The plugin captures compaction inferences — 19 of them.** That's the blind spot I was worried about, and it isn't one. My test just scored it wrong.
+
+## Two things I got wrong
+
+**I collapsed capture and attribution.** Turn 1 stalled, so `close()` never ran, nothing was drained into an operation, and the checks compared `ours 0` against the export — reporting a *successful capture of 19 compaction inferences* as a failure. Those are now separate checks: "did the channel see everything OpenCode charged for" sums all observed inferences (attributed or not) against the export; "did an operation claim it" is scored on its own and may legitimately fail on a stall.
+
+**The `compaction.reserved` forcing was based on a misreading, and I doubled down on it.** I told you three times that a stall meant "lower `--reserved`." The diagnostic killed that:
+
+| run                              | expected                   | observed                                       |
+| -------------------------------- | -------------------------- | ---------------------------------------------- |
+| `reserved: 200000`, 256k model   | ~56k usable, no compaction | 19 compactions in 120s, turn 1 never completed |
+| no compaction config, same model | —                          | 10k/256k used, clean turns, ratio 1            |
+
+`hy3` is fine. The config was the problem. Whatever `reserved` controls, forcing it produces a compaction loop rather than the behaviour under test — so the knob is gone, and the test now fills context with real reads until OpenCode compacts on its own. Prompt caching keeps the cost down: the same file is re-read each turn, so after the first it bills at the cache rate.
+
+New flags: `--fill-kb` (default 120) and `--turns` (default 12). If it comes back INCONCLUSIVE, raise either.
+
+There's a general lesson worth stating: a test that reconfigures the harness risks measuring the reconfiguration instead of the thing. That's exactly what happened, and it cost two rounds to notice.
+
+

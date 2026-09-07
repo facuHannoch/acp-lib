@@ -4,8 +4,11 @@
 with credit).
 
 ```bash
+# The one that answers the question today:
+bun smoke-tests/test7-compaction/compaction-smoke.ts --stress-compaction 200000 --turns 2
+
+# Normal operation (compaction will probably NOT fire — see below):
 bun smoke-tests/test7-compaction/compaction-smoke.ts
-bun smoke-tests/test7-compaction/compaction-smoke.ts --fill-kb 200 --turns 20
 ```
 
 Exit codes: `0` passed · `1` a check failed · `2` inconclusive (compaction never happened).
@@ -28,14 +31,23 @@ The check reads OpenCode's own session record from its database, not the channel
 test. Comparing the channel against `usage_update.cost` would be the library grading its
 own homework — both numbers arrive over the same path that might be wrong.
 
-## How compaction is triggered
+## Getting compaction to happen is the hard part
 
-Honestly: the harness's own settings are left alone, and context is filled with real file
-reads until OpenCode decides to compact. `--fill-kb` sizes the file re-read each turn
-(default 120KB), `--turns` caps how long it keeps going.
+Four approaches were measured. Only the last works on demand:
 
-Cost is bounded by prompt caching. The same file is re-read every turn, so after the first
-one it bills at the cache-read rate rather than the input rate.
+| approach | result |
+|---|---|
+| re-read one file each turn | context flat at ~25k/256k for 12 turns — OpenCode replaces the prior tool output rather than stacking it |
+| a distinct file per turn | context grew ~255 tokens **per turn** despite 80KB reads; tool output is truncated and largely not retained |
+| declare a smaller window (`provider.models.limit.context`) | context ran to 11,079 against a declared 11,000 with **no compaction** — this setting does not drive the decision |
+| `compaction.reserved` (`--stress-compaction`) | compacts reliably, but in a runaway loop: turns never complete |
+
+So `--stress-compaction` is the mode that answers the question, and it is deliberately
+labelled pathological. Turns stall, attribution cannot succeed, and **only the capture
+checks are meaningful** — which is fine, because capture is the question.
+
+Without it the run will usually come back INCONCLUSIVE. That is honest: compaction did not
+happen, so nothing was proven.
 
 ### Why there is no "force compaction" flag
 

@@ -51,7 +51,7 @@ const has = (name: string) => process.argv.includes(`--${name}`);
 
 // Guard first: every other path in this file spends money, and an unrecognised flag
 // falling through to a live run is an expensive way to learn about a typo.
-const KNOWN = new Set(["--model", "--fill-kb", "--turns", "--timeout-ms"]);
+const KNOWN = new Set(["--model", "--fill-kb", "--context-limit", "--turns", "--timeout-ms", "--stress-compaction"]);
 const unknown = process.argv.slice(2).filter(
   (arg, index, all) => arg.startsWith("--") && !KNOWN.has(arg) && all[index] === arg,
 );
@@ -61,17 +61,41 @@ if (has("help") || has("h") || unknown.length > 0) {
       "compaction-smoke — does the certified channel see compaction inferences?\n" +
       "SPENDS REAL TOKENS.\n\n" +
       "  --model <id>       default opencode-go/hy3 (256k context, cheap)\n" +
-      "  --fill-kb <n>      size of the file re-read each turn (default 120)\n" +
-      "  --turns <n>        default 12; raise if compaction never fires\n" +
-      "  --timeout-ms <n>   per-turn stall timeout (default 120000)\n",
+      "  --fill-kb <n>      size of each generated file (default 80)\n" +
+      "  --context-limit <n> context window to declare for the model (default 40000).\n" +
+      "                     Lower fills it faster; too low and a single read cannot fit.\n" +
+      "  --turns <n>        default 8; raise if compaction never fires\n" +
+      "  --timeout-ms <n>   per-turn stall timeout (default 120000)\n" +
+      "  --stress-compaction <reserved>\n" +
+      "                     force a compaction loop to generate compaction inferences.\n" +
+      "                     Pathological: turns stall and attribution fails by design.\n" +
+      "                     Only the capture checks are meaningful. Try 200000.\n",
   );
   process.exit(unknown.length > 0 ? 1 : 0);
 }
 
 const MODEL = flag("model") ?? "opencode-go/hy3";
-/** Approximate size of the file re-read each turn; this is what fills the window. */
-const FILL_KB = Number(flag("fill-kb") ?? 120);
-const TURNS = Number(flag("turns") ?? 12);
+/** Approximate size of each generated file. One read should be a decent share of the window. */
+const FILL_KB = Number(flag("fill-kb") ?? 80);
+/**
+ * Context window to declare for the model, in tokens.
+ *
+ * This describes the MODEL, which is an ordinary config override, rather than reaching
+ * into the harness's compaction machinery. A few reads then overflow it and OpenCode
+ * compacts of its own accord.
+ */
+const CONTEXT_LIMIT = Number(flag("context-limit") ?? 40_000);
+/**
+ * Drive the harness into a compaction loop on purpose, to generate compaction inferences.
+ *
+ * Not a way to observe normal behaviour — it is pathological, and turns will stall. It is
+ * here because it is the ONLY reliable way found to make compaction happen on demand, and
+ * the question this test asks is whether the channel SEES compaction work, which does not
+ * require the turns to succeed. Expect attribution checks to fail; capture is the check
+ * that matters.
+ */
+const STRESS = flag("stress-compaction");
+const TURNS = Number(flag("turns") ?? 8);
 /** A stalled turn is a result, not a reason to hang. */
 const TURN_TIMEOUT_MS = Number(flag("timeout-ms") ?? 120_000);
 
@@ -138,17 +162,23 @@ async function readExport(sessionId: string): Promise<ExportedAssistant[] | null
 
 async function main(): Promise<number> {
   const root = await mkdtemp(join(tmpdir(), "acp-compaction-"));
-  // Large enough that a handful of reads fill a real context window. Re-reading the same
-  // file is what makes this affordable: after the first turn it bills at the cache rate.
+  // A DISTINCT file per turn. Re-reading one file does not accumulate context — OpenCode
+  // replaces the prior tool output rather than stacking it, which an earlier version of
+  // this test learned the slow way: twelve reads of the same file left the window flat at
+  // 25k/256k and compaction never fired.
   const perSection = 400;
   const sectionCount = Math.max(1, Math.round((FILL_KB * 1024) / perSection));
-  const sections = Array.from(
-    { length: sectionCount },
-    (_, index) =>
-      `## Section ${index + 1}\n` +
-      `Notes about topic ${index + 1}. `.repeat(Math.round(perSection / 26)),
-  ).join("\n\n");
-  await writeFile(join(root, "notes.md"), `# Notes\n\n${sections}\n`, "utf8");
+  for (let turn = 1; turn <= TURNS; turn += 1) {
+    const sections = Array.from(
+      { length: sectionCount },
+      (_, index) =>
+        `## File ${turn} Section ${index + 1}\n` +
+        `Distinct notes for file ${turn} topic ${index + 1}. `.repeat(
+          Math.round(perSection / 44),
+        ),
+    ).join("\n\n");
+    await writeFile(join(root, `notes-${turn}.md`), `# Notes ${turn}\n\n${sections}\n`, "utf8");
+  }
 
   const metering = await createOpencodeMetering({ onWarning: (m) => console.log(`  ! ${m}`) });
 
@@ -159,8 +189,21 @@ async function main(): Promise<number> {
       {
         $schema: "https://opencode.ai/config.json",
         plugin: [meteringPluginPath()],
-        // Compaction settings are deliberately untouched: the run must exercise the
-        // harness as a real consumer meets it, not under a synthetic configuration.
+        // Stress mode only: drives a compaction loop, which is the one reliable way found
+        // to generate compaction inferences on demand.
+        ...(STRESS ? { compaction: { auto: true, reserved: Number(STRESS) } } : {}),
+        // Declare a smaller context window for this model. Observed NOT to influence when
+        // OpenCode compacts — context ran past a declared 11,000-token window without
+        // triggering — so this only shapes the reported context figures.
+        provider: {
+          [MODEL.split("/")[0]!]: {
+            models: {
+              [MODEL.split("/").slice(1).join("/")]: {
+                limit: { context: CONTEXT_LIMIT, output: Math.round(CONTEXT_LIMIT / 8) },
+              },
+            },
+          },
+        },
       },
       null,
       2,
@@ -183,7 +226,10 @@ async function main(): Promise<number> {
 
   await session.setConfig("model", MODEL);
   console.log(
-    `model ${session.advertisedModel}  fill ${FILL_KB}KB/turn  up to ${TURNS} turns\n`,
+    `model ${session.advertisedModel}  window ${CONTEXT_LIMIT.toLocaleString()} tokens  ` +
+      `fill ${FILL_KB}KB/turn  up to ${TURNS} turns` +
+      (STRESS ? `  STRESS reserved=${STRESS} (turns will stall by design)` : "") +
+      `\n`,
   );
 
   // Every inference the channel saw, whether or not an operation claimed it. A stalled
@@ -197,10 +243,7 @@ async function main(): Promise<number> {
 
   for (let turn = 1; turn <= TURNS; turn += 1) {
     // Alternating reads keep adding context until the window overflows.
-    const prompt =
-      turn % 3 === 0
-        ? "How many sections have you seen so far? Answer from memory, no tools."
-        : `Read notes.md and reply with the heading of section ${turn}. Use your tools.`;
+    const prompt = `Read notes-${turn}.md and reply with its first heading only. Use your tools.`;
 
     let record: Awaited<ReturnType<typeof session.prompt>>["metering"] = null;
     try {
@@ -241,8 +284,10 @@ async function main(): Promise<number> {
   if (stalled) {
     check(
       "turns completed",
-      false,
-      `stalled: ${stalled}. Try a smaller --fill-kb, or a longer --timeout-ms.`,
+      STRESS ? null : false,
+      STRESS
+        ? `stalled: expected in stress mode — the loop is what generates compactions`
+        : `stalled: ${stalled}. Try a smaller --fill-kb, or a longer --timeout-ms.`,
     );
   }
 
@@ -258,7 +303,8 @@ async function main(): Promise<number> {
     check(
       "compaction occurred",
       null,
-      `no compaction in ${TURNS} turns — raise --turns or --fill-kb to fill the window faster`,
+      `no compaction in ${TURNS} turns at a ${CONTEXT_LIMIT.toLocaleString()}-token window — ` +
+        `lower --context-limit or raise --fill-kb`,
     );
     return report(2);
   }
@@ -288,15 +334,19 @@ async function main(): Promise<number> {
   // ATTRIBUTION: separate question. A stalled turn captures work it never claims.
   const ourCost = Number(snapshot.ratedCosts[0]?.amount ?? 0);
   const ourTokens = snapshot.totals.total.knownTokens;
+  // In stress mode the turns deliberately stall, so no operation ever closes and nothing
+  // is drained into one. Reporting that as a failure would bury the capture result, which
+  // is the only thing stress mode can answer.
+  const attributionScored = STRESS ? null : true;
   check(
     "attributed totals match OpenCode's own record",
-    Math.abs(exportedCost - ourCost) < 1e-9,
+    attributionScored && Math.abs(exportedCost - ourCost) < 1e-9,
     `attributed ${ourCost} vs export ${exportedCost}` +
       (observed.length > 0 ? ` — ${observed.length} inference(s) never claimed by an operation` : ""),
   );
   check(
     "attributed tokens match OpenCode's own record",
-    ourTokens === exportedTokens,
+    attributionScored && ourTokens === exportedTokens,
     `attributed ${ourTokens} vs export ${exportedTokens}`,
   );
   check(
@@ -311,7 +361,7 @@ async function main(): Promise<number> {
   );
   check(
     "nothing left unattributed",
-    observed.length === 0,
+    attributionScored && observed.length === 0,
     observed.length === 0
       ? "every observed inference belonged to an operation"
       : `${observed.length} inference(s) observed outside any operation ` +

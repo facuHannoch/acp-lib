@@ -423,6 +423,44 @@ leaves artifacts, and `matches` compared strings — it would have reported a di
 almost every operation. Agreement is now the ratio rounding to `1` at scale 6, which is
 far tighter than any real undercount (the measured ones were 2x-3.4x).
 
+## Finding 12 — the channel sees compaction, closing the last known blind spot
+
+Compaction was the remaining candidate: a model call no user prompt asks for, issued when
+context fills. ACP never surfaces it. Verified against `opencode export`:
+
+```
+PASS  compaction occurred — 16 compaction inference(s) in the session
+PASS  channel saw every inference OpenCode charged for
+        seen 0.012488660000000002  vs export 0.012488660000000002
+PASS  channel saw every token OpenCode counted — seen 182783 vs export 182783
+```
+
+Exact on cost and tokens with 16 compaction inferences included. The plugin observes
+compaction work, so it is not a blind spot.
+
+### Getting compaction to happen on demand was the hard part
+
+Three approaches failed before one worked, and the failures are worth recording because
+each looked reasonable:
+
+| approach | result |
+|---|---|
+| fill context by re-reading one file | context stayed flat at ~25k/256k for 12 turns — OpenCode replaces the prior tool output rather than stacking it |
+| fill context with a distinct file per turn | context grew ~255 tokens/TURN despite 80KB reads; tool output is truncated and mostly not retained |
+| declare a smaller window via `provider.models.limit.context` | context ran to 11,079 against a declared 11,000 with no compaction — the setting does not drive the compaction decision |
+| `compaction.reserved` | compacts reliably, but in a runaway loop: 16-19 compactions and no turn ever completes |
+
+Only the last produces compactions on demand, so it is kept as an explicitly pathological
+`--stress-compaction` mode rather than presented as normal behaviour.
+
+### Which is why capture and attribution are scored separately
+
+In stress mode turns stall, so no operation closes and nothing is drained — attribution
+cannot succeed by construction. An earlier version collapsed the two and reported a
+successful capture of 19 compaction inferences as a failure. Capture is the question stress
+mode can answer; attribution is scored only in normal runs, where it has been exact across
+23 operations.
+
 ## Still unanswered — needs the prompting pass on other harnesses
 
 The question the whole ACP-derived backend rests on is **cumulative versus per-turn**, and
