@@ -8,11 +8,10 @@
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 import type { Adapter } from "./adapters.ts";
-import { buildSpawnCommand } from "./adapters.ts";
-import { AcpTransport } from "./transport/acp-transport.ts";
+import { AcpTransport, type TerminalHandlers } from "./transport/acp-transport.ts";
+import { prepareLaunch, type AcpLauncher } from "./launcher.ts";
 import {
   parseCapabilities,
-  buildClientCapabilities,
   type Capabilities,
   type ClientCapabilities,
   type ClientCapabilityConfig,
@@ -41,11 +40,16 @@ import type {
 export interface AcpClientConfig {
   /** How to launch the agent binary. */
   adapter: Adapter;
-  /** Prefix merged before the adapter command, e.g. ["docker","exec","-i","<ctr>"]. */
+  /** Runtime-specific launcher for exact ACP/PTY host process preparation. */
+  launcher?: AcpLauncher;
+  /**
+   * Prefix merged before the adapter command, e.g. ["docker","exec","-i","<ctr>"].
+   * @deprecated Use launcher.
+   */
   execPrefix?: string[];
-  /** Extra env vars injected at spawn time (never sent over the protocol). */
+  /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
-  /** Agent workspace — passed to session/new. Also the spawn cwd unless using docker exec. */
+  /** Workspace visible to the ACP target and sent in session requests. */
   cwd?: string;
   /** Resume this session id when startSession() is called. */
   sessionId?: string;
@@ -59,8 +63,14 @@ export interface AcpClientConfig {
    * What we let the agent do through us: filesystem reads/writes and terminals. All
    * enabled by default. Disabling one stops us advertising it, so the agent falls back
    * to its own implementation instead of calling a method we won't answer.
+   * @deprecated Use clientHandlers; when a new handler selection is present it wins.
    */
   clientCapabilities?: ClientCapabilityConfig;
+  /**
+   * Client-side ACP implementations. Omitted selects the built-in host implementation;
+   * false disables implementation and advertisement; custom handlers are advertised.
+   */
+  clientHandlers?: AcpClientHandlers;
   /** Diagnostics sink. Omit for a silent library. */
   logger?: Logger;
   /**
@@ -69,6 +79,51 @@ export interface AcpClientConfig {
    * included, so where it goes is the caller's call. `createWireLog()` builds a sink.
    */
   wire?: (entry: WireEntry) => void;
+}
+
+export interface FilesystemHandlers {
+  readTextFile?: (
+    params: schema.ReadTextFileRequest,
+  ) => Promise<schema.ReadTextFileResponse>;
+  writeTextFile?: (
+    params: schema.WriteTextFileRequest,
+  ) => Promise<schema.WriteTextFileResponse>;
+}
+
+export interface AcpClientHandlers {
+  terminal?: TerminalHandlers | false;
+  filesystem?: FilesystemHandlers | false;
+}
+
+interface ResolvedClientHandlers {
+  terminal: "builtin" | TerminalHandlers | false;
+  readTextFile: "builtin" | NonNullable<FilesystemHandlers["readTextFile"]> | false;
+  writeTextFile: "builtin" | NonNullable<FilesystemHandlers["writeTextFile"]> | false;
+}
+
+function resolveClientHandlers(
+  handlers: AcpClientHandlers | undefined,
+  legacy: ClientCapabilityConfig | undefined,
+): ResolvedClientHandlers {
+  const terminal = handlers?.terminal !== undefined
+    ? handlers.terminal
+    : legacy?.terminal === false ? false : "builtin";
+
+  if (handlers?.filesystem === false) {
+    return { terminal, readTextFile: false, writeTextFile: false };
+  }
+  if (handlers?.filesystem) {
+    return {
+      terminal,
+      readTextFile: handlers.filesystem.readTextFile ?? false,
+      writeTextFile: handlers.filesystem.writeTextFile ?? false,
+    };
+  }
+  return {
+    terminal,
+    readTextFile: legacy?.fs?.readTextFile === false ? false : "builtin",
+    writeTextFile: legacy?.fs?.writeTextFile === false ? false : "builtin",
+  };
 }
 
 export interface StartSessionOptions {
@@ -154,10 +209,18 @@ export class AcpClient implements AgentClient {
 
   private readonly log: Logger;
   private readonly clientCapabilities: ClientCapabilities;
+  private readonly handlers: ResolvedClientHandlers;
 
   constructor(private config: AcpClientConfig) {
     this.log = config.logger ?? noopLogger;
-    this.clientCapabilities = buildClientCapabilities(config.clientCapabilities);
+    this.handlers = resolveClientHandlers(config.clientHandlers, config.clientCapabilities);
+    this.clientCapabilities = {
+      fs: {
+        readTextFile: this.handlers.readTextFile !== false,
+        writeTextFile: this.handlers.writeTextFile !== false,
+      },
+      terminal: this.handlers.terminal !== false,
+    };
   }
 
   // --- introspection (populated by connect) -------------------------------------
@@ -204,13 +267,9 @@ export class AcpClient implements AgentClient {
   async connect(): Promise<Capabilities> {
     if (this.transport) return this.capabilities;
 
-    const command = buildSpawnCommand(this.config.adapter, this.config.execPrefix);
-    const isDockerExec = command[0] === "docker";
-
-    this.log.info("connect", { command, dockerExec: isDockerExec });
-
+    const launch = await prepareLaunch("acp", this.config.launcher, this.config);
     const caps = this.clientCapabilities;
-    this.terminals = caps.terminal
+    this.terminals = this.handlers.terminal === "builtin"
       ? new TerminalRegistry({
           cwd: this.config.cwd,
           env: this.config.env,
@@ -218,29 +277,34 @@ export class AcpClient implements AgentClient {
         })
       : null;
 
+    const terminalHandlers = this.handlers.terminal === "builtin"
+      ? this.terminalHandlers(this.terminals!)
+      : this.handlers.terminal || undefined;
+    const readHandler = this.handlers.readTextFile === "builtin"
+      ? async (p: schema.ReadTextFileRequest) => ({ content: await readTextFile(p) })
+      : this.handlers.readTextFile || undefined;
+    const writeHandler = this.handlers.writeTextFile === "builtin"
+      ? async (p: schema.WriteTextFileRequest) => {
+          await writeTextFile(p);
+          return {};
+        }
+      : this.handlers.writeTextFile || undefined;
+
     const transport = new AcpTransport({
-      command,
-      // docker exec resolves paths inside the container's namespace — don't pass a host cwd.
-      cwd: isDockerExec ? undefined : this.config.cwd,
-      env: this.config.env,
+      launch,
       onUpdate: (n) => this.handleUpdate(n),
       onPermissionRequest: (p) => this.handlePermission(p),
-      onReadTextFile: caps.fs.readTextFile
-        ? async (p) => ({ content: await readTextFile(p) })
-        : undefined,
-      onWriteTextFile: caps.fs.writeTextFile
-        ? async (p) => {
-            await writeTextFile(p);
-            return {};
-          }
-        : undefined,
-      terminals: this.terminals ? this.terminalHandlers(this.terminals) : undefined,
+      onReadTextFile: readHandler,
+      onWriteTextFile: writeHandler,
+      terminals: terminalHandlers,
       onWire: this.config.wire,
       onStderr: (line) => {
         this.log.debug("agent_stderr", { line });
         this.authStderrSink?.(line);
       },
       onCrash: (code) => {
+        this.terminals?.releaseAll();
+        this.terminals = null;
         this.transport = null;
         this._sessionId = null;
         this.commandTransition = null;
@@ -248,28 +312,37 @@ export class AcpClient implements AgentClient {
         this.log.error("process_exit", { code });
       },
     });
-    await transport.start();
-    this.transport = transport;
+    try {
+      this.log.info("connect", { command: launch.command });
+      await transport.start();
+      this.transport = transport;
 
-    const init = await transport.raceExit(
-      transport.initialize({
-        protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: caps as unknown as schema.ClientCapabilities,
-        clientInfo: this.config.clientInfo ?? {
-          name: "acp-lib",
-          title: "ACP Lib",
-          version: "0.1.0",
-        },
-      } as schema.InitializeRequest),
-    );
-    this._capabilities = parseCapabilities(init, caps);
-    this.log.info("initialized", {
-      agent: this._capabilities.agentInfo?.name,
-      protocolVersion: this._capabilities.protocolVersion,
-      loadSession: this._capabilities.agent.loadSession,
-    });
-    this.log.debug("initialize_response", { response: init });
-    return this._capabilities;
+      const init = await transport.raceExit(
+        transport.initialize({
+          protocolVersion: PROTOCOL_VERSION,
+          clientCapabilities: caps as unknown as schema.ClientCapabilities,
+          clientInfo: this.config.clientInfo ?? {
+            name: "acp-lib",
+            title: "ACP Lib",
+            version: "0.1.0",
+          },
+        } as schema.InitializeRequest),
+      );
+      this._capabilities = parseCapabilities(init, caps);
+      this.log.info("initialized", {
+        agent: this._capabilities.agentInfo?.name,
+        protocolVersion: this._capabilities.protocolVersion,
+        loadSession: this._capabilities.agent.loadSession,
+      });
+      this.log.debug("initialize_response", { response: init });
+      return this._capabilities;
+    } catch (error) {
+      this.transport = null;
+      await transport.stop().catch((cleanupError) => {
+        this.log.warn("launch_cleanup_failed", { error: String(cleanupError) });
+      });
+      throw error;
+    }
   }
 
   /**

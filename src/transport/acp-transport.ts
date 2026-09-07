@@ -6,6 +6,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 import { ProcessCrashError } from "../errors.ts";
+import { onceDispose, type PreparedLaunch } from "../launcher.ts";
 import type { WireEntry } from "../types.ts";
 
 /** The five `terminal/*` methods a client that advertises `terminal: true` must serve. */
@@ -20,11 +21,8 @@ export interface TerminalHandlers {
 }
 
 export interface AcpTransportOptions {
-  /** Full command to spawn: [...execPrefix, ...adapter.command]. */
-  command: string[];
-  /** cwd for the spawned process. Omit for `docker exec` (host path won't resolve in-container). */
-  cwd?: string;
-  env?: Record<string, string>;
+  /** Exact host-side process launch, already resolved by the caller's launcher. */
+  launch: PreparedLaunch;
 
   /**
    * A session/update notification arrived, exactly as the agent sent it — the transport
@@ -67,8 +65,11 @@ export class AcpTransport {
   private connection: acp.ClientSideConnection | null = null;
   private stopping = false;
   private tap?: (dir: WireEntry["dir"], line: string) => void;
+  private readonly disposeLaunch: () => Promise<void>;
 
-  constructor(private opts: AcpTransportOptions) {}
+  constructor(private opts: AcpTransportOptions) {
+    this.disposeLaunch = onceDispose(opts.launch.dispose);
+  }
 
   async start(): Promise<void> {
     if (this.proc) return;
@@ -77,54 +78,90 @@ export class AcpTransport {
     // Bun's FileSink (from stdin:"pipe") lacks getWriter().
     const stdinTransform = new TransformStream<Uint8Array, Uint8Array>();
 
-    const proc = Bun.spawn(this.opts.command, {
-      cwd: this.opts.cwd,
-      env: { ...process.env, ...(this.opts.env ?? {}) },
-      stdin: stdinTransform.readable,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    let proc: ReturnType<typeof Bun.spawn>;
+    try {
+      proc = Bun.spawn(this.opts.launch.command, {
+        cwd: this.opts.launch.spawnCwd,
+        env: this.opts.launch.spawnEnv,
+        stdin: stdinTransform.readable,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    } catch (error) {
+      await this.disposeLaunch().catch(() => {});
+      throw error;
+    }
     this.proc = proc;
 
-    const wire = this.opts.onWire;
-    const tap = wire ? (dir: WireEntry["dir"], line: string) => wire({ dir, ts: Date.now(), line }) : undefined;
+    try {
+      const wire = this.opts.onWire;
+      const tap = wire ? (dir: WireEntry["dir"], line: string) => wire({ dir, ts: Date.now(), line }) : undefined;
 
-    const stream = acp.ndJsonStream(
-      // Outgoing bytes are forwarded untouched; the tap only reads them on the way past.
-      tap ? tapOutgoing(stdinTransform.writable, (line) => tap("out", line)) : stdinTransform.writable,
-      interceptUpdates(
-        proc.stdout as ReadableStream<Uint8Array>,
-        (m) => this.opts.onUpdate?.(m.params as schema.SessionNotification),
-        tap && ((line) => tap("in", line)),
-      ),
-    );
-    this.tap = tap;
-    const handler = new ClientHandler(this.opts);
-    this.connection = new acp.ClientSideConnection(() => handler, stream);
+      const stream = acp.ndJsonStream(
+        // Outgoing bytes are forwarded untouched; the tap only reads them on the way past.
+        tap ? tapOutgoing(stdinTransform.writable, (line) => tap("out", line)) : stdinTransform.writable,
+        interceptUpdates(
+          proc.stdout as ReadableStream<Uint8Array>,
+          (m) => this.opts.onUpdate?.(m.params as schema.SessionNotification),
+          tap && ((line) => tap("in", line)),
+        ),
+      );
+      this.tap = tap;
+      const handler = new ClientHandler(this.opts);
+      this.connection = new acp.ClientSideConnection(() => handler, stream);
 
-    if (proc.stderr) this.pumpStderr(proc.stderr as ReadableStream<Uint8Array>);
+      if (proc.stderr) this.pumpStderr(proc.stderr as ReadableStream<Uint8Array>);
 
-    proc.exited
-      .then((code) => {
-        if (this.proc === proc && !this.stopping) {
-          this.proc = null;
-          this.connection = null;
-          this.opts.onCrash?.(code ?? null);
-        }
-      })
-      .catch(() => {});
+      proc.exited
+        .then(async (code) => {
+          if (this.proc === proc && !this.stopping) {
+            this.proc = null;
+            this.connection = null;
+            await this.disposeLaunch().catch(() => {});
+            this.opts.onCrash?.(code ?? null);
+          }
+        }, async () => {
+          if (this.proc === proc && !this.stopping) {
+            this.proc = null;
+            this.connection = null;
+            await this.disposeLaunch().catch(() => {});
+            this.opts.onCrash?.(null);
+          }
+        })
+        .catch(() => {});
+    } catch (error) {
+      await this.stop().catch(() => {});
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
-    if (!this.proc) return;
+    const proc = this.proc;
+    this.proc = null;
+    this.connection = null;
+    if (!proc) {
+      await this.disposeLaunch();
+      return;
+    }
     try {
-      this.proc.kill("SIGTERM");
+      proc.kill("SIGTERM");
     } catch {
       /* already exited */
     }
-    this.proc = null;
-    this.connection = null;
+    const exited = await Promise.race([
+      proc.exited.then(() => true, () => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+    ]);
+    if (!exited) {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* already exited */
+      }
+      await proc.exited.catch(() => {});
+    }
+    await this.disposeLaunch();
   }
 
   private conn(): acp.ClientSideConnection {

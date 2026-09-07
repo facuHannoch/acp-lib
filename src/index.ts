@@ -11,7 +11,11 @@ export type {
   SwitchSessionOptions,
   ConnectResult,
   SessionLoadFailure,
+  AcpClientHandlers,
+  FilesystemHandlers,
 } from "./client.ts";
+
+export type { AcpLauncher, PreparedLaunch, LaunchKind } from "./launcher.ts";
 
 export {
   AgentController,
@@ -68,6 +72,7 @@ export type {
   TerminalOutput,
   TerminalRegistryOptions,
 } from "./terminals.ts";
+export type { TerminalHandlers } from "./transport/acp-transport.ts";
 
 export { extractChunkText, extractResponseChunk, toActivityEvent } from "./updates.ts";
 

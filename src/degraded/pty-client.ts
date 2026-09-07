@@ -12,7 +12,7 @@
 
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "../agent-client.ts";
 import type { Adapter } from "../adapters.ts";
-import { buildPtyCommand } from "../adapters.ts";
+import { prepareLaunch, type AcpLauncher } from "../launcher.ts";
 import type { ScreenParser } from "../parser/types.ts";
 import type { PromptResult, PromptHandlers, Attachment } from "../types.ts";
 import { noopLogger, type Logger } from "../logger.ts";
@@ -26,7 +26,11 @@ const ESC = "\x1b";
 
 export interface PtyClientOptions {
   adapter: Adapter;
+  /** Runtime-specific launcher for exact ACP/PTY host process preparation. */
+  launcher?: AcpLauncher;
+  /** @deprecated Use launcher. */
   execPrefix?: string[];
+  /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
   cwd?: string;
   /** Optional smart parser (SML/heuristic). Absent → deterministic extractReply. */
@@ -80,14 +84,9 @@ export class PtyClient implements AgentClient, Bridgeable {
   /** Spawn the interactive CLI and wait for its banner/prompt to settle. */
   async start(): Promise<void> {
     if (this.transport) return;
-    const command = buildPtyCommand(this.opts.adapter, this.opts.execPrefix);
-    this.log.info("pty_connect", { command });
-
-    this.screen = new EmulatorScreen({ cols: this.cols, rows: this.rows });
+    const launch = await prepareLaunch("pty", this.opts.launcher, this.opts);
     const transport = new PtyTransport({
-      command,
-      cwd: this.opts.cwd,
-      env: this.opts.env,
+      launch,
       cols: this.cols,
       rows: this.rows,
       onData: (data) => this.onData(data),
@@ -97,12 +96,21 @@ export class PtyClient implements AgentClient, Bridgeable {
         void this.finishTurn("end_turn");
       },
     });
-    await transport.start();
-    this.transport = transport;
+    try {
+      this.log.info("pty_connect", { command: launch.command });
+      this.screen = new EmulatorScreen({ cols: this.cols, rows: this.rows });
+      await transport.start();
+      this.transport = transport;
 
-    // Drain the startup banner so the first prompt's response isn't polluted by it.
-    await this.waitIdle();
-    this.log.debug("pty_ready", {});
+      // Drain the startup banner so the first prompt's response isn't polluted by it.
+      await this.waitIdle();
+      this.log.debug("pty_ready", {});
+    } catch (error) {
+      await transport.stop().catch((cleanupError) => {
+        this.log.warn("pty_launch_cleanup_failed", { error: String(cleanupError) });
+      });
+      throw error;
+    }
   }
 
   prompt(

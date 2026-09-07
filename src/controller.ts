@@ -11,6 +11,7 @@ import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from ".
 import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { Logger } from "./logger.ts";
+import type { AcpLauncher } from "./launcher.ts";
 import type {
   InternalSessionCommand,
   Attachment,
@@ -38,7 +39,11 @@ export interface AgentControllerConfig {
   adapterId: string;
   /** How to talk to the agent on start(). Default "normal". */
   mode?: AgentMode;
+  /** Runtime-specific launcher shared by normal ACP and degraded PTY modes. */
+  launcher?: AcpLauncher;
+  /** @deprecated Use launcher. */
   execPrefix?: string[];
+  /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
   cwd?: string;
   /** Session id to load on start(). */
@@ -51,6 +56,8 @@ export interface AgentControllerConfig {
   clientInfo?: AcpClientConfig["clientInfo"];
   /** What we let the agent do through us (terminals, filesystem). All on by default. */
   clientCapabilities?: AcpClientConfig["clientCapabilities"];
+  /** Client-side ACP implementations; their presence determines advertisement. */
+  clientHandlers?: AcpClientConfig["clientHandlers"];
   logger?: Logger;
   /** Raw protocol traffic for debugging — see `AcpClientConfig.wire`. */
   wire?: (entry: WireEntry) => void;
@@ -196,6 +203,7 @@ export class AgentController implements AgentClient {
     const { PtyClient } = await import("./degraded/index.ts");
     const pty = new PtyClient({
       adapter: this.config.adapter,
+      launcher: this.config.launcher,
       execPrefix: this.config.execPrefix,
       env: this.config.env,
       cwd: this.config.cwd,
@@ -379,6 +387,7 @@ export class AgentController implements AgentClient {
       const { PtyClient } = await import("./degraded/index.ts");
       const client = new PtyClient({
         adapter,
+        launcher: this.config.launcher,
         execPrefix: this.config.execPrefix,
         env: this.config.env,
         cwd: this.config.cwd,
@@ -395,6 +404,7 @@ export class AgentController implements AgentClient {
 
     const client = new AcpClient({
       adapter,
+      launcher: this.config.launcher,
       execPrefix: this.config.execPrefix,
       env: this.config.env,
       cwd: this.config.cwd,
@@ -403,6 +413,7 @@ export class AgentController implements AgentClient {
       defaultPermission: this.config.defaultPermission,
       clientInfo: this.config.clientInfo,
       clientCapabilities: this.config.clientCapabilities,
+      clientHandlers: this.config.clientHandlers,
       logger: this.config.logger,
       wire: this.config.wire,
     });
