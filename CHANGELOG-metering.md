@@ -52,6 +52,12 @@ the session, and offers no discriminator. The library states the interpretation 
 applied in `record.provenance.counterInterpretation` rather than pretending the protocol
 settled it.
 
+**Which reading applies is per-harness evidence, not a guess.** OpenCode was measured
+reporting PER-TURN counters, so it is registered as such and its delta is the report
+itself. Everything else defaults to cumulative until measured.
+`MeteringConfig.counterInterpretation` overrides it for a harness version you know
+differs.
+
 `usage` is also `null` — never zero-filled — when a harness reports nothing or reports
 something malformed. Null means unknown, not free.
 
@@ -121,7 +127,64 @@ entry date is engraved beside the lookup key rather than inferred from the sourc
 do NOT use `kind: "models.dev"`: that shape promises an immutable upstream commit, and a
 runtime fetch has verified none.
 
-## 8. Metering state starts at version 2
+## 8. Records carry a provider-cost reconciliation
+
+Every record gains `costReconciliation`, comparing the rated total against the rise in the
+harness's own cumulative cost across that operation.
+
+```ts
+const check = record.costReconciliation;
+if (check.status === "checked" && !check.matches) {
+  // check.ratio === "2.032221" means the provider charged 2x what we accounted for
+}
+```
+
+This exists because **ACP-derived metering undercounts any tool-using turn**. ACP reports
+one model inference per prompt; a turn with N tool calls bills roughly N+1. Measured on
+OpenCode: 1 tool call → 2.03x, 3 tool calls → 3.43x, 0 tool calls → 1.00x.
+
+Do not bill from `attributable.ratedTotal` on the ACP backend. Bill from
+`costReconciliation.providerDelta` where the harness reports cost, and treat the rated
+total as the cross-check.
+
+Agreement is judged on the ratio rounding to `1`, not on string equality: provider cost
+arrives as a JSON float, so cumulative subtraction yields artifacts like
+`0.002577469999999998` against an exact `0.00257747`.
+
+## 9. `billing_required` needs a certified integration
+
+The mode is refused unless the library has a certification registered for the adapter AND
+a live `InferenceSource` presenting the matching `certificationId`. Neither a registry
+entry alone nor a consumer-supplied flag opens it — certification describes evidence, not
+configuration.
+
+Only OpenCode qualifies today. For it:
+
+```ts
+const metering = await createOpencodeMetering();
+const session = await AgentSession.create({
+  adapter: ADAPTERS.opencode,
+  adapterId: "opencode",
+  env: metering.env,                                   // loads the plugin
+  metering: {
+    enforcement: "billing_required",
+    inferenceSource: metering.inferenceSource,
+  },
+});
+if (!(await metering.waitForPlugin())) throw new Error("metering plugin did not load");
+```
+
+The integration installs a plugin that observes one assistant message per model inference,
+recovering the calls ACP hides. Verified against OpenCode's own database export: 9
+inferences across 5 operations, cost and tokens matching exactly.
+
+An unhealthy channel or zero observed inferences reports `usage_unavailable` and blocks in
+`billing_required`, rather than falling back to a backend known to undercount.
+
+`routing` remains `"observed"` even here: the plugin reports what the harness ran, but a
+library cannot prove no model call bypassed it.
+
+## 10. Metering state starts at version 2
 
 There is no version 1 on disk — pricing provenance and unallocated usage are part of the
 initial persisted shape. Restoration validates `version` before reading any
