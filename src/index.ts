@@ -171,6 +171,14 @@ export {
   validateTranscriptRecord,
 } from "./persistence/records.ts";
 export type * from "./persistence/records.ts";
+export {
+  AgentSessionRecordValidationError,
+  AgentSessionStoreConflictError,
+  SessionMaintenanceInProgressError,
+  internalSessionHistoryDigest,
+  validateAgentSessionRecord,
+} from "./persistence/registry.ts";
+export type * from "./persistence/registry.ts";
 
 export {
   MAX_SCALE,

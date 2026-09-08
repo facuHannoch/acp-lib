@@ -1121,3 +1121,28 @@ Added `test/persistence-records.test.ts` for terminal-boundary semantics, checkp
 identity, header installation/upgrade rules, audit isolation, machine-code/truncation
 validation, and prohibited audit record kinds. The complete phase-1 persistence suite
 passes 42/42 and `tsc --noEmit` passes.
+
+### Part 2A — strict registry contract and record authority
+
+Started the registry phase alongside the existing permissive `SessionStore`; the old
+file-per-session routing catalog has not been silently upgraded to claim atomic/CAS
+semantics it does not implement. Added `src/persistence/registry.ts` with the public
+`AgentSessionStore` compare-and-swap contract, incarnation-aware session records, all four
+prepared maintenance variants, staged continuation state, bounded-receipt shapes,
+discriminated preparation results, listing summaries/options/pages, and typed conflict/
+maintenance errors.
+
+Defined and tested registry record validation before implementing the physical store.
+The validator checks canonical JSON, checkpoint identity/digest, record revision, exact
+materialized routing/configuration/protocol projections, complete internal-session history
+revision and canonical digest, absolute transcript/audit locations, transcript identity
+agreement, exact stored policy/limit shapes, and canonical lifecycle timestamps. The
+history digest is computed over the canonical entry array and remains separate from the
+bounded checkpoint as required by the transcript reducer design.
+
+Exported the strict record/store/maintenance/listing types and validation utilities from
+the package root. Added `test/persistence-registry.test.ts` with registry-only authority,
+projection disagreement, complete-history consistency, and transcript projection tests.
+This subpart passes 4/4 and `tsc --noEmit` passes. The atomic full-JSON store, receipt
+retention, CAS/maintenance transaction implementation, and cursor pagination remain the
+next part; no live `SessionManager` behavior uses this contract yet.
