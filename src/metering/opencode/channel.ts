@@ -144,7 +144,7 @@ export class OpencodeMeteringChannel {
   /**
    * Bounded on purpose. An unbounded buffer is a promise that cannot be kept, and silently
    * dropping on overflow would be the same under-reporting bug in another organ. Overflow
-   * is counted into `lostReportCount`, so exceeding capacity degrades attribution to
+   * is counted as permanently lost, so exceeding capacity degrades attribution to
    * partial rather than losing records quietly.
    */
   private readonly pending = new Map<string, ProviderInference>();
@@ -152,7 +152,15 @@ export class OpencodeMeteringChannel {
   private _handshake: ChannelHandshake | null = null;
   private _rejected = 0;
   /** Highest sequence seen per session, and how many were skipped. */
-  private readonly highestSequence = new Map<string, number>();
+  /**
+   * Per-session sequence ledger.
+   *
+   * A high-water mark could say "seen up to N" but never "missing 3 and 7", so it could not
+   * RETRACT a loss claim: out-of-order arrival on loopback recorded a permanent phantom
+   * gap, which under billing_required blocked a working session. An outstanding set is
+   * discharged when the late report lands.
+   */
+  private readonly sequences = new Map<string, { highest: number; outstanding: Set<number> }>();
   /**
    * Message ids accepted at any point, not just those still pending.
    *
@@ -162,7 +170,8 @@ export class OpencodeMeteringChannel {
    * double-charge must not depend on a component running inside the harness.
    */
   private readonly seenMessageIds = new Set<string>();
-  private _lostReports = 0;
+  /** Refused for capacity — permanently lost, unlike a gap that may still be filled. */
+  private _permanentlyLost = 0;
   private _duplicatesRefused = 0;
 
   readonly token: string = crypto.randomUUID();
@@ -189,20 +198,38 @@ export class OpencodeMeteringChannel {
     return this._rejected;
   }
   /**
-   * Reports the plugin sent that never arrived, detected by gaps in its sequence.
+   * Sequence numbers seen skipped and not yet filled, for one session or all of them.
    *
-   * Non-zero means measurement is incomplete, and any operation covering that span must
-   * not claim complete attribution.
+   * RETRACTABLE: a report arriving out of order discharges its own number, so this count
+   * FALLS. Treating a gap as permanent is what let a benign reorder block billing.
    *
-   * LIMITATION: gaps are only visible once a LATER report arrives. A lost final report —
-   * including the last of a session — is undetectable this way, so an operation can claim
-   * complete attribution despite having lost its final inference. Sequence numbers detect
-   * observed discontinuities; they do not prove delivery. Closing that gap needs a
-   * plugin-to-parent finalization fence, which this version does not have.
+   * LIMITATION: a gap is only visible once a LATER report arrives, so a lost FINAL report
+   * is undetectable. Sequence numbers detect observed discontinuities; they do not prove
+   * delivery. Closing that needs a plugin-to-parent finalization fence, which this version
+   * does not have.
    */
-  get lostReportCount(): number {
-    return this._lostReports;
+  outstandingReports(sessionId?: string | null): number {
+    if (sessionId) return this.sequences.get(sessionId)?.outstanding.size ?? 0;
+    let total = 0;
+    for (const ledger of this.sequences.values()) total += ledger.outstanding.size;
+    return total;
   }
+
+  /**
+   * Records this channel refused and can therefore never receive.
+   *
+   * Distinct from an outstanding gap: this usage is unaccounted ANYWHERE, which is the one
+   * condition that should stop a billing session.
+   */
+  get permanentlyLostCount(): number {
+    return this._permanentlyLost;
+  }
+
+  /** Highest sequence recorded for a session, used to recognise a late arrival. */
+  sequenceHighWater(sessionId: string | null): number {
+    return sessionId ? (this.sequences.get(sessionId)?.highest ?? 0) : 0;
+  }
+
   get url(): string {
     if (!this.server) throw new Error("metering channel is not started");
     return `http://127.0.0.1:${this.server.port}/inference`;
@@ -245,6 +272,11 @@ export class OpencodeMeteringChannel {
             this.options.onWarning?.("rejected a malformed inference record");
             return new Response("bad record", { status: 400 });
           }
+          // Sequence bookkeeping runs BEFORE any refusal below. A duplicate consumes its
+          // number whatever we do with the payload, and skipping it left the ledger behind
+          // so the next legitimate record looked like a gap.
+          if (inference.sequence !== null) this.recordSequence(inference);
+
           // Keyed by messageID across the channel's whole life, not just what is pending:
           // the same inference counted twice would inflate a bill.
           const everSeen = this.seenMessageIds.has(inference.messageID);
@@ -254,11 +286,11 @@ export class OpencodeMeteringChannel {
             this._duplicatesRefused += 1;
             return new Response("duplicate", { status: 409 });
           }
-          const firstSighting = !everSeen;
-          if (firstSighting && this.pending.size >= this.capacity) {
+          if (!everSeen && this.pending.size >= this.capacity) {
             // Full. Refuse rather than evict: dropping the oldest would silently lose a
-            // record already counted as delivered.
-            this._lostReports += 1;
+            // record already counted as delivered. This one is PERMANENTLY lost — unlike a
+            // sequence gap it will never arrive, because we rejected it.
+            this._permanentlyLost += 1;
             this.options.onWarning?.(
               `metering channel is full at ${this.capacity} undrained records; ` +
                 `refusing further records until an operation closes`,
@@ -267,26 +299,6 @@ export class OpencodeMeteringChannel {
           }
           this.pending.set(inference.messageID, inference);
           this.seenMessageIds.add(inference.messageID);
-          if (inference.sequence !== null) {
-            // Bookkeeping runs for EVERY report, not just first sightings. A duplicate
-            // consumes a sequence number, and skipping it here left `highest` behind so the
-            // next genuine report looked like a gap — a phantom loss that blocks a working
-            // billing session. The channel must not depend on the plugin, which runs inside
-            // the harness, sequencing perfectly.
-            //
-            // A gap means a POST was lost. Silence and loss look identical without this,
-            // and an operation would still claim complete attribution.
-            const previous = this.highestSequence.get(inference.sessionID) ?? 0;
-            if (inference.sequence > previous + 1) {
-              this._lostReports += inference.sequence - previous - 1;
-              this.options.onWarning?.(
-                `metering channel lost ${inference.sequence - previous - 1} report(s)`,
-              );
-            }
-            if (inference.sequence > previous) {
-              this.highestSequence.set(inference.sessionID, inference.sequence);
-            }
-          }
           return new Response("ok");
         }
 
@@ -295,6 +307,36 @@ export class OpencodeMeteringChannel {
       },
     });
   }
+
+  /**
+   * Fold a sequence number into its session's ledger.
+   *
+   * Advancing opens gaps for anything skipped; EVERY arrival — in order, late, or a
+   * duplicate — discharges its own number, so a reorder resolves itself rather than
+   * standing as a permanent loss.
+   */
+  private recordSequence(inference: ProviderInference): void {
+    const sequence = inference.sequence!;
+    let ledger = this.sequences.get(inference.sessionID);
+    if (!ledger) {
+      ledger = { highest: 0, outstanding: new Set<number>() };
+      this.sequences.set(inference.sessionID, ledger);
+    }
+    if (sequence > ledger.highest) {
+      for (let missing = ledger.highest + 1; missing < sequence; missing += 1) {
+        ledger.outstanding.add(missing);
+      }
+      ledger.highest = sequence;
+    }
+    ledger.outstanding.delete(sequence);
+    if (ledger.outstanding.size > 0) {
+      this.options.onWarning?.(
+        `metering channel is missing ${ledger.outstanding.size} report(s) for session ` +
+          `${inference.sessionID}; they may still arrive`,
+      );
+    }
+  }
+
 
   /**
    * Take the records collected for one provider thread since the last drain.

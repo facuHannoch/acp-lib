@@ -181,6 +181,19 @@ inferences across 5 operations, cost and tokens matching exactly.
 An unhealthy channel or zero observed inferences reports `usage_unavailable` and blocks in
 `billing_required`, rather than falling back to a backend known to undercount.
 
+**What blocks, and what only marks a record partial.** `billing_required` blocks on
+PERMANENT loss — a report the channel refused for capacity, whose usage is accounted
+nowhere. It does NOT block on an outstanding sequence gap: those usually resolve moments
+later, and the late report then lands in `unallocatedUsage`, visible and costed. The
+promise is "never silently under-account", not "every operation is perfectly attributed",
+and halting a production session on a loopback reorder costs more than it prevents. Such
+an operation still reports `attribution: "partial"`, and
+`meteringSnapshot.outstandingReports` exposes the count so a consumer can alert on one
+that stops falling.
+
+A report arriving after its operation closed is routed to `unallocatedUsage` rather than
+charged to whichever operation drains next — which is what makes not blocking defensible.
+
 `routing` remains `"observed"` even here: the plugin reports what the harness ran, but a
 library cannot prove no model call bypassed it.
 

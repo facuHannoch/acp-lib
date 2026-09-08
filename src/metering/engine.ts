@@ -57,12 +57,22 @@ export interface InferenceSource {
    */
   drainForeign?(internalSessionId: string | null): readonly ProviderInference[];
   /**
-   * Reports the source knows it lost, cumulative.
+   * Reports known skipped and not yet filled, for this provider thread.
    *
-   * Without this a dropped report is indistinguishable from an inference that never
-   * happened, and the operation would still claim complete attribution.
+   * RETRACTABLE — a late arrival discharges its own gap, so this can fall. The engine asks
+   * it as a STATE question at close rather than comparing a counter across the operation,
+   * because a delta over a retractable value is meaningless.
    */
-  lostReportCount?(): number;
+  outstandingReports?(internalSessionId: string | null): number;
+  /**
+   * Reports the source refused and can never receive.
+   *
+   * Permanent, and therefore the only loss that justifies stopping a billing session: that
+   * usage is unaccounted anywhere, whereas a late report still lands in unallocated usage.
+   */
+  permanentlyLostCount?(): number;
+  /** Highest sequence recorded for a thread, used to recognise a late arrival at close. */
+  sequenceHighWater?(internalSessionId: string | null): number;
 }
 import {
   rateDelta,
@@ -120,8 +130,16 @@ export interface OpenOperation {
   readonly model: string | null;
   readonly policy: PricingPolicy | null;
   readonly pricingFailureReason: string | null;
-  /** Lost-report count when the operation opened, to detect loss during it. */
-  readonly lostReportsAtOpen: number;
+  /** Permanently-lost count at open, to spot a refusal during this operation. */
+  readonly permanentlyLostAtOpen: number;
+  /**
+   * Sequence high-water when the operation opened.
+   *
+   * A record drained at close whose sequence is at or below this was expected before the
+   * operation began — it is LATE, and belongs to unallocated usage rather than being
+   * charged to whichever operation happens to be draining.
+   */
+  readonly sequenceHighWaterAtOpen: number;
 }
 
 export interface CloseOperationInput {
@@ -154,6 +172,8 @@ export class MeteringEngine {
   private readonly interpretation: CounterInterpretation;
   /** Provider cumulative cost as of the previous close, for per-operation deltas. */
   private lastProviderCost: Money | null = null;
+  /** Records drained this close that belong to an operation already finished. */
+  private lateArrivals: readonly ProviderInference[] = [];
 
   constructor(private readonly options: MeteringEngineOptions) {
     const restoration = restoreMeteringState(options.initialState, options.agentSessionId);
@@ -201,6 +221,10 @@ export class MeteringEngine {
   }
   get lastOperation(): OperationMeteringRecord | null {
     return this._lastOperation;
+  }
+  /** Reports the certified source is still missing for a thread; retractable. */
+  outstandingReports(internalSessionId: string | null): number {
+    return this.options.inferenceSource?.outstandingReports?.(internalSessionId) ?? 0;
   }
   get counterInterpretation(): CounterInterpretation {
     return this.interpretation;
@@ -310,7 +334,9 @@ export class MeteringEngine {
       model: input.model,
       policy,
       pricingFailureReason,
-      lostReportsAtOpen: this.options.inferenceSource?.lostReportCount?.() ?? 0,
+      permanentlyLostAtOpen: this.options.inferenceSource?.permanentlyLostCount?.() ?? 0,
+      sequenceHighWaterAtOpen:
+        this.options.inferenceSource?.sequenceHighWater?.(input.internalSessionId) ?? 0,
     });
   }
 
@@ -370,8 +396,11 @@ export class MeteringEngine {
     // Swept before provenance so the attribution claim and the blocking decision are made
     // from the same facts, not from two separate reads of a moving source.
     const foreign = source?.drainForeign?.(open.internalSessionId) ?? [];
-    const lostDuringOperation =
-      (source?.lostReportCount?.() ?? 0) > open.lostReportsAtOpen;
+    // A STATE question, not a delta: gaps are retractable, so "did a counter rise" is not
+    // answerable. What matters is whether anything is still missing now, at close.
+    const outstanding = source?.outstandingReports?.(open.internalSessionId) ?? 0;
+    const permanentlyLost =
+      (source?.permanentlyLostCount?.() ?? 0) > open.permanentlyLostAtOpen;
 
     const provenance: MeteringProvenance =
       usage.status !== "metered"
@@ -388,7 +417,7 @@ export class MeteringEngine {
               // complete attribution would be exactly the overstatement this design
               // refuses everywhere else.
               attribution:
-                lostDuringOperation || foreign.length > 0
+                outstanding > 0 || permanentlyLost || foreign.length > 0
                   ? ("partial" as const)
                   : ("complete" as const),
               certificationId: source!.certificationId,
@@ -399,7 +428,14 @@ export class MeteringEngine {
       attributable,
       applicability,
       baseline: nextBaseline,
-      ...(foreign.length > 0 ? { unallocated: foreign.map(toUnallocated) } : {}),
+      ...(foreign.length > 0 || this.lateArrivals.length > 0
+        ? {
+            unallocated: [
+              ...foreign.map((inference) => toUnallocated(inference, "foreign")),
+              ...this.lateArrivals.map((inference) => toUnallocated(inference, "late")),
+            ],
+          }
+        : {}),
     });
     this.baseline = nextBaseline;
     if (nextBaseline) this.trustedZeroBaseline = false;
@@ -427,6 +463,7 @@ export class MeteringEngine {
       nextState: this.state,
     });
     this.lastProviderCost = input.providerCostAfter?.cumulative ?? this.lastProviderCost;
+    this.lateArrivals = [];
 
     this._lastOperation = record;
 
@@ -446,10 +483,16 @@ export class MeteringEngine {
     // of ACP telemetry and never claimed to account for every hidden inference, so holding
     // it to that standard would be a promise it was explicitly not making.
     if (this.options.enforcement === "billing_required" && !this._blocked) {
-      if (lostDuringOperation) {
+      // Only PERMANENT loss blocks. An outstanding gap usually resolves moments later and
+      // its usage then lands in unallocated — visible, costed, reconcilable — so the
+      // promise "never silently under-account" still holds, and the record already says
+      // `attribution: partial`. Blocking a production session on a loopback reorder costs
+      // more than it prevents. A refused record is different: that usage is accounted
+      // nowhere and never will be.
+      if (permanentlyLost) {
         this.block(
-          `operation ${open.operationId}: certified source lost inference reports, so some ` +
-            `billable work was never measured`,
+          `operation ${open.operationId}: certified source refused inference reports for ` +
+            `capacity, so some billable work can never be measured`,
         );
       } else if (foreign.length > 0) {
         this.block(
@@ -487,7 +530,20 @@ export class MeteringEngine {
       };
     }
 
-    const inferences = source.drain(open.internalSessionId);
+    const drained = source.drain(open.internalSessionId);
+    // A record whose sequence predates this operation's start was expected earlier: it is
+    // a LATE arrival belonging to an operation already closed. Charging it here would
+    // misattribute it, so it goes to unallocated usage instead — which is what makes it
+    // defensible not to block on an outstanding gap.
+    // `typeof`, not `=== null`: a source that omits `sequence` yields undefined, and
+    // comparing that against the high-water mark is false — which silently classified
+    // EVERY record as late and reported the operation unmeasured. An absent sequence means
+    // "no ordering information", which must default to keeping the record.
+    const isLate = (inference: ProviderInference): boolean =>
+      typeof inference.sequence === "number" &&
+      inference.sequence <= open.sequenceHighWaterAtOpen;
+    const inferences = drained.filter((inference) => !isLate(inference));
+    this.lateArrivals = drained.filter(isLate);
     if (inferences.length === 0) {
       // A prompt that reached the provider ran at least one inference. None means the
       // channel missed them, which is exactly the silent undercount this path exists to
@@ -928,13 +984,19 @@ function combineAttributable(
  * cannot be represented becomes null — never zero, which would understate a reconciliation
  * against an invoice.
  */
-function toUnallocated(inference: ProviderInference): UnallocatedUsageAccrual {
+function toUnallocated(
+  inference: ProviderInference,
+  kind: "foreign" | "late",
+): UnallocatedUsageAccrual {
   const decimal = inference.cost === null ? null : decimalFromNumber(inference.cost);
   return {
     usage: inference.tokens,
     // OpenCode reports cost in USD; the currency travels with the figure so a consumer
     // never has to infer it.
     ratedCost: decimal?.ok ? { amount: decimal.value, currency: "USD" } : null,
-    reason: `inference from provider thread ${inference.sessionID}`,
+    reason:
+      kind === "foreign"
+        ? `inference from provider thread ${inference.sessionID}`
+        : `report arrived after the operation it belonged to had closed`,
   };
 }

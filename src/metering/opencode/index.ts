@@ -123,7 +123,9 @@ export async function createOpencodeMetering(
     isHealthy: () => channel.handshake !== null,
     drain: (internalSessionId) => channel.drain(internalSessionId),
     drainForeign: (internalSessionId) => channel.drainForeign(internalSessionId),
-    lostReportCount: () => channel.lostReportCount,
+    outstandingReports: (internalSessionId) => channel.outstandingReports(internalSessionId),
+    permanentlyLostCount: () => channel.permanentlyLostCount,
+    sequenceHighWater: (internalSessionId) => channel.sequenceHighWater(internalSessionId),
   };
 
   return {

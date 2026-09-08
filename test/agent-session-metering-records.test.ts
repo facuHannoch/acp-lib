@@ -638,8 +638,10 @@ describe("billing_required certification gate", () => {
 });
 
 describe("certified inference source", () => {
+  let nextSequence = 0;
   const inference = (over: Record<string, unknown> = {}) =>
     ({
+      sequence: (nextSequence += 1),
       messageID: `m${Math.random()}`,
       sessionID: "s",
       providerID: "anthropic",
@@ -782,10 +784,10 @@ describe("second-round review fixes", () => {
           certificationId: "opencode-plugin@1",
           isHealthy: () => true,
           drain: () => {
-            lost = 1; // a report went missing while this operation ran
+            lost = 1; // a report is missing at the moment this operation closes
             return [inference()] as never;
           },
-          lostReportCount: () => lost,
+          outstandingReports: () => lost,
         },
       },
     });
@@ -806,7 +808,7 @@ describe("second-round review fixes", () => {
           certificationId: "opencode-plugin@1",
           isHealthy: () => true,
           drain: () => [inference()] as never,
-          lostReportCount: () => 0,
+          outstandingReports: () => 0,
         },
       },
     });
@@ -957,9 +959,11 @@ describe("billing_required blocks on attribution gaps", () => {
       ...over,
     }) as never;
 
-  test("a lost report preserves the operation but blocks the next", async () => {
-    // Detecting that billable work went unmeasured and then carrying on is the failure
-    // this mode exists to prevent.
+  test("an outstanding gap marks the operation partial but does NOT block", async () => {
+    // Deliberately narrower than blocking on any gap. An outstanding report usually
+    // arrives moments later and lands in unallocated usage — visible and costed — so the
+    // promise "never silently under-account" still holds. Halting a production session on
+    // a loopback reorder costs more than it prevents.
     let lost = 0;
     const { session } = await openSession({
       adapterId: "opencode",
@@ -973,18 +977,18 @@ describe("billing_required blocks on attribution gaps", () => {
             lost = 1;
             return [inference()] as never;
           },
-          lostReportCount: () => lost,
+          outstandingReports: () => lost,
         },
       },
     });
     try {
       const first = (await session.prompt("one")) as AgentSessionPromptResult;
-      // The completed response and its record survive — the provider was already paid.
       expect(first.metering!.provenance.attribution).toBe("partial");
       expect(first.metering!.usage.status).toBe("metered");
-      // But nothing further is dispatched.
-      await expect(session.prompt("two")).rejects.toThrow(/blocked/);
-      expect(session.meteringSnapshot.blockedReason).toContain("lost inference reports");
+      // Not blocked: the gap may still resolve, and the record already says partial.
+      expect(session.meteringSnapshot.blocked).toBe(false);
+      const second = (await session.prompt("two")) as AgentSessionPromptResult;
+      expect(second.metering!.usage.status).toBe("metered");
     } finally {
       await session.stop();
     }
@@ -1037,7 +1041,7 @@ describe("billing_required blocks on attribution gaps", () => {
             lost = 1;
             return [inference()] as never;
           },
-          lostReportCount: () => lost,
+          outstandingReports: () => lost,
         },
       },
     });
@@ -1212,6 +1216,92 @@ describe("deliberate absence across several models", () => {
       expect(session.meteringSnapshot.ratedCosts.unaccounted).toBe(0);
       // Tokens are still fully accounted across both models.
       expect(result.metering!.usage.attributable.totalTokens).toBe(200);
+    } finally {
+      await session.stop();
+    }
+  });
+});
+
+describe("late arrivals are not charged to the wrong operation", () => {
+  const record = (sequence: number, messageID: string) =>
+    ({
+      sequence,
+      messageID,
+      sessionID: "usage-sess-1",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+      summary: false,
+      completedAt: Date.now(),
+      cost: 0.25,
+      tokens: { totalTokens: 100, inputTokens: 60, outputTokens: 40 },
+    }) as never;
+
+  test("a report belonging to a closed operation lands in unallocated", async () => {
+    // Without this, a report that arrived late sat in `pending` and was drained into
+    // whichever operation closed next — misattribution, and the reason it is defensible
+    // not to block on an outstanding gap.
+    let highWater = 0;
+    let queue: unknown[] = [];
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          sequenceHighWater: () => highWater,
+          drain: () => {
+            const drained = queue;
+            queue = [];
+            return drained as never;
+          },
+        },
+      },
+    });
+    try {
+      // Operation 1 sees sequence 2; sequence 1 never showed up.
+      queue = [record(2, "b")];
+      await session.prompt("one");
+      highWater = 2;
+
+      // Operation 2 drains the late sequence 1 alongside its own sequence 3.
+      queue = [record(1, "a"), record(3, "c")];
+      const second = (await session.prompt("two")) as AgentSessionPromptResult;
+
+      // Only the current operation's own inference is attributed to it.
+      expect(second.metering!.usage.status).toBe("metered");
+      if (second.metering!.usage.status !== "metered") return;
+      expect(second.metering!.usage.attributable.totalTokens).toBe(100);
+
+      // The late one is preserved as unallocated, with its cost and a reason.
+      const unallocated = session.meteringSnapshot.unallocatedUsage;
+      expect(unallocated.recordCount).toBe(1);
+      expect(unallocated.knownTokens.totalTokens).toBe(100);
+      expect(unallocated.ratedCosts.amounts).toEqual([{ amount: "0.25", currency: "USD" }]);
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("a source with no sequence information keeps every record", async () => {
+    // An absent sequence means "no ordering information", which must not be read as
+    // "arrived late" — that classified every record as late and reported the operation
+    // unmeasured.
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: fixedPricing,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () =>
+            [{ ...(record(1, "x") as Record<string, unknown>), sequence: undefined }] as never,
+        },
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.usage.status).toBe("metered");
     } finally {
       await session.stop();
     }

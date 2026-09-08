@@ -168,6 +168,14 @@ export interface AgentSessionMeteringSnapshot extends AgentSessionMeteringState 
   readonly restoration: Exclude<StateRestoration, { status: "restored" }> | { status: "restored"; version: 2 };
   readonly blocked: boolean;
   readonly blockedReason: string | null;
+  /**
+   * Reports the certified source is still missing.
+   *
+   * Retractable — a late arrival discharges its gap — and deliberately NOT a blocking
+   * condition, because the usage lands in unallocated when it appears. A count that stops
+   * falling is the signal worth alerting on, which is why it is surfaced here.
+   */
+  readonly outstandingReports: number;
   readonly lastOperation: OperationMeteringRecord | null;
 }
 

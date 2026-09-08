@@ -526,6 +526,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           : restoration,
       blocked: this.metering.blocked,
       blockedReason: this.metering.blockedReason,
+      outstandingReports: this.metering.outstandingReports(this._internalSessionId),
       lastOperation: this.metering.lastOperation,
     });
   }

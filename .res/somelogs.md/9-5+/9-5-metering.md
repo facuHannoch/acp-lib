@@ -4370,3 +4370,73 @@ Do it in one change, before anything ships. Splitting it leaves a window where s
 
 I'd also add one test that doesn't exist in any form today: **rate every category in every currency combination and assert line items sum to the engraved total per currency.** The current invariant test only covers the same-currency case, which is why it passed while the EUR vanished.
 
+
+
+
+
+
+## Root cause
+
+A high-water mark is a lossy summary. It can say "seen up to N" but not "missing 3, 7, and 12" — so once it claims a loss it can never retract one. Both defects are that single limitation: out-of-order can't be corrected, and the 409 path skips the only place the mark advances.
+
+It's the same shape as the `MoneyTotal` problem. A type that couldn't express the thing it needed to express, so the code approximated — and the approximation was wrong in exactly the cases that matter.
+
+But there's a second, deeper conflation. `lostReportCount` currently means three incompatible things at once:
+
+| meaning                                  | lifecycle                                     |
+| ---------------------------------------- | --------------------------------------------- |
+| a sequence gap                           | **retractable** — a late report discharges it |
+| a capacity refusal                       | **permanent** — that record is never coming   |
+| the engine's `> lostReportsAtOpen` delta | assumes **monotonic**                         |
+
+The third breaks the moment the first becomes retractable. So "track a set" isn't sufficient — the engine has to stop asking a delta question.
+
+## The proposal
+
+**1. Per-session ledger instead of a scalar.** `{ highest, outstanding: Set<number> }`. On sequence *n*: add `highest+1 … n-1` to outstanding, advance `highest`, and always discharge *n*. Late arrival removes itself from outstanding, so the count falls.
+
+**2. Split retractable from permanent.** `outstandingReports` (may resolve) and `permanentlyLostReports` (capacity refusals — those records were refused and will never arrive). They are different facts and only one of them justifies stopping a business.
+
+**3. The engine asks a state question, not a delta.** At close: "are there outstanding gaps for this session *now*?" — not "did a counter rise?". `OpenOperation.lostReportsAtOpen` disappears.
+
+**4. Bookkeeping above the 409 return**, so a duplicate always consumes its sequence.
+
+## The consequential decision: what `billing_required` blocks on
+
+This is where it stops being a contained fix. I'd **narrow** the blocking rule I added two rounds ago:
+
+- **Permanent loss → block.** That money is never accounted for anywhere.
+- **Outstanding gap → mark `attribution: partial`, do not block.**
+
+The justification is the design's actual promise. It is not "every operation is perfectly attributed" — it is *never silently under-account*. When a late report arrives it lands in `unallocatedUsage`: visible, costed, reconcilable. The money is accounted for; only its attribution is imprecise, and the record says so. Halting a production billing session over a loopback reorder is a false positive that costs more than it prevents.
+
+That only holds if the late report actually reaches unallocated, which brings the necessary companion change:
+
+**5. Late arrivals must not be charged to the next operation.** Today, a report that arrives after its operation closed sits in `pending` and gets drained into whichever operation closes next — misattribution, the same class as the foreign-thread bug. Snapshot the session's high-water at `open`; at close, any drained record with `sequence <= highWaterAtOpen` was expected earlier, so it routes to `unallocatedUsage` with reason `late report` rather than being attributed.
+
+Sequence-based rather than timestamp-based deliberately — no clock-skew assumption between the harness's `completedAt` and our `startedAt`.
+
+## What this touches
+
+- **`InferenceSource`**: `lostReportCount?()` becomes something like `coverage(internalSessionId) → { outstanding, permanentlyLost }`. Ripples to the OpenCode integration and every test double.
+- **Provenance**: `attribution` computed from state rather than a delta.
+- **Blocking**: narrower, and the narrowing needs to be stated in the changelog as a deliberate weakening with its rationale — otherwise it reads as a regression of the previous round's fix.
+- **`unallocatedUsage`**: gains a third reason alongside foreign-thread and no-cost.
+- **`OperationMeteringRecord`**: unchanged shape. Worth noting — the record contract survives, which is a sign the change is in the right layer.
+- **Docs**: the changelog, `test7`'s README, and the certification description all describe sequence detection as if gaps were permanent.
+
+## What I would not do
+
+**Delay close until gaps resolve** — unbounded latency, and it makes metering able to stall the agent. Never acceptable.
+
+**Emit amended records** — records are immutable by design and consumers may already have persisted them; corrections would be a whole new concept and a large consumer burden for a rare case.
+
+**Attribute gaps to operations by timestamp bounds** — plausible (a gap sits between two known reports), but it buys precision we don't need and adds a clock assumption.
+
+## The limitation that survives
+
+A gap that never resolves and never trips capacity shows as a persistent `outstanding` count with `attribution: partial` — and does **not** block. That's the tail-loss problem again wearing different clothes, and it's a deliberate trade. To make it actionable rather than invisible I'd surface `outstanding` on `meteringSnapshot`, so a consumer can alert on a count that isn't falling.
+
+I'd also fix my test: it currently asserts the bug as correct, with a comment rationalising it. That's worth calling out in the commit, because the test was the thing that should have caught this and instead certified it.
+
+Want me to implement this?

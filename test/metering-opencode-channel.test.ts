@@ -225,7 +225,9 @@ describe("bounded buffer", () => {
     }
     const overflow = await post(channel, inference({ messageID: "c" }));
     expect(overflow.status).toBe(503);
-    expect(channel.lostReportCount).toBe(1);
+    // Permanently lost, not an outstanding gap: we refused it, so it will never arrive.
+    expect(channel.permanentlyLostCount).toBe(1);
+    expect(channel.outstandingReports()).toBe(0);
     // The records already accepted are intact.
     expect(channel.drain(null).map((record) => record.messageID)).toEqual(["a", "b"]);
   });
@@ -281,7 +283,7 @@ describe("duplicate suppression", () => {
     await post(target, inference({ messageID: "a", sequence: 1 }));
     await post(target, inference({ messageID: "a", sequence: 2 })); // the duplicate
     await post(target, inference({ messageID: "b", sequence: 3 }));
-    expect(target.lostReportCount).toBe(0);
+    expect(target.outstandingReports()).toBe(0);
   });
 });
 
@@ -290,7 +292,9 @@ describe("gap detection stays correct around duplicates", () => {
     const target = start();
     await post(target, inference({ messageID: "a", sequence: 1 }));
     await post(target, inference({ messageID: "c", sequence: 3 })); // b never arrived
-    expect(target.lostReportCount).toBe(1);
+    expect(target.outstandingReports()).toBe(1);
+    // Outstanding, not permanent: it may still turn up.
+    expect(target.permanentlyLostCount).toBe(0);
   });
 
   test("a double-loaded plugin repeating the same sequences reports no loss", async () => {
@@ -300,14 +304,31 @@ describe("gap detection stays correct around duplicates", () => {
     for (const [id, sequence] of [["a", 1], ["a", 1], ["b", 2], ["b", 2]] as const) {
       await post(target, inference({ messageID: id, sequence }));
     }
-    expect(target.lostReportCount).toBe(0);
+    expect(target.outstandingReports()).toBe(0);
   });
 
-  test("out-of-order arrival does not invent a loss", async () => {
+  test("out-of-order arrival resolves itself instead of standing as a loss", async () => {
+    // This test previously ASSERTED the bug: it expected 1 and rationalised the permanent
+    // phantom gap as intended. A high-water mark could not retract a claim, so benign
+    // loopback reordering blocked billing_required forever.
     const target = start();
     await post(target, inference({ messageID: "b", sequence: 2 }));
+    expect(target.outstandingReports()).toBe(1); // 1 is missing — so far
+
     await post(target, inference({ messageID: "a", sequence: 1 }));
-    // 2 arrived first and is the high-water mark; 1 is behind it, not a gap.
-    expect(target.lostReportCount).toBe(1); // the gap 0->2 is reported once, and only once
+    expect(target.outstandingReports()).toBe(0); // and now it is not
+
+    await post(target, inference({ messageID: "c", sequence: 3 }));
+    expect(target.outstandingReports()).toBe(0);
+    expect(target.permanentlyLostCount).toBe(0);
+  });
+
+  test("gaps are tracked per session, not globally", async () => {
+    const target = start();
+    await post(target, inference({ messageID: "a", sessionID: "s1", sequence: 1 }));
+    await post(target, inference({ messageID: "b", sessionID: "s2", sequence: 3 }));
+    expect(target.outstandingReports("s1")).toBe(0);
+    expect(target.outstandingReports("s2")).toBe(2);
+    expect(target.outstandingReports()).toBe(2);
   });
 });
