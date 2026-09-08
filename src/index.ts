@@ -201,6 +201,16 @@ export type {
   FileSessionLogWriterOptions,
   SessionLogKind,
 } from "./persistence/session-log-writer.ts";
+export {
+  projectAuditEvent,
+  projectTranscriptEvent,
+} from "./persistence/projection.ts";
+export type {
+  AuditProjectionContext,
+  NormalizedActivityProjection,
+  NormalizedPersistenceEvent,
+  TranscriptProjectionContext,
+} from "./persistence/projection.ts";
 
 export {
   MAX_SCALE,

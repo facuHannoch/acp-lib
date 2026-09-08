@@ -1230,3 +1230,33 @@ suite passes 5/5 and `tsc --noEmit` passes. This subpart deliberately creates on
 generations; opening/scanning an existing generation belongs with the reducer/reader.
 Capture filtering, independent transcript/audit projection, and bounded truncation remain
 the next subpart.
+
+### Part 3B — independent pre-serialization capture projection
+
+Added `src/persistence/projection.ts` with one explicit normalized runtime-event union and
+two independent pure projections. Transcript and audit records are constructed separately;
+there is no generic transcript-to-audit mapper. Both results are detached from mutable
+input before a writer can enqueue them.
+
+Tool activity is classified before projection into a closed content-free metadata shape,
+invocation `input`, and returned `content`. Capture levels are cumulative, but metadata
+cannot carry arbitrary keys, titles, paths, commands, patches, or output. The default
+activity transcript therefore retains only structural tool identity/status/timing; the
+default audit policy adds invocation input but not results; detailed/content policies add
+results. Conversation messages never enter audit. Reasoning, configuration definitions,
+full permission details, metering summaries, lifecycle detail, protocol metadata, and raw
+traffic each require their precise policy level.
+
+Transcript transition routing/activation/history remains structural even when transition
+presentation is disabled; summary and consumer reason text require content capture. Audit
+transition projection rebuilds an explicit descriptor containing only internal identity,
+adapter, mode, model, and protocol, so restoration configuration, activation timestamps,
+history entries, summary, and reason text cannot cross into that artifact. Normalized
+protocol capability keys are emitted in lexical order; raw protocol payloads remain
+diagnostic-transcript-only.
+
+Added `test/persistence-projection.test.ts` with direct leak assertions across metadata,
+input, and content tool levels; transcript/audit message and reasoning separation;
+structural transition retention and audit stripping; configuration/permission levels;
+and normalized-versus-raw protocol capture. Every projected result is also passed through
+its concrete record validator. The projection suite passes 5/5 and `tsc --noEmit` passes.
