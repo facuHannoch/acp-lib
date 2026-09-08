@@ -148,6 +148,29 @@ export {
   checkpointDigestMatches,
 } from "./persistence/integrity.ts";
 export type { PersistedMachineCode } from "./persistence/integrity.ts";
+export {
+  CheckpointValidationError,
+  createAgentSessionCheckpoint,
+  validateAgentSessionCheckpoint,
+} from "./persistence/checkpoint.ts";
+export type {
+  AgentSessionBoundary,
+  AgentSessionCheckpoint,
+  AgentSessionCheckpointInput,
+  CheckpointIdentityExpectation,
+  JsonObject,
+  JsonValue,
+  PersistedProtocol,
+  PersistedSessionConfigSelection,
+  SessionConfigurationCheckpoint,
+  TransitionKind,
+} from "./persistence/checkpoint.ts";
+export {
+  SessionLogRecordValidationError,
+  validateAuditLogRecord,
+  validateTranscriptRecord,
+} from "./persistence/records.ts";
+export type * from "./persistence/records.ts";
 
 export {
   MAX_SCALE,

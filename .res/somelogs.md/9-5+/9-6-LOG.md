@@ -1065,3 +1065,59 @@ Added `test/persistence-integrity.test.ts` with nine focused tests including a k
 canonical SHA-256 vector, checkpoint mutation detection, invalid/lossy JSON cases,
 repeated references, exact machine-code bounds, and provider-prose normalization. The
 combined phase-1 foundation suite now passes 29/29 and `tsc --noEmit` passes.
+
+### Part 1D — continuation checkpoint contract
+
+Added `src/persistence/checkpoint.ts` with the bounded, versioned continuation-state
+schema and the public create/validate boundary. Checkpoint creation clones the input,
+canonicalizes every JSON value through the shared integrity implementation, computes the
+digest over all fields except `digest`, and validates the resulting artifact before
+returning it. Restored checkpoints are checked before use for version, digest, logical
+session and incarnation identity, adapter identity, state/history revisions, transcript
+identity/generation/path, protocol shape, boundary shape, canonical timestamps, and
+optional expected values supplied by the opener.
+
+Runtime validation now covers the cross-field invariants that TypeScript cannot enforce:
+internal-session identity and activation time appear together; activation and transition
+times cannot postdate the checkpoint; configuration adapter identity matches the active
+adapter; announced/omitted IDs are unique; omitted IDs were actually announced; exact
+configuration fidelity cannot claim omitted values; restoration targets have unique IDs,
+valid types/sources/timestamps, and strictly increasing ordinals. Optional metering state
+is accepted only when the existing metering-state restoration validator accepts its
+version, structure, and logical-session identity.
+
+Exported the checkpoint types, constructor, validator, and typed validation error through
+the package root so a consumer-managed store can persist and verify the same continuation
+unit as the library-managed path. Added `test/persistence-checkpoint.test.ts`; the combined
+phase-1 foundation suite passes 36/36 and `tsc --noEmit` passes.
+
+### Part 1E — sink-specific session-log schemas
+
+Added `src/persistence/records.ts` with distinct transcript-v2 and audit-v1 envelopes and
+concrete record unions. The transcript schema includes headers, checkpoints, durable
+operation boundaries, messages, coalesced reasoning snapshots, activity revisions,
+configuration, permissions, transitions, metering references, lifecycle, normalized
+protocol metadata, and diagnostic raw records. The audit schema deliberately defines its
+own allowlisted operation/reasoning/activity/configuration/permission/transition/metering/
+lifecycle records; it has no generic projection from transcript records and cannot accept
+messages, checkpoints, raw protocol payloads, restoration configuration, history entries,
+transition summaries, or consumer reason text.
+
+Added runtime validators for both sinks. They validate versions and discriminants,
+logical/log identity, generations and sequences, bounded canonical JSON, timestamps,
+truncation metadata, exact header policy/limit shapes, installation provenance, safe
+machine codes, operation-abort presence rules, and required operation correlation.
+Transcript checkpoint records validate their complete checkpoint payload and enforce
+record/payload revision, identity, path, generation, and physical-versus-covered sequence
+invariants. Transition validation keeps audit descriptors content-free and validates the
+transcript's restoration configuration, activation state, history identity, and exact
+prior-session descriptor match. Protocol capabilities are normalized boolean leaves in
+lexical key order.
+
+Made the already-existing resolved capture-policy and persistence-limit validators
+reusable by record-header validation rather than duplicating the preset matrix. Exported
+the record validators, error, and consumer-facing schema types from the package root.
+Added `test/persistence-records.test.ts` for terminal-boundary semantics, checkpoint
+identity, header installation/upgrade rules, audit isolation, machine-code/truncation
+validation, and prohibited audit record kinds. The complete phase-1 persistence suite
+passes 42/42 and `tsc --noEmit` passes.

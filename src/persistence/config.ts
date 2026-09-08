@@ -266,7 +266,7 @@ function resolveLayers(
     }
   }
 
-  validateLimits(limits);
+  validatePersistenceLimits(limits);
   return Object.freeze({
     root,
     transcript: freezeTranscript(transcript),
@@ -312,7 +312,7 @@ function mergeTranscript(
   const preset = next.preset ?? inherited.preset;
   const captureBase = next.preset ? presetCapture(next.preset) : inherited.capture;
   const capture = { ...captureBase, ...next.capture };
-  validateTranscriptCapture(capture);
+  validateTranscriptCapturePolicy(capture);
   return {
     ...(next.path !== undefined
       ? { path: next.path }
@@ -349,7 +349,7 @@ function mergeAuditLog(
 
   const inherited = current === false ? defaultAuditLog() : current;
   const capture = { ...inherited.capture, ...next.capture };
-  validateAuditCapture(capture);
+  validateAuditLogCapturePolicy(capture);
   return {
     ...(next.path !== undefined
       ? { path: next.path }
@@ -397,7 +397,13 @@ function presetCapture(preset: TranscriptPreset): TranscriptCapturePolicy {
   return { ...capture };
 }
 
-function validateLimits(limits: PersistenceLimits): void {
+export function validatePersistenceLimits(limits: PersistenceLimits): void {
+  assertKnownKeys("limits", limits, [
+    "maxRecordBytes",
+    "maxCapturedFieldBytes",
+    "maxJsonDepth",
+    "maxCursorBytes",
+  ]);
   validateIntegerRange("maxRecordBytes", limits.maxRecordBytes, 4_096, 16_777_216);
   validateIntegerRange(
     "maxCapturedFieldBytes",
@@ -415,7 +421,11 @@ function validateIntegerRange(name: string, value: number, min: number, max: num
   }
 }
 
-function validateTranscriptCapture(value: TranscriptCapturePolicy): void {
+export function validateTranscriptCapturePolicy(value: TranscriptCapturePolicy): void {
+  assertKnownKeys("capture", value, [
+    "messages", "reasoning", "tools", "lifecycle", "transitions", "permissions",
+    "usage", "configuration", "protocol",
+  ]);
   oneOf("capture.messages", value.messages, ["none", "text"]);
   oneOf("capture.reasoning", value.reasoning, ["none", "text"]);
   oneOf("capture.tools", value.tools, ["none", "metadata", "input", "content"]);
@@ -427,7 +437,11 @@ function validateTranscriptCapture(value: TranscriptCapturePolicy): void {
   oneOf("capture.protocol", value.protocol, ["none", "metadata", "raw"]);
 }
 
-function validateAuditCapture(value: AuditLogCapturePolicy): void {
+export function validateAuditLogCapturePolicy(value: AuditLogCapturePolicy): void {
+  assertKnownKeys("auditLog.capture", value, [
+    "reasoning", "tools", "lifecycle", "transitions", "permissions", "usage",
+    "configuration",
+  ]);
   oneOf("auditLog.capture.reasoning", value.reasoning, ["none", "text"]);
   oneOf("auditLog.capture.tools", value.tools, ["none", "metadata", "input", "content"]);
   bool("auditLog.capture.lifecycle", value.lifecycle);
