@@ -165,7 +165,17 @@ export interface MeteringConfig {
 
 export interface AgentSessionMeteringSnapshot extends AgentSessionMeteringState {
   readonly enforcement: MeteringEnforcement;
-  readonly restoration: Exclude<StateRestoration, { status: "restored" }> | { status: "restored"; version: 2 };
+  /**
+   * Outcome of restoring `MeteringConfig.initialState`.
+   *
+   * The restored version is DERIVED from `AgentSessionMeteringState["version"]` rather
+   * than written literally. Hardcoding it left the snapshot reporting a restore of
+   * version 2 beside version-3 state after the last bump — a hand-maintained copy of a
+   * fact that already exists elsewhere will eventually disagree with it.
+   */
+  readonly restoration:
+    | Exclude<StateRestoration, { status: "restored" }>
+    | { status: "restored"; version: AgentSessionMeteringState["version"] };
   readonly blocked: boolean;
   readonly blockedReason: string | null;
   /**

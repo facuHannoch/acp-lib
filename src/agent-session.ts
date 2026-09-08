@@ -520,9 +520,11 @@ export class AgentSession implements AgentClient, Bridgeable {
     return Object.freeze({
       ...this.metering.currentState,
       enforcement: this.metering.enforcement,
+      // Carry the version the restore actually reported. The `state` field is dropped
+      // because the snapshot already IS the state; the version is not re-stated literally.
       restoration:
         restoration.status === "restored"
-          ? { status: "restored" as const, version: 2 as const }
+          ? { status: "restored" as const, version: restoration.version }
           : restoration,
       blocked: this.metering.blocked,
       blockedReason: this.metering.blockedReason,

@@ -315,3 +315,31 @@ describe("unallocated cost that cannot be represented", () => {
     expect(state.totals.total.knownTokens).toBe(0);
   });
 });
+
+describe("the state version is declared once", () => {
+  test("a restored state reports the version it actually restored", () => {
+    // The snapshot once hardcoded `version: 2` while the state itself said 3, because the
+    // number lived in four places and a bump missed one.
+    const result = restoreMeteringState(emptyMeteringState("agent-1"), "agent-1");
+    expect(result.status).toBe("restored");
+    if (result.status !== "restored") return;
+    expect(result.version).toBe(METERING_STATE_VERSION);
+    expect(result.state.version).toBe(METERING_STATE_VERSION);
+  });
+
+  test("a fresh state carries the same version the constant declares", () => {
+    expect(emptyMeteringState("agent-1").version).toBe(METERING_STATE_VERSION);
+  });
+
+  test("the version one below the current is rejected, not silently read", () => {
+    const previous = {
+      ...emptyMeteringState("agent-1"),
+      version: METERING_STATE_VERSION - 1,
+    } as unknown as AgentSessionMeteringState;
+    const result = restoreMeteringState(previous, "agent-1");
+    expect(result.status).toBe("ignored");
+    if (result.status !== "ignored") return;
+    expect(result.reason).toBe("initial_state_version_unsupported");
+    expect(result.providedVersion).toBe(METERING_STATE_VERSION - 1);
+  });
+});

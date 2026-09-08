@@ -12,6 +12,7 @@ import {
   certificationFor,
 } from "../src/metering/certification.ts";
 import type { PricingPolicy, PricingResolver } from "../src/metering/pricing.ts";
+import { emptyMeteringState } from "../src/metering/state.ts";
 import { addMoney, rateTokens, soleAmount } from "../src/metering/money.ts";
 
 function usageAdapter() {
@@ -1302,6 +1303,24 @@ describe("late arrivals are not charged to the wrong operation", () => {
     try {
       const result = (await session.prompt("hello")) as AgentSessionPromptResult;
       expect(result.metering!.usage.status).toBe("metered");
+    } finally {
+      await session.stop();
+    }
+  });
+});
+
+describe("snapshot version consistency", () => {
+  test("the snapshot cannot report restoring a different version than it holds", async () => {
+    const { session } = await openSession({
+      metering: { pricing: false, initialState: emptyMeteringState("agent-records-restore") },
+      agentSessionId: "agent-records-restore",
+    });
+    try {
+      const snapshot = session.meteringSnapshot;
+      expect(snapshot.restoration.status).toBe("restored");
+      if (snapshot.restoration.status !== "restored") return;
+      // These are the two halves that silently disagreed.
+      expect(snapshot.restoration.version).toBe(snapshot.version);
     } finally {
       await session.stop();
     }

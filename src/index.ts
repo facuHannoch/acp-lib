@@ -220,6 +220,7 @@ export type {
   AggregateUsageTotal,
   CategoryCoverage,
   MeteringBaseline,
+  MeteringStateVersion,
   OperationAccrual,
   StateRestoration,
   UnallocatedUsageAccrual,

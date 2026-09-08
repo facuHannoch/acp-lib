@@ -76,7 +76,7 @@ export interface MeteringBaseline {
 }
 
 export interface AgentSessionMeteringState {
-  readonly version: 3;
+  readonly version: MeteringStateVersion;
   readonly agentSessionId: string;
   readonly operationCount: number;
   readonly meteredOperationCount: number;
@@ -88,7 +88,15 @@ export interface AgentSessionMeteringState {
   readonly activeBaseline: MeteringBaseline | null;
 }
 
-export const METERING_STATE_VERSION = 3;
+/**
+ * The persisted shape's version, declared ONCE.
+ *
+ * It previously appeared as a literal in four places, and the last bump missed one — the
+ * session snapshot reported restoring version 2 beside version-3 state. A number that has
+ * to be updated in several places is a number that will eventually disagree with itself.
+ */
+export type MeteringStateVersion = 3;
+export const METERING_STATE_VERSION: MeteringStateVersion = 3;
 
 /** Category → the TokenUsage field carrying it. */
 const CATEGORY_FIELD: Readonly<Record<TokenCategory, keyof TokenUsage>> = Object.freeze({
@@ -133,7 +141,7 @@ function deriveCoverage(total: Omit<UsageCategoryTotal, "coverage">): CategoryCo
 
 export function emptyMeteringState(agentSessionId: string): AgentSessionMeteringState {
   return Object.freeze({
-    version: METERING_STATE_VERSION as 3,
+    version: METERING_STATE_VERSION,
     agentSessionId,
     operationCount: 0,
     meteredOperationCount: 0,
@@ -325,7 +333,11 @@ export function accumulateByCurrency(
 
 export type StateRestoration =
   | { readonly status: "not_provided" }
-  | { readonly status: "restored"; readonly version: 3; readonly state: AgentSessionMeteringState }
+  | {
+      readonly status: "restored";
+      readonly version: MeteringStateVersion;
+      readonly state: AgentSessionMeteringState;
+    }
   | {
       readonly status: "ignored";
       readonly reason:
