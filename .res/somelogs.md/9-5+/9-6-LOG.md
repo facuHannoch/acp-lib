@@ -985,3 +985,83 @@ subject to their ordinary capture policy before transcript/audit projection.
 
 Updated reducer, checkpoint, migration, security, and deferred-work tests accordingly. No
 runtime source or tests were changed.
+
+## Implementation
+
+### Part 1A — persistence configuration normalization
+
+Started implementation with the policy/configuration foundation required before either
+session-log writer can safely persist data.
+
+Added `src/persistence/config.ts` with the public persistence configuration types and an
+internal deterministic resolver for direct and managed sessions. Direct omission/`false`
+remains no-persistence; an explicit direct configuration and managed sessions start from
+the specified activity transcript, typed session-configuration, disabled audit-log, and
+bounded-size defaults. Root resolution follows explicit input, `ACP_CLIENT_HOME`, then
+`~/.acp-client`.
+
+Implemented the specified layer semantics rather than shallow spreading: preset changes
+reset transcript capture before same-layer overrides; member overrides inherit without a
+new preset; arrays replace rather than concatenate; a higher object re-enables a lower
+disabled log from library defaults; and a highest-priority `false` remains final. Manager
+constraints validate the completed result without silently changing it. Managed layers
+cannot supply a competing root.
+
+Added hard-range validation for record, field, depth, and cursor limits; validation for
+capture values, paths, booleans, configuration IDs, and constraints; immutable/detached
+resolved policies; and runtime rejection of unknown nested fields so JavaScript callers
+cannot smuggle arbitrary values into a future persisted header. Only the consumer-facing
+configuration types and typed `PersistenceConfigurationError` are exported from the
+package root; resolution helpers remain an implementation detail.
+
+Added `test/persistence-config.test.ts` with 13 tests covering defaults, every preset,
+layer precedence, disable/re-enable behavior, array replacement, constraints, hard
+limits, root precedence/tilde expansion, runtime unknown-field rejection, and immutable
+input detachment. The focused suite passes (13/13) and `tsc --noEmit` passes.
+
+The complete existing test suite was also attempted. It is presently blocked in this
+sandbox by pre-existing environment-dependent tests: `Bun.serve({ port: 0 })` fails with
+`EADDRINUSE` in `metering-live-catalog.test.ts`, and ACP fixture subprocess startup tests
+time out/close their connection. Running each affected file alone reproduces the same
+failure; neither imports nor exercises the new persistence resolver.
+
+### Part 1B — session-log path resolution
+
+Added `src/persistence/paths.ts`, the filesystem-dependent step deliberately kept separate
+from policy merging. It resolves omitted transcript/audit destinations under the effective
+root, interprets an explicitly supplied existing directory as a library-named destination,
+uses existing regular files and nonexistent paths exactly, normalizes relative and `~/`
+paths, and returns absolute transcript/audit paths without creating filesystem objects.
+
+The default resolver rejects direct and ancestor symbolic links, non-file/non-directory
+objects, blank logical IDs, and transcript/audit aliases. Alias detection covers both the
+same normalized path and distinct hard-link paths identifying the same existing file.
+Disabled logs resolve to `null`. These checks happen before a writer or harness needs to
+start.
+
+Added `test/persistence-paths.test.ts` with seven focused tests covering the default
+layout, directory-derived names, exact file/nonexistent behavior, relative and home
+expansion, direct/ancestor symlink rejection, normalized-path and hard-link collision,
+and disabled logs. The combined phase-1 configuration/path suite passes 20/20 and
+`tsc --noEmit` passes.
+
+### Part 1C — canonical integrity primitives
+
+Added `src/persistence/integrity.ts` with strict RFC-8785-style canonical JSON generation,
+lowercase SHA-256 canonical digests, checkpoint digest computation/verification that
+excludes exactly the `digest` member, and the shared bounded `PersistedMachineCode`
+contract. Checkpoint digest calculation and verification plus its typed serialization
+error are exported for consumers that persist/validate their own checkpoints; lower-level
+canonicalization and provider-code normalization remain internal module utilities.
+
+Canonicalization sorts object keys recursively, preserves array order, uses ECMAScript
+JSON number/string serialization, accepts repeated noncyclic references, and rejects
+non-finite numbers, unsupported values, sparse arrays, non-plain objects, symbols, cycles,
+lone UTF-16 surrogates, and values beyond the configured depth. Provider-originated prose
+normalizes to the stable `unknown` machine code, while structural consumer/library codes
+fail validation rather than silently changing meaning.
+
+Added `test/persistence-integrity.test.ts` with nine focused tests including a known
+canonical SHA-256 vector, checkpoint mutation detection, invalid/lossy JSON cases,
+repeated references, exact machine-code bounds, and provider-prose normalization. The
+combined phase-1 foundation suite now passes 29/29 and `tsc --noEmit` passes.

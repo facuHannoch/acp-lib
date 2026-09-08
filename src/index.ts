@@ -128,6 +128,28 @@ export type {
 } from "./transcript.ts";
 
 export {
+  PersistenceConfigurationError,
+} from "./persistence/config.ts";
+export type {
+  AgentSessionPersistenceOptions,
+  AuditLogCapturePolicy,
+  AuditLogConfig,
+  ManagedSessionPersistenceOptions,
+  PersistenceLimits,
+  SessionConfigurationPersistenceConfig,
+  SessionPersistenceConstraints,
+  TranscriptCapturePolicy,
+  TranscriptConfig,
+  TranscriptPreset,
+} from "./persistence/config.ts";
+export {
+  PersistenceSerializationError,
+  checkpointDigest,
+  checkpointDigestMatches,
+} from "./persistence/integrity.ts";
+export type { PersistedMachineCode } from "./persistence/integrity.ts";
+
+export {
   MAX_SCALE,
   EMPTY_MONEY_TOTAL,
   addMoney,
