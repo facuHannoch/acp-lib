@@ -12,7 +12,7 @@ import {
   certificationFor,
 } from "../src/metering/certification.ts";
 import type { PricingPolicy, PricingResolver } from "../src/metering/pricing.ts";
-import { addMoney, rateTokens } from "../src/metering/money.ts";
+import { addMoney, rateTokens, soleAmount } from "../src/metering/money.ts";
 
 function usageAdapter() {
   return { command: ["bun", resolve(import.meta.dir, "fixtures/usage-agent.ts")] };
@@ -102,10 +102,11 @@ describe("operation metering records", () => {
     try {
       const first = (await session.prompt("one")) as AgentSessionPromptResult;
       const carried = first.metering!.nextState;
-      expect(carried.version).toBe(2);
+      expect(carried.version).toBe(3);
       expect(carried.totals.total.knownTokens).toBe(100);
       expect(carried.activeBaseline?.internalSessionId).toBe("usage-sess-1");
-      expect(carried.ratedCosts).toEqual([{ amount: "0.000783", currency: "USD" }]);
+      expect(carried.ratedCosts.amounts).toEqual([{ amount: "0.000783", currency: "USD" }]);
+      expect(carried.ratedCosts.unaccounted).toBe(0);
 
       const second = (await session.prompt("two")) as AgentSessionPromptResult;
       expect(second.metering!.nextState.totals.total.knownTokens).toBe(200);
@@ -225,7 +226,7 @@ describe("pricing on records", () => {
       expect(attributable.input.pricing?.ratedCost.amount).toBe("0.00018");
       expect(attributable.output.pricing?.ratedCost.amount).toBe("0.0006");
       expect(attributable.cachedRead?.pricing?.ratedCost.amount).toBe("0.000003");
-      expect(attributable.ratedTotal?.amount).toBe("0.000783");
+      expect(soleAmount(attributable.ratedTotal)?.amount).toBe("0.000783");
     } finally {
       await session.stop();
     }
@@ -238,7 +239,7 @@ describe("pricing on records", () => {
       expect(result.metering!.pricingStatus).toBe("not_configured");
       if (result.metering!.usage.status !== "metered") return;
       expect(result.metering!.usage.attributable.totalTokens).toBe(100);
-      expect(result.metering!.usage.attributable.ratedTotal).toBeNull();
+      expect(soleAmount(result.metering!.usage.attributable.ratedTotal)).toBeNull();
       expect(result.metering!.usage.attributable.input.pricing).toBeNull();
     } finally {
       await session.stop();
@@ -885,7 +886,7 @@ describe("second-round review fixes", () => {
       // as the signal marked it pricing_unavailable and blocked strict mode on correctly
       // priced work.
       expect(result.metering!.pricingStatus).toBe("priced");
-      expect(result.metering!.nextState.ratedCosts).toEqual([attributable.ratedTotal!]);
+      expect(result.metering!.nextState.ratedCosts.amounts).toEqual(attributable.ratedTotal.amounts);
 
       expect(attributable.lineItems).toHaveLength(2);
       expect(attributable.lineItems!.map((item) => item.modelId).sort()).toEqual([
@@ -907,12 +908,12 @@ describe("second-round review fixes", () => {
           if (!recomputed.ok) return;
           expect(recomputed.value.amount).toBe(amount.pricing.ratedCost.amount);
         }
-        const total = addMoney(summed, item.ratedTotal!);
+        const total = addMoney(summed, soleAmount(item.ratedTotal)!);
         expect(total.ok).toBe(true);
         if (!total.ok) return;
         summed = total.value;
       }
-      expect(summed.amount).toBe(attributable.ratedTotal!.amount);
+      expect(summed.amount).toBe(soleAmount(attributable.ratedTotal)!.amount);
     } finally {
       await session.stop();
     }
@@ -1014,7 +1015,7 @@ describe("billing_required blocks on attribution gaps", () => {
       // Preserved, not discarded: it is real spend, with the provider's own cost.
       const unallocated = session.meteringSnapshot.unallocatedUsage;
       expect(unallocated.recordCount).toBe(1);
-      expect(unallocated.ratedCosts).toEqual([{ amount: "0.5", currency: "USD" }]);
+      expect(unallocated.ratedCosts.amounts).toEqual([{ amount: "0.5", currency: "USD" }]);
     } finally {
       await session.stop();
     }
@@ -1043,6 +1044,82 @@ describe("billing_required blocks on attribution gaps", () => {
     try {
       await session.prompt("one");
       expect(session.meteringSnapshot.blocked).toBe(false);
+    } finally {
+      await session.stop();
+    }
+  });
+});
+
+describe("a multi-CURRENCY operation cannot understate itself", () => {
+  const inference = (modelID: string) =>
+    ({
+      sequence: null,
+      messageID: `m${Math.random()}`,
+      sessionID: "s",
+      providerID: "p",
+      modelID,
+      summary: false,
+      completedAt: Date.now(),
+      cost: 0,
+      tokens: { totalTokens: 2_000_000, inputTokens: 1_000_000, outputTokens: 1_000_000 },
+    }) as never;
+
+  const priced = (currency: string) => ({
+    ...TEST_POLICY,
+    providerId: "p",
+    schedules: [
+      {
+        ...TEST_POLICY.schedules[0]!,
+        input: { amount: "5", currency, perTokens: 1_000_000 },
+        output: { amount: "5", currency, perTokens: 1_000_000 },
+        cachedRead: { amount: "5", currency, perTokens: 1_000_000 },
+      },
+    ],
+  });
+
+  test("both currencies survive, and the total says so", async () => {
+    // This is the bug the whole MoneyTotal change exists for: two line items of 10 each
+    // produced an engraved total of 10, reported as `priced`. Half the cost vanished.
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: (context) => priced(context.model === "eur-model" ? "EUR" : "USD"),
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => [inference("claude-sonnet-4-5"), inference("eur-model")] as never,
+        },
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      const usage = result.metering!.usage;
+      expect(usage.status).toBe("metered");
+      if (usage.status !== "metered") return;
+      const total = usage.attributable.ratedTotal;
+
+      // Neither currency is dropped.
+      expect(total.amounts).toHaveLength(2);
+      expect(total.amounts.map((amount) => amount.currency).sort()).toEqual(["EUR", "USD"]);
+      expect(total.unaccounted).toBe(0);
+
+      // Line items sum to the total, PER CURRENCY. The old invariant test only covered a
+      // single currency, which is exactly why it passed while a currency went missing.
+      for (const currency of ["USD", "EUR"]) {
+        const fromItems = usage.attributable
+          .lineItems!.flatMap((item) => item.ratedTotal.amounts)
+          .filter((amount) => amount.currency === currency)
+          .reduce((sum, amount) => sum + Number(amount.amount), 0);
+        const fromTotal = Number(
+          total.amounts.find((amount) => amount.currency === currency)!.amount,
+        );
+        expect(fromItems).toBe(fromTotal);
+      }
+
+      // No single figure exists, so none is offered.
+      expect(soleAmount(total)).toBeNull();
+      // And the session keeps both rather than silently banking one.
+      expect(result.metering!.nextState.ratedCosts.amounts).toHaveLength(2);
     } finally {
       await session.stop();
     }

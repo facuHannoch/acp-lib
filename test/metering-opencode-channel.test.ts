@@ -212,3 +212,40 @@ describe("review fixes", () => {
     expect(target.drain(null)).toHaveLength(1);
   });
 });
+
+describe("bounded buffer", () => {
+  test("overflow is refused and counted, never silently evicted", async () => {
+    // An unbounded buffer is a promise that cannot be kept; evicting the oldest would lose
+    // a record already counted as delivered. Overflow feeds lostReportCount so it degrades
+    // attribution instead of passing unnoticed.
+    channel = new OpencodeMeteringChannel({ maxPendingRecords: 2 });
+    channel.start();
+    for (const id of ["a", "b"]) {
+      expect((await post(channel, inference({ messageID: id }))).ok).toBe(true);
+    }
+    const overflow = await post(channel, inference({ messageID: "c" }));
+    expect(overflow.status).toBe(503);
+    expect(channel.lostReportCount).toBe(1);
+    // The records already accepted are intact.
+    expect(channel.drain(null).map((record) => record.messageID)).toEqual(["a", "b"]);
+  });
+
+  test("an update to an already-held record is accepted at capacity", async () => {
+    // Only NEW records are refused; a settling message must still be able to correct
+    // itself, or the final token counts would be lost.
+    channel = new OpencodeMeteringChannel({ maxPendingRecords: 1 });
+    channel.start();
+    await post(channel, inference({ messageID: "a", cost: 0.1 }));
+    expect((await post(channel, inference({ messageID: "a", cost: 0.2 }))).ok).toBe(true);
+    expect(channel.drain(null)[0]?.cost).toBe(0.2);
+  });
+
+  test("the shared secret is compared without leaking a prefix", async () => {
+    channel = new OpencodeMeteringChannel();
+    channel.start();
+    // A same-length near-miss and a wrong-length token both refuse.
+    const nearMiss = `${channel.token.slice(0, -1)}${channel.token.endsWith("a") ? "b" : "a"}`;
+    expect((await post(channel, inference(), nearMiss)).status).toBe(403);
+    expect((await post(channel, inference(), "short")).status).toBe(403);
+  });
+});

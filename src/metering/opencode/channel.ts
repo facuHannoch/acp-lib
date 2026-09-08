@@ -49,6 +49,21 @@ interface RawInference {
   };
 }
 
+/**
+ * Compare a shared secret without leaking length or prefix through timing.
+ *
+ * The channel is loopback-only with a random token, so this is defence in depth rather
+ * than a live threat — but it is an auth check, and auth checks compare in constant time.
+ */
+function timingSafeEquals(candidate: string | null, expected: string): boolean {
+  if (candidate === null || candidate.length !== expected.length) return false;
+  let difference = 0;
+  for (let index = 0; index < expected.length; index += 1) {
+    difference |= candidate.charCodeAt(index) ^ expected.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
 function counter(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -107,6 +122,13 @@ function normalizeInference(raw: RawInference): ProviderInference | null {
 export interface MeteringChannelOptions {
   /** Emitted on malformed or unauthorized posts; never thrown at the harness. */
   readonly onWarning?: (message: string) => void;
+  /**
+   * Maximum undrained records held. Default 10,000.
+   *
+   * Reached only when operations stop closing — a stalled session drains nothing. Overflow
+   * counts toward lost reports so it cannot pass unnoticed.
+   */
+  readonly maxPendingRecords?: number;
 }
 
 /**
@@ -119,7 +141,14 @@ export interface MeteringChannelOptions {
  */
 export class OpencodeMeteringChannel {
   private server: ReturnType<typeof Bun.serve> | null = null;
+  /**
+   * Bounded on purpose. An unbounded buffer is a promise that cannot be kept, and silently
+   * dropping on overflow would be the same under-reporting bug in another organ. Overflow
+   * is counted into `lostReportCount`, so exceeding capacity degrades attribution to
+   * partial rather than losing records quietly.
+   */
   private readonly pending = new Map<string, ProviderInference>();
+  private readonly capacity: number;
   private _handshake: ChannelHandshake | null = null;
   private _rejected = 0;
   /** Highest sequence seen per session, and how many were skipped. */
@@ -128,7 +157,9 @@ export class OpencodeMeteringChannel {
 
   readonly token: string = crypto.randomUUID();
 
-  constructor(private readonly options: MeteringChannelOptions = {}) {}
+  constructor(private readonly options: MeteringChannelOptions = {}) {
+    this.capacity = options.maxPendingRecords ?? 10_000;
+  }
 
   /** True once the plugin has announced itself: "loaded" versus "silent" are different. */
   get handshake(): ChannelHandshake | null {
@@ -165,7 +196,7 @@ export class OpencodeMeteringChannel {
       port: 0,
       fetch: async (request) => {
         if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
-        if (request.headers.get("x-acp-meter-token") !== this.token) {
+        if (!timingSafeEquals(request.headers.get("x-acp-meter-token"), this.token)) {
           this._rejected += 1;
           this.options.onWarning?.("rejected a post with a bad token");
           return new Response("forbidden", { status: 403 });
@@ -198,6 +229,16 @@ export class OpencodeMeteringChannel {
           // Keyed by messageID: a message can be reported more than once, and the same
           // inference counted twice would inflate a bill.
           const firstSighting = !this.pending.has(inference.messageID);
+          if (firstSighting && this.pending.size >= this.capacity) {
+            // Full. Refuse rather than evict: dropping the oldest would silently lose a
+            // record already counted as delivered.
+            this._lostReports += 1;
+            this.options.onWarning?.(
+              `metering channel is full at ${this.capacity} undrained records; ` +
+                `refusing further records until an operation closes`,
+            );
+            return new Response("full", { status: 503 });
+          }
           this.pending.set(inference.messageID, inference);
           if (firstSighting && inference.sequence !== null) {
             // A gap means a POST was lost. Silence and loss look identical without this,

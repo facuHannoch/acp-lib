@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { rateDelta, selectSchedule, unpricedUsage } from "../src/metering/rating.ts";
+import { soleAmount } from "../src/metering/money.ts";
 import type {
   CacheInputConvention,
   CategoryApplicability,
@@ -70,7 +71,7 @@ describe("rating a delta", () => {
     expect(result.usage.input.pricing?.ratedCost).toEqual({ amount: "3", currency: "USD" });
     expect(result.usage.output.pricing?.ratedCost).toEqual({ amount: "3", currency: "USD" });
     expect(result.usage.input.pricing?.unitPrice).toEqual(price("3"));
-    expect(result.usage.ratedTotal).toEqual({ amount: "6", currency: "USD" });
+    expect(soleAmount(result.usage.ratedTotal)).toEqual({ amount: "6", currency: "USD" });
   });
 
   test("the total is exactly the sum of the engraved subtotals", () => {
@@ -92,7 +93,7 @@ describe("rating a delta", () => {
       result.usage.cachedRead!.pricing!.ratedCost.amount,
     ];
     expect(subtotals).toEqual(["0.075", "0.018", "0.003"]);
-    expect(result.usage.ratedTotal?.amount).toBe("0.096");
+    expect(soleAmount(result.usage.ratedTotal)?.amount).toBe("0.096");
   });
 
   describe("cache-input convention", () => {
@@ -199,7 +200,9 @@ describe("unpriced usage", () => {
     expect(usage.input.reportedTokens).toBe(100);
     expect(usage.input.pricedTokens).toBeNull();
     expect(usage.input.pricing).toBeNull();
-    expect(usage.ratedTotal).toBeNull();
+    // Nothing rated: an unaccounted contribution, not a zero total.
+    expect(soleAmount(usage.ratedTotal)).toBeNull();
+    expect(usage.ratedTotal.unaccounted).toBe(1);
     expect(usage.pricingSource).toBeNull();
     expect(usage.pricingKey).toBeNull();
     expect(usage.cachedRead?.reportedTokens).toBe(5);
@@ -305,7 +308,7 @@ describe("thought convention", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.usage.ratedTotal?.amount).toBe("0.00348629");
+    expect(soleAmount(result.usage.ratedTotal)?.amount).toBe("0.00348629");
   });
 
   test("and on the following turn", () => {
@@ -316,7 +319,7 @@ describe("thought convention", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.usage.ratedTotal?.amount).toBe("0.00184757");
+    expect(soleAmount(result.usage.ratedTotal)?.amount).toBe("0.00184757");
   });
 
   test("engraves the output price as the rate actually applied to thought", () => {

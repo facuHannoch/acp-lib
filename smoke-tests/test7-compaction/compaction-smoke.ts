@@ -39,7 +39,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ADAPTERS, AgentSession, createOpencodeMetering } from "../../src/index.ts";
+import { ADAPTERS, AgentSession, createOpencodeMetering, soleAmount } from "../../src/index.ts";
 import { meteringPluginPath } from "../../src/metering/opencode/index.ts";
 import type { ProviderInference } from "../../src/metering/opencode/index.ts";
 
@@ -332,7 +332,7 @@ async function main(): Promise<number> {
   );
 
   // ATTRIBUTION: separate question. A stalled turn captures work it never claims.
-  const ourCost = Number(snapshot.ratedCosts[0]?.amount ?? 0);
+  const ourCost = Number(soleAmount(snapshot.ratedCosts)?.amount ?? 0);
   const ourTokens = snapshot.totals.total.knownTokens;
   // In stress mode the turns deliberately stall, so no operation ever closes and nothing
   // is drained into one. Reporting that as a failure would bury the capture result, which

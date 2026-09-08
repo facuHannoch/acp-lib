@@ -129,8 +129,14 @@ export type {
 
 export {
   MAX_SCALE,
+  EMPTY_MONEY_TOTAL,
   addMoney,
+  addToTotal,
   canonicalizeMoney,
+  isTotalComplete,
+  mergeTotals,
+  soleAmount,
+  totalOf,
   ratioOf,
   subtractMoney,
   decimalFromNumber,
@@ -138,7 +144,7 @@ export {
   rateTokens,
   sumMoneyByCurrency,
 } from "./metering/money.ts";
-export type { Money, MoneyResult, TokenUnitPrice } from "./metering/money.ts";
+export type { Money, MoneyResult, MoneyTotal, TokenUnitPrice } from "./metering/money.ts";
 export { normalizeTokenUsage } from "./metering/usage.ts";
 export {
   ACP_PROVENANCE,

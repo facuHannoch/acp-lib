@@ -4210,3 +4210,163 @@ provider runtime route × token/pricing behavior
 If 40 Anthropic models all use the same route and semantics, one route certification covers them, while exact pricing is validated mechanically per catalog entry. Models with genuinely different behavior become explicit exceptions.
 
 
+
+
+
+
+
+---
+
+# ?
+
+Your question found a real gap. It **wasn't** shown — it silently vanished.
+
+`accrueUnallocated` skipped a null cost, and skipped a failed accumulation, both without trace. So `recordCount: 3, ratedCosts: [0.5]` was ambiguous between "all three summed to 0.5" and "one did, two were unknown." Same failure mode the per-category coverage counters exist to prevent, reproduced in the one place that had no equivalent.
+
+Now `UnallocatedUsageState` carries `costedRecordCount` and `uncostedRecordCount`, so `ratedCosts` is explicitly a **lower bound** whenever a cost was absent, unrepresentable, or in a currency that couldn't be combined.
+
+## The full picture, now in the changelog
+
+| where                              | what a consumer sees                                      |
+| ---------------------------------- | --------------------------------------------------------- |
+| category couldn't be rated         | `pricingStatus: "pricing_unavailable"` + reason naming it |
+| one category of a priced operation | `pricing: null`, `reportedTokens` still present           |
+| multi-model operation              | top-level `pricing: null`; rates live in `lineItems`      |
+| harness sent a malformed cost      | record rejected outright — nothing partial stored         |
+| harness sent no cost               | `cost: null`, tokens still recorded                       |
+| unallocated work                   | `uncostedRecordCount > 0` ⇒ `ratedCosts` is a lower bound |
+| our rating vs provider's           | `costReconciliation.status: "unavailable"` + reason       |
+
+Nothing turns an unknown cost into zero. But they report it *differently*, which matters when reconciling — so it's documented rather than left to be discovered.
+
+## Worth naming
+
+This is the **fourth** instance of the same error class in this session: `cost: … : 0` in the channel, the `?? "0"` fallback in `toUnallocated`, and now two silent skips here. Each time the code was about billing, and each time I let an unknown quietly become nothing.
+
+The pattern is specific enough to be actionable: whenever I write a conditional that *skips* a value rather than recording that it was skipped, in a path that feeds a total, it's the same bug wearing different clothes. The reviews caught three of them; your one-line question caught the fourth.
+
+460 tests, 32 commits.
+
+
+
+
+Verified, and it's the worst one yet:
+
+```
+lineItems     : a=10 USD  b=10 EUR
+ratedTotal    : {"amount":"10","currency":"USD"}
+pricingStatus : priced
+sessionCosts  : [{"amount":"10","currency":"USD"}]
+```
+
+Reporting **no changes**, as asked.
+
+## Flagrant
+
+**1. A multi-currency operation silently loses half its cost and reports `priced`.**
+
+`combineAttributable` (`engine.ts:855`) does `if (sum.ok) ratedTotal = sum.value` — `addMoney` refuses cross-currency, so the EUR line item is dropped from the total with no trace. The record then shows two line items totalling 20 beside an engraved total of 10, and `pricingStatus: "priced"` asserts it was fully rated. The session's `ratedCosts` loses it too.
+
+This is a silent 50% under-bill presented as complete. My own "line items sum to total" test doesn't catch it because I only exercised same-currency. Reachable via any consumer resolver returning per-model currencies — the code supports multi-currency deliberately everywhere else.
+
+**2. Same pattern in the primary session total** (`state.ts:228`). If `accumulateByCurrency` fails for an operation's `ratedTotal`, `ratedCosts` is left unchanged while `meteredOperationCount` still increments. An operation's entire cost vanishes from the session, and nothing records that it did.
+
+These are instances **five and six** of the fabricated-absence pattern, and unlike the four already fixed, both sit in the main billing path rather than the unallocated one. The fix I applied to `accrueUnallocated` an hour ago — count what you skip — was never applied to its two neighbours.
+
+## Worth fixing, not flagrant
+
+**3. `pending` is unbounded.** Records accumulate until drained, and drain only happens when an operation closes. The compaction stall showed 38 records pending with no operation ever closing. A long-lived stalled session grows without limit; there's no cap or eviction.
+
+**4. `catalogJson as unknown as Catalog`** (`catalog/index.ts:44`). The digest proves the bytes are what shipped, but nothing validates the *shape*. A generator change would surface as `undefined` at runtime rather than a clear failure — the same "validate before trusting" argument I accepted for restored state.
+
+## Minor
+
+**5.** Channel token compares with `!==`, not constant-time. Loopback plus a random UUID makes this close to theoretical, but it is an auth check.
+
+**6.** No request-body cap on the channel endpoint; it inherits Bun's 128 MB default.
+
+## The honest summary
+
+Immutability holds properly (verified: nested freezes, mutation throws). The counter/coverage machinery is sound. But the *same single mistake* — treating a failed operation as a no-op instead of recording it — now has six instances, and I fixed four of them one at a time without once grepping for the pattern. Findings 1 and 2 above are what that costs.
+
+
+68 references, but only **5 places actually form a money total**. That ratio is the whole story.
+
+## Root cause
+
+Tokens got completeness tracking. Money didn't. Compare what the types can express:
+
+```ts
+UsageCategoryTotal { knownTokens, attributed/notApplicable/unavailableCount, coverage }
+ratedCosts:        readonly Money[]          // ← nowhere to say "and one didn't make it"
+```
+
+When token accumulation can't establish a value, the type *forces* you to say so. When money accumulation fails, `MoneyResult` hands you an `.ok` you can quietly not handle — and `if (x.ok) total = x.value` reads like careful code. Six times it wasn't.
+
+So this isn't six bugs. It's one missing type.
+
+## The fix: make the failure unrepresentable
+
+```ts
+interface MoneyTotal {
+  readonly amounts: readonly Money[];   // one per currency
+  readonly unaccounted: number;         // contributions that could not be included
+}
+
+function addToTotal(total: MoneyTotal, addition: Money | null): MoneyTotal;  // never fails
+```
+
+`addToTotal` returns a total, not a `Result`. A null or uncombinable contribution increments `unaccounted` **inside the returned value**. There is no `.ok` to forget, so the bug cannot be written — which matters more than fixing the six sites, because discipline demonstrably didn't hold.
+
+`complete === unaccounted === 0`.
+
+## What that implies system-wide
+
+**`pricingStatus` stops being a parallel signal.** Right now `ratingComplete` is a boolean I thread separately alongside the data — two things that can drift, and did (that was the last blocker). It becomes derived: `priced ⟺ ratedTotal.unaccounted === 0`. One source of truth.
+
+**`costReconciliation` gets more correct, not just adapted.** Today it compares provider cost against a possibly-lossy single `Money`. Against a `MoneyTotal` it can only claim a match when there's exactly one currency *and* nothing unaccounted — so the mixed-currency case reports `unavailable` instead of a confident wrong ratio.
+
+**The unallocated counters I added an hour ago get subsumed.** `costedRecordCount`/`uncostedRecordCount` become `unaccounted`. That's the tell that the counters were a local patch for a global problem.
+
+**Record shape breaks.** `ratedTotal.amount` → the total. To keep the common path ergonomic without hiding the ambiguous one:
+
+```ts
+soleAmount(total: MoneyTotal): Money | null   // exactly one currency, nothing unaccounted
+```
+
+Null forces you to look. That's the same trick as `PricedTokenAmount.pricing: null`.
+
+**State version 2 → 3**, since `ratedCosts` changes shape. Nothing has shipped, so there's no migration to write — but `restoreMeteringState` must reject v2 rather than partially read it, exactly as it does foreign versions today.
+
+**Spec updates:** §6 (`Money` aggregation), §8 (`AttributableUsage.ratedTotal`), §11 (`ratedCosts`, `UnallocatedUsageState`). §6 already says amounts aggregate per currency and `ratedCosts` is already `Money[]` — so the spec was *already* multi-currency at the state level while `AttributableUsage.ratedTotal` was singular. That inconsistency is where the EUR actually gets lost.
+
+## The genuinely hard call: what a multi-currency operation means
+
+Three options, and I don't think it's obvious:
+
+**Refuse it.** A multi-model operation whose groups resolve to different currencies is `pricing_unavailable`. Cheap, honest, blocks strict mode correctly. Cost: a legitimate mixed-currency deployment can never use `billing_required`, and discovers that at runtime.
+
+**Represent it.** `MoneyTotal` carries both currencies; the operation is priced, and the consumer decides how to present "10 USD + 10 EUR". Most honest, and consistent with the session level already doing this. Cost: every consumer must handle an array.
+
+**Refuse at the operation, represent at the session.** An operation is one unit of work and should have one number; a session legitimately spans currencies across a handoff. This matches the existing asymmetry rather than fighting it.
+
+I'd take the third. It explains why the two levels differ instead of treating the difference as an accident, and it keeps `soleAmount` meaningful at the operation level where consumers actually read it.
+
+## The other findings, same philosophy
+
+**Unbounded `pending`** is the identical disease in another organ: an unbounded buffer is a promise you can't keep, and silently dropping on overflow would be instance seven. Bound it, and route the overflow count into `lostReportCount` — so exceeding capacity degrades `attribution` to `"partial"` rather than losing records quietly. "When you discard, count it" becomes the rule, not a habit.
+
+**Catalog cast** — validate the artifact's shape at load beside the digest. The digest proves *which* bytes; it says nothing about *what shape*. Same "validate before trusting" argument already accepted for restored state.
+
+**Constant-time token compare** — trivial, do it while touching the file.
+
+## What I would not do
+
+I wouldn't convert every `Result`-returning function. `parseDecimal`, `rateTokens`, `validatePricingPolicy` should keep failing loudly — a bad unit price *must* stop rating. The change is narrowly to **accumulation into a total**, which is the only place where "failure" and "no-op" look alike.
+
+## Sequencing
+
+Do it in one change, before anything ships. Splitting it leaves a window where some totals carry `unaccounted` and others don't — which is worse than either end state, and precisely how I created the last two regressions. The 5 total-forming sites and ~68 references make it maybe an afternoon; the risk is in the test updates, not the source.
+
+I'd also add one test that doesn't exist in any form today: **rate every category in every currency combination and assert line items sum to the engraved total per currency.** The current invariant test only covers the same-currency case, which is why it passed while the EUR vanished.
+

@@ -72,7 +72,16 @@ import {
   type BillingFacts,
   type PricedTokenAmount,
 } from "./rating.ts";
-import { addMoney, decimalFromNumber, ratioOf, subtractMoney, type Money } from "./money.ts";
+import {
+  EMPTY_MONEY_TOTAL,
+  decimalFromNumber,
+  isTotalComplete,
+  mergeTotals,
+  ratioOf,
+  soleAmount,
+  subtractMoney,
+  type Money,
+} from "./money.ts";
 import {
   accrueOperation,
   emptyMeteringState,
@@ -349,7 +358,10 @@ export class MeteringEngine {
       pricingStatus = "not_attributable";
     } else if (this.options.pricing === false) {
       pricingStatus = "not_configured";
-    } else if (ratingComplete) {
+    } else if (ratingComplete && attributable && isTotalComplete(attributable.ratedTotal)) {
+      // Completeness is read off the DATA, not from a flag travelling beside it. The two
+      // could drift, and did: a fully rated multi-model operation was once reported
+      // pricing_unavailable because a separate signal disagreed with the total.
       pricingStatus = "priced";
     } else {
       pricingStatus = "pricing_unavailable";
@@ -656,7 +668,7 @@ export class MeteringEngine {
     const combined = combineAttributable(parts);
     // Complete only when EVERY model group rated. One unpriceable model makes the
     // operation's total an understatement, whatever the others managed.
-    const complete = parts.every((part) => part.usage.ratedTotal !== null);
+    const complete = parts.every((part) => isTotalComplete(part.usage.ratedTotal));
     return reason ? { usage: combined, complete, reason } : { usage: combined, complete };
   }
 
@@ -709,8 +721,17 @@ export class MeteringEngine {
     attributable: AttributableUsage | null,
     providerCostAfter: ProviderCostSnapshot | null,
   ): CostReconciliation {
-    const rated = attributable?.ratedTotal;
-    if (!rated) return { status: "unavailable", reason: "operation was not rated" };
+    // Only an unambiguous single amount can be compared with the provider's single figure.
+    // A multi-currency or incomplete total has no one number to reconcile.
+    const rated = attributable ? soleAmount(attributable.ratedTotal) : null;
+    if (!rated) {
+      return {
+        status: "unavailable",
+        reason: attributable
+          ? "operation has no single rated amount to compare"
+          : "operation was not rated",
+      };
+    }
     if (!providerCostAfter) {
       return { status: "unavailable", reason: "harness reported no provider cost" };
     }
@@ -844,16 +865,11 @@ function combineAttributable(
     });
   }
 
-  let ratedTotal: Money | null = null;
-  for (const part of parts) {
-    if (!part.usage.ratedTotal) continue;
-    if (!ratedTotal) {
-      ratedTotal = part.usage.ratedTotal;
-      continue;
-    }
-    const sum = addMoney(ratedTotal, part.usage.ratedTotal);
-    if (sum.ok) ratedTotal = sum.value;
-  }
+  // Merged, never dropped. The previous version discarded a line item whose currency could
+  // not be added — producing a total of 10 beside line items summing to 20, reported as
+  // fully priced.
+  let ratedTotal = EMPTY_MONEY_TOTAL;
+  for (const part of parts) ratedTotal = mergeTotals(ratedTotal, part.usage.ratedTotal);
 
   const lineItems = parts.map((part) =>
     Object.freeze({

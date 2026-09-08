@@ -41,6 +41,36 @@ interface Catalog {
   readonly providers: Readonly<Record<string, CatalogProvider>>;
 }
 
+/**
+ * Validate the artifact's SHAPE, not just its bytes.
+ *
+ * The digest proves which bytes shipped; it says nothing about what shape they have. A
+ * generator change would otherwise surface as `undefined` deep in a pricing path rather
+ * than as a clear failure at load — the same "validate before trusting" argument already
+ * applied to restored consumer state.
+ */
+function assertCatalogShape(value: unknown): asserts value is Catalog {
+  const root = value as Record<string, unknown> | null;
+  if (typeof root !== "object" || root === null || typeof root.providers !== "object") {
+    throw new Error("pricing catalog artifact is not a catalog object");
+  }
+  for (const [providerId, provider] of Object.entries(
+    root.providers as Record<string, unknown>,
+  )) {
+    const entry = provider as Record<string, unknown> | null;
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      typeof entry.cacheInputConvention !== "object" ||
+      typeof entry.conventionEvidence !== "string" ||
+      typeof entry.models !== "object"
+    ) {
+      throw new Error(`pricing catalog provider ${providerId} is malformed`);
+    }
+  }
+}
+
+assertCatalogShape(catalogJson);
 const catalog = catalogJson as unknown as Catalog;
 
 /** Identity of the shipped artifact, engraved into every policy it produces. */

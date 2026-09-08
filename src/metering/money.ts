@@ -234,6 +234,96 @@ export function ratioOf(numerator: Money, denominator: Money): string | null {
 }
 
 /**
+ * A running money total that cannot hide what it failed to include.
+ *
+ * `Money[]` had no way to say "one contribution did not make it", so every accumulation
+ * site wrote `if (sum.ok) total = sum.value` and a failure silently became a no-op. That
+ * single missing concept produced six separate under-reporting bugs, including an
+ * operation that dropped half its cost while reporting itself fully priced.
+ *
+ * Tokens never had this problem: `UsageCategoryTotal` forces a coverage answer. This is the
+ * same idea for money.
+ */
+export interface MoneyTotal {
+  /** One accumulated amount per currency. Empty when nothing was added. */
+  readonly amounts: readonly Money[];
+  /**
+   * Contributions that could not be included — absent, malformed, or uncombinable.
+   *
+   * Non-zero means `amounts` is a LOWER BOUND.
+   */
+  readonly unaccounted: number;
+}
+
+export const EMPTY_MONEY_TOTAL: MoneyTotal = Object.freeze({
+  amounts: Object.freeze([]),
+  unaccounted: 0,
+});
+
+/**
+ * Add a contribution to a total.
+ *
+ * Deliberately returns a total rather than a Result: there is no `.ok` to forget, so a
+ * failure cannot silently become a no-op. A null or unusable contribution is COUNTED.
+ */
+export function addToTotal(total: MoneyTotal, addition: Money | null): MoneyTotal {
+  if (!addition) {
+    return Object.freeze({ amounts: total.amounts, unaccounted: total.unaccounted + 1 });
+  }
+  const canonical = canonicalizeMoney(addition);
+  if (!canonical.ok) {
+    return Object.freeze({ amounts: total.amounts, unaccounted: total.unaccounted + 1 });
+  }
+
+  const amounts: Money[] = [];
+  let merged = false;
+  for (const existing of total.amounts) {
+    if (existing.currency !== canonical.value.currency) {
+      amounts.push(existing);
+      continue;
+    }
+    const sum = addMoney(existing, canonical.value);
+    if (!sum.ok) {
+      // Cannot happen for two canonical same-currency amounts, but counting beats
+      // assuming: an uncounted drop is the bug this type exists to prevent.
+      return Object.freeze({ amounts: total.amounts, unaccounted: total.unaccounted + 1 });
+    }
+    amounts.push(sum.value);
+    merged = true;
+  }
+  if (!merged) amounts.push(canonical.value);
+  return Object.freeze({ amounts: Object.freeze(amounts), unaccounted: total.unaccounted });
+}
+
+/** Merge one total into another, preserving both unaccounted counts. */
+export function mergeTotals(a: MoneyTotal, b: MoneyTotal): MoneyTotal {
+  let merged = a;
+  for (const amount of b.amounts) merged = addToTotal(merged, amount);
+  return Object.freeze({ amounts: merged.amounts, unaccounted: merged.unaccounted + b.unaccounted });
+}
+
+/** True when every contribution was accounted for. */
+export function isTotalComplete(total: MoneyTotal): boolean {
+  return total.unaccounted === 0;
+}
+
+/**
+ * The single amount a total represents, or null.
+ *
+ * Null whenever there is not exactly one — several currencies, none, or something
+ * unaccounted. Callers that want one number must therefore handle the ambiguous case
+ * rather than reading `amounts[0]` and hoping.
+ */
+export function soleAmount(total: MoneyTotal): Money | null {
+  return total.unaccounted === 0 && total.amounts.length === 1 ? total.amounts[0]! : null;
+}
+
+/** Build a total from a single known amount. */
+export function totalOf(amount: Money | null): MoneyTotal {
+  return addToTotal(EMPTY_MONEY_TOTAL, amount);
+}
+
+/**
  * Convert an ACP-reported JSON number cost into a canonical decimal string.
  *
  * `String(n)` is already the shortest round-trippable representation; this only expands

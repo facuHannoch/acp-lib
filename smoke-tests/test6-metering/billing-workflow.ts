@@ -14,7 +14,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ADAPTERS, AgentSession, createOpencodeMetering } from "../../src/index.ts";
+import { ADAPTERS, AgentSession, createOpencodeMetering, soleAmount } from "../../src/index.ts";
 
 const MODEL = process.argv[2] ?? "opencode-go/kimi-k2.6";
 
@@ -78,7 +78,7 @@ async function main() {
         String(index + 1).padStart(2),
         String(turnTools).padStart(5),
         (usage.status === "metered" ? String(usage.attributable.totalTokens) : "—").padStart(8),
-        (usage.status === "metered" ? (usage.attributable.ratedTotal?.amount ?? "—") : "—").padStart(14),
+        (usage.status === "metered" ? (soleAmount(usage.attributable.ratedTotal)?.amount ?? "—") : "—").padStart(14),
         (reconciliation.status === "checked" ? reconciliation.providerDelta.amount : "—").padStart(14),
         (reconciliation.status === "checked" ? (reconciliation.ratio ?? "—") : "—").padStart(10),
         record.provenance.source,
@@ -101,7 +101,8 @@ async function main() {
 
   console.log(`\ntool calls           ${toolCalls}`);
   console.log(`operations           ${snapshot.operationCount} (metered ${snapshot.meteredOperationCount})`);
-  console.log(`our session total    ${snapshot.ratedCosts[0]?.amount ?? "—"}`);
+  console.log(`our session total    ${soleAmount(snapshot.ratedCosts)?.amount ?? "— (multi-currency or incomplete)"}`);
+  console.log(`unaccounted costs    ${snapshot.ratedCosts.unaccounted}`);
   console.log(`provider cumulative  ${session.providerCost?.cumulative.amount ?? "—"}`);
   console.log(`unattributed         ${unattributed.length} inference(s)`);
   for (const inference of unattributed) {

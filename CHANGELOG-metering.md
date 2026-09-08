@@ -184,7 +184,42 @@ An unhealthy channel or zero observed inferences reports `usage_unavailable` and
 `routing` remains `"observed"` even here: the plugin reports what the harness ran, but a
 library cannot prove no model call bypassed it.
 
-## 10. How an unrepresentable cost is reported
+## 10. Money totals carry their own completeness
+
+`ratedTotal` and `ratedCosts` are no longer `Money | null` / `Money[]`. They are a
+`MoneyTotal`:
+
+```ts
+interface MoneyTotal {
+  readonly amounts: readonly Money[];   // one per currency
+  readonly unaccounted: number;         // contributions that could not be included
+}
+```
+
+```diff
+-const cost = record.usage.attributable.ratedTotal?.amount;
++const cost = soleAmount(record.usage.attributable.ratedTotal)?.amount;
+```
+
+`soleAmount()` returns a figure only when exactly one currency is involved and nothing was
+unaccounted; otherwise null, so the ambiguous case has to be handled rather than read as
+`amounts[0]`.
+
+Why this exists: `Money[]` had nowhere to record a contribution it failed to include, so
+every accumulation site wrote `if (sum.ok) total = sum.value` and a failure silently became
+a no-op. That single missing concept produced six separate under-reporting bugs — the worst
+of which dropped an entire currency from an operation while reporting it fully priced.
+Tokens never had the problem, because `UsageCategoryTotal` forces a coverage answer;
+`addToTotal` now forces the same answer for money by returning a total rather than a
+Result, so there is no `.ok` to forget.
+
+`pricingStatus: "priced"` is now derived from the total being complete rather than from a
+separate flag travelling beside it.
+
+`UnallocatedUsageState` loses its `costedRecordCount`/`uncostedRecordCount` counters —
+`ratedCosts.unaccounted` says the same thing.
+
+## 11. How an unrepresentable cost is reported
 
 Nothing in the metering path turns an unknown cost into zero. Each place says so
 differently, and the difference matters when reconciling against an invoice:
@@ -196,17 +231,18 @@ differently, and the difference matters when reconciling against an invoice:
 | a multi-model operation | top-level `pricing: null`; each rate lives in its own `lineItems` entry |
 | the harness reported a malformed cost | the inference record is rejected outright; nothing partial is stored |
 | the harness reported no cost | `ProviderInference.cost: null` — tokens are still recorded |
-| unallocated work | `uncostedRecordCount` > 0 marks `ratedCosts` as a **lower bound** |
+| any money total | `unaccounted` > 0 marks `amounts` as a **lower bound** |
+| a total spanning currencies | `amounts` has several entries; `soleAmount()` returns null |
 | provider cost vs our rating | `costReconciliation.status: "unavailable"` with a reason |
 
-The unallocated case is the one to watch: `ratedCosts` is only a complete figure when
-`uncostedRecordCount` is zero. A silently skipped cost would otherwise be
-indistinguishable from work that genuinely cost nothing.
+Nothing turns an unknown cost into zero, and no total can be read as complete without
+saying so — `unaccounted` is on the total itself, so a lower bound cannot be mistaken for
+a final figure.
 
-## 11. Metering state starts at version 2
+## 12. Metering state starts at version 3
 
-There is no version 1 on disk — pricing provenance and unallocated usage are part of the
-initial persisted shape. Restoration validates `version` before reading any
+There is no version 1 or 2 on disk — nothing shipped before the MoneyTotal change, so
+there is no migration to write. Restoration validates `version` before reading any
 version-specific field; an unknown version is a preflight error in a strict mode and is
 ignored wholesale in best-effort, surfaced through `session.meteringSnapshot.restoration`.
 

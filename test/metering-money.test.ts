@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  EMPTY_MONEY_TOTAL,
   MAX_SCALE,
+  addToTotal,
+  isTotalComplete,
+  mergeTotals,
+  soleAmount,
+  totalOf,
   addMoney,
   canonicalizeMoney,
   decimalFromNumber,
@@ -301,5 +307,58 @@ describe("reconciliation arithmetic", () => {
   test("a ratio against nothing is not a number", () => {
     expect(ratioOf({ amount: "1", currency: "USD" }, { amount: "0", currency: "USD" })).toBeNull();
     expect(ratioOf({ amount: "1", currency: "USD" }, { amount: "1", currency: "EUR" })).toBeNull();
+  });
+});
+
+describe("MoneyTotal — a total that cannot hide what it dropped", () => {
+  test("an unusable contribution is counted, never a silent no-op", () => {
+    // The whole point: `if (sum.ok) total = sum.value` let six separate sites turn a
+    // failure into a no-op. addToTotal has no `.ok` to forget.
+    let total = addToTotal(EMPTY_MONEY_TOTAL, { amount: "1", currency: "USD" });
+    total = addToTotal(total, null);
+    total = addToTotal(total, { amount: "1e6", currency: "USD" });
+    expect(total.amounts).toEqual([{ amount: "1", currency: "USD" }]);
+    expect(total.unaccounted).toBe(2);
+    expect(isTotalComplete(total)).toBe(false);
+  });
+
+  test("currencies coexist instead of one being dropped", () => {
+    let total = addToTotal(EMPTY_MONEY_TOTAL, { amount: "10", currency: "USD" });
+    total = addToTotal(total, { amount: "10", currency: "EUR" });
+    total = addToTotal(total, { amount: "5", currency: "USD" });
+    expect(total.amounts).toEqual([
+      { amount: "15", currency: "USD" },
+      { amount: "10", currency: "EUR" },
+    ]);
+    expect(isTotalComplete(total)).toBe(true);
+  });
+
+  test("soleAmount refuses anything ambiguous", () => {
+    const usd = addToTotal(EMPTY_MONEY_TOTAL, { amount: "1", currency: "USD" });
+    expect(soleAmount(usd)).toEqual({ amount: "1", currency: "USD" });
+    // Two currencies: there is no single figure to show.
+    expect(soleAmount(addToTotal(usd, { amount: "1", currency: "EUR" }))).toBeNull();
+    // Something was dropped: the figure would be a lower bound presented as a total.
+    expect(soleAmount(addToTotal(usd, null))).toBeNull();
+    expect(soleAmount(EMPTY_MONEY_TOTAL)).toBeNull();
+  });
+
+  test("merging preserves both sides' unaccounted counts", () => {
+    const a = addToTotal(addToTotal(EMPTY_MONEY_TOTAL, { amount: "1", currency: "USD" }), null);
+    const b = addToTotal(addToTotal(EMPTY_MONEY_TOTAL, { amount: "2", currency: "EUR" }), null);
+    const merged = mergeTotals(a, b);
+    expect(merged.amounts).toEqual([
+      { amount: "1", currency: "USD" },
+      { amount: "2", currency: "EUR" },
+    ]);
+    expect(merged.unaccounted).toBe(2);
+  });
+
+  test("totalOf carries a null through as unaccounted, not as zero", () => {
+    expect(totalOf(null)).toEqual({ amounts: [], unaccounted: 1 });
+    expect(totalOf({ amount: "0", currency: "USD" })).toEqual({
+      amounts: [{ amount: "0", currency: "USD" }],
+      unaccounted: 0,
+    });
   });
 });

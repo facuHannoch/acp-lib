@@ -9,7 +9,15 @@
 // number.
 
 import type { TokenUsage } from "../types.ts";
-import { addMoney, rateTokens, type Money, type TokenUnitPrice } from "./money.ts";
+import {
+  EMPTY_MONEY_TOTAL,
+  addToTotal,
+  rateTokens,
+  soleAmount,
+  type Money,
+  type MoneyTotal,
+  type TokenUnitPrice,
+} from "./money.ts";
 import {
   TOKEN_CATEGORIES,
   unitPriceFor,
@@ -53,7 +61,8 @@ export interface RatedLineItem {
   readonly cachedRead?: PricedTokenAmount;
   readonly cachedWrite?: PricedTokenAmount;
   readonly thought?: PricedTokenAmount;
-  readonly ratedTotal: Money | null;
+  /** This model's cost. Carries its own completeness — see MoneyTotal. */
+  readonly ratedTotal: MoneyTotal;
 }
 
 export interface AttributableUsage {
@@ -81,7 +90,13 @@ export interface AttributableUsage {
   readonly cachedRead?: PricedTokenAmount;
   readonly cachedWrite?: PricedTokenAmount;
   readonly thought?: PricedTokenAmount;
-  readonly ratedTotal: Money | null;
+  /**
+   * The operation's cost, carrying what it could not include.
+   *
+   * `soleAmount()` returns a single figure only when exactly one currency was involved and
+   * nothing was unaccounted; otherwise the caller must decide what to show.
+   */
+  readonly ratedTotal: MoneyTotal;
   /**
    * Per-model breakdown, present only when an operation spanned more than one model.
    *
@@ -263,15 +278,18 @@ export function rateDelta(
 
   // The total is the exact sum of the already-rounded engraved subtotals, so a reader can
   // add up what the record shows and land on what the record says.
-  let ratedTotal: Money | null = null;
-  for (const subtotal of subtotals) {
-    if (!ratedTotal) {
-      ratedTotal = subtotal;
-      continue;
-    }
-    const sum = addMoney(ratedTotal, subtotal);
-    if (!sum.ok) return { ok: false, reason: sum.reason };
-    ratedTotal = sum.value;
+  let ratedTotal = EMPTY_MONEY_TOTAL;
+  for (const subtotal of subtotals) ratedTotal = addToTotal(ratedTotal, subtotal);
+  if (ratedTotal.unaccounted > 0) {
+    return { ok: false, reason: `${ratedTotal.unaccounted} category subtotal(s) could not be totalled` };
+  }
+  // One schedule is single-currency by validation, so more than one here means the
+  // categories disagree — a catalog fault, not something to average over.
+  if (ratedTotal.amounts.length > 1) {
+    return {
+      ok: false,
+      reason: `schedule ${schedule.tier} produced ${ratedTotal.amounts.length} currencies`,
+    };
   }
 
   return {
@@ -319,6 +337,7 @@ export function unpricedUsage(delta: TokenUsage): AttributableUsage {
       ? { cachedWrite: amount(delta.cachedWriteTokens) }
       : {}),
     ...(delta.thoughtTokens !== undefined ? { thought: amount(delta.thoughtTokens) } : {}),
-    ratedTotal: null,
+    // Nothing was rated, and that is one unaccounted contribution rather than a zero.
+    ratedTotal: addToTotal(EMPTY_MONEY_TOTAL, null),
   });
 }
