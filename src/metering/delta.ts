@@ -8,11 +8,8 @@
 // cumulative figure as if one operation had incurred it.
 
 import type { TokenUsage } from "../types.ts";
+import { OPTIONAL_USAGE_KEYS, REQUIRED_USAGE_KEYS } from "./categories.ts";
 import type { CounterInterpretation } from "./provider.ts";
-
-/** Optional counters, which may legitimately appear and disappear between reports. */
-const OPTIONAL_KEYS = ["cachedReadTokens", "cachedWriteTokens", "thoughtTokens"] as const;
-const REQUIRED_KEYS = ["totalTokens", "inputTokens", "outputTokens"] as const;
 
 export type DeltaResult =
   | { readonly kind: "attributable"; readonly delta: TokenUsage }
@@ -52,7 +49,7 @@ export function calculateDelta(
 
   // A decreasing counter is a reset, never a negative operation. Reporting a negative
   // delta — or clamping it to zero — would both be inventions.
-  for (const key of REQUIRED_KEYS) {
+  for (const key of REQUIRED_USAGE_KEYS) {
     const previous = baseline?.[key] ?? 0;
     if (current[key] < previous) {
       return {
@@ -61,7 +58,7 @@ export function calculateDelta(
       };
     }
   }
-  for (const key of OPTIONAL_KEYS) {
+  for (const key of OPTIONAL_USAGE_KEYS) {
     const previous = baseline?.[key];
     const now = current[key];
     if (previous !== undefined && now !== undefined && now < previous) {
@@ -75,7 +72,7 @@ export function calculateDelta(
     outputTokens: current.outputTokens - (baseline?.outputTokens ?? 0),
   };
 
-  for (const key of OPTIONAL_KEYS) {
+  for (const key of OPTIONAL_USAGE_KEYS) {
     const now = current[key];
     if (now === undefined) continue; // not reported now → nothing attributable
     const previous = baseline?.[key];

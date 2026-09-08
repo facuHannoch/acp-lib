@@ -4440,3 +4440,50 @@ A gap that never resolves and never trips capacity shows as a persistent `outsta
 I'd also fix my test: it currently asserts the bug as correct, with a comment rationalising it. That's worth calling out in the commit, because the test was the thing that should have caught this and instead certified it.
 
 Want me to implement this?
+
+
+
+
+
+# 
+
+
+Done — not committed. `bun run check` clean: tsc exit 0, 487/487 tests pass.
+
+## What changed
+
+**New `src/metering/categories.ts`** (122 lines) is now the single source for the category set:
+
+| Export                                                       | Replaces                                                                                                                            |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `TokenCategory`, `TOKEN_CATEGORIES`                          | moved out of `pricing.ts` (re-exported there, so the public surface is unchanged)                                                   |
+| `TokenCategoryKey`, `TOKEN_CATEGORY_KEYS`                    | inline arrays at `engine.ts:918` and `state.ts:392`                                                                                 |
+| `CATEGORY_FIELD`                                             | the identical `DELTA_KEY` (rating.ts) **and** `CATEGORY_FIELD` (state.ts)                                                           |
+| `CATEGORY_TOTAL`                                             | `state.ts:111`                                                                                                                      |
+| `REQUIRED_USAGE_KEYS` / `OPTIONAL_USAGE_KEYS` / `USAGE_KEYS` | the verbatim pair in `usage.ts` + `delta.ts`, and the inline list at `state.ts:278`                                                 |
+| `isTokenCount`                                               | `isValidCounter` ×2 (`usage.ts`, `context.ts`), `isCount` (`state.ts`), `counter` (`channel.ts`, now a thin null-returning wrapper) |
+| `disjointTokenUsage`                                         | the sum-plus-spread block at `channel.ts:94` and `engine.ts:886`                                                                    |
+
+Also removed the stale duplicate JSDoc above `combineAttributable` — the pre-fix block that described keeping an engraved unit price, contradicting the block below it.
+
+## Made unrepresentable, not just co-located
+
+You asked twice for the systemic view, so I didn't stop at moving the copies into one file — a second array literal typed `readonly TokenCategory[]` would still have compiled with a category missing.
+
+- `TOKEN_CATEGORIES` and `TOKEN_CATEGORY_KEYS` are now **derived** from `Object.keys(CATEGORY_FIELD)` / `Object.values(CATEGORY_TOTAL)`. Those maps are `Record<TokenCategory, …>`, so the compiler already refuses an incomplete one — and now an incomplete *list* can't exist either.
+- The required/optional split can't be derived from the type, so it's asserted: `Exclude<keyof TokenUsage, USAGE_KEYS[number]> extends never`.
+
+I verified both guards actually fire rather than assuming:
+
+- Adding `"audio"` to `TokenCategory` → 3 compile errors (`categories.ts:35`, `:44`, and `engine.ts:160`'s applicability map).
+- Adding `audioTokens?: number` to `TokenUsage` → `categories.ts(88): Type 'false' does not satisfy the constraint 'true'`.
+
+That second one is the failure this was really about: previously that field would have normalized cleanly in `usage.ts` and then been silently dropped from every delta, undercounting with no error anywhere.
+
+## Deliberately left duplicated
+
+- `compaction-smoke.ts:153` and `harness-matrix.ts:142` still sum by hand. The first checks the library against `opencode export`; the second classifies a harness's counter semantics *by testing* the disjointness identity. Importing the library's arithmetic would make both circular. I added a comment at each site saying so, so it doesn't get "fixed" later.
+- `pricing.ts:249` `["cachedRead", "cachedWrite"]` — the cache-convention key pair is a genuinely different two-element set.
+- `isValidMoney` / `isUnitPrice` / `isMoneyTotal` — correct layering, not duplication; the latter two already delegate.
+
+One behavioural note: `state.ts`'s restore validator previously checked `totals.total` with `isCategoryTotal` inside the same loop. It still does, now as an explicit line above the category loop, with a comment noting the three counters it checks are exactly the ones `AggregateUsageTotal` and `UsageCategoryTotal` share. Same coverage as before — I didn't tighten it while refactoring.

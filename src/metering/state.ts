@@ -12,6 +12,13 @@
 
 import type { TokenUsage } from "../types.ts";
 import {
+  CATEGORY_FIELD,
+  CATEGORY_TOTAL,
+  TOKEN_CATEGORY_KEYS,
+  USAGE_KEYS,
+  isTokenCount,
+} from "./categories.ts";
+import {
   EMPTY_MONEY_TOTAL,
   addMoney,
   addToTotal,
@@ -99,24 +106,6 @@ export type MeteringStateVersion = 3;
 export const METERING_STATE_VERSION: MeteringStateVersion = 3;
 
 /** Category → the TokenUsage field carrying it. */
-const CATEGORY_FIELD: Readonly<Record<TokenCategory, keyof TokenUsage>> = Object.freeze({
-  input: "inputTokens",
-  output: "outputTokens",
-  cached_read: "cachedReadTokens",
-  cached_write: "cachedWriteTokens",
-  thought: "thoughtTokens",
-});
-
-/** Category → the UsageTotals field carrying it. */
-const CATEGORY_TOTAL: Readonly<Record<TokenCategory, keyof Omit<UsageTotals, "total">>> =
-  Object.freeze({
-    input: "input",
-    output: "output",
-    cached_read: "cachedRead",
-    cached_write: "cachedWrite",
-    thought: "thought",
-  });
-
 function emptyCategoryTotal(): UsageCategoryTotal {
   return Object.freeze({
     knownTokens: 0,
@@ -274,14 +263,7 @@ function accrueUnallocated(
   for (const { usage, ratedCost } of additions) {
     // addToTotal counts what it cannot include, so a missing cost cannot vanish.
     ratedCosts = addToTotal(ratedCosts, ratedCost);
-    for (const key of [
-      "totalTokens",
-      "inputTokens",
-      "outputTokens",
-      "cachedReadTokens",
-      "cachedWriteTokens",
-      "thoughtTokens",
-    ] as const) {
+    for (const key of USAGE_KEYS) {
       const value = usage[key];
       if (value === undefined) continue;
       known[key] = (known[key] ?? 0) + value;
@@ -354,17 +336,13 @@ export type StateRestoration =
  * line up between versions are the most dangerous kind of near-match, because the result
  * looks like a successful restore.
  */
-function isCount(value: unknown): boolean {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 function isMoneyTotal(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const total = value as Record<string, unknown>;
   return (
     Array.isArray(total.amounts) &&
     total.amounts.every((amount) => isValidMoney(amount as Money)) &&
-    isCount(total.unaccounted)
+    isTokenCount(total.unaccounted)
   );
 }
 
@@ -372,30 +350,33 @@ function isCategoryTotal(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const total = value as Record<string, unknown>;
   return (
-    isCount(total.knownTokens) &&
-    isCount(total.attributedOperationCount) &&
-    isCount(total.unavailableOperationCount)
+    isTokenCount(total.knownTokens) &&
+    isTokenCount(total.attributedOperationCount) &&
+    isTokenCount(total.unavailableOperationCount)
   );
 }
 
 /** Check the shape a restored state must have before any of it is trusted. */
 function isStructurallyValid(state: AgentSessionMeteringState): boolean {
   if (
-    !isCount(state.operationCount) ||
-    !isCount(state.meteredOperationCount) ||
-    !isCount(state.unmeteredOperationCount)
+    !isTokenCount(state.operationCount) ||
+    !isTokenCount(state.meteredOperationCount) ||
+    !isTokenCount(state.unmeteredOperationCount)
   ) {
     return false;
   }
   const totals = state.totals as unknown as Record<string, unknown> | undefined;
   if (!totals) return false;
-  for (const key of ["total", "input", "output", "cachedRead", "cachedWrite", "thought"]) {
+  // `total` is an AggregateUsageTotal, but the three counters checked here are exactly the
+  // ones both shapes share, so one predicate covers it and the five categories alike.
+  if (!isCategoryTotal(totals.total)) return false;
+  for (const key of TOKEN_CATEGORY_KEYS) {
     if (!isCategoryTotal(totals[key])) return false;
   }
   if (!isMoneyTotal(state.ratedCosts)) return false;
 
   const unallocated = state.unallocatedUsage as unknown as Record<string, unknown> | undefined;
-  if (!unallocated || !isCount(unallocated.recordCount) || !isMoneyTotal(unallocated.ratedCosts)) {
+  if (!unallocated || !isTokenCount(unallocated.recordCount) || !isMoneyTotal(unallocated.ratedCosts)) {
     return false;
   }
 
@@ -406,7 +387,7 @@ function isStructurallyValid(state: AgentSessionMeteringState): boolean {
       return false;
     }
     const usage = baseline.reportedUsage as unknown as Record<string, unknown> | undefined;
-    if (!usage || !isCount(usage.totalTokens) || !isCount(usage.inputTokens) || !isCount(usage.outputTokens)) {
+    if (!usage || !isTokenCount(usage.totalTokens) || !isTokenCount(usage.inputTokens) || !isTokenCount(usage.outputTokens)) {
       return false;
     }
   }

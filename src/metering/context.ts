@@ -15,6 +15,7 @@
 // are parsed and stored separately: a cost-only change must not make a context value look
 // newly observed.
 
+import { isTokenCount } from "./categories.ts";
 import { decimalFromNumber, type Money } from "./money.ts";
 
 export interface ContextWindowStatus {
@@ -48,10 +49,6 @@ export type ProviderCostUpdate =
   | { readonly kind: "observed"; readonly cumulative: Money }
   | { readonly kind: "invalid"; readonly reason: string };
 
-function isValidCounter(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 /**
  * Parse the context-window half of a `usage_update`.
  *
@@ -68,7 +65,7 @@ export function parseContextWindow(
   const raw = update as Record<string, unknown>;
   const usedTokens = raw.used;
   const sizeTokens = raw.size;
-  if (!isValidCounter(usedTokens) || !isValidCounter(sizeTokens)) return null;
+  if (!isTokenCount(usedTokens) || !isTokenCount(sizeTokens)) return null;
   if (sizeTokens === 0) return null;
 
   return Object.freeze({

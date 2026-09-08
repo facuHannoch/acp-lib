@@ -11,22 +11,12 @@
 //      applied here.
 
 import type { TokenUsage } from "../types.ts";
-
-/** Optional counters, in the order they are validated. */
-const OPTIONAL_KEYS = ["cachedReadTokens", "cachedWriteTokens", "thoughtTokens"] as const;
-
-/** Required counters. A malformed one makes the whole report unavailable. */
-const REQUIRED_KEYS = ["totalTokens", "inputTokens", "outputTokens"] as const;
+import { OPTIONAL_USAGE_KEYS, REQUIRED_USAGE_KEYS, isTokenCount } from "./categories.ts";
 
 export type UsageNormalization =
   | { readonly ok: true; readonly usage: TokenUsage }
   /** `reason` is a stable, safe-to-log string; it becomes MeteringUsageResult.reason. */
   | { readonly ok: false; readonly reason: string };
-
-/** A counter must be a finite, non-negative safe integer. Nothing else is a token count. */
-function isValidCounter(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
 
 function describe(value: unknown): string {
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : String(value);
@@ -54,9 +44,9 @@ export function normalizeTokenUsage(raw: unknown): UsageNormalization {
 
   const source = raw as Record<string, unknown>;
   const required: Record<string, number> = {};
-  for (const key of REQUIRED_KEYS) {
+  for (const key of REQUIRED_USAGE_KEYS) {
     const value = source[key];
-    if (!isValidCounter(value)) {
+    if (!isTokenCount(value)) {
       return { ok: false, reason: `usage.${key} is ${describe(value)}, not a token count` };
     }
     required[key] = value;
@@ -68,11 +58,11 @@ export function normalizeTokenUsage(raw: unknown): UsageNormalization {
     outputTokens: required.outputTokens!,
   };
 
-  for (const key of OPTIONAL_KEYS) {
+  for (const key of OPTIONAL_USAGE_KEYS) {
     const value = source[key];
     // ACP types these as `number | null | undefined`; both nullish forms mean "not reported".
     if (value === null || value === undefined) continue;
-    if (!isValidCounter(value)) {
+    if (!isTokenCount(value)) {
       return { ok: false, reason: `usage.${key} is ${describe(value)}, not a token count` };
     }
     usage[key] = value;

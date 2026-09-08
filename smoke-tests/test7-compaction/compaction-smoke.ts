@@ -142,6 +142,9 @@ async function readExport(sessionId: string): Promise<ExportedAssistant[] | null
     for (const entry of list) {
       const info = ((entry as Record<string, unknown>).info ?? entry) as Record<string, any>;
       if (info?.role !== "assistant") continue;
+      // Summed here by hand, NOT via the library's disjointTokenUsage. This parses
+      // `opencode export` to check the library's number against the harness's own
+      // record; importing the library's arithmetic would make the check circular.
       const tokens = info.tokens ?? {};
       out.push({
         cost: Number(info.cost ?? 0),

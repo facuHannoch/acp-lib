@@ -9,6 +9,7 @@
 // number.
 
 import type { TokenUsage } from "../types.ts";
+import { CATEGORY_FIELD, TOKEN_CATEGORIES } from "./categories.ts";
 import {
   EMPTY_MONEY_TOTAL,
   addToTotal,
@@ -19,7 +20,6 @@ import {
   type TokenUnitPrice,
 } from "./money.ts";
 import {
-  TOKEN_CATEGORIES,
   unitPriceFor,
   type PricingPolicy,
   type PricingSchedule,
@@ -119,14 +119,6 @@ export interface BillingFacts {
   readonly batch?: boolean;
   readonly consumer?: Readonly<Record<string, string>>;
 }
-
-const DELTA_KEY: Readonly<Record<TokenCategory, keyof TokenUsage>> = Object.freeze({
-  input: "inputTokens",
-  output: "outputTokens",
-  cached_read: "cachedReadTokens",
-  cached_write: "cachedWriteTokens",
-  thought: "thoughtTokens",
-});
 
 export type ScheduleSelection =
   | { readonly ok: true; readonly schedule: PricingSchedule }
@@ -239,7 +231,7 @@ export function rateDelta(
   }
 
   for (const category of TOKEN_CATEGORIES) {
-    const reportedTokens = delta[DELTA_KEY[category]];
+    const reportedTokens = delta[CATEGORY_FIELD[category]];
     if (reportedTokens === undefined) continue; // not reported → not rated, not zeroed
 
     if (policy.categoryApplicability[category] === "not_applicable") {

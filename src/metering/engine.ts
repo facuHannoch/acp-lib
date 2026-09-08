@@ -7,6 +7,11 @@
 // stops a mid-flight configuration change from repricing work already sent.
 
 import type { TokenUsage } from "../types.ts";
+import {
+  TOKEN_CATEGORY_KEYS,
+  disjointTokenUsage,
+  type TokenCategoryKey,
+} from "./categories.ts";
 import type { ContextWindowStatus, ProviderCostSnapshot } from "./context.ts";
 import { baselineMatches, calculateDelta } from "./delta.ts";
 import {
@@ -882,24 +887,9 @@ export function sumInferenceTokens(inferences: readonly ProviderInference[]): To
     if (tokens.thoughtTokens !== undefined) thought = (thought ?? 0) + tokens.thoughtTokens;
   }
 
-  return Object.freeze({
-    totalTokens: input + output + (cachedRead ?? 0) + (cachedWrite ?? 0) + (thought ?? 0),
-    inputTokens: input,
-    outputTokens: output,
-    ...(cachedRead !== null ? { cachedReadTokens: cachedRead } : {}),
-    ...(cachedWrite !== null ? { cachedWriteTokens: cachedWrite } : {}),
-    ...(thought !== null ? { thoughtTokens: thought } : {}),
-  });
+  return disjointTokenUsage({ input, output, cachedRead, cachedWrite, thought });
 }
 
-/**
- * Merge per-model-group ratings into one operation-level view.
- *
- * Subtotals stay as each group rated them, so a record still adds up, but the engraved
- * unit price belongs to whichever group priced that category — with several models in one
- * operation there is no single rate to show. `pricingKey` is kept only when every group
- * agreed, rather than presenting one model's key as if it covered the whole operation.
- */
 /**
  * Merge per-model ratings into one operation-level view WITHOUT inventing a blended rate.
  *
@@ -915,9 +905,8 @@ function combineAttributable(
 ): AttributableUsage {
   if (parts.length === 1) return parts[0]!.usage;
 
-  const categories = ["input", "output", "cachedRead", "cachedWrite", "thought"] as const;
-  const merged: Partial<Record<(typeof categories)[number], PricedTokenAmount>> = {};
-  for (const category of categories) {
+  const merged: Partial<Record<TokenCategoryKey, PricedTokenAmount>> = {};
+  for (const category of TOKEN_CATEGORY_KEYS) {
     const present = parts
       .map((part) => part.usage[category])
       .filter((amount): amount is PricedTokenAmount => amount !== undefined);

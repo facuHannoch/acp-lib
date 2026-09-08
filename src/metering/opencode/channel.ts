@@ -9,6 +9,7 @@
 // ledger.
 
 import type { TokenUsage } from "../../types.ts";
+import { disjointTokenUsage, isTokenCount } from "../categories.ts";
 
 /** One model inference, as OpenCode itself accounted for it. */
 export interface ProviderInference {
@@ -64,8 +65,9 @@ function timingSafeEquals(candidate: string | null, expected: string): boolean {
   return difference === 0;
 }
 
+/** `isTokenCount` in null-returning form: the raw shape is unvalidated JSON. */
 function counter(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return isTokenCount(value) ? value : null;
 }
 
 /**
@@ -90,14 +92,13 @@ function normalizeInference(raw: RawInference): ProviderInference | null {
   const cacheRead = counter(raw.tokens?.cache?.read);
   const cacheWrite = counter(raw.tokens?.cache?.write);
 
-  const tokens: TokenUsage = {
-    totalTokens: input + output + (reasoning ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0),
-    inputTokens: input,
-    outputTokens: output,
-    ...(cacheRead !== null ? { cachedReadTokens: cacheRead } : {}),
-    ...(cacheWrite !== null ? { cachedWriteTokens: cacheWrite } : {}),
-    ...(reasoning !== null ? { thoughtTokens: reasoning } : {}),
-  };
+  const tokens = disjointTokenUsage({
+    input,
+    output,
+    cachedRead: cacheRead,
+    cachedWrite: cacheWrite,
+    thought: reasoning,
+  });
 
   // A malformed cost is NOT zero. Coercing it would put a fabricated zero into a billing
   // ledger, which is the exact failure this design refuses everywhere else.

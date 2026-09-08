@@ -6,17 +6,12 @@
 // schedule is selected AFTER the operation, from recorded billing facts — never by
 // fetching a new price, and never by picking arbitrarily when the choice is ambiguous.
 
+import { TOKEN_CATEGORIES, type TokenCategory } from "./categories.ts";
 import { isValidMoney, type TokenUnitPrice } from "./money.ts";
 
-export type TokenCategory = "input" | "output" | "cached_read" | "cached_write" | "thought";
-
-export const TOKEN_CATEGORIES: readonly TokenCategory[] = Object.freeze([
-  "input",
-  "output",
-  "cached_read",
-  "cached_write",
-  "thought",
-]);
+// The category set is defined in ./categories.ts so pricing, rating, state and the engine
+// cannot drift apart. Re-exported here because it is part of this module's public surface.
+export { TOKEN_CATEGORIES, type TokenCategory };
 
 /** Applicability is independent from whether a price happens to be present. */
 export type CategoryApplicability = "applicable" | "not_applicable" | "unknown";

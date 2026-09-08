@@ -134,6 +134,8 @@ async function probe(preset: AdapterPreset): Promise<Observation> {
     //
     // The decisive evidence is the component-sum identity: when totalTokens equals
     // input + output + cache for a SINGLE report, that report describes one turn.
+    // Recomputed independently of the library on purpose: this probe classifies a
+    // harness's counter semantics, so it must not assume the identity it is testing for.
     const componentSum = (r: Record<string, number | undefined>): number =>
       (r.inputTokens ?? 0) +
       (r.outputTokens ?? 0) +
