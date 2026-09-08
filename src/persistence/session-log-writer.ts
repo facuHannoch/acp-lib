@@ -11,6 +11,8 @@ import {
   type SessionLogRecordExpectation,
   type TranscriptHeaderRecord,
 } from "./records.ts";
+import { truncateSessionLogRecord } from "./truncation.ts";
+import type { PersistenceLimits } from "./config.ts";
 
 export type SessionLogKind = "transcript" | "audit";
 
@@ -56,6 +58,8 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
   readonly kind: K;
   readonly path: string;
   readonly maxRecordBytes: number;
+  private readonly limits: PersistenceLimits;
+  private readonly includeTruncationDigests: boolean;
   private readonly handle: FileHandle;
   private readonly lock: OwnedLogLock;
   private readonly expected: SessionLogRecordExpectation;
@@ -72,6 +76,8 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
     this.kind = options.kind;
     this.path = options.path;
     this.maxRecordBytes = options.maxRecordBytes;
+    this.limits = options.header.effectiveLimits;
+    this.includeTruncationDigests = options.header.includeTruncationDigests;
     this.handle = handle;
     this.lock = lock;
     this.sequence = options.header.seq;
@@ -156,13 +162,17 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
   }
 
   private async writeRecord(record: KnownTranscriptRecord | KnownAuditLogRecord, durable: boolean): Promise<void> {
+    const bounded = truncateSessionLogRecord(record, {
+      limits: this.limits,
+      includeTruncationDigests: this.includeTruncationDigests,
+    });
     try {
-      if (this.kind === "transcript") validateTranscriptRecord(record, this.expected);
-      else validateAuditLogRecord(record, this.expected);
+      if (this.kind === "transcript") validateTranscriptRecord(bounded, this.expected);
+      else validateAuditLogRecord(bounded, this.expected);
     } catch (error) {
       throw new SessionLogWriteError("session-log record validation failed", { cause: error });
     }
-    const line = `${JSON.stringify(record)}\n`;
+    const line = `${JSON.stringify(bounded)}\n`;
     const bytes = Buffer.byteLength(line, "utf8") - 1;
     if (bytes > this.maxRecordBytes) throw new SessionLogRecordTooLargeError(bytes, this.maxRecordBytes);
     try {

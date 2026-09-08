@@ -69,6 +69,7 @@ describe("session-log record schemas", () => {
       preset: "activity",
       effectivePolicy: TRANSCRIPT_PRESETS.activity,
       effectiveLimits: DEFAULT_PERSISTENCE_LIMITS,
+      includeTruncationDigests: false,
       installation: {
         kind: "creation",
         operationId: "create-1",

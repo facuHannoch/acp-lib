@@ -129,6 +129,7 @@ export interface TranscriptHeaderRecord extends TranscriptEnvelope {
   readonly preset: TranscriptPreset;
   readonly effectivePolicy: TranscriptCapturePolicy;
   readonly effectiveLimits: PersistenceLimits;
+  readonly includeTruncationDigests: boolean;
   readonly upgradedFrom?: { readonly version: 1; readonly boundaryOffset: number };
   readonly installation?: SessionLogInstallation;
 }
@@ -318,6 +319,7 @@ export interface AuditLogHeaderRecord extends AuditLogEnvelope {
   readonly createdAt: string;
   readonly effectivePolicy: AuditLogCapturePolicy;
   readonly effectiveLimits: PersistenceLimits;
+  readonly includeTruncationDigests: boolean;
   readonly installation: SessionLogInstallation;
 }
 
@@ -582,6 +584,7 @@ function validateHeader(record: Record<string, unknown>, sink: "transcript" | "a
   iso(record.createdAt, "header.createdAt");
   if (!isRecord(record.effectivePolicy)) fail("header.effectivePolicy must be an object");
   if (!isRecord(record.effectiveLimits)) fail("header.effectiveLimits must be an object");
+  if (typeof record.includeTruncationDigests !== "boolean") fail("header.includeTruncationDigests must be boolean");
   try {
     validatePersistenceLimits(record.effectiveLimits as unknown as PersistenceLimits);
     if (sink === "transcript") {

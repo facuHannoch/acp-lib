@@ -1260,3 +1260,33 @@ input, and content tool levels; transcript/audit message and reasoning separatio
 structural transition retention and audit stripping; configuration/permission levels;
 and normalized-versus-raw protocol capture. Every projected result is also passed through
 its concrete record validator. The projection suite passes 5/5 and `tsc --noEmit` passes.
+
+### Part 3C — bounded post-policy record truncation
+
+Added `src/persistence/truncation.ts` as the single size-bounding step between capture
+projection and physical serialization. It validates the engraved limits, clones rather
+than mutates projected records, truncates strings only at Unicode code-point boundaries,
+and replaces oversized structured capture as a whole with an explicit omitted marker.
+The order is deterministic and prioritizes raw payloads, tool results, reasoning, tool
+input, and message presentation before less common captured detail. Structural identity
+is never shortened to make a record fit; a record whose structural remainder exceeds the
+bound fails with `SessionLogTruncationError`.
+
+Maximum JSON depth is represented as an explicit `max_depth` omission only for captured
+values that genuinely cross the configured depth. Cyclic or otherwise non-JSON values
+fail rather than being mislabeled as truncation. Optional SHA-256 metadata is generated
+only from values already admitted by capture policy. An integration test projects a tool
+event at metadata level and verifies that excluded command/output secrets and their hash
+cannot appear after truncation, including when truncation digests are enabled.
+
+Integrated the truncator into `FileSessionLogWriter` before validation and append. The
+writer takes its limits and digest choice from the installed header, so reopen cannot
+silently change either. The previously resolved `includeTruncationDigests` option is now
+engraved in transcript/audit headers and registry metadata; the persistence spec was
+updated to match this necessary continuation/configuration fact.
+
+Added `test/persistence-truncation.test.ts` for Unicode-safe text bounds, whole-value tool
+output omission and optional hashes, record-level fitting, deep captured values, invalid
+JSON rejection, and structural oversize failure. Extended projection and writer tests for
+security ordering and physical integration. The complete persistence/manager-focused
+suite passes 76/76, `tsc --noEmit` passes, and `git diff --check` is clean.

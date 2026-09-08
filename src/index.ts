@@ -211,6 +211,11 @@ export type {
   NormalizedPersistenceEvent,
   TranscriptProjectionContext,
 } from "./persistence/projection.ts";
+export {
+  SessionLogTruncationError,
+  truncateSessionLogRecord,
+} from "./persistence/truncation.ts";
+export type { SessionLogTruncationOptions } from "./persistence/truncation.ts";
 
 export {
   MAX_SCALE,

@@ -7,7 +7,6 @@ import {
   FileSessionLogWriter,
   SessionLogAlreadyExistsError,
   SessionLogInUseError,
-  SessionLogRecordTooLargeError,
   SessionLogWriteError,
 } from "../src/persistence/session-log-writer.ts";
 import type { TranscriptHeaderRecord, TranscriptOperationRecord } from "../src/persistence/records.ts";
@@ -47,14 +46,17 @@ describe("FileSessionLogWriter", () => {
     await writer.close();
   });
 
-  test("enforces record byte bounds before writing", async () => {
+  test("applies bounded truncation before writing", async () => {
     const path = await transcriptPath();
     const writer = await FileSessionLogWriter.create({ kind: "transcript", path, header: header(), maxRecordBytes: 4_096 });
-    await expect(writer.append({
+    await writer.append({
       v: 2, t: "message", transcriptId: "transcript-1", generation: 1, agentSessionId: "agent-1",
       seq: 2, ts: TS, operationId: "op-1", role: "assistant", text: "x".repeat(5_000),
-    })).rejects.toBeInstanceOf(SessionLogRecordTooLargeError);
-    expect((await readFile(path, "utf8")).trimEnd().split("\n")).toHaveLength(1);
+    });
+    const lines = (await readFile(path, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(lines).toHaveLength(2);
+    expect(lines[1].text.length).toBeLessThan(5_000);
+    expect(lines[1].truncation).toEqual([{ field: "text", reason: "field_limit", originalBytes: 5_000 }]);
     await writer.close();
   });
 
@@ -77,6 +79,7 @@ function header(): TranscriptHeaderRecord {
     seq: 1, ts: TS, event: "created", createdAt: new Date(TS).toISOString(), preset: "activity",
     effectivePolicy: TRANSCRIPT_PRESETS.activity,
     effectiveLimits: { ...DEFAULT_PERSISTENCE_LIMITS, maxRecordBytes: 4_096, maxCapturedFieldBytes: 1_024 },
+    includeTruncationDigests: false,
     installation: { kind: "creation", operationId: "creation-1", requestDigest: "a".repeat(64) },
   };
 }

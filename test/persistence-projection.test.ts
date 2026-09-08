@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { DEFAULT_AUDIT_LOG_CAPTURE, TRANSCRIPT_PRESETS } from "../src/persistence/config.ts";
 import {
   projectAuditEvent,
@@ -6,6 +7,7 @@ import {
   type NormalizedPersistenceEvent,
 } from "../src/persistence/projection.ts";
 import { validateAuditLogRecord, validateTranscriptRecord } from "../src/persistence/records.ts";
+import { truncateSessionLogRecord } from "../src/persistence/truncation.ts";
 
 const TS = Date.parse("2026-09-08T12:00:00.000Z");
 
@@ -102,6 +104,31 @@ describe("session-log capture projection", () => {
     expect(projectTranscriptEvent(raw, transcriptContext(TRANSCRIPT_PRESETS.detailed))).toBeNull();
     expect(projectTranscriptEvent(raw, transcriptContext(TRANSCRIPT_PRESETS.diagnostic))?.t).toBe("raw");
     expect(projectAuditEvent(raw, auditContext(DEFAULT_AUDIT_LOG_CAPTURE))).toBeNull();
+  });
+
+  test("capture filtering runs before truncation and optional digesting", () => {
+    const secret = "consumer-secret-".repeat(500);
+    const event: NormalizedPersistenceEvent = {
+      kind: "activity",
+      activity: {
+        activityId: "tool-1", activityRevision: 1, operationId: "op-1",
+        reason: "announced", kind: "terminal", status: "in_progress",
+        metadata: { providerActivityId: "provider-tool-1", startedAt: TS },
+        input: { command: secret },
+        content: { output: secret },
+      },
+    };
+    const projected = projectTranscriptEvent(event, transcriptContext(TRANSCRIPT_PRESETS.activity));
+    if (!projected) throw new Error("activity projection unexpectedly omitted");
+    const bounded = truncateSessionLogRecord(projected, {
+      limits: { maxRecordBytes: 4_096, maxCapturedFieldBytes: 1_024, maxJsonDepth: 8, maxCursorBytes: 4_096 },
+      includeTruncationDigests: true,
+    });
+    const serialized = JSON.stringify(bounded);
+    const digest = createHash("sha256").update(Buffer.from(JSON.stringify({ command: secret }), "utf8")).digest("hex");
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain(digest);
+    expect(bounded.truncation).toBeUndefined();
   });
 });
 

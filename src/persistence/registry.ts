@@ -139,6 +139,7 @@ export interface AgentSessionRecord {
     readonly preset: TranscriptPreset;
     readonly effectivePolicy: TranscriptCapturePolicy;
     readonly effectiveLimits: PersistenceLimits;
+    readonly includeTruncationDigests: boolean;
   };
   readonly auditLog: null | {
     readonly path: string;
@@ -146,6 +147,7 @@ export interface AgentSessionRecord {
     readonly generation: number;
     readonly effectivePolicy: AuditLogCapturePolicy;
     readonly effectiveLimits: PersistenceLimits;
+    readonly includeTruncationDigests: boolean;
   };
   readonly metadata?: Readonly<Record<string, JsonValue>>;
   readonly deletion?: {
@@ -370,6 +372,7 @@ function validateLogMetadata(
   if (typeof value.path !== "string" || !isAbsolute(value.path)) fail(`${kind}.path must be absolute`);
   positiveInteger(value.generation, `${kind}.generation`);
   if (!isRecord(value.effectivePolicy) || !isRecord(value.effectiveLimits)) fail(`${kind} policy and limits must be objects`);
+  if (typeof value.includeTruncationDigests !== "boolean") fail(`${kind}.includeTruncationDigests must be boolean`);
   try {
     validatePersistenceLimits(value.effectiveLimits as unknown as PersistenceLimits);
     if (kind === "transcript") {

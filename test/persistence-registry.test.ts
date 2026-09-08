@@ -66,6 +66,7 @@ describe("agent-session registry records", () => {
         maxJsonDepth: 64,
         maxCursorBytes: 4_096,
       },
+      includeTruncationDigests: false,
     };
     expect(() => validateAgentSessionRecord({ ...base, checkpoint, transcript })).not.toThrow();
     expectInvalid({ ...base, checkpoint, transcript: { ...transcript, transcriptId: "other" } }, "identity projection disagrees");

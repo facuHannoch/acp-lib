@@ -838,6 +838,7 @@ interface AgentSessionRecord {
     preset: TranscriptPreset;
     effectivePolicy: TranscriptCapturePolicy;
     effectiveLimits: PersistenceLimits;
+    includeTruncationDigests: boolean;
   };
 
   /** Operational session-log metadata only; never continuation authority. */
@@ -847,6 +848,7 @@ interface AgentSessionRecord {
     generation: number;
     effectivePolicy: AuditLogCapturePolicy;
     effectiveLimits: PersistenceLimits;
+    includeTruncationDigests: boolean;
   };
 
   metadata?: Record<string, JsonValue>;
@@ -1668,6 +1670,7 @@ interface TranscriptHeaderRecord extends TranscriptEnvelope {
   preset: TranscriptPreset;
   effectivePolicy: TranscriptCapturePolicy;
   effectiveLimits: PersistenceLimits;
+  includeTruncationDigests: boolean;
   upgradedFrom?: { version: 1; boundaryOffset: number };
   /** Required for created/replaced headers; absent only on a legacy upgrade boundary. */
   installation?: SessionLogInstallation;
@@ -1888,6 +1891,7 @@ interface AuditLogHeaderRecord extends AuditLogEnvelope {
   createdAt: string;
   effectivePolicy: AuditLogCapturePolicy;
   effectiveLimits: PersistenceLimits;
+  includeTruncationDigests: boolean;
   installation: SessionLogInstallation;
 }
 
