@@ -3586,3 +3586,36 @@ Different adapter + transcript missing
 ```
 
 There is no automatic safe recovery. The consumer must provide continuation context or abort. Starting a blank session while preserving the old `agentSessionId` would falsely imply continuity that the library does not possess.
+
+
+Yes. The current spec still predates several decisions we just made. Before implementation, we should update it in these areas:
+
+- Remove `resolveAdapter` from `SessionManagerConfig`. Adapters are supplied per create/open operation; the manager stores only `adapterId`.
+- Remove `internalSessionHistory` from `AgentSessionCheckpoint`. Keep bounded current-routing information plus history revision/digest; full history belongs in registry/transcript transitions.
+- Define adapter identity behavior:
+  - Same `adapterId`: attempt normal `loadSession()`.
+  - Different `adapterId`: throw `AdapterMismatchError`.
+  - Cross-adapter continuation must be an explicit switch/reconstruction operation.
+- Define the extensible recovery sequence:
+  1. Resolve checkpoint.
+  2. Attempt internal-session load.
+  3. Optionally reconstruct from transcript.
+  4. Optionally reconstruct from consumer-provided continuation.
+  5. Otherwise remain unresolved.
+- Defer certified automatic replay from v0. Dirty boundaries should become `uncertain` and require explicit resolution.
+- Tighten missing-transcript behavior:
+  - `open()` never creates a missing transcript.
+  - If the registry says a transcript is the continuation authority and it is missing, throw `TranscriptNotFoundError` before starting the harness.
+  - Distinguish missing, unavailable, corrupt, and identity-mismatched transcripts.
+  - Registry-only sessions remain loadable without transcripts.
+- Make clear that managed restoration never inherits the legacy `onFailure: "new"` behavior. It must not silently replace a missing harness thread.
+- Update deletion to the agreed tombstone model with `deleteTranscript` and `removeRegistryEntry`.
+- Normalize conditional authority:
+  - Registry + transcript: registry provides discovery; transcript provides continuation.
+  - Registry only: registry provides both.
+  - Transcript only: consumer/path provides discovery; transcript provides continuation.
+  - Neither: consumer owns all continuation state.
+- Remove or correct the remaining manager-level/default-root wording that implies each session can relocate the manager registry.
+
+So yes: this is a necessary consistency pass, not merely editorial cleanup. The current draft would otherwise lead implementation toward the wrong adapter ownership, oversized checkpoints, and unsafe implicit recovery.
+

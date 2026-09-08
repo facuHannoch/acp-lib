@@ -28,8 +28,8 @@ assumptions that don't fit when you orchestrate **many** agents across **many**
 environments:
 
 - **No forced `cwd` discovery.** Other libraries crawl up to the git root and impose a
-  working directory. This one takes `cwd` (and an `execPrefix` like `docker exec -i …`) as
-  plain config, so you can talk to agents inside containers or arbitrary runtimes.
+  working directory. This one keeps target-visible `cwd` separate from an optional
+  runtime `launcher` that prepares the exact host process.
 - **Introspection over hardcoding.** Models, auth methods, capabilities, and config
   options are all *discovered* from the protocol at runtime, never baked in. The library
   surfaces raw protocol facts and lets you decide what they mean.
@@ -273,15 +273,25 @@ shell line and run through `bash` (or `/bin/sh`), because that is how agents use
 `claude-code-acp` puts its whole Bash command line, redirections and all, in `command`.
 Set `ACP_TERMINAL_SHELL` to choose a different shell.
 
-To opt out — letting the agent fall back to its own implementation — turn the capability
-off, which also stops us advertising it:
+The built-in handlers operate in the library process's host namespace. For a container,
+VM, SSH session, or other runtime boundary, disable them or provide runtime-aware handlers.
+Handler presence is the source of truth for capability advertisement:
 
 ```ts
 new AcpClient({
   adapter: ADAPTERS.codex,
-  clientCapabilities: { terminal: false, fs: { writeTextFile: false } },
+  clientHandlers: {
+    terminal: false,
+    filesystem: {
+      readTextFile: async (request) => containerFs.read(request),
+      // write omitted: writeTextFile is not advertised
+    },
+  },
 });
 ```
+
+`clientCapabilities` remains as a compatibility option. New `clientHandlers` selections
+take precedence and cannot advertise an operation without installing its implementation.
 
 ### Durable sessions with a catalog
 

@@ -32,7 +32,8 @@ thread selection, and the optional `SessionManager` catalog with one explicit mo
   for its entire lifetime.
 - **Internal session**: the current harness/provider thread. Its `internalSessionId` can
   change during a handoff, switch, or mode change.
-- **Registry**: the authoritative inventory and routing catalog of logical agent sessions.
+- **Registry**: the authoritative inventory and discovery catalog of managed logical
+  agent sessions. In registry-only mode it also holds continuation state.
 - **Transcript**: an append-only JSONL history for one logical agent session.
 - **Checkpoint**: a versioned, serializable snapshot sufficient to reconstruct the
   library's last known continuation state.
@@ -42,10 +43,12 @@ thread selection, and the optional `SessionManager` catalog with one explicit mo
 - **In-flight boundary**: an operation was durably recorded as started but was not durably
   recorded as settled.
 
-The registry is authoritative for discovery. A checkpoint is authoritative for the
-continuation state at its revision. A transcript is authoritative for the events the
-library persisted. None is an invoice, a tamper-resistant audit ledger, or proof that an
-external tool side effect did not occur.
+The registry is authoritative for managed-session discovery. When a transcript is
+enabled, its latest valid checkpoint and journal tail are authoritative for continuation;
+the registry checkpoint is a materialized projection. In registry-only mode the registry
+checkpoint is authoritative for continuation. A transcript is authoritative only for the
+events the library actually persisted. None is an invoice, a tamper-resistant audit
+ledger, or proof that an external tool side effect did not occur.
 
 ## 3. Public configuration and ownership
 
@@ -76,11 +79,16 @@ interface SessionConfigurationPersistenceConfig {
 }
 
 interface AgentSessionPersistenceOptions {
-  /** Base for this session's default transcript path; never moves a manager registry. */
+  /** Base for a direct session's default transcript path. */
   root?: string;
   transcript?: false | TranscriptConfig;
   sessionConfiguration?: SessionConfigurationPersistenceConfig;
 }
+
+type ManagedSessionPersistenceOptions = Omit<
+  AgentSessionPersistenceOptions,
+  "root"
+>;
 
 interface AgentSessionConfig {
   // Existing runtime configuration...
@@ -93,9 +101,8 @@ interface SessionManagerConfig {
   root?: string;
   /** Omit for the default central JSON registry. */
   store?: AgentSessionStore;
-  resolveAdapter?: AdapterResolver;
   /** Defaults only; every create call may override them. */
-  sessionDefaults?: AgentSessionPersistenceOptions;
+  sessionDefaults?: ManagedSessionPersistenceOptions;
 }
 
 interface JsonObject {
@@ -131,7 +138,7 @@ manager's registry. Its default per-session persistence is:
 }
 ```
 
-For managed creation, effective session persistence is resolved in this order:
+For managed creation, effective per-session persistence is resolved in this order:
 
 1. The individual `createAgentSession()` option.
 2. `SessionManagerConfig.sessionDefaults`.
@@ -139,6 +146,12 @@ For managed creation, effective session persistence is resolved in this order:
 
 An explicit per-session `transcript: false` always wins. It disables that session's
 transcript without removing the session from the manager registry.
+
+The manager owns its registry and root. A managed session cannot move either through a
+per-session option. It may select an arbitrary transcript destination with
+`transcript.path`, or override its transcript preset, capture policy, and ACP
+configuration-persistence policy. This keeps one manager's inventory coherent while
+preserving genuinely per-session transcript placement.
 
 V0 exposes no buffered durability option. Managed persistence uses durable operation
 boundaries; direct sessions with persistence disabled make no durability guarantee. The
@@ -150,7 +163,8 @@ root, define manager defaults, or choose transcript behavior for every session.
 Directories and files created by the default store must be owner-only where the platform
 supports permissions.
 
-The manager/default-transcript root is resolved in this order:
+The manager root, or a direct session's default-transcript root, is resolved in this
+order:
 
 1. `SessionManagerConfig.root` or the explicit direct-session transcript root.
 2. `ACP_CLIENT_HOME`.
@@ -200,8 +214,8 @@ This prevents accidental ambiguity but is not a defense against a malicious acto
 concurrently replace directories owned by the consumer.
 
 If `path` is omitted, the library creates and uses the `transcripts` directory under the
-effective per-session root. A managed session uses its own persistence root override,
-then the manager root, then the environment/home default.
+effective root. A managed session uses the manager root; a direct session uses its
+explicit persistence root and then the environment/home default.
 
 A transcript path does not, by itself, select or restore a provider thread. Restoration
 occurs only through the new persistence/checkpoint startup path described below. Legacy
@@ -219,11 +233,16 @@ await AgentSession.create({
   agentSessionId: optionalConsumerChosenId,
 });
 
-await AgentSession.open({
+const opened = await AgentSession.open({
   agentSessionId: optionalWhenCheckpointOrExactFileIdentifiesIt,
   persistence,
   checkpoint: optionalConsumerCheckpoint,
-  resolveAdapter,
+  adapter,
+  adapterId,
+  continuation: {
+    // Omit for the default: only try the recorded internal session.
+    strategies: optionalOrderedContinuationStrategies,
+  },
 });
 ```
 
@@ -233,7 +252,9 @@ transcript belongs to another logical session, creation fails with
 transcript. Direct use has no implicit registry.
 
 Direct `open()` reconstructs from an explicit consumer checkpoint and/or transcript. It
-applies the consistency rules in section 10 to those supplied artifacts.
+applies the consistency rules in section 10 to those supplied artifacts and returns the
+session together with an explicit continuation report; it never hides a failed attempt
+to load the prior internal thread.
 
 `open()` requires at least one unambiguous identity source: an `agentSessionId`, an
 explicit checkpoint, or an exact existing transcript file configured through
@@ -241,16 +262,17 @@ explicit checkpoint, or an exact existing transcript file configured through
 filename can be derived. Opening a missing path fails; only `create()` creates a new
 logical session.
 
-Built-in adapter IDs use the library's adapter resolver. Reopening a custom adapter
-requires a consumer `resolveAdapter(adapterId)` callback. Persisted command lines are not
-blindly executed.
+The consumer supplies the adapter object for every create or open operation. Persistence
+stores `adapterId` as routing metadata; neither a checkpoint nor `SessionManager`
+constructs, owns, or globally resolves adapter instances. This avoids embedding process
+commands or consumer dependency policy in the persistence layer. Persisted command lines
+are never blindly executed.
 
 Managed creation and loading go through the manager:
 
 ```ts
 const sessions = await SessionManager.open({
   root: "/absolute/path/to/acp-data",
-  resolveAdapter,
   sessionDefaults: {
     transcript: {
       path: "/absolute/path/to/default-transcripts",
@@ -263,6 +285,7 @@ const page = await sessions.listAgentSessions();
 
 const created = await sessions.createAgentSession({
   adapterId: "claude",
+  adapter: claudeAdapter,
   persistence: {
     // Per-session choice overrides manager defaults.
     transcript: {
@@ -274,23 +297,44 @@ const created = await sessions.createAgentSession({
 
 const registryOnly = await sessions.createAgentSession({
   adapterId: "codex",
+  adapter: codexAdapter,
   persistence: { transcript: false },
 });
 
-const loaded = await sessions.loadAgentSession(created.agentSessionId);
+const info = await sessions.getAgentSessionInfo(created.agentSessionId);
+const loaded = await sessions.loadAgentSession(created.agentSessionId, {
+  adapterId: info.adapterId,
+  adapter: resolveAdapter(info.adapterId),
+});
 ```
 
-`SessionManager.createAgentSession()` resolves adapter and persistence inputs, calls the
-lower-level constructor, and records the resulting logical session. It does not retain
-the live object or proxy its methods; the consumer remains the owner. The manager owns
-the registry, while the returned session owns its transcript writer and effective
-capture policy.
+`SessionManager.createAgentSession()` resolves persistence inputs, receives the adapter
+for that operation, calls the lower-level constructor, and records the resulting logical
+session. It does not retain the live object, resolve future adapters, or proxy session
+methods; the consumer remains the owner. The manager owns the registry, while the
+returned session owns its transcript writer and effective capture policy.
 
 `loadAgentSession(agentSessionId)` reads that session's resolved transcript path and
-policy from its registry record. It does not accept a casual transcript override.
-Relocation is an explicit operation which creates a new checkpoint revision. Providing a
-bare `internalSessionId` remains a lower-level provider-thread operation, not restoration
-of a logical `AgentSession`.
+policy from its registry record and requires an adapter for that load operation. It does
+not accept a casual transcript override. Relocation is an explicit operation which
+creates a new checkpoint revision. Providing a bare `internalSessionId` remains a
+lower-level provider-thread operation, not restoration of a logical `AgentSession`.
+
+If the supplied `adapterId` equals the persisted `adapterId`, restoration attempts the
+normal adapter `loadSession(internalSessionId)` path. A different adapter object or
+version under the same stable adapter identity is allowed to try; compatibility is
+determined by the load result rather than speculative version checks. If the IDs differ,
+ordinary restoration fails before harness startup with `AdapterMismatchError`. Continuing
+the same logical session through a different adapter is an explicit switch or transcript
+reconstruction operation, never an accidental load.
+
+Both `AgentSession.open()` and `SessionManager.loadAgentSession()` return
+`AgentSessionOpenResult`, defined in section 20. Consumers therefore learn whether the
+recorded thread loaded, whether it was unavailable, which explicit fallback ran, and
+which internal thread became active. When no strategy succeeds, the typed thrown error
+carries the same partial continuation report. Opening-time notifications duplicate this
+information for observers but are not the sole delivery mechanism: a listener may not
+yet be attached to the returned session.
 
 ## 6. Capture policy
 
@@ -428,6 +472,12 @@ interface AgentSessionRecord {
   };
 
   metadata?: Record<string, JsonValue>;
+  deletion?: {
+    /** Logical tombstone time; its presence prevents accidental ID reuse. */
+    deletedAt: string;
+    /** Present when transcript deletion was explicitly requested and completed. */
+    transcriptDeletedAt?: string;
+  };
   createdAt: string;
   updatedAt: string;
   lastOpenedAt: string;
@@ -443,9 +493,11 @@ negotiated during initialization, not a hardcoded SDK constant. Degraded session
 within a recognized registry version. Environment variables, API keys, authorization
 headers, and adapter command lines containing credentials must never be stored.
 
-The routing fields duplicated outside `checkpoint` are indexed/materialized projections
-for listing. They must equal the corresponding checkpoint fields. A mismatch is registry
-corruption, not a last-write-wins choice.
+Routing fields duplicated outside `checkpoint` are indexed/materialized projections for
+listing. Every duplicated field must equal its checkpoint counterpart. Full
+`internalSessionHistory` is the exception: it is intentionally not a checkpoint member
+and is validated against its revision/digest plus transcript transitions when available.
+A mismatch is registry corruption, not a last-write-wins choice.
 
 Unknown registry versions are fatal. A library must not partially interpret a newer
 document whose invariants it does not understand.
@@ -486,6 +538,11 @@ installed under the same `agentSessionId`.
 active. A null degraded-mode identity has no history entry; its mode transitions remain
 represented by transition records.
 
+The registry retains this history as a listing/registry-only projection. When transcripts
+are enabled, the canonical history is reconstructed from transition records. The complete
+history is deliberately excluded from every continuation checkpoint so checkpoint size
+and digest work remain bounded as a logical session accumulates transitions.
+
 ## 9. Continuation checkpoint
 
 Consumers should not have to independently persist an `internalSessionId` and reconstruct
@@ -502,7 +559,14 @@ interface AgentSessionCheckpoint {
   mode: "normal" | "degraded";
   internalSessionId: string | null;
   internalSessionActivatedAt: string | null;
-  internalSessionHistory: readonly InternalSessionHistoryEntry[];
+  /** Digest/revision of history, for corruption consistency rather than restoration. */
+  internalSessionHistoryRevision: number;
+  internalSessionHistoryDigest: string;
+  lastTransition?: {
+    transitionId: string;
+    kind: "handoff" | "switch" | "mode_change" | "replacement";
+    at: string;
+  };
   model: string | null;
   sessionConfiguration: SessionConfigurationCheckpoint;
   protocol:
@@ -541,6 +605,12 @@ interface AgentSessionCheckpoint {
 The exact metering-state type is defined by the metering specification. The checkpoint
 stores bounded continuation state, never unbounded operation history.
 
+`internalSessionHistoryRevision` and `internalSessionHistoryDigest` detect disagreement
+with the registry projection or transcript-derived transition history. They are not a
+recovery input and do not replace transition records. In transcript-enabled mode, history
+is rebuilt from those records; in registry-only mode, the registry owns both the history
+projection and its checkpoint consistency fields.
+
 `stateRevision` increases whenever resumable state changes. `digest` is lowercase-hex
 SHA-256 over RFC 8785 JSON Canonicalization Scheme bytes for every checkpoint member
 except `digest`. Unsupported JSON values are rejected before checkpoint creation. The
@@ -576,6 +646,8 @@ interface SessionConfigurationCheckpoint {
   adapterId: string;
   /** Digest of IDs, types, and selectable values last announced by the harness. */
   schemaDigest: string | null;
+  /** Last announced IDs, retained so schema mismatches can identify missing options. */
+  announcedConfigIds: readonly string[];
   /** Values explicitly applied through this AgentSession, in application order. */
   desired: readonly PersistedSessionConfigSelection[];
   /** Latest persisted current values reported by the harness. */
@@ -612,21 +684,23 @@ operation until repaired. It must not report an ordinary pre-dispatch failure.
 
 On `open()`, the library loads the internal session, obtains its newly announced options,
 and compares them with the checkpoint. Explicit `desired` selections are reapplied in
-ordinal order only when they differ, validating the option after every response because
-one option can change the remaining schema. Reapplication happens before any prompt or
-handoff seed.
+one ordinal pass only when they differ, validating the option after every response
+because one option can change the remaining schema. Reapplication never iterates toward
+a fixed point: if a later selection changes an earlier one, the residual difference is a
+configuration mismatch. Reapplication happens before any prompt or handoff seed.
 
 If a desired option disappeared, its value is no longer allowed, reapplication is
-rejected, or an omitted value prevents exact comparison, restoration enters uncertain
-recovery with reason `configuration_mismatch`. The consumer may accept the harness's
-current configuration, provide replacement selections, start a new internal session, or
-abort.
+rejected, or an omitted value prevents exact comparison, configuration restoration is
+`mismatch` and the session is non-promptable. This is distinct from an uncertain crash
+boundary. The consumer may accept the harness's current configuration, provide
+replacement selections, start a new internal session, or abort.
 
 During same-adapter handoff, desired selections carry to the new internal session and are
 applied before continuation seeding. Across an adapter switch they do not transfer unless
 the switch request or consumer supplies an explicit mapping; config IDs are not portable
-between harnesses. The old configuration snapshot remains in
-`internalSessionHistory`.
+between harnesses. The old configuration snapshot remains in the registry history and
+the corresponding transcript transition record; it is not copied into every later
+checkpoint.
 
 ## 10. Authority and persistence combinations
 
@@ -634,7 +708,7 @@ The supported combinations are:
 
 | Registry | Transcript | Reopen source | Discovery |
 | --- | --- | --- | --- |
-| enabled | enabled | newest consistent checkpoint | registry |
+| enabled | enabled | transcript checkpoint and journal tail | registry |
 | enabled | disabled | registry checkpoint | registry |
 | disabled | enabled | latest valid transcript checkpoint | consumer-supplied path |
 | disabled | disabled | consumer-supplied checkpoint | consumer |
@@ -642,12 +716,21 @@ The supported combinations are:
 With neither facility enabled:
 
 - creating a new session remains supported;
-- reopening requires a consumer-supplied `AgentSessionCheckpoint` and adapter resolution;
+- reopening requires a consumer-supplied `AgentSessionCheckpoint` and consumer-supplied
+  adapter;
 - providing only `agentSessionId` is insufficient and must fail before starting a
   harness.
 
-The registry is the inventory source of truth. Transcript-directory scanning is an
-explicit recovery/import utility, never implicit session discovery.
+The registry is the managed inventory source of truth. Transcript-directory scanning is
+an explicit recovery/import utility, never implicit session discovery. Authority is
+conditional rather than shared:
+
+- with both stores, the registry discovers and locates the session while the transcript
+  owns continuation;
+- with only the registry, its checkpoint owns continuation;
+- with only the transcript, the consumer supplies discovery and the transcript owns
+  continuation;
+- with neither, the consumer supplies both discovery and a checkpoint.
 
 Restoration examines `(checkpoint, journal tail)`, not the checkpoint alone. The journal
 tail is every structurally valid operation/transition record after
@@ -656,20 +739,43 @@ has an uncovered terminal operation, or has an operation that only started. A re
 only session expresses the equivalent tail state by publishing an in-flight checkpoint
 before dispatch.
 
-When registry and transcript both contain a checkpoint:
+When both stores contain checkpoints, the transcript checkpoint and journal tail decide
+continuation. The registry copy is validated as a projection:
 
-1. Same revision and digest: the state is consistent.
-2. Transcript revision newer: use it and repair the registry observably.
-3. A newer registry `in_flight` checkpoint matching the transcript's uncovered
-   `operation(started)` is the expected dirty write-ahead state; use it and enter
-   recovery.
-4. Any other newer registry revision is used with an observable transcript persistence
-   gap.
-5. Same revision with different digest: fail with a checkpoint-conflict error.
-6. Different logical identities or transcript generations: fail; never merge them.
+1. Same revision and digest means the projection is current.
+2. A transcript-newer revision is used and repairs the registry observably.
+3. For a registry-newer in-flight revision, the library deterministically reconstructs
+   the expected in-flight checkpoint from the authoritative transcript checkpoint and
+   its journal tail. The registry revision is accepted only as a matching projection when
+   every reconstructed field and its digest match. Continuation still comes from the
+   transcript-derived state.
+4. Any other registry-newer revision is never selected over the transcript. It reports a
+   persistence gap and enters uncertain recovery.
+5. Same revision with different digest is a checkpoint conflict.
+6. Different logical identities or transcript generations are an identity error; they
+   are never merged.
 
-These rules acknowledge that two files cannot be atomically committed together. The
-writer creates one immutable checkpoint object and writes that exact object to both.
+These rules acknowledge that two files cannot be atomically committed together without
+turning both into competing authorities. The writer creates one immutable checkpoint
+object for publication to both, but a registry projection cannot overwrite or invent
+transcript continuation state merely because its numeric revision is greater.
+
+If a registry record declares a non-null transcript, that transcript is required for
+managed restoration. A missing file produces `TranscriptNotFoundError` before the
+harness starts; an unreadable file produces `TranscriptUnavailableError`, malformed
+content produces `TranscriptCorruptionError`, and disagreement in logical identity or
+generation produces `TranscriptIdentityError`. The library must not create a replacement
+file, fall back to the registry projection, or start a new provider thread. A record with
+`transcript: null` is intentionally registry-only and remains loadable from its registry
+checkpoint.
+
+An unexpectedly missing transcript is rejected during artifact validation, before any
+continuation strategy runs. `new_from_consumer_continuation` is not a bypass for that
+failure. It is available when the session was intentionally registry-only, when direct
+opening uses a consumer checkpoint, or after an explicit repair/import operation has
+acknowledged and replaced the missing transcript authority. A transcript whose deletion
+is recorded in a tombstone is expectedly absent, but restoring that tombstone must choose
+`transcript: false` or an explicit new transcript destination/generation.
 
 ## 11. Registry storage contract
 
@@ -735,6 +841,8 @@ The public listing name is deliberately explicit:
 interface ListAgentSessionsOptions {
   cursor?: AgentSessionListCursor;
   limit?: number;
+  /** Defaults to false. */
+  includeDeleted?: boolean;
   order?:
     | "updated_desc"
     | "updated_asc"
@@ -759,14 +867,29 @@ interface AgentSessionSummary {
   updatedAt: string;
   recovery: "clean" | "required";
   transcriptAvailable: boolean;
+  deletedAt?: string;
 }
 
 sessionManager.listAgentSessions(options?: ListAgentSessionsOptions):
   Promise<AgentSessionListPage>;
+
+sessionManager.getAgentSessionInfo(
+  agentSessionId: string,
+  options?: { includeDeleted?: boolean },
+): Promise<AgentSessionSummary | null>;
 ```
 
 Defaults are `limit: 50` and `order: "updated_desc"`; maximum limit is 500. Ordering uses
 `agentSessionId` as a deterministic tie-breaker.
+
+Normal listing omits tombstones. `includeDeleted: true` includes them so consumers can
+audit or explicitly purge deleted sessions.
+
+`getAgentSessionInfo()` is a metadata lookup, not a live-session lookup. It lets a
+consumer read the persisted `adapterId` and then supply the appropriate adapter to
+`loadAgentSession()`. It returns `null` for an unknown ID and, by default, for a tombstone;
+`includeDeleted: true` exposes the latter. `SessionManager` never maintains or returns a
+map of live `AgentSession` objects.
 
 `summary.recovery` reports the registry checkpoint's known status. A transcript-only
 dirty tail discovered later can change it when the session is loaded; listing does not
@@ -784,10 +907,10 @@ cursor captures the newest creation boundary so later insertions do not enter th
 Deletion may still remove an unseen item. The API promises no historical snapshot unless
 the injected store explicitly supports one.
 
-`SessionManager.list()` may remain deprecated during migration. `AgentSession.listSessions()`
-currently means a merged registry plus active harness `session/list`; it must be renamed
-or clearly retained as a separate harness-discovery operation so it cannot be confused
-with `listAgentSessions()`.
+`SessionManager.list()` is deprecated in favor of `listAgentSessions()`.
+`AgentSession.listSessions()` is deprecated in favor of
+`AgentSession.listInternalSessions()`, which means only the active adapter's ACP
+`session/list` capability. It never merges registry sessions with harness sessions.
 
 ## 13. Transcript v2 envelope
 
@@ -866,9 +989,19 @@ interface TranscriptMessageRecord extends TranscriptEnvelope {
   t: "message";
   role: "user" | "assistant";
   text: string;
-  messages?: JsonValue[];
+  structured?: TranscriptStructuredMessagesV1;
   status?: string;
   stopReason?: string;
+}
+
+interface TranscriptStructuredMessagesV1 {
+  version: 1;
+  messages: readonly TranscriptResponseMessageV1[];
+}
+
+interface TranscriptResponseMessageV1 {
+  messageId?: string;
+  text: string;
 }
 
 interface TranscriptPermissionRecord extends TranscriptEnvelope {
@@ -1255,8 +1388,11 @@ Views:
 The limit counts returned projected items, not physical JSONL lines. Readers may scan
 additional records to satisfy a filtered page.
 
-`types` is valid only with `view: "records"`. Supplying it with `conversation` or
-`timeline` is rejected rather than producing a cursor whose projection is ambiguous.
+`types` is valid with `view: "records"` and with `view: "timeline"` when every requested
+type belongs to the timeline union. It is rejected for `conversation`, and a timeline
+request containing a structural/non-timeline type is rejected. V0 does not introduce a
+second `include` vocabulary while the projection categories are the same physical record
+types. The validated type filter remains part of the cursor fingerprint.
 
 `limit` must be an integer from 1 through 500. Zero, negative, fractional, non-finite,
 and oversized values are rejected rather than silently clamped.
@@ -1348,69 +1484,146 @@ Restoration enters a non-promptable recovery state:
 type SessionRecoveryStatus =
   | { kind: "clean" }
   | {
-      kind: "reconciled";
-      operationId: string;
-      recoveredRecords: number;
-    }
-  | {
       kind: "uncertain";
       operationId: string;
       boundary:
         | "started_without_terminal"
         | "terminal_without_checkpoint"
         | "in_flight_checkpoint";
-      reason:
-        | "history_unavailable"
-        | "history_mismatch"
-        | "harness_session_missing"
-        | "configuration_mismatch";
+    };
+
+type ConfigurationRestoreStatus =
+  | { kind: "matched" }
+  | {
+      kind: "mismatch";
+      configIds: readonly string[];
+      reasons: readonly string[];
     };
 ```
 
-Replay is evidence only when the adapter declares its recovery grade:
+V0 does not automatically reconcile a dirty boundary from replay. ACP `loadSession` may
+emit useful historical updates, while `resumeSession` does not replay, but ACP does not
+guarantee completeness or stable comparable identities. A successful load therefore
+cannot prove that the local transcript and harness agree. Any replayed evidence permitted
+by capture policy may be recorded with recovery provenance, but status remains
+`uncertain`.
+
+Obtaining a usable continuation and reconciling an unclean operation are separate state
+machines. Continuation acquisition runs on every open; `SessionRecoveryStatus` describes
+whether the resulting logical session is safe to prompt after its durable boundary is
+examined. Successfully loading or reconstructing a thread never turns a dirty operation
+boundary into a clean one.
+
+Continuation acquisition is an ordered, extensible pipeline rather than hardcoded
+fallback inside `open()`:
 
 ```ts
-interface AdapterRecoverySupport {
-  replay: "certified" | "observable" | "none";
-  certificationId?: string;
+type ContinuationStrategy =
+  | { kind: "load_internal_session" }
+  | {
+      kind: "new_from_transcript";
+      buildContinuation: TranscriptContinuationBuilder;
+    }
+  | {
+      kind: "new_from_consumer_continuation";
+      continuation: string;
+    };
+
+interface OpenContinuationOptions {
+  /** Defaults to [{ kind: "load_internal_session" }]. */
+  strategies?: readonly ContinuationStrategy[];
+}
+
+interface TranscriptContinuationBuilderContext {
+  agentSessionId: string;
+  checkpoint: AgentSessionCheckpoint;
+  transcript: TranscriptReader;
+  targetAdapterId: string;
+}
+
+type TranscriptContinuationBuilder = (
+  context: TranscriptContinuationBuilderContext,
+) => Promise<{ continuation: string; metadata?: Record<string, JsonValue> }>;
+
+interface ContinuationAttempt {
+  strategy: ContinuationStrategy["kind"];
+  status: "succeeded" | "failed" | "skipped";
+  errorCode?: string;
+  reason?: string;
+}
+
+interface ContinuationReport {
+  recordedAdapterId: string;
+  recordedInternalSessionId: string | null;
+  requestedAdapterId: string;
+  recordedThreadAvailability: "available" | "unavailable" | "not_checked";
+  attempts: readonly ContinuationAttempt[];
+  outcome:
+    | {
+        kind: "loaded";
+        activeInternalSessionId: string;
+      }
+    | {
+        kind: "reconstructed";
+        source: "transcript" | "consumer";
+        activeInternalSessionId: string;
+        transitionId: string;
+      }
+    | { kind: "unavailable" };
+}
+
+interface AgentSessionOpenResult {
+  session: AgentSession;
+  continuation: ContinuationReport;
+  recovery: SessionRecoveryStatus;
+  configuration: ConfigurationRestoreStatus;
 }
 ```
 
-`certified` means the pinned adapter/harness combination has a tested completeness marker,
-stable event identities, and a canonical comparison projection defined by that adapter.
-The projection includes operation/message/activity identity and normalized content digests
-permitted by the capture policy. Certification must account for hidden handoff summary
-and seed operations. A generic ACP `loadSession` capability is not certification: ACP does
-not guarantee complete replay or comparable stable identifiers.
+`AgentSession.open({ continuation?: OpenContinuationOptions, ... })` and
+`SessionManager.loadAgentSession(id, { continuation?: OpenContinuationOptions, ... })`
+use this identical contract. An empty strategy array is invalid because it can never
+produce a live session.
 
-If the effective capture policy omitted fields required by that certified comparison,
-the replay cannot establish equality and recovery remains uncertain. Certification does
-not override capture policy or recover data the library deliberately chose not to store.
+The library first resolves and validates the authoritative checkpoint. It then evaluates
+explicit strategies in order, stopping at the first success. The default strategy list
+contains only `load_internal_session`; this uses the persisted internal ID with the
+supplied same-identity adapter. A missing harness thread is a typed failure by default—it
+does not inherit the legacy `providerSession.onFailure: "new"` behavior.
 
-With certified replay, the library:
+Every strategy attempt is appended to the report, including locally skipped attempts.
+If `load_internal_session` reaches the adapter and the recorded thread is missing, the
+report marks `recordedThreadAvailability: "unavailable"` before any fallback begins. A
+successful fallback does not erase that fact. If no strategy succeeds,
+`ContinuationUnavailableError` (or the more specific terminal cause, such as
+`InternalSessionNotFoundError`) exposes the partial report on its `continuation` member.
 
-1. Loads the recorded current `internalSessionId` using the replay-capable path.
-2. Compares replayed history with the last settled transcript boundary.
-3. Appends observable missing information as explicitly recovered records.
-4. Requires the adapter's replay-complete marker and exact agreement through the last
-   settled local fingerprint.
-5. Appends a reconciliation transition and a new settled checkpoint.
-6. Publishes that checkpoint to the registry.
+`new_from_transcript` is opt-in because it creates a provider thread, consumes tokens,
+sends retained content to a harness, may be impossible under a restrictive capture
+policy, and cannot undo prior tool side effects. V0 requires an explicit builder rather
+than silently choosing truncation, summarization, or raw replay semantics. It may reuse
+handoff summary/seed machinery, but is recorded as reconstruction rather than ordinary
+handoff. Consumer continuation is a final explicit alternative when the transcript was
+never the required authority or the consumer has explicitly repaired/replaced it.
+Exhausting all configured strategies leaves the session unopened; the library never
+silently creates an empty thread.
 
-Recovered records include provenance and must not pretend they were observed live:
+The strategy interface is intentionally separable from checkpoint selection and dirty-
+boundary recovery so future adapter-certified replay, alternate transcript summarizers,
+or consumer continuation modules can be added without changing either state machine.
 
-```ts
-interface TranscriptRecoveryProvenance {
-  recoveredAt: string;
-  operationId: string;
-  source: "harness_history";
-}
-```
+Changing adapter identity is outside ordinary restoration. `load_internal_session`
+requires the supplied `adapterId` to equal the checkpoint adapter ID. A different ID
+records a locally failed/skipped attempt and, with no explicit reconstruction strategy,
+raises `AdapterMismatchError` before contacting the harness. Supplying a
+`new_from_transcript` or `new_from_consumer_continuation` strategy alongside the different
+target ID is the explicit adapter-switch request. It creates a new internal session under
+the same stable `agentSessionId`, records a switch/reconstruction transition, and installs
+the new adapter ID only after the applicable transition rules are satisfied.
 
-ACP `loadSession` can expose observable replay when supported; `resumeSession` does not
-provide equivalent evidence. Without a certified adapter contract, recovered replay may
-be appended as useful evidence but the state remains `uncertain`. Successful load or
-resume alone cannot prove reconciliation.
+Opening-time continuation attempt/completion notifications carry the same report fields.
+The returned result or thrown error remains the authoritative delivery mechanism because
+session listeners may not exist until after opening completes.
 
 If history is missing, mismatched, or unavailable, the session remains uncertain until
 the consumer resolves it:
@@ -1451,14 +1664,76 @@ an observable transcript gap.
 Persistence errors use typed errors and notifications. They must not be reduced to debug
 logs or silently converted to an empty registry/transcript.
 
+At minimum the persistence/opening error taxonomy distinguishes:
+
+- `TranscriptNotFoundError`: the required resolved file does not exist;
+- `TranscriptUnavailableError`: the file exists but cannot be read safely;
+- `TranscriptCorruptionError`: its bytes violate the selected transcript contract;
+- `TranscriptIdentityError`: its logical identity or generation conflicts with the
+  requested session;
+- `AdapterMismatchError`: ordinary restoration was attempted with another adapter
+  identity;
+- `InternalSessionNotFoundError`: the same-identity adapter cannot load the recorded
+  harness thread.
+
+Only an explicit continuation strategy may turn the latter two continuation failures into a
+new internal session. `create()` may create an absent transcript; `open()` and managed
+load never do.
+
 ## 22. Lifecycle and deletion
 
 Detailed retention, export, and import policy is deferred, but destructive boundaries are
-defined now:
+defined now. The managed API is explicit about both independently destructive targets:
 
-- Removing a registry record does not delete its transcript by default.
-- Deleting a transcript does not silently remove its registry record.
-- A combined deletion requires an explicit option naming both targets.
+```ts
+sessionManager.deleteAgentSession(agentSessionId, {
+  deleteTranscript?: boolean;     // default false
+  removeRegistryEntry?: boolean; // default false
+}): Promise<void>;
+
+sessionManager.restoreAgentSession(agentSessionId, {
+  adapterId: string;
+  adapter: Adapter;
+  continuation?: OpenContinuationOptions;
+  /** Required when the tombstone says its former transcript was deleted. */
+  replacementTranscript?: false | TranscriptConfig;
+}): Promise<AgentSessionOpenResult>;
+```
+
+With both options omitted or false, deletion tombstones the registry entry, retains the
+transcript, prevents accidental ID reuse, and hides the session from normal listing.
+`includeDeleted: true` exposes tombstones. `deleteTranscript: true` removes the transcript
+but retains the tombstone unless hard removal is also explicitly requested.
+`removeRegistryEntry: true` permanently removes discovery metadata. Requesting both is
+the fully destructive operation and CLI surfaces require confirmation.
+
+`loadAgentSession()` rejects tombstones with `AgentSessionDeletedError`.
+`restoreAgentSession()` is the only managed open operation that accepts one. If the
+transcript was retained, it applies ordinary authority and continuation rules. If the
+tombstone records transcript deletion, restoration requires an explicit replacement
+transcript configuration or `replacementTranscript: false`; it never recreates the old
+path implicitly. The tombstone is cleared only after continuation acquisition succeeds,
+a restoration transition/checkpoint is durable, and the registry update succeeds. A
+failure leaves the tombstone in place and returns or throws the full continuation report.
+
+Deletion is a compare-and-swap mutation and is valid only after the consumer has stopped
+the corresponding live `AgentSession`. When a transcript exists, failure to acquire its
+exclusive writer lock produces `AgentSessionInUseError`. Registry-only mode cannot prove
+that another process holds a live in-memory object; if deletion races a later checkpoint
+publication, CAS prevents resurrection and that live session becomes persistence-blocked.
+This limitation is explicit because `SessionManager` deliberately does not retain the
+consumer's live-session map.
+
+A retained tombstone prevents reuse of its stable ID. Permanent registry removal while
+retaining the transcript leaves an orphan which can be explicitly imported and whose
+identity still prevents `create()` from appending to it. Only explicit hard registry
+removal together with transcript deletion forgets the identity sufficiently for later
+reuse.
+
+Additional boundaries:
+
+- Removing a registry entry never implicitly deletes its transcript.
+- Deleting a transcript never silently removes its registry entry.
 - Handoff and switch update one registry entry; they never create a new logical session.
 - A session with transcripts disabled remains discoverable when its registry is enabled.
 - An unregistered transcript is importable but is not automatically a known session.
@@ -1542,8 +1817,9 @@ At minimum, the session-level notification stream gains events for:
 - persistence failure;
 - registry recovered from backup;
 - registry repaired from transcript;
+- continuation attempt failed, skipped, or completed during opening;
 - recovery required;
-- recovery reconciled;
+- continuation strategy attempted/completed;
 - recovery explicitly accepted with uncertainty;
 - transcript corruption or cursor invalidation when relevant to a live reader.
 
@@ -1556,13 +1832,25 @@ change the session state, or manufacture operation failure records.
 
 - Default root, environment override, and explicit-root precedence.
 - Direct `AgentSession.create()` with omitted persistence creates no files.
+- Direct `AgentSession.open()` receives an adapter explicitly; persistence never creates
+  or globally resolves one.
 - Managed creation with omitted per-session options writes the registry and that
   session's default `activity` transcript.
 - `SessionManager.createAgentSession()` records the created session; direct
   `AgentSession.create()` never appears in its registry implicitly.
+- Manager create/load calls receive their adapter per operation; manager configuration
+  contains no adapter resolver or default adapter.
+- `getAgentSessionInfo()` returns metadata rather than a live object and exposes the
+  adapter ID needed for consumer resolution.
 - Per-session transcript settings override manager defaults and explicit
   `transcript: false` produces a registry-only managed session.
 - `create()` never restores and `open()` never creates a missing logical session.
+- A registry-declared missing transcript fails before harness startup with
+  `TranscriptNotFoundError`; registry-only restoration does not require one.
+- Consumer continuation cannot bypass an unexpectedly missing authoritative transcript;
+  it is allowed after explicit repair or when no transcript was configured.
+- Missing, unreadable, corrupt, and identity-mismatched transcripts produce distinct
+  typed failures.
 - Conflicting identity candidates fail instead of applying identifier/path precedence.
 - `persistence: false`, registry-only, transcript-only, and both-enabled behavior.
 - Existing directory, existing file, nonexistent file, and invalid filesystem path.
@@ -1589,6 +1877,16 @@ change the session state, or manufacture operation failure records.
 - Lock recovery cannot steal a provably live lock.
 - Unknown registry versions fail before mutation.
 - Handoff/switch update one logical record and preserve internal history.
+- Full internal-session history is absent from continuation checkpoints; transcript
+  transitions rebuild it and registry-only mode retains it in the registry record.
+- Default deletion tombstones and retains the transcript; include-deleted listing and
+  every combination of explicit transcript deletion/hard registry removal are tested.
+- Ordinary load rejects a tombstone. Explicit restore clears it only after successful
+  continuation, durable checkpointing, and CAS registry publication.
+- Restoring a tombstone whose transcript was deleted requires an explicit replacement
+  transcript or transcript-disabled choice.
+- An active transcript writer prevents deletion; a registry-only delete/checkpoint race
+  cannot resurrect the record.
 - `listAgentSessions()` ordering, limits, ties, and cursor invalidation are deterministic.
 
 ### Checkpoints and durability
@@ -1600,12 +1898,16 @@ change the session state, or manufacture operation failure records.
 - A post-ACP config persistence failure is reported as changed-but-unpersisted and blocks
   later state mutation.
 - Open reapplies desired selections in order; disappeared/rejected options enter
-  `configuration_mismatch` recovery.
+  non-promptable configuration mismatch state without being mislabeled as an uncertain
+  operation boundary.
 - Same-adapter handoff carries desired selections before seeding; cross-adapter switch
   requires an explicit mapping.
+- Same adapter identity attempts `loadSession()` even when the adapter object/version
+  differs; another adapter identity fails with `AdapterMismatchError` before startup.
 - Reconcile, stop, and reopen retain the same revision and state.
 - Transcript and registry copies use the identical checkpoint digest.
-- Transcript-newer repairs registry; registry-newer reports a transcript gap.
+- Transcript-newer repairs registry; registry-newer never silently overrides transcript
+  continuation and reports an uncertain persistence gap.
 - Equal revision with unequal digest fails.
 - Dispatch never occurs when the start marker cannot be synchronized.
 - Registry-only mode persists in-flight state before dispatch; `persistence: false`
@@ -1624,9 +1926,16 @@ change the session state, or manufacture operation failure records.
   uncovered terminal boundary.
 - Crash after transcript checkpoint but before registry publication repairs registry.
 - A torn final line is ignored; a malformed complete v2 middle line is corruption.
-- Certified replay can reconcile; merely observable replay imports evidence but remains
-  uncertain.
-- Resume without replay remains uncertain.
+- ACP replay may import observable evidence but remains uncertain in v0.
+- Resume without replay remains uncertain, and successful load alone is not proof of
+  reconciliation.
+- Default continuation recovery attempts only the recorded internal session. Transcript
+  reconstruction and consumer continuation occur only when explicitly configured.
+- Successful and failed opens expose ordered attempts, prior-thread availability, active
+  thread identity, and reconstruction source through their continuation report.
+- Continuation acquisition never clears an independently dirty operation boundary.
+- Transcript reconstruction creates and seeds a new thread, records provenance, and
+  never claims to undo tool side effects.
 - No prompt is accepted until uncertain recovery is resolved.
 - Accepting harness state records the gap; starting a new thread records the transition.
 
@@ -1642,6 +1951,8 @@ change the session state, or manufacture operation failure records.
 - Limit counts projected items, not physical records.
 - Concurrent append does not alter an existing pagination snapshot.
 - Reusing a cursor with another view/filter/transcript fails.
+- Timeline accepts only timeline-record `types`; conversation rejects `types` and records
+  accepts all known record types.
 - Truncation, replacement, rewrite, and generation change invalidate old cursors.
 - Cursor validation rejects hostile offsets and oversized payloads.
 - Async iteration remains bounded on a very large transcript.
@@ -1664,7 +1975,8 @@ change the session state, or manufacture operation failure records.
 2. Implement the central atomic registry and `listAgentSessions()` pagination.
 3. Implement the v2 writer, pre-persistence filtering, sequencing, and durable flush.
 4. Add operation write-ahead records and checkpoint publication ordering.
-5. Add checkpoint-based open/restore and adapter-assisted recovery state.
+5. Add checkpoint-based open/restore, per-operation adapter inputs, and the explicit
+   continuation-acquisition strategy pipeline.
 6. Add cursor transcript reads, projections, activity folding, and bounded iteration.
 7. Add migration utilities and mixed v1/v2 reading.
 8. Integrate CLI presentation only after the consumer-facing APIs are stable.
@@ -1677,5 +1989,6 @@ change the session state, or manufacture operation failure records.
 - Billing truth; the metering specification deliberately assigns durable accounting to
   the consumer.
 - General automatic discovery/import of arbitrary harness sessions.
+- Adapter-certified automatic replay reconciliation.
 - Exactly-once recovery of provider calls or external tool side effects, which neither
   ACP nor local filesystem checkpoints can guarantee.

@@ -539,3 +539,104 @@ The note retains the possible future buffered mode and its honest limitation: su
 power loss could erase recent boundaries and make an apparently clean checkpoint
 unreliable. It is deferred until measurements show synchronization latency is material
 relative to harness/model operations.
+
+### Persistence restoration and recovery correction
+
+Normalized `9-6-SPEC-persistence-transcripts.md` after the adapter ownership, checkpoint,
+missing-transcript, and recovery discussion.
+
+Adapter construction is no longer a `SessionManager` concern. The manager stores the
+stable `adapterId`, but every create/load/open operation receives the concrete adapter
+from the consumer. Ordinary restoration permits another adapter object or version under
+the same adapter identity and lets `loadSession()` determine compatibility. A different
+adapter identity fails before harness startup with `AdapterMismatchError`; continuing
+through another adapter is an explicit switch or transcript reconstruction operation.
+
+Removed the complete `internalSessionHistory` from `AgentSessionCheckpoint`. Checkpoints
+now retain only the current internal session, activation time, optional last transition,
+and bounded history revision/digest. The registry retains history for registry-only and
+listing use, while transcript-enabled history is reconstructed from transition records.
+The digest is a corruption-consistency signal, not a competing recovery source.
+
+Replaced the dual-authority checkpoint rules with conditional authority:
+
+- registry plus transcript: registry provides discovery and transcript provides
+  continuation;
+- registry only: registry provides discovery and continuation;
+- transcript only: the consumer supplies discovery and transcript provides continuation;
+- neither: the consumer supplies both the checkpoint and adapter.
+
+A registry-declared transcript is mandatory during managed restoration. Missing,
+unreadable, corrupt, and identity-mismatched files now produce distinct typed errors
+before harness startup. Managed restoration never creates a replacement transcript,
+falls back to a stale registry projection, starts an empty thread, or inherits legacy
+`providerSession.onFailure: "new"` behavior. Registry-only sessions remain valid without
+a transcript.
+
+V0 automatic certified replay was removed from the active contract and deferred. Dirty
+boundaries remain explicitly `uncertain`; generic ACP load replay can add observable
+evidence but cannot prove completeness. Continuation recovery is now an ordered,
+extensible pipeline: validate the checkpoint, try the recorded internal session by
+default, then only when explicitly configured create a new thread from transcript or
+consumer-provided continuation. This preserves a future extension point without making
+costly/content-sending reconstruction an implicit fallback.
+
+The public deletion contract now defaults to a registry tombstone with transcript
+retention. Transcript deletion and permanent registry removal are separate explicit
+booleans, deleted entries are hidden normally and discoverable with `includeDeleted`, and
+the fully destructive combination requires explicit selection. The old ambiguous listing
+names are decided: manager inventory is `listAgentSessions()` and harness discovery is
+`AgentSession.listInternalSessions()`.
+
+Also added announced ACP configuration IDs for actionable schema mismatch reporting,
+bounded configuration reapplication to one ordinal pass, a concrete versioned structured
+message payload, and timeline `types` filtering when the requested types are members of
+the timeline union. Tests, notifications, implementation order, and deferred-work lists
+were aligned with these decisions. No runtime source or tests were changed.
+
+### Continuation outcomes and tombstone restoration correction
+
+Completed the final pre-implementation clarification pass on the persistence spec.
+
+Separated continuation acquisition from crash-boundary reconciliation. Opening always
+uses an ordered `ContinuationStrategy` pipeline, defaulting only to loading the recorded
+internal session. `new_from_transcript` requires an explicit consumer builder in v0, and
+consumer-supplied continuation remains explicit. Independently, an uncovered or in-flight
+operation produces `SessionRecoveryStatus: uncertain`; successfully finding or creating
+a provider thread cannot make that uncertainty disappear.
+
+Both direct `AgentSession.open()` and managed `loadAgentSession()` now return an
+`AgentSessionOpenResult`. Its continuation report includes the recorded adapter and
+internal session, requested adapter, whether the recorded thread was available,
+every ordered attempt, the final source, transition ID when reconstruction occurred, and
+the active internal session ID. If opening exhausts its strategies, the typed error
+carries the same partial report. Opening-time notifications mirror the attempts and
+outcome, but the return/error value is authoritative because consumers cannot reliably
+attach a session listener before an open returns.
+
+ACP configuration mismatch is no longer mislabeled as crash recovery. It has a separate
+`ConfigurationRestoreStatus`, while continuation availability is represented only by the
+continuation report and crash recovery only by the durable operation boundary.
+
+Made registry-ahead validation mechanical: the implementation reconstructs the expected
+in-flight checkpoint from the authoritative transcript checkpoint plus journal tail and
+accepts the registry only when every field and digest match that projection. Other
+registry-newer state remains an uncertain persistence gap and never overrides transcript
+continuation.
+
+Clarified that an unexpectedly missing authoritative transcript fails validation before
+continuation strategies run. Consumer continuation is available only when transcripts
+were intentionally disabled, a direct consumer checkpoint is authoritative, or an
+explicit repair/import has replaced the missing authority.
+
+Specified `getAgentSessionInfo()` as the manager metadata lookup used to obtain
+`adapterId`; it never returns or owns a live session. Completed tombstone behavior:
+ordinary load rejects deleted sessions, `restoreAgentSession()` explicitly accepts a
+tombstone, deleted transcripts require an explicit replacement/disabled choice, and the
+tombstone clears only after successful continuation, durable checkpointing, and CAS
+publication. Transcript locks reject deletion of active transcript-backed sessions;
+registry-only races cannot resurrect a tombstone. Only explicit hard registry removal
+plus transcript deletion permits stable-ID reuse.
+
+The required-test matrix and notification contract were extended for all of these cases.
+No runtime source or tests were changed.

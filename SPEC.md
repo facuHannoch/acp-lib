@@ -36,9 +36,8 @@ surface.
 AcpClient                       ← the single handle
   config (constructor)          ← how to spawn & configure the process
     adapter                     ← launch command (preset or inline)
-    execPrefix                  ← e.g. ["docker","exec","-i","<container>"]
-    env                         ← spawn-time env vars
-    cwd                         ← agent workspace
+    launcher.prepare()          ← runtime-specific ACP/PTY process preparation
+    cwd                         ← target-visible agent workspace
     sessionsDir                 ← where session files are persisted
     sessionId?                  ← optional, to resume a specific session
     defaultPermission           ← "approve" | "cancel" fallback
@@ -71,7 +70,7 @@ this agent support fs?", "what auth methods exist?"). Lazy init can't offer that
 without triggering a prompt.
 
 `connect()` performs, in order:
-1. spawn the subprocess (`[...execPrefix, ...adapter.command]`)
+1. prepare and spawn the ACP subprocess (`launcher.prepare({ kind: "acp", targetCommand })`)
 2. `initialize` → populates `capabilities`
 3. `session/new` (or `session/load` if `sessionId` given) → populates `configOptions`
 
@@ -117,17 +116,31 @@ they offer, which is reversed between them.
 new AcpClient({ adapter: { command: ["my-custom-acp"] } })
 ```
 
-### Exec prefix (Docker etc.)
-The adapter owns its command; the *client* owns the prefix. Merged at spawn time as
-`[...execPrefix, ...adapter.command]`. The adapter doesn't know or care how it's
-executed.
+### Runtime launchers
+The adapter owns the target commands. A launcher may translate either the ACP command or
+the interactive PTY command into an exact host-side process launch. The launcher owns
+runtime semantics; the library does not inspect argv or interpret target paths.
 
 ```ts
 new AcpClient({
-  adapter: ADAPTERS.kimi,                                  // ["kimi","acp"]
-  execPrefix: ["docker", "exec", "-i", "container-name"],  // → docker exec -i container-name kimi acp
+  adapter: ADAPTERS.kimi,
+  launcher: {
+    async prepare({ kind, targetCommand }) {
+      return {
+        command: ["runtime-exec", kind, ...targetCommand],
+        spawnCwd: "/host/launcher/cwd",
+        spawnEnv: sanitizedHostEnvironment,
+        dispose: async () => releasePreparedResources(),
+      };
+    },
+  },
 })
 ```
+
+`spawnEnv` is the complete environment of the directly spawned process and is passed to
+`Bun.spawn` unchanged. A returned launch is disposed exactly once after process exit or
+startup failure. `execPrefix` and `env` retain their historical overlay behavior only as
+compatibility options.
 
 ---
 
