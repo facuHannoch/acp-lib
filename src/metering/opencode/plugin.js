@@ -42,6 +42,15 @@ async function post(body) {
 // operation would still be reported as completely attributed.
 const sequence = new Map();
 
+// Message ids already reported, for this plugin instance's lifetime.
+//
+// The sequence must advance once per INFERENCE, not once per event. If a completed message
+// is seen twice — OpenCode loads plugins from both `.opencode/plugin/` and the config
+// `plugin` array, so a project-local copy alongside ours double-loads — incrementing again
+// makes the parent see a gap where none exists, and a phantom lost report blocks a working
+// billing session.
+const reported = new Set();
+
 export const AcpMeteringPlugin = async ({ directory, worktree }) => {
   // Announced at startup so the parent can tell "plugin never loaded" from "no inferences
   // happened yet" — the distinction billing-grade metering depends on.
@@ -55,6 +64,9 @@ export const AcpMeteringPlugin = async ({ directory, worktree }) => {
       // `message.updated` fires repeatedly while a message streams; only the completed
       // state carries final token counts. Earlier ones report zeros and would understate.
       if (!info.time?.completed) return;
+
+      if (reported.has(info.id)) return;
+      reported.add(info.id);
 
       const next = (sequence.get(info.sessionID) ?? 0) + 1;
       sequence.set(info.sessionID, next);

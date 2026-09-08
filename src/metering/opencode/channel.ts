@@ -153,7 +153,17 @@ export class OpencodeMeteringChannel {
   private _rejected = 0;
   /** Highest sequence seen per session, and how many were skipped. */
   private readonly highestSequence = new Map<string, number>();
+  /**
+   * Message ids accepted at any point, not just those still pending.
+   *
+   * `pending` alone is not a dedupe scope: once an operation drains it, a repeat report for
+   * the same completed message would be taken as fresh work and charged to the NEXT
+   * operation. The plugin suppresses repeats too; this is the defensive half, because a
+   * double-charge must not depend on a component running inside the harness.
+   */
+  private readonly seenMessageIds = new Set<string>();
   private _lostReports = 0;
+  private _duplicatesRefused = 0;
 
   readonly token: string = crypto.randomUUID();
 
@@ -164,6 +174,15 @@ export class OpencodeMeteringChannel {
   /** True once the plugin has announced itself: "loaded" versus "silent" are different. */
   get handshake(): ChannelHandshake | null {
     return this._handshake;
+  }
+  /**
+   * Repeat reports for a message already drained.
+   *
+   * Non-zero usually means the plugin is loaded twice — harmless now that it is refused,
+   * but worth surfacing because it also indicates the harness config has two entries.
+   */
+  get duplicatesRefusedCount(): number {
+    return this._duplicatesRefused;
   }
   /** Posts refused for a bad token or malformed body. Non-zero means something is wrong. */
   get rejectedCount(): number {
@@ -226,9 +245,16 @@ export class OpencodeMeteringChannel {
             this.options.onWarning?.("rejected a malformed inference record");
             return new Response("bad record", { status: 400 });
           }
-          // Keyed by messageID: a message can be reported more than once, and the same
-          // inference counted twice would inflate a bill.
-          const firstSighting = !this.pending.has(inference.messageID);
+          // Keyed by messageID across the channel's whole life, not just what is pending:
+          // the same inference counted twice would inflate a bill.
+          const everSeen = this.seenMessageIds.has(inference.messageID);
+          if (everSeen && !this.pending.has(inference.messageID)) {
+            // Already drained into a completed operation. Accepting it again would charge
+            // the work twice.
+            this._duplicatesRefused += 1;
+            return new Response("duplicate", { status: 409 });
+          }
+          const firstSighting = !everSeen;
           if (firstSighting && this.pending.size >= this.capacity) {
             // Full. Refuse rather than evict: dropping the oldest would silently lose a
             // record already counted as delivered.
@@ -240,7 +266,14 @@ export class OpencodeMeteringChannel {
             return new Response("full", { status: 503 });
           }
           this.pending.set(inference.messageID, inference);
-          if (firstSighting && inference.sequence !== null) {
+          this.seenMessageIds.add(inference.messageID);
+          if (inference.sequence !== null) {
+            // Bookkeeping runs for EVERY report, not just first sightings. A duplicate
+            // consumes a sequence number, and skipping it here left `highest` behind so the
+            // next genuine report looked like a gap — a phantom loss that blocks a working
+            // billing session. The channel must not depend on the plugin, which runs inside
+            // the harness, sequencing perfectly.
+            //
             // A gap means a POST was lost. Silence and loss look identical without this,
             // and an operation would still claim complete attribution.
             const previous = this.highestSequence.get(inference.sessionID) ?? 0;

@@ -637,6 +637,10 @@ export class MeteringEngine {
 
     const parts: { usage: AttributableUsage; sample: ProviderInference }[] = [];
     let reason: string | undefined;
+    // `pricing: false` is a choice everywhere, including here. The single-model fast path
+    // already honoured it; a multi-model operation was still recording each group as a
+    // failed rating, so a deliberately unrated session accumulated phantom losses.
+    const unpricedReason = this.options.pricing === false ? "not_attempted" : "failed";
     for (const group of groups.values()) {
       const sample = group[0]!;
       const tokens = sumInferenceTokens(group);
@@ -646,20 +650,22 @@ export class MeteringEngine {
         ? open.policy
         : await this.resolveForInference(open, sample);
       if (!policy) {
-        reason ??= `no pricing policy for ${sample.providerID}/${sample.modelID}`;
-        parts.push({ usage: unpricedUsage(tokens), sample });
+        if (unpricedReason === "failed") {
+          reason ??= `no pricing policy for ${sample.providerID}/${sample.modelID}`;
+        }
+        parts.push({ usage: unpricedUsage(tokens, unpricedReason), sample });
         continue;
       }
       const selected = selectSchedule(policy, facts);
       if (!selected.ok) {
         reason ??= selected.reason;
-        parts.push({ usage: unpricedUsage(tokens), sample });
+        parts.push({ usage: unpricedUsage(tokens, "failed"), sample });
         continue;
       }
       const rated = rateDelta(tokens, policy, selected.schedule);
       if (!rated.ok) {
         reason ??= rated.reason;
-        parts.push({ usage: unpricedUsage(tokens), sample });
+        parts.push({ usage: unpricedUsage(tokens, "failed"), sample });
         continue;
       }
       parts.push({ usage: rated.usage, sample });
@@ -668,6 +674,7 @@ export class MeteringEngine {
     const combined = combineAttributable(parts);
     // Complete only when EVERY model group rated. One unpriceable model makes the
     // operation's total an understatement, whatever the others managed.
+    // With pricing off, "complete" means nothing was lost — not that everything was rated.
     const complete = parts.every((part) => isTotalComplete(part.usage.ratedTotal));
     return reason ? { usage: combined, complete, reason } : { usage: combined, complete };
   }

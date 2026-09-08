@@ -85,9 +85,11 @@ export async function createOpencodeMetering(
   }
   if (!verified) options.onWarning?.(`running against unverified opencode ${version ?? "?"}`);
 
-  const channel = new OpencodeMeteringChannel({ onWarning: options.onWarning });
-  channel.start();
-  // Fail closed. Proceeding without the user's config would silently change which model
+  // Profile FIRST. It can fail closed on an unreadable config, and a channel started
+  // before that throw would leave a bound loopback socket with no object to stop it —
+  // the caller never receives the return value an exception skips past.
+  //
+  // Fail closed: proceeding without the user's config would silently change which model
   // answers, and a certified metering channel that alters what it is metering is worse
   // than no metering. `allowUnreadableConfig` is the deliberate override.
   const profile = await writeManagedProfile(meteringPluginPath(), {
@@ -106,6 +108,15 @@ export async function createOpencodeMetering(
       );
     },
   });
+
+  const channel = new OpencodeMeteringChannel({ onWarning: options.onWarning });
+  try {
+    channel.start();
+  } catch (error) {
+    // Nothing else has been handed out yet, so this is the only chance to clean up.
+    await profile.cleanup();
+    throw error;
+  }
 
   const inferenceSource: InferenceSource = {
     certificationId: OPENCODE_PLUGIN_CERTIFICATION.certificationId,

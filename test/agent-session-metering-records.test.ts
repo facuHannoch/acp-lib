@@ -1174,3 +1174,46 @@ describe("deliberate absence is not a loss", () => {
     }
   });
 });
+
+describe("deliberate absence across several models", () => {
+  test("pricing: false stays clean when an operation spans models", async () => {
+    // The single-model fast path honoured `pricing: false`; the multi-model path still
+    // recorded each group as a failed rating, so a deliberately unrated session
+    // accumulated phantom losses.
+    const inference = (modelID: string) =>
+      ({
+        sequence: null,
+        messageID: `m${Math.random()}`,
+        sessionID: "s",
+        providerID: "anthropic",
+        modelID,
+        summary: false,
+        completedAt: Date.now(),
+        cost: 0,
+        tokens: { totalTokens: 100, inputTokens: 60, outputTokens: 40 },
+      }) as never;
+
+    const { session } = await openSession({
+      adapterId: "opencode",
+      metering: {
+        pricing: false,
+        inferenceSource: {
+          certificationId: "opencode-plugin@1",
+          isHealthy: () => true,
+          drain: () => [inference("claude-sonnet-4-5"), inference("other-model")] as never,
+        },
+      },
+    });
+    try {
+      const result = (await session.prompt("hello")) as AgentSessionPromptResult;
+      expect(result.metering!.pricingStatus).toBe("not_configured");
+      if (result.metering!.usage.status !== "metered") return;
+      expect(result.metering!.usage.attributable.ratedTotal.unaccounted).toBe(0);
+      expect(session.meteringSnapshot.ratedCosts.unaccounted).toBe(0);
+      // Tokens are still fully accounted across both models.
+      expect(result.metering!.usage.attributable.totalTokens).toBe(200);
+    } finally {
+      await session.stop();
+    }
+  });
+});

@@ -249,3 +249,65 @@ describe("bounded buffer", () => {
     expect((await post(channel, inference(), "short")).status).toBe(403);
   });
 });
+
+describe("duplicate suppression", () => {
+  test("a repeat of an already-drained message is refused, not charged again", async () => {
+    // `pending` alone was the dedupe scope, so once an operation drained a record, a
+    // repeat post was taken as fresh work and billed to the NEXT operation.
+    const target = start();
+    await post(target, inference({ messageID: "a" }));
+    expect(target.drain(null)).toHaveLength(1);
+
+    const repeat = await post(target, inference({ messageID: "a" }));
+    expect(repeat.status).toBe(409);
+    expect(target.drain(null)).toHaveLength(0);
+    expect(target.duplicatesRefusedCount).toBe(1);
+  });
+
+  test("a repeat while still pending updates in place, as a settling message must", async () => {
+    const target = start();
+    await post(target, inference({ messageID: "a", cost: 0.1 }));
+    expect((await post(target, inference({ messageID: "a", cost: 0.2 }))).ok).toBe(true);
+    const drained = target.drain(null);
+    expect(drained).toHaveLength(1);
+    expect(drained[0]?.cost).toBe(0.2);
+  });
+
+  test("a duplicate does not manufacture a phantom lost report", async () => {
+    // The sequence advances per event, so a duplicate consumed a number the channel never
+    // saw as a first sighting — making the NEXT message look like a gap and, under
+    // billing_required, blocking a working session.
+    const target = start();
+    await post(target, inference({ messageID: "a", sequence: 1 }));
+    await post(target, inference({ messageID: "a", sequence: 2 })); // the duplicate
+    await post(target, inference({ messageID: "b", sequence: 3 }));
+    expect(target.lostReportCount).toBe(0);
+  });
+});
+
+describe("gap detection stays correct around duplicates", () => {
+  test("a genuine gap is still detected", async () => {
+    const target = start();
+    await post(target, inference({ messageID: "a", sequence: 1 }));
+    await post(target, inference({ messageID: "c", sequence: 3 })); // b never arrived
+    expect(target.lostReportCount).toBe(1);
+  });
+
+  test("a double-loaded plugin repeating the same sequences reports no loss", async () => {
+    // Two plugin instances each keep their own counter, so the channel sees every
+    // (messageID, sequence) pair twice rather than an advancing sequence.
+    const target = start();
+    for (const [id, sequence] of [["a", 1], ["a", 1], ["b", 2], ["b", 2]] as const) {
+      await post(target, inference({ messageID: id, sequence }));
+    }
+    expect(target.lostReportCount).toBe(0);
+  });
+
+  test("out-of-order arrival does not invent a loss", async () => {
+    const target = start();
+    await post(target, inference({ messageID: "b", sequence: 2 }));
+    await post(target, inference({ messageID: "a", sequence: 1 }));
+    // 2 arrived first and is the high-water mark; 1 is behind it, not a gap.
+    expect(target.lostReportCount).toBe(1); // the gap 0->2 is reported once, and only once
+  });
+});
