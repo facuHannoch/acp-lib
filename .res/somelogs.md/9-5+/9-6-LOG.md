@@ -1204,3 +1204,29 @@ maintenance inspection, and explicit compatibility-mode rejection. The focused m
 and legacy manager suites pass 6/6 and `tsc --noEmit` passes. Managed creation/loading are
 not yet exposed; they require the session-log writer and creation transaction coordinator
 rather than a best-effort record after `AgentSession.create()`.
+
+### Part 3A — lifetime-owned physical session-log writer
+
+Added `src/persistence/session-log-writer.ts` as the bounded physical sink shared by the
+future transcript and audit projections. A new writer requires an absolute resolved path,
+claims only an absent or zero-byte regular destination, installs and validates the exact
+versioned header as sequence 1, keeps a cross-process lock for its complete lifetime, and
+creates parent/log/lock artifacts owner-only. A second live writer receives a typed in-use
+error; dead locks are reclaimed only after positive PID liveness failure and token
+revalidation.
+
+Every append is serialized, validates the complete sink-specific record schema plus
+logical/log/generation identity, requires the exact next sequence, measures UTF-8 bytes
+without the newline, and enforces the same `maxRecordBytes` engraved in the header.
+Callers explicitly select durable boundaries; `sync()` and `close()` flush outstanding
+work. Schema/sequence/size rejection occurs before writing and does not poison the queue,
+while an append or synchronization failure after bytes may have reached the file
+permanently poisons that writer so later writes cannot hide a corrupt or uncertain tail.
+
+Added `test/persistence-session-log-writer.test.ts` covering owner-only creation and
+durable append, sequence and identity rejection with queue recovery, initialized versus
+zero-byte destinations, pre-write size rejection, and lifetime lock exclusion. The writer
+suite passes 5/5 and `tsc --noEmit` passes. This subpart deliberately creates only new
+generations; opening/scanning an existing generation belongs with the reducer/reader.
+Capture filtering, independent transcript/audit projection, and bounded truncation remain
+the next subpart.

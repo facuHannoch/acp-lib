@@ -190,6 +190,17 @@ export type {
   FileAgentSessionStoreOptions,
   RegistryRecoveryNotice,
 } from "./persistence/file-registry-store.ts";
+export {
+  FileSessionLogWriter,
+  SessionLogAlreadyExistsError,
+  SessionLogInUseError,
+  SessionLogRecordTooLargeError,
+  SessionLogWriteError,
+} from "./persistence/session-log-writer.ts";
+export type {
+  FileSessionLogWriterOptions,
+  SessionLogKind,
+} from "./persistence/session-log-writer.ts";
 
 export {
   MAX_SCALE,
