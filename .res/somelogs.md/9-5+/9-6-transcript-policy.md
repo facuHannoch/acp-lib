@@ -3733,3 +3733,676 @@ My recommendation is:
 This also clarifies an important consequence: if messages are excluded from the canonical transcript, ordinary internal-session loading can still work, but `new_from_transcript` reconstruction may be unavailable. The continuation report should expose that rather than discovering it only after the internal harness thread has disappeared.
 
 
+
+
+
+
+
+
+These are valuable criticisms. The first three reveal actual contradictions, not just missing implementation detail. I would revise my previous answer: the architecture is ready, but the contract needs one more correction pass before implementation.
+
+1. Pre-dispatch termination
+
+Agreed, with one adjustment: ordinary queue cancellation should normally produce no operation record because queued work has not entered the pre-dispatch persistence phase.
+
+Add:
+
+```ts
+interface TranscriptOperationRecord extends TranscriptEnvelope {
+  t: "operation";
+  event:
+    | "started"
+    | "settled"
+    | "failed"
+    | "cancelled"
+    | "interrupted"
+    | "aborted";
+
+  abortReason?:
+    | "pre_dispatch_persistence_failure"
+    | "pre_dispatch_cancelled";
+}
+```
+
+The compensation algorithm should be explicit:
+
+1. Track every artifact where `started` became durable.
+2. If a later required pre-dispatch write fails, do not contact the harness.
+3. Append `operation(aborted)` to every artifact that contains `started`.
+4. Publish a settled checkpoint where possible.
+5. If the compensating write fails, reopening remains conservatively uncertain.
+
+That last condition is unavoidable: knowing in memory that dispatch did not happen is insufficient after a crash unless the fact was persisted.
+
+2. Reconstructing internal-session history
+
+Agreed. Deriving history from timestamps and partial transition records would be nondeterministic.
+
+I would introduce an explicit activation phase:
+
+```ts
+event:
+  | "started"
+  | "target_created"
+  | "target_activated"
+  | "completed"
+  | "failed";
+```
+
+`target_activated` should carry the exact immutable history entry being committed:
+
+```ts
+historyEntry: InternalSessionHistoryEntry;
+```
+
+The canonical fold becomes simple:
+
+- `started` and `target_created` do not modify history.
+- `target_activated` appends exactly its `historyEntry`.
+- Repeated records with the same transition ID must contain the identical entry.
+- Failure before activation does not change current routing or history.
+- Failure after activation keeps the target current and retains the committed history entry.
+- `completed` describes orchestration completion; it does not independently mutate history.
+
+This also supplies configuration, activation/deactivation timestamps, model, protocol, adapter, and replacement reason without asking every reader to infer them.
+
+3. Undefined repair operations
+
+Agreed, although I would not build every repair operation into v0.
+
+I suggest dividing them:
+
+- Transcript relocation and arbitrary import: explicitly deferred. Remove language implying they already have public APIs.
+- Live persistence failure: no in-place repair in v0. The session remains blocked and must be stopped.
+- Audit replacement/disable: supported through an offline manager operation.
+- Missing transcript authority: requires an explicit offline repair acknowledging loss of transcript authority.
+
+A possible managed API:
+
+```ts
+await sessionManager.reconfigureAgentSessionPersistence(agentSessionId, {
+  expectedRecordRevision,
+
+  transcript:
+    | { action: "keep" }
+    | {
+        action: "disable";
+        acknowledgeContinuationLoss: true;
+      }
+    | {
+        action: "replace";
+        config: TranscriptConfig;
+        checkpoint: AgentSessionCheckpoint;
+        acknowledgeContinuationLoss: true;
+      },
+
+  auditLog:
+    | { action: "keep" }
+    | {
+        action: "disable";
+        acknowledgeAuditGap: true;
+      }
+    | {
+        action: "replace";
+        config: AuditLogConfig;
+        acknowledgeAuditGap: true;
+      },
+});
+```
+
+It must require no live writer, use registry CAS, and never start a harness. The following `loadAgentSession()` then uses the repaired configuration normally.
+
+4. Hard removal
+
+Agreed with your choice. Prohibit hard registry removal while retaining any library-managed artifact.
+
+Therefore:
+
+```ts
+removeRegistryEntry: true
+```
+
+requires deletion of every configured transcript and audit log in the same operation. Otherwise it throws. This gives us an enforceable guarantee and eliminates library-created orphans.
+
+Externally copied files may still exist, naturally, but they are outside the managed identity guarantee.
+
+5. Consumer-controlled durable dispatch
+
+Agreed. The current statement promises an integration point that does not exist.
+
+I would remove it for v0:
+
+> With registry and transcript persistence disabled, no durable dispatch boundary exists.
+
+Consumers needing database-backed durability should provide an `AgentSessionStore` through `SessionManager`. A more general pre-dispatch persistence coordinator can remain deferred. We should not introduce another sink abstraction until we know the manager store cannot cover the orchestration use case.
+
+6. Record-size limits
+
+Agreed. This is both a storage and input-validation requirement.
+
+We need separate limits:
+
+```ts
+interface PersistenceLimits {
+  maxRecordBytes: number;
+  maxCapturedFieldBytes: number;
+  maxJsonDepth: number;
+  maxCursorBytes: number;
+}
+```
+
+Suggested initial defaults:
+
+```ts
+{
+  maxRecordBytes: 1_048_576,       // 1 MiB
+  maxCapturedFieldBytes: 262_144,  // 256 KiB
+  maxJsonDepth: 64,
+  maxCursorBytes: 4_096,
+}
+```
+
+Rules:
+
+- Measure encoded UTF-8 bytes, not JavaScript character count.
+- Truncate strings only on valid UTF-8/code-point boundaries.
+- Oversized structured values become an explicit omission object containing:
+  - reason;
+  - original byte count;
+  - SHA-256 digest of the omitted serialized value.
+- Truncate tool results before tool inputs.
+- Never truncate identity, sequencing, operation boundaries, or checkpoint integrity fields.
+- An oversized structural record is a persistence error, not a truncated record.
+- Full activity snapshots remain bounded by these limits, preventing unbounded repeated growth.
+- Cursor decoding validates encoded size before decoding, then nesting, numeric ranges, and offsets before filesystem access.
+
+So yes: I would incorporate all six, with the modifications above. After that pass, I would consider the specification genuinely ready for phase-one implementation.
+
+
+
+
+
+
+
+---
+
+
+# Review passes
+
+
+These are real blockers. The first is slightly nuanced—`SessionConfigurationCheckpoint` is already filtered by the separate restoration policy—but it still violates the declared structural-record contract, and mechanically copying it into the audit log is definitely wrong.
+
+I would resolve them as follows.
+
+1. Separate transcript and audit transitions
+
+The transcript transition may retain the already-filtered restoration configuration because it needs to reconstruct canonical internal-session history. The spec must explicitly identify this as restoration state, governed by `sessionConfiguration`, not `capture.configuration`.
+
+The audit log needs its own sanitized shape:
+
+```ts
+interface AuditLogTransitionRecord extends AuditLogEnvelope {
+  t: "transition";
+  transitionId: string;
+  kind: TransitionKind;
+  event:
+    | "started"
+    | "target_created"
+    | "target_activated"
+    | "completed"
+    | "failed";
+
+  from?: AuditInternalSessionDescriptor;
+  to?: AuditInternalSessionDescriptor;
+  failedAfter?: TransitionPhase;
+  errorCode?: string;
+}
+
+interface AuditInternalSessionDescriptor {
+  internalSessionId: string | null;
+  adapterId: string;
+  mode: "normal" | "degraded";
+  model: string | null;
+  protocol: { name: "acp"; version: number } | { name: "pty" };
+}
+```
+
+It must omit:
+
+- `sessionConfiguration`;
+- `historyEntry`;
+- summary and continuation content;
+- replacement reasons when they contain consumer text.
+
+The generic `AuditRecordFrom<TranscriptTransitionRecord>` mapping should be removed. Security-sensitive audit records should have concrete schemas.
+
+2. Normalize history transition identity
+
+Agreed:
+
+```ts
+interface InternalSessionHistoryTransition {
+  kind: "handoff" | "switch" | "mode_change" | "replacement";
+  transitionId: string;
+  reason?: string;
+}
+```
+
+Every transition kind then participates in the same canonical matching rule. `reason` should be persisted only when admitted by the relevant restoration/capture policy; a content-free reason code would be preferable to arbitrary text.
+
+3. Repair an uncovered `target_activated`
+
+Deterministic checkpoint repair is the consistent result.
+
+A durable `target_activated` means the transition fold has committed:
+
+- the previous history entry;
+- the target’s current identity;
+- configuration/model/protocol state;
+- the history revision and digest.
+
+If the following checkpoint is absent, reopening should:
+
+1. Start from the preceding valid checkpoint.
+2. Apply the exact `target_activated` record.
+3. Derive the new checkpoint deterministically.
+4. Append and synchronize it.
+5. Repair the registry projection.
+6. Report that checkpoint repair occurred.
+
+This is not an uncertain provider operation. If the target thread subsequently cannot be loaded, that is a separate continuation-availability failure and appears in `ContinuationReport`.
+
+A malformed or incomplete activation record remains corruption.
+
+4. Prepared deletion
+
+Agreed. Deletion needs the same transaction structure as reconfiguration:
+
+```text
+CAS prepared deletion
+→ hide/block the session from ordinary load
+→ acquire artifact locks
+→ delete requested artifacts
+→ fsync parent directories
+→ finalize tombstone or remove registry entry
+```
+
+The registry should carry something like:
+
+```ts
+pendingDeletion?: {
+  deletionId: string;
+  requestDigest: string;
+  status: "prepared";
+  deleteTranscript: boolean;
+  deleteAuditLog: boolean;
+  removeRegistryEntry: boolean;
+  startedAt: string;
+}
+```
+
+The caller supplies a stable `deletionId`, allowing an interrupted deletion to be retried idempotently.
+
+Until finalized:
+
+- ordinary loading fails with `DeletionInProgressError`;
+- normal listing hides it;
+- `includeDeleted: true` exposes it;
+- another deletion ID or conflicting request fails;
+- identity remains reserved.
+
+This also fixes transcript-only deletion and audit-only deletion, not merely full removal.
+
+5. Configuration mismatch resolution
+
+We need a distinct API because this is not crash recovery:
+
+```ts
+await session.resolveConfigurationMismatch({
+  strategy: "accept_effective",
+});
+
+await session.resolveConfigurationMismatch({
+  strategy: "replace_desired",
+  selections: {
+    model: "sonnet",
+    reasoning: "high",
+  },
+});
+```
+
+Semantics:
+
+- `accept_effective` makes the currently announced effective values the new desired restoration state.
+- `replace_desired` applies the supplied selections in one ordinal pass and persists the resulting desired/effective state.
+- Both create a configuration record and checkpoint before unblocking.
+- Failure leaves the mismatch unresolved.
+
+I would remove “start a new thread” from this API. The consumer can resolve/accept configuration first and then explicitly hand off or switch. Combining thread replacement with configuration reconciliation creates another compound state machine unnecessarily.
+
+6. Strict create semantics
+
+Agreed. `create()` must reject any initialized transcript or audit log, even when its `agentSessionId` matches.
+
+Claimable destinations are only:
+
+- absent paths;
+- existing zero-byte regular files acquired under the exclusive writer lock.
+
+Anything containing a recognized header, legacy transcript content, malformed content, or even unrelated bytes is not claimable by `create()`.
+
+7. Deterministic option merging
+
+Use `activity` as the default transcript preset whenever transcript persistence is explicitly enabled, including direct `transcript: {}`.
+
+Resolve managed configuration layer by layer:
+
+1. Managed library defaults.
+2. Manager session defaults.
+3. Per-session options.
+
+At each layer:
+
+- `false` disables the artifact.
+- A supplied `path` replaces only the path.
+- A supplied `preset` resets the capture policy to that preset.
+- That same layer’s `capture` overrides individual members after preset expansion.
+- A layer with no `preset` merges its `capture` into the previously resolved policy.
+- `limits` merge member-by-member.
+- Arrays such as configuration `include`/`exclude` replace rather than concatenate.
+
+Thus:
+
+```ts
+// Retains manager preset and capture settings:
+transcript: { path: "/customer/path" }
+
+// Resets policy to detailed, then changes messages:
+transcript: {
+  preset: "detailed",
+  capture: { messages: "none" },
+}
+```
+
+8. Make truncation conform to the schemas
+
+Whole message records should never disappear when message capture is enabled.
+
+Rules:
+
+- `text: string` remains a string and is Unicode-safely truncated.
+- Optional structured fields such as `structured` may be omitted, with envelope truncation metadata.
+- Required `JsonValue` fields may contain `OmittedPersistedValue`.
+- Strongly typed structural fields cannot be replaced with omission markers.
+- A record is retained unless its nontruncatable structure alone exceeds the hard limit, which becomes a typed persistence failure.
+- Conversation availability becomes `partial` when a message record has truncation metadata affecting `text` or `structured`.
+
+That removes the type contradiction and preserves evidence that content existed.
+
+9. Remove stale relocation support
+
+Agreed. `loadAgentSession()` should say it rejects transcript path overrides. Healthy relocation and arbitrary new destinations remain deferred.
+
+The offline replacement operation is recovery at the recorded path, not relocation.
+
+10. Introduce a view-independent snapshot cursor
+
+`listActivityStates()` should not accept a page cursor tied to a projection/filter. Add:
+
+```ts
+interface TranscriptPage<T, C> {
+  items: readonly T[];
+  snapshot: TranscriptSnapshotCursor;
+  // Existing navigation fields...
+}
+
+interface ListTranscriptActivitiesOptions {
+  at?: TranscriptSnapshotCursor;
+  status?: "open" | "terminal" | "all";
+  order?: "updated_desc" | "updated_asc";
+  limit?: number;
+}
+```
+
+`TranscriptSnapshotCursor` identifies only:
+
+- artifact ID and generation;
+- snapshot high-water sequence and byte offset;
+- boundary digest.
+
+It contains no view/filter fingerprint. Default ordering should be `updated_desc`, with `activityId` as the deterministic tie-breaker. The result is limited but not itself paginated in v0.
+
+So, unfortunately, the spec still was not implementation-ready. These corrections are worth making first; otherwise we would immediately encode contradictions into the public types and recovery machinery.
+
+
+
+
+
+These changes are directionally right and improve the architecture, not merely patch the wording. They push the design toward three healthy principles:
+
+- persisted schemas are sink-specific;
+- transcript state is reducible deterministically;
+- destructive maintenance uses explicit transactions.
+
+I would adopt all ten, with a few important refinements.
+
+## Important refinements
+
+1. **Do not generically map any security-sensitive transcript record into audit records.**
+
+   Separating transition records is essential. I would go slightly further: audit records should generally have concrete schemas for transitions, permissions, configuration, and activity. A generic `AuditRecordFrom<T>` creates a future security hazard: adding a field to a transcript schema can silently add it to the audit artifact.
+
+   Architecturally, use one normalized internal event and two explicit projections:
+
+   ```text
+   normalized runtime event
+       ├── transcript projection — restoration + capture policy
+       └── audit projection      — audit allowlist only
+   ```
+
+   The transcript configuration exception should explicitly say that filtered restoration values may appear in checkpoints and canonical transition-history records, governed exclusively by `sessionConfiguration`.
+
+2. **Keep arbitrary reason text out of canonical history.**
+
+   Normalizing `transitionId` is correct, but conditional capture cannot affect canonical history or its digest. Otherwise two sessions with identical routing history but different capture policies produce different canonical history.
+
+   I would split it:
+
+   ```ts
+   interface InternalSessionHistoryTransition {
+     kind: TransitionKind;
+     transitionId: string;
+     reasonCode?: string;
+   }
+   ```
+
+   Any consumer-authored explanation becomes a separate `reasonText`, admitted only under transition content capture and excluded from history reconstruction and its digest.
+
+3. **Deterministic activation repair needs deterministic checkpoint fields.**
+
+   The repair algorithm is right, but “derive the checkpoint deterministically” requires every digest-covered value to be derivable from the activation record. In particular:
+
+   - resulting `stateRevision`;
+   - `updatedAt`;
+   - `internalSessionActivatedAt`;
+   - history revision and digest;
+   - `lastTransition.at`;
+   - transcript `coveredSequence`;
+   - boundary state.
+
+   Avoid generating a fresh timestamp during recovery. Either put the resulting checkpoint metadata on `target_activated`, or define canonical derivation from fields already present. Otherwise two recovery attempts can produce different checkpoint digests.
+
+   The repair should also be represented directly in `AgentSessionOpenResult`, not only through a notification, because opening listeners may not yet exist:
+
+   ```ts
+   repairs: readonly PersistenceRepair[];
+   ```
+
+4. **Acquire deletion locks before publishing prepared deletion.**
+
+   The proposed deletion transaction is good, but I would order it as:
+
+   ```text
+   resolve targets
+   → acquire all artifact locks in canonical order
+   → reread and validate registry revision
+   → CAS pendingDeletion
+   → delete artifacts and fsync directories
+   → finalize tombstone/removal
+   ```
+
+   Publishing `pendingDeletion` before acquiring locks could leave the session hidden and blocked merely because a live session still owns a writer lock.
+
+   Also, `AgentSessionSummary` needs a way to represent this state when `includeDeleted: true`; `deletedAt` alone is insufficient. Something like:
+
+   ```ts
+   lifecycle: "active" | "deletion_pending" | "deleted";
+   ```
+
+5. **Configuration replacement must be ordered and crash-safe per selection.**
+
+   `accept_effective` is clean. `replace_desired` should not take a record/object because its semantics depend on order:
+
+   ```ts
+   selections: readonly {
+     configId: string;
+     value: JsonValue;
+   }[];
+   ```
+
+   Each `setSessionConfigOption` that reaches the harness needs its ordinary operation start/terminal/checkpoint boundary. A single checkpoint after the whole pass is insufficient: a crash after applying selection two of four would leave runtime configuration changed without durable knowledge of which selections succeeded.
+
+   Suggested behavior:
+
+   ```text
+   validate mismatch-resolution request
+   → apply selection 1 + checkpoint
+   → validate returned schema
+   → apply selection 2 + checkpoint
+   → ...
+   → final configuration-resolution record/checkpoint
+   → unblock
+   ```
+
+   If one fails, prior successful changes remain accurately checkpointed and the mismatch remains unresolved.
+
+   `accept_effective` also needs policy-specific semantics: values excluded by `sessionConfiguration` cannot become persisted desired state. The method can accept the current runtime configuration, but must not claim exact future restoration for omitted values.
+
+6. **Strict creation exposes a broader multi-artifact initialization problem.**
+
+   Rejecting initialized files is correct, but consider:
+
+   ```text
+   transcript header successfully created
+   → audit header creation fails
+   → create() fails
+   ```
+
+   A retry now sees an initialized transcript and must reject it. Similar partial states can occur before registry publication.
+
+   Creation therefore needs either:
+
+   - a stable consumer/library-generated `creationId` and resumable prepared creation;
+   - temporary artifacts installed only after all are prepared;
+   - or explicit cleanup of artifacts proven to have been created by this failed attempt.
+
+   Temporary files alone do not make two artifact renames plus a registry update atomic. A generalized registry maintenance transaction is probably cleaner.
+
+7. **Define how `false` behaves across configuration layers.**
+
+   The merge algorithm is good, but one ambiguity remains: can a higher-precedence object re-enable something disabled by a lower layer?
+
+   I recommend:
+
+   - manager `transcript: false` disables it by default;
+   - per-session `transcript: { ... }` explicitly re-enables it, starting from the library `activity` preset;
+   - per-session `transcript: false` is final because it is the highest layer.
+
+   The same rule should apply to audit configuration. Also explicitly define whether managed `persistence: false` is legal; it cannot disable the manager registry if managed creation always guarantees discovery.
+
+8. **The truncation rules are coherent, but hashes may leak sensitive values.**
+
+   Keeping every message record is exactly right. One concern: `originalSha256` of captured-but-truncated content can enable dictionary attacks against low-entropy secrets, commands, paths, or configuration values.
+
+   I would either:
+
+   - omit the original hash by default and retain only `originalBytes`;
+   - make hashes an explicit diagnostic-policy feature;
+   - or hash only non-sensitive structural content.
+
+   A plain SHA-256 digest is not necessarily harmless metadata.
+
+9. **The snapshot cursor design is correct.**
+
+   Define `updated_*` using the sequence number of the greatest activity revision, not timestamps:
+
+   ```text
+   primary key: latest activity record seq
+   tie-breaker: activityId
+   ```
+
+   Also specify that:
+
+   - `at` is inclusive of the snapshot high-water sequence;
+   - the snapshot is returned even for an empty page;
+   - the page navigation cursor embeds or references the same snapshot identity;
+   - status filtering happens after folding activity revisions.
+
+## Larger architectural effect
+
+These changes reveal that the system really has two foundational abstractions.
+
+### A pure transcript reducer
+
+There should be one implementation that folds:
+
+```text
+checkpoint + structural journal tail → derived continuation state
+```
+
+The writer, opener, registry repair, activation repair, cursor reader, and tests should all use this same reducer. If each subsystem independently implements transition folding, their checkpoint digests will eventually diverge.
+
+The checkpoint becomes a materialized cache of the reducer, not a separately interpreted state object.
+
+### A generalized maintenance transaction
+
+Reconfiguration and deletion now share the same shape, and strict creation likely needs it too. Rather than accumulating independent optional fields such as:
+
+```ts
+persistenceReconfiguration?
+pendingDeletion?
+pendingCreation?
+```
+
+consider one mutually exclusive registry field:
+
+```ts
+maintenance?: {
+  kind: "creation" | "persistence_reconfiguration" | "deletion";
+  operationId: string;
+  requestDigest: string;
+  status: "prepared";
+  startedAt: string;
+  details: ...;
+};
+```
+
+That naturally prevents deletion and reconfiguration from racing and gives listing/loading one consistent blocked-state rule.
+
+Finally, promptability should be an explicit composition rather than scattered booleans:
+
+```text
+promptable =
+  continuation acquired
+  AND recovery resolved
+  AND configuration matched
+  AND persistence healthy
+  AND no maintenance operation pending
+```
+
+That will become important because these changes introduce several intentionally independent state machines.
+
+Bottom line: I would accept the proposed direction. The key additional work is making activation-derived checkpoint fields deterministic, making configuration replacement crash-safe per setting, and extending prepared transactions to creation—not just deletion and repair.
+
+
+

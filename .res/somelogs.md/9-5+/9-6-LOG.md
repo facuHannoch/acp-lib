@@ -675,3 +675,112 @@ explicitly replaces or disables it.
 The registry schema, listing summaries, pagination/cursor contract, continuation report,
 notifications, tombstone/deletion rules, required tests, and implementation order were
 updated consistently. No runtime source or tests were changed.
+
+### Final pre-implementation persistence corrections
+
+Closed six correctness and security gaps identified in the persistence specification.
+
+Added `operation(aborted)` with explicit pre-dispatch persistence-failure and cancellation
+reasons. When one required start boundary fails after another became durable, dispatch is
+withheld and every successful artifact receives a compensating abort plus a settled
+checkpoint where applicable. A durable abort proves the harness was not contacted and can
+repair a missing settled checkpoint deterministically; failure to persist the abort
+correctly remains uncertain.
+
+Made internal-session history reconstruction canonical. Transitions now have a
+`target_activated` phase carrying the exact immutable `InternalSessionHistoryEntry`, while
+descriptors include configuration and activation time. The fold rules explicitly cover
+creation, activation, completion, failure before activation, and failure after activation,
+so implementations never infer timestamps or history from adjacency.
+
+Defined the previously implicit repair surface. V0 has no live repair: consumers stop the
+session and use `reconfigureAgentSessionPersistence()` with revision CAS, a stable
+reconfiguration ID, explicit loss acknowledgements, and a validated checkpoint. The
+registry records a prepared transaction before destructive work, replacement remains at
+the same path in v0, durable artifact installation precedes final registry publication,
+and identical retries can complete interrupted work. Checkpoint lookup can explicitly
+return a nonauthoritative registry projection after transcript loss. Relocation, general
+orphan import, and in-place continuation after an audit gap remain deferred.
+
+Prohibited hard registry removal while retaining any configured artifact. Fully
+destructive removal must explicitly delete every transcript/audit log, synchronizes those
+deletions before CAS-removing discovery, and remains retryable if interrupted.
+
+Removed the unsupported claim that a direct consumer can reproduce pre-dispatch durability
+from notifications. Durable database-backed continuation uses an injected
+`AgentSessionStore` through `SessionManager`; with both continuation stores disabled the
+library makes no restoration guarantee.
+
+Added concrete record-security limits and defaults: 1 MiB per record, 256 KiB per captured
+field, JSON depth 64, and cursor size 4 KiB, with documented configurable hard ceilings.
+The contract now specifies UTF-8 measurement, Unicode-safe truncation, deterministic
+omission metadata/digests, filtering before measurement, truncation priority, rejection of
+oversized structural records, and pre-decode reader/cursor validation. Conversation
+availability reports `partial` when retained messages were size-limited.
+
+Updated schemas, registry summaries, error taxonomy, notifications, recovery rules,
+deletion ordering, tests, implementation order, and deferred work accordingly. No runtime
+source or tests were changed.
+
+### Full pre-implementation architecture pass
+
+Updated `9-6-SPEC-persistence-transcripts.md` to incorporate the final review as one
+coherent contract rather than a series of isolated exceptions.
+
+Made transcript and audit persistence explicitly sink-specific. Runtime events now pass
+through separate transcript and audit allowlist projections; audit schemas are concrete
+and cannot inherit newly added transcript fields. Audit transitions exclude restoration
+configuration, canonical history entries, summary/continuation content, and arbitrary
+reason text. Transcript transition configuration remains available for restoration only
+under the independent session-configuration persistence policy.
+
+Normalized transition identity and deterministic reduction. Every canonical history
+entry carries a transition kind and ID plus an optional stable reason code; capture-
+controlled reason text never affects history or its digest. `target_activated` records now
+carry every value needed to derive the resulting checkpoint without a fresh timestamp.
+A single pure reducer folds checkpoint plus structural journal tail for writers, opening,
+registry repair, cursor reads, and tests. An uncovered durable activation rebuilds its
+checkpoint and is reported directly in `AgentSessionOpenResult.repairs`.
+
+Replaced separate prepared-operation concepts with one generalized per-session maintenance
+transaction covering creation, persistence reconfiguration, and deletion. The store
+contract now supports prepare, constrained update, and atomic finalize operations.
+Creation uses a stable creation ID, rejects every initialized destination, stages all logs,
+and durably records its complete staged registry row before promotion. Direct persistent
+creation uses a temporary owner-only maintenance marker because no registry is present.
+The unavoidable provider/local-storage gap before a returned internal-session ID can be
+recorded is stated explicitly.
+
+Deletion now requires a stable deletion ID and expected record revision. It acquires every
+configured log lock before publishing prepared deletion, then removes requested logs,
+synchronizes their directories, and finalizes the tombstone or hard removal. Interrupted
+deletion remains visibly `maintenance_pending` and only an identical request can resume
+it. Hard removal continues to require deletion of every configured session log.
+
+Finished configuration layering and manager invariants. Persistence merges low-to-high,
+objects can explicitly re-enable a lower-layer `false`, arrays replace, capture and limits
+merge as documented, and manager constraints can require or forbid transcript/audit logs
+after resolution. Constraints are validation only and do not silently enable or disable
+storage. Managed `persistence: false` is invalid; registry-only managed sessions disable
+both logs explicitly.
+
+Added an explicit promptability composition and blocker list spanning continuation,
+recovery, configuration, persistence health, maintenance, and stopped state. Configuration
+mismatch resolution is ordered: `accept_effective` persists only policy-admitted values,
+while each `replace_desired` selection receives its own operation boundary and checkpoint,
+so partial progress remains truthful after a crash or failure.
+
+Hardened record-size privacy. Message records are never physically omitted, text remains
+a valid Unicode string, and optional structured content can be omitted without violating
+the schema. Truncation hashes now default off for every preset because low-entropy values
+can be guessed from plain SHA-256; each log must explicitly enable them, after capture
+filtering.
+
+Separated snapshot cursors from navigation cursors. Every transcript/audit page returns
+its inclusive high-water snapshot even when empty. Activity-state listing accepts only a
+same-transcript snapshot, folds revisions through that boundary, applies status filtering
+after folding, and orders deterministically by latest revision sequence plus activity ID.
+
+Added the corresponding required tests, updated implementation order to build maintenance
+and the reducer before managed restoration, and standardized “session log” to mean only a
+transcript or audit log. No runtime source or tests were changed.
