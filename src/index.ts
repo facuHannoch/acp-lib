@@ -222,6 +222,17 @@ export {
   reduceTranscriptHistory,
   reduceTranscriptState,
 } from "./persistence/reducer.ts";
+export {
+  TranscriptCorruptionError,
+  TranscriptIdentityError,
+  TranscriptNotFoundError,
+  TranscriptUnavailableError,
+  scanTranscriptContinuation,
+} from "./persistence/transcript-scanner.ts";
+export type {
+  TranscriptContinuationScan,
+  TranscriptScanExpectation,
+} from "./persistence/transcript-scanner.ts";
 export type {
   PersistenceRepair,
   SessionRecoveryStatus,

@@ -1324,3 +1324,32 @@ checkpoint consistency, uncovered and materialized activation, dirty operation b
 classification, exact in-flight materialization, deterministic abort repair, and major
 corruption cases. The complete persistence/manager-focused suite passes 82/82,
 `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 4B — bounded physical transcript continuation scan
+
+Added `src/persistence/transcript-scanner.ts` as the first filesystem consumer of the
+canonical folds. `scanTranscriptContinuation()` opens only an absolute regular file,
+captures a byte-size snapshot, reads it in fixed 64 KiB chunks, accepts only complete
+newline-terminated records, and ignores an incomplete final suffix while reporting its
+exact byte count. A line is bounded before UTF-8 decoding or JSON parsing—first by the
+library hard ceiling and then by the header's engraved `maxRecordBytes`. UTF-8 decoding
+is fatal rather than replacement-based.
+
+The scanner requires an exact sequence beginning with one validated header, enforces a
+stable logical/log/generation identity, supports explicit expected-identity checks, and
+distinguishes not-found, unavailable, corrupt, and identity failures. Recognized records
+receive the concrete transcript validator. A valid same-version unknown display record
+may be skipped without weakening envelope, sequence, canonical-JSON, or identity checks.
+
+Every physical checkpoint is validated incrementally against the prior checkpoint and
+its structural tail, rather than trusting only the newest record. Target activations are
+folded through each checkpoint's covered sequence, then the latest physical checkpoint
+and remaining tail are returned with the canonical reduction. This catches corruption in
+an older structural interval even when a later checkpoint exists and preserves the
+physical-checkpoint versus covered-state sequence distinction.
+
+Added `test/persistence-transcript-scanner.test.ts` covering bounded streaming with a torn
+tail, successive checkpoint-chain validation, unknown display records, distinct malformed
+and identity errors, missing files, deterministic abort repair, and recovery status. The
+complete persistence/manager-focused suite passes 87/87, `tsc --noEmit` passes, and
+`git diff --check` is clean.
