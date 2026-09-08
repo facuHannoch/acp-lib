@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAgentSessionCheckpoint, type AgentSessionCheckpoint } from "../src/persistence/checkpoint.ts";
 import { TRANSCRIPT_PRESETS } from "../src/persistence/config.ts";
 import { EMPTY_HISTORY_DIGEST } from "../src/persistence/reducer.ts";
 import type { KnownTranscriptRecord, TranscriptHeaderRecord, TranscriptOperationRecord } from "../src/persistence/records.ts";
+import { FileSessionLogWriter } from "../src/persistence/session-log-writer.ts";
 import {
   TranscriptCorruptionError,
   TranscriptIdentityError,
@@ -77,6 +78,26 @@ describe("transcript continuation scanner", () => {
     const root = await mkdtemp(join(tmpdir(), "acp-scanner-missing-"));
     roots.push(root);
     await expect(scanTranscriptContinuation(join(root, "missing.jsonl"))).rejects.toBeInstanceOf(TranscriptNotFoundError);
+  });
+
+  test("resumes append ownership at the last complete record and removes only a torn suffix", async () => {
+    const path = await transcriptPath();
+    const checkpoint = initialCheckpoint(path);
+    await writeLines(path, [header(path), checkpointRecord(checkpoint, 2)]);
+    await appendFile(path, "{\"partial\":", "utf8");
+
+    const { writer, scan } = await FileSessionLogWriter.resumeTranscript({
+      path,
+      expected: { agentSessionId: "agent-1", transcriptId: "transcript-1", generation: 1 },
+    });
+    expect(scan.ignoredTrailingBytes).toBeGreaterThan(0);
+    expect(writer.nextSequence).toBe(3);
+    await writer.append(operation(3, "started", 2), { durable: true });
+    await writer.close();
+
+    const lines = (await readFile(path, "utf8")).trimEnd().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines.map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3]);
   });
 });
 

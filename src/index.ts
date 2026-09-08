@@ -199,6 +199,8 @@ export {
 } from "./persistence/session-log-writer.ts";
 export type {
   FileSessionLogWriterOptions,
+  ResumedTranscriptWriter,
+  ResumeTranscriptWriterOptions,
   SessionLogKind,
 } from "./persistence/session-log-writer.ts";
 export {

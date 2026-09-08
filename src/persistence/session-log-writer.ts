@@ -13,6 +13,13 @@ import {
 } from "./records.ts";
 import { truncateSessionLogRecord } from "./truncation.ts";
 import type { PersistenceLimits } from "./config.ts";
+import {
+  scanTranscriptContinuation,
+  TranscriptNotFoundError,
+  TranscriptUnavailableError,
+  type TranscriptContinuationScan,
+  type TranscriptScanExpectation,
+} from "./transcript-scanner.ts";
 
 export type SessionLogKind = "transcript" | "audit";
 
@@ -23,6 +30,18 @@ export interface FileSessionLogWriterOptions<K extends SessionLogKind> {
   readonly maxRecordBytes: number;
   readonly lockTimeoutMs?: number;
   readonly lockRetryMs?: number;
+}
+
+export interface ResumeTranscriptWriterOptions {
+  readonly path: string;
+  readonly expected?: TranscriptScanExpectation;
+  readonly lockTimeoutMs?: number;
+  readonly lockRetryMs?: number;
+}
+
+export interface ResumedTranscriptWriter {
+  readonly writer: FileSessionLogWriter<"transcript">;
+  readonly scan: TranscriptContinuationScan;
 }
 
 export class SessionLogWriteError extends Error {
@@ -72,6 +91,7 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
     options: FileSessionLogWriterOptions<K>,
     handle: FileHandle,
     lock: OwnedLogLock,
+    initialSequence = options.header.seq,
   ) {
     this.kind = options.kind;
     this.path = options.path;
@@ -80,7 +100,7 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
     this.includeTruncationDigests = options.header.includeTruncationDigests;
     this.handle = handle;
     this.lock = lock;
-    this.sequence = options.header.seq;
+    this.sequence = initialSequence;
     this.expected = {
       agentSessionId: options.header.agentSessionId,
       logId: options.kind === "transcript"
@@ -110,6 +130,49 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
       const writer = new FileSessionLogWriter(options, handle, lock);
       await writer.writeRecord(options.header, true);
       return writer;
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      await lock.release();
+      throw error;
+    }
+  }
+
+  /** Own and resume one validated transcript generation, discarding only a torn suffix. */
+  static async resumeTranscript(
+    options: ResumeTranscriptWriterOptions,
+  ): Promise<ResumedTranscriptWriter> {
+    if (!isAbsolute(options.path)) throw new SessionLogWriteError("session-log path must be absolute");
+    await inspectResumableTranscript(options.path);
+    const lock = await acquireLogLock(
+      `${options.path}.lock`,
+      options.path,
+      options.lockTimeoutMs ?? 5_000,
+      options.lockRetryMs ?? 20,
+    );
+    let handle: FileHandle | undefined;
+    try {
+      const before = await inspectResumableTranscript(options.path);
+      const scan = await scanTranscriptContinuation(options.path, options.expected);
+      handle = await open(options.path, "a+");
+      const owned = await handle.stat();
+      if (owned.dev !== before.dev || owned.ino !== before.ino || owned.size !== scan.snapshotBytes) {
+        throw new TranscriptUnavailableError("transcript changed while append ownership was being acquired");
+      }
+      if (scan.ignoredTrailingBytes > 0) {
+        await handle.truncate(scan.lastCompleteOffset);
+        await handle.sync();
+      }
+      await chmod(options.path, 0o600).catch(() => undefined);
+      const writerOptions: FileSessionLogWriterOptions<"transcript"> = {
+        kind: "transcript",
+        path: options.path,
+        header: scan.header,
+        maxRecordBytes: scan.header.effectiveLimits.maxRecordBytes,
+        lockTimeoutMs: options.lockTimeoutMs,
+        lockRetryMs: options.lockRetryMs,
+      };
+      const writer = new FileSessionLogWriter(writerOptions, handle, lock, scan.lastCompleteSequence);
+      return { writer, scan };
     } catch (error) {
       await handle?.close().catch(() => undefined);
       await lock.release();
@@ -191,6 +254,20 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
     if (this.closed) throw new SessionLogWriteError("session-log writer is closed");
     if (this.failure) throw this.failure;
   }
+}
+
+async function inspectResumableTranscript(path: string) {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new TranscriptNotFoundError(path);
+    throw new TranscriptUnavailableError(`cannot inspect transcript before resume: ${path}`, { cause: error });
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new TranscriptUnavailableError(`transcript is not a regular non-symbolic file: ${path}`);
+  }
+  return info;
 }
 
 function validateWriterOptions(options: FileSessionLogWriterOptions<SessionLogKind>): void {

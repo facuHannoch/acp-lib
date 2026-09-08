@@ -38,6 +38,8 @@ export interface TranscriptContinuationScan {
   readonly reduction: TranscriptReductionResult;
   readonly lastCompleteSequence: number;
   readonly lastCompleteOffset: number;
+  /** File size captured before the scan; later appends are excluded from this result. */
+  readonly snapshotBytes: number;
   readonly ignoredTrailingBytes: number;
 }
 
@@ -183,6 +185,7 @@ async function scanOpenTranscript(
     reduction,
     lastCompleteSequence: sequence,
     lastCompleteOffset,
+    snapshotBytes: snapshotSize,
     ignoredTrailingBytes: snapshotSize - lastCompleteOffset,
   };
 }

@@ -1353,3 +1353,23 @@ tail, successive checkpoint-chain validation, unknown display records, distinct 
 and identity errors, missing files, deterministic abort repair, and recovery status. The
 complete persistence/manager-focused suite passes 87/87, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 4C — exclusive resume of an existing transcript generation
+
+Extended `FileSessionLogWriter` with `resumeTranscript()`. Resume rejects missing,
+non-regular, symbolic, or relative targets; acquires the same lifetime ownership lock as
+creation; scans the generation through the bounded continuation scanner; and verifies
+that the owned descriptor still names the inspected inode at the exact scanned snapshot
+size. It therefore cannot validate one file and unknowingly append to a replacement.
+
+An incomplete final suffix is truncated only after exclusive ownership is established,
+then synchronized before append resumes. The writer inherits capture limits and the
+truncation-digest choice from the installed header, starts at the scanner's last complete
+physical sequence, and retains append-mode semantics for all later records. The resume
+result also returns the exact continuation reduction and scan metadata, avoiding a second
+independent restoration interpretation.
+
+Extended the scanner result with its captured physical byte size and added an integration
+test that resumes a transcript with a torn suffix, confirms the next sequence, appends a
+durable operation record, and verifies that only three complete JSON records remain. The
+scanner/writer suites pass 11/11 and `tsc --noEmit` passes.
