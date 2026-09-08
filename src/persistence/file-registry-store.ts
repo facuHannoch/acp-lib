@@ -15,11 +15,11 @@ import { validateSessionConfigurationCheckpoint } from "./checkpoint.ts";
 import {
   AgentSessionStoreConflictError,
   SessionMaintenanceInProgressError,
+  summarizeAgentSessionRecord,
   validateAgentSessionRecord,
   type AgentSessionListPage,
   type AgentSessionRecord,
   type AgentSessionStore,
-  type AgentSessionSummary,
   type AgentSessionsRegistryFile,
   type ListAgentSessionsOptions,
   type ListSessionMaintenanceOptions,
@@ -152,7 +152,7 @@ export class FileAgentSessionStore implements AgentSessionStore {
         return true;
       })
       .sort(sessionComparator(order))
-      .map((record) => toSummary(record, file.maintenance[record.agentSessionId]));
+      .map((record) => summarizeAgentSessionRecord(record, file.maintenance[record.agentSessionId]));
     const sessions = rows.slice(offset, offset + limit);
     const nextOffset = offset + sessions.length;
     const hasMore = nextOffset < rows.length;
@@ -687,28 +687,6 @@ function validateReceipt(id: string, value: unknown): asserts value is Maintenan
   sha256(value.requestDigest, "receipt requestDigest");
   canonicalIso(value.completedAt, "receipt completedAt");
   if (!["creation", "restoration", "persistence_reconfiguration", "deletion"].includes(value.kind as string)) throw new AgentSessionRegistryError("receipt kind is invalid");
-}
-
-function toSummary(record: AgentSessionRecord, maintenance?: SessionMaintenance): AgentSessionSummary {
-  const lifecycle = maintenance ? "maintenance_pending" : record.deletion ? "deleted" : "active";
-  return {
-    agentSessionId: record.agentSessionId,
-    incarnationId: record.incarnationId,
-    recordRevision: record.recordRevision,
-    adapterId: record.adapterId,
-    mode: record.mode,
-    model: record.model,
-    ...(record.title === undefined ? {} : { title: record.title }),
-    ...(record.cwd === undefined ? {} : { cwd: record.cwd }),
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    recovery: record.checkpoint.boundary.status === "settled" ? "clean" : "required",
-    transcriptAvailable: record.transcript !== null && record.deletion?.transcriptDeletedAt === undefined,
-    auditLogAvailable: record.auditLog !== null && record.deletion?.auditLogDeletedAt === undefined,
-    lifecycle,
-    ...(maintenance ? { maintenance: { kind: maintenance.kind, operationId: maintenance.operationId, startedAt: maintenance.startedAt } } : {}),
-    ...(record.deletion ? { deletedAt: record.deletion.deletedAt } : {}),
-  };
 }
 
 function sessionComparator(order: NonNullable<ListAgentSessionsOptions["order"]>) {

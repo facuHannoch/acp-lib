@@ -1179,3 +1179,28 @@ writers without lost updates, staging/fencing/finalization and retry receipts, b
 recovery without backup destruction, revision-invalidated pagination, live-versus-dead
 lock behavior, and stable-ID ABA protection. The complete focused persistence suite
 passes 53/53 and `tsc --noEmit` passes.
+
+### Part 2C — managed registry inspection surface
+
+Extended `SessionManager` without changing adapter ownership or silently upgrading the
+legacy catalog. `SessionManager.open()` now constructs (or accepts) a strict
+`AgentSessionStore`, resolves the manager root, and retains only persistence defaults and
+constraints. It does not resolve adapters and does not retain live `AgentSession`
+instances. Existing `new SessionManager(legacyStore)` behavior remains available for the
+current CLI/AgentSession integration and fails with a typed mode error if asked to perform
+strict managed-registry operations.
+
+Added `listAgentSessions()`, `getAgentSessionInfo()`, `getSessionMaintenance()`, and
+`listSessionMaintenance()` as direct manager-facing views over the strict store. Metadata
+lookup honors tombstone/prepared-deletion visibility, exposes incarnation and maintenance
+state, and never starts a harness. Added manager/per-session persistence normalization so
+the upcoming managed create/load paths share the already-tested defaults, layer merge,
+and constraint enforcement. Moved session-summary materialization to the registry module
+so custom stores and the manager use the same lifecycle/recovery projection.
+
+Added `test/session-manager-managed.test.ts` covering strict open and metadata discovery,
+default/per-session policy merging, constraint enforcement, prepared-deletion visibility,
+maintenance inspection, and explicit compatibility-mode rejection. The focused managed
+and legacy manager suites pass 6/6 and `tsc --noEmit` passes. Managed creation/loading are
+not yet exposed; they require the session-log writer and creation transaction coordinator
+rather than a best-effort record after `AgentSession.create()`.

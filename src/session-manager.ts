@@ -7,6 +7,38 @@
 
 import type { SessionRecord, SessionStore } from "./session-store.ts";
 import type { SessionListEntry } from "./types.ts";
+import {
+  resolveManagedPersistence,
+  resolvePersistenceRoot,
+  type ManagedSessionPersistenceOptions,
+  type ResolvedAgentSessionPersistence,
+  type SessionPersistenceConstraints,
+} from "./persistence/config.ts";
+import { FileAgentSessionStore } from "./persistence/file-registry-store.ts";
+import {
+  summarizeAgentSessionRecord,
+  type AgentSessionListPage,
+  type AgentSessionStore,
+  type AgentSessionSummary,
+  type ListAgentSessionsOptions,
+  type ListSessionMaintenanceOptions,
+  type SessionMaintenance,
+  type SessionMaintenancePage,
+} from "./persistence/registry.ts";
+
+export interface SessionManagerConfig {
+  readonly root?: string;
+  readonly store?: AgentSessionStore;
+  readonly sessionDefaults?: ManagedSessionPersistenceOptions;
+  readonly sessionConstraints?: SessionPersistenceConstraints;
+}
+
+export class SessionManagerModeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionManagerModeError";
+  }
+}
 
 /** A row in the merged session view. `source` says where it was seen. */
 export interface MergedSession {
@@ -27,32 +59,58 @@ export interface MergedSession {
 export type SessionInput = Omit<SessionRecord, "createdAt" | "updatedAt">;
 
 export class SessionManager {
-  constructor(private readonly store: SessionStore) {}
+  private readonly legacyStore: SessionStore | null;
+  private readonly agentStore: AgentSessionStore | null;
+  private readonly managedRoot: string | null;
+  private readonly sessionDefaults?: ManagedSessionPersistenceOptions;
+  private readonly sessionConstraints: SessionPersistenceConstraints;
+
+  constructor(store: SessionStore | AgentSessionStore, managedConfig?: SessionManagerConfig) {
+    if (isAgentSessionStore(store)) {
+      this.legacyStore = null;
+      this.agentStore = store;
+      this.managedRoot = resolvePersistenceRoot(managedConfig?.root);
+      this.sessionDefaults = managedConfig?.sessionDefaults;
+      this.sessionConstraints = managedConfig?.sessionConstraints ?? {};
+    } else {
+      this.legacyStore = store;
+      this.agentStore = null;
+      this.managedRoot = null;
+      this.sessionConstraints = {};
+    }
+  }
+
+  static async open(config: SessionManagerConfig = {}): Promise<SessionManager> {
+    const root = resolvePersistenceRoot(config.root);
+    const store = config.store ?? new FileAgentSessionStore({ root });
+    return new SessionManager(store, { ...config, root });
+  }
 
   /** Upsert a record: preserves createdAt, bumps updatedAt. Returns the stored record. */
   async record(input: SessionInput): Promise<SessionRecord> {
+    const store = this.requireLegacyStore("record()");
     const now = new Date().toISOString();
-    const existing = await this.store.get(input.agentSessionId);
+    const existing = await store.get(input.agentSessionId);
     const record: SessionRecord = {
       ...input,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
-    await this.store.save(record);
+    await store.save(record);
     return record;
   }
 
   get(agentSessionId: string): Promise<SessionRecord | null> {
-    return this.store.get(agentSessionId);
+    return this.requireLegacyStore("get()").get(agentSessionId);
   }
 
   delete(agentSessionId: string): Promise<void> {
-    return this.store.delete(agentSessionId);
+    return this.requireLegacyStore("delete()").delete(agentSessionId);
   }
 
   /** Catalog records, newest first. */
   async list(): Promise<SessionRecord[]> {
-    const records = await this.store.list();
+    const records = await this.requireLegacyStore("list()").list();
     return records.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
   }
 
@@ -65,8 +123,61 @@ export class SessionManager {
     agentEntries: SessionListEntry[],
     adapter: string,
   ): Promise<MergedSession[]> {
-    return mergeSessions(await this.store.list(), agentEntries, adapter);
+    return mergeSessions(await this.requireLegacyStore("listMerged()").list(), agentEntries, adapter);
   }
+
+  async listAgentSessions(options?: ListAgentSessionsOptions): Promise<AgentSessionListPage> {
+    return await this.requireAgentStore("listAgentSessions()").listAgentSessions(options);
+  }
+
+  async getAgentSessionInfo(
+    agentSessionId: string,
+    options: { readonly includeDeleted?: boolean } = {},
+  ): Promise<AgentSessionSummary | null> {
+    const store = this.requireAgentStore("getAgentSessionInfo()");
+    const [record, maintenance] = await Promise.all([
+      store.getAgentSessionRecord(agentSessionId),
+      store.getMaintenance(agentSessionId),
+    ]);
+    if (!record) return null;
+    if (!options.includeDeleted && (record.deletion || maintenance?.kind === "deletion")) return null;
+    return summarizeAgentSessionRecord(record, maintenance ?? undefined);
+  }
+
+  async getSessionMaintenance(agentSessionId: string): Promise<SessionMaintenance | null> {
+    return await this.requireAgentStore("getSessionMaintenance()").getMaintenance(agentSessionId);
+  }
+
+  async listSessionMaintenance(options?: ListSessionMaintenanceOptions): Promise<SessionMaintenancePage> {
+    return await this.requireAgentStore("listSessionMaintenance()").listMaintenance(options);
+  }
+
+  /** Internal normalization used by the upcoming managed create/load transaction path. */
+  resolveSessionPersistence(
+    options?: ManagedSessionPersistenceOptions,
+  ): ResolvedAgentSessionPersistence {
+    if (!this.managedRoot) throw new SessionManagerModeError("resolveSessionPersistence() requires a SessionManager created through SessionManager.open()");
+    return resolveManagedPersistence(
+      this.managedRoot,
+      this.sessionDefaults,
+      options,
+      this.sessionConstraints,
+    );
+  }
+
+  private requireLegacyStore(operation: string): SessionStore {
+    if (!this.legacyStore) throw new SessionManagerModeError(`${operation} is available only on compatibility SessionManager instances`);
+    return this.legacyStore;
+  }
+
+  private requireAgentStore(operation: string): AgentSessionStore {
+    if (!this.agentStore) throw new SessionManagerModeError(`${operation} requires a SessionManager created through SessionManager.open()`);
+    return this.agentStore;
+  }
+}
+
+function isAgentSessionStore(store: SessionStore | AgentSessionStore): store is AgentSessionStore {
+  return "getAgentSessionRecord" in store && typeof store.getAgentSessionRecord === "function";
 }
 
 /** Pure merge — exported for testing. */

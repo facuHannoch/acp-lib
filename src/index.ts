@@ -104,8 +104,8 @@ export {
   defaultSessionsDir,
 } from "./session-store.ts";
 export type { SessionStore, SessionRecord } from "./session-store.ts";
-export { SessionManager, mergeSessions } from "./session-manager.ts";
-export type { MergedSession, SessionInput } from "./session-manager.ts";
+export { SessionManager, SessionManagerModeError, mergeSessions } from "./session-manager.ts";
+export type { MergedSession, SessionInput, SessionManagerConfig } from "./session-manager.ts";
 
 export {
   appendTranscriptLine,

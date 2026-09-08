@@ -289,6 +289,31 @@ export function internalSessionHistoryDigest(
   return sha256CanonicalJson(entries);
 }
 
+export function summarizeAgentSessionRecord(
+  record: AgentSessionRecord,
+  maintenance?: SessionMaintenance,
+): AgentSessionSummary {
+  const lifecycle = maintenance ? "maintenance_pending" : record.deletion ? "deleted" : "active";
+  return {
+    agentSessionId: record.agentSessionId,
+    incarnationId: record.incarnationId,
+    recordRevision: record.recordRevision,
+    adapterId: record.adapterId,
+    mode: record.mode,
+    model: record.model,
+    ...(record.title === undefined ? {} : { title: record.title }),
+    ...(record.cwd === undefined ? {} : { cwd: record.cwd }),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    recovery: record.checkpoint.boundary.status === "settled" ? "clean" : "required",
+    transcriptAvailable: record.transcript !== null && record.deletion?.transcriptDeletedAt === undefined,
+    auditLogAvailable: record.auditLog !== null && record.deletion?.auditLogDeletedAt === undefined,
+    lifecycle,
+    ...(maintenance ? { maintenance: { kind: maintenance.kind, operationId: maintenance.operationId, startedAt: maintenance.startedAt } } : {}),
+    ...(record.deletion ? { deletedAt: record.deletion.deletedAt } : {}),
+  };
+}
+
 export function validateAgentSessionRecord(value: unknown): asserts value is AgentSessionRecord {
   if (!isRecord(value)) fail("agent-session record must be an object");
   try {
