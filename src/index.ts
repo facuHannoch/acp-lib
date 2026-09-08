@@ -216,6 +216,19 @@ export {
   truncateSessionLogRecord,
 } from "./persistence/truncation.ts";
 export type { SessionLogTruncationOptions } from "./persistence/truncation.ts";
+export {
+  EMPTY_HISTORY_DIGEST,
+  TranscriptReductionError,
+  reduceTranscriptHistory,
+  reduceTranscriptState,
+} from "./persistence/reducer.ts";
+export type {
+  PersistenceRepair,
+  SessionRecoveryStatus,
+  TranscriptHistoryReduction,
+  TranscriptReductionResult,
+  TranscriptStructuralRecord,
+} from "./persistence/reducer.ts";
 
 export {
   MAX_SCALE,

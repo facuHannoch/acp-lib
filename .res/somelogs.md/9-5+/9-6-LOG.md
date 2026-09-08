@@ -1290,3 +1290,37 @@ output omission and optional hashes, record-level fitting, deep captured values,
 JSON rejection, and structural oversize failure. Extended projection and writer tests for
 security ordering and physical integration. The complete persistence/manager-focused
 suite passes 76/76, `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 4A — canonical transcript history and continuation reducer
+
+Added `src/persistence/reducer.ts` with the two pure folds required by the persistence
+contract. `reduceTranscriptHistory()` consumes canonical target activations in physical
+sequence order, validates one log identity and a continuous routing chain, rejects repeat
+activation IDs, and computes the exact JCS/SHA-256 history digest (including the exported
+empty-history constant). `reduceTranscriptState()` begins at the physical checkpoint
+record—not merely its covered state sequence—and folds only later structural records, so
+a checkpoint can never consume itself as tail input.
+
+The continuation fold validates its supplied history result rather than trusting its
+revision/digest, preserves logical/log/incarnation identity, and prevents checkpoints
+from changing provider routing without a durable target activation. A `started` operation
+produces the exact deterministic in-flight checkpoint; a physical materialization must
+match it byte-for-byte at the canonical JSON level. Ordinary terminals remain uncertain
+until a later advancing checkpoint covers the exact terminal sequence. Durable
+pre-dispatch aborts produce deterministic settled checkpoints and an explicit repair;
+interrupted/in-flight boundaries remain conservatively uncertain.
+
+Target activation verifies the complete `from` descriptor against current reduced state,
+adds the exact history entry when present, installs the new descriptor using only the
+persisted activation state, and reports a repair only when its materialized checkpoint is
+missing. Materialized activation/abort checkpoints must exactly equal the pure reduction;
+same-revision disagreement, sequence regression, duplicate starts/terminals, cross-log
+tail records, unexplained routing changes, and history mismatch fail closed with
+`TranscriptReductionError`. The fold performs no I/O, harness calls, notification work,
+or fresh clock reads.
+
+Added `test/persistence-reducer.test.ts` covering independent history hashing, selected
+checkpoint consistency, uncovered and materialized activation, dirty operation boundary
+classification, exact in-flight materialization, deterministic abort repair, and major
+corruption cases. The complete persistence/manager-focused suite passes 82/82,
+`tsc --noEmit` passes, and `git diff --check` is clean.
