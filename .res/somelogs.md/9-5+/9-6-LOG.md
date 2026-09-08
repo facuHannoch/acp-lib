@@ -640,3 +640,38 @@ plus transcript deletion permits stable-ID reuse.
 
 The required-test matrix and notification contract were extended for all of these cases.
 No runtime source or tests were changed.
+
+### Separate operational audit artifact
+
+Extended `9-6-SPEC-persistence-transcripts.md` after deciding that operational evidence
+may need different storage, access, and retention policy from conversation/restoration
+content.
+
+The ordinary transcript can now explicitly operate without message capture, preserving
+its structural checkpoints and continuation authority while never enqueueing user or
+assistant text. Tool capture gained an `input` level between `metadata` and `content`:
+it retains arguments, commands, paths, and edit patches while excluding tool results,
+terminal output, and returned file content.
+
+Added an optional, separately configured `auditLog`. It is disabled by default, has its
+own path, identity, generation, sequence, lock, capture policy, reader, cursor, registry
+metadata, deletion controls, and typed failures. Its default policy records operational
+tool input, lifecycle, transition metadata, permission decisions, usage, and selected ACP
+configuration, but never messages, restoration checkpoints, raw ACP traffic, handoff
+content, or consumer continuation content.
+
+The transcript remains the sole file-based continuation authority. The audit artifact is
+never consulted for thread selection, checkpoint restoration, metering restoration,
+crash reconciliation, or transcript reconstruction. Shared logical/operation/activity
+identifiers correlate both files, but the specification makes no cross-file atomic-commit
+or total-order claim.
+
+Configured audit durability is strict in v0: its start boundary must synchronize before
+provider dispatch. A post-dispatch audit failure reports a visible audit gap and blocks
+later state-changing work without changing the independent continuation-recovery status.
+Managed reopen rejects a missing or corrupt expected audit artifact unless the consumer
+explicitly replaces or disables it.
+
+The registry schema, listing summaries, pagination/cursor contract, continuation report,
+notifications, tombstone/deletion rules, required tests, and implementation order were
+updated consistently. No runtime source or tests were changed.

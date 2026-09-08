@@ -3619,3 +3619,117 @@ Yes. The current spec still predates several decisions we just made. Before impl
 
 So yes: this is a necessary consistency pass, not merely editorial cleanup. The current draft would otherwise lead implementation toward the wrong adapter ownership, oversized checkpoints, and unsafe implicit recovery.
 
+
+
+# auditLog
+
+There are two separate needs here, and a second file only solves one of them.
+
+The current capture model can already represent “retain what the agent did, but not the conversation”:
+
+```ts
+persistence: {
+  transcript: {
+    preset: "activity",
+    capture: {
+      messages: "none",
+      tools: "metadata",
+      lifecycle: true,
+      usage: true,
+    },
+  },
+}
+```
+
+So a second file is not required merely to exclude chat content. Filtering happens before persistence, meaning messages never enter the file.
+
+However, a second artifact becomes valuable when the consumer wants both:
+
+- A conversation/restoration transcript, perhaps short-lived and access-restricted.
+- A durable operational audit log, perhaps retained longer and accessible to administrators.
+
+Those have different retention, permissions, and security policies. Keeping them in one JSONL file makes independent deletion or access impossible.
+
+I would model that distinction explicitly rather than calling both “transcripts”:
+
+```ts
+persistence: {
+  transcript: {
+    path: "/data/transcripts",
+    preset: "conversation",
+  },
+
+  auditLog: {
+    path: "/data/audit",
+    capture: {
+      tools: "input",
+      lifecycle: true,
+      permissions: "decision",
+      usage: true,
+    },
+  },
+}
+```
+
+The roles would be:
+
+- `transcript`: canonical continuation/restoration artifact. It may contain conversation content and always contains structural checkpoints.
+- `auditLog`: operational evidence. It references `agentSessionId`, `operationId`, `recordId`, and transition IDs, but is not used to restore the session.
+
+That last rule is important. If both files were restoration authorities, every operation would require a distributed transaction across two files. A power failure could leave one ahead of the other. Keeping only the transcript authoritative avoids that complexity.
+
+There is also a gap in our current capture policy. This:
+
+```ts
+tools: "none" | "metadata" | "content"
+```
+
+is too coarse for auditing. “Content” combines tool arguments and commands with potentially enormous tool output. A consumer often wants to know:
+
+> The agent ran `bun test` and edited these files.
+
+without storing the entire test output or file contents.
+
+I would change it to:
+
+```ts
+tools: "none" | "metadata" | "input" | "content";
+```
+
+Where:
+
+- `metadata`: tool name, status, timing, identifiers.
+- `input`: metadata plus arguments, commands, paths, and edit patches.
+- `content`: input plus tool results, terminal output, file contents, and other returned content.
+
+That gives us a genuinely useful audit configuration:
+
+```ts
+auditLog: {
+  capture: {
+    messages: "none",
+    reasoning: "none",
+    tools: "input",
+    lifecycle: true,
+    transitions: "metadata",
+    permissions: "decision",
+    usage: true,
+    configuration: "selections",
+    protocol: "none",
+  },
+}
+```
+
+One warning: tool inputs can still be highly sensitive—commands reveal paths, edit patches contain source, and shell arguments may contain credentials. An audit log is smaller and differently scoped, but not inherently safe.
+
+My recommendation is:
+
+1. Add `tools: "input"` now.
+2. Confirm that a single transcript can operate with `messages: "none"`.
+3. Add `auditLog` as a separate optional sink/artifact.
+4. Keep the audit log non-authoritative for restoration.
+5. Do not create two files by default; only create the audit log when explicitly configured.
+
+This also clarifies an important consequence: if messages are excluded from the canonical transcript, ordinary internal-session loading can still work, but `new_from_transcript` reconstruction may be unavailable. The continuation report should expose that rather than discovering it only after the internal harness thread has disappeared.
+
+
