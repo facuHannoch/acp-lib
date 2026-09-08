@@ -698,7 +698,12 @@ export class MeteringEngine {
     delta: TokenUsage,
     facts: BillingFacts,
   ): { usage: AttributableUsage; complete: boolean; reason?: string } {
-    if (!open.policy) return { usage: unpricedUsage(delta), complete: false };
+    if (!open.policy) {
+      // `pricing: false` is a choice, not a failure. Marking it unaccounted would make a
+      // deliberately unrated session report lost costs.
+      const reason = this.options.pricing === false ? "not_attempted" : "failed";
+      return { usage: unpricedUsage(delta, reason), complete: this.options.pricing === false };
+    }
 
     const selected = selectSchedule(open.policy, facts);
     if (!selected.ok) {

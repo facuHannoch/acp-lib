@@ -216,6 +216,12 @@ Result, so there is no `.ok` to forget.
 `pricingStatus: "priced"` is now derived from the total being complete rather than from a
 separate flag travelling beside it.
 
+`unaccounted` counts contributions that were **attempted and failed**. Setting
+`pricing: false` is a choice, not a failure, so a deliberately unrated session reports
+`{ amounts: [], unaccounted: 0 }` — the same distinction `not_applicable` versus
+`unavailable` draws for token categories. `pricingStatus` still separates the two
+(`not_configured` versus `pricing_unavailable`).
+
 `UnallocatedUsageState` loses its `costedRecordCount`/`uncostedRecordCount` counters —
 `ratedCosts.unaccounted` says the same thing.
 

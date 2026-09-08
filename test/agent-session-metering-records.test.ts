@@ -1125,3 +1125,52 @@ describe("a multi-CURRENCY operation cannot understate itself", () => {
     }
   });
 });
+
+describe("deliberate absence is not a loss", () => {
+  test("pricing: false leaves a clean total, not a session full of losses", async () => {
+    // The mirror of the bug MoneyTotal fixed: a consumer who asked for no rating must not
+    // see `unaccounted` climb, or every deliberately unrated session reads as lossy.
+    const { session } = await openSession({ metering: { pricing: false } });
+    try {
+      for (const text of ["one", "two", "three"]) await session.prompt(text);
+      const snapshot = session.meteringSnapshot;
+      expect(snapshot.operationCount).toBe(3);
+      expect(snapshot.ratedCosts).toEqual({ amounts: [], unaccounted: 0 });
+      // Tokens are still fully accounted; only the money was never asked for.
+      expect(snapshot.totals.total.knownTokens).toBe(300);
+      expect(snapshot.totals.total.coverage).toBe("complete");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("a rating that was attempted and failed does count as unaccounted", async () => {
+    const { session } = await openSession({ metering: { pricing: () => null } });
+    try {
+      await session.prompt("one");
+      const snapshot = session.meteringSnapshot;
+      expect(snapshot.ratedCosts.unaccounted).toBe(1);
+      expect(snapshot.lastOperation?.pricingStatus).toBe("pricing_unavailable");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("the two are distinguishable from the record alone", async () => {
+    const notAttempted = await openSession({ metering: { pricing: false } });
+    const failed = await openSession({ metering: { pricing: () => null } });
+    try {
+      const a = (await notAttempted.session.prompt("x")) as AgentSessionPromptResult;
+      const b = (await failed.session.prompt("x")) as AgentSessionPromptResult;
+      expect(a.metering!.pricingStatus).toBe("not_configured");
+      expect(b.metering!.pricingStatus).toBe("pricing_unavailable");
+      if (a.metering!.usage.status !== "metered") return;
+      if (b.metering!.usage.status !== "metered") return;
+      expect(a.metering!.usage.attributable.ratedTotal.unaccounted).toBe(0);
+      expect(b.metering!.usage.attributable.ratedTotal.unaccounted).toBe(1);
+    } finally {
+      await notAttempted.session.stop();
+      await failed.session.stop();
+    }
+  });
+});

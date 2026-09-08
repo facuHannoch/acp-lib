@@ -316,12 +316,25 @@ export function rateDelta(
 }
 
 /**
+ * Why an attributable delta carries no price.
+ *
+ * `not_attempted` is a consumer choice (`pricing: false`); `failed` is a rating that was
+ * tried and could not finish. Collapsing them makes a deliberately unrated session look
+ * like one that lost costs — the same conflation `not_applicable` versus `unavailable`
+ * avoids for token categories.
+ */
+export type UnpricedReason = "not_attempted" | "failed";
+
+/**
  * Represent an attributable delta with no pricing applied.
  *
  * Best-effort metering reports real token counts even when no price is available; the
  * null pricing says so explicitly rather than implying the operation was free.
  */
-export function unpricedUsage(delta: TokenUsage): AttributableUsage {
+export function unpricedUsage(
+  delta: TokenUsage,
+  reason: UnpricedReason = "failed",
+): AttributableUsage {
   const amount = (reportedTokens: number): PricedTokenAmount =>
     Object.freeze({ reportedTokens, pricedTokens: null, pricing: null });
   return Object.freeze({
@@ -337,7 +350,8 @@ export function unpricedUsage(delta: TokenUsage): AttributableUsage {
       ? { cachedWrite: amount(delta.cachedWriteTokens) }
       : {}),
     ...(delta.thoughtTokens !== undefined ? { thought: amount(delta.thoughtTokens) } : {}),
-    // Nothing was rated, and that is one unaccounted contribution rather than a zero.
-    ratedTotal: addToTotal(EMPTY_MONEY_TOTAL, null),
+    // A rating that failed leaves an unaccounted contribution; one never attempted leaves
+    // an empty total, because nothing was lost.
+    ratedTotal: reason === "failed" ? addToTotal(EMPTY_MONEY_TOTAL, null) : EMPTY_MONEY_TOTAL,
   });
 }
