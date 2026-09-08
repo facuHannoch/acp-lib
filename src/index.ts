@@ -179,6 +179,17 @@ export {
   validateAgentSessionRecord,
 } from "./persistence/registry.ts";
 export type * from "./persistence/registry.ts";
+export {
+  AgentSessionRegistryCursorError,
+  AgentSessionRegistryError,
+  AgentSessionRegistryLockError,
+  FileAgentSessionStore,
+  MaintenanceOutcomeUnknownError,
+} from "./persistence/file-registry-store.ts";
+export type {
+  FileAgentSessionStoreOptions,
+  RegistryRecoveryNotice,
+} from "./persistence/file-registry-store.ts";
 
 export {
   MAX_SCALE,

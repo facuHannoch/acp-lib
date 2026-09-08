@@ -1146,3 +1146,36 @@ projection disagreement, complete-history consistency, and transcript projection
 This subpart passes 4/4 and `tsc --noEmit` passes. The atomic full-JSON store, receipt
 retention, CAS/maintenance transaction implementation, and cursor pagination remain the
 next part; no live `SessionManager` behavior uses this contract yet.
+
+### Part 2B — atomic full-JSON registry store
+
+Added `src/persistence/file-registry-store.ts`, a separate strict implementation of
+`AgentSessionStore` using the specified `agent-sessions.json` primary, synchronized
+temporary sibling, and `agent-sessions.json.bak`. Mutations acquire a cross-process
+exclusive lock, reread the latest registry under that lock, apply one transaction,
+increment the global revision, fsync owner-only temporary files, preserve the last valid
+primary as a synchronized backup, atomically rename, and synchronize the directory.
+Readers visibly recover through an optional notice when the primary is invalid and the
+backup validates. A recovery-origin mutation never copies the corrupt primary over the
+valid backup.
+
+Implemented strict per-record CAS and incarnation checks, maintenance fencing for ordinary
+saves/deletes, discriminated prepare retries, monotonic maintenance staging, exact staged
+record publication, atomic finalization/receipt insertion, hard deletion, and
+incarnation-scoped idempotency. Creation/restoration must durably stage continuation
+before staging their complete record; only deletion maintenance may finalize by removing
+the registry record. Completion receipts are capped at 32 per logical ID and 4,096
+globally. A late deletion retry for an older incarnation resolves through its receipt and
+cannot affect a new incarnation reusing the same logical ID.
+
+Added revision-bound opaque pagination for agent-session and maintenance lists, including
+deterministic ordering, tombstone/maintenance visibility rules, limits, and stale cursor
+rejection. Lock reclamation requires positive proof that the owning PID no longer exists;
+elapsed age alone never permits stealing a live lock. Lock release checks its random token
+before unlinking.
+
+Added `test/persistence-file-registry-store.test.ts`. Tests cover CAS, two independent
+writers without lost updates, staging/fencing/finalization and retry receipts, backup
+recovery without backup destruction, revision-invalidated pagination, live-versus-dead
+lock behavior, and stable-ID ABA protection. The complete focused persistence suite
+passes 53/53 and `tsc --noEmit` passes.
