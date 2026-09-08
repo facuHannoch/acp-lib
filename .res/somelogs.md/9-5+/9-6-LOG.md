@@ -784,3 +784,204 @@ after folding, and orders deterministically by latest revision sequence plus act
 Added the corresponding required tests, updated implementation order to build maintenance
 and the reducer before managed restoration, and standardized “session log” to mean only a
 transcript or audit log. No runtime source or tests were changed.
+
+### Capture-schema and maintenance-completeness pass
+
+Closed the remaining pre-implementation gaps in
+`9-6-SPEC-persistence-transcripts.md`.
+
+Added concrete transcript and audit reasoning records. Streaming reasoning is persisted
+as complete monotonic snapshots under a stable reasoning ID rather than ambiguous activity
+payloads or raw protocol deltas. Added a concrete transcript protocol-metadata record for
+normalized initialization identity and schema-known boolean capabilities; arbitrary/raw
+initialization content remains restricted to diagnostic raw records.
+
+Made capture-independent continuation explicit. The canonical transcript reducer and the
+authority section now share one exact structural-tail definition containing only
+checkpoints, operation boundaries, and transition records. Configuration and lifecycle
+records are presentation history; configuration/recovery changes become authoritative
+only through mandatory checkpoints, so capture policy cannot alter restoration behavior.
+
+Completed the maintenance-store contract with `getMaintenance()`, paginated maintenance
+listing, and bounded completion receipts. Finalization atomically applies its session
+mutation, clears the prepared marker, and stores a receipt. Exact retries are idempotent
+while a marker or receipt remains; after eviction, ambiguous outcomes fail visibly rather
+than being inferred. Maintenance listing makes generated managed-creation reservations
+discoverable after power loss.
+
+Narrowed the provider-thread loss window in creation. Immediately after the harness
+returns an internal-session identity, creation durably records a bounded
+`stagedContinuation` before writing, syncing, or installing session logs. It later records
+the complete staged registry row only after logs are durable. Direct persistent creation
+now requires caller-supplied logical and creation IDs so its prepared marker is always
+recoverable by an identical retry.
+
+Added durable session-log installation provenance to transcript and audit headers:
+maintenance kind, operation ID, and request digest. Retry/cleanup may adopt or remove an
+installed final-path log only when all provenance fields match the prepared transaction.
+The spec explicitly treats this as structural transaction evidence under locks, not
+tamper-resistant authentication.
+
+Moved tombstone restoration into the same maintenance architecture. Restoration now
+requires a stable restoration ID and expected record revision, records retained/disabled/
+replacement log choices, stages the acquired provider thread immediately, installs logs
+with matching provenance, and clears the tombstone only through atomic finalization.
+
+Replaced ambiguous `desired` configuration with ordered `restorationTargets` carrying
+`explicit_selection` or `accepted_effective` provenance and real recording time. Defined
+fidelity completely: intentionally lossy policy is promptable partial restoration, exact
+requires all relevant announced values to be retained, and only a failed persisted target
+creates mismatch. Explicit excluded selections never bypass persistence policy.
+
+Also corrected managed-creation ordering prose, transition IDs for mode changes and
+replacements, conversation-partial wording, deletion defaults wording, and audit abort
+validation. Expanded required tests and implementation order for every new invariant. No
+runtime source or tests were changed.
+
+### Bounded idempotency and final consistency tradeoffs
+
+Applied the final clean-pass review without adding persisted high-level result objects or
+a second direct-session receipt subsystem.
+
+`prepareMaintenance()` now returns a discriminated prepared/already-prepared/already-
+completed result, so callers cannot accidentally execute work after finding a completion
+receipt. The contract now promises mutation idempotency only. A completed deletion retry
+may return normally; non-void create/restoration/reconfiguration retries receive a typed
+already-completed error and explicitly load or inspect current state rather than receiving
+a fabricated original report or live object.
+
+Bounded maintenance receipts now have both per-logical-ID and global limits (32 and 4,096)
+with deterministic eviction. After eviction, an outcome that current state cannot safely
+establish fails as unknown. Hard deletion may temporarily retain this content-free
+operation receipt, but it is not discovery state and does not reserve the reusable logical
+ID.
+
+Made maintenance restoration requests canonicalizable without persisting content
+fingerprints. Transcript reconstruction strategies carry a stable nonsecret `strategyId`;
+consumer continuation carries `continuationId`. Digests cover IDs, ordering, adapter and
+storage intent, but never callback identity or continuation text. A retry may rerun the
+consumer behavior only before staged continuation is durable; afterward it must reuse the
+recorded provider thread.
+
+Defined uncovered-abort repair exactly using existing envelope fields instead of another
+state object: required next revision, validated epoch-millisecond timestamp and canonical
+ISO conversion, settled boundary semantics, covered sequence, unchanged continuation
+fields, and recomputed digest.
+
+Accepted and documented the V0 direct-creation response-gap tradeoff. Direct persistent
+creation has known caller IDs and is marker-resumable before finalization; after marker
+removal, a lost response is recovered with explicit `AgentSession.open()` only when a
+transcript or consumer checkpoint exists, not another create or an invented original
+result. Audit-only direct persistence remains non-restorable by design. Direct completion
+receipts remain deferred.
+
+Clarified that restoration-target replacement is exact and recomputes matched versus
+partial fidelity, deprecated transcript options do not inherit strict v2 creation rules,
+only the migration/import utility upgrades v1 transcripts, V0 offline replacement uses a
+new random log ID at generation 1, and restoration is included throughout maintenance
+errors/tests. No runtime source or tests were changed.
+
+### Final reducer and identity-boundary pass
+
+Closed the remaining four implementation gaps while deliberately keeping richer retry and
+provider-reconciliation policy deferred.
+
+Split transcript derivation into two coordinated internal folds. A full canonical-history
+fold streams every `target_activated` record through the requested snapshot; a continuation
+fold then uses the validated history through the selected checkpoint plus its structural
+tail. The spec now defines empty-history revision/digest, exact JCS/SHA-256 input,
+checkpoint validation, and the complete `TranscriptReductionResult`. Registry-only
+history uses the same digest algorithm.
+
+Made registry in-flight projection deterministic without adding another state object.
+`operation(started)` now requires the exact next state revision and validated epoch-
+millisecond timestamp. The fold copies prior continuation state, installs the specified
+in-flight boundary, sets covered sequence, uses canonical `toISOString()`, and recomputes
+the same checkpoint digest the writer publishes. Timestamp state derivation is limited to
+the explicitly defined started and aborted cases.
+
+Scoped completion receipts to logical-session incarnations using the already-existing
+`creationId`. `AgentSessionRecord`, every maintenance transaction, and every receipt carry
+`incarnationId`; existing-session operations must match the registry incarnation, hard-
+deleted receipts never affect a fresh incarnation, and logical-ID reuse requires a new
+creation ID. Migration generates a fresh incarnation as well.
+
+Chose a fixed V0 rule for the unavoidable provider/local-storage gap rather than adding a
+policy API. Manager background operations never retry provider creation. An identical
+explicit create/restore retry with a matching prepared marker but no staged continuation
+is authorization to repeat the provider step and accept a possible unidentified orphan.
+Once continuation is staged, creating another thread or rerunning its builder is forbidden.
+Adapter-aware orphan discovery/deletion and configurable fail/retry/reconcile policy remain
+deferred.
+
+Hardened direct maintenance marker paths by naming them with SHA-256 of the JCS two-ID
+array and verifying actual IDs inside the owner-only marker. Clarified that navigation
+cursors—not snapshot cursors—are view/filter-bound; maintenance inspection exposes
+persisted recovery state rather than executable original requests; and tombstone log
+replacement requires an explicit path, though deliberately reusing the prior path remains
+allowed with a new identity at generation 1.
+
+Expanded tests, implementation ordering, and deferred-work boundaries accordingly. No
+runtime source or tests were changed.
+
+### Incarnation fencing and reducer-boundary pass
+
+Closed the final three transaction/reducer inconsistencies without introducing another
+identity or transaction abstraction.
+
+Made the already-persisted `incarnationId` the public ABA token. Checkpoints, live
+`AgentSession` objects, session summaries, and maintenance summaries expose it, and every
+existing-session maintenance request now requires `expectedIncarnationId` alongside the
+record revision. Store updates/finalization validate the same incarnation, so a delayed
+mutation for a hard-deleted incarnation cannot affect a new session which reused its
+stable logical ID—even if their record revisions happen to coincide. Incarnation mismatch
+uses the existing typed maintenance-conflict path rather than adding another error class.
+
+Added one common `baseRecordRevision` fence to all prepared maintenance values: `null` for
+creation and the exact pre-operation revision for restoration, persistence
+reconfiguration, and deletion. Ordinary record saves/deletes atomically reject while a
+maintenance marker exists. Finalization verifies the marker's incarnation and base
+revision before applying its single mutation. This makes the documented registry-only
+delete/checkpoint race enforceable and prevents a late live-session checkpoint from
+crossing prepared maintenance or resurrecting a deleted record.
+
+Corrected the transcript fold boundary. The history fold now consumes activations only
+through the selected checkpoint's inclusive `coveredSequence`; the continuation fold
+receives only structural records after it. Post-checkpoint activations are therefore
+applied exactly once. Activation from a null internal-session identity installs the new
+target without appending history or changing its revision/digest.
+
+Updated the public method examples, storage contract, deletion/restoration prose, tests,
+and implementation order to make these constraints directly implementable. No runtime
+source or tests were changed.
+
+### Physical checkpoint boundary and migration-authority pass
+
+Corrected the remaining checkpoint self-tail problem while preserving the useful meaning
+of `coveredSequence`. The continuation reducer now receives the selected physical
+`TranscriptCheckpointRecord`; its base is that record's checkpoint and its tail begins
+strictly after the containing record's `seq`. `coveredSequence` remains the logical state
+coverage boundary used by deterministic started/activation/abort projection. Added exact
+record/checkpoint invariants for revision, logical/transcript identity, generation,
+normalized path, incarnation, and the absence of intervening structural records. This
+also makes repaired checkpoints valid without forcing a second state revision merely to
+materialize them.
+
+Defined the previously missing v1-to-v2 authority boundary without adding a history-seed
+record. The explicit migration utility requires a complete continuation seed matching
+`StagedContinuationState`, appends an upgrade header and canonical initial checkpoint,
+then publishes a registry projection only when configured. The migrated checkpoint starts
+at state revision 1 with a settled boundary, no prior transition/metering state, and empty
+canonical internal-session history. The v1 prefix remains pageable presentation history
+but never becomes v2 continuation or history-fold authority. Header-only interruption is
+an incomplete migration rejected by ordinary open and resumable through the migration
+utility. Lossless legacy routing-history import remains explicitly deferred.
+
+Added one shared `PersistedMachineCode` contract instead of enumerating harness-specific
+codes. Persisted reason/error codes must match a bounded ASCII identifier grammar;
+provider or consumer prose, paths, commands, whitespace, and oversized values cannot use
+those fields. Unknown provider values normalize to `unknown`, while readable details are
+subject to their ordinary capture policy before transcript/audit projection.
+
+Updated reducer, checkpoint, migration, security, and deferred-work tests accordingly. No
+runtime source or tests were changed.

@@ -4406,3 +4406,842 @@ Bottom line: I would accept the proposed direction. The key additional work is m
 
 
 
+
+
+
+
+
+
+
+These are good findings. Most are genuine specification holes, not overengineering. I would adopt them, with a slightly different solution for maintenance idempotency and creation provenance.
+
+1. Capture schemas: agree
+
+If `reasoning` and protocol `metadata` are configurable capture components, they need concrete records.
+
+I would add:
+
+- `TranscriptReasoningRecord`
+- `AuditLogReasoningRecord`
+- `TranscriptProtocolMetadataRecord`
+
+Reasoning should use complete revisions under a stable `reasoningId`, like activity snapshots, instead of persisting every stream delta. Protocol metadata should contain a normalized allowlist of initialization/capability information; raw ACP payloads remain exclusive to `TranscriptRawRecord`.
+
+2. Structural reducer: agree strongly
+
+Capture-dependent configuration and lifecycle records must not affect continuation.
+
+The canonical reducer should consume only:
+
+```ts
+type TranscriptStructuralRecord =
+  | TranscriptCheckpointRecord
+  | TranscriptOperationRecord
+  | TranscriptTransitionRecord;
+```
+
+Configuration mutations, mismatch resolutions, and recovery resolutions become authoritative through their resulting checkpoints. Their configuration/lifecycle records are display history only.
+
+Section 10’s definition of the journal tail should use this exact shared type. Capture policy must never change reducer output.
+
+3. Maintenance read/idempotency: agree, with bounded receipts
+
+`AgentSessionStore` needs:
+
+```ts
+getMaintenance(agentSessionId: string):
+  Promise<SessionMaintenance | null>;
+```
+
+For finalization retries, I would add bounded completion receipts:
+
+```ts
+interface MaintenanceCompletionReceipt {
+  agentSessionId: string;
+  operationId: string;
+  requestDigest: string;
+  kind: SessionMaintenance["kind"];
+  outcome: "completed";
+  completedAt: string;
+}
+```
+
+The store atomically replaces the prepared transaction with a receipt when finalizing.
+
+However, we should not promise eternal idempotency. Receipts must have a documented retention bound. Therefore:
+
+> Retrying is idempotent while either the prepared transaction or its completion receipt remains available.
+
+This matters particularly after hard deletion and later reuse of the same `agentSessionId`.
+
+4. Provider-ID persistence order: agree
+
+The current window is not narrow. Creation should be:
+
+```text
+prepare maintenance
+→ create provider thread
+→ immediately persist staged continuation identity
+→ construct/sync/install session logs
+→ persist complete staged record
+→ finalize
+```
+
+The first maintenance update need not contain the complete final registry record. It should hold a bounded `stagedContinuation` containing the internal ID, adapter, protocol, model/configuration state, and activation time. The unavoidable loss window then really is only between the provider response and that first durable update.
+
+5. Installed-log provenance: agree, but it is structural—not cryptographic
+
+This is the point you were unsure about. We do need it.
+
+Otherwise, after a crash, the library cannot safely establish whether a final-path file was installed by the interrupted transaction or pre-existed. Locks prevent concurrent writers, but they do not establish ownership across process death.
+
+I would use:
+
+```ts
+interface SessionLogInstallation {
+  kind: "creation" | "persistence_reconfiguration" | "restoration";
+  operationId: string;
+  requestDigest: string;
+}
+```
+
+Every transcript/audit header contains:
+
+```ts
+installation: SessionLogInstallation;
+```
+
+This replaces `reconfigurationId`.
+
+Matching the prepared transaction against the header allows safe retry and cleanup. It is not tamper resistance or cryptographic proof against an attacker; it is transaction provenance under the library’s locking and corruption model.
+
+A random installation nonce could also work, but the operation ID plus request digest already carries the required identity and exact-request check.
+
+6. Tombstone restoration: agree
+
+Restoration is effectively creation applied to an existing tombstone. It needs:
+
+```ts
+restorationId: string;
+expectedRecordRevision: number;
+```
+
+and:
+
+```ts
+kind: "restoration"
+```
+
+in `SessionMaintenance`.
+
+The prepared restoration should cover replacement logs, continuation acquisition, transition/checkpoint persistence, and final tombstone clearing. A crash must leave a resumable `maintenance_pending` restoration, not orphaned logs or threads.
+
+7. Configuration fidelity: agree
+
+I would rename `desired` to `restorationTargets`:
+
+```ts
+interface PersistedSessionConfigSelection {
+  configId: string;
+  type: "select" | "boolean" | "unknown";
+  value: JsonValue;
+  ordinal: number;
+  source: "explicit_selection" | "accepted_effective";
+  recordedAt: string;
+}
+```
+
+Rules:
+
+- `restorationFidelity: "exact"` only when all relevant announced effective values were admitted by policy.
+- `values: "none"` is immediately `partial`.
+- `typed` becomes `partial` whenever an announced value is omitted because it is unsupported or unknown.
+- Choosing a lossy persistence policy is itself acceptance of partial future restoration. It should not force a mismatch on every reopen.
+- A persisted restoration target that disappears, becomes invalid, or is rejected still produces `mismatch`.
+- `accept_effective` creates restoration targets with `source: "accepted_effective"` and a real `recordedAt`; it does not pretend they were explicitly applied.
+
+The remaining smaller findings are also correct:
+
+- Require caller-supplied `agentSessionId` and `creationId` for persistent direct creation. Managed creation may generate them because pending work is discoverable through its registry.
+- Fix the stale “lower-level constructor, then registry” description.
+- Define `transitionId` for all transition kinds.
+- Remove the claim that whole retained messages can be omitted.
+- Say “with all deletion flags omitted or false.”
+- Apply the exact `abortReason` presence invariant to audit operation records too.
+
+So yes: I would implement all of these changes. The provenance proposal in point 5 is necessary, but it should be described as transaction ownership evidence—not cryptographic authentication.
+
+
+
+
+
+
+
+
+I’ll do one more clean pass over the latest text, concentrating on whether those maintenance, restoration, configuration-fidelity, and record-schema gaps were actually closed—and whether the fixes introduced new contradictions elsewhere.This version is much closer. The previous structural-transition, maintenance-read, restoration-transaction, configuration-model, reasoning/protocol-schema, and stale-text problems are largely fixed. I still see four blockers and several smaller inconsistencies.
+
+## Blockers
+
+1. **`prepareMaintenance()` cannot report “already completed.”**
+
+   Its return type is `Promise<void>` ([lines 1258–1262](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1258)), but an exact completion receipt is supposed to report that the operation already completed without creating a reservation ([lines 1286–1290](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1286)).
+
+   The caller must distinguish:
+
+   - newly prepared: continue performing the operation;
+   - already prepared: resume it;
+   - already completed: do not perform it again.
+
+   With `void`, a caller could proceed after an already-completed result despite holding no reservation.
+
+   It needs a discriminated result:
+
+   ```ts
+   type PrepareMaintenanceResult =
+     | { status: "prepared"; maintenance: SessionMaintenance }
+     | { status: "already_prepared"; maintenance: SessionMaintenance }
+     | { status: "already_completed"; receipt: MaintenanceCompletionReceipt };
+   ```
+
+2. **High-level return semantics after an “already completed” receipt are undefined.**
+
+   This matters because these methods do not merely return `void`:
+
+   - create returns a live `AgentSession`;
+   - restoration returns `AgentSessionOpenResult`;
+   - reconfiguration returns a summary.
+
+   A receipt contains no original continuation report, repair report, or live session ([lines 678–685](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:678)). After a lost response, an identical retry cannot reproduce the original method result.
+
+   Define one of these contracts:
+
+   - mutation idempotency only, with an `AlreadyCompleted` result requiring a separate load;
+   - retry transparently performs an ordinary load and returns a newly produced open report;
+   - completion receipts retain a serializable operation result, while live objects are reacquired separately.
+
+   The first is probably cleanest. Do not imply full call-result idempotency if only the mutation is idempotent.
+
+3. **Restoration request identity is not canonicalizable as currently typed.**
+
+   `restoreAgentSession()` places `OpenContinuationOptions` inside a request identified by a canonical `requestDigest`, but a continuation strategy may contain a JavaScript `buildContinuation` function ([lines 2499–2525](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2499)). Functions cannot be canonically serialized or compared across retries.
+
+   Consumer continuation strings create another problem: hashing their content can leak a guessable fingerprint through the registry and permanent log header.
+
+   Require stable, nonsecret strategy identity separately from executable behavior:
+
+   ```ts
+   {
+     kind: "new_from_transcript";
+     strategyId: string;
+     buildContinuation: TranscriptContinuationBuilder;
+   }
+   ```
+
+   The maintenance digest should cover `strategyId`, strategy order, target adapter ID, paths, and other nonsecret intent—not callback identity or raw continuation content. If exact consumer continuation equality is required, the API needs an explicit caller-provided opaque `continuationId`.
+
+4. **Deterministic repair of an uncovered `aborted` record remains underdefined.**
+
+   Activation records now carry every digest-relevant derivation field. Abort records do not. Yet restoration claims it can synthesize a settled checkpoint deterministically without fresh timestamps ([lines 2416–2422](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2416)).
+
+   It still needs normative rules for:
+
+   - resulting `stateRevision`;
+   - `updatedAt`;
+   - whether `lastSettledOperationId` becomes the aborted operation or remains unchanged;
+   - `coveredSequence`;
+   - exact boundary content.
+
+   Add an `abortState` analogous to `activationState`, or explicitly derive these fields from envelope `stateRevision`, `ts`, `seq`, and `operationId`, including the canonical timestamp conversion.
+
+## Likely legacy regression
+
+Direct persistent creation now requires caller-supplied `agentSessionId` and `creationId` ([lines 381–385](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:381)), and strict creation rejects legacy/malformed nonempty files.
+
+That is fine for the new `persistence` API, but it may regress deprecated `transcriptPath`/`transcriptDir` usage if compatibility normalization causes them to count as “persistence enabled.” Existing legacy behavior allows generated logical IDs and historically tolerated permissive v1 files.
+
+The compatibility section should explicitly state:
+
+> The direct-creation ID requirements, strict empty-destination rule, and v2 maintenance transaction apply only to the new `persistence` configuration. Deprecated transcript options retain their historical ID generation and append behavior during compatibility mode.
+
+Otherwise the compatibility guarantees at [lines 2954–2995](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2954) conflict with strict creation.
+
+## Other real inconsistencies
+
+- **Direct creation has no completion receipt.** Its marker is removed before the call returns ([lines 359–370](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:359)). If the process dies after marker removal but before the caller receives success, retry sees initialized logs and fails. Either document that direct creation is resumable only before finalization or retain a bounded direct completion receipt.
+
+- **Receipts are bounded per ID, not globally.** Keeping 32 receipts per `agentSessionId` still leaves the central registry growing forever as unique IDs are hard-deleted ([lines 848–854](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:848)). It also means “fully destructive” deletion retains logical ID and timing metadata. Add a global bound/purge contract or explicitly weaken the hard-deletion semantics.
+
+- **Configuration resolution can incorrectly report `matched`.** `replace_restoration_targets` says its final checkpoint marks the status matched ([lines 1107–1112](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1107)). If persistence policy excludes any effective values, the recomputed status must remain `partial`, not `matched`.
+
+- **Replacement semantics need one sentence.** Clarify that successful `replace_restoration_targets` replaces the old target list exactly, rather than merging into it. Otherwise old disappeared targets could survive the resolution.
+
+- **The v1 upgrade entry point is unclear.** Strict `create()` rejects legacy content and ordinary `open()` requires continuation state that a v1 transcript may not contain, yet the migration section says a v2 writer can intentionally open and upgrade v1 ([lines 2968–2986](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2968)). State explicitly that only the migration/import utility performs this upgrade, or define another entry point.
+
+- **Replacement generation identity remains ambiguous.** Section 19 says a new generation may preserve `transcriptId`; reconfiguration says it creates a new identity and generation. V0 should mandate whether replacement uses `(same ID, generation + 1)` or `(new ID, generation 1)`.
+
+- **Error taxonomy omits restoration in one sentence.** `SessionMaintenanceConflictError` is described as covering creation, reconfiguration, or deletion, but maintenance now also includes restoration ([lines 2706–2709](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2706)).
+
+Overall, the architecture is now coherent in shape. The remaining serious work is mostly about idempotency boundaries: distinguishing prepared/completed operations, defining what retries return, making continuation strategies comparable, and making abort repair genuinely deterministic.
+
+
+
+The review is strong, but it does not require another architectural expansion. Three blockers need direct fixes; the idempotency issue should be resolved by narrowing the guarantee rather than persisting complete method results.
+
+## Changes I would make now
+
+1. `prepareMaintenance()` returns a discriminated result
+
+This is a real type-level hole. Adopt the proposed result:
+
+```ts
+type PrepareMaintenanceResult =
+  | { status: "prepared"; maintenance: SessionMaintenance }
+  | { status: "already_prepared"; maintenance: SessionMaintenance }
+  | { status: "already_completed"; receipt: MaintenanceCompletionReceipt };
+```
+
+Only `prepared` and `already_prepared` authorize continuing the mutation.
+
+2. Promise mutation idempotency only
+
+We should not persist continuation reports, repair reports, or serialized method results. That adds substantial state and still cannot reproduce a live object.
+
+The contract should say:
+
+> Maintenance idempotency applies to the durable mutation, not reproduction of the original method result.
+
+On an `already_completed` receipt:
+
+- `deleteAgentSession()` can return successfully because its return type is `void`.
+- Create, restoration, and reconfiguration return/throw a typed `MaintenanceAlreadyCompleted` outcome carrying the receipt.
+- The consumer then uses `loadAgentSession()` or `getAgentSessionInfo()` to obtain current state.
+
+That is honest and avoids pretending a newly opened object/report is the original result.
+
+3. Add stable continuation-strategy identities
+
+This is necessary because callbacks cannot enter a canonical digest.
+
+```ts
+type ContinuationStrategy =
+  | { kind: "load_internal_session" }
+  | {
+      kind: "new_from_transcript";
+      strategyId: string;
+      buildContinuation: TranscriptContinuationBuilder;
+    }
+  | {
+      kind: "new_from_consumer_continuation";
+      continuationId: string;
+      continuation: string;
+    };
+```
+
+The maintenance digest includes strategy kind, order, `strategyId`/`continuationId`, adapter ID, and other nonsecret intent. It excludes:
+
+- callback identity;
+- generated continuation text;
+- consumer continuation content.
+
+The caller must reuse the same behavior/content for the same ID. The library deliberately cannot verify content equality without retaining a guessable fingerprint. Stronger verification can be deferred.
+
+4. Define aborted-checkpoint reduction without another model
+
+We do not need `abortState`. Require `stateRevision` on `operation(aborted)` and define:
+
+- `stateRevision = previous stateRevision + 1`;
+- `updatedAt = canonical ISO conversion of envelope.ts`;
+- `lastSettledOperationId = aborted operationId`;
+- `boundary = { status: "settled", lastSettledOperationId: operationId }`;
+- transcript `coveredSequence = aborted record seq`;
+- every other continuation field remains unchanged.
+
+Also define the timestamp conversion precisely, including millisecond precision. That makes abort repair deterministic with existing fields.
+
+## Small corrections to make now
+
+These are inexpensive and valid:
+
+- Legacy transcript options retain generated IDs, permissive append behavior, and do not enter strict v2 creation maintenance.
+- `replace_restoration_targets` replaces the entire old target list.
+- Its resulting configuration status is recomputed as `exact` or `partial`; it must not unconditionally say `matched`.
+- Only the explicit migration/import utility upgrades a v1 transcript.
+- V0 replacement creates a new transcript/audit-log ID at generation 1. Future rewrite/compaction may preserve ID and increment generation.
+- Add restoration to the maintenance-conflict error description.
+- Fix the remaining stale wording identified by the review.
+
+## Tradeoffs to document and accept
+
+Direct persistent creation does not need another receipt subsystem. Since direct persistence now requires known IDs and paths:
+
+- before finalization, retry resumes through the marker;
+- after finalization but before response delivery, retry sees the initialized transcript;
+- the consumer uses `AgentSession.open()` with its known identity/path.
+
+So direct creation is transaction-resumable before finalization, but its original call result is not reproducible afterward. That is acceptable for V0 and should be stated explicitly.
+
+Receipts do need a global bound. I would specify:
+
+- maximum 32 receipts per `agentSessionId`;
+- maximum 4096 receipts globally;
+- deterministic eviction by oldest `completedAt`, then agent/session and operation ID;
+- hard deletion removes session content and discovery state but may temporarily retain this bounded, content-free operational receipt.
+
+That slightly weakens “fully destructive” wording, but accurately bounds the retained metadata.
+
+So I would accept nearly the entire review, but explicitly defer:
+
+- reproduction of original live objects and reports;
+- hashing/comparing continuation content;
+- direct-session completion receipts.
+
+Those are real limitations, not correctness gaps, once stated clearly.
+
+
+
+
+
+
+
+
+# review pass
+
+
+I’ll reread the current file and diff, then re-audit the transaction boundaries, idempotency contracts, recovery rules, and compatibility story against the issues from the last pass.The earlier blockers are now substantially addressed: maintenance preparation has a discriminated result, high-level completed retries have explicit semantics, continuation digests exclude callbacks/content, aborted checkpoint repair is deterministic, receipt storage is globally bounded, and legacy create behavior is scoped away from v2. I’m checking whether those fixes created any contradictions at adjacent API and lifecycle boundaries.The spec is much stronger now, and the blockers from the previous pass are mostly resolved. I still see four implementation blockers and a few smaller contradictions.
+
+## Blockers
+
+1. Canonical history cannot be reconstructed from the specified reducer input
+
+The spec excludes complete history from checkpoints, saying it will be reconstructed from transition records ([spec:917](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:917)). But the reducer receives only a checkpoint plus structural records after its `coveredSequence` ([spec:1143](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1143), [spec:1209](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1209)).
+
+After the first checkpoint following a transition, that transition is no longer in the tail. The checkpoint contains only the history revision/digest, not the entries. Therefore the reducer cannot:
+
+- reconstruct full `internalSessionHistory`;
+- append a new entry and recompute its digest;
+- repair the registry’s full history projection.
+
+`TranscriptReductionResult` and the history-digest algorithm are also undefined.
+
+I would split this into two explicit folds:
+
+- a history fold over every canonical `target_activated` record through the snapshot;
+- a continuation fold from the latest checkpoint over its structural tail.
+
+Define the initial history digest and exact JCS/SHA-256 input as well.
+
+2. Registry-newer in-flight checkpoint validation is not deterministic
+
+The authority rules require reconstructing every field and digest of a registry-newer in-flight checkpoint from the transcript ([spec:1221](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1221)).
+
+But `operation(started)` does not require state revision, checkpoint timestamp, covered sequence, or an in-flight state payload. Moreover, transcript timestamps are expressly forbidden as state-derivation input except for abort repair ([spec:1491](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1491), [spec:1511](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1511)).
+
+So two conforming writers could produce different registry checkpoint `updatedAt` values that the transcript cannot reproduce.
+
+Give `started` something analogous to transition `activationState`, or normatively define:
+
+- next `stateRevision`;
+- exact `updatedAt`;
+- boundary;
+- transcript `coveredSequence`;
+- which prior fields are copied.
+
+3. Completion receipts conflict with logical-ID reuse
+
+The spec says receipts do not prevent reuse after hard deletion ([spec:862](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:862), [spec:2931](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2931)). But `prepareMaintenance()` checks retained receipts before examining the possibly reused identity ([spec:1306](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1306)).
+
+If a new incarnation reuses an old operation ID:
+
+- the same digest produces a false `already_completed`;
+- a different digest produces a false conflict.
+
+Either operation IDs must be globally unique and never reused, including across deleted incarnations, or receipts need an incarnation identifier. The latter is structurally safer.
+
+4. The unstaged-provider crash policy still references a nonexistent API
+
+Creation acknowledges the unavoidable crash window after provider creation but before `stagedContinuation` is durable. It says another thread is started only under the “same explicit retry policy” ([spec:374](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:374)), but no such policy or default behavior is defined.
+
+On retry, the library cannot know whether the first provider call completed. It needs a concrete choice such as:
+
+```ts
+unstagedProviderOutcome: "fail_uncertain" | "retry_and_allow_orphan"
+```
+
+This should cover managed creation and any restoration strategy that can create a thread before staging.
+
+## Flagrant security/detail issue
+
+The direct-maintenance filename includes raw caller-supplied `creationId`:
+
+[spec:265](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:265)
+
+```text
+<encoded-agentSessionId>.<creationId>.json
+```
+
+Unless IDs have a restrictive validated grammar defined elsewhere, this permits separators, `..`, oversized names, and collisions. Encode both components independently or use a digest-derived filename.
+
+## Smaller inconsistencies
+
+- Snapshot cursors are explicitly view-independent ([spec:2387](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2387)), but the following generic rule says “a cursor” is invalid with another view/filter ([spec:2393](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2393)). Qualify that rule as applying only to navigation cursors.
+- `getSessionMaintenance()` is said to expose exact normalized retry details, but maintenance records omit significant original inputs such as policies, continuation strategies, adapters, and runtime intent. Either weaken that promise to “persisted recovery state” or store a complete nonsecret retry descriptor.
+- Tombstone restoration says the old transcript path is never recreated implicitly, but `replacementTranscript: {}` can resolve through defaults to that exact path ([spec:2915](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2915), [spec:2961](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2961)). Require an explicit `path`, or state that explicitly supplying `{}` authorizes the resolved default path with a new identity.
+
+Overall: the audit separation, configuration fidelity, prepared deletion/restoration, strict-v2 compatibility boundary, truncation contract, and completed-maintenance semantics now look coherent. The history fold and in-flight checkpoint derivation are the two most architecturally important remaining problems.
+
+
+
+
+
+---
+
+
+
+This review is valid, but we can close it without materially expanding the architecture. Two issues require deterministic algorithms, one needs an incarnation field, and one can be handled as an explicit V0 limitation.
+
+## 1. History reconstruction: accept, but keep it internal
+
+The current reducer cannot reconstruct history once earlier transitions fall behind the latest checkpoint. We need two folds, but they do not need to become large public abstractions:
+
+```text
+history fold:
+  all target_activated records through snapshot
+  → complete InternalSessionHistory
+
+continuation fold:
+  latest checkpoint
+  + reconstructed history through checkpoint.coveredSequence
+  + structural tail after coveredSequence
+  → current continuation state
+```
+
+Define:
+
+- Initial history revision: `0`.
+- Initial history digest: lowercase SHA-256 of UTF-8 JCS `[]`.
+- Each `target_activated.historyEntry` is appended in `seq` order.
+- Revision equals the number of canonical entries.
+- Digest is lowercase SHA-256 of the UTF-8 JCS serialization of the complete ordered entry array.
+- Every checkpoint’s history revision/digest must match the history fold through its `coveredSequence`.
+
+`TranscriptReductionResult` only needs an internal normative shape:
+
+```ts
+interface TranscriptReductionResult {
+  checkpoint: AgentSessionCheckpoint;
+  internalSessionHistory: readonly InternalSessionHistoryEntry[];
+  recovery: SessionRecoveryStatus;
+  repairs: readonly PersistenceRepair[];
+}
+```
+
+The implementation may perform both folds in one streaming scan. A disposable index can optimize this later.
+
+## 2. Registry in-flight reconstruction: accept, reuse existing fields
+
+We do not need another `startState` object. Make `operation(started)` deterministic using `stateRevision`, `ts`, and `seq`, exactly as abort now does:
+
+- `stateRevision = previous.stateRevision + 1`;
+- `updatedAt = canonical `toISOString()` conversion of `started.ts`;
+- copy every other continuation field;
+- set boundary to:
+
+```ts
+{
+  status: "in_flight",
+  lastSettledOperationId: previous.boundary.lastSettledOperationId,
+  interruptedOperationId: started.operationId,
+  cause: "operation_started",
+}
+```
+
+- set `coveredSequence = started.seq`;
+- recompute the digest.
+
+The envelope rule becomes: `ts` is state-authoritative only for deterministic `started` and `aborted` reduction.
+
+This makes registry-newer in-flight validation reproducible without another schema.
+
+## 3. Receipt reuse: use `creationId` as the incarnation
+
+The review is right. Globally unique operation IDs would merely turn a structural issue into a caller convention.
+
+We already have the appropriate identity: `creationId`. Store it as the logical incarnation ID:
+
+```ts
+interface AgentSessionRecord {
+  incarnationId: string; // creationId for newly created sessions
+  // ...
+}
+
+interface MaintenanceCompletionReceipt {
+  agentSessionId: string;
+  incarnationId: string;
+  // ...
+}
+```
+
+All maintenance checks are scoped by:
+
+```text
+agentSessionId + incarnationId + operationId
+```
+
+Rules:
+
+- A newly created incarnation must use a fresh `creationId`.
+- Existing-session maintenance gets the incarnation from the registry record.
+- Migration generates and persists a fresh incarnation ID.
+- Hard deletion may retain receipts for the deleted incarnation.
+- Reusing the logical ID creates a new incarnation and cannot match old receipts.
+
+This adds one field, not a new lifecycle abstraction.
+
+## 4. Unstaged provider outcome: accept a fixed V0 policy
+
+I would avoid another configurable policy.
+
+Use this concrete rule:
+
+> An identical, explicit retry of a prepared creation/restoration with no staged continuation is authorization to repeat the provider-thread creation step.
+
+Consequences:
+
+- The library never retries it automatically during manager opening, listing, or unrelated loading.
+- The retry may leave one unknown orphan provider thread.
+- The new staged continuation records that an unstaged prior attempt may have completed.
+- The library emits this uncertainty through the returned opening report/notification.
+- Once `stagedContinuation` exists, no subsequent retry may create another thread or rerun the continuation builder.
+
+This is a reasonable V0 limitation. A configurable fail/retry/reconcile policy can be deferred until adapters can provide stronger creation idempotency.
+
+## Security and smaller fixes
+
+All should be accepted:
+
+- Direct marker filename becomes something like:
+
+  ```text
+  maintenance/<sha256(JCS([agentSessionId, creationId]))>.json
+  ```
+
+  Actual IDs remain inside the owner-only marker.
+
+- Cursor view/filter invalidation applies only to navigation cursors.
+- `getSessionMaintenance()` promises persisted recovery state, not the complete original request.
+- Tombstone replacement requires an explicit `path`. The consumer may deliberately reuse the former path, but it receives a new log ID at generation 1.
+- Add the history/reducer definitions and in-flight reconstruction tests.
+
+## What to defer
+
+Document these explicitly:
+
+- History side indexes or periodic history materialization.
+- Adapter-aware reconciliation of possibly orphaned provider threads.
+- Configurable unstaged-provider retry policy.
+- Complete executable retry descriptors.
+- Automatic cleanup of provider-side orphan sessions.
+
+So I would accept the review, but treat blocker 4 as a fixed, documented V0 retry rule rather than adding another policy API. The resulting implementation model remains manageable.
+
+
+
+
+# review pass
+
+I’ll inspect the newest revision against those four blockers first, then do another cross-section pass for any regressions introduced by the fixes.The previous four issues are now explicitly repaired. Two new cross-section problems remain in the transaction/reducer contracts: the history-fold API currently double-counts its own tail, and incarnation-scoped receipts cannot be addressed by the store API after a hard deletion. I’m validating the CAS behavior as well, because it affects deletion and reconfiguration under registry-only races.This revision fixes all issues from the previous pass. I still see three real blockers, primarily around incarnation safety and the history reducer.
+
+## Blockers
+
+1. Stable-ID reuse still has an ABA problem at the public API
+
+Receipts are correctly scoped by `incarnationId` ([spec:889](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:889)), but consumers cannot supply or inspect that incarnation:
+
+- `AgentSessionSummary` omits it ([spec:1463](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1463)).
+- `deleteAgentSession()` accepts only the logical ID, deletion ID, and record revision ([spec:2985](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2985)).
+- `finalizeMaintenance()` also lacks it ([spec:1344](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1344)).
+
+A dangerous sequence is therefore possible:
+
+1. Incarnation A is hard-deleted.
+2. The same `agentSessionId` is recreated as incarnation B.
+3. A delayed retry of A’s deletion arrives.
+4. Its `expectedRecordRevision` happens to equal B’s revision.
+5. The manager associates the request with the current incarnation and deletes B.
+
+The internal receipt tuple does not protect against this because the caller has not identified which incarnation it intended.
+
+Expose `incarnationId` in summaries/results and require `expectedIncarnationId` on every existing-session mutation. Store finalization and receipt lookup must also receive it explicitly. This is the proper ABA token; `recordRevision` alone resets with reuse and is insufficient.
+
+2. Prepared maintenance does not clearly fence ordinary record publication
+
+`prepareMaintenance()` verifies the record revision ([spec:1362](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1362)), but the prepared record does not retain that base revision except for restoration. `finalizeMaintenance()` has no expected revision parameter.
+
+That conflicts with the explicit registry-only race claim that CAS prevents resurrection ([spec:3074](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:3074)). A live registry-only session could publish a checkpoint after deletion/reconfiguration is prepared but before it finalizes. Nothing currently says that `saveAgentSessionRecord()` must reject writes while maintenance exists, and finalization cannot verify that the record remained unchanged.
+
+Add a common field:
+
+```ts
+baseRecordRevision: number | null;
+```
+
+Then require both:
+
+- ordinary record saves atomically reject an active maintenance reservation;
+- finalization verifies the current incarnation and base record revision before applying its mutation.
+
+This should be part of the `AgentSessionStore` contract, not merely default-store behavior.
+
+3. The new history-fold API disagrees with its own prose
+
+The API takes `activationsThroughSnapshot` and returns history through the entire snapshot ([spec:1188](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1188)). But `reduceTranscriptState()` expects `historyThroughCheckpoint` and then folds post-checkpoint transition activations itself ([spec:1192](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1192), [spec:1210](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:1210)).
+
+Passing the declared history result into the declared state reducer would double-apply post-checkpoint activations.
+
+Make the boundary explicit:
+
+```ts
+reduceTranscriptHistory(
+  activationsThroughCheckpoint: Iterable<TranscriptTransitionRecord>,
+): TranscriptHistoryReduction;
+```
+
+Then pass only records after `checkpoint.transcript.coveredSequence` to the state reducer.
+
+There is also a related direct contradiction: history revision is defined as `entries.length`, and `historyEntry` is absent when `from.internalSessionId` is null, but transition rule 3 unconditionally says every activation appends an entry and increments the revision ([spec:2284](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2284), [spec:2290](/home/ffacu/q/apps/libs/acp-lib/.res/somelogs.md/9-5+/9-6-SPEC-persistence-transcripts.md:2290)). The append/increment must be conditional on `historyEntry` being present.
+
+Everything else from the last review is now coherently fixed: deterministic started/aborted reduction, safe marker naming, explicit orphan-producing retry behavior, incarnation-scoped receipts, cursor distinction, explicit tombstone replacement paths, and maintenance-inspection wording. After the three issues above, I would consider the architecture substantially implementation-ready.
+
+
+
+
+---
+
+
+
+
+All three are real correctness issues. I would fix them now; none requires another subsystem or conceptual abstraction.
+
+## 1. Use `incarnationId` as the public ABA token
+
+The reviewer is right: an internal incarnation field provides no protection if a delayed caller cannot identify its intended incarnation.
+
+Expose it consistently:
+
+```ts
+interface AgentSessionSummary {
+  agentSessionId: string;
+  incarnationId: string;
+  recordRevision: number;
+  // ...
+}
+
+class AgentSession {
+  readonly agentSessionId: string;
+  readonly incarnationId: string;
+}
+```
+
+Every mutation targeting an existing managed session must require:
+
+```ts
+expectedIncarnationId: string;
+expectedRecordRevision: number;
+```
+
+That includes at least:
+
+- `deleteAgentSession()`;
+- `restoreAgentSession()`;
+- `reconfigureAgentSessionPersistence()`;
+- future offline metadata/maintenance mutations.
+
+Ordinary live checkpoint publication already knows its incarnation from the `AgentSession` object and must include it in its CAS.
+
+Store finalization becomes:
+
+```ts
+finalizeMaintenance(
+  agentSessionId: string,
+  expectedIncarnationId: string,
+  operationId: string,
+  requestDigest: string,
+  mutation: ...
+): Promise<void>;
+```
+
+A delayed mutation for incarnation A can then find A’s receipt or fail safely, but can never be interpreted as a mutation against incarnation B.
+
+This is not really API expansion—it exposes the ABA token the design already depends upon.
+
+## 2. Maintenance must fence ordinary record writes
+
+Also valid. Add one common field to every maintenance transaction:
+
+```ts
+baseRecordRevision: number | null;
+```
+
+Rules:
+
+- Creation uses `null` and requires no session record to exist.
+- Reconfiguration, restoration, and deletion use the exact current revision.
+- `prepareMaintenance()` atomically validates incarnation and base revision.
+- `saveAgentSessionRecord()` rejects when active maintenance exists for that logical ID/incarnation.
+- `finalizeMaintenance()` verifies:
+
+  ```text
+  active maintenance identity
+  + incarnation
+  + operation ID
+  + request digest
+  + unchanged base record revision
+  ```
+
+- Only `finalizeMaintenance()` may mutate the record while the reservation exists.
+
+Remove restoration’s separate `priorRecordRevision`; the common field replaces it.
+
+This makes the existing “CAS prevents resurrection” claim true for custom stores as well as the default JSON implementation.
+
+## 3. Correct the history-fold boundary
+
+This is primarily a naming/contract correction:
+
+```ts
+reduceTranscriptHistory(
+  activationsThroughCheckpoint: Iterable<TranscriptTransitionRecord>,
+): TranscriptHistoryReduction;
+
+reduceTranscriptState(
+  checkpoint: AgentSessionCheckpoint,
+  historyThroughCheckpoint: TranscriptHistoryReduction,
+  structuralTailAfterCheckpoint: readonly TranscriptStructuralRecord[],
+): TranscriptReductionResult;
+```
+
+The state reducer folds only records whose sequence is greater than `checkpoint.transcript.coveredSequence`.
+
+And transition reduction becomes conditional:
+
+```text
+if target_activated.historyEntry is present:
+  append entry
+  revision += 1
+  recompute digest
+
+otherwise:
+  change current routing only
+  leave history entries/revision/digest unchanged
+```
+
+That correctly handles transitions from a null/degraded internal identity.
+
+These should not be deferred. They are small changes that make the already-chosen architecture enforceable:
+
+- one existing identity becomes public;
+- one common CAS field is added;
+- one fold parameter is renamed;
+- one unconditional sentence becomes conditional.
+
+After these corrections, I agree with the review: the persistence architecture should be considered implementation-ready rather than continuing another design-expansion cycle.
