@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FileAgentSessionStore } from "../src/persistence/file-registry-store.ts";
@@ -123,6 +123,18 @@ describe("SessionManager.restoreAgentSession", () => {
       deleteAuditLog: true,
     });
     const deleted = (await manager.getAgentSessionInfo("alias-agent", { includeDeleted: true }))!;
+    const directory = join(root, "replacement-directory");
+    await mkdir(directory);
+    await expect(manager.restoreAgentSession("alias-agent", {
+      ...runtimeConfig(),
+      restorationId: "directory-restore",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+      replacementTranscript: { path: directory },
+      replacementAuditLog: false,
+    })).rejects.toThrow("final file, not a directory");
+    expect(await manager.getSessionMaintenance("alias-agent")).toBeNull();
+
     const path = join(root, "replacement", "same.jsonl");
 
     await expect(manager.restoreAgentSession("alias-agent", {

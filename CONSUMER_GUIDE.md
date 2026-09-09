@@ -661,8 +661,9 @@ const opened = await sessions.restoreAgentSession(agentSessionId, {
 ```
 
 Retained artifacts are reused. If an artifact was deleted, restoration requires an
-explicit `false` or an explicit replacement path; it never silently recreates the previous
-file. The returned value has the same continuation, recovery, configuration,
+explicit `false` or an absolute normalized replacement filename; directory shorthand is
+not accepted because restoration IDs must remain stable if filesystem state changes. It
+never silently recreates the previous file. The returned value has the same continuation, recovery, configuration,
 promptability, and repairs report as ordinary managed loading.
 
 ## Use the command layers in a UI

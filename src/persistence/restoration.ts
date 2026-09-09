@@ -28,7 +28,7 @@ import { resolveDirectPersistence } from "./config.ts";
 import { resolveSessionLogPaths } from "./paths.ts";
 import { FileSessionLogWriter } from "./session-log-writer.ts";
 import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
 import { scanTranscriptContinuation } from "./transcript-scanner.ts";
 import { AuditLogReader } from "./audit-log-reader.ts";
 import type { AuditLogHeaderRecord } from "./records.ts";
@@ -536,8 +536,12 @@ async function normalizeRestorationOptions(
 ): Promise<RestoreAgentSessionOptions> {
   let replacementTranscript = options.replacementTranscript;
   if (replacementTranscript) {
+    const path = await exactReplacementFilePath(
+      replacementTranscript.path,
+      "replacement transcript",
+    );
     const resolved = resolveDirectPersistence({
-      transcript: replacementTranscript,
+      transcript: { ...replacementTranscript, path },
       auditLog: false,
       sessionConfiguration: record.sessionConfigurationPersistence,
       limits: record.transcript?.effectiveLimits,
@@ -546,7 +550,9 @@ async function normalizeRestorationOptions(
       throw new AgentSessionRestorationError("replacement transcript is disabled");
     }
     const paths = await resolveSessionLogPaths(resolved, record.agentSessionId);
-    if (!paths.transcriptPath) throw new AgentSessionRestorationError("replacement transcript path is absent");
+    if (!paths.transcriptPath || paths.transcriptPath !== path) {
+      throw new AgentSessionRestorationError("replacement transcript must name its final file");
+    }
     replacementTranscript = {
       path: paths.transcriptPath,
       preset: resolved.transcript.preset,
@@ -557,16 +563,22 @@ async function normalizeRestorationOptions(
 
   let replacementAuditLog = options.replacementAuditLog;
   if (replacementAuditLog) {
+    const path = await exactReplacementFilePath(
+      replacementAuditLog.path,
+      "replacement audit log",
+    );
     const resolved = resolveDirectPersistence({
       transcript: false,
-      auditLog: replacementAuditLog,
+      auditLog: { ...replacementAuditLog, path },
       limits: record.auditLog?.effectiveLimits,
     });
     if (resolved === false || resolved.auditLog === false) {
       throw new AgentSessionRestorationError("replacement audit log is disabled");
     }
     const paths = await resolveSessionLogPaths(resolved, record.agentSessionId);
-    if (!paths.auditLogPath) throw new AgentSessionRestorationError("replacement audit-log path is absent");
+    if (!paths.auditLogPath || paths.auditLogPath !== path) {
+      throw new AgentSessionRestorationError("replacement audit log must name its final file");
+    }
     replacementAuditLog = {
       path: paths.auditLogPath,
       capture: resolved.auditLog.capture,
@@ -579,6 +591,25 @@ async function normalizeRestorationOptions(
     ...(replacementTranscript !== undefined ? { replacementTranscript } : {}),
     ...(replacementAuditLog !== undefined ? { replacementAuditLog } : {}),
   };
+}
+
+async function exactReplacementFilePath(path: string, label: string): Promise<string> {
+  if (!isAbsolute(path) || resolvePath(path) !== path) {
+    throw new AgentSessionRestorationError(
+      `${label} path must be an absolute normalized final filename`,
+    );
+  }
+  try {
+    const info = await lstat(path);
+    if (info.isDirectory()) {
+      throw new AgentSessionRestorationError(
+        `${label} path must name its final file, not a directory`,
+      );
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return path;
 }
 
 async function validateRestorationArtifacts(

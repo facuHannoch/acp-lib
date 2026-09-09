@@ -3142,8 +3142,10 @@ that exact representation drives the request digest, maintenance targets, artifa
 headers, and installation. Semantically equivalent retry syntax therefore identifies the
 same transaction.
 
-Replacement configuration requires an explicit path; omission never resolves through
-manager defaults. The consumer may deliberately name the former path, but that is an
+Replacement configuration requires an absolute normalized final filename; omission never
+resolves through manager defaults and an existing directory is never interpreted as
+filename shorthand. This keeps the request digest independent of later filesystem path
+classification. The consumer may deliberately name the former file, but that is an
 explicit choice and creates a new log identity at generation 1.
 
 Restoration is a `kind: "restoration"` maintenance transaction rather than a privileged
@@ -3509,7 +3511,7 @@ change the session state, or manufacture operation failure records.
   transcript or transcript-disabled choice.
 - Restoring a tombstone whose audit log was deleted requires an explicit replacement
   audit log or audit-disabled choice, independently from transcript continuation.
-- A replacement log requires an explicit path; deliberately reusing the former path is
+- A replacement log requires an absolute normalized final filename; deliberately reusing the former path is
   allowed but creates a new identity at generation 1, while `{}` cannot silently resolve
   through manager defaults.
 - Hard registry removal without deletion of every configured session log is rejected before

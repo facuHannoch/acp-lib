@@ -2329,6 +2329,20 @@ load-only restoration ordering.
 
 Verification: `tsc --noEmit`, 671/671 repository tests, and `git diff --check` pass.
 
+### Part 22 — filesystem-independent restoration paths
+
+Made replacement destinations stable transaction inputs rather than filesystem-dependent
+path shorthand. Tombstone restoration now requires each replacement path to be an
+absolute normalized final filename and rejects an existing directory before hashing or
+maintenance. Consequently, deleting or changing a directory between identical retries
+cannot change request normalization or bypass the original completion receipt.
+
+The consumer guide and persistence specification now state this stricter
+maintenance-specific contract. Regression coverage rejects an existing replacement
+directory and verifies that no maintenance reservation is published.
+
+Verification: `tsc --noEmit`, 671/671 repository tests, and `git diff --check` pass.
+
 ### Part 21 — normalized restoration identity
 
 Completed restoration preflight normalization. Replacement transcript and audit choices
