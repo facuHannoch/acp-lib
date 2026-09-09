@@ -1461,3 +1461,20 @@ creation transaction, whose installation provenance is the authority for safe cl
 Added tests for a generation that closes and fully rescans with the identical checkpoint,
 plus rejection of an invalid initial coverage boundary before file creation. The scanner
 and runtime suite passes 11/11, `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 5E — session-configuration continuation snapshots
+
+Added `snapshotSessionConfiguration()` to convert the harness's complete advertised
+configuration map into the bounded checkpoint model. The snapshot sorts announced IDs,
+hashes the ID/type/selectable-value schema deterministically, applies the configured
+value policy before inspecting current values, records policy omissions explicitly, and
+derives exact/partial restoration fidelity. A nonempty `include` is treated as an
+allowlist; `exclude` always wins; typed mode admits booleans, valid advertised selections,
+and explicitly included unknown options only.
+
+Existing ordered restoration targets are preserved only when the same persistence policy
+admits them. Non-JSON runtime values are reported as omitted instead of being coerced or
+allowed to corrupt a checkpoint. Tests cover typed capture, unknown-value opt-in,
+exclusion and malformed values, and insertion-order-independent schema digests. The
+configuration/checkpoint tests pass 11/11, `tsc --noEmit` passes, and `git diff --check`
+is clean.
