@@ -65,7 +65,11 @@ import {
 import { resolveSessionLogPaths } from "./persistence/paths.ts";
 import { createAgentSessionCheckpoint } from "./persistence/checkpoint.ts";
 import { EMPTY_HISTORY_DIGEST } from "./persistence/reducer.ts";
-import type { TranscriptHeaderRecord, OperationKind } from "./persistence/records.ts";
+import type {
+  InternalSessionDescriptor,
+  TranscriptHeaderRecord,
+  OperationKind,
+} from "./persistence/records.ts";
 import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
 import { snapshotSessionConfiguration } from "./persistence/configuration-state.ts";
 import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
@@ -770,9 +774,6 @@ export class AgentSession implements AgentClient, Bridgeable {
    * coordinate a handoff against in-flight work themselves.
    */
   handoff(options: HandoffOptions = {}): Promise<HandoffResult> {
-    if (this.v2Transcript) {
-      return Promise.reject(new Error("handoff with v2 persistence is not available until its transition boundary is wired"));
-    }
     return new Promise<HandoffResult>((resolve, reject) => {
       if (this.phase === "stopped") {
         reject(new Error("AgentSession is stopped"));
@@ -831,8 +832,11 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
     const fromInternalSessionId = this._internalSessionId;
+    const fromDescriptor = this.v2Transcript ? this.v2Descriptor() : null;
     let toInternalSessionId: string | undefined;
+    let toDescriptor: InternalSessionDescriptor | undefined;
     let summary: string | undefined;
+    let failedAfter: "start" | "target_created" | "target_activated" = "start";
     // Records accumulate as they complete, so a handoff that fails partway still reports
     // the operations it already paid for.
     const records: OperationMeteringRecord[] = [];
@@ -841,15 +845,26 @@ export class AgentSession implements AgentClient, Bridgeable {
       handoffId: item.handoffId,
       fromInternalSessionId,
     });
-    await this.appendTranscript({
-      v: 1,
-      t: "handoff",
-      event: "start",
-      ts: Date.now(),
-      handoffId: item.handoffId,
-      fromInternalSessionId,
-      ...(item.options.summary !== undefined ? { summary: item.options.summary } : {}),
-    });
+    if (this.v2Transcript) {
+      await this.v2Transcript.appendTransitionEvent({
+        kind: "transition",
+        transitionId: item.handoffId,
+        transitionKind: "handoff",
+        event: "started",
+        from: fromDescriptor,
+        ...(item.options.summary !== undefined ? { summary: item.options.summary } : {}),
+      });
+    } else {
+      await this.appendTranscript({
+        v: 1,
+        t: "handoff",
+        event: "start",
+        ts: Date.now(),
+        handoffId: item.handoffId,
+        fromInternalSessionId,
+        ...(item.options.summary !== undefined ? { summary: item.options.summary } : {}),
+      });
+    }
 
     try {
       if (this.controller.isDegraded) {
@@ -877,13 +892,56 @@ export class AgentSession implements AgentClient, Bridgeable {
       const created = await this.controller.newSession();
       if (!created.sessionId) throw new Error("harness returned no session id for handoff");
       toInternalSessionId = created.sessionId;
-      this.setInternalSessionId(toInternalSessionId);
-      this.emitStateIfChanged();
-      await this.persist();
-
       if (toInternalSessionId === fromInternalSessionId) {
         throw new Error("harness did not replace the internal session during handoff");
       }
+
+      if (this.v2Transcript) {
+        const transitionAt = new Date().toISOString();
+        toDescriptor = this.v2Descriptor(toInternalSessionId, transitionAt);
+        await this.v2Transcript.appendTransitionEvent({
+          kind: "transition",
+          transitionId: item.handoffId,
+          transitionKind: "handoff",
+          event: "target_created",
+          from: fromDescriptor,
+          to: toDescriptor,
+        });
+        failedAfter = "target_created";
+        const checkpoint = this.v2Transcript.checkpoint;
+        await this.v2Transcript.activateTransition({
+          kind: "transition",
+          transitionId: item.handoffId,
+          transitionKind: "handoff",
+          event: "target_activated",
+          from: fromDescriptor,
+          to: toDescriptor,
+          ...(fromDescriptor?.internalSessionId
+            ? {
+                historyEntry: {
+                  internalSessionId: fromDescriptor.internalSessionId,
+                  adapterId: fromDescriptor.adapterId,
+                  model: fromDescriptor.model,
+                  sessionConfiguration: fromDescriptor.sessionConfiguration,
+                  protocol: fromDescriptor.protocol,
+                  activatedAt: fromDescriptor.activatedAt!,
+                  deactivatedAt: transitionAt,
+                  transition: { kind: "handoff", transitionId: item.handoffId },
+                },
+              }
+            : {}),
+          activationState: {
+            resultingStateRevision: checkpoint.stateRevision + 1,
+            updatedAt: transitionAt,
+            transitionAt,
+            boundary: checkpoint.boundary,
+          },
+        });
+        failedAfter = "target_activated";
+      }
+      this.setInternalSessionId(toInternalSessionId);
+      this.emitStateIfChanged();
+      await this.persist();
 
       const seeded = await this.meteredInternalPrompt(
         `${item.handoffId}:seed`,
@@ -903,23 +961,35 @@ export class AgentSession implements AgentClient, Bridgeable {
         summary,
         meteringRecords: Object.freeze([...records]),
       });
-      await this.appendTranscript({
-        v: 1,
-        t: "handoff",
-        event: "complete",
-        ts: Date.now(),
-        handoffId: item.handoffId,
-        fromInternalSessionId,
-        toInternalSessionId,
-        summary,
-      });
+      if (this.v2Transcript) {
+        await this.v2Transcript.appendTransitionEvent({
+          kind: "transition",
+          transitionId: item.handoffId,
+          transitionKind: "handoff",
+          event: "completed",
+          from: fromDescriptor,
+          to: toDescriptor,
+          summary,
+        });
+      } else {
+        await this.appendTranscript({
+          v: 1,
+          t: "handoff",
+          event: "complete",
+          ts: Date.now(),
+          handoffId: item.handoffId,
+          fromInternalSessionId,
+          toInternalSessionId,
+          summary,
+        });
+      }
       this.emit({ kind: "handoff_completed", result });
       return result;
     } catch (err) {
       // Once session/new succeeds the controller really is on the new thread. Keep the
       // public id and catalog truthful even when continuation seeding subsequently fails.
       const actualSessionId = this.controller.currentSessionId;
-      if (actualSessionId && actualSessionId !== this._internalSessionId) {
+      if (!this.v2Transcript && actualSessionId && actualSessionId !== this._internalSessionId) {
         this.setInternalSessionId(actualSessionId);
         toInternalSessionId = actualSessionId;
         this.emitStateIfChanged();
@@ -930,17 +1000,33 @@ export class AgentSession implements AgentClient, Bridgeable {
         }
       }
       const error = String(err);
-      await this.appendTranscript({
-        v: 1,
-        t: "handoff",
-        event: "failed",
-        ts: Date.now(),
-        handoffId: item.handoffId,
-        fromInternalSessionId,
-        ...(toInternalSessionId ? { toInternalSessionId } : {}),
-        ...(summary !== undefined ? { summary } : {}),
-        error,
-      });
+      if (this.v2Transcript) {
+        await this.v2Transcript.appendTransitionEvent({
+          kind: "transition",
+          transitionId: item.handoffId,
+          transitionKind: "handoff",
+          event: "failed",
+          from: fromDescriptor,
+          ...(toDescriptor ? { to: toDescriptor } : {}),
+          failedAfter,
+          ...(summary !== undefined ? { summary } : {}),
+          errorCode: "unknown",
+        }).catch((persistenceError) => {
+          this.log.warn("handoff_failure_transcript_failed", { error: String(persistenceError) });
+        });
+      } else {
+        await this.appendTranscript({
+          v: 1,
+          t: "handoff",
+          event: "failed",
+          ts: Date.now(),
+          handoffId: item.handoffId,
+          fromInternalSessionId,
+          ...(toInternalSessionId ? { toInternalSessionId } : {}),
+          ...(summary !== undefined ? { summary } : {}),
+          error,
+        });
+      }
       this.emit({
         kind: "handoff_failed",
         handoffId: item.handoffId,
@@ -1228,18 +1314,102 @@ export class AgentSession implements AgentClient, Bridgeable {
       model: this.model,
       degraded: this.controller.isDegraded,
     });
+    let transcriptStarted = false;
+    if (this.v2Transcript) {
+      try {
+        await this.v2Transcript.beginOperation(operationId, persistenceOperationKind(operationKind));
+        transcriptStarted = true;
+        await this.v2Transcript.appendEvent({
+          kind: "message",
+          operationId,
+          role: "user",
+          text,
+        });
+        await this.v2Transcript.syncBeforeDispatch();
+      } catch (error) {
+        if (transcriptStarted) {
+          await this.v2Transcript.abortOperation("pre_dispatch_persistence_failure").catch(
+            (abortError) => this.log.warn("transcript_predispatch_abort_failed", { error: String(abortError) }),
+          );
+        }
+        throw error;
+      }
+    }
     let closed = false;
+    let transcriptClosed = false;
     try {
       const result = await this.controller.prompt(text);
-      records.push(await this.closeOperation(operation, result.status, result.usage));
+      const record = await this.closeOperation(operation, result.status, result.usage);
+      records.push(record);
       closed = true;
+      if (this.v2Transcript) {
+        await this.v2Transcript.appendEvent({
+          kind: "message",
+          operationId,
+          role: "assistant",
+          text: result.text,
+          structured: { version: 1, messages: result.messages },
+          stopReason: result.stopReason,
+          status: result.status,
+        });
+        await this.finishV2Prompt(result.status, record);
+        transcriptClosed = true;
+      }
       return result;
     } catch (err) {
       if (!closed) {
-        records.push(await this.closeOperation(operation, "error", null, String(err)));
+        const record = await this.closeOperation(operation, "error", null, String(err));
+        records.push(record);
+        closed = true;
+      }
+      if (this.v2Transcript && !transcriptClosed) {
+        const record = records[records.length - 1]!;
+        await this.v2Transcript.appendEvent({
+          kind: "message",
+          operationId,
+          role: "assistant",
+          text: "",
+          structured: { version: 1, messages: [] },
+          stopReason: "error",
+          status: "error",
+        }).catch(() => undefined);
+        await this.finishV2Prompt("error", record, "unknown").catch(
+          (persistenceError) => this.log.warn("transcript_terminal_write_failed", { error: String(persistenceError) }),
+        );
       }
       throw err;
     }
+  }
+
+  private v2Descriptor(
+    internalSessionId: string | null = this._internalSessionId,
+    activatedAt?: string,
+  ): InternalSessionDescriptor {
+    if (!this.v2Transcript || this.persistence === false) {
+      throw new Error("v2 descriptor requires transcript persistence");
+    }
+    const checkpoint = this.v2Transcript.checkpoint;
+    const observedAt = activatedAt ?? new Date().toISOString();
+    return {
+      internalSessionId,
+      adapterId: this.adapterId,
+      mode: this._mode,
+      model: this.model,
+      sessionConfiguration: internalSessionId === checkpoint.internalSessionId
+        ? checkpoint.sessionConfiguration
+        : snapshotSessionConfiguration({
+            adapterId: this.adapterId,
+            configOptions: this.controller.configOptions,
+            policy: this.persistence.sessionConfiguration,
+            observedAt,
+          }),
+      activatedAt: internalSessionId === checkpoint.internalSessionId
+        ? checkpoint.internalSessionActivatedAt
+        : internalSessionId
+          ? observedAt
+          : null,
+      protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
+    };
   }
 
   /**

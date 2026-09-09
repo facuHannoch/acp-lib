@@ -1514,3 +1514,36 @@ installed before provider initialization executes. The new runtime/AgentSession 
 pass 7/7, the full legacy AgentSession transcript/state regression set passes 20/20 when
 run outside the restricted subprocess sandbox, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 6B — durable AgentSession handoff transitions
+
+Wired v2-backed handoffs through the transition journal and the ordinary operation
+runtime. A transition writes `started`; optional summary generation runs as a durable
+`handoff_summary` operation on the old thread; provider creation writes `target_created`;
+and `target_activated` durably installs the new descriptor, deterministic activation
+checkpoint, and exact prior-thread history entry before the logical session publishes the
+new internal ID. Continuation seeding then runs as its own durable `handoff_seed`
+operation, followed by `completed`.
+
+Failure handling is phase-aware. A failure before activation leaves the old logical
+routing intact. A seed failure after activation writes a failed transition with
+`failedAfter: "target_activated"` while retaining the already committed new thread and
+canonical history. If the harness switches but activation persistence fails, the runtime
+is poisoned and the logical session does not pretend the uncommitted target was safely
+installed.
+
+The library-internal prompt helper now uses the same metering preflight, durable
+start/input boundary, response and metering projection, and terminal checkpoint path as a
+consumer prompt. This closes the previous hole where handoff summary/seed inference was
+metered but could bypass transcript-v2 operation evidence.
+
+Also corrected the transition runtime's TypeScript contract: activation and
+non-activation inputs are now explicit refinements of the normalized transition event,
+rather than an `Extract` over a non-discriminated event-property union that collapsed to
+`never` in production sources.
+
+Added subprocess end-to-end tests for successful v2 activation and post-activation seed
+failure. Both close and rescan cleanly, retain the previous thread exactly once, expose
+the replacement as current, and contain the expected transition/operation sequences.
+The two v2 cases pass 2/2; the complete handoff and handoff-metering regression suites
+pass 9/9; `tsc --noEmit` and `git diff --check` pass.

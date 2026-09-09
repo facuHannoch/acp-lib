@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AgentSession, type AgentSessionNotification } from "../src/agent-session.ts";
 import { FileSessionStore } from "../src/session-store.ts";
 import { SessionManager } from "../src/session-manager.ts";
 import { readTranscriptLines } from "../src/transcript.ts";
+import { scanTranscriptContinuation } from "../src/persistence/transcript-scanner.ts";
 
 const AGENT = resolve(import.meta.dir, "../smoke-tests/test5-operations/operations-agent.ts");
 const live = new Set<AgentSession>();
@@ -39,6 +40,73 @@ async function createSession(label = "handoff-test"): Promise<{
 }
 
 describe("AgentSession handoff", () => {
+  test("v2 persistence activates the replacement thread and retains canonical history", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-handoff-v2-"));
+    const session = await AgentSession.create({
+      adapter: { command: ["bun", AGENT, "handoff-v2"] },
+      adapterId: "fake",
+      agentSessionId: "stable-v2-id",
+      creationId: "stable-v2-creation",
+      persistence: { root, transcript: { preset: "activity" } },
+    });
+    live.add(session);
+    const originalInternalSessionId = session.internalSessionId;
+
+    const result = await session.handoff({ summary: "portable v2 continuation" });
+    expect(result.fromInternalSessionId).toBe(originalInternalSessionId);
+    expect(result.toInternalSessionId).toBe(session.internalSessionId!);
+    expect(result.toInternalSessionId).not.toBe(originalInternalSessionId);
+
+    await session.stop();
+    live.delete(session);
+    const path = session.transcriptPath!;
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    expect(scan.reduction.checkpoint.internalSessionId).toBe(result.toInternalSessionId);
+    expect(scan.reduction.internalSessionHistory.map((entry) => entry.internalSessionId))
+      .toEqual([originalInternalSessionId]);
+
+    const records = (await readFile(path, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records.filter((record) => record.t === "transition").map((record) => record.event))
+      .toEqual(["started", "target_created", "target_activated", "completed"]);
+    expect(records.filter((record) => record.t === "operation").map((record) => record.operationKind))
+      .toEqual(["handoff_seed", "handoff_seed"]);
+  }, 20_000);
+
+  test("v2 persistence keeps an activated target when continuation seeding fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-handoff-v2-failure-"));
+    const session = await AgentSession.create({
+      adapter: { command: ["bun", AGENT, "fail-seed"] },
+      adapterId: "fake",
+      agentSessionId: "stable-v2-failure",
+      creationId: "stable-v2-failure-creation",
+      persistence: { root, transcript: { preset: "activity" } },
+    });
+    live.add(session);
+    const originalInternalSessionId = session.internalSessionId;
+
+    await expect(session.handoff({ summary: "portable v2 continuation" })).rejects.toThrow(
+      "deterministic continuation seed failure",
+    );
+    expect(session.internalSessionId).not.toBe(originalInternalSessionId);
+    const activatedInternalSessionId = session.internalSessionId;
+    await session.stop();
+    live.delete(session);
+
+    const scan = await scanTranscriptContinuation(session.transcriptPath!);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    expect(scan.reduction.checkpoint.internalSessionId).toBe(activatedInternalSessionId);
+    expect(scan.reduction.internalSessionHistory.map((entry) => entry.internalSessionId))
+      .toEqual([originalInternalSessionId]);
+    const records = (await readFile(session.transcriptPath!, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records.filter((record) => record.t === "transition").map((record) => record.event))
+      .toEqual(["started", "target_created", "target_activated", "failed"]);
+    expect(records.filter((record) => record.t === "operation").map((record) => record.event))
+      .toEqual(["started", "failed"]);
+  }, 20_000);
+
   test("replaces only the internal thread and records one logical transcript boundary", async () => {
     const { session, sessions, transcriptPath } = await createSession();
     const originalObject = session;

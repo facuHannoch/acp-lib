@@ -35,6 +35,14 @@ export interface TranscriptTerminalCheckpointChanges {
   readonly boundary?: AgentSessionBoundary;
 }
 
+type NormalizedTransitionEvent = Extract<NormalizedPersistenceEvent, { kind: "transition" }>;
+type TargetActivationEvent = Omit<NormalizedTransitionEvent, "event"> & {
+  readonly event: "target_activated";
+};
+type NonActivationTransitionEvent = Omit<NormalizedTransitionEvent, "event"> & {
+  readonly event: Exclude<NormalizedTransitionEvent["event"], "target_activated">;
+};
+
 export interface CreateTranscriptRuntimeOptions {
   readonly path: string;
   readonly header: TranscriptHeaderRecord;
@@ -217,7 +225,7 @@ export class TranscriptPersistenceRuntime {
   }
 
   async appendTransitionEvent(
-    event: Exclude<Extract<NormalizedPersistenceEvent, { kind: "transition" }>, { event: "target_activated" }>,
+    event: NonActivationTransitionEvent,
     options: { readonly durable?: boolean; readonly ts?: number } = {},
   ): Promise<void> {
     this.assertUsable();
@@ -235,7 +243,7 @@ export class TranscriptPersistenceRuntime {
   }
 
   async activateTransition(
-    event: Extract<Extract<NormalizedPersistenceEvent, { kind: "transition" }>, { event: "target_activated" }>,
+    event: TargetActivationEvent,
     ts = Date.now(),
   ): Promise<AgentSessionCheckpoint> {
     this.assertUsable();
