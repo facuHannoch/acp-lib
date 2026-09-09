@@ -220,8 +220,13 @@ export class TranscriptPersistenceRuntime {
       policy: this.header.effectivePolicy,
     });
     if (!record) return false;
-    await this.writer.append(record);
-    return true;
+    try {
+      await this.writer.append(record);
+      return true;
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
   }
 
   async appendTransitionEvent(
@@ -239,7 +244,47 @@ export class TranscriptPersistenceRuntime {
       policy: this.header.effectivePolicy,
     });
     if (!record || record.t !== "transition") throw new TranscriptRuntimeStateError("transition projection did not produce a structural record");
-    await this.writer.append(record, { durable: options.durable ?? true });
+    try {
+      await this.writer.append(record, { durable: options.durable ?? true });
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
+  }
+
+  /** Publish resumable non-routing state when no provider operation is active. */
+  async publishCheckpoint(
+    changes: TranscriptTerminalCheckpointChanges,
+    ts = Date.now(),
+  ): Promise<AgentSessionCheckpoint> {
+    this.assertUsable();
+    if (this._recovery.kind !== "clean") {
+      throw new TranscriptRuntimeStateError("uncertain transcript recovery must be resolved before checkpoint publication");
+    }
+    if (this.activeOperation) {
+      throw new TranscriptRuntimeStateError("standalone checkpoint cannot publish during an active operation");
+    }
+    const next = createAgentSessionCheckpoint({
+      ...checkpointInput(this._checkpoint),
+      ...(changes.model === undefined ? {} : { model: changes.model }),
+      ...(changes.sessionConfiguration === undefined
+        ? {}
+        : { sessionConfiguration: structuredClone(changes.sessionConfiguration) }),
+      ...(changes.metering === undefined ? {} : { metering: structuredClone(changes.metering) }),
+      stateRevision: this._checkpoint.stateRevision + 1,
+      boundary: changes.boundary ?? this._checkpoint.boundary,
+      updatedAt: timestampToIso(ts),
+    });
+    const physical = checkpointRecord(this.writer.nextSequence, next, this.header);
+    try {
+      await this.writer.append(physical, { durable: true });
+      const reduced = reduceTranscriptState(this.selectedCheckpointRecord, this.history, [physical]);
+      this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery);
+      return this.checkpoint;
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
   }
 
   async activateTransition(

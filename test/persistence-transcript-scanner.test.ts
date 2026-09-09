@@ -222,6 +222,22 @@ describe("transcript continuation scanner", () => {
     expect(initialized).toBe(true);
     await runtime.close();
   });
+
+  test("live runtime durably publishes standalone non-routing checkpoint state", async () => {
+    const path = await transcriptPath();
+    const initial = initialCheckpoint(path);
+    await writeLines(path, [header(path), checkpointRecord(initial, 2)]);
+    const runtime = await TranscriptPersistenceRuntime.resume({ path });
+    const published = await runtime.publishCheckpoint({ model: "model-2" }, TS + 1_000);
+    expect(published.stateRevision).toBe(initial.stateRevision + 1);
+    expect(published.model).toBe("model-2");
+    expect(published.transcript?.coveredSequence).toBe(initial.transcript?.coveredSequence);
+    await runtime.close();
+
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.reduction.checkpoint.digest).toBe(published.digest);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+  });
 });
 
 async function transcriptPath(): Promise<string> {

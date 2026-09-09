@@ -107,10 +107,24 @@ interface ConfigQueueItem {
   reject: (error: unknown) => void;
 }
 
-type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem;
+interface ModeQueueItem {
+  kind: "set_mode";
+  transitionId: string;
+  mode: AgentMode;
+  resolve: (result: ConnectResult) => void;
+  reject: (error: unknown) => void;
+}
+
+type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem;
 
 /** What the stable logical session is doing right now. */
-export type AgentSessionPhase = "idle" | "prompting" | "handoff" | "configuring" | "stopped";
+export type AgentSessionPhase =
+  | "idle"
+  | "prompting"
+  | "handoff"
+  | "configuring"
+  | "switching_mode"
+  | "stopped";
 
 /** Authoritative, immutable point-in-time state for orchestration consumers. */
 export interface AgentSessionState {
@@ -166,6 +180,9 @@ export type AgentSessionEvent =
   | { kind: "configuration_started"; operationId: string; configId: string }
   | { kind: "configuration_completed"; operationId: string; configId: string }
   | { kind: "configuration_failed"; operationId: string; configId: string; error: string }
+  | { kind: "mode_change_started"; transitionId: string; from: AgentMode; to: AgentMode }
+  | { kind: "mode_change_completed"; transitionId: string; from: AgentMode; to: AgentMode }
+  | { kind: "mode_change_failed"; transitionId: string; from: AgentMode; to: AgentMode; error: string }
   /** Latest context-window observation for the ACTIVE provider thread, or null. */
   | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
   /** Latest cumulative provider-reported cost. Telemetry, never asserted to be an invoice. */
@@ -711,7 +728,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
   /** True while one operation is executing. Queued work is exposed independently. */
   get isBusy(): boolean {
-    return this.phase === "prompting" || this.phase === "handoff" || this.phase === "configuring";
+    return this.phase !== "idle" && this.phase !== "stopped";
   }
   get queuedOperationCount(): number {
     return this.queue.length;
@@ -818,7 +835,9 @@ export class AgentSession implements AgentClient, Bridgeable {
           ? "prompting"
           : item.kind === "handoff"
             ? "handoff"
-            : "configuring";
+            : item.kind === "set_config"
+              ? "configuring"
+              : "switching_mode";
         this.emitStateIfChanged();
         if (item.kind === "prompt") {
           this.emit({ kind: "turn_started", turnId: item.turnId });
@@ -840,7 +859,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           } catch (err) {
             item.reject(err);
           }
-        } else {
+        } else if (item.kind === "set_config") {
           this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
           try {
             await this.runSetConfig(item);
@@ -848,6 +867,17 @@ export class AgentSession implements AgentClient, Bridgeable {
             item.resolve();
           } catch (err) {
             this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
+            item.reject(err);
+          }
+        } else {
+          const from = this._mode;
+          this.emit({ kind: "mode_change_started", transitionId: item.transitionId, from, to: item.mode });
+          try {
+            const result = await this.runSetMode(item);
+            this.emit({ kind: "mode_change_completed", transitionId: item.transitionId, from, to: item.mode });
+            item.resolve(result);
+          } catch (err) {
+            this.emit({ kind: "mode_change_failed", transitionId: item.transitionId, from, to: item.mode, error: String(err) });
             item.reject(err);
           }
         }
@@ -1155,6 +1185,110 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
   }
 
+  private async runSetMode(item: ModeQueueItem): Promise<ConnectResult> {
+    if (item.mode === this._mode) return await this.controller.setMode(item.mode);
+    if (!this.v2Transcript) {
+      const result = await this.controller.setMode(item.mode);
+      this._mode = this.controller.currentMode;
+      this.setInternalSessionId(result.sessionId || null);
+      await this.persist();
+      return result;
+    }
+
+    const from = this.v2Descriptor();
+    let to: InternalSessionDescriptor | undefined;
+    let failedAfter: "start" | "target_created" | "target_activated" = "start";
+    await this.v2Transcript.appendTransitionEvent({
+      kind: "transition",
+      transitionId: item.transitionId,
+      transitionKind: "mode_change",
+      event: "started",
+      from,
+      reasonCode: "mode_change",
+    });
+    try {
+      const result = await this.controller.setMode(item.mode);
+      const targetMode = this.controller.currentMode;
+      const targetInternalSessionId = result.sessionId || null;
+      const transitionAt = new Date().toISOString();
+      to = this.v2Descriptor(targetInternalSessionId, transitionAt, targetMode);
+      await this.v2Transcript.appendTransitionEvent({
+        kind: "transition",
+        transitionId: item.transitionId,
+        transitionKind: "mode_change",
+        event: "target_created",
+        from,
+        to,
+        reasonCode: "mode_change",
+      });
+      failedAfter = "target_created";
+      const checkpoint = this.v2Transcript.checkpoint;
+      await this.v2Transcript.activateTransition({
+        kind: "transition",
+        transitionId: item.transitionId,
+        transitionKind: "mode_change",
+        event: "target_activated",
+        from,
+        to,
+        ...(from.internalSessionId
+          ? {
+              historyEntry: {
+                internalSessionId: from.internalSessionId,
+                adapterId: from.adapterId,
+                model: from.model,
+                sessionConfiguration: from.sessionConfiguration,
+                protocol: from.protocol,
+                activatedAt: from.activatedAt!,
+                deactivatedAt: transitionAt,
+                transition: {
+                  kind: "mode_change",
+                  transitionId: item.transitionId,
+                  reasonCode: "mode_change",
+                },
+              },
+            }
+          : {}),
+        activationState: {
+          resultingStateRevision: checkpoint.stateRevision + 1,
+          updatedAt: transitionAt,
+          transitionAt,
+          boundary: checkpoint.boundary,
+        },
+        reasonCode: "mode_change",
+      });
+      failedAfter = "target_activated";
+      this._mode = targetMode;
+      this.setInternalSessionId(targetInternalSessionId);
+      this.emitStateIfChanged();
+      await this.v2Transcript.publishCheckpoint({ metering: this.metering.currentState });
+      await this.v2Transcript.appendTransitionEvent({
+        kind: "transition",
+        transitionId: item.transitionId,
+        transitionKind: "mode_change",
+        event: "completed",
+        from,
+        to,
+        reasonCode: "mode_change",
+      });
+      return result;
+    } catch (error) {
+      await this.v2Transcript.appendTransitionEvent({
+        kind: "transition",
+        transitionId: item.transitionId,
+        transitionKind: "mode_change",
+        event: "failed",
+        from,
+        ...(to ? { to } : {}),
+        failedAfter,
+        reasonCode: "mode_change",
+        errorCode: "unknown",
+      }).catch((persistenceError) => {
+        this.log.warn("mode_change_failure_transcript_failed", { error: String(persistenceError) });
+      });
+      throw error;
+    }
+  }
+
   private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
     this.beginTurn(item.turnId);
     let operation: OpenOperation;
@@ -1371,9 +1505,6 @@ export class AgentSession implements AgentClient, Bridgeable {
     before: AgentSessionMeteringState;
     after: AgentSessionMeteringState;
   }> {
-    if (this.v2Transcript) {
-      throw new Error("metering reconciliation with v2 persistence requires checkpoint publication");
-    }
     if (this.isBusy || this.queue.length > 0) {
       throw new Error("reconcileMetering requires an idle session with no queued operations");
     }
@@ -1389,6 +1520,11 @@ export class AgentSession implements AgentClient, Bridgeable {
       );
     }
     const wasBlocked = this.metering.blocked;
+    if (this.v2Transcript) {
+      // The replacement state is already fully validated above. Persist it first so a
+      // successful return can never leave only the in-memory engine reconciled.
+      await this.v2Transcript.publishCheckpoint({ metering: restoration.state });
+    }
     // Validated first: state is replaced atomically or not at all.
     const { before } = this.metering.reconcile(restoration.state);
     const after = this.metering.currentState;
@@ -1498,6 +1634,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   private v2Descriptor(
     internalSessionId: string | null = this._internalSessionId,
     activatedAt?: string,
+    mode: AgentMode = this._mode,
   ): InternalSessionDescriptor {
     if (!this.v2Transcript || this.persistence === false) {
       throw new Error("v2 descriptor requires transcript persistence");
@@ -1507,7 +1644,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     return {
       internalSessionId,
       adapterId: this.adapterId,
-      mode: this._mode,
+      mode,
       model: this.model,
       sessionConfiguration: internalSessionId === checkpoint.internalSessionId
         ? checkpoint.sessionConfiguration
@@ -1671,7 +1808,12 @@ export class AgentSession implements AgentClient, Bridgeable {
             metering: null,
           });
         } else {
-          item.reject(new Error(`${item.kind === "handoff" ? "handoff" : "configuration change"} cancelled before it started`));
+          const label = item.kind === "handoff"
+            ? "handoff"
+            : item.kind === "set_config"
+              ? "configuration change"
+              : "mode change";
+          item.reject(new Error(`${label} cancelled before it started`));
         }
       }
       this.emitStateIfChanged();
@@ -1694,15 +1836,18 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   // --- mode swap (catalog-affecting) -------------------------------------------
   async setMode(mode: AgentMode): Promise<ConnectResult> {
-    if (this.v2Transcript) {
-      throw new Error("mode changes with v2 persistence are not available until their transition boundary is wired");
-    }
-    const result = await this.controller.setMode(mode);
-    this._mode = this.controller.currentMode;
-    // The ACP/harness session changes on swap, so context/cost reset with it.
-    this.setInternalSessionId(result.sessionId || null);
-    await this.persist();
-    return result;
+    if (this.phase === "stopped") throw new Error("AgentSession is stopped");
+    return await new Promise<ConnectResult>((resolve, reject) => {
+      this.queue.push({
+        kind: "set_mode",
+        transitionId: this.mintOperationId(),
+        mode,
+        resolve,
+        reject,
+      });
+      this.emitStateIfChanged();
+      void this.pump();
+    });
   }
 
   // --- thin proxies to the live connection -------------------------------------

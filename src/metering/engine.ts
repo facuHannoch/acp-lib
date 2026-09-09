@@ -251,7 +251,15 @@ export class MeteringEngine {
         adapterId: this.options.adapterId,
         internalSessionId,
       });
-    if (!keep) this.baseline = null;
+    if (!keep) {
+      this.baseline = null;
+      // The serializable state is a continuation checkpoint, not only accumulated totals.
+      // Carrying the replaced thread's baseline here can make a later restore look valid
+      // until the controller reconnects, and makes a mode-transition checkpoint lie.
+      if (this.state.activeBaseline !== null) {
+        this.state = Object.freeze({ ...this.state, activeBaseline: null });
+      }
+    }
     // A thread we created has counters starting at zero; one we merely loaded does not.
     this.trustedZeroBaseline = created && !keep;
   }

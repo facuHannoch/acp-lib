@@ -1576,3 +1576,37 @@ notifications, operation/configuration records, unchanged state after rejection,
 reduction after close. The v2 setConfig suite passes 2/2, configuration-state tests pass
 5/5, the persistence/manager suite passes, `tsc --noEmit` passes, and `git diff --check`
 is clean.
+
+### Part 6D — durable mode changes and metering reconciliation
+
+Changed `AgentSession.setMode()` into a queued session transition so it serializes with
+prompts, handoffs, and configuration changes. Mode replacement now exposes the
+`switching_mode` busy phase plus started/completed/failed lifecycle notifications. A
+queued mode change cancelled before dispatch produces no persistence evidence.
+
+For v2-backed sessions, a real mode replacement records `started`, `target_created`,
+`target_activated`, and `completed`. Target activation durably installs the new mode,
+protocol, internal-session identity, and the prior ACP thread's canonical history entry
+before the logical session publishes the replacement identity. Moving to degraded PTY
+therefore records a valid null internal-session ID instead of pretending the previous ACP
+thread is still current. Failures retain phase-aware transition evidence and do not
+publish an uncommitted target as logical session state.
+
+Added standalone checkpoint publication to the transcript runtime for non-routing state
+changes made while no provider operation is active. It advances the state revision,
+keeps the state-changing covered sequence unchanged, appends the physical checkpoint
+durably, verifies it through the canonical reducer, and poisons the runtime if publication
+fails. Ordinary projected and transition append failures now poison the runtime as well,
+preventing later writes from continuing after an unknown persistence boundary.
+
+Mode replacement now clears both the live and serialized metering baseline for the old
+provider thread and publishes that cleared state. `reconcileMetering()` uses the same
+standalone-checkpoint primitive: the validated replacement state is made durable before
+the in-memory engine changes or reconciliation notifications are emitted, without
+manufacturing a provider operation or metering record.
+
+Added end-to-end tests for an ACP-to-PTY mode replacement and durable metering
+reconciliation, plus a runtime test for standalone checkpoint publication. The focused
+mode/reconciliation suite passes 2/2, the targeted metering and persistence suites pass
+208 tests, the complete repository suite passes 595/595, `tsc --noEmit` passes, and
+`git diff --check` is clean.
