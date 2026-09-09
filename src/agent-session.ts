@@ -78,6 +78,7 @@ import type {
   OperationKind,
 } from "./persistence/records.ts";
 import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
+import { TranscriptReader } from "./persistence/transcript-reader.ts";
 import {
   snapshotSessionConfiguration,
   snapshotSessionConfigurationAfterSelection,
@@ -217,8 +218,8 @@ export interface ContinuationReport {
 export interface TranscriptContinuationBuilderContext {
   readonly agentSessionId: string;
   readonly checkpoint: AgentSessionCheckpoint;
-  /** Absolute authoritative path. TranscriptReader pagination is added in Phase 6. */
-  readonly transcriptPath: string;
+  /** Snapshot-bound access to captured history; the builder decides how much to read. */
+  readonly transcript: TranscriptReader;
   readonly targetAdapterId: string;
 }
 
@@ -1020,7 +1021,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           ? (await strategy.buildContinuation(Object.freeze({
               agentSessionId: this.agentSessionId,
               checkpoint: structuredClone(checkpoint),
-              transcriptPath: this.openBootstrap.transcriptPath,
+              transcript: new TranscriptReader(this.openBootstrap.transcriptPath),
               targetAdapterId: this.adapterId,
             }))).continuation
           : strategy.continuation;

@@ -279,7 +279,7 @@ describe("AgentSession persisted configuration", () => {
             builderContext = {
               recordedAdapterId: context.checkpoint.adapterId,
               targetAdapterId: context.targetAdapterId,
-              transcriptPath: context.transcriptPath,
+              transcriptPath: context.transcript.path,
             };
             return { continuation: "Continue from the transcript-backed test history." };
           },

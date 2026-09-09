@@ -1752,3 +1752,43 @@ all three uncertain-boundary shapes, durable reopen after acceptance, promptabil
 unblocking and notification, and explicit recovery onto a newly seeded provider thread.
 The complete repository suite passes 609/609, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 8A — snapshot-bound transcript pagination
+
+Added the public `TranscriptReader` for bounded-memory access to an authoritative v2
+transcript. `readPage()` supports the `conversation`, `timeline`, and `records` views,
+returns every page oldest-to-newest, starts from the newest matching records, and provides
+non-overlapping older/newer navigation. Type filters are validated against the selected
+projection; an explicitly empty filter remains distinct from an omitted filter, and
+unknown future record envelopes remain visible only through the records view.
+
+Pagination now has a stable inclusive snapshot boundary. Concurrent appends remain outside
+an existing walk, while a fresh read sees them. Opaque navigation cursors bind the log
+generation, high-water mark, physical boundary, direction, view, and exact filter. Snapshot
+cursors are deliberately view-independent for folded queries. Both cursor kinds verify the
+captured prefix and record boundaries, reject truncation or earlier rewrites, use strict
+canonical base64url decoding, and fit the spec's minimum 256-byte engraved cursor limit.
+Log identity and integrity values are compact SHA-256 tags rather than paths or content.
+
+The reader scans JSONL in fixed-size byte chunks in both directions, preserves records and
+Unicode code points crossing chunk boundaries, rejects noncontiguous sequences and records
+above engraved or hard safety limits, ignores only an incomplete bounded trailing suffix,
+and never loads the whole transcript merely to return a normal page. Individual record
+validation reuses the v2 persisted schema validators; forward-compatible unknown records
+still require a valid identity envelope and canonical JSON value.
+
+Added offline `listActivityStates()` at an inclusive snapshot. It folds each activity to
+its greatest revision before applying open/terminal filtering, deterministic sequence/ID
+ordering, and the requested limit. Open states are explicitly `historically_open`, never
+presented as proof that an old tool is still running.
+
+Continuation builders now receive the `TranscriptReader` itself instead of an absolute
+path, so consumers can reconstruct from bounded pages without independently parsing the
+storage format. The reader and its public cursor/page/activity types are exported from the
+package barrel.
+
+Tests cover reverse pagination, no overlap, filtered walks, concurrent appends, unknown
+records, empty filters, cursor projection binding, prefix rewrites, malformed/oversized and
+wrong-kind cursors, snapshot activity folding, the 256-byte cursor budget, and records over
+64 KiB with a UTF-8 split. The complete repository suite passes 616/616, `tsc --noEmit`
+passes, and `git diff --check` is clean.

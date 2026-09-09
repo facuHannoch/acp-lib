@@ -275,6 +275,24 @@ export type {
   TranscriptContinuationScan,
   TranscriptScanExpectation,
 } from "./persistence/transcript-scanner.ts";
+export {
+  TranscriptCursorInvalidError,
+  TranscriptReader,
+  TranscriptReaderError,
+} from "./persistence/transcript-reader.ts";
+export type {
+  ActivityExecutionState,
+  ListTranscriptActivitiesOptions,
+  PersistedActivityState,
+  PersistedActivityStatePage,
+  ReadTranscriptPageOptions,
+  TranscriptConversationItem,
+  TranscriptCursor,
+  TranscriptPage,
+  TranscriptSnapshotCursor,
+  TranscriptTimelineItem,
+  TranscriptView,
+} from "./persistence/transcript-reader.ts";
 export type {
   PersistenceRepair,
   SessionRecoveryStatus,
