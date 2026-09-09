@@ -5245,3 +5245,84 @@ These should not be deferred. They are small changes that make the already-chose
 - one unconditional sentence becomes conditional.
 
 After these corrections, I agree with the review: the persistence architecture should be considered implementation-ready rather than continuing another design-expansion cycle.
+
+
+
+# Deferred
+
+There are still deferred limitations outside that CLI work:
+
+- Combined transcript-and-audit reconfiguration is two operations, not one atomic operation.
+- Direct AgentSession.open() does not resume audit logs; SessionManager.loadAgentSession() does.
+- Managed degraded/PT​​Y sessions are unsupported.
+- More crash/failure-injection and real-harness end-to-end testing would be valuable.
+
+
+
+# result
+
+Yes—the transcript implementation is ready for a consumer integration/pilot. The main missing piece is polished consumer documentation, not core functionality.
+
+A consumer can now:
+
+- Configure transcript capture using `conversation`, `activity`, `detailed`, or `diagnostic`.
+- Override individual capture components.
+- Use managed default paths or choose a per-session path.
+- Create, load, hand off, restore, and delete sessions while preserving transcript authority.
+- Read transcripts without starting the harness.
+- Paginate through `conversation`, `timeline`, or raw `records` views.
+- Fold long-running tool activity into current states.
+- Detect malformed, rewritten, oversized, or identity-mismatched files.
+- Keep a separate audit log with its own capture policy.
+- Discover the transcript through the session checkpoint.
+
+For example:
+
+```ts
+const manager = await SessionManager.open({
+  root: "/absolute/app-data",
+});
+
+const session = await manager.createAgentSession({
+  adapter: ADAPTERS.opencode,
+  adapterId: "opencode",
+  persistence: {
+    transcript: {
+      preset: "activity",
+    },
+  },
+});
+
+await session.prompt("Inspect the project");
+await session.stop();
+
+const resolved = await manager.getAgentSessionCheckpoint(
+  session.agentSessionId,
+);
+
+const transcriptPath = resolved?.checkpoint.transcript?.path;
+if (transcriptPath) {
+  const reader = new TranscriptReader(transcriptPath);
+
+  const page = await reader.readPage({
+    view: "timeline",
+    limit: 50,
+  });
+
+  console.log(page.items);
+}
+```
+
+Important V0 boundaries:
+
+- Managed sessions currently support normal ACP mode, not degraded PTY mode.
+- Transcript and audit reconfiguration are separate operations.
+- Replacement reconfiguration retains the existing path.
+- A dirty/in-flight recovery boundary is reported explicitly; the library does not guess what happened at the provider.
+- Files are plaintext and are not tamper-resistant or encrypted.
+- A transcript generation has one active writer; readers remain independently paginated.
+- Legacy transcript migration is explicit.
+
+One documentation problem remains: README’s older “Optional chat transcript” section still primarily describes the deprecated `transcriptPath`/`transcriptDir` model. Before publishing this as the recommended consumer API, we should replace that section with a proper V2 guide covering managed creation, presets, pagination, recovery, and audit separation.
+
+So: ready to begin using from the orchestration library, yes. I would validate it there with one end-to-end workflow before calling the public documentation finished.
