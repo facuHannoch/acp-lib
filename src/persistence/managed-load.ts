@@ -58,11 +58,6 @@ export async function loadManagedAgentSession(
   if (record.mode !== "normal") {
     throw new ManagedAgentSessionAuthorityConflictError("managed loading currently requires normal ACP mode");
   }
-  if (!record.transcript) {
-    throw new ManagedAgentSessionAuthorityConflictError(
-      "managed registry-only loading is not implemented yet",
-    );
-  }
   if (record.auditLog) {
     throw new ManagedAgentSessionAuthorityConflictError(
       "managed audit-log loading is not implemented yet",
@@ -72,11 +67,22 @@ export async function loadManagedAgentSession(
     throw new AdapterMismatchError(record.adapterId, config.adapterId);
   }
 
-  const opened = await AgentSession.open({
-    ...config,
-    agentSessionId,
-    persistence: persistenceFromManagedRecord(record),
-  });
+  const opened = record.transcript
+    ? await AgentSession.open({
+        ...config,
+        agentSessionId,
+        persistence: persistenceFromManagedRecord(record),
+      })
+    : await AgentSession.openManagedRegistry({
+        ...config,
+        agentSessionId,
+        checkpoint: record.checkpoint,
+        persistence: {
+          transcript: false,
+          auditLog: false,
+          sessionConfiguration: record.sessionConfigurationPersistence ?? { values: "typed" },
+        },
+      }, record.internalSessionHistory);
   try {
     const snapshot = opened.session.getManagedPersistenceSnapshot();
     assertCompatibleAuthority(record, snapshot.checkpoint);

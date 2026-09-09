@@ -110,10 +110,32 @@ describe("SessionManager.createAgentSession", () => {
     }
   }, 20_000);
 
-  test("rejects not-yet-supported registry-only and audit-backed variants explicitly", async () => {
+  test("creates registry-only sessions and publishes operation checkpoints", async () => {
     const { manager } = await setup();
-    await expect(manager.createAgentSession({ ...config(), persistence: { transcript: false } }))
-      .rejects.toThrow("registry-only managed creation is not implemented yet");
+    const session = await manager.createAgentSession({
+      ...config(),
+      agentSessionId: "registry-only",
+      creationId: "registry-only-creation",
+      persistence: { transcript: false },
+    });
+    try {
+      expect(session.transcriptPath).toBeUndefined();
+      expect(await manager.getAgentSessionInfo("registry-only")).toMatchObject({
+        transcriptAvailable: false,
+        recovery: "clean",
+      });
+      await session.setConfig("model", "beta");
+      const checkpoint = await manager.getAgentSessionCheckpoint("registry-only");
+      expect(checkpoint).toMatchObject({ source: "registry_projection", authoritative: true });
+      expect(checkpoint?.checkpoint.model).toBe("beta");
+      expect(checkpoint?.checkpoint.boundary.status).toBe("settled");
+    } finally {
+      await session.stop();
+    }
+  }, 20_000);
+
+  test("rejects the not-yet-supported audit-backed variant explicitly", async () => {
+    const { manager } = await setup();
     await expect(manager.createAgentSession({ ...config(), persistence: { auditLog: {} } }))
       .rejects.toThrow("managed audit-log creation is not implemented yet");
   });

@@ -79,6 +79,7 @@ import type {
   OperationKind,
 } from "./persistence/records.ts";
 import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
+import { RegistryPersistenceRuntime, type PersistenceStateRuntime } from "./persistence/state-runtime.ts";
 import { TranscriptReader } from "./persistence/transcript-reader.ts";
 import {
   snapshotSessionConfiguration,
@@ -565,7 +566,7 @@ interface AgentSessionOpenBootstrap {
 /** @internal Transaction hooks supplied only by SessionManager managed creation. */
 export interface ManagedAgentSessionCreationBootstrap {
   readonly requestDigest: string;
-  readonly transcriptLock: SessionLogWriterLock;
+  readonly transcriptLock?: SessionLogWriterLock;
   readonly stageContinuation: (state: StagedContinuationState) => Promise<StagedContinuationState>;
 }
 
@@ -584,7 +585,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly _transcriptPath?: string;
   private readonly persistence: false | ResolvedAgentSessionPersistence;
   private readonly creationId: string;
-  private v2Transcript: TranscriptPersistenceRuntime | null = null;
+  private v2Transcript: PersistenceStateRuntime | null = null;
   private v2TranscriptPath: string | null = null;
   private v2ActivityWrite: Promise<void> = Promise.resolve();
   private readonly transcriptActivity: boolean;
@@ -766,7 +767,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     try {
       session = new AgentSession(config, null, bootstrap);
     } catch (error) {
-      await bootstrap.transcriptLock.release().catch(() => undefined);
+      await bootstrap.transcriptLock?.release().catch(() => undefined);
       throw error;
     }
     try {
@@ -774,7 +775,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       return session;
     } catch (error) {
       await session.stop().catch(() => undefined);
-      await bootstrap.transcriptLock.release().catch(() => undefined);
+      await bootstrap.transcriptLock?.release().catch(() => undefined);
       throw error;
     }
   }
@@ -790,6 +791,67 @@ export class AgentSession implements AgentClient, Bridgeable {
     transcriptLock: SessionLogWriterLock,
   ): Promise<AgentSessionOpenResult> {
     return await AgentSession.openWithLock(config, transcriptLock);
+  }
+
+  /** @internal Restore a registry-authoritative session without a transcript reader. */
+  static async openManagedRegistry(
+    config: AgentSessionOpenConfig,
+    history: readonly InternalSessionHistoryEntry[],
+  ): Promise<AgentSessionOpenResult> {
+    const checkpoint = config.checkpoint;
+    if (!checkpoint || checkpoint.transcript !== null) {
+      throw new Error("registry-managed open requires a registry-only checkpoint");
+    }
+    const strategies = normalizeContinuationStrategies(config.continuation);
+    if (checkpoint.adapterId !== config.adapterId && !strategies.some(isReconstructionStrategy)) {
+      throw new AdapterMismatchError(checkpoint.adapterId, config.adapterId);
+    }
+    if (!checkpoint.internalSessionId) {
+      throw new Error("registry-managed open has no recorded internal session id");
+    }
+    const { checkpoint: _checkpoint, continuation: _continuation, ...runtime } = config;
+    const session = new AgentSession({
+      ...runtime,
+      agentSessionId: checkpoint.agentSessionId,
+      creationId: checkpoint.incarnationId,
+      mode: "normal",
+      providerSession: {
+        kind: "load",
+        internalSessionId: checkpoint.internalSessionId,
+        onFailure: "error",
+      },
+      metering: { ...config.metering, initialState: checkpoint.metering },
+    });
+    session.v2Transcript = new RegistryPersistenceRuntime(checkpoint, history);
+    try {
+      const result = await session.controller.start();
+      if (!result.resumed || !result.sessionId) {
+        throw new Error("adapter did not confirm loading the recorded internal session");
+      }
+      session.setInternalSessionId(result.sessionId, false);
+      const attempt: ContinuationAttempt = Object.freeze({
+        strategy: "load_internal_session",
+        status: "succeeded",
+      });
+      const continuation = continuationReport(
+        checkpoint, config.adapterId, session.v2Transcript, "available", [attempt],
+        { kind: "loaded", activeInternalSessionId: result.sessionId },
+      );
+      const configuration = await session.restoreOpeningConfiguration();
+      session._configurationRestore = configuration;
+      session.emitStateIfChanged();
+      return Object.freeze({
+        session,
+        continuation,
+        recovery: structuredClone(session._recovery),
+        configuration: structuredClone(configuration),
+        promptability: session.promptability,
+        repairs: [],
+      });
+    } catch (error) {
+      await session.stop().catch(() => undefined);
+      throw error;
+    }
   }
 
   private static async openWithLock(
@@ -915,6 +977,42 @@ export class AgentSession implements AgentClient, Bridgeable {
     if (!paths.transcriptPath || persistence.transcript === false) {
       const result = await this.controller.start();
       this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
+      if (this.managedCreation) {
+        const now = new Date().toISOString();
+        const observed: StagedContinuationState = {
+          adapterId: this.adapterId,
+          mode: this._mode,
+          internalSessionId: this._internalSessionId,
+          internalSessionActivatedAt: this._internalSessionId ? now : null,
+          model: this.model,
+          sessionConfiguration: snapshotSessionConfiguration({
+            adapterId: this.adapterId,
+            configOptions: this.controller.configOptions,
+            policy: persistence.sessionConfiguration,
+            observedAt: now,
+          }),
+          protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
+        };
+        const staged = await this.managedCreation.stageContinuation(observed);
+        this.v2Transcript = new RegistryPersistenceRuntime(createAgentSessionCheckpoint({
+          agentSessionId: this.agentSessionId,
+          incarnationId: this.creationId,
+          stateRevision: 1,
+          adapterId: this.adapterId,
+          mode: staged.mode,
+          internalSessionId: staged.internalSessionId,
+          internalSessionActivatedAt: staged.internalSessionActivatedAt,
+          internalSessionHistoryRevision: 0,
+          internalSessionHistoryDigest: EMPTY_HISTORY_DIGEST,
+          model: staged.model,
+          sessionConfiguration: staged.sessionConfiguration,
+          protocol: staged.protocol,
+          transcript: null,
+          metering: this.metering.currentState,
+          boundary: { status: "settled", lastSettledOperationId: null },
+          updatedAt: now,
+        }));
+      }
       return;
     }
 
@@ -3176,7 +3274,7 @@ function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
 function continuationReport(
   checkpoint: AgentSessionCheckpoint,
   requestedAdapterId: string,
-  transcript: TranscriptPersistenceRuntime,
+  transcript: PersistenceStateRuntime,
   recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"],
   attempts: readonly ContinuationAttempt[],
   outcome: ContinuationReport["outcome"],

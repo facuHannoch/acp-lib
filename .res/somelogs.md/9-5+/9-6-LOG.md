@@ -2124,3 +2124,30 @@ session exposes an internal durable restoration-checkpoint primitive. Tests cove
 reactivation, restored model/provider identity, continued registry publication, active-row
 rejection, and recovery after staged finalization failure. The complete repository suite
 passes 655/655, `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 13 — registry-only managed session runtime
+
+Separated managed checkpoint state from transcript storage through a common persistence
+runtime contract and added `RegistryPersistenceRuntime`. A managed session with
+`transcript: false` now retains its stable logical/provider identities, configuration,
+metering, transition history, operation boundary, and promptability entirely in the strict
+registry. It captures no conversation/activity content and reports conversation availability
+as `not_captured`.
+
+Registry-only creation stages provider identity before publishing the initial record, just
+like transcript-backed creation. Every later operation publishes an in-flight checkpoint by
+incarnation/revision CAS before provider dispatch and a settled checkpoint afterward. A
+failed pre-dispatch registry publication withholds provider work and marks persistence
+unhealthy. Staged creation retry loads the recorded provider thread instead of starting a
+replacement.
+
+Managed loading now recognizes registry authority, restores the exact provider thread and
+configuration, returns the normal `AgentSessionOpenResult`, and attaches ongoing checkpoint
+publication. Offline checkpoint inspection labels this source authoritative. The transcript
+runtime implements the same internal state contract, keeping all existing transcript-backed
+behavior unchanged.
+
+Tests cover registry-only creation, absent transcript paths, authoritative checkpoint
+inspection, configuration persistence, stopped-session reopening, continuation reporting,
+and ongoing updates after load. The complete repository suite passes 657/657,
+`tsc --noEmit` passes, and `git diff --check` is clean.

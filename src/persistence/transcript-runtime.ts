@@ -29,6 +29,7 @@ import {
   type SessionLogWriterLock,
 } from "./session-log-writer.ts";
 import type { TranscriptHeaderRecord } from "./records.ts";
+import type { PersistenceStateRuntime } from "./state-runtime.ts";
 
 export interface TranscriptTerminalCheckpointChanges {
   readonly model?: string | null;
@@ -72,7 +73,7 @@ export class TranscriptRuntimeStateError extends Error {
  * Live v2 transcript state machine. It is deliberately provider-agnostic: callers own
  * dispatch, while this object owns the durable-before-dispatch and terminal boundaries.
  */
-export class TranscriptPersistenceRuntime {
+export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
   private selectedCheckpointRecord: TranscriptCheckpointRecord;
   private history: TranscriptHistoryReduction;
   private _checkpoint: AgentSessionCheckpoint;

@@ -109,6 +109,33 @@ describe("SessionManager.loadAgentSession", () => {
       adapter: { command: ["definitely-not-a-real-command"] },
     })).rejects.toBeInstanceOf(AdapterMismatchError);
   }, 20_000);
+
+  test("loads a registry-only session and keeps its registry checkpoint authoritative", async () => {
+    const { manager } = await setup();
+    const created = await manager.createAgentSession({
+      ...createConfig(),
+      agentSessionId: "registry-only",
+      creationId: "registry-only-creation",
+      persistence: { transcript: false },
+    });
+    await created.setConfig("model", "beta");
+    await created.stop();
+
+    const opened = await manager.loadAgentSession("registry-only", loadConfig());
+    try {
+      expect(opened.continuation).toMatchObject({
+        recordedConversationAvailability: "not_captured",
+        outcome: { kind: "loaded", activeInternalSessionId: "config-session" },
+      });
+      expect(opened.session.model).toBe("beta");
+      await opened.session.setConfig("model", "alpha");
+      const checkpoint = await manager.getAgentSessionCheckpoint("registry-only");
+      expect(checkpoint).toMatchObject({ source: "registry_projection", authoritative: true });
+      expect(checkpoint?.checkpoint.model).toBe("alpha");
+    } finally {
+      await opened.session.stop();
+    }
+  }, 20_000);
 });
 
 async function setup() {

@@ -75,11 +75,6 @@ export async function createManagedAgentSession(
   if (config.mode !== undefined && config.mode !== "normal") {
     throw new ManagedAgentSessionCreationError("managed transcript creation currently requires normal ACP mode");
   }
-  if (context.persistence.transcript === false) {
-    throw new ManagedAgentSessionCreationError(
-      "registry-only managed creation is not implemented yet; enable transcript persistence",
-    );
-  }
   if (context.persistence.auditLog !== false) {
     throw new ManagedAgentSessionCreationError(
       "managed audit-log creation is not implemented yet; disable auditLog for this session",
@@ -88,7 +83,6 @@ export async function createManagedAgentSession(
   const agentSessionId = nonblankOrGenerated(config.agentSessionId, "agentSessionId");
   const creationId = nonblankOrGenerated(config.creationId, "creationId");
   const paths = await resolveSessionLogPaths(context.persistence, agentSessionId);
-  if (!paths.transcriptPath) throw new ManagedAgentSessionCreationError("managed creation requires a transcript path");
   const transcriptPath = paths.transcriptPath;
   const requestDigest = sha256CanonicalJson({
     agentSessionId,
@@ -97,7 +91,7 @@ export async function createManagedAgentSession(
     mode: "normal",
     cwd: config.cwd ?? null,
     title: config.title ?? null,
-    transcript: {
+    transcript: context.persistence.transcript === false ? null : {
       path: transcriptPath,
       preset: context.persistence.transcript.preset,
       capture: context.persistence.transcript.capture,
@@ -121,14 +115,18 @@ export async function createManagedAgentSession(
     throw new AgentSessionStoreConflictError("managed creation requires an unused logical identity");
   }
 
-  await mkdir(dirname(transcriptPath), { recursive: true, mode: 0o700 });
-  await chmod(dirname(transcriptPath), 0o700).catch(() => undefined);
-  const transcriptLock = await acquireSessionLogWriterLock(transcriptPath);
+  if (transcriptPath) {
+    await mkdir(dirname(transcriptPath), { recursive: true, mode: 0o700 });
+    await chmod(dirname(transcriptPath), 0o700).catch(() => undefined);
+  }
+  const transcriptLock = transcriptPath
+    ? await acquireSessionLogWriterLock(transcriptPath)
+    : undefined;
   let lockTransferred = false;
   let session: AgentSession | null = null;
   try {
     const priorMaintenance = await context.store.getMaintenance(agentSessionId);
-    if (!priorMaintenance) await requireUninitializedDestination(transcriptPath);
+    if (!priorMaintenance && transcriptPath) await requireUninitializedDestination(transcriptPath);
     const prepared = await context.store.prepareMaintenance(agentSessionId, proposed, {
       expectedRecordRevision: null,
     });
@@ -147,25 +145,31 @@ export async function createManagedAgentSession(
         requestDigest,
         { save: active.details.stagedRecord },
       );
-      await transcriptLock.release();
-      const opened = await AgentSession.open({
-        ...runtimeConfig(config),
-        agentSessionId,
-        persistence: directPersistence(context.persistence, transcriptPath),
-        checkpoint: active.details.stagedRecord.checkpoint,
-      });
+      await transcriptLock?.release();
+      const opened = active.details.stagedRecord.transcript
+        ? await AgentSession.open({
+            ...runtimeConfig(config),
+            agentSessionId,
+            persistence: directPersistence(context.persistence, transcriptPath),
+            checkpoint: active.details.stagedRecord.checkpoint,
+          })
+        : await AgentSession.openManagedRegistry({
+            ...runtimeConfig(config),
+            agentSessionId,
+            persistence: directPersistence(context.persistence, null),
+            checkpoint: active.details.stagedRecord.checkpoint,
+          }, active.details.stagedRecord.internalSessionHistory);
       attachManagedRegistryPublisher(opened.session, context.store);
       return opened.session;
     }
 
     if (prepared.status === "already_prepared") {
-      await removeOwnedCreationArtifact(
-        transcriptPath,
-        agentSessionId,
-        creationId,
-        requestDigest,
-        context.persistence.limits.maxRecordBytes,
-      );
+      if (transcriptPath) {
+        await removeOwnedCreationArtifact(
+          transcriptPath, agentSessionId, creationId, requestDigest,
+          context.persistence.limits.maxRecordBytes,
+        );
+      }
     }
     const stagedContinuation = active.details.stagedContinuation;
     lockTransferred = true;
@@ -229,7 +233,7 @@ export async function createManagedAgentSession(
     await session?.stop().catch(() => undefined);
     throw error;
   } finally {
-    if (!lockTransferred) await transcriptLock.release().catch(() => undefined);
+    if (!lockTransferred) await transcriptLock?.release().catch(() => undefined);
   }
 }
 
@@ -249,13 +253,15 @@ function runtimeConfig(config: ManagedAgentSessionCreateConfig): Omit<
 
 function directPersistence(
   persistence: ResolvedAgentSessionPersistence,
-  transcriptPath: string,
+  transcriptPath: string | null,
 ): AgentSessionPersistenceOptions {
-  if (persistence.transcript === false) throw new ManagedAgentSessionCreationError("transcript is disabled");
+  if (persistence.transcript !== false && !transcriptPath) {
+    throw new ManagedAgentSessionCreationError("enabled transcript has no resolved path");
+  }
   return {
     root: persistence.root,
-    transcript: {
-      path: transcriptPath,
+    transcript: persistence.transcript === false ? false : {
+      path: transcriptPath!,
       preset: persistence.transcript.preset,
       capture: persistence.transcript.capture,
       includeTruncationDigests: persistence.transcript.includeTruncationDigests,
@@ -269,7 +275,7 @@ function directPersistence(
 function creationMaintenance(
   creationId: string,
   requestDigest: string,
-  transcriptPath: string,
+  transcriptPath: string | null,
 ): CreationMaintenance {
   return {
     kind: "creation",
@@ -290,8 +296,8 @@ function initialRecord(
   checkpoint: AgentSessionRecord["checkpoint"],
   history: readonly InternalSessionHistoryEntry[],
 ): AgentSessionRecord {
-  if (persistence.transcript === false || !checkpoint.transcript) {
-    throw new ManagedAgentSessionCreationError("created session has no transcript authority");
+  if (persistence.transcript !== false && !checkpoint.transcript) {
+    throw new ManagedAgentSessionCreationError("enabled transcript has no checkpoint identity");
   }
   return {
     agentSessionId: checkpoint.agentSessionId,
@@ -309,10 +315,10 @@ function initialRecord(
     sessionConfiguration: checkpoint.sessionConfiguration,
     sessionConfigurationPersistence: persistence.sessionConfiguration,
     protocol: checkpoint.protocol,
-    transcript: {
-      path: checkpoint.transcript.path,
-      transcriptId: checkpoint.transcript.transcriptId,
-      generation: checkpoint.transcript.generation,
+    transcript: persistence.transcript === false ? null : {
+      path: checkpoint.transcript!.path,
+      transcriptId: checkpoint.transcript!.transcriptId,
+      generation: checkpoint.transcript!.generation,
       preset: persistence.transcript.preset,
       effectivePolicy: persistence.transcript.capture,
       effectiveLimits: persistence.limits,
