@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import {
   AgentSession,
   type AgentSessionConfig,
+  type ManagedAgentSessionPersistenceSnapshot,
 } from "../agent-session.ts";
 import type {
   AgentSessionPersistenceOptions,
@@ -25,6 +26,7 @@ import {
   type SessionLogWriterLock,
 } from "./session-log-writer.ts";
 import { attachManagedRegistryPublisher } from "./managed-registry.ts";
+import { AuditPersistenceRuntime } from "./audit-runtime.ts";
 
 export interface ManagedAgentSessionCreateConfig extends Omit<
   AgentSessionConfig,
@@ -75,11 +77,6 @@ export async function createManagedAgentSession(
   if (config.mode !== undefined && config.mode !== "normal") {
     throw new ManagedAgentSessionCreationError("managed transcript creation currently requires normal ACP mode");
   }
-  if (context.persistence.auditLog !== false) {
-    throw new ManagedAgentSessionCreationError(
-      "managed audit-log creation is not implemented yet; disable auditLog for this session",
-    );
-  }
   const agentSessionId = nonblankOrGenerated(config.agentSessionId, "agentSessionId");
   const creationId = nonblankOrGenerated(config.creationId, "creationId");
   const paths = await resolveSessionLogPaths(context.persistence, agentSessionId);
@@ -100,11 +97,7 @@ export async function createManagedAgentSession(
     sessionConfiguration: context.persistence.sessionConfiguration,
     limits: context.persistence.limits,
   });
-  const proposed = creationMaintenance(
-    creationId,
-    requestDigest,
-    transcriptPath,
-  );
+  const proposed = creationMaintenance(creationId, requestDigest, transcriptPath, paths.auditLogPath);
 
   // Completed retries are answered without touching the artifact or starting a harness.
   if (await context.store.getAgentSessionRecord(agentSessionId)) {
@@ -115,18 +108,32 @@ export async function createManagedAgentSession(
     throw new AgentSessionStoreConflictError("managed creation requires an unused logical identity");
   }
 
-  if (transcriptPath) {
-    await mkdir(dirname(transcriptPath), { recursive: true, mode: 0o700 });
-    await chmod(dirname(transcriptPath), 0o700).catch(() => undefined);
+  for (const path of [transcriptPath, paths.auditLogPath]) {
+    if (!path) continue;
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await chmod(dirname(path), 0o700).catch(() => undefined);
   }
-  const transcriptLock = transcriptPath
-    ? await acquireSessionLogWriterLock(transcriptPath)
-    : undefined;
+  const acquired = new Map<string, SessionLogWriterLock>();
+  try {
+    for (const path of [transcriptPath, paths.auditLogPath]
+      .filter((value): value is string => value !== null)
+      .sort((left, right) => left.localeCompare(right))) {
+      acquired.set(path, await acquireSessionLogWriterLock(path));
+    }
+  } catch (error) {
+    await Promise.all([...acquired.values()].map((lock) => lock.release().catch(() => undefined)));
+    throw error;
+  }
+  const transcriptLock = transcriptPath ? acquired.get(transcriptPath) : undefined;
+  const auditLogLock = paths.auditLogPath ? acquired.get(paths.auditLogPath) : undefined;
   let lockTransferred = false;
   let session: AgentSession | null = null;
   try {
     const priorMaintenance = await context.store.getMaintenance(agentSessionId);
-    if (!priorMaintenance && transcriptPath) await requireUninitializedDestination(transcriptPath);
+    if (!priorMaintenance) {
+      if (transcriptPath) await requireUninitializedDestination(transcriptPath);
+      if (paths.auditLogPath) await requireUninitializedDestination(paths.auditLogPath);
+    }
     const prepared = await context.store.prepareMaintenance(agentSessionId, proposed, {
       expectedRecordRevision: null,
     });
@@ -145,20 +152,30 @@ export async function createManagedAgentSession(
         requestDigest,
         { save: active.details.stagedRecord },
       );
-      await transcriptLock?.release();
+      const stored = active.details.stagedRecord;
+      const audit = stored.auditLog
+        ? await AuditPersistenceRuntime.resume({
+            path: stored.auditLog.path,
+            agentSessionId,
+            auditLogId: stored.auditLog.auditLogId,
+            generation: stored.auditLog.generation,
+            writerLock: auditLogLock,
+          })
+        : undefined;
+      lockTransferred = true;
       const opened = active.details.stagedRecord.transcript
-        ? await AgentSession.open({
+        ? await AgentSession.openManaged({
             ...runtimeConfig(config),
             agentSessionId,
             persistence: directPersistence(context.persistence, transcriptPath),
             checkpoint: active.details.stagedRecord.checkpoint,
-          })
+          }, transcriptLock, audit)
         : await AgentSession.openManagedRegistry({
             ...runtimeConfig(config),
             agentSessionId,
             persistence: directPersistence(context.persistence, null),
             checkpoint: active.details.stagedRecord.checkpoint,
-          }, active.details.stagedRecord.internalSessionHistory);
+          }, active.details.stagedRecord.internalSessionHistory, audit);
       attachManagedRegistryPublisher(opened.session, context.store);
       return opened.session;
     }
@@ -167,7 +184,13 @@ export async function createManagedAgentSession(
       if (transcriptPath) {
         await removeOwnedCreationArtifact(
           transcriptPath, agentSessionId, creationId, requestDigest,
-          context.persistence.limits.maxRecordBytes,
+          context.persistence.limits.maxRecordBytes, "transcript",
+        );
+      }
+      if (paths.auditLogPath) {
+        await removeOwnedCreationArtifact(
+          paths.auditLogPath, agentSessionId, creationId, requestDigest,
+          context.persistence.limits.maxRecordBytes, "audit",
         );
       }
     }
@@ -185,6 +208,7 @@ export async function createManagedAgentSession(
     }, {
       requestDigest,
       transcriptLock,
+      auditLogLock,
       stageContinuation: async (state) => {
         const existing = active.details.stagedContinuation;
         if (existing) {
@@ -212,8 +236,7 @@ export async function createManagedAgentSession(
       config,
       context.persistence,
       active,
-      snapshot.checkpoint,
-      snapshot.internalSessionHistory,
+      snapshot,
     );
     const staged: CreationMaintenance = {
       ...active,
@@ -233,7 +256,9 @@ export async function createManagedAgentSession(
     await session?.stop().catch(() => undefined);
     throw error;
   } finally {
-    if (!lockTransferred) await transcriptLock?.release().catch(() => undefined);
+    if (!lockTransferred) {
+      await Promise.all([...acquired.values()].map((lock) => lock.release().catch(() => undefined)));
+    }
   }
 }
 
@@ -266,7 +291,11 @@ function directPersistence(
       capture: persistence.transcript.capture,
       includeTruncationDigests: persistence.transcript.includeTruncationDigests,
     },
-    auditLog: false,
+    auditLog: persistence.auditLog === false ? false : {
+      path: persistence.auditLog.path,
+      capture: persistence.auditLog.capture,
+      includeTruncationDigests: persistence.auditLog.includeTruncationDigests,
+    },
     sessionConfiguration: persistence.sessionConfiguration,
     limits: persistence.limits,
   };
@@ -276,6 +305,7 @@ function creationMaintenance(
   creationId: string,
   requestDigest: string,
   transcriptPath: string | null,
+  auditLogPath: string | null,
 ): CreationMaintenance {
   return {
     kind: "creation",
@@ -285,7 +315,7 @@ function creationMaintenance(
     requestDigest,
     status: "prepared",
     startedAt: new Date().toISOString(),
-    details: { transcriptPath, auditLogPath: null },
+    details: { transcriptPath, auditLogPath },
   };
 }
 
@@ -293,9 +323,9 @@ function initialRecord(
   config: ManagedAgentSessionCreateConfig,
   persistence: ResolvedAgentSessionPersistence,
   maintenance: CreationMaintenance,
-  checkpoint: AgentSessionRecord["checkpoint"],
-  history: readonly InternalSessionHistoryEntry[],
+  snapshot: ManagedAgentSessionPersistenceSnapshot,
 ): AgentSessionRecord {
+  const { checkpoint, internalSessionHistory: history } = snapshot;
   if (persistence.transcript !== false && !checkpoint.transcript) {
     throw new ManagedAgentSessionCreationError("enabled transcript has no checkpoint identity");
   }
@@ -324,7 +354,7 @@ function initialRecord(
       effectiveLimits: persistence.limits,
       includeTruncationDigests: persistence.transcript.includeTruncationDigests,
     },
-    auditLog: null,
+    auditLog: snapshotAuditMetadata(persistence, snapshot),
     createdAt: maintenance.startedAt,
     updatedAt: checkpoint.updatedAt < maintenance.startedAt ? maintenance.startedAt : checkpoint.updatedAt,
     lastOpenedAt: checkpoint.updatedAt < maintenance.startedAt ? maintenance.startedAt : checkpoint.updatedAt,
@@ -349,6 +379,7 @@ async function removeOwnedCreationArtifact(
   creationId: string,
   requestDigest: string,
   maxRecordBytes: number,
+  kind: "transcript" | "audit",
 ): Promise<void> {
   let info;
   try {
@@ -363,7 +394,7 @@ async function removeOwnedCreationArtifact(
   if (info.size === 0) return;
   const first = await firstJsonLine(path, maxRecordBytes);
   if (!isRecord(first)
-    || first.v !== 2
+    || first.v !== (kind === "transcript" ? 2 : 1)
     || first.t !== "header"
     || first.agentSessionId !== agentSessionId
     || !isRecord(first.installation)
@@ -381,6 +412,23 @@ async function removeOwnedCreationArtifact(
   } finally {
     await parent.close();
   }
+}
+
+function snapshotAuditMetadata(
+  persistence: ResolvedAgentSessionPersistence,
+  snapshot: ManagedAgentSessionPersistenceSnapshot,
+): AgentSessionRecord["auditLog"] {
+  if (persistence.auditLog === false) return null;
+  const identity = snapshot?.auditLog;
+  if (!identity) throw new ManagedAgentSessionCreationError("enabled audit log has no installed identity");
+  return {
+    path: identity.path,
+    auditLogId: identity.auditLogId,
+    generation: identity.generation,
+    effectivePolicy: persistence.auditLog.capture,
+    effectiveLimits: persistence.limits,
+    includeTruncationDigests: persistence.auditLog.includeTruncationDigests,
+  };
 }
 
 async function firstJsonLine(path: string, maxBytes: number): Promise<unknown> {

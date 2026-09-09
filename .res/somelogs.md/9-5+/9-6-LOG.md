@@ -2151,3 +2151,31 @@ Tests cover registry-only creation, absent transcript paths, authoritative check
 inspection, configuration persistence, stopped-session reopening, continuation reporting,
 and ongoing updates after load. The complete repository suite passes 657/657,
 `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 14 — independent managed audit persistence
+
+Added an audit persistence runtime and a compositional audited state runtime. Audit is a
+separate append-only artifact with its own identity, generation, sequence, lock, capture
+policy, limits, and failure state. It consumes the same normalized runtime events as the
+transcript/registry checkpoint backend but passes them through `projectAuditEvent()`'s
+explicit allowlist; message content, continuation checkpoints, raw protocol traffic, and
+transcript-only transition state cannot enter it implicitly.
+
+Managed creation now coordinates transcript and audit destinations, creates their parent
+directories, acquires locks in canonical path order, proves both destinations uninitialized,
+and records both paths in prepared maintenance before provider startup. Audit headers carry
+the same creation provenance. The installed audit identity is projected into the registry,
+and interrupted staged creation resumes the exact audit generation rather than overwriting
+or silently abandoning it.
+
+Operation starts reach the authoritative checkpoint backend and the audit writer durably
+before dispatch. Terminal, activity, reasoning, configuration, permission, transition,
+metering-reference, and lifecycle events retain shared operation identity while each sink
+applies its own policy. Audit errors make persistence unhealthy. Added validated audit-log
+resume for managed loading; transcript+audit and audit-only sessions both resume their
+independent sequence and continue recording after provider/configuration restoration.
+
+Tests cover separate artifact creation, registry visibility, explicit operation and
+configuration projections, message exclusion, audit-only load, and sequence continuation.
+The complete repository suite passes 658/658, `tsc --noEmit` passes, and
+`git diff --check` is clean.

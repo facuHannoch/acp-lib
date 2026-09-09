@@ -15,6 +15,7 @@ import {
   attachManagedRegistryPublisher,
   projectManagedAgentSessionRecord,
 } from "./managed-registry.ts";
+import { AuditPersistenceRuntime } from "./audit-runtime.ts";
 
 export interface ManagedAgentSessionLoadConfig extends Omit<
   AgentSessionOpenConfig,
@@ -58,21 +59,26 @@ export async function loadManagedAgentSession(
   if (record.mode !== "normal") {
     throw new ManagedAgentSessionAuthorityConflictError("managed loading currently requires normal ACP mode");
   }
-  if (record.auditLog) {
-    throw new ManagedAgentSessionAuthorityConflictError(
-      "managed audit-log loading is not implemented yet",
-    );
-  }
   if (record.adapterId !== config.adapterId && !hasReconstructionStrategy(config)) {
     throw new AdapterMismatchError(record.adapterId, config.adapterId);
   }
 
-  const opened = record.transcript
-    ? await AgentSession.open({
+  const audit = record.auditLog
+    ? await AuditPersistenceRuntime.resume({
+        path: record.auditLog.path,
+        agentSessionId,
+        auditLogId: record.auditLog.auditLogId,
+        generation: record.auditLog.generation,
+      })
+    : undefined;
+  let opened: AgentSessionOpenResult;
+  try {
+    opened = record.transcript
+    ? await AgentSession.openManaged({
         ...config,
         agentSessionId,
         persistence: persistenceFromManagedRecord(record),
-      })
+      }, undefined, audit)
     : await AgentSession.openManagedRegistry({
         ...config,
         agentSessionId,
@@ -82,7 +88,11 @@ export async function loadManagedAgentSession(
           auditLog: false,
           sessionConfiguration: record.sessionConfigurationPersistence ?? { values: "typed" },
         },
-      }, record.internalSessionHistory);
+      }, record.internalSessionHistory, audit);
+  } catch (error) {
+    await audit?.close().catch(() => undefined);
+    throw error;
+  }
   try {
     const snapshot = opened.session.getManagedPersistenceSnapshot();
     assertCompatibleAuthority(record, snapshot.checkpoint);
@@ -124,7 +134,11 @@ export function persistenceFromManagedRecord(record: AgentSessionRecord): AgentS
       capture: record.transcript.effectivePolicy,
       includeTruncationDigests: record.transcript.includeTruncationDigests,
     },
-    auditLog: false,
+    auditLog: record.auditLog ? {
+      path: record.auditLog.path,
+      capture: record.auditLog.effectivePolicy,
+      includeTruncationDigests: record.auditLog.includeTruncationDigests,
+    } : false,
     sessionConfiguration: record.sessionConfigurationPersistence ?? { values: "typed" },
     limits: record.transcript.effectiveLimits,
   };

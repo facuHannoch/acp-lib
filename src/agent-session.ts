@@ -80,6 +80,7 @@ import type {
 } from "./persistence/records.ts";
 import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
 import { RegistryPersistenceRuntime, type PersistenceStateRuntime } from "./persistence/state-runtime.ts";
+import { AuditPersistenceRuntime, AuditedPersistenceRuntime, type AuditLogIdentity } from "./persistence/audit-runtime.ts";
 import { TranscriptReader } from "./persistence/transcript-reader.ts";
 import {
   snapshotSessionConfiguration,
@@ -559,7 +560,7 @@ export interface AgentSessionOpenConfig extends Omit<
 }
 
 interface AgentSessionOpenBootstrap {
-  readonly transcript: TranscriptPersistenceRuntime;
+  readonly transcript: PersistenceStateRuntime;
   readonly transcriptPath: string;
 }
 
@@ -567,12 +568,14 @@ interface AgentSessionOpenBootstrap {
 export interface ManagedAgentSessionCreationBootstrap {
   readonly requestDigest: string;
   readonly transcriptLock?: SessionLogWriterLock;
+  readonly auditLogLock?: SessionLogWriterLock;
   readonly stageContinuation: (state: StagedContinuationState) => Promise<StagedContinuationState>;
 }
 
 export interface ManagedAgentSessionPersistenceSnapshot {
   readonly checkpoint: AgentSessionCheckpoint;
   readonly internalSessionHistory: readonly InternalSessionHistoryEntry[];
+  readonly auditLog: AuditLogIdentity | null;
 }
 
 export class AgentSession implements AgentClient, Bridgeable {
@@ -628,6 +631,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   private _configurationRestore: ConfigurationRestoreStatus = { kind: "matched" };
   private readonly managedCreation: ManagedAgentSessionCreationBootstrap | null;
   private managedPersistenceHealthy = true;
+  private managedAuditLog: AuditLogIdentity | null = null;
 
   private constructor(
     config: AgentSessionConfig,
@@ -768,6 +772,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       session = new AgentSession(config, null, bootstrap);
     } catch (error) {
       await bootstrap.transcriptLock?.release().catch(() => undefined);
+      await bootstrap.auditLogLock?.release().catch(() => undefined);
       throw error;
     }
     try {
@@ -776,6 +781,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     } catch (error) {
       await session.stop().catch(() => undefined);
       await bootstrap.transcriptLock?.release().catch(() => undefined);
+      await bootstrap.auditLogLock?.release().catch(() => undefined);
       throw error;
     }
   }
@@ -788,15 +794,17 @@ export class AgentSession implements AgentClient, Bridgeable {
   /** @internal Managed open after maintenance acquired the artifact lock. */
   static async openManaged(
     config: AgentSessionOpenConfig,
-    transcriptLock: SessionLogWriterLock,
+    transcriptLock?: SessionLogWriterLock,
+    audit?: AuditPersistenceRuntime,
   ): Promise<AgentSessionOpenResult> {
-    return await AgentSession.openWithLock(config, transcriptLock);
+    return await AgentSession.openWithLock(config, transcriptLock, audit);
   }
 
   /** @internal Restore a registry-authoritative session without a transcript reader. */
   static async openManagedRegistry(
     config: AgentSessionOpenConfig,
     history: readonly InternalSessionHistoryEntry[],
+    audit?: AuditPersistenceRuntime,
   ): Promise<AgentSessionOpenResult> {
     const checkpoint = config.checkpoint;
     if (!checkpoint || checkpoint.transcript !== null) {
@@ -822,7 +830,9 @@ export class AgentSession implements AgentClient, Bridgeable {
       },
       metering: { ...config.metering, initialState: checkpoint.metering },
     });
-    session.v2Transcript = new RegistryPersistenceRuntime(checkpoint, history);
+    const primary = new RegistryPersistenceRuntime(checkpoint, history);
+    session.v2Transcript = audit ? new AuditedPersistenceRuntime(primary, audit) : primary;
+    session.managedAuditLog = audit?.identity ?? null;
     try {
       const result = await session.controller.start();
       if (!result.resumed || !result.sessionId) {
@@ -857,6 +867,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   private static async openWithLock(
     config: AgentSessionOpenConfig,
     transcriptLock?: SessionLogWriterLock,
+    audit?: AuditPersistenceRuntime,
   ): Promise<AgentSessionOpenResult> {
     const strategies = normalizeContinuationStrategies(config.continuation);
     const persistence = resolveDirectPersistence(config.persistence);
@@ -865,15 +876,24 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
     const paths = await resolveSessionLogPaths(persistence, config.agentSessionId);
     if (!paths.transcriptPath) throw new Error("AgentSession.open() requires a transcript path");
-    if (paths.auditLogPath) {
+    if (paths.auditLogPath && !audit) {
       throw new Error("direct v2 audit-log integration is not implemented yet");
     }
 
-    const transcript = await TranscriptPersistenceRuntime.resume({
-      path: paths.transcriptPath,
-      expected: { agentSessionId: config.agentSessionId },
-      writerLock: transcriptLock,
-    });
+    let primary: TranscriptPersistenceRuntime;
+    try {
+      primary = await TranscriptPersistenceRuntime.resume({
+        path: paths.transcriptPath,
+        expected: { agentSessionId: config.agentSessionId },
+        writerLock: transcriptLock,
+      });
+    } catch (error) {
+      await audit?.close().catch(() => undefined);
+      throw error;
+    }
+    const transcript: PersistenceStateRuntime = audit
+      ? new AuditedPersistenceRuntime(primary, audit)
+      : primary;
     const checkpoint = transcript.checkpoint;
     try {
       validateAgentSessionCheckpoint(config.checkpoint ?? checkpoint, {
@@ -907,6 +927,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           initialState: checkpoint.metering,
         },
       }, { transcript, transcriptPath: paths.transcriptPath });
+      session.managedAuditLog = audit?.identity ?? null;
 
       try {
         const continuation = await session.acquireOpeningContinuation(checkpoint, strategies);
@@ -971,13 +992,39 @@ export class AgentSession implements AgentClient, Bridgeable {
       return;
     }
     const paths = await resolveSessionLogPaths(persistence, this.agentSessionId);
-    if (paths.auditLogPath) {
-      throw new Error("direct v2 audit-log integration is not implemented yet");
+    const createdAt = new Date().toISOString();
+    const requestDigest = this.managedCreation?.requestDigest ?? sha256CanonicalJson({
+      agentSessionId: this.agentSessionId,
+      creationId: this.creationId,
+      adapterId: this.adapterId,
+      mode: this._mode,
+      transcriptPath: paths.transcriptPath,
+      auditLogPath: paths.auditLogPath,
+    });
+    let audit: AuditPersistenceRuntime | null = null;
+    if (paths.auditLogPath && persistence.auditLog !== false) {
+      const auditLogId = crypto.randomUUID();
+      const header = {
+        v: 1 as const, t: "header" as const, auditLogId, generation: 1,
+        agentSessionId: this.agentSessionId, seq: 1, ts: Date.parse(createdAt),
+        event: "created" as const, createdAt,
+        effectivePolicy: persistence.auditLog.capture,
+        effectiveLimits: persistence.limits,
+        includeTruncationDigests: persistence.auditLog.includeTruncationDigests,
+        installation: { kind: "creation" as const, operationId: this.creationId, requestDigest },
+      };
+      audit = await AuditPersistenceRuntime.create({
+        path: paths.auditLogPath,
+        header,
+        writerLock: this.managedCreation?.auditLogLock,
+      });
+      this.managedAuditLog = audit.identity;
     }
     if (!paths.transcriptPath || persistence.transcript === false) {
-      const result = await this.controller.start();
-      this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
-      if (this.managedCreation) {
+      try {
+        const result = await this.controller.start();
+        this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
+        if (this.managedCreation) {
         const now = new Date().toISOString();
         const observed: StagedContinuationState = {
           adapterId: this.adapterId,
@@ -994,7 +1041,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
         };
         const staged = await this.managedCreation.stageContinuation(observed);
-        this.v2Transcript = new RegistryPersistenceRuntime(createAgentSessionCheckpoint({
+          const primary = new RegistryPersistenceRuntime(createAgentSessionCheckpoint({
           agentSessionId: this.agentSessionId,
           incarnationId: this.creationId,
           stateRevision: 1,
@@ -1011,25 +1058,18 @@ export class AgentSession implements AgentClient, Bridgeable {
           metering: this.metering.currentState,
           boundary: { status: "settled", lastSettledOperationId: null },
           updatedAt: now,
-        }));
+          }));
+          this.v2Transcript = audit ? new AuditedPersistenceRuntime(primary, audit) : primary;
+        }
+        return;
+      } catch (error) {
+        await audit?.close().catch(() => undefined);
+        throw error;
       }
-      return;
     }
 
     const transcriptPath = paths.transcriptPath;
-    const createdAt = new Date().toISOString();
     const transcriptId = crypto.randomUUID();
-    const requestDigest = this.managedCreation?.requestDigest ?? sha256CanonicalJson({
-      agentSessionId: this.agentSessionId,
-      creationId: this.creationId,
-      adapterId: this.adapterId,
-      mode: this._mode,
-      transcriptPath,
-      preset: persistence.transcript.preset,
-      capture: persistence.transcript.capture,
-      limits: persistence.limits,
-      includeTruncationDigests: persistence.transcript.includeTruncationDigests,
-    });
     const header: TranscriptHeaderRecord = {
       v: 2,
       t: "header",
@@ -1048,7 +1088,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     };
 
     this.v2TranscriptPath = transcriptPath;
-    this.v2Transcript = await TranscriptPersistenceRuntime.create({
+    const primary = await TranscriptPersistenceRuntime.create({
       path: transcriptPath,
       header,
       writerLock: this.managedCreation?.transcriptLock,
@@ -1094,6 +1134,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         });
       },
     });
+    this.v2Transcript = audit ? new AuditedPersistenceRuntime(primary, audit) : primary;
   }
 
   /**
@@ -1511,6 +1552,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     return Object.freeze({
       checkpoint: this.v2Transcript.checkpoint,
       internalSessionHistory: Object.freeze([...this.v2Transcript.internalSessionHistory]),
+      auditLog: this.managedAuditLog ? structuredClone(this.managedAuditLog) : null,
     });
   }
 

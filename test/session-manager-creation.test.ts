@@ -6,6 +6,7 @@ import { MaintenanceAlreadyCompletedError, ManagedAgentSessionCreationError } fr
 import { FileAgentSessionStore } from "../src/persistence/file-registry-store.ts";
 import { scanTranscriptContinuation } from "../src/persistence/transcript-scanner.ts";
 import { SessionManager } from "../src/session-manager.ts";
+import { AuditLogReader } from "../src/persistence/audit-log-reader.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -134,11 +135,27 @@ describe("SessionManager.createAgentSession", () => {
     }
   }, 20_000);
 
-  test("rejects the not-yet-supported audit-backed variant explicitly", async () => {
-    const { manager } = await setup();
-    await expect(manager.createAgentSession({ ...config(), persistence: { auditLog: {} } }))
-      .rejects.toThrow("managed audit-log creation is not implemented yet");
-  });
+  test("creates an independent audit log with explicit audit projections", async () => {
+    const { root, manager } = await setup();
+    const session = await manager.createAgentSession({
+      ...config(),
+      agentSessionId: "audited",
+      creationId: "audited-creation",
+      persistence: { auditLog: {} },
+    });
+    await session.setConfig("model", "beta");
+    await session.prompt("not copied into audit messages");
+    await session.stop();
+    expect(await manager.getAgentSessionInfo("audited")).toMatchObject({
+      transcriptAvailable: true,
+      auditLogAvailable: true,
+    });
+    const page = await new AuditLogReader(join(root, "audit-logs", "audited.jsonl"))
+      .readPage({ limit: 100 });
+    expect(page.items.some((item) => item.t === "operation")).toBe(true);
+    expect(page.items.some((item) => item.t === "configuration")).toBe(true);
+    expect(page.items.some((item) => (item as { t: string }).t === "message")).toBe(false);
+  }, 20_000);
 
   test("registry pre-dispatch failure aborts locally and blocks the live session", async () => {
     const { manager, store } = await setup();

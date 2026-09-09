@@ -50,6 +50,12 @@ export interface ResumedTranscriptWriter {
   readonly scan: TranscriptContinuationScan;
 }
 
+export interface ResumeAuditLogWriterOptions {
+  readonly path: string;
+  readonly expected: { readonly agentSessionId: string; readonly auditLogId: string; readonly generation: number };
+  readonly writerLock?: SessionLogWriterLock;
+}
+
 export class SessionLogWriteError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -220,6 +226,56 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
     } catch (error) {
       await handle?.close().catch(() => undefined);
       await lock.release();
+      throw error;
+    }
+  }
+
+  /** Resume one audit generation after validating every complete physical record. */
+  static async resumeAuditLog(options: ResumeAuditLogWriterOptions): Promise<{
+    readonly writer: FileSessionLogWriter<"audit">;
+    readonly header: AuditLogHeaderRecord;
+  }> {
+    if (!isAbsolute(options.path)) throw new SessionLogWriteError("audit-log path must be absolute");
+    const lock = options.writerLock ?? await acquireSessionLogWriterLock(options.path);
+    if (lock.path !== options.path) {
+      await lock.release().catch(() => undefined);
+      throw new SessionLogWriteError("pre-acquired writer lock belongs to another path");
+    }
+    let handle: FileHandle | undefined;
+    try {
+      const bytes = await readFile(options.path);
+      if (bytes.length === 0 || bytes[bytes.length - 1] !== 0x0a) {
+        throw new SessionLogWriteError("audit log has an incomplete final record");
+      }
+      const lines = bytes.toString("utf8").trimEnd().split("\n");
+      let header: AuditLogHeaderRecord | undefined;
+      let expectedSeq = 1;
+      for (const line of lines) {
+        const value = JSON.parse(line) as KnownAuditLogRecord;
+        if (!header) {
+          if (value.t !== "header") throw new SessionLogWriteError("audit log does not begin with a header");
+          header = value;
+        }
+        validateAuditLogRecord(value, {
+          agentSessionId: options.expected.agentSessionId,
+          logId: options.expected.auditLogId,
+          generation: options.expected.generation,
+        });
+        if (value.seq !== expectedSeq++) throw new SessionLogWriteError("audit-log sequence is not contiguous");
+        if (Buffer.byteLength(line, "utf8") > header.effectiveLimits.maxRecordBytes) {
+          throw new SessionLogWriteError("audit-log record exceeds its engraved limit");
+        }
+      }
+      if (!header) throw new SessionLogWriteError("audit log is empty");
+      handle = await open(options.path, "a+");
+      const writer = new FileSessionLogWriter({
+        kind: "audit", path: options.path, header,
+        maxRecordBytes: header.effectiveLimits.maxRecordBytes,
+      }, handle, lock, lines.length);
+      return { writer, header };
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      await lock.release().catch(() => undefined);
       throw error;
     }
   }

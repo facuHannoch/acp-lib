@@ -136,6 +136,30 @@ describe("SessionManager.loadAgentSession", () => {
       await opened.session.stop();
     }
   }, 20_000);
+
+  test("resumes an audit-only session and continues its independent sequence", async () => {
+    const { root, manager } = await setup();
+    const created = await manager.createAgentSession({
+      ...createConfig(),
+      agentSessionId: "audit-only",
+      creationId: "audit-only-creation",
+      persistence: { transcript: false, auditLog: {} },
+    });
+    await created.setConfig("model", "beta");
+    await created.stop();
+    const before = await new (await import("../src/persistence/audit-log-reader.ts")).AuditLogReader(
+      join(root, "audit-logs", "audit-only.jsonl"),
+    ).readPage({ limit: 100 });
+
+    const opened = await manager.loadAgentSession("audit-only", loadConfig());
+    await opened.session.setConfig("model", "alpha");
+    await opened.session.stop();
+    const after = await new (await import("../src/persistence/audit-log-reader.ts")).AuditLogReader(
+      join(root, "audit-logs", "audit-only.jsonl"),
+    ).readPage({ limit: 100 });
+    expect(after.items.length).toBeGreaterThan(before.items.length);
+    expect((await manager.getAgentSessionInfo("audit-only"))?.auditLogAvailable).toBe(true);
+  }, 20_000);
 });
 
 async function setup() {
