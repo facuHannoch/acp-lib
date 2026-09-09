@@ -1,30 +1,38 @@
 # Consumer guide
 
-This guide is for applications that embed `@qlairoslabs/acp-client`, especially
-orchestrators that keep several agents alive at once. The library supplies the ACP
-connection and stable-session primitives; the consumer owns the collection of live
-`AgentSession` objects and decides whether operations appear as slash commands, buttons,
-HTTP endpoints, jobs, or something else.
+This guide is for applications embedding `@qlairoslabs/acp-client`, especially
+orchestrators that own several logical agent sessions. The library owns ACP communication,
+one live session's operation queue, metering, and optional persistence. The consumer owns
+its collection of live objects, adapter resolution, user interface, and application policy.
 
-The package currently requires Bun 1.3.5 or newer.
+The package requires Bun 1.3.5 or newer.
 
-## The three operation layers
+## Mental model
 
-Keep these layers separate in consumer code:
+There are three different operation layers:
 
-| Layer | Owner | Library surface | Typical operations |
-|---|---|---|---|
-| Logical session management | Consumer | `SessionManager`, `SessionStore`, `AgentSession.create()` | Create, catalog, list, reopen, stop, and select `AgentSession` objects |
-| Stable session control | `AgentSession` | The live `AgentSession` instance | Prompt, observe state, interrupt, handoff, bridge, stop |
-| Active harness session | ACP provider | `internalSessionCommands`, `executeInternalSessionCommand()`, `session.connection` | Run advertised commands and use provider capabilities/configuration |
+| Layer | Main API | Examples |
+|---|---|---|
+| Logical-session management | `SessionManager` | Create, list, load, restore, reconfigure, and delete logical sessions |
+| One stable logical session | `AgentSession` | Prompt, interrupt, handoff, observe state, change configuration, and bridge |
+| Active harness thread | ACP and `internalSessionCommands` | Harness-specific commands such as `/usage` and `/model` |
 
-An `agentSessionId` is the stable consumer-facing identity. An `internalSessionId` belongs
-to the currently active provider thread and may change during a handoff or mode change.
+An `agentSessionId` is the stable identity exposed to the consumer. An
+`internalSessionId` identifies the current provider or harness thread. Handoff and other
+thread replacements may change the latter without changing the former.
 
 ```text
-consumer registry
-  └── AgentSession agent-7            stable object and agentSessionId
-        └── internal session abc      replaceable provider thread
+consumer
+  └── SessionManager
+        └── AgentSession agent-7           stable logical identity
+              └── internal thread abc      replaceable harness identity
+```
+
+`SessionManager` persists and discovers logical sessions. It does not retain live
+`AgentSession` objects. An orchestrator normally keeps those separately:
+
+```ts
+const liveSessions = new Map<string, AgentSession>();
 ```
 
 ## Install and import
@@ -33,21 +41,20 @@ consumer registry
 bun add @qlairoslabs/acp-client
 ```
 
-Core session APIs come from the package root:
-
 ```ts
 import {
-  AgentSession,
   ADAPTERS,
-  FileSessionStore,
+  AgentSession,
+  AuditLogReader,
   SessionManager,
+  TranscriptReader,
   type Adapter,
   type AgentSessionNotification,
   type PromptHandlers,
 } from "@qlairoslabs/acp-client";
 ```
 
-Reusable interactive helpers are intentionally in a separate entry point:
+Interactive helpers are a separate entry point:
 
 ```ts
 import {
@@ -60,11 +67,12 @@ import {
 
 ## Resolve adapters in the consumer
 
-An adapter only describes how to launch a harness. Presets are provided, but consumers
-can supply any `Adapter` object.
+An adapter only tells the library how to launch a harness. Capabilities, authentication,
+configuration, and harness commands are discovered after ACP initialization.
 
 ```ts
 const adapters: Record<string, Adapter> = {
+  opencode: ADAPTERS.opencode,
   codex: ADAPTERS.codex,
   claude: ADAPTERS.claude,
   pi: ADAPTERS.pi,
@@ -82,58 +90,57 @@ function resolveAdapter(adapterId: string): Adapter {
 }
 ```
 
-The catalog stores `adapterId`, not executable configuration. This resolver therefore
-belongs to the consumer.
+The managed registry stores `adapterId`, not executable configuration or credentials.
+Consequently, loading a session still requires the consumer to resolve that ID.
 
-Presets do not encode a provider's features. After the process starts, the library
-discovers capabilities, authentication methods, configuration, sessions, and harness
-commands through ACP. The Pi preset targets `@automatalabs/pi-acp`, which embeds Pi through
-its published SDK and installs the `pi-acp` executable. The native `pi` command is used
-only for interactive PTY mode.
+## Choose direct or managed sessions
 
-Install the preset executable globally with `npm install -g @automatalabs/pi-acp`, or use
-`{ command: ["npx", "-y", "@automatalabs/pi-acp"] }` as a custom adapter.
+Use a direct `AgentSession` when the application wants a transient ACP connection or owns
+all persistence externally. Direct sessions perform no V2 persistence by default.
 
-## Create the catalog and live-session registry
+Use `SessionManager.open()` when the library should maintain a durable logical-session
+registry and transcripts. Calling `SessionManager.open()` is the opt-in to managed local
+persistence.
 
-`SessionManager` is a metadata catalog, not a registry of running objects and not a
-transcript store. Use `FileSessionStore` locally or implement `SessionStore` over the
-consumer's database.
+For most orchestrators, the managed path is the recommended starting point.
+
+## Open a managed session manager
 
 ```ts
-const sessionManager = new SessionManager(
-  new FileSessionStore("/absolute/path/to/session-catalog"),
-);
-
-const liveSessions = new Map<string, AgentSession>();
+const sessions = await SessionManager.open({
+  root: "/absolute/path/to/application-state",
+  sessionDefaults: {
+    transcript: { preset: "activity" },
+    auditLog: false,
+  },
+});
 ```
 
-The manager exposes:
+Root resolution is:
 
-```ts
-await sessionManager.record(input);
-await sessionManager.get(agentSessionId);
-await sessionManager.list();
-await sessionManager.delete(agentSessionId);
-await sessionManager.listMerged(providerSessions, adapterId);
-```
+1. An explicit `root`.
+2. `ACP_CLIENT_HOME`.
+3. `~/.acp-client`.
 
-Normally the consumer does not call `record()` directly. An `AgentSession` given
-`sessions: sessionManager` records itself on startup and updates the record when its
-provider identity, mode, title, or transcript location changes.
+The default managed configuration enables an `activity` transcript and disables the
+independent audit log. A session can override manager defaults unless a manager constraint
+forbids the resulting configuration. For example, a product that must always retain
+continuation history can separately set `sessionConstraints.transcript` to `"required"`;
+that manager will intentionally reject the registry-only example below.
 
-## Create a logical session
+## Create a managed logical session
 
 ```ts
 async function createSession(adapterId: string): Promise<AgentSession> {
-  const session = await AgentSession.create({
+  const session = await sessions.createAgentSession({
     adapter: resolveAdapter(adapterId),
     adapterId,
-    providerSession: { kind: "new" },
-    sessions: sessionManager,
-    transcriptDir: "/absolute/path/to/transcripts",
     cwd: process.cwd(),
+    title: "Repository agent",
     defaultPermission: "cancel",
+    persistence: {
+      transcript: { preset: "activity" },
+    },
   });
 
   liveSessions.set(session.agentSessionId, session);
@@ -141,264 +148,538 @@ async function createSession(adapterId: string): Promise<AgentSession> {
 }
 ```
 
-If `agentSessionId` is omitted, the library creates one. Always return or store
-`session.agentSessionId`; do not use `internalSessionId` as the orchestrator's key.
+`agentSessionId` and `creationId` are generated when omitted. A consumer that needs
+idempotent retries across process failure may supply stable values itself.
 
-`providerSession` is explicit:
-
-```ts
-{ kind: "new" }
-{ kind: "load", internalSessionId, onFailure?: "error" | "new" }
-```
-
-Loading fails closed by default. Use `onFailure: "new"` only when replacing a missing
-provider thread is deliberate policy.
-
-## Reopen a cataloged session
-
-`SessionManager.get()` returns routing metadata. It does not start a process. Reopening is
-consumer composition because only the consumer knows how to resolve adapters and where to
-keep live objects.
+To create a registry-only session:
 
 ```ts
-async function reopenSession(agentSessionId: string): Promise<AgentSession> {
-  const existing = liveSessions.get(agentSessionId);
-  if (existing) return existing;
-
-  const record = await sessionManager.get(agentSessionId);
-  if (!record) throw new Error(`Unknown AgentSession: ${agentSessionId}`);
-
-  const session = await AgentSession.create({
-    adapter: resolveAdapter(record.adapter),
-    adapterId: record.adapter,
-    agentSessionId: record.agentSessionId,
-    providerSession: record.internalSessionId
-      ? {
-          kind: "load",
-          internalSessionId: record.internalSessionId,
-          onFailure: "error",
-        }
-      : { kind: "new" },
-    mode: record.mode,
-    cwd: record.cwd,
-    title: record.title,
-    sessions: sessionManager,
-    ...(record.transcriptPath
-      ? { transcriptPath: record.transcriptPath }
-      : {}),
-  });
-
-  liveSessions.set(session.agentSessionId, session);
-  return session;
-}
+const session = await sessions.createAgentSession({
+  adapter: ADAPTERS.opencode,
+  adapterId: "opencode",
+  persistence: {
+    transcript: false,
+    auditLog: false,
+  },
+});
 ```
 
-Transcript existence never selects a provider thread. `transcriptPath` and
-`transcriptDir` only select history storage.
+Registry-only mode preserves continuation state but not conversational history. It cannot
+reconstruct the conversation if the provider thread becomes unavailable.
 
-## List and select sessions
-
-Use the manager to list the consumer's catalog without starting a harness:
-
-```ts
-const catalog = await sessionManager.list();
-```
-
-Once a session is connected, `session.listSessions()` merges that catalog with the active
-adapter's ACP `session/list` response when the harness supports it:
-
-```ts
-const rows = await session.listSessions();
-
-for (const row of rows) {
-  console.log(
-    row.agentSessionId,
-    row.internalSessionId,
-    row.adapter,
-    row.source, // "catalog" | "agent" | "both"
-  );
-}
-```
-
-Selecting which `AgentSession` receives the next operation is consumer state. The library
-does not maintain a global “current AgentSession.”
+Managed creation and loading currently require normal ACP mode. Managed degraded/PTY
+sessions are not implemented.
 
 ## Prompt and stream a turn
 
 ```ts
-const result = await session.prompt("Inspect the failing tests.", {
+const handlers: PromptHandlers = {
   onChunk: (text) => process.stdout.write(text),
-  onActivity: (event) => renderRawActivity(event),
-  onRecord: (folded) => publishFoldedActivity(folded),
-  onUpdate: (rawUpdate) => debugProtocolUpdate(rawUpdate),
+  onActivity: (event) => renderActivity(event),
+  onRecord: (record) => publishFoldedActivity(record),
   onPermissionRequest: (request) => {
     const allow = request.options.find((option) => option.kind === "allow_once");
     return allow
       ? { outcome: "selected", optionId: allow.optionId }
       : { outcome: "cancelled" };
   },
-});
+};
 
-console.log(result.status, result.stopReason, result.text, result.usage);
+const result = await session.prompt("Inspect the failing tests.", handlers);
+
+console.log(result.status);
+console.log(result.text);
+console.log(result.operationId);
+console.log(result.metering);
 ```
 
-Prompts and handoffs on one `AgentSession` are serialized. The consumer does not need a
-separate mutex for them.
+Prompts, configuration changes, handoffs, and other mutations are serialized by each
+`AgentSession`. Multiple different `AgentSession` objects may operate concurrently.
 
-## Observe state without polling
+## Observe state, context, and usage
 
-Read the current snapshot first, then subscribe to future notifications:
+Read a snapshot first, then subscribe to changes:
 
 ```ts
-function attachSession(session: AgentSession): () => void {
-  publishState(session.state);
+publishState(session.state);
 
-  return session.subscribe((notification: AgentSessionNotification) => {
-    publishNotification(notification);
+const unsubscribe = session.subscribe((notification: AgentSessionNotification) => {
+  publishNotification(notification);
 
-    switch (notification.event.kind) {
-      case "state_changed":
-        publishState(notification.event.state);
-        break;
-      case "turn_completed":
-      case "turn_failed":
-      case "handoff_completed":
-      case "handoff_failed":
-        scheduleDependentWork(session.agentSessionId);
-        break;
-    }
-  });
-}
+  if (notification.event.kind === "state_changed") {
+    publishState(notification.event.state);
+  }
+
+  if (notification.event.kind === "metering_recorded") {
+    persistBillingMetadata(notification.event.record);
+  }
+});
 ```
 
-Useful snapshots are:
+Useful live properties include:
 
 ```ts
 session.state;
 session.isBusy;
 session.queuedOperationCount;
+session.contextWindow;     // active thread only, or null
+session.providerCost;      // provider telemetry, not asserted invoice truth
+session.meteringSnapshot;  // logical-session totals and coverage
+session.model;
+session.providerId;
 ```
 
-Notifications carry a monotonically increasing `seq`, timestamp, and stable
-`agentSessionId`. A listener exception is isolated from the operation.
+`contextWindow` describes the latest usage observation for the active internal thread. It
+is cleared after a handoff until the new thread reports its context. Metering totals belong
+to the stable logical session and continue across internal-thread changes.
 
-## Interrupt and stop
+Each completed token-consuming operation carries its own `OperationMeteringRecord`. Store
+that record in the consumer's billing or analytics system if it is financially relevant;
+do not use the transcript as an authoritative billing ledger.
+
+Metering defaults to `best_effort` with the pinned models.dev pricing catalog. The other
+enforcement modes have narrower meanings:
+
+- `telemetry_required` stops after missing or invalid ACP usage, but ACP telemetry is not a
+  billing guarantee.
+- `billing_required` requires a registered certified per-inference integration. Plain ACP
+  usage can never satisfy it.
 
 ```ts
-session.interrupt();                    // cancel the active operation
-session.interrupt({ clearQueue: true }); // also discard queued operations
+const session = await sessions.createAgentSession({
+  adapter: ADAPTERS.opencode,
+  adapterId: "opencode",
+  metering: {
+    enforcement: "best_effort",
+  },
+});
+```
+
+Subscription authentication is not inferred as a metering mode. Treat subscription usage
+as informative telemetry; use a certified integration and consumer-controlled API billing
+when token costs must be enforceable.
+
+## Interrupt, stop, and own live objects
+
+```ts
+session.interrupt();
+session.interrupt({ clearQueue: true });
 
 await session.stop();
 liveSessions.delete(session.agentSessionId);
 ```
 
-`stop()` is terminal for that object. Reopen from the catalog to obtain a new live object
-with the same logical identity.
+`stop()` is terminal for that object. The logical session remains in the manager and can
+later be loaded into a new live object.
 
-## Handoff within the current harness
+## List and inspect managed sessions
+
+Listing is cursor-paginated and does not start a harness:
 
 ```ts
-const result = await session.handoff();
+const page = await sessions.listAgentSessions({
+  limit: 100,
+  includeDeleted: false,
+  order: "updated_desc",
+});
+
+for (const item of page.sessions) {
+  console.log(item.agentSessionId, item.adapterId, item.lifecycle);
+}
 ```
 
-Without options, the old provider thread generates a portable summary. The session then
-creates a new provider thread and introduces that summary through a user prompt.
-
-The consumer may provide an already-generated summary:
+Inspect one session or its current continuation checkpoint:
 
 ```ts
-const result = await session.handoff({
+const info = await sessions.getAgentSessionInfo(agentSessionId);
+const resolved = await sessions.getAgentSessionCheckpoint(agentSessionId);
+
+if (!info || !resolved) throw new Error("Unknown session");
+
+console.log(resolved.source);        // "transcript" or "registry_projection"
+console.log(resolved.authoritative);
+console.log(resolved.checkpoint.internalSessionId);
+```
+
+Maintenance inspection is also offline:
+
+```ts
+await sessions.getSessionMaintenance(agentSessionId);
+await sessions.listSessionMaintenance({ limit: 100 });
+```
+
+A prepared maintenance record means an interrupted create, restore, reconfiguration, or
+deletion should be resumed or resolved before ordinary mutations continue.
+
+## Load an existing session
+
+The manager requires the adapter at runtime but selects continuation from persisted state:
+
+```ts
+async function loadSession(agentSessionId: string): Promise<AgentSession> {
+  const info = await sessions.getAgentSessionInfo(agentSessionId);
+  if (!info) throw new Error(`Unknown session: ${agentSessionId}`);
+
+  const opened = await sessions.loadAgentSession(agentSessionId, {
+    adapter: resolveAdapter(info.adapterId),
+    adapterId: info.adapterId,
+    defaultPermission: "cancel",
+  });
+
+  console.log(opened.continuation);
+  console.log(opened.recovery);
+  console.log(opened.configuration);
+  console.log(opened.promptability);
+  console.log(opened.repairs);
+
+  liveSessions.set(agentSessionId, opened.session);
+  return opened.session;
+}
+```
+
+Loading never silently creates a replacement provider thread. By default it attempts the
+persisted `internalSessionId`. If that thread is unavailable, continuation reports the
+failure and the returned session may be non-promptable.
+
+For cross-adapter or missing-thread recovery, supply an explicit ordered continuation
+strategy, such as a consumer-owned continuation:
+
+```ts
+const opened = await sessions.loadAgentSession(agentSessionId, {
+  adapter: resolveAdapter(targetAdapterId),
+  adapterId: targetAdapterId,
+  continuation: {
+    strategies: [
+      { kind: "load_internal_session" },
+      {
+        kind: "new_from_consumer_continuation",
+        continuationId: "summary-v3",
+        continuation: portableSummary,
+      },
+    ],
+  },
+});
+```
+
+The consumer should always inspect `promptability`. Do not assume that successfully
+opening files means the provider state is safe to mutate.
+
+## Resolve recovery and configuration blockers
+
+An uncertain operation boundary is never guessed away. The consumer explicitly decides:
+
+```ts
+await session.resolveRecovery({
+  strategy: "accept_harness_state",
+});
+
+// Or deliberately replace the provider thread:
+await session.resolveRecovery({
+  strategy: "start_new_internal_session",
+  continuation: portableSummary,
+});
+```
+
+If persisted configuration no longer matches what the harness announces:
+
+```ts
+await session.resolveConfigurationMismatch({
+  strategy: "accept_effective",
+});
+
+// Or apply an exact ordered replacement target list:
+await session.resolveConfigurationMismatch({
+  strategy: "replace_restoration_targets",
+  selections: [
+    { configId: "model", value: "anthropic/claude-sonnet-4" },
+  ],
+});
+```
+
+These are separate state machines. Resolving recovery does not implicitly accept a
+configuration mismatch.
+
+## Handoff without losing logical identity
+
+```ts
+const handoff = await session.handoff();
+```
+
+The current thread generates portable continuation context, the library creates a new
+thread on the same adapter, and the same `AgentSession` continues:
+
+```ts
+handoff.agentSessionId === session.agentSessionId;
+handoff.toInternalSessionId === session.internalSessionId;
+```
+
+If the consumer already has a summary, bypass summary generation:
+
+```ts
+await session.handoff({
   summary: "Objective, decisions, current state, and next steps...",
 });
 ```
 
-The following remains true:
+V0 handoff uses the current adapter. The default summary-generation and new-thread
+introduction prompts are library-defined, and introduction is an ordinary user prompt
+because ACP has no portable system-prompt field.
+
+## Harness configuration and commands
+
+ACP configuration is available through the stable session:
 
 ```ts
-result.agentSessionId === session.agentSessionId;
-result.toInternalSessionId === session.internalSessionId;
+console.log(session.configOptions);
+await session.setConfig("model", "some-model");
+await session.authenticate(methodId, { onOutput: showAuthOutput });
 ```
 
-Current limitations are important:
+Configuration selected through `AgentSession` is checkpointed according to the configured
+`sessionConfiguration` persistence policy and reapplied during loading.
 
-- Handoff only creates a new thread on the current adapter/harness.
-- The summary-generation prompt is currently fixed unless generation is bypassed by
-  supplying `summary`.
-- The new-thread introduction prompt is currently fixed.
-- The introduction is an ordinary user prompt, not a system prompt.
-- ACP `session/new` has no portable system-prompt field.
-- Handoff requires normal ACP mode.
-
-Cross-adapter handoff and independently configurable summary/introduction policies should
-be treated as future API work, not emulated by mutating `internalSessionId` in consumer
-code.
-
-## Discover and execute harness commands
-
-Commands advertised by the active ACP harness are exposed as immutable metadata:
+Harness slash commands are discovered as metadata:
 
 ```ts
 for (const command of session.internalSessionCommands) {
   console.log(command.name, command.description, command.input?.hint);
 }
-```
 
-Changes also arrive through the session listener as
-`internal_session_commands_changed`.
-
-Execute one explicitly without including the leading slash:
-
-```ts
 await session.executeInternalSessionCommand("usage");
 await session.executeInternalSessionCommand("status", "verbose");
 ```
 
-ACP represents these commands as ordinary prompts. The named method makes consumer intent
-explicit and keeps the operation in the session queue, transcript, and lifecycle events.
-Advertisement is discovery, not an allow-list: a harness may accept a command before it
-advertises it.
+ACP sends a harness command as a prompt. `executeInternalSessionCommand()` makes the layer
+explicit and routes it through the logical session's queue, lifecycle, transcript, and
+metering machinery. Advertisement is discovery rather than an allow-list.
 
-## Reuse the AgentSession local command set
+## Configure transcripts
 
-The same local handlers used by the opinionated one-session REPL are public:
+Transcripts and audit logs are separate artifacts:
+
+- A transcript supports conversation display, continuation, debugging, and restoration.
+- An audit log supports a filtered operational history without copying conversation text.
+- The registry is the managed inventory and current routing projection.
+
+Configure them per session:
 
 ```ts
-const localCommands = createAgentSessionCommands({
-  session,
-  note: (message) => showNotice(message),
+const session = await sessions.createAgentSession({
+  adapter: ADAPTERS.opencode,
+  adapterId: "opencode",
+  persistence: {
+    transcript: {
+      path: "/absolute/path/to/transcripts", // directory or exact file
+      preset: "detailed",
+      capture: {
+        permissions: "decision",
+        protocol: "none",
+      },
+    },
+    auditLog: {
+      path: "/absolute/path/to/audit",
+      capture: {
+        tools: "input",
+        usage: true,
+      },
+    },
+    sessionConfiguration: {
+      values: "typed",
+      exclude: ["secret-option"],
+    },
+  },
+});
+```
+
+If a configured path is an existing directory, the library derives the filename from
+`agentSessionId`. A file path is used exactly. Default managed locations are beneath the
+manager root in separate transcript and audit directories.
+
+Available transcript presets are:
+
+| Preset | Intended use |
+|---|---|
+| `conversation` | User/assistant text with minimal transition metadata |
+| `activity` | End-user operation history without reasoning or tool contents |
+| `detailed` | Reasoning, tool input/output, and richer transition details |
+| `diagnostic` | Full diagnostic capture, including raw protocol records |
+
+Capture filtering happens before persistence. Selecting a more detailed preset is an
+explicit decision to persist more sensitive content. Limits and truncation protect record
+size; structural identity is never truncated merely to force an invalid record to fit.
+
+The files are plaintext. The library does not provide encryption, tamper resistance, a
+billing source of truth, or automatic retention policy. Apply filesystem permissions,
+retention, backup, and deletion policy appropriate to the application.
+
+## Read a transcript with pagination
+
+Resolve its authoritative path without starting the harness:
+
+```ts
+const resolved = await sessions.getAgentSessionCheckpoint(agentSessionId);
+const path = resolved?.checkpoint.transcript?.path;
+if (!path) throw new Error("This session has no transcript");
+
+const reader = new TranscriptReader(path);
+```
+
+The reader offers three projections:
+
+```ts
+const conversation = await reader.readPage({
+  view: "conversation",
+  limit: 50,
 });
 
-const handled = await localCommands.onSlashCommand("state", []);
+const timeline = await reader.readPage({
+  view: "timeline",
+  types: ["message", "activity", "transition"],
+  limit: 50,
+});
+
+const records = await reader.readPage({
+  view: "records",
+  limit: 50,
+});
 ```
 
-The built-in set currently handles:
+Each page is ordered oldest-first within that page, while the initial page selects the
+newest matching records. Navigate using `olderCursor` and `newerCursor`:
+
+```ts
+const older = timeline.olderCursor
+  ? await reader.readPage({
+      view: "timeline",
+      types: ["message", "activity", "transition"],
+      cursor: timeline.olderCursor,
+      limit: 50,
+    })
+  : null;
+```
+
+Navigation cursors are bound to the snapshot, view, and filter. Reusing one with another
+view or filter fails explicitly. Appends after the snapshot do not reorder the page being
+read, while rewrites before its boundary invalidate the cursor.
+
+Fold revisioned activities at the same snapshot:
+
+```ts
+const activity = await reader.listActivityStates({
+  at: timeline.snapshot,
+  status: "open",
+  order: "updated_desc",
+  limit: 100,
+});
+```
+
+An activity that was open at the snapshot remains `historically_open`; the reader does not
+claim that a tool is still executing in a process it cannot observe.
+
+## Read the independent audit log
+
+```ts
+const audit = new AuditLogReader(knownAuditLogPath);
+
+const page = await audit.readPage({
+  types: ["operation", "activity", "permission", "metering_reference"],
+  limit: 100,
+});
+```
+
+Audit pagination has the same stable-snapshot behavior. V0 summaries expose whether an
+audit log is available but do not expose its path. A consumer that enables an audit log
+should retain the configured path or derive it as part of its own persistence policy.
+
+## Reconfigure persistence offline
+
+Stop the live session before reconfiguration. Transcript and audit mutations are separate
+fenced V0 operations.
+
+```ts
+const info = await sessions.getAgentSessionInfo(agentSessionId);
+const resolved = await sessions.getAgentSessionCheckpoint(agentSessionId);
+if (!info || !resolved) throw new Error("Unknown session");
+
+await sessions.reconfigureAgentSessionPersistence(agentSessionId, {
+  reconfigurationId: crypto.randomUUID(),
+  expectedIncarnationId: info.incarnationId,
+  expectedRecordRevision: info.recordRevision,
+  transcript: {
+    action: "replace",
+    config: {
+      path: resolved.checkpoint.transcript!.path,
+      preset: "conversation",
+    },
+    checkpoint: resolved.checkpoint,
+    acknowledgeContinuationLoss: true,
+  },
+});
+```
+
+V0 replacement changes the generation and policy while retaining the recorded path.
+Disablement permanently removes that artifact and requires the corresponding explicit
+acknowledgement. Use the managed CLI when an operator-facing confirmation flow is desired.
+
+## Delete and restore managed sessions
+
+Deletion is tombstoning by default. The consumer supplies incarnation and revision CAS
+tokens so a delayed request cannot delete a newly reused logical identity.
+
+```ts
+const info = await sessions.getAgentSessionInfo(agentSessionId);
+if (!info) throw new Error("Unknown session");
+
+await sessions.deleteAgentSession(agentSessionId, {
+  deletionId: crypto.randomUUID(),
+  expectedIncarnationId: info.incarnationId,
+  expectedRecordRevision: info.recordRevision,
+  deleteTranscript: false,
+  deleteAuditLog: false,
+  removeRegistryEntry: false,
+});
+```
+
+Hard registry removal is allowed only when all retained artifacts are deleted in the same
+operation. Prefer tombstones when restoration or identity history matters.
+
+Restore a tombstone explicitly:
+
+```ts
+const deleted = await sessions.getAgentSessionInfo(agentSessionId, {
+  includeDeleted: true,
+});
+if (!deleted) throw new Error("Unknown session");
+
+const opened = await sessions.restoreAgentSession(agentSessionId, {
+  adapter: resolveAdapter(deleted.adapterId),
+  adapterId: deleted.adapterId,
+  restorationId: crypto.randomUUID(),
+  expectedIncarnationId: deleted.incarnationId,
+  expectedRecordRevision: deleted.recordRevision,
+});
+```
+
+Retained artifacts are reused. If an artifact was deleted, restoration requires an
+explicit `false` or an explicit replacement path; it never silently recreates the previous
+file. The returned value has the same continuation, recovery, configuration,
+promptability, and repairs report as ordinary managed loading.
+
+## Use the command layers in a UI
+
+The one-session REPL uses unambiguous routing:
 
 ```text
-/help
-/session
-/state
-/commands
-/handoff [SUMMARY]
-/bridge
+ordinary text     -> session.prompt(...)
+/command          -> local AgentSession command
+//command [input] -> session.executeInternalSessionCommand(...)
 ```
-
-`/exit` is handled by the REPL loop rather than the command factory.
-
-The factory currently exposes the handler, not a declarative metadata array for local
-commands. A consumer can reuse the handler directly; a custom command palette must define
-its own local labels/descriptions for now. Harness commands do have declarative metadata
-through `session.internalSessionCommands`.
-
-## Run the opinionated single-session REPL
 
 ```ts
 try {
   await runAgentSessionRepl(session, {
     activity: true,
-    spinner: true,
-    note: (message) => process.stderr.write(`${message}\n`),
     onSlashCommand: async (command, args) => {
-      // Consumer-local extension, tried after the built-in AgentSession commands.
       if (command !== "tag") return false;
       await addTag(session.agentSessionId, args.join(" "));
       return true;
@@ -409,102 +690,95 @@ try {
 }
 ```
 
-Input routing is deliberately unambiguous:
+Built-in local commands include `/session`, `/state`, `/commands`, `/handoff`, and
+`/bridge`. Unknown `/...` commands never fall through as prompts. A graphical application
+can skip slash parsing and bind the same methods directly to buttons, RPC methods, jobs,
+or orchestration events.
 
-```text
-ordinary text     -> session.prompt(...)
-/command          -> local AgentSession command
-//command [input] -> session.executeInternalSessionCommand(...)
+The packaged managed CLI is a reference consumer:
+
+```bash
+acp-client create [AGENT_SESSION_ID] --adapter opencode
+acp-client open AGENT_SESSION_ID
+acp-client sessions --json
+acp-client info AGENT_SESSION_ID
+acp-client checkpoint AGENT_SESSION_ID
+acp-client maintenance [AGENT_SESSION_ID]
+acp-client restore AGENT_SESSION_ID
+acp-client reconfigure AGENT_SESSION_ID --replace-transcript --preset detailed --yes
+acp-client delete AGENT_SESSION_ID --delete-transcript --yes
 ```
 
-An unknown `/command` is rejected locally and never falls through to the harness.
+## Direct sessions
 
-## Reuse routing in a custom UI
-
-Consumers do not need to use readline. `parseReplInput()` and `dispatchReplInput()` are
-terminal-independent:
+Direct sessions are intentionally persistence-free unless configured:
 
 ```ts
-const local = createAgentSessionCommands({ session, note: showNotice });
-const promptHandlers: PromptHandlers = {
-  onChunk: (text) => renderText(text),
-  onActivity: (event) => renderActivity(event),
-};
+const session = await AgentSession.create({
+  adapter: ADAPTERS.opencode,
+  adapterId: "opencode",
+  providerSession: { kind: "new" },
+});
+```
 
-await dispatchReplInput(parseReplInput(input), {
-  prompt: async (text) => {
-    await session.prompt(text, promptHandlers);
-  },
-  localCommand: (command, args) => local.onSlashCommand(command, args),
-  internalSessionCommand: async (command, value) => {
-    await session.executeInternalSessionCommand(command, value, promptHandlers);
-  },
-  unknownLocalCommand: (command) => {
-    showNotice(`Unknown local command: /${command}`);
-  },
-  missingInternalSessionCommand: () => {
-    showNotice("A command name is required after //");
+Direct V2 persistence requires stable logical and creation identities because there is no
+manager transaction to discover generated ones after a crash:
+
+```ts
+const session = await AgentSession.create({
+  adapter: ADAPTERS.opencode,
+  adapterId: "opencode",
+  agentSessionId,
+  creationId,
+  providerSession: { kind: "new" },
+  persistence: {
+    root: "/absolute/application-state",
+    transcript: { preset: "activity" },
   },
 });
 ```
 
-A graphical consumer may skip slash parsing entirely and bind these operations directly
-to buttons, menus, RPC methods, or orchestration events.
+For durable multi-session applications, prefer `SessionManager.createAgentSession()` and
+`SessionManager.loadAgentSession()`.
 
-## Use the lower-level control plane when needed
+## Legacy compatibility
 
-`session.connection` exposes the live `AgentController` for operations that do not belong
-to the stable session abstraction:
+`FileSessionStore`, `sessions:`, `transcriptPath`, `transcriptDir`, and
+`transcriptActivity` remain for compatibility with the earlier flat catalog/transcript
+model. They should not be used for new managed implementations.
 
-```ts
-session.capabilities;
-session.configOptions;
-await session.setConfig("model", "some-model");
-await session.authenticate(methodId, { onOutput: showAuthOutput });
-
-const controller = session.connection;
-await controller.listSessions();
-await controller.loadSession(internalSessionId);
-```
-
-Use controller session-switching methods carefully: they operate directly on the provider
-thread. Prefer `AgentSession` methods when a stable logical-session equivalent exists, so
-the catalog, lifecycle notifications, and transcript remain coherent.
-
-## Transcript policy
-
-Choose exactly one history destination:
+Legacy transcript conversion and registry import are explicit:
 
 ```ts
-transcriptPath: "/absolute/path/to/conversation.jsonl"
-// or
-transcriptDir: "/absolute/path/to/transcripts"
+await migrateLegacyTranscript(options);
+await sessions.importLegacySessions(legacyStore);
 ```
 
-Omit both to disable transcript writes. This does not disable prompting, handoff, catalog
-management, or lifecycle notifications.
+Migration preserves the legacy prefix for presentation and establishes a new V2 authority
+boundary. Strict V2 creation never claims an already initialized legacy file implicitly.
 
-Enable settled activity records when the consumer needs tool/thinking/plan history:
+## Current V0 boundaries
 
-```ts
-transcriptActivity: {
-  checkpointOnInput: true,
-  rawOutput: false,
-  maxBytes: 64_000,
-}
-```
-
-Use `readTranscript()` for logical user/assistant messages and `readTranscriptLines()` for
-the complete typed stream, including activity and handoff boundaries.
+- Managed creation and loading support normal ACP mode only.
+- Handoff creates a new thread on the current adapter.
+- Transcript and audit reconfiguration are separate operations.
+- Replacement reconfiguration retains the existing artifact path.
+- Generic ACP load cannot prove what happened after a crash; uncertainty requires an
+  explicit consumer decision.
+- Session logs are plaintext and do not provide encryption or tamper resistance.
+- Metering records are application telemetry, not an invoice or trusted billing ledger.
+- A transcript or audit generation has one active writer, enforced by a writer lock.
+- Retention policy and automatic pruning belong to the consumer.
 
 ## Recommended ownership rules
 
-- Key orchestration state by `agentSessionId`, never `internalSessionId`.
-- Keep the map of live `AgentSession` objects in the consumer.
-- Treat `SessionManager` as routing metadata, not a process manager.
-- Read `session.state` before subscribing to notifications.
-- Use `executeInternalSessionCommand()` instead of constructing slash prompts manually.
-- Keep consumer/local commands separate from harness commands in the UI.
-- Resolve adapters in the consumer and fail explicitly on unknown adapter ids.
-- Stop every live session during consumer shutdown.
-- Do not infer provider loading from transcript filenames or contents.
+- Key application state by `agentSessionId`, never `internalSessionId`.
+- Keep live `AgentSession` objects in the consumer; use the manager for durable discovery.
+- Resolve adapter IDs in the consumer and fail explicitly when one is unknown.
+- Inspect `AgentSessionOpenResult.promptability` before dispatching work.
+- Read state before subscribing so no initial snapshot is missed.
+- Persist operation metering records separately when they matter financially.
+- Use transcript presets deliberately; detailed and diagnostic capture can contain secrets.
+- Keep local commands distinct from harness commands.
+- Stop every live session during application shutdown.
+- Do not infer provider loading from a transcript path or file contents.

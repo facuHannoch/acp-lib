@@ -2258,3 +2258,22 @@ offline summary/checkpoint/maintenance inspection, and live-session ownership. T
 repository suite passes 667/667 and `tsc --noEmit` passes. A repository-wide diff check still
 reports a pre-existing trailing blank line in the separately modified
 `9-6-transcript-policy.md`; the managed CLI files themselves pass `git diff --check`.
+
+### Part 18 — V2 consumer guide
+
+Rewrote `CONSUMER_GUIDE.md` against the implemented public API. The guide now leads with
+the managed `SessionManager.open()` path rather than the deprecated flat `SessionStore`,
+explains stable logical identity versus replaceable harness identity, and covers managed
+creation, loading, promptability, explicit recovery/configuration resolution, handoff,
+harness commands, metering, deletion, restoration, and offline maintenance inspection.
+
+The persistence section now documents the transcript/audit/registry separation, capture
+presets, security consequences, per-session paths, registry-only operation, snapshot-bound
+cursor pagination, activity-state folding, offline reconfiguration, and current V0
+limitations. Direct persistence and legacy `transcriptPath`/`transcriptDir` behavior remain
+documented as separate, clearly scoped alternatives instead of being presented as the
+recommended managed architecture.
+
+The guide also describes the managed reference CLI and the reusable one-session command
+routing without presenting either as a mandatory orchestration model. `git diff --check`
+passes for the rewritten guide and log.
