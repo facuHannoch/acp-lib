@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FileAgentSessionStore } from "../src/persistence/file-registry-store.ts";
+import { MaintenanceAlreadyCompletedError } from "../src/persistence/registry.ts";
 import { SessionManager } from "../src/session-manager.ts";
 
 const roots: string[] = [];
@@ -37,8 +38,8 @@ describe("SessionManager persistence maintenance", () => {
     expect(record?.checkpoint.transcript?.generation).toBe(1);
     expect(record?.checkpoint.transcript?.transcriptId)
       .not.toBe(authority.checkpoint.transcript?.transcriptId);
-    expect(await manager.reconfigureAgentSessionPersistence("managed-agent", request))
-      .toMatchObject({ recordRevision: changed.recordRevision });
+    await expect(manager.reconfigureAgentSessionPersistence("managed-agent", request))
+      .rejects.toBeInstanceOf(MaintenanceAlreadyCompletedError);
 
     const opened = await manager.loadAgentSession("managed-agent", runtimeConfig());
     try {

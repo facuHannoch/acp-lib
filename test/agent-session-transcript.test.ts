@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { AgentSession, type AgentSessionConfig } from "../src/agent-session.ts";
+import {
+  AgentSession,
+  DirectAuditPersistenceUnsupportedError,
+  type AgentSessionConfig,
+} from "../src/agent-session.ts";
 import {
   foldFrame,
   wireFrames,
@@ -58,6 +62,19 @@ describe("AgentSession transcript config", () => {
       persistence: { root: dir },
       transcriptPath: join(dir, "legacy.jsonl"),
     })).rejects.toThrow("cannot combine persistence with deprecated transcript options");
+  });
+
+  test("rejects direct v2 audit persistence before creating an artifact", async () => {
+    await expect(AgentSession.create({
+      adapter: fakeAdapter(),
+      adapterId: "fake",
+      agentSessionId: "direct-audit",
+      creationId: "direct-audit-creation",
+      persistence: { root: dir, transcript: false, auditLog: {} },
+    })).rejects.toBeInstanceOf(DirectAuditPersistenceUnsupportedError);
+
+    await expect(readFile(join(dir, "audit-logs", "direct-audit.jsonl"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 
   test("uses transcriptDir with agentSessionId as the file name", async () => {

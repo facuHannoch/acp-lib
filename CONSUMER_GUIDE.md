@@ -722,7 +722,7 @@ const session = await AgentSession.create({
 ```
 
 Direct V2 persistence requires stable logical and creation identities because there is no
-manager transaction to discover generated ones after a crash:
+manager catalog to discover generated ones after a crash:
 
 ```ts
 const session = await AgentSession.create({
@@ -738,8 +738,14 @@ const session = await AgentSession.create({
 });
 ```
 
-For durable multi-session applications, prefer `SessionManager.createAgentSession()` and
-`SessionManager.loadAgentSession()`.
+In V0 this direct transcript path is a preview convenience, not a crash-resumable creation
+transaction. A failure after the transcript header is installed can leave an initialized
+artifact which must be opened or cleaned up explicitly. Direct audit persistence is
+rejected instead of creating an audit file which the live session cannot safely own.
+
+For durable persistent applications, use `SessionManager.createAgentSession()` and
+`SessionManager.loadAgentSession()`. The manager owns prepared creation, registry fencing,
+audit attachment, retry discovery, and completion receipts.
 
 ## Legacy compatibility
 
@@ -760,7 +766,13 @@ boundary. Strict V2 creation never claims an already initialized legacy file imp
 ## Current V0 boundaries
 
 - Managed creation and loading support normal ACP mode only.
+- Direct V2 creation supports transcript-only persistence and is not crash-resumable;
+  direct V2 audit persistence is rejected.
+- Direct V2 opening currently requires an explicit `agentSessionId` and transcript;
+  checkpoint-only and exact-file identity inference are deferred.
 - Handoff creates a new thread on the current adapter.
+- Tombstone restoration currently loads only the recorded provider thread; reconstruction
+  strategies remain available to ordinary managed loading but are deferred for restoration.
 - Transcript and audit reconfiguration are separate operations.
 - Replacement reconfiguration retains the existing artifact path.
 - Generic ACP load cannot prove what happened after a crash; uncertainty requires an

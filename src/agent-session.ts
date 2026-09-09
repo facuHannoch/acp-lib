@@ -307,6 +307,14 @@ export class AdapterMismatchError extends Error {
   }
 }
 
+/** Direct V2 audit creation is deferred until it has the same crash transaction as managed creation. */
+export class DirectAuditPersistenceUnsupportedError extends Error {
+  constructor() {
+    super("direct V2 audit persistence is not supported; use SessionManager.createAgentSession()");
+    this.name = "DirectAuditPersistenceUnsupportedError";
+  }
+}
+
 export interface HandoffOptions {
   /** Portable continuation context. When omitted, the current thread generates it. */
   readonly summary?: string;
@@ -562,6 +570,7 @@ export interface AgentSessionOpenConfig extends Omit<
 interface AgentSessionOpenBootstrap {
   readonly transcript: PersistenceStateRuntime;
   readonly transcriptPath: string;
+  readonly stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>;
 }
 
 /** @internal Transaction hooks supplied only by SessionManager managed creation. */
@@ -752,6 +761,10 @@ export class AgentSession implements AgentClient, Bridgeable {
    * implicitly. Consumers compose a catalog record back into this method when reopening.
    */
   static async create(config: AgentSessionConfig): Promise<AgentSession> {
+    const directPersistence = resolveDirectPersistence(config.persistence);
+    if (directPersistence !== false && directPersistence.auditLog !== false) {
+      throw new DirectAuditPersistenceUnsupportedError();
+    }
     const session = new AgentSession(config);
     try {
       await session.start();
@@ -796,8 +809,9 @@ export class AgentSession implements AgentClient, Bridgeable {
     config: AgentSessionOpenConfig,
     transcriptLock?: SessionLogWriterLock,
     audit?: AuditPersistenceRuntime,
+    stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>,
   ): Promise<AgentSessionOpenResult> {
-    return await AgentSession.openWithLock(config, transcriptLock, audit);
+    return await AgentSession.openWithLock(config, transcriptLock, audit, stageContinuation);
   }
 
   /** @internal Restore a registry-authoritative session without a transcript reader. */
@@ -805,6 +819,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     config: AgentSessionOpenConfig,
     history: readonly InternalSessionHistoryEntry[],
     audit?: AuditPersistenceRuntime,
+    stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>,
   ): Promise<AgentSessionOpenResult> {
     const checkpoint = config.checkpoint;
     if (!checkpoint || checkpoint.transcript !== null) {
@@ -839,6 +854,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
       session.setInternalSessionId(result.sessionId, false);
+      await stageOpeningContinuation(stageContinuation, checkpoint, result.sessionId);
       const attempt: ContinuationAttempt = Object.freeze({
         strategy: "load_internal_session",
         status: "succeeded",
@@ -868,6 +884,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     config: AgentSessionOpenConfig,
     transcriptLock?: SessionLogWriterLock,
     audit?: AuditPersistenceRuntime,
+    stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>,
   ): Promise<AgentSessionOpenResult> {
     const strategies = normalizeContinuationStrategies(config.continuation);
     const persistence = resolveDirectPersistence(config.persistence);
@@ -877,7 +894,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     const paths = await resolveSessionLogPaths(persistence, config.agentSessionId);
     if (!paths.transcriptPath) throw new Error("AgentSession.open() requires a transcript path");
     if (paths.auditLogPath && !audit) {
-      throw new Error("direct v2 audit-log integration is not implemented yet");
+      throw new DirectAuditPersistenceUnsupportedError();
     }
 
     let primary: TranscriptPersistenceRuntime;
@@ -926,7 +943,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           ...config.metering,
           initialState: checkpoint.metering,
         },
-      }, { transcript, transcriptPath: paths.transcriptPath });
+      }, { transcript, transcriptPath: paths.transcriptPath, stageContinuation });
       session.managedAuditLog = audit?.identity ?? null;
 
       try {
@@ -1198,6 +1215,11 @@ export class AgentSession implements AgentClient, Bridgeable {
           }
           this._mode = this.controller.currentMode;
           this.setInternalSessionId(loaded.sessionId, false);
+          await stageOpeningContinuation(
+            this.openBootstrap.stageContinuation,
+            checkpoint,
+            loaded.sessionId,
+          );
           this.continuationAcquired = true;
           recordedThreadAvailability = "available";
           attempts.push(Object.freeze({ strategy: strategy.kind, status: "succeeded" }));
@@ -3376,6 +3398,29 @@ function normalizeContinuationStrategies(
       continuation: strategy.continuation,
     });
   }));
+}
+
+async function stageOpeningContinuation(
+  stage: ((state: StagedContinuationState) => Promise<StagedContinuationState>) | undefined,
+  checkpoint: AgentSessionCheckpoint,
+  internalSessionId: string,
+): Promise<void> {
+  if (!stage) return;
+  const observed: StagedContinuationState = {
+    adapterId: checkpoint.adapterId,
+    mode: checkpoint.mode,
+    internalSessionId,
+    internalSessionActivatedAt: checkpoint.internalSessionActivatedAt,
+    model: checkpoint.model,
+    sessionConfiguration: checkpoint.sessionConfiguration,
+    protocol: checkpoint.protocol,
+  };
+  const persisted = await stage(observed);
+  if (persisted.adapterId !== observed.adapterId
+    || persisted.mode !== observed.mode
+    || persisted.internalSessionId !== observed.internalSessionId) {
+    throw new Error("staged continuation disagrees with the loaded provider identity");
+  }
 }
 
 function configurationTargetIssue(

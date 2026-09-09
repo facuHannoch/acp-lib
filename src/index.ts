@@ -38,6 +38,7 @@ export {
   AgentSessionPromptBlockedError,
   AdapterMismatchError,
   ContinuationUnavailableError,
+  DirectAuditPersistenceUnsupportedError,
 } from "./agent-session.ts";
 export type {
   AgentSessionConfig,
@@ -208,6 +209,7 @@ export type * from "./persistence/records.ts";
 export {
   AgentSessionRecordValidationError,
   AgentSessionStoreConflictError,
+  MaintenanceAlreadyCompletedError,
   SessionMaintenanceInProgressError,
   internalSessionHistoryDigest,
   validateAgentSessionRecord,
@@ -325,7 +327,6 @@ export {
 } from "./persistence/deletion.ts";
 export type { DeleteAgentSessionOptions } from "./persistence/deletion.ts";
 export {
-  MaintenanceAlreadyCompletedError,
   ManagedAgentSessionCreationError,
 } from "./persistence/managed-creation.ts";
 export type { ManagedAgentSessionCreateConfig } from "./persistence/managed-creation.ts";

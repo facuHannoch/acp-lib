@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FileAgentSessionStore } from "../src/persistence/file-registry-store.ts";
 import { AgentSessionRestorationError } from "../src/persistence/restoration.ts";
+import { MaintenanceAlreadyCompletedError } from "../src/persistence/registry.ts";
 import { SessionManager } from "../src/session-manager.ts";
 
 const roots: string[] = [];
@@ -45,6 +46,12 @@ describe("SessionManager.restoreAgentSession", () => {
     } finally {
       await restored.session.stop();
     }
+    await expect(manager.restoreAgentSession("managed-agent", {
+      ...runtimeConfig(),
+      restorationId: "restore-managed",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+    })).rejects.toBeInstanceOf(MaintenanceAlreadyCompletedError);
   }, 20_000);
 
   test("does not treat an active session as restorable", async () => {
@@ -97,6 +104,56 @@ describe("SessionManager.restoreAgentSession", () => {
     } finally {
       await restored.session.stop();
     }
+  }, 20_000);
+
+  test("stages provider identity before publishing the restored record", async () => {
+    const { root, manager, store } = await setup();
+    const created = await manager.createAgentSession(createConfig());
+    await created.stop();
+    const active = (await manager.getAgentSessionInfo("managed-agent"))!;
+    await manager.deleteAgentSession("managed-agent", {
+      deletionId: "delete-before-staging",
+      expectedIncarnationId: active.incarnationId,
+      expectedRecordRevision: active.recordRevision,
+      deleteTranscript: true,
+    });
+    const deleted = (await manager.getAgentSessionInfo("managed-agent", { includeDeleted: true }))!;
+    const request = {
+      ...runtimeConfig(),
+      restorationId: "restore-staging-order",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+      replacementTranscript: {
+        path: join(root, "replacement", "staging-order.jsonl"),
+        preset: "conversation",
+      },
+    } as const;
+    const update = store.updateMaintenance.bind(store);
+    store.updateMaintenance = async (...args) => {
+      const maintenance = args[3];
+      if (maintenance.kind === "restoration" && maintenance.details.stagedRecord) {
+        throw new Error("simulated restored-record failure");
+      }
+      return await update(...args);
+    };
+
+    await expect(manager.restoreAgentSession("managed-agent", request))
+      .rejects.toThrow("simulated restored-record failure");
+
+    const maintenance = await manager.getSessionMaintenance("managed-agent");
+    expect(maintenance).toMatchObject({
+      kind: "restoration",
+      details: {
+        stagedContinuation: { internalSessionId: "config-session" },
+      },
+    });
+    if (maintenance?.kind === "restoration") {
+      expect(maintenance.details.stagedRecord).toBeUndefined();
+    }
+    store.updateMaintenance = update;
+    const restored = await manager.restoreAgentSession("managed-agent", request);
+    await restored.session.stop();
+    expect((await manager.getAgentSessionInfo("managed-agent"))?.lifecycle).toBe("active");
   }, 20_000);
 
   test("restores a retained transcript and audit log together", async () => {

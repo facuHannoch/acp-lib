@@ -543,6 +543,7 @@ function validateMaintenance(agentSessionId: string, value: unknown): asserts va
   if (value.kind === "creation") {
     if (value.baseRecordRevision !== null) throw new AgentSessionRegistryError("creation baseRecordRevision must be null");
     validateCreationOrRestorationStages(agentSessionId, {
+      kind: "creation",
       incarnationId: value.incarnationId as string,
       baseRecordRevision: null,
     }, value.details);
@@ -551,6 +552,7 @@ function validateMaintenance(agentSessionId: string, value: unknown): asserts va
   } else if (value.kind === "restoration") {
     positiveInteger(value.baseRecordRevision, "maintenance baseRecordRevision");
     validateCreationOrRestorationStages(agentSessionId, {
+      kind: "restoration",
       incarnationId: value.incarnationId as string,
       baseRecordRevision: value.baseRecordRevision as number,
     }, value.details);
@@ -574,7 +576,11 @@ function validateMaintenance(agentSessionId: string, value: unknown): asserts va
 
 function validateCreationOrRestorationStages(
   agentSessionId: string,
-  maintenance: { incarnationId: string; baseRecordRevision: number | null },
+  maintenance: {
+    kind: "creation" | "restoration";
+    incarnationId: string;
+    baseRecordRevision: number | null;
+  },
   details: Record<string, unknown>,
 ): void {
   const stagedContinuation = details.stagedContinuation;
@@ -590,7 +596,10 @@ function validateCreationOrRestorationStages(
     }
     const expectedRevision = maintenance.baseRecordRevision === null ? 1 : maintenance.baseRecordRevision + 1;
     if (stagedRecord.recordRevision !== expectedRevision) throw new AgentSessionRegistryError("stagedRecord revision mismatch");
-    for (const field of ["adapterId", "mode", "internalSessionId", "internalSessionActivatedAt", "model", "sessionConfiguration", "protocol"] as const) {
+    const matchingFields = maintenance.kind === "creation"
+      ? ["adapterId", "mode", "internalSessionId", "internalSessionActivatedAt", "model", "sessionConfiguration", "protocol"] as const
+      : ["adapterId", "mode", "internalSessionId", "internalSessionActivatedAt", "protocol"] as const;
+    for (const field of matchingFields) {
       if (canonicalizeJson(stagedRecord[field]) !== canonicalizeJson((stagedContinuation as Record<string, unknown>)[field])) {
         throw new AgentSessionRegistryError(`stagedRecord ${field} disagrees with stagedContinuation`);
       }

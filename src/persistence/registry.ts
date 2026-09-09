@@ -291,6 +291,14 @@ export class SessionMaintenanceInProgressError extends Error {
   }
 }
 
+/** A non-void maintenance retry found a durable completion receipt. */
+export class MaintenanceAlreadyCompletedError extends Error {
+  constructor(readonly receipt: MaintenanceCompletionReceipt) {
+    super(`managed ${receipt.kind} ${receipt.operationId} already completed; load or inspect the persisted session`);
+    this.name = "MaintenanceAlreadyCompletedError";
+  }
+}
+
 export function internalSessionHistoryDigest(
   entries: readonly InternalSessionHistoryEntry[],
 ): string {

@@ -7,6 +7,7 @@ import { loadManagedAgentSession, persistenceFromManagedRecord } from "./managed
 import { attachManagedRegistryPublisher, projectManagedAgentSessionRecord } from "./managed-registry.ts";
 import {
   AgentSessionStoreConflictError,
+  MaintenanceAlreadyCompletedError,
   type AgentSessionRecord,
   type AgentSessionStore,
   type RestorationMaintenance,
@@ -94,7 +95,7 @@ export async function restoreManagedAgentSession(
       expectedRecordRevision: options.expectedRecordRevision,
     });
     if (prepared.status === "already_completed") {
-      throw new AgentSessionRestorationError("restoration already completed; load the active session");
+      throw new MaintenanceAlreadyCompletedError(prepared.receipt);
     }
     if (prepared.maintenance.kind !== "restoration") {
       throw new AgentSessionRestorationError("prepared maintenance is not restoration");
@@ -112,6 +113,25 @@ export async function restoreManagedAgentSession(
     const authorityRecord = await prepareRestorationAuthority(
       record, options, requestDigest, prepared.maintenance.startedAt,
     );
+    let currentMaintenance = prepared.maintenance;
+    const stageContinuation = async (
+      observed: StagedContinuationState,
+    ): Promise<StagedContinuationState> => {
+      const existing = currentMaintenance.details.stagedContinuation;
+      if (existing) {
+        assertSameContinuation(existing, observed);
+        return existing;
+      }
+      const staged: RestorationMaintenance = {
+        ...currentMaintenance,
+        details: { ...currentMaintenance.details, stagedContinuation: observed },
+      };
+      await store.updateMaintenance(
+        agentSessionId, record.incarnationId, options.restorationId, staged,
+      );
+      currentMaintenance = staged;
+      return observed;
+    };
     const activeAudit = authorityRecord.auditLog;
     const audit = activeAudit
       ? await AuditPersistenceRuntime.resume({
@@ -128,7 +148,7 @@ export async function restoreManagedAgentSession(
           ...runtime,
           agentSessionId,
           persistence: persistenceFromManagedRecord(authorityRecord),
-        }, transcriptLock, audit)
+        }, transcriptLock, audit, stageContinuation)
       : await AgentSession.openManagedRegistry({
           ...runtime,
           agentSessionId,
@@ -142,9 +162,8 @@ export async function restoreManagedAgentSession(
             } : false,
             sessionConfiguration: authorityRecord.sessionConfigurationPersistence ?? { values: "typed" },
           },
-        }, authorityRecord.internalSessionHistory, audit);
+        }, authorityRecord.internalSessionHistory, audit, stageContinuation);
     const snapshot = await opened.session.publishManagedRestorationCheckpoint();
-    const currentMaintenance = prepared.maintenance;
     const stagedContinuation: StagedContinuationState = {
       adapterId: snapshot.checkpoint.adapterId,
       mode: snapshot.checkpoint.mode,
@@ -162,11 +181,7 @@ export async function restoreManagedAgentSession(
       { lastOpenedAt: snapshot.checkpoint.updatedAt },
     );
     const existingContinuation = currentMaintenance.details.stagedContinuation;
-    if (existingContinuation
-      && (existingContinuation.adapterId !== stagedContinuation.adapterId
-        || existingContinuation.internalSessionId !== stagedContinuation.internalSessionId)) {
-      throw new AgentSessionRestorationError("restored continuation disagrees with staged provider identity");
-    }
+    if (existingContinuation) assertSameContinuation(existingContinuation, stagedContinuation);
     const continuationStaged: RestorationMaintenance = existingContinuation
       ? currentMaintenance
       : { ...currentMaintenance, details: { ...currentMaintenance.details, stagedContinuation } };
@@ -227,7 +242,7 @@ async function prepareRestorationAuthority(
       transcript: { transcriptId, generation: 1, path: config.path, coveredSequence: 1 },
       updatedAt: createdAt,
     });
-    await installRestorationTranscript(record, config.path, resolved.transcript, resolved.limits, checkpoint, transcriptId, options.restorationId, requestDigest, createdAt);
+    checkpoint = await installRestorationTranscript(record, config.path, resolved.transcript, resolved.limits, checkpoint, transcriptId, options.restorationId, requestDigest, createdAt);
     transcript = {
       path: config.path, transcriptId, generation: 1,
       preset: resolved.transcript.preset,
@@ -291,15 +306,16 @@ async function installRestorationTranscript(
   operationId: string,
   requestDigest: string,
   createdAt: string,
-): Promise<void> {
+): Promise<AgentSessionRecord["checkpoint"]> {
   if (await exists(path)) {
     const scan = await scanTranscriptContinuation(path, {
       agentSessionId: record.agentSessionId, transcriptId, generation: 1,
     });
-    if (scan.reduction.checkpoint.digest !== checkpoint.digest) {
-      throw new AgentSessionRestorationError("existing restoration transcript has another checkpoint");
+    if (scan.reduction.checkpoint.incarnationId !== checkpoint.incarnationId
+      || scan.reduction.checkpoint.stateRevision < checkpoint.stateRevision) {
+      throw new AgentSessionRestorationError("existing restoration transcript has incompatible authority");
     }
-    return;
+    return scan.reduction.checkpoint;
   }
   const temp = `${path}.restoration-${requestDigest.slice(0, 24)}`;
   await unlink(temp).catch(() => undefined);
@@ -328,6 +344,7 @@ async function installRestorationTranscript(
   }
   await rename(temp, path);
   await syncDirectory(dirname(path));
+  return checkpoint;
 }
 
 async function installRestorationAudit(
@@ -403,7 +420,7 @@ async function completedOrConflict(
     { expectedRecordRevision: options.expectedRecordRevision },
   );
   if (result.status === "already_completed") {
-    throw new AgentSessionRestorationError("restoration already completed; load the active session");
+    throw new MaintenanceAlreadyCompletedError(result.receipt);
   }
   throw new AgentSessionStoreConflictError("agent-session record compare-and-swap failed");
 }
@@ -460,5 +477,25 @@ function validateOptions(id: string, options: RestoreAgentSessionOptions): void 
   }
   if (!Number.isSafeInteger(options.expectedRecordRevision) || options.expectedRecordRevision < 1) {
     throw new AgentSessionRestorationError("expectedRecordRevision must be a positive safe integer");
+  }
+  if (options.continuation?.strategies?.some(
+    (strategy) => strategy.kind !== "load_internal_session",
+  )) {
+    throw new AgentSessionRestorationError(
+      "v0 tombstone restoration only supports loading the recorded provider thread",
+    );
+  }
+}
+
+function assertSameContinuation(
+  expected: StagedContinuationState,
+  observed: StagedContinuationState,
+): void {
+  if (expected.adapterId !== observed.adapterId
+    || expected.mode !== observed.mode
+    || expected.internalSessionId !== observed.internalSessionId) {
+    throw new AgentSessionRestorationError(
+      "restored continuation disagrees with staged provider identity",
+    );
   }
 }

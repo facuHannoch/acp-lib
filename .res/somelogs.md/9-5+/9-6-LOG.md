@@ -2277,3 +2277,35 @@ recommended managed architecture.
 The guide also describes the managed reference CLI and the reusable one-session command
 routing without presenting either as a mandatory orchestration model. `git diff --check`
 passes for the rewritten guide and log.
+
+### Part 19 — persistence merge-readiness closure
+
+Closed the orchestration-boundary defects found in the final persistence review. Managed
+tombstone restoration now durably stages the loaded provider identity immediately after
+the harness confirms it, before configuration replay, restoration checkpoint publication,
+or registry projection. Restoration-stage validation preserves the immutable continuation
+identity while allowing the final record to contain the configuration/model observations
+made later during opening.
+
+Interrupted replacement restoration now recognizes its own advanced replacement
+transcript instead of requiring the original seed checkpoint digest. A focused crash test
+fails after provider staging but before staged-record publication, verifies that the
+provider ID is already durable, and then resumes the same transaction and replacement log.
+V0 tombstone restoration is deliberately restricted to loading the recorded provider
+thread; reconstruction strategies remain available to ordinary managed loading and are
+deferred here until their newly created threads have a complete retry protocol.
+
+Unified non-void maintenance retry behavior under the shared
+`MaintenanceAlreadyCompletedError`. Creation, restoration, and transcript/audit
+reconfiguration no longer manufacture a current high-level result after finding a bounded
+completion receipt. Direct V2 audit persistence now fails with a typed error before any
+artifact is created instead of leaving an unattached audit writer.
+
+The specification and consumer guide now distinguish implemented V0 guarantees from the
+target direct-session design. Managed persistence is the durable consumer path. Direct V2
+transcript-only creation remains an explicitly documented, non-crash-resumable preview;
+direct audit persistence, checkpoint-only opening, exact-file identity inference, managed
+degraded mode, and combined transcript/audit reconfiguration remain explicit deferrals.
+
+Verification: `tsc --noEmit`, 669/669 repository tests, `git diff --check`, and
+`bun pm pack --dry-run` all pass.

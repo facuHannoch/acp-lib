@@ -273,8 +273,6 @@ The default file implementation uses:
     <encoded-agentSessionId>.jsonl
   audit-logs/                         # present only when an audit log is configured
     <encoded-agentSessionId>.jsonl
-  maintenance/                        # transient direct-create transaction markers
-    <sha256-of-JCS-[agentSessionId,creationId]>.json
 ```
 
 There is one central mutable registry, at most one authoritative append-only transcript
@@ -283,13 +281,9 @@ second permanent metadata file beside either append-only session log. Prepared m
 markers and temporary files are transactional implementation state and are removed on
 finalization; they are not per-session metadata stores.
 
-Managed maintenance lives atomically in the registry and does not use this directory.
-The `maintenance/` directory exists only for explicitly persistent direct creation, which
-has no registry transaction in which to place its prepared marker.
-The filename is lowercase-hex SHA-256 over the UTF-8 RFC 8785 serialization of the exact
-two-string array `[agentSessionId, creationId]`. Raw IDs never enter a filename. The
-owner-only marker contains the actual IDs and request digest and verifies all three after
-opening, so hashing is lookup/path safety rather than authentication.
+Managed maintenance lives atomically in the registry. A future crash-resumable direct
+creation coordinator may use owner-only marker files under `maintenance/`, addressed by a
+digest rather than raw IDs; that coordinator is deferred from V0.
 
 The default transcript filename is derived from the stable `agentSessionId`, never from
 the mutable `internalSessionId`.
@@ -357,20 +351,16 @@ const opened = await AgentSession.open({
 });
 ```
 
-Direct `create()` always begins a new logical-session creation transaction. Every resolved
+Direct `create()` always begins a new logical session. Every resolved
 transcript or audit destination must be absent or an existing zero-byte regular file when
 its lock is acquired. Any recognized header, legacy content, malformed content, or
 unrelated byte rejects creation with `AgentSessionAlreadyExistsError`, even when it names
-the requested `agentSessionId`. The sole exception is an identical prepared-creation retry,
-which may adopt a header whose installation provenance exactly matches that transaction.
 Only `open()` opens a completed logical session.
 
 Strict multi-log initialization uses the generalized maintenance transaction from section
 11. Managed creation reserves `{ kind: "creation" }` in the registry after acquiring all
-session-log locks in canonical path order. Direct persistent creation writes an owner-only
-prepared-creation marker under the effective root's `maintenance` directory because it
-has no registry. The normalized request digest covers identity, resolved paths, policies,
-limits, adapter ID and nonsecret runtime intent.
+session-log locks in canonical path order. The normalized request digest covers identity,
+resolved paths, policies, limits, adapter ID and nonsecret runtime intent.
 
 The creator establishes the new internal session and immediately advances the prepared
 transaction with its `stagedContinuation`, before constructing or installing a session
@@ -378,13 +368,11 @@ log. It then prepares temporary headers carrying the transaction's installation
 provenance, appends the initial checkpoint to the temporary transcript, synchronizes and
 installs every destination, and persists the complete `stagedRecord` before finalization.
 It finally promotes that record and replaces the prepared transaction with its completion
-receipt, or removes the direct marker. A caught failure removes only temporary/final files
-whose installation provenance matches that creation ID and request digest. A power-loss
-survivor is resumed or cleaned only by the identical creation ID/request; another request
-conflicts. Retrying a prepared creation loads the internal thread from
-`stagedContinuation`; once `stagedRecord` exists it also validates every installed log
-against it. This is completion of the same uncommitted create, not `create()` opening an
-already-created logical session.
+receipt. A caught failure removes only temporary/final files whose installation provenance
+matches that creation ID and request digest. A power-loss survivor is resumed or cleaned
+only by the identical managed creation ID/request; another request conflicts. Retrying a
+prepared managed creation loads the internal thread from `stagedContinuation`; once
+`stagedRecord` exists it also validates every installed log against it.
 
 There is necessarily a narrow external-system boundary between the provider returning a
 new internal-session ID and the library durably adding it to the prepared transaction. A
@@ -400,32 +388,26 @@ another one or rerun continuation construction.
 
 Managed creation may generate `agentSessionId` and `creationId` because its prepared work
 is discoverable through the registry. Direct creation with persistence enabled requires
-the caller to supply both IDs; it never creates an undiscoverable marker identified only
-by a value which would have been returned after completion. Direct persistence-disabled
-creation may continue to generate both IDs normally.
+the caller to supply both IDs. Direct persistence-disabled creation may continue to
+generate both IDs normally.
 
 `creationId` also becomes the persisted `incarnationId`. Reusing a previously hard-deleted
 `agentSessionId` requires a fresh creation ID; reuse of the old creation ID is rejected.
 
-Direct creation has no completion-receipt store. It is resumable through its marker only
-until finalization. If the process dies after removing that marker but before delivering
-the successful return, an identical retry sees initialized logs and does not create or
-adopt them. With a transcript, the caller uses `AgentSession.open()` with its required
-known ID/path; without a transcript it additionally needs a separately retained
-checkpoint, as required by the authority table. Audit-only direct persistence cannot
-recover logical continuation from its log. Persisting original direct-call results or
-direct completion receipts is deferred.
+V0 direct V2 persistence is deliberately narrower: it supports transcript-only creation
+without a prepared marker or completion receipt. It is not crash-resumable. A failure
+after final-path initialization can leave an artifact which a retry rejects; the consumer
+must explicitly open or remove it. Direct V2 audit persistence is rejected. Applications
+requiring durable creation, audit capture, or retry discovery must use `SessionManager`.
+A direct-session pre-dispatch coordinator and direct completion receipts are deferred.
 
-Direct `open()` reconstructs from an explicit consumer checkpoint and/or transcript. It
-applies the consistency rules in section 10 to those supplied persistence inputs and returns the
-session together with an explicit continuation report; it never hides a failed attempt
-to load the prior internal thread.
+V0 direct `open()` reconstructs from an explicit transcript and returns the session with
+an explicit continuation report; it never hides a failed attempt to load the prior thread.
+Checkpoint-only authority and direct audit integration are deferred.
 
-`open()` requires at least one unambiguous identity source: an `agentSessionId`, an
-explicit checkpoint, or an exact existing transcript file configured through
-`persistence.transcript.path`. Opening from a directory requires `agentSessionId` so the
-filename can be derived. Opening a missing path fails; only `create()` creates a new
-logical session.
+V0 `open()` requires an explicit `agentSessionId` and transcript persistence. Opening a
+missing path fails; only `create()` creates a new logical session. Exact-file identity
+inference and consumer-checkpoint-only opening remain target behavior for a later pass.
 
 The consumer supplies the adapter object for every create or open operation. Persistence
 stores `adapterId` as routing metadata; neither a checkpoint nor `SessionManager`
@@ -3135,6 +3117,12 @@ path implicitly. The tombstone is cleared only after continuation acquisition su
 a restoration transition/checkpoint is durable, and the registry update succeeds. A
 failure leaves the tombstone in place and returns or throws the full continuation report.
 
+V0 tombstone restoration accepts only `load_internal_session`. Although ordinary managed
+loading supports explicit reconstruction strategies, restoration defers them because a
+newly constructed provider thread must be recoverably staged and resumed across every
+replacement-log failure boundary. Supplying another strategy fails before maintenance or
+provider work begins.
+
 Replacement configuration requires an explicit path; omission never resolves through
 manager defaults. The consumer may deliberately name the former path, but that is an
 explicit choice and creates a new log identity at generation 1.
@@ -3392,14 +3380,10 @@ change the session state, or manufacture operation failure records.
 
 - Default root, environment override, and explicit-root precedence.
 - Direct `AgentSession.create()` with omitted persistence creates no files.
-- Direct persistent creation rejects omitted `agentSessionId` or `creationId`; retrying the
-  same explicit pair discovers and resumes its prepared marker without a listing API.
-- Direct marker filenames are the specified hash of the two IDs; hostile/long ID strings
-  never become path components, and marker contents must match after lookup.
-- A power loss after direct-marker removal but before return causes retry to reject the
-  initialized log and permits explicit `open()` only from a transcript or consumer
-  checkpoint; no original create result is fabricated and an audit log is never promoted
-  to continuation authority.
+- Direct persistent creation rejects omitted `agentSessionId` or `creationId`, and direct
+  audit persistence rejects before creating an artifact.
+- A direct transcript initialized before a failed return is never adopted by `create()`;
+  the consumer must explicitly open or remove it.
 - Direct `AgentSession.open()` receives an adapter explicitly; persistence never creates
   or globally resolves one.
 - Managed creation with omitted per-session options writes the registry and that
@@ -3521,10 +3505,13 @@ change the session state, or manufacture operation failure records.
 - Replacement becomes durable before registry publication, and retrying an interrupted
   replacement recognizes only the same `reconfigurationId`.
 - V0 replacement uses a new random log ID at generation 1; old cursors cannot cross it.
-- Creation interrupted after preparing one or more logs is resumable only with the same
-  creation ID/request digest; an unrelated retry cannot claim an initialized destination.
-- Creation failure cleanup removes only files proven to belong to that attempt, and crash
-  simulation covers each log installation and registry-finalization boundary.
+- Managed creation interrupted after preparing one or more logs is resumable only with the
+  same creation ID/request digest; an unrelated retry cannot claim an initialized
+  destination.
+- Managed creation failure cleanup removes only files proven to belong to that attempt,
+  and crash simulation covers each log installation and registry-finalization boundary.
+- Direct V2 creation is transcript-only and explicitly documented as non-transactional in
+  V0; direct audit persistence is rejected before artifact creation.
 - Prepared creation, reconfiguration, restoration, and deletion are mutually exclusive
   through one maintenance slot and have idempotent same-ID retries while their marker or
   bounded completion receipt remains.
@@ -3547,7 +3534,7 @@ change the session state, or manufacture operation failure records.
   Ordinary saves/deletes are atomically rejected while a marker exists, and finalization
   verifies the marker's incarnation and base revision. A late registry-only checkpoint
   cannot cross the maintenance fence or resurrect a deleted record.
-- Immediately after a provider returns a creation/restoration thread ID, maintenance
+- Immediately after a provider returns a managed creation/restoration thread ID, maintenance
   persists `stagedContinuation` before any log write, sync, or install. Crashes at every
   following boundary reuse that ID rather than creating another thread.
 - A matching explicit retry with no staged continuation repeats provider-thread creation

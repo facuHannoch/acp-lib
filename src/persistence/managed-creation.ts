@@ -14,10 +14,10 @@ import type {
 import { resolveSessionLogPaths } from "./paths.ts";
 import {
   AgentSessionStoreConflictError,
+  MaintenanceAlreadyCompletedError,
   type AgentSessionRecord,
   type AgentSessionStore,
   type CreationMaintenance,
-  type MaintenanceCompletionReceipt,
 } from "./registry.ts";
 import type { InternalSessionHistoryEntry } from "./records.ts";
 import { sha256CanonicalJson } from "./integrity.ts";
@@ -27,6 +27,10 @@ import {
 } from "./session-log-writer.ts";
 import { attachManagedRegistryPublisher } from "./managed-registry.ts";
 import { AuditPersistenceRuntime } from "./audit-runtime.ts";
+
+// Retain the former module-level export while the canonical error now applies to every
+// maintenance kind and lives with the shared registry contract.
+export { MaintenanceAlreadyCompletedError } from "./registry.ts";
 
 export interface ManagedAgentSessionCreateConfig extends Omit<
   AgentSessionConfig,
@@ -52,15 +56,6 @@ export class ManagedAgentSessionCreationError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "ManagedAgentSessionCreationError";
-  }
-}
-
-export class MaintenanceAlreadyCompletedError extends ManagedAgentSessionCreationError {
-  constructor(readonly receipt: MaintenanceCompletionReceipt) {
-    super(
-      `managed ${receipt.kind} ${receipt.operationId} already completed; load the persisted session`,
-    );
-    this.name = "MaintenanceAlreadyCompletedError";
   }
 }
 

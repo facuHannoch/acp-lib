@@ -12,6 +12,7 @@ import { sha256CanonicalJson } from "./integrity.ts";
 import { resolveSessionLogPaths } from "./paths.ts";
 import {
   AgentSessionStoreConflictError,
+  MaintenanceAlreadyCompletedError,
   type AgentSessionRecord,
   type AgentSessionStore,
   type AgentSessionSummary,
@@ -88,9 +89,7 @@ export async function reconfigureManagedAgentSessionPersistence(
       proposedMaintenance(options, requestDigest, retryPath),
       { expectedRecordRevision: options.expectedRecordRevision },
     );
-    if (completed.status === "already_completed" && candidate) {
-      return summarizeAgentSessionRecord(candidate);
-    }
+    if (completed.status === "already_completed") throw new MaintenanceAlreadyCompletedError(completed.receipt);
     throw new AgentSessionStoreConflictError("agent-session record compare-and-swap failed");
   }
   const initial = candidate;
@@ -123,11 +122,7 @@ export async function reconfigureManagedAgentSessionPersistence(
     const prepared = await store.prepareMaintenance(agentSessionId, proposed, {
       expectedRecordRevision: options.expectedRecordRevision,
     });
-    if (prepared.status === "already_completed") {
-      const completed = await store.getAgentSessionRecord(agentSessionId);
-      if (!completed) throw new AgentSessionStoreConflictError("completed reconfiguration record disappeared");
-      return summarizeAgentSessionRecord(completed);
-    }
+    if (prepared.status === "already_completed") throw new MaintenanceAlreadyCompletedError(prepared.receipt);
     if (prepared.maintenance.kind !== "persistence_reconfiguration") {
       throw new AgentSessionPersistenceReconfigurationError("prepared maintenance is not persistence reconfiguration");
     }
@@ -189,7 +184,7 @@ async function reconfigureAuditLog(
     const completed = await store.prepareMaintenance(agentSessionId, proposed, {
       expectedRecordRevision: options.expectedRecordRevision,
     });
-    if (completed.status === "already_completed" && candidate) return summarizeAgentSessionRecord(candidate);
+    if (completed.status === "already_completed") throw new MaintenanceAlreadyCompletedError(completed.receipt);
     throw new AgentSessionStoreConflictError("agent-session record compare-and-swap failed");
   }
   if (!candidate.auditLog) throw new AgentSessionPersistenceReconfigurationError("session has no audit log to reconfigure");
@@ -201,7 +196,7 @@ async function reconfigureAuditLog(
     const prepared = await store.prepareMaintenance(agentSessionId, proposed, {
       expectedRecordRevision: options.expectedRecordRevision,
     });
-    if (prepared.status === "already_completed") return summarizeAgentSessionRecord(record);
+    if (prepared.status === "already_completed") throw new MaintenanceAlreadyCompletedError(prepared.receipt);
     const at = prepared.maintenance.startedAt < record.updatedAt
       ? record.updatedAt : prepared.maintenance.startedAt;
     let auditLog: AgentSessionRecord["auditLog"] = null;
