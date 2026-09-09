@@ -38,6 +38,11 @@ import {
   type ManagedAgentSessionCreateConfig,
 } from "./persistence/managed-creation.ts";
 import type { AgentSession } from "./agent-session.ts";
+import {
+  loadManagedAgentSession,
+  type ManagedAgentSessionLoadConfig,
+} from "./persistence/managed-load.ts";
+import type { AgentSessionOpenResult } from "./agent-session.ts";
 
 export interface SessionManagerConfig {
   readonly root?: string;
@@ -189,6 +194,18 @@ export class SessionManager {
       store,
       persistence: this.resolveSessionPersistence(config.persistence),
     }, config);
+  }
+
+  /** Load a cataloged logical session from its immutable persistence authority. */
+  async loadAgentSession(
+    agentSessionId: string,
+    config: ManagedAgentSessionLoadConfig,
+  ): Promise<AgentSessionOpenResult> {
+    return await loadManagedAgentSession(
+      this.requireAgentStore("loadAgentSession()"),
+      agentSessionId,
+      config,
+    );
   }
 
   /** Shared normalization used by managed create and the upcoming managed load path. */

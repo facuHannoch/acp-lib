@@ -130,6 +130,12 @@ export interface AgentSessionRecord {
   readonly title?: string;
   readonly model: string | null;
   readonly sessionConfiguration: SessionConfigurationCheckpoint;
+  /** Immutable persistence policy needed to keep filtering restoration targets after reopen. */
+  readonly sessionConfigurationPersistence?: {
+    readonly values: "none" | "typed" | "all";
+    readonly include: readonly string[];
+    readonly exclude: readonly string[];
+  };
   readonly protocol: PersistedProtocol;
   readonly agent?: { readonly name?: string; readonly title?: string; readonly version?: string };
   readonly transcript: null | {

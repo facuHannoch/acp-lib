@@ -2040,3 +2040,30 @@ and staged-continuation retries without duplicate provider creation, completed-c
 semantics, explicit unsupported variants, and registry pre-dispatch failure. The complete
 repository suite passes 645/645,
 `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 11B — transcript-backed managed loading and registry reconciliation
+
+Added `SessionManager.loadAgentSession()` as the managed counterpart to direct
+`AgentSession.open()`. It resolves a logical identity from the manager's strict registry,
+rejects missing identities, tombstones, active maintenance, unsupported persistence modes,
+and accidental adapter changes before starting the harness. The stored transcript path,
+capture policy, limits, and session-configuration persistence policy are reconstructed from
+the registry rather than from mutable manager defaults.
+
+The transcript reducer remains the continuation authority. Loading compares its reduced
+checkpoint with the registry projection: a transcript-ahead state repairs the registry,
+same-revision digest disagreement fails, and an unexplained registry-ahead checkpoint fails
+instead of guessing. A successful open publishes a new `lastOpenedAt` revision and attaches
+the same ongoing checkpoint publisher used by managed creation, so later operations keep
+advancing the catalog. Any registry failure during reconciliation stops the acquired live
+session before the error escapes.
+
+Extracted the common registry projection/publisher logic so creation and loading share one
+incarnation-fenced CAS implementation. Added the resolved session-configuration persistence
+policy to new registry records; without it a reopened session could silently apply a
+different filtering policy to later configuration checkpoints.
+
+Tests cover provider-thread loading, configuration restoration, continued checkpoint
+publication, transcript-ahead registry repair, missing and deleted identities, and
+adapter-mismatch rejection before process startup. The complete repository suite passes
+649/649, `tsc --noEmit` passes, and `git diff --check` is clean.

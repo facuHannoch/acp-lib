@@ -24,6 +24,7 @@ import {
   acquireSessionLogWriterLock,
   type SessionLogWriterLock,
 } from "./session-log-writer.ts";
+import { attachManagedRegistryPublisher } from "./managed-registry.ts";
 
 export interface ManagedAgentSessionCreateConfig extends Omit<
   AgentSessionConfig,
@@ -153,7 +154,7 @@ export async function createManagedAgentSession(
         persistence: directPersistence(context.persistence, transcriptPath),
         checkpoint: active.details.stagedRecord.checkpoint,
       });
-      attachRegistryPublisher(opened.session, context.store);
+      attachManagedRegistryPublisher(opened.session, context.store);
       return opened.session;
     }
 
@@ -222,7 +223,7 @@ export async function createManagedAgentSession(
       requestDigest,
       { save: record },
     );
-    attachRegistryPublisher(session, context.store);
+    attachManagedRegistryPublisher(session, context.store);
     return session;
   } catch (error) {
     await session?.stop().catch(() => undefined);
@@ -306,6 +307,7 @@ function initialRecord(
     ...(config.title === undefined ? {} : { title: config.title }),
     model: checkpoint.model,
     sessionConfiguration: checkpoint.sessionConfiguration,
+    sessionConfigurationPersistence: persistence.sessionConfiguration,
     protocol: checkpoint.protocol,
     transcript: {
       path: checkpoint.transcript.path,
@@ -321,33 +323,6 @@ function initialRecord(
     updatedAt: checkpoint.updatedAt < maintenance.startedAt ? maintenance.startedAt : checkpoint.updatedAt,
     lastOpenedAt: checkpoint.updatedAt < maintenance.startedAt ? maintenance.startedAt : checkpoint.updatedAt,
   };
-}
-
-function attachRegistryPublisher(session: AgentSession, store: AgentSessionStore): void {
-  session.attachManagedCheckpointPublisher(async (checkpoint, history) => {
-    const current = await store.getAgentSessionRecord(checkpoint.agentSessionId);
-    if (!current || current.incarnationId !== checkpoint.incarnationId) {
-      throw new AgentSessionStoreConflictError("managed registry projection identity disappeared");
-    }
-    const next: AgentSessionRecord = {
-      ...current,
-      recordRevision: current.recordRevision + 1,
-      checkpoint,
-      adapterId: checkpoint.adapterId,
-      mode: checkpoint.mode,
-      internalSessionId: checkpoint.internalSessionId,
-      internalSessionActivatedAt: checkpoint.internalSessionActivatedAt,
-      internalSessionHistory: history,
-      model: checkpoint.model,
-      sessionConfiguration: checkpoint.sessionConfiguration,
-      protocol: checkpoint.protocol,
-      updatedAt: checkpoint.updatedAt < current.updatedAt ? current.updatedAt : checkpoint.updatedAt,
-    };
-    await store.saveAgentSessionRecord(next, {
-      expectedRecordRevision: current.recordRevision,
-      expectedIncarnationId: current.incarnationId,
-    });
-  });
 }
 
 async function requireUninitializedDestination(path: string): Promise<void> {

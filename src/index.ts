@@ -126,6 +126,12 @@ export {
 export type { SessionStore, SessionRecord } from "./session-store.ts";
 export { SessionManager, SessionManagerModeError, mergeSessions } from "./session-manager.ts";
 export type { MergedSession, SessionInput, SessionManagerConfig } from "./session-manager.ts";
+export {
+  ManagedAgentSessionAuthorityConflictError,
+  ManagedAgentSessionDeletedError,
+  ManagedAgentSessionNotFoundError,
+} from "./persistence/managed-load.ts";
+export type { ManagedAgentSessionLoadConfig } from "./persistence/managed-load.ts";
 
 export {
   appendTranscriptLine,
