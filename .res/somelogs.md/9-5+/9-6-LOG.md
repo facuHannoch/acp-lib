@@ -1652,3 +1652,30 @@ mismatch blocking. Added scanner coverage for truncated conversation detection. 
 focused restoration suite passes 6/6, scanner tests pass 14/14, the complete repository
 suite passes 600/600, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 7B — configuration-mismatch resolution
+
+Added the queued `resolveConfigurationMismatch()` API and both specified resolution
+strategies. Resolution is allowed only for a live mismatched v2 session whose crash
+recovery and persistence state permit mutation; it serializes with prompts, handoffs,
+mode changes, and ordinary configuration changes under the existing `configuring` phase.
+
+`accept_effective` performs no harness mutation. It snapshots the current announcement,
+turns every policy-admitted effective value into an ordered `accepted_effective`
+restoration target, writes the policy-visible resolution record, and durably publishes
+the replacement checkpoint before removing the prompt blocker. Excluded or otherwise
+unpersistable values retain an honest promptable-partial result.
+
+`replace_restoration_targets` validates a nonempty duplicate-free selection list before
+dispatch. Each selection is revalidated against the latest announcement after every
+prior harness response, because one option may change the remaining schema. A value that
+must change is applied through its own durable `set_config` start/terminal/checkpoint
+boundary. Successful earlier selections remain accurately checkpointed if a later one
+fails. Once all values agree, a final standalone checkpoint replaces—not merges—the old
+target list and only then clears the mismatch. The result reports which options actually
+required harness mutation, and the session emits a resolution notification.
+
+Added a pure helper for accepting effective configuration plus end-to-end tests for both
+resolution strategies, including a harness which rejects the first opening-time restore
+and accepts the explicit retry. The focused configuration suites pass 14/14, the complete
+repository suite passes 603/603, `tsc --noEmit` passes, and `git diff --check` is clean.

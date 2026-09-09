@@ -55,6 +55,8 @@ export type {
   HandoffResult,
   ProviderSession,
   ConfigurationRestoreStatus,
+  ConfigurationMismatchResolution,
+  ConfigurationMismatchResolutionResult,
   ContinuationAttempt,
   ContinuationReport,
   PromptBlocker,
@@ -256,8 +258,10 @@ export { persistenceEventFromActivity } from "./persistence/activity-projection.
 export {
   snapshotSessionConfiguration,
   snapshotSessionConfigurationAfterSelection,
+  snapshotAcceptedEffectiveConfiguration,
 } from "./persistence/configuration-state.ts";
 export type {
+  SnapshotAcceptedEffectiveConfigurationOptions,
   SnapshotSessionConfigurationAfterSelectionOptions,
   SnapshotSessionConfigurationOptions,
 } from "./persistence/configuration-state.ts";

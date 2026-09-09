@@ -69,6 +69,7 @@ import {
   type AgentSessionCheckpoint,
   type JsonValue,
   type PersistedSessionConfigSelection,
+  type SessionConfigurationCheckpoint,
 } from "./persistence/checkpoint.ts";
 import { EMPTY_HISTORY_DIGEST } from "./persistence/reducer.ts";
 import type {
@@ -80,6 +81,7 @@ import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.t
 import {
   snapshotSessionConfiguration,
   snapshotSessionConfigurationAfterSelection,
+  snapshotAcceptedEffectiveConfiguration,
 } from "./persistence/configuration-state.ts";
 import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
 import {
@@ -126,7 +128,14 @@ interface ModeQueueItem {
   reject: (error: unknown) => void;
 }
 
-type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem;
+interface ConfigResolutionQueueItem {
+  kind: "resolve_config";
+  resolution: ConfigurationMismatchResolution;
+  resolve: (result: ConfigurationMismatchResolutionResult) => void;
+  reject: (error: unknown) => void;
+}
+
+type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem | ConfigResolutionQueueItem;
 
 /** What the stable logical session is doing right now. */
 export type AgentSessionPhase =
@@ -200,6 +209,18 @@ export interface AgentSessionOpenResult {
   readonly repairs: readonly PersistenceRepair[];
 }
 
+export type ConfigurationMismatchResolution =
+  | { readonly strategy: "accept_effective" }
+  | {
+      readonly strategy: "replace_restoration_targets";
+      readonly selections: readonly { readonly configId: string; readonly value: JsonValue }[];
+    };
+
+export interface ConfigurationMismatchResolutionResult {
+  readonly configuration: ConfigurationRestoreStatus;
+  readonly appliedConfigIds: readonly string[];
+}
+
 export class AgentSessionPromptBlockedError extends Error {
   constructor(readonly blockers: readonly PromptBlocker[]) {
     super(`AgentSession cannot mutate while blocked: ${blockers.join(", ")}`);
@@ -265,6 +286,11 @@ export type AgentSessionEvent =
   | { kind: "mode_change_started"; transitionId: string; from: AgentMode; to: AgentMode }
   | { kind: "mode_change_completed"; transitionId: string; from: AgentMode; to: AgentMode }
   | { kind: "mode_change_failed"; transitionId: string; from: AgentMode; to: AgentMode; error: string }
+  | {
+      kind: "configuration_mismatch_resolved";
+      configuration: ConfigurationRestoreStatus;
+      appliedConfigIds: readonly string[];
+    }
   /** Latest context-window observation for the ACTIVE provider thread, or null. */
   | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
   /** Latest cumulative provider-reported cost. Telemetry, never asserted to be an invoice. */
@@ -1070,7 +1096,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           ? "prompting"
           : item.kind === "handoff"
             ? "handoff"
-            : item.kind === "set_config"
+            : item.kind === "set_config" || item.kind === "resolve_config"
               ? "configuring"
               : "switching_mode";
         this.emitStateIfChanged();
@@ -1102,6 +1128,18 @@ export class AgentSession implements AgentClient, Bridgeable {
             item.resolve();
           } catch (err) {
             this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
+            item.reject(err);
+          }
+        } else if (item.kind === "resolve_config") {
+          try {
+            const result = await this.runResolveConfigurationMismatch(item.resolution);
+            this.emit({
+              kind: "configuration_mismatch_resolved",
+              configuration: structuredClone(result.configuration),
+              appliedConfigIds: result.appliedConfigIds,
+            });
+            item.resolve(result);
+          } catch (err) {
             item.reject(err);
           }
         } else {
@@ -1503,6 +1541,150 @@ export class AgentSession implements AgentClient, Bridgeable {
     return saved.restorationFidelity === "partial" || current.restorationFidelity === "partial"
       ? Object.freeze({ kind: "partial" as const, omittedConfigIds: Object.freeze(omittedConfigIds) })
       : Object.freeze({ kind: "matched" as const });
+  }
+
+  private async runResolveConfigurationMismatch(
+    resolution: ConfigurationMismatchResolution,
+  ): Promise<ConfigurationMismatchResolutionResult> {
+    if (this._configurationRestore.kind !== "mismatch") {
+      throw new Error("configuration mismatch resolution requires a mismatched session");
+    }
+    if (!this.v2Transcript || this.persistence === false) {
+      throw new Error("configuration mismatch resolution requires v2 transcript persistence");
+    }
+    if (this._recovery.kind !== "clean") {
+      throw new AgentSessionPromptBlockedError(["recovery_required"]);
+    }
+    if (!this.v2Transcript.healthy) {
+      throw new AgentSessionPromptBlockedError(["persistence_unhealthy"]);
+    }
+
+    let snapshot: SessionConfigurationCheckpoint;
+    const appliedConfigIds: string[] = [];
+    if (resolution.strategy === "accept_effective") {
+      const recordedAt = new Date().toISOString();
+      snapshot = snapshotAcceptedEffectiveConfiguration({
+        adapterId: this.adapterId,
+        configOptions: this.controller.configOptions,
+        policy: this.persistence.sessionConfiguration,
+        recordedAt,
+      });
+    } else {
+      validateReplacementSelections(resolution.selections, this.controller.configOptions);
+      let restorationTargets: readonly PersistedSessionConfigSelection[] = [];
+      for (const selection of resolution.selections) {
+        const option = this.controller.configOptions.get(selection.configId);
+        const issue = configurationTargetIssue(option, {
+          configId: selection.configId,
+          type: option?.type ?? "unknown",
+          value: selection.value,
+          ordinal: 0,
+          source: "explicit_selection",
+          recordedAt: new Date(0).toISOString(),
+        });
+        if (issue) throw new Error(`${issue}: ${selection.configId}`);
+        const recordedAt = new Date().toISOString();
+        if (!sameJsonValue(option!.currentValue, selection.value)) {
+          await this.applyConfigurationResolutionSelection(
+            selection.configId,
+            selection.value,
+            this.v2Transcript.checkpoint.sessionConfiguration.restorationTargets,
+          );
+          appliedConfigIds.push(selection.configId);
+        }
+        const selected = snapshotSessionConfigurationAfterSelection({
+          adapterId: this.adapterId,
+          configOptions: this.controller.configOptions,
+          policy: this.persistence.sessionConfiguration,
+          restorationTargets,
+          selection: {
+            configId: selection.configId,
+            type: this.controller.configOptions.get(selection.configId)?.type ?? "unknown",
+            value: selection.value,
+            recordedAt,
+          },
+          observedAt: recordedAt,
+        });
+        restorationTargets = selected.restorationTargets;
+      }
+      for (const selection of resolution.selections) {
+        const current = this.controller.configOptions.get(selection.configId);
+        if (!current || !sameJsonValue(current.currentValue, selection.value)) {
+          throw new Error(`configuration resolution left a residual mismatch for ${selection.configId}`);
+        }
+      }
+      snapshot = snapshotSessionConfiguration({
+        adapterId: this.adapterId,
+        configOptions: this.controller.configOptions,
+        policy: this.persistence.sessionConfiguration,
+        restorationTargets,
+      });
+    }
+
+    await this.v2Transcript.appendEvent({
+      kind: "configuration",
+      event: "resolved",
+      schemaDigest: snapshot.schemaDigest ?? undefined,
+    });
+    await this.v2Transcript.publishCheckpoint({
+      model: this.model,
+      sessionConfiguration: snapshot,
+      metering: this.metering.currentState,
+    });
+    const configuration: ConfigurationRestoreStatus = snapshot.restorationFidelity === "partial"
+      ? Object.freeze({
+          kind: "partial",
+          omittedConfigIds: Object.freeze([...snapshot.omittedConfigIds]),
+        })
+      : Object.freeze({ kind: "matched" });
+    this._configurationRestore = configuration;
+    this.emitStateIfChanged();
+    return Object.freeze({
+      configuration: structuredClone(configuration),
+      appliedConfigIds: Object.freeze(appliedConfigIds),
+    });
+  }
+
+  private async applyConfigurationResolutionSelection(
+    configId: string,
+    value: JsonValue,
+    restorationTargets: readonly PersistedSessionConfigSelection[],
+  ): Promise<void> {
+    if (!this.v2Transcript || this.persistence === false) throw new Error("v2 transcript required");
+    const operationId = this.mintOperationId();
+    await this.v2Transcript.beginOperation(operationId, "set_config");
+    try {
+      await this.v2Transcript.syncBeforeDispatch();
+    } catch (error) {
+      await this.v2Transcript.abortOperation("pre_dispatch_persistence_failure").catch(() => undefined);
+      throw error;
+    }
+    try {
+      await this.controller.setConfig(configId, structuredClone(value));
+      const observedAt = new Date().toISOString();
+      const intermediate = snapshotSessionConfiguration({
+        adapterId: this.adapterId,
+        configOptions: this.controller.configOptions,
+        policy: this.persistence.sessionConfiguration,
+        restorationTargets,
+        observedAt,
+      });
+      await this.v2Transcript.appendEvent({
+        kind: "configuration",
+        event: "selected",
+        configId,
+        ...(configId in intermediate.effective ? { value } : {}),
+        schemaDigest: intermediate.schemaDigest ?? undefined,
+      });
+      await this.v2Transcript.finishOperation("settled", {
+        model: this.model,
+        sessionConfiguration: intermediate,
+        metering: this.metering.currentState,
+      });
+    } catch (error) {
+      await this.v2Transcript.finishOperation("failed", {}, "unknown").catch(() => undefined);
+      throw error;
+    }
   }
 
   private async runSetMode(item: ModeQueueItem): Promise<ConnectResult> {
@@ -2130,7 +2312,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         } else {
           const label = item.kind === "handoff"
             ? "handoff"
-            : item.kind === "set_config"
+            : item.kind === "set_config" || item.kind === "resolve_config"
               ? "configuration change"
               : "mode change";
           item.reject(new Error(`${label} cancelled before it started`));
@@ -2206,6 +2388,30 @@ export class AgentSession implements AgentClient, Bridgeable {
         resolve,
         reject,
       });
+      this.emitStateIfChanged();
+      void this.pump();
+    });
+  }
+  resolveConfigurationMismatch(
+    resolution: ConfigurationMismatchResolution,
+  ): Promise<ConfigurationMismatchResolutionResult> {
+    if (this.phase === "stopped") return Promise.reject(new Error("AgentSession is stopped"));
+    let owned: ConfigurationMismatchResolution;
+    try {
+      owned = resolution.strategy === "accept_effective"
+        ? Object.freeze({ strategy: "accept_effective" })
+        : Object.freeze({
+            strategy: "replace_restoration_targets",
+            selections: Object.freeze(resolution.selections.map((selection) => Object.freeze({
+              configId: selection.configId,
+              value: structuredClone(selection.value),
+            }))),
+          });
+    } catch (error) {
+      return Promise.reject(new Error(`configuration resolution cannot be cloned: ${String(error)}`));
+    }
+    return new Promise((resolve, reject) => {
+      this.queue.push({ kind: "resolve_config", resolution: owned, resolve, reject });
       this.emitStateIfChanged();
       void this.pump();
     });
@@ -2456,6 +2662,33 @@ function configurationTargetIssue(
     (choice) => sameJsonValue(choice.value, target.value),
   )) return "configuration_value_no_longer_allowed";
   return null;
+}
+
+function validateReplacementSelections(
+  selections: readonly { readonly configId: string; readonly value: JsonValue }[],
+  options: ConfigOptions,
+): void {
+  if (selections.length === 0) throw new Error("replacement restoration targets cannot be empty");
+  const ids = new Set<string>();
+  for (const selection of selections) {
+    if (!selection.configId.trim()) throw new Error("replacement configId cannot be blank");
+    if (ids.has(selection.configId)) {
+      throw new Error(`duplicate replacement configId: ${selection.configId}`);
+    }
+    ids.add(selection.configId);
+    canonicalizeJson(selection.value);
+    const option = options.get(selection.configId);
+    if (!option) throw new Error(`configuration option is not announced: ${selection.configId}`);
+    const issue = configurationTargetIssue(option, {
+      configId: selection.configId,
+      type: option.type,
+      value: selection.value,
+      ordinal: 0,
+      source: "explicit_selection",
+      recordedAt: new Date(0).toISOString(),
+    });
+    if (issue) throw new Error(`${issue}: ${selection.configId}`);
+  }
 }
 
 function sameJsonValue(left: unknown, right: JsonValue): boolean {

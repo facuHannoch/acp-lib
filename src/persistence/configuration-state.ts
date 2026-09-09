@@ -25,6 +25,11 @@ export interface SnapshotSessionConfigurationAfterSelectionOptions
   };
 }
 
+export interface SnapshotAcceptedEffectiveConfigurationOptions
+  extends Omit<SnapshotSessionConfigurationOptions, "restorationTargets"> {
+  readonly recordedAt?: string;
+}
+
 /**
  * Convert the harness's latest complete option announcement into bounded continuation
  * state. Values are inspected only after their IDs/types pass persistence policy.
@@ -101,6 +106,27 @@ export function snapshotSessionConfigurationAfterSelection(
     ? [...existing, candidate]
     : existing;
   return snapshotSessionConfiguration({ ...options, restorationTargets });
+}
+
+/** Make the policy-admitted current announcement the ordered future restoration target. */
+export function snapshotAcceptedEffectiveConfiguration(
+  options: SnapshotAcceptedEffectiveConfigurationOptions,
+): SessionConfigurationCheckpoint {
+  const recordedAt = options.recordedAt ?? options.observedAt ?? new Date().toISOString();
+  const effective = snapshotSessionConfiguration(options);
+  const restorationTargets: PersistedSessionConfigSelection[] = [];
+  for (const config of options.configOptions.values()) {
+    if (!(config.configId in effective.effective)) continue;
+    restorationTargets.push({
+      configId: config.configId,
+      type: config.type,
+      value: structuredClone(effective.effective[config.configId]!),
+      ordinal: restorationTargets.length,
+      source: "accepted_effective",
+      recordedAt,
+    });
+  }
+  return snapshotSessionConfiguration({ ...options, restorationTargets, observedAt: recordedAt });
 }
 
 function isAdmitted(

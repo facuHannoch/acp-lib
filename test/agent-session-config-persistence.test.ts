@@ -253,4 +253,84 @@ describe("AgentSession persisted configuration", () => {
       .rejects.toBeInstanceOf(AgentSessionPromptBlockedError);
     await opened.session.stop();
   }, 20_000);
+
+  test("accept_effective durably clears a mismatch without mutating the harness", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-accept-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-accept-session",
+      creationId: "config-accept-incarnation",
+      persistence: { root },
+    });
+    await created.setConfig("model", "beta");
+    const transcriptPath = created.transcriptPath!;
+    await created.stop();
+    const opened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-accept-session",
+      persistence: { root },
+      env: { ...process.env, OMIT_CONFIG: "1" } as Record<string, string>,
+    });
+
+    const result = await opened.session.resolveConfigurationMismatch({ strategy: "accept_effective" });
+    expect(result).toEqual({ configuration: { kind: "matched" }, appliedConfigIds: [] });
+    expect(opened.session.promptability).toEqual({ promptable: true, blockers: [] });
+    await opened.session.stop();
+    const scan = await scanTranscriptContinuation(transcriptPath);
+    expect(scan.reduction.checkpoint.sessionConfiguration.restorationTargets).toEqual([]);
+    const records = (await readFile(transcriptPath, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records.filter((record) => record.t === "configuration").at(-1)?.event).toBe("resolved");
+  }, 20_000);
+
+  test("replacement resolution checkpoints every applied selection and replaces old targets", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-replace-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-replace-session",
+      creationId: "config-replace-incarnation",
+      persistence: { root },
+    });
+    await created.setConfig("model", "beta");
+    const transcriptPath = created.transcriptPath!;
+    await created.stop();
+    const opened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-replace-session",
+      persistence: { root },
+      env: { ...process.env, REJECT_FIRST_LOADED_BETA: "1" } as Record<string, string>,
+    });
+    expect(opened.configuration.kind).toBe("mismatch");
+
+    const result = await opened.session.resolveConfigurationMismatch({
+      strategy: "replace_restoration_targets",
+      selections: [{ configId: "model", value: "beta" }],
+    });
+    expect(result).toEqual({
+      configuration: { kind: "matched" },
+      appliedConfigIds: ["model"],
+    });
+    expect(opened.session.model).toBe("beta");
+    expect(opened.session.promptability).toEqual({ promptable: true, blockers: [] });
+    await opened.session.stop();
+
+    const scan = await scanTranscriptContinuation(transcriptPath);
+    expect(scan.reduction.checkpoint.sessionConfiguration.restorationTargets).toMatchObject([
+      { configId: "model", value: "beta", ordinal: 0, source: "explicit_selection" },
+    ]);
+    const records = (await readFile(transcriptPath, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records.filter((record) => record.t === "operation").map((record) => record.event))
+      .toEqual(["started", "settled", "started", "failed", "started", "settled"]);
+    expect(records.filter((record) => record.t === "configuration").map((record) => record.event))
+      .toEqual(["selected", "selected", "resolved"]);
+  }, 20_000);
 });

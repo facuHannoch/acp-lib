@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ConfigOptions } from "../src/config-options.ts";
 import {
+  snapshotAcceptedEffectiveConfiguration,
   snapshotSessionConfiguration,
   snapshotSessionConfigurationAfterSelection,
 } from "../src/persistence/configuration-state.ts";
@@ -87,5 +88,23 @@ describe("session configuration persistence snapshots", () => {
     expect(third.restorationTargets.map((target) => [target.configId, target.ordinal]))
       .toEqual([["enabled", 1], ["model", 2]]);
     expect(third.restorationTargets[1]?.value).toBe("opus");
+  });
+
+  test("accepting effective values creates ordered accepted restoration targets", () => {
+    const current: ConfigOptions = new Map([
+      ["model", options.get("model")!],
+      ["enabled", options.get("enabled")!],
+    ]);
+    const accepted = snapshotAcceptedEffectiveConfiguration({
+      adapterId: "claude",
+      configOptions: current,
+      policy: { values: "typed", include: [], exclude: [] },
+      recordedAt: "2026-01-02T00:00:00.000Z",
+    });
+    expect(accepted.restorationTargets).toMatchObject([
+      { configId: "model", value: "sonnet", ordinal: 0, source: "accepted_effective" },
+      { configId: "enabled", value: true, ordinal: 1, source: "accepted_effective" },
+    ]);
+    expect(accepted.restorationFidelity).toBe("exact");
   });
 });

@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 let model = "alpha";
+let loaded = false;
+let rejectedLoadedBeta = false;
 
 function send(message: unknown): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -40,6 +42,7 @@ function handle(message: any): void {
         send({ jsonrpc: "2.0", id: message.id, error: { code: -32011, message: "session not found" } });
         return;
       }
+      loaded = true;
       send({
         jsonrpc: "2.0",
         id: message.id,
@@ -47,6 +50,14 @@ function handle(message: any): void {
       });
       return;
     case "session/set_config_option":
+      if (
+        loaded && process.env.REJECT_FIRST_LOADED_BETA === "1" &&
+        message.params?.value === "beta" && !rejectedLoadedBeta
+      ) {
+        rejectedLoadedBeta = true;
+        send({ jsonrpc: "2.0", id: message.id, error: { code: -32012, message: "first restored beta rejected" } });
+        return;
+      }
       if (message.params?.value === "reject") {
         send({ jsonrpc: "2.0", id: message.id, error: { code: -32010, message: "selection rejected" } });
         return;
