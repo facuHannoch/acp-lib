@@ -23,14 +23,24 @@ import type {
 import type { PersistedMachineCode } from "./integrity.ts";
 import {
   FileSessionLogWriter,
+  type FileSessionLogWriterOptions,
   type ResumeTranscriptWriterOptions,
 } from "./session-log-writer.ts";
+import type { TranscriptHeaderRecord } from "./records.ts";
 
 export interface TranscriptTerminalCheckpointChanges {
   readonly model?: string | null;
   readonly sessionConfiguration?: SessionConfigurationCheckpoint;
   readonly metering?: AgentSessionCheckpoint["metering"];
   readonly boundary?: AgentSessionBoundary;
+}
+
+export interface CreateTranscriptRuntimeOptions {
+  readonly path: string;
+  readonly header: TranscriptHeaderRecord;
+  readonly checkpoint: AgentSessionCheckpoint;
+  readonly lockTimeoutMs?: number;
+  readonly lockRetryMs?: number;
 }
 
 export class TranscriptRuntimeStateError extends Error {
@@ -72,6 +82,47 @@ export class TranscriptPersistenceRuntime {
     this._checkpoint = checkpoint;
     this._recovery = recovery;
     this._openingRepairs = Object.freeze([...repairs]);
+  }
+
+  /**
+   * Install a new transcript generation and its initial continuation checkpoint.
+   *
+   * Creation transaction ownership remains with the caller: if this method fails after
+   * installing the header, the caller may remove the destination only when the header's
+   * installation provenance proves that it belongs to that same prepared transaction.
+   */
+  static async create(options: CreateTranscriptRuntimeOptions): Promise<TranscriptPersistenceRuntime> {
+    assertInitialCheckpoint(options.header, options.path, options.checkpoint);
+    const writerOptions: FileSessionLogWriterOptions<"transcript"> = {
+      kind: "transcript",
+      path: options.path,
+      header: options.header,
+      maxRecordBytes: options.header.effectiveLimits.maxRecordBytes,
+      lockTimeoutMs: options.lockTimeoutMs,
+      lockRetryMs: options.lockRetryMs,
+    };
+    const writer = await FileSessionLogWriter.create(writerOptions);
+    try {
+      const physical = checkpointRecord(writer.nextSequence, options.checkpoint, options.header);
+      await writer.append(physical, { durable: true });
+      const history = reduceInternalSessionHistory([]);
+      const reduced = reduceTranscriptState(physical, history, []);
+      if (reduced.recovery.kind !== "clean") {
+        throw new TranscriptRuntimeStateError("initial transcript checkpoint must be settled");
+      }
+      return new TranscriptPersistenceRuntime(
+        writer,
+        options.header,
+        physical,
+        history,
+        reduced.checkpoint,
+        reduced.recovery,
+        [],
+      );
+    } catch (error) {
+      await writer.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   static async resume(options: ResumeTranscriptWriterOptions): Promise<TranscriptPersistenceRuntime> {
@@ -368,5 +419,37 @@ function timestampToIso(ts: number): string {
     return new Date(ts).toISOString();
   } catch (error) {
     throw new TranscriptRuntimeStateError(`invalid operation timestamp: ${String(error)}`);
+  }
+}
+
+function assertInitialCheckpoint(
+  header: TranscriptHeaderRecord,
+  path: string,
+  checkpoint: AgentSessionCheckpoint,
+): void {
+  if (header.event !== "created" && header.event !== "replaced") {
+    throw new TranscriptRuntimeStateError("new transcript generation requires a created or replaced header");
+  }
+  if (checkpoint.agentSessionId !== header.agentSessionId) {
+    throw new TranscriptRuntimeStateError("initial checkpoint agentSessionId disagrees with header");
+  }
+  if (!checkpoint.transcript) {
+    throw new TranscriptRuntimeStateError("initial transcript checkpoint has no transcript identity");
+  }
+  if (
+    checkpoint.transcript.transcriptId !== header.transcriptId ||
+    checkpoint.transcript.generation !== header.generation ||
+    checkpoint.transcript.path !== path
+  ) {
+    throw new TranscriptRuntimeStateError("initial checkpoint transcript identity disagrees with header");
+  }
+  if (checkpoint.transcript.coveredSequence !== header.seq) {
+    throw new TranscriptRuntimeStateError("initial checkpoint must cover exactly the transcript header");
+  }
+  if (checkpoint.internalSessionHistoryRevision !== 0) {
+    throw new TranscriptRuntimeStateError("initial checkpoint history must be empty");
+  }
+  if (checkpoint.boundary.status !== "settled" || checkpoint.boundary.lastSettledOperationId !== null) {
+    throw new TranscriptRuntimeStateError("initial checkpoint boundary must be settled with no operation");
   }
 }

@@ -1444,3 +1444,20 @@ without private arguments/results, detailed capture admits reasoning and tool co
 and plan payloads remain excluded at the activity level. The projection tests pass 9/9,
 `tsc --noEmit` passes, and `git diff --check` is clean. This is the final classification
 primitive needed before connecting the v2 runtime to `AgentSession` notifications.
+
+### Part 5D — new transcript-generation runtime boundary
+
+Extended `TranscriptPersistenceRuntime` with `create()`, giving live-session integration a
+single owner for both new and resumed v2 generations. Creation validates the initial
+checkpoint before touching the destination, installs and durably synchronizes the header
+through the existing exclusive writer, appends the initial checkpoint durably, and runs
+the canonical reducer before returning a usable runtime.
+
+The boundary requires exact header/checkpoint identity, an empty canonical history, a
+settled no-operation boundary, and `coveredSequence` equal to the header sequence. It
+deliberately leaves cleanup after a partially installed valid generation to the enclosing
+creation transaction, whose installation provenance is the authority for safe cleanup.
+
+Added tests for a generation that closes and fully rescans with the identical checkpoint,
+plus rejection of an invalid initial coverage boundary before file creation. The scanner
+and runtime suite passes 11/11, `tsc --noEmit` passes, and `git diff --check` is clean.

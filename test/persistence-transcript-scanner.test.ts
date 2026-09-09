@@ -169,6 +169,40 @@ describe("transcript continuation scanner", () => {
     expect(scan.reduction.internalSessionHistory.map((entry) => entry.internalSessionId)).toEqual(["provider-1"]);
     expect(scan.reduction.repairs).toEqual([]);
   });
+
+  test("live runtime creates a new generation with one durable initial checkpoint", async () => {
+    const path = await transcriptPath();
+    const firstHeader = header(path);
+    const checkpoint = initialCheckpoint(path);
+    const runtime = await TranscriptPersistenceRuntime.create({
+      path,
+      header: firstHeader,
+      checkpoint,
+    });
+
+    expect(runtime.nextSequence).toBe(3);
+    expect(runtime.checkpoint.digest).toBe(checkpoint.digest);
+    expect(runtime.recovery).toEqual({ kind: "clean" });
+    await runtime.close();
+
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.lastCompleteSequence).toBe(2);
+    expect(scan.header).toEqual(firstHeader);
+    expect(scan.reduction.checkpoint.digest).toBe(checkpoint.digest);
+    expect(scan.reduction.internalSessionHistory).toEqual([]);
+  });
+
+  test("live runtime rejects an initial checkpoint that does not cover its header", async () => {
+    const path = await transcriptPath();
+    const firstHeader = header(path);
+    const checkpoint = createAgentSessionCheckpoint({
+      ...withoutDigest(initialCheckpoint(path)),
+      transcript: { ...initialCheckpoint(path).transcript!, coveredSequence: 2 },
+    });
+
+    await expect(TranscriptPersistenceRuntime.create({ path, header: firstHeader, checkpoint }))
+      .rejects.toThrow("cover exactly the transcript header");
+  });
 });
 
 async function transcriptPath(): Promise<string> {

@@ -237,6 +237,7 @@ export {
   TranscriptRuntimeStateError,
 } from "./persistence/transcript-runtime.ts";
 export type {
+  CreateTranscriptRuntimeOptions,
   TranscriptTerminalCheckpointChanges,
 } from "./persistence/transcript-runtime.ts";
 export { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
