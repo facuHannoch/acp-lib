@@ -9,6 +9,7 @@ import type { SessionRecord, SessionStore } from "./session-store.ts";
 import type { SessionListEntry } from "./types.ts";
 import {
   resolveManagedPersistence,
+  enforceSessionPersistenceConstraints,
   resolvePersistenceRoot,
   type ManagedSessionPersistenceOptions,
   type ResolvedAgentSessionPersistence,
@@ -214,6 +215,7 @@ export class SessionManager {
     agentSessionId: string,
     config: ManagedAgentSessionLoadConfig,
   ): Promise<AgentSessionOpenResult> {
+    await this.enforceRecordedConstraints(agentSessionId);
     return await loadManagedAgentSession(
       this.requireAgentStore("loadAgentSession()"),
       agentSessionId,
@@ -238,6 +240,18 @@ export class SessionManager {
     agentSessionId: string,
     options: ReconfigureAgentSessionPersistenceOptions,
   ): Promise<AgentSessionSummary> {
+    const record = await this.requireAgentStore("reconfigureAgentSessionPersistence()")
+      .getAgentSessionRecord(agentSessionId);
+    if (record) {
+      enforceSessionPersistenceConstraints({
+        transcript: options.transcript
+          ? options.transcript.action === "replace"
+          : record.transcript !== null && record.deletion?.transcriptDeletedAt === undefined,
+        auditLog: options.auditLog
+          ? options.auditLog.action === "replace"
+          : record.auditLog !== null && record.deletion?.auditLogDeletedAt === undefined,
+      }, this.sessionConstraints);
+    }
     return await reconfigureManagedAgentSessionPersistence(
       this.requireAgentStore("reconfigureAgentSessionPersistence()"),
       agentSessionId,
@@ -250,6 +264,17 @@ export class SessionManager {
     agentSessionId: string,
     options: RestoreAgentSessionOptions,
   ): Promise<AgentSessionOpenResult> {
+    const record = await this.requireAgentStore("restoreAgentSession()").getAgentSessionRecord(agentSessionId);
+    if (record) {
+      const transcriptRetained = record.transcript !== null
+        && record.deletion?.transcriptDeletedAt === undefined;
+      const auditRetained = record.auditLog !== null
+        && record.deletion?.auditLogDeletedAt === undefined;
+      enforceSessionPersistenceConstraints({
+        transcript: transcriptRetained || Boolean(options.replacementTranscript),
+        auditLog: auditRetained || Boolean(options.replacementAuditLog),
+      }, this.sessionConstraints);
+    }
     return await restoreManagedAgentSession(
       this.requireAgentStore("restoreAgentSession()"),
       agentSessionId,
@@ -257,7 +282,16 @@ export class SessionManager {
     );
   }
 
-  /** Shared normalization used by managed create and the upcoming managed load path. */
+  private async enforceRecordedConstraints(agentSessionId: string): Promise<void> {
+    const record = await this.requireAgentStore("managed persistence constraints").getAgentSessionRecord(agentSessionId);
+    if (!record) return;
+    enforceSessionPersistenceConstraints({
+      transcript: record.transcript !== null && record.deletion?.transcriptDeletedAt === undefined,
+      auditLog: record.auditLog !== null && record.deletion?.auditLogDeletedAt === undefined,
+    }, this.sessionConstraints);
+  }
+
+  /** Shared normalization for managed creation and per-session persistence policy. */
   resolveSessionPersistence(
     options?: ManagedSessionPersistenceOptions,
   ): ResolvedAgentSessionPersistence {

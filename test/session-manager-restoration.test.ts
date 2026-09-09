@@ -160,6 +160,51 @@ describe("SessionManager.restoreAgentSession", () => {
       await restored.session.stop();
     }
   }, 20_000);
+
+  test("installs explicit replacement generations for deleted artifacts", async () => {
+    const { root, manager } = await setup();
+    const created = await manager.createAgentSession({
+      ...createConfig(),
+      agentSessionId: "replace-deleted",
+      creationId: "replace-deleted-creation",
+      persistence: { auditLog: {} },
+    });
+    await created.setConfig("model", "beta");
+    await created.stop();
+    const active = (await manager.getAgentSessionInfo("replace-deleted"))!;
+    await manager.deleteAgentSession("replace-deleted", {
+      deletionId: "delete-before-replace",
+      expectedIncarnationId: active.incarnationId,
+      expectedRecordRevision: active.recordRevision,
+      deleteTranscript: true,
+      deleteAuditLog: true,
+    });
+    const deleted = (await manager.getAgentSessionInfo("replace-deleted", { includeDeleted: true }))!;
+    const restored = await manager.restoreAgentSession("replace-deleted", {
+      ...runtimeConfig(), restorationId: "restore-replacements",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+      replacementTranscript: {
+        path: join(root, "replacement", "conversation.jsonl"),
+        preset: "conversation",
+      },
+      replacementAuditLog: {
+        path: join(root, "replacement", "audit.jsonl"),
+      },
+    });
+    try {
+      expect(restored.session.model).toBe("beta");
+      expect(await manager.getAgentSessionInfo("replace-deleted")).toMatchObject({
+        lifecycle: "active", transcriptAvailable: true, auditLogAvailable: true,
+      });
+      const authority = await manager.getAgentSessionCheckpoint("replace-deleted");
+      expect(authority?.checkpoint.transcript?.path).toBe(
+        join(root, "replacement", "conversation.jsonl"),
+      );
+    } finally {
+      await restored.session.stop();
+    }
+  }, 20_000);
 });
 
 async function setup() {

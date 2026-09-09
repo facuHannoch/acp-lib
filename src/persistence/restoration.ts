@@ -17,13 +17,24 @@ import { acquireSessionLogWriterLock } from "./session-log-writer.ts";
 import type { SessionLogWriterLock } from "./session-log-writer.ts";
 import { AuditPersistenceRuntime } from "./audit-runtime.ts";
 import { createAgentSessionCheckpoint } from "./checkpoint.ts";
+import type {
+  AuditLogConfig,
+  ResolvedAuditLogConfig,
+  ResolvedTranscriptConfig,
+  TranscriptConfig,
+} from "./config.ts";
+import { resolveDirectPersistence } from "./config.ts";
+import { FileSessionLogWriter } from "./session-log-writer.ts";
+import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
+import { scanTranscriptContinuation } from "./transcript-scanner.ts";
 
 export interface RestoreAgentSessionOptions extends ManagedAgentSessionLoadConfig {
   readonly restorationId: string;
   readonly expectedIncarnationId: string;
   readonly expectedRecordRevision: number;
-  readonly replacementTranscript?: false | unknown;
-  readonly replacementAuditLog?: false | unknown;
+  readonly replacementTranscript?: false | (TranscriptConfig & { readonly path: string });
+  readonly replacementAuditLog?: false | (AuditLogConfig & { readonly path: string });
 }
 
 export class AgentSessionRestorationError extends Error {
@@ -51,29 +62,30 @@ export async function restoreManagedAgentSession(
     ? record.transcript : null;
   const retainedAudit = record.auditLog && !record.deletion.auditLogDeletedAt
     ? record.auditLog : null;
-  if (!retainedTranscript && options.replacementTranscript !== false) {
+  if (!retainedTranscript && options.replacementTranscript === undefined) {
     throw new AgentSessionRestorationError(
-      "a deleted transcript requires explicit replacementTranscript:false or a replacement (not yet implemented)",
+      "a deleted transcript requires explicit replacementTranscript:false or a replacement",
     );
   }
   if (retainedTranscript && options.replacementTranscript !== undefined) {
     throw new AgentSessionRestorationError("a retained transcript cannot be replaced during this restoration slice");
   }
-  if (!retainedAudit && record.auditLog && options.replacementAuditLog !== false) {
+  if (!retainedAudit && record.auditLog && options.replacementAuditLog === undefined) {
     throw new AgentSessionRestorationError("deleted audit-log state must be explicitly disabled or replaced");
   }
-  if ((options.replacementTranscript && options.replacementTranscript !== false)
-    || (options.replacementAuditLog && options.replacementAuditLog !== false)) {
-    throw new AgentSessionRestorationError("replacement artifact creation during restoration is not implemented yet");
-  }
-
   const requestDigest = restorationDigest(agentSessionId, options);
+  const transcriptPath = retainedTranscript?.path
+    ?? (options.replacementTranscript
+      ? options.replacementTranscript.path : null);
+  const auditPath = retainedAudit?.path
+    ?? (options.replacementAuditLog
+      ? options.replacementAuditLog.path : null);
   const locks = await acquireOrderedLocks([
-    retainedTranscript?.path ?? null,
-    retainedAudit?.path ?? null,
+    transcriptPath,
+    auditPath,
   ]);
-  const transcriptLock = retainedTranscript ? locks.get(retainedTranscript.path) : undefined;
-  const auditLock = retainedAudit ? locks.get(retainedAudit.path) : undefined;
+  const transcriptLock = transcriptPath ? locks.get(transcriptPath) : undefined;
+  const auditLock = auditPath ? locks.get(auditPath) : undefined;
   let transferred = false;
   let opened: AgentSessionOpenResult | null = null;
   try {
@@ -97,18 +109,21 @@ export async function restoreManagedAgentSession(
       return await loadManagedAgentSession(store, agentSessionId, runtimeOptions(options));
     }
     const runtime = runtimeOptions(options);
-    const authorityRecord = restorationAuthorityRecord(record, retainedTranscript !== null, retainedAudit !== null);
-    const audit = retainedAudit
+    const authorityRecord = await prepareRestorationAuthority(
+      record, options, requestDigest, prepared.maintenance.startedAt,
+    );
+    const activeAudit = authorityRecord.auditLog;
+    const audit = activeAudit
       ? await AuditPersistenceRuntime.resume({
-          path: retainedAudit.path,
+          path: activeAudit.path,
           agentSessionId,
-          auditLogId: retainedAudit.auditLogId,
-          generation: retainedAudit.generation,
+          auditLogId: activeAudit.auditLogId,
+          generation: activeAudit.generation,
           writerLock: auditLock,
         })
       : undefined;
     transferred = true;
-    opened = retainedTranscript
+    opened = authorityRecord.transcript
       ? await AgentSession.openManaged({
           ...runtime,
           agentSessionId,
@@ -186,23 +201,64 @@ export async function restoreManagedAgentSession(
   }
 }
 
-function restorationAuthorityRecord(
+async function prepareRestorationAuthority(
   record: AgentSessionRecord,
-  keepTranscript: boolean,
-  keepAudit: boolean,
-): AgentSessionRecord {
-  if (keepTranscript && keepAudit) return record;
+  options: RestoreAgentSessionOptions,
+  requestDigest: string,
+  createdAt: string,
+): Promise<AgentSessionRecord> {
+  const keepTranscript = record.transcript !== null && record.deletion?.transcriptDeletedAt === undefined;
+  const keepAudit = record.auditLog !== null && record.deletion?.auditLogDeletedAt === undefined;
   let checkpoint = record.checkpoint;
-  if (!keepTranscript && checkpoint.transcript) {
+  let transcript = keepTranscript ? record.transcript : null;
+  if (!keepTranscript && options.replacementTranscript) {
+    const config = options.replacementTranscript;
+    const resolved = resolveDirectPersistence({
+      transcript: config, auditLog: false,
+      sessionConfiguration: record.sessionConfigurationPersistence,
+      limits: record.transcript?.effectiveLimits,
+    });
+    if (resolved === false || resolved.transcript === false) throw new AgentSessionRestorationError("replacement transcript is disabled");
+    const transcriptId = stableReplacementId(requestDigest, "transcript");
+    const { version: _version, digest: _digest, ...input } = checkpoint;
+    checkpoint = createAgentSessionCheckpoint({
+      ...input,
+      stateRevision: checkpoint.stateRevision + 1,
+      transcript: { transcriptId, generation: 1, path: config.path, coveredSequence: 1 },
+      updatedAt: createdAt,
+    });
+    await installRestorationTranscript(record, config.path, resolved.transcript, resolved.limits, checkpoint, transcriptId, options.restorationId, requestDigest, createdAt);
+    transcript = {
+      path: config.path, transcriptId, generation: 1,
+      preset: resolved.transcript.preset,
+      effectivePolicy: resolved.transcript.capture,
+      effectiveLimits: resolved.limits,
+      includeTruncationDigests: resolved.transcript.includeTruncationDigests,
+    };
+  } else if (!keepTranscript && checkpoint.transcript) {
     const { version: _version, digest: _digest, ...input } = checkpoint;
     checkpoint = createAgentSessionCheckpoint({
       ...input,
       stateRevision: checkpoint.stateRevision + 1,
       transcript: null,
-      updatedAt: new Date().toISOString(),
+      updatedAt: createdAt,
     });
   }
-  return { ...record, checkpoint, transcript: keepTranscript ? record.transcript : null, auditLog: keepAudit ? record.auditLog : null };
+  let auditLog = keepAudit ? record.auditLog : null;
+  if (!keepAudit && options.replacementAuditLog) {
+    const config = options.replacementAuditLog;
+    const resolved = resolveDirectPersistence({ transcript: false, auditLog: config, limits: record.auditLog?.effectiveLimits });
+    if (resolved === false || resolved.auditLog === false) throw new AgentSessionRestorationError("replacement audit log is disabled");
+    const auditLogId = stableReplacementId(requestDigest, "audit");
+    await installRestorationAudit(record, config.path, resolved.auditLog, resolved.limits, auditLogId, options.restorationId, requestDigest, createdAt);
+    auditLog = {
+      path: config.path, auditLogId, generation: 1,
+      effectivePolicy: resolved.auditLog.capture,
+      effectiveLimits: resolved.limits,
+      includeTruncationDigests: resolved.auditLog.includeTruncationDigests,
+    };
+  }
+  return { ...record, checkpoint, transcript, auditLog };
 }
 
 async function acquireOrderedLocks(paths: readonly (string | null)[]): Promise<Map<string, SessionLogWriterLock>> {
@@ -210,6 +266,8 @@ async function acquireOrderedLocks(paths: readonly (string | null)[]): Promise<M
   try {
     for (const path of [...new Set(paths.filter((value): value is string => value !== null))]
       .sort((left, right) => left.localeCompare(right))) {
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await chmod(dirname(path), 0o700).catch(() => undefined);
       locks.set(path, await acquireSessionLogWriterLock(path));
     }
     return locks;
@@ -217,6 +275,108 @@ async function acquireOrderedLocks(paths: readonly (string | null)[]): Promise<M
     await Promise.all([...locks.values()].map((lock) => lock.release().catch(() => undefined)));
     throw error;
   }
+}
+
+function stableReplacementId(requestDigest: string, kind: "transcript" | "audit"): string {
+  return `${kind}-${sha256CanonicalJson({ requestDigest, kind }).slice(0, 32)}`;
+}
+
+async function installRestorationTranscript(
+  record: AgentSessionRecord,
+  path: string,
+  config: ResolvedTranscriptConfig,
+  limits: NonNullable<AgentSessionRecord["transcript"]>["effectiveLimits"],
+  checkpoint: AgentSessionRecord["checkpoint"],
+  transcriptId: string,
+  operationId: string,
+  requestDigest: string,
+  createdAt: string,
+): Promise<void> {
+  if (await exists(path)) {
+    const scan = await scanTranscriptContinuation(path, {
+      agentSessionId: record.agentSessionId, transcriptId, generation: 1,
+    });
+    if (scan.reduction.checkpoint.digest !== checkpoint.digest) {
+      throw new AgentSessionRestorationError("existing restoration transcript has another checkpoint");
+    }
+    return;
+  }
+  const temp = `${path}.restoration-${requestDigest.slice(0, 24)}`;
+  await unlink(temp).catch(() => undefined);
+  const writer = await FileSessionLogWriter.create({
+    kind: "transcript", path: temp, logicalPath: path,
+    header: {
+      v: 2, t: "header", transcriptId, generation: 1,
+      agentSessionId: record.agentSessionId, seq: 1, ts: Date.parse(createdAt),
+      event: "replaced", createdAt,
+      preset: config.preset,
+      effectivePolicy: config.capture,
+      effectiveLimits: limits,
+      includeTruncationDigests: config.includeTruncationDigests,
+      installation: { kind: "restoration", operationId, requestDigest },
+    },
+    maxRecordBytes: limits.maxRecordBytes,
+  });
+  try {
+    await writer.append({
+      v: 2, t: "checkpoint", transcriptId, generation: 1,
+      agentSessionId: record.agentSessionId, seq: 2, ts: Date.parse(createdAt),
+      stateRevision: checkpoint.stateRevision, checkpoint,
+    }, { durable: true });
+  } finally {
+    await writer.close();
+  }
+  await rename(temp, path);
+  await syncDirectory(dirname(path));
+}
+
+async function installRestorationAudit(
+  record: AgentSessionRecord,
+  path: string,
+  config: ResolvedAuditLogConfig,
+  limits: NonNullable<AgentSessionRecord["auditLog"]>["effectiveLimits"],
+  auditLogId: string,
+  operationId: string,
+  requestDigest: string,
+  createdAt: string,
+): Promise<void> {
+  if (await exists(path)) return;
+  const temp = `${path}.restoration-${requestDigest.slice(0, 24)}`;
+  await unlink(temp).catch(() => undefined);
+  const writer = await FileSessionLogWriter.create({
+    kind: "audit", path: temp,
+    header: {
+      v: 1, t: "header", auditLogId, generation: 1,
+      agentSessionId: record.agentSessionId, seq: 1, ts: Date.parse(createdAt),
+      event: "replaced", createdAt,
+      effectivePolicy: config.capture,
+      effectiveLimits: limits,
+      includeTruncationDigests: config.includeTruncationDigests,
+      installation: { kind: "restoration", operationId, requestDigest },
+    },
+    maxRecordBytes: limits.maxRecordBytes,
+  });
+  await writer.close();
+  await rename(temp, path);
+  await syncDirectory(dirname(path));
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw new AgentSessionRestorationError(`replacement destination is not a regular file: ${path}`);
+    }
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(path, "r");
+  try { await handle.sync(); } finally { await handle.close(); }
 }
 
 function runtimeOptions(options: RestoreAgentSessionOptions): ManagedAgentSessionLoadConfig {
@@ -264,10 +424,14 @@ function restorationMaintenance(
     details: {
       transcript: record.transcript && !record.deletion?.transcriptDeletedAt
         ? { action: "retain", path: record.transcript.path }
-        : { action: "disable" },
+        : options.replacementTranscript
+          ? { action: "replace", path: options.replacementTranscript.path }
+          : { action: "disable" },
       auditLog: record.auditLog && !record.deletion?.auditLogDeletedAt
         ? { action: "retain", path: record.auditLog.path }
-        : { action: "disable" },
+        : options.replacementAuditLog
+          ? { action: "replace", path: options.replacementAuditLog.path }
+          : { action: "disable" },
     },
   };
 }

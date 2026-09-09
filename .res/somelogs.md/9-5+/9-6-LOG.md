@@ -2206,3 +2206,28 @@ falling back to an unannounced mode.
 Tests cover audit replacement and disablement, retained transcript+audit restoration, and
 explicit restoration after both logs were deleted. The complete repository suite passes
 661/661, `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 16 — replacement restoration and manager constraint closure
+
+Completed the missing-artifact restoration branch. A tombstone can now explicitly install
+new transcript and audit generations at consumer-supplied paths. Replacement identities are
+deterministically derived from the restoration request digest, headers carry restoration
+installation provenance, and the transcript receives a derived generation-1 authority
+checkpoint. If the process stops after artifact installation, the same request recognizes
+and validates the exact installed generation instead of minting another identity.
+
+Replacement directories and locks are acquired before maintenance in canonical order. New
+files are built and synchronized as siblings before atomic installation, then reopened under
+the transaction-owned final locks. The tombstone is cleared only after continuation,
+post-restoration checkpoint, audit ownership, and the complete record are staged. Explicit
+`false` remains the separate choice that restores using registry-only authority.
+
+Added enforcement of current `SessionManager` persistence constraints when loading recorded
+sessions, before any harness command can start. Restoration evaluates the resulting retained,
+disabled, or replacement artifact set rather than incorrectly validating the tombstone's old
+state. Tests cover explicit transcript+audit replacement after deletion and load-time
+constraint rejection before process startup.
+
+The complete repository suite passes 663/663, `tsc --noEmit` passes, and
+`git diff --check` is clean. At this point the remaining product work begins at the managed
+CLI layer; the consumer-facing SessionManager lifecycle is implemented.

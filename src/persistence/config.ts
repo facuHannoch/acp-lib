@@ -223,6 +223,15 @@ export function resolveManagedPersistence(
   return resolved;
 }
 
+/** Validate an already-recorded session against manager policy without re-resolving it. */
+export function enforceSessionPersistenceConstraints(
+  enabled: { readonly transcript: boolean; readonly auditLog: boolean },
+  constraints: SessionPersistenceConstraints,
+): void {
+  enforceConstraint("transcript", enabled.transcript, constraints.transcript);
+  enforceConstraint("audit log", enabled.auditLog, constraints.auditLog);
+}
+
 function validateManagedLayer(
   value: ManagedSessionPersistenceOptions | undefined,
   name: string,

@@ -160,6 +160,26 @@ describe("SessionManager.loadAgentSession", () => {
     expect(after.items.length).toBeGreaterThan(before.items.length);
     expect((await manager.getAgentSessionInfo("audit-only"))?.auditLogAvailable).toBe(true);
   }, 20_000);
+
+  test("enforces current manager persistence constraints before harness startup", async () => {
+    const { root, manager, store } = await setup();
+    const created = await manager.createAgentSession({
+      ...createConfig(),
+      agentSessionId: "registry-only-constrained",
+      creationId: "registry-only-constrained-creation",
+      persistence: { transcript: false },
+    });
+    await created.stop();
+    const strict = await SessionManager.open({
+      root,
+      store,
+      sessionConstraints: { transcript: "required" },
+    });
+    await expect(strict.loadAgentSession("registry-only-constrained", {
+      ...loadConfig(),
+      adapter: { command: ["definitely-not-a-real-command"] },
+    })).rejects.toThrow("transcript persistence is required");
+  }, 20_000);
 });
 
 async function setup() {
