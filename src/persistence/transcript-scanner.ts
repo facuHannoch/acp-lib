@@ -35,6 +35,7 @@ export interface TranscriptScanExpectation {
 export interface TranscriptContinuationScan {
   readonly header: TranscriptHeaderRecord;
   readonly selectedCheckpointRecord: TranscriptCheckpointRecord;
+  readonly historyAtSelectedCheckpoint: TranscriptHistoryReduction;
   readonly reduction: TranscriptReductionResult;
   readonly lastCompleteSequence: number;
   readonly lastCompleteOffset: number;
@@ -182,6 +183,7 @@ async function scanOpenTranscript(
   return {
     header,
     selectedCheckpointRecord: selected,
+    historyAtSelectedCheckpoint: selectedHistory,
     reduction,
     lastCompleteSequence: sequence,
     lastCompleteOffset,

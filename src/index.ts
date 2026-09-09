@@ -222,6 +222,7 @@ export {
   EMPTY_HISTORY_DIGEST,
   TranscriptReductionError,
   reduceTranscriptHistory,
+  reduceInternalSessionHistory,
   reduceTranscriptState,
 } from "./persistence/reducer.ts";
 export {
@@ -231,6 +232,13 @@ export {
   TranscriptUnavailableError,
   scanTranscriptContinuation,
 } from "./persistence/transcript-scanner.ts";
+export {
+  TranscriptPersistenceRuntime,
+  TranscriptRuntimeStateError,
+} from "./persistence/transcript-runtime.ts";
+export type {
+  TranscriptTerminalCheckpointChanges,
+} from "./persistence/transcript-runtime.ts";
 export type {
   TranscriptContinuationScan,
   TranscriptScanExpectation,

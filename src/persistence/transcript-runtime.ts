@@ -1,0 +1,315 @@
+import {
+  createAgentSessionCheckpoint,
+  type AgentSessionBoundary,
+  type AgentSessionCheckpoint,
+  type AgentSessionCheckpointInput,
+  type SessionConfigurationCheckpoint,
+} from "./checkpoint.ts";
+import { projectTranscriptEvent, type NormalizedPersistenceEvent } from "./projection.ts";
+import {
+  reduceInternalSessionHistory,
+  reduceTranscriptState,
+  type PersistenceRepair,
+  type SessionRecoveryStatus,
+  type TranscriptHistoryReduction,
+} from "./reducer.ts";
+import type {
+  OperationAbortReason,
+  OperationKind,
+  TranscriptCheckpointRecord,
+  TranscriptOperationRecord,
+} from "./records.ts";
+import type { PersistedMachineCode } from "./integrity.ts";
+import {
+  FileSessionLogWriter,
+  type ResumeTranscriptWriterOptions,
+} from "./session-log-writer.ts";
+
+export interface TranscriptTerminalCheckpointChanges {
+  readonly model?: string | null;
+  readonly sessionConfiguration?: SessionConfigurationCheckpoint;
+  readonly metering?: AgentSessionCheckpoint["metering"];
+  readonly boundary?: AgentSessionBoundary;
+}
+
+export class TranscriptRuntimeStateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TranscriptRuntimeStateError";
+  }
+}
+
+/**
+ * Live v2 transcript state machine. It is deliberately provider-agnostic: callers own
+ * dispatch, while this object owns the durable-before-dispatch and terminal boundaries.
+ */
+export class TranscriptPersistenceRuntime {
+  private selectedCheckpointRecord: TranscriptCheckpointRecord;
+  private history: TranscriptHistoryReduction;
+  private _checkpoint: AgentSessionCheckpoint;
+  private _recovery: SessionRecoveryStatus;
+  private readonly _openingRepairs: readonly PersistenceRepair[];
+  private activeOperation: {
+    operationId: string;
+    kind: OperationKind;
+    started: TranscriptOperationRecord;
+  } | null = null;
+  private failure: Error | null = null;
+  private closed = false;
+
+  private constructor(
+    private readonly writer: FileSessionLogWriter<"transcript">,
+    private readonly header: Awaited<ReturnType<typeof FileSessionLogWriter.resumeTranscript>>["scan"]["header"],
+    selectedCheckpointRecord: TranscriptCheckpointRecord,
+    history: TranscriptHistoryReduction,
+    checkpoint: AgentSessionCheckpoint,
+    recovery: SessionRecoveryStatus,
+    repairs: readonly PersistenceRepair[],
+  ) {
+    this.selectedCheckpointRecord = selectedCheckpointRecord;
+    this.history = history;
+    this._checkpoint = checkpoint;
+    this._recovery = recovery;
+    this._openingRepairs = Object.freeze([...repairs]);
+  }
+
+  static async resume(options: ResumeTranscriptWriterOptions): Promise<TranscriptPersistenceRuntime> {
+    const { writer, scan } = await FileSessionLogWriter.resumeTranscript(options);
+    try {
+      let selected = scan.selectedCheckpointRecord;
+      let history = scan.historyAtSelectedCheckpoint;
+      let checkpoint = scan.reduction.checkpoint;
+      if (scan.reduction.repairs.length > 0) {
+        const record = checkpointRecord(writer.nextSequence, checkpoint, scan.header);
+        await writer.append(record, { durable: true });
+        selected = record;
+        history = reduceInternalSessionHistory(scan.reduction.internalSessionHistory);
+      }
+      return new TranscriptPersistenceRuntime(
+        writer,
+        scan.header,
+        selected,
+        history,
+        checkpoint,
+        scan.reduction.recovery,
+        scan.reduction.repairs,
+      );
+    } catch (error) {
+      await writer.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  get checkpoint(): AgentSessionCheckpoint {
+    return structuredClone(this._checkpoint);
+  }
+
+  get recovery(): SessionRecoveryStatus {
+    return structuredClone(this._recovery);
+  }
+
+  get openingRepairs(): readonly PersistenceRepair[] {
+    return this._openingRepairs.map((repair) => structuredClone(repair));
+  }
+
+  get nextSequence(): number {
+    return this.writer.nextSequence;
+  }
+
+  async beginOperation(operationId: string, kind: OperationKind, ts = Date.now()): Promise<void> {
+    this.assertUsable();
+    if (this._recovery.kind !== "clean") throw new TranscriptRuntimeStateError("uncertain transcript recovery must be resolved before dispatch");
+    if (this.activeOperation) throw new TranscriptRuntimeStateError("another transcript operation is already active");
+    const record: TranscriptOperationRecord = {
+      ...this.envelope(this.writer.nextSequence, ts),
+      t: "operation",
+      operationId,
+      operationKind: kind,
+      event: "started",
+      stateRevision: this._checkpoint.stateRevision + 1,
+    };
+    await this.writer.append(record, { durable: true });
+    const reduced = reduceTranscriptState(this.selectedCheckpointRecord, this.history, [record]);
+    this._checkpoint = reduced.checkpoint;
+    this._recovery = reduced.recovery;
+    this.activeOperation = { operationId, kind, started: record };
+  }
+
+  async appendEvent(event: NormalizedPersistenceEvent, ts = Date.now()): Promise<boolean> {
+    this.assertUsable();
+    if (event.kind === "transition" && event.event === "target_activated") {
+      throw new TranscriptRuntimeStateError("target activation requires the dedicated transition boundary API");
+    }
+    const record = projectTranscriptEvent(event, {
+      transcriptId: this.header.transcriptId,
+      generation: this.header.generation,
+      agentSessionId: this.header.agentSessionId,
+      seq: this.writer.nextSequence,
+      ts,
+      policy: this.header.effectivePolicy,
+    });
+    if (!record) return false;
+    await this.writer.append(record);
+    return true;
+  }
+
+  /** Flush policy-projected input appended after beginOperation before provider dispatch. */
+  async syncBeforeDispatch(): Promise<void> {
+    this.assertUsable();
+    this.requireActive();
+    await this.writer.sync();
+  }
+
+  async finishOperation(
+    event: "settled" | "failed" | "cancelled" | "interrupted",
+    changes: TranscriptTerminalCheckpointChanges = {},
+    errorCode?: PersistedMachineCode,
+    ts = Date.now(),
+  ): Promise<AgentSessionCheckpoint> {
+    this.assertUsable();
+    const active = this.requireActive();
+    const terminal: TranscriptOperationRecord = {
+      ...this.envelope(this.writer.nextSequence, ts),
+      t: "operation",
+      operationId: active.operationId,
+      operationKind: active.kind,
+      event,
+      ...(errorCode === undefined ? {} : { errorCode }),
+    };
+    try {
+      await this.writer.append(terminal);
+      const next = createAgentSessionCheckpoint({
+        ...checkpointInput(this._checkpoint),
+        ...(changes.model === undefined ? {} : { model: changes.model }),
+        ...(changes.sessionConfiguration === undefined
+          ? {}
+          : { sessionConfiguration: structuredClone(changes.sessionConfiguration) }),
+        ...(changes.metering === undefined ? {} : { metering: structuredClone(changes.metering) }),
+        stateRevision: this._checkpoint.stateRevision + 1,
+        transcript: { ...this._checkpoint.transcript!, coveredSequence: terminal.seq },
+        boundary: changes.boundary ?? { status: "settled", lastSettledOperationId: active.operationId },
+        updatedAt: timestampToIso(ts),
+      });
+      const physical = checkpointRecord(this.writer.nextSequence, next, this.header);
+      await this.writer.append(physical, { durable: true });
+      const reduced = reduceTranscriptState(
+        this.selectedCheckpointRecord,
+        this.history,
+        [active.started, terminal, physical],
+      );
+      this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery);
+      this.activeOperation = null;
+      return this.checkpoint;
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
+  }
+
+  async abortOperation(
+    reason: OperationAbortReason,
+    ts = Date.now(),
+  ): Promise<AgentSessionCheckpoint> {
+    this.assertUsable();
+    const active = this.requireActive();
+    const aborted: TranscriptOperationRecord = {
+      ...this.envelope(this.writer.nextSequence, ts),
+      t: "operation",
+      operationId: active.operationId,
+      operationKind: active.kind,
+      event: "aborted",
+      abortReason: reason,
+      stateRevision: this._checkpoint.stateRevision + 1,
+    };
+    try {
+      await this.writer.append(aborted);
+      const reduced = reduceTranscriptState(
+        this.selectedCheckpointRecord,
+        this.history,
+        [active.started, aborted],
+      );
+      const physical = checkpointRecord(this.writer.nextSequence, reduced.checkpoint, this.header);
+      await this.writer.append(physical, { durable: true });
+      reduceTranscriptState(
+        this.selectedCheckpointRecord,
+        this.history,
+        [active.started, aborted, physical],
+      );
+      this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery);
+      this.activeOperation = null;
+      return this.checkpoint;
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.writer.close();
+  }
+
+  private installCheckpoint(
+    record: TranscriptCheckpointRecord,
+    checkpoint: AgentSessionCheckpoint,
+    recovery: SessionRecoveryStatus,
+  ): void {
+    this.selectedCheckpointRecord = record;
+    this.history = reduceInternalSessionHistory(this.history.entries);
+    this._checkpoint = checkpoint;
+    this._recovery = recovery;
+  }
+
+  private envelope(seq: number, ts: number) {
+    return {
+      v: 2 as const,
+      transcriptId: this.header.transcriptId,
+      generation: this.header.generation,
+      agentSessionId: this.header.agentSessionId,
+      seq,
+      ts,
+    };
+  }
+
+  private requireActive() {
+    if (!this.activeOperation) throw new TranscriptRuntimeStateError("no transcript operation is active");
+    return this.activeOperation;
+  }
+
+  private assertUsable(): void {
+    if (this.closed) throw new TranscriptRuntimeStateError("transcript persistence runtime is closed");
+    if (this.failure) throw new TranscriptRuntimeStateError(`transcript persistence runtime failed: ${this.failure.message}`);
+  }
+}
+
+function checkpointRecord(
+  seq: number,
+  checkpoint: AgentSessionCheckpoint,
+  header: { transcriptId: string; generation: number; agentSessionId: string },
+): TranscriptCheckpointRecord {
+  return {
+    v: 2,
+    t: "checkpoint",
+    transcriptId: header.transcriptId,
+    generation: header.generation,
+    agentSessionId: header.agentSessionId,
+    seq,
+    ts: Date.parse(checkpoint.updatedAt),
+    stateRevision: checkpoint.stateRevision,
+    checkpoint,
+  };
+}
+
+function checkpointInput(checkpoint: AgentSessionCheckpoint): AgentSessionCheckpointInput {
+  const { version: _version, digest: _digest, ...input } = checkpoint;
+  return structuredClone(input);
+}
+
+function timestampToIso(ts: number): string {
+  try {
+    return new Date(ts).toISOString();
+  } catch (error) {
+    throw new TranscriptRuntimeStateError(`invalid operation timestamp: ${String(error)}`);
+  }
+}

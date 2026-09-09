@@ -1373,3 +1373,35 @@ Extended the scanner result with its captured physical byte size and added an in
 test that resumes a transcript with a torn suffix, confirms the next sequence, appends a
 durable operation record, and verifies that only three complete JSON records remain. The
 scanner/writer suites pass 11/11 and `tsc --noEmit` passes.
+
+### Part 5A — live v2 transcript operation runtime
+
+Added `src/persistence/transcript-runtime.ts` as the provider-independent live boundary
+that `AgentSession` operations will share. Resume takes exclusive ownership through the
+existing scanner/writer path, materializes any deterministic activation/abort checkpoint
+repair before returning, exposes the current checkpoint/recovery/opening repairs, and
+refuses new dispatch while recovery is uncertain.
+
+`beginOperation()` writes and synchronizes the write-ahead start before a caller may reach
+the harness, then derives its in-flight checkpoint through the canonical reducer.
+`appendEvent()` applies the installed transcript capture policy before enqueue and rejects
+target activation through this generic surface. `syncBeforeDispatch()` lets callers make
+policy-admitted input durable after the start boundary. `finishOperation()` writes a
+terminal plus advancing checkpoint and verifies the complete interval with the reducer;
+`abortOperation()` performs the corresponding deterministic pre-dispatch compensation.
+Both terminal paths poison the runtime on partial failure so retry cannot append a second
+terminal and make the generation ambiguous.
+
+Terminal checkpoint updates are deliberately restricted to model, session-configuration,
+metering, and an explicit boundary; ordinary operations cannot silently change provider
+routing. Undefined optional changes preserve existing checkpoint state. The runtime owns
+no provider calls and accepts no conversation content except through the normalized
+capture projection.
+
+Extended the scanner contract with the history reduction at its selected physical
+checkpoint and exported the identical registry/runtime history hashing function. Added
+end-to-end tests for a live prompt boundary with captured user content, clean rescan and
+matching checkpoint digest, plus durable abort compensation that rescans with no pending
+repair. The complete persistence/manager-focused suite passes 90/90, `tsc --noEmit`
+passes, and `git diff --check` is clean. `AgentSession` is not yet wired to this runtime;
+that is the next subpart.

@@ -109,6 +109,13 @@ export function reduceTranscriptHistory(
   return historyResult(entries);
 }
 
+/** Apply the same canonical revision/digest algorithm to a registry or runtime history. */
+export function reduceInternalSessionHistory(
+  entries: readonly InternalSessionHistoryEntry[],
+): TranscriptHistoryReduction {
+  return historyResult(entries);
+}
+
 export function reduceTranscriptState(
   selectedCheckpointRecord: TranscriptCheckpointRecord,
   historyThroughCheckpoint: TranscriptHistoryReduction,

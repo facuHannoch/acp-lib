@@ -7,6 +7,7 @@ import { TRANSCRIPT_PRESETS } from "../src/persistence/config.ts";
 import { EMPTY_HISTORY_DIGEST } from "../src/persistence/reducer.ts";
 import type { KnownTranscriptRecord, TranscriptHeaderRecord, TranscriptOperationRecord } from "../src/persistence/records.ts";
 import { FileSessionLogWriter } from "../src/persistence/session-log-writer.ts";
+import { TranscriptPersistenceRuntime } from "../src/persistence/transcript-runtime.ts";
 import {
   TranscriptCorruptionError,
   TranscriptIdentityError,
@@ -98,6 +99,40 @@ describe("transcript continuation scanner", () => {
     const lines = (await readFile(path, "utf8")).trimEnd().split("\n");
     expect(lines).toHaveLength(3);
     expect(lines.map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3]);
+  });
+
+  test("live runtime writes one durable operation boundary and policy-projected content", async () => {
+    const path = await transcriptPath();
+    await writeLines(path, [header(path), checkpointRecord(initialCheckpoint(path), 2)]);
+    const runtime = await TranscriptPersistenceRuntime.resume({ path });
+    await runtime.beginOperation("op-live", "prompt", TS + 1_000);
+    expect(await runtime.appendEvent({
+      kind: "message", operationId: "op-live", role: "user", text: "hello",
+    }, TS + 1_100)).toBe(true);
+    const checkpoint = await runtime.finishOperation("settled", {}, undefined, TS + 2_000);
+    expect(checkpoint.boundary).toEqual({ status: "settled", lastSettledOperationId: "op-live" });
+    await runtime.close();
+
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    expect(scan.reduction.checkpoint.digest).toBe(checkpoint.digest);
+    const records = (await readFile(path, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(records.slice(2).map((record) => [record.t, record.event ?? record.role])).toEqual([
+      ["operation", "started"], ["message", "user"], ["operation", "settled"], ["checkpoint", undefined],
+    ]);
+  });
+
+  test("live runtime compensates a pre-dispatch failure with an abort and checkpoint", async () => {
+    const path = await transcriptPath();
+    await writeLines(path, [header(path), checkpointRecord(initialCheckpoint(path), 2)]);
+    const runtime = await TranscriptPersistenceRuntime.resume({ path });
+    await runtime.beginOperation("op-abort", "prompt", TS + 1_000);
+    const checkpoint = await runtime.abortOperation("pre_dispatch_persistence_failure", TS + 2_000);
+    expect(checkpoint.boundary).toEqual({ status: "settled", lastSettledOperationId: "op-abort" });
+    await runtime.close();
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    expect(scan.reduction.repairs).toEqual([]);
   });
 });
 
