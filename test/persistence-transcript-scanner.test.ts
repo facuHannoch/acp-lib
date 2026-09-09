@@ -134,6 +134,41 @@ describe("transcript continuation scanner", () => {
     expect(scan.reduction.recovery).toEqual({ kind: "clean" });
     expect(scan.reduction.repairs).toEqual([]);
   });
+
+  test("live runtime makes target activation and canonical history durable together", async () => {
+    const path = await transcriptPath();
+    const initial = initialCheckpoint(path);
+    await writeLines(path, [header(path), checkpointRecord(initial, 2)]);
+    const runtime = await TranscriptPersistenceRuntime.resume({ path });
+    const from = descriptor(initial, "provider-1", iso(0));
+    const to = descriptor(initial, "provider-2", iso(2_000));
+    await runtime.appendTransitionEvent({
+      kind: "transition", transitionId: "handoff-1", transitionKind: "handoff",
+      event: "started", from,
+    }, { ts: TS + 1_000 });
+    const checkpoint = await runtime.activateTransition({
+      kind: "transition", transitionId: "handoff-1", transitionKind: "handoff",
+      event: "target_activated", from, to,
+      historyEntry: {
+        internalSessionId: "provider-1", adapterId: "opencode", model: "model-1",
+        sessionConfiguration: initial.sessionConfiguration, protocol: initial.protocol,
+        activatedAt: iso(0), deactivatedAt: iso(2_000),
+        transition: { kind: "handoff", transitionId: "handoff-1" },
+      },
+      activationState: {
+        resultingStateRevision: 2, updatedAt: iso(2_000), transitionAt: iso(2_000),
+        boundary: { status: "settled", lastSettledOperationId: null },
+      },
+    }, TS + 2_000);
+    expect(checkpoint.internalSessionId).toBe("provider-2");
+    expect(checkpoint.internalSessionHistoryRevision).toBe(1);
+    await runtime.close();
+
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.reduction.checkpoint.internalSessionId).toBe("provider-2");
+    expect(scan.reduction.internalSessionHistory.map((entry) => entry.internalSessionId)).toEqual(["provider-1"]);
+    expect(scan.reduction.repairs).toEqual([]);
+  });
 });
 
 async function transcriptPath(): Promise<string> {
@@ -198,4 +233,12 @@ function iso(offset: number): string {
 function withoutDigest(checkpoint: AgentSessionCheckpoint) {
   const { version: _version, digest: _digest, ...input } = checkpoint;
   return input;
+}
+
+function descriptor(checkpoint: AgentSessionCheckpoint, internalSessionId: string, activatedAt: string) {
+  return {
+    internalSessionId, adapterId: checkpoint.adapterId, mode: checkpoint.mode,
+    model: checkpoint.model, sessionConfiguration: checkpoint.sessionConfiguration,
+    activatedAt, protocol: checkpoint.protocol,
+  };
 }

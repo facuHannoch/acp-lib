@@ -1405,3 +1405,26 @@ matching checkpoint digest, plus durable abort compensation that rescans with no
 repair. The complete persistence/manager-focused suite passes 90/90, `tsc --noEmit`
 passes, and `git diff --check` is clean. `AgentSession` is not yet wired to this runtime;
 that is the next subpart.
+
+### Part 5B — durable transition activation boundary
+
+Extended `TranscriptPersistenceRuntime` with explicit transition APIs rather than letting
+callers send routing changes through the generic event path. Non-activation phases use
+`appendTransitionEvent()` and default to a durable boundary. `activateTransition()`
+requires clean recovery and no active provider operation, writes the structural
+`target_activated` record durably, derives its checkpoint and complete canonical history
+through the shared reducer, writes the materialized checkpoint durably, verifies the
+materialization, and only then returns the new continuation checkpoint.
+
+Generic `appendEvent()` now rejects every transition, preventing an apparently harmless
+display write from bypassing continuation-state updates. Activation failure poisons the
+runtime; a caller cannot continue on an in-memory target after only part of the durable
+routing transition succeeded. The runtime's installed history is replaced from the
+reducer result so later transitions append to exactly the history that was persisted.
+
+Added an end-to-end handoff-shaped activation test: transition start, durable target
+activation, materialized checkpoint, close, full physical rescan, current-target check,
+canonical prior-thread history check, and confirmation that no repair remains. The
+complete persistence/manager-focused suite passes 91/91, `tsc --noEmit` passes, and
+`git diff --check` is clean. This completes the persistence primitive needed for wiring
+AgentSession prompts and handoffs without separate sequencing implementations.

@@ -14,6 +14,7 @@ import {
   type TranscriptHistoryReduction,
 } from "./reducer.ts";
 import type {
+  InternalSessionHistoryEntry,
   OperationAbortReason,
   OperationKind,
   TranscriptCheckpointRecord,
@@ -137,8 +138,8 @@ export class TranscriptPersistenceRuntime {
 
   async appendEvent(event: NormalizedPersistenceEvent, ts = Date.now()): Promise<boolean> {
     this.assertUsable();
-    if (event.kind === "transition" && event.event === "target_activated") {
-      throw new TranscriptRuntimeStateError("target activation requires the dedicated transition boundary API");
+    if (event.kind === "transition") {
+      throw new TranscriptRuntimeStateError("transitions require the dedicated transition boundary API");
     }
     const record = projectTranscriptEvent(event, {
       transcriptId: this.header.transcriptId,
@@ -151,6 +152,61 @@ export class TranscriptPersistenceRuntime {
     if (!record) return false;
     await this.writer.append(record);
     return true;
+  }
+
+  async appendTransitionEvent(
+    event: Exclude<Extract<NormalizedPersistenceEvent, { kind: "transition" }>, { event: "target_activated" }>,
+    options: { readonly durable?: boolean; readonly ts?: number } = {},
+  ): Promise<void> {
+    this.assertUsable();
+    if (this.activeOperation) throw new TranscriptRuntimeStateError("a transition phase cannot be recorded during an active provider operation");
+    const record = projectTranscriptEvent(event, {
+      transcriptId: this.header.transcriptId,
+      generation: this.header.generation,
+      agentSessionId: this.header.agentSessionId,
+      seq: this.writer.nextSequence,
+      ts: options.ts ?? Date.now(),
+      policy: this.header.effectivePolicy,
+    });
+    if (!record || record.t !== "transition") throw new TranscriptRuntimeStateError("transition projection did not produce a structural record");
+    await this.writer.append(record, { durable: options.durable ?? true });
+  }
+
+  async activateTransition(
+    event: Extract<Extract<NormalizedPersistenceEvent, { kind: "transition" }>, { event: "target_activated" }>,
+    ts = Date.now(),
+  ): Promise<AgentSessionCheckpoint> {
+    this.assertUsable();
+    if (this._recovery.kind !== "clean") throw new TranscriptRuntimeStateError("uncertain transcript recovery must be resolved before transition activation");
+    if (this.activeOperation) throw new TranscriptRuntimeStateError("a transition target cannot activate during an active provider operation");
+    const projected = projectTranscriptEvent(event, {
+      transcriptId: this.header.transcriptId,
+      generation: this.header.generation,
+      agentSessionId: this.header.agentSessionId,
+      seq: this.writer.nextSequence,
+      ts,
+      policy: this.header.effectivePolicy,
+    });
+    if (!projected || projected.t !== "transition") {
+      throw new TranscriptRuntimeStateError("target activation projection did not produce a structural record");
+    }
+    try {
+      await this.writer.append(projected, { durable: true });
+      const reduced = reduceTranscriptState(this.selectedCheckpointRecord, this.history, [projected]);
+      const physical = checkpointRecord(this.writer.nextSequence, reduced.checkpoint, this.header);
+      await this.writer.append(physical, { durable: true });
+      reduceTranscriptState(this.selectedCheckpointRecord, this.history, [projected, physical]);
+      this.installCheckpoint(
+        physical,
+        reduced.checkpoint,
+        reduced.recovery,
+        reduced.internalSessionHistory,
+      );
+      return this.checkpoint;
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
   }
 
   /** Flush policy-projected input appended after beginOperation before provider dispatch. */
@@ -254,9 +310,10 @@ export class TranscriptPersistenceRuntime {
     record: TranscriptCheckpointRecord,
     checkpoint: AgentSessionCheckpoint,
     recovery: SessionRecoveryStatus,
+    historyEntries: readonly InternalSessionHistoryEntry[] = this.history.entries,
   ): void {
     this.selectedCheckpointRecord = record;
-    this.history = reduceInternalSessionHistory(this.history.entries);
+    this.history = reduceInternalSessionHistory(historyEntries);
     this._checkpoint = checkpoint;
     this._recovery = recovery;
   }
