@@ -33,9 +33,17 @@ export type {
   SetConfigFromStringResult,
 } from "./controller.ts";
 
-export { AgentSession } from "./agent-session.ts";
+export {
+  AgentSession,
+  AgentSessionPromptBlockedError,
+  AdapterMismatchError,
+  ContinuationUnavailableError,
+} from "./agent-session.ts";
 export type {
   AgentSessionConfig,
+  AgentSessionOpenConfig,
+  AgentSessionOpenResult,
+  AgentSessionPromptability,
   TranscriptActivityConfig,
   AgentSessionPhase,
   AgentSessionState,
@@ -46,6 +54,10 @@ export type {
   HandoffOptions,
   HandoffResult,
   ProviderSession,
+  ConfigurationRestoreStatus,
+  ContinuationAttempt,
+  ContinuationReport,
+  PromptBlocker,
 } from "./agent-session.ts";
 
 export type {

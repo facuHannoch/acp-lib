@@ -2,8 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { AgentSession, type AgentSessionNotification } from "../src/agent-session.ts";
+import {
+  AgentSession,
+  AgentSessionPromptBlockedError,
+  ContinuationUnavailableError,
+  type AgentSessionNotification,
+} from "../src/agent-session.ts";
 import { scanTranscriptContinuation } from "../src/persistence/transcript-scanner.ts";
+import { FileSessionLogWriter } from "../src/persistence/session-log-writer.ts";
 
 const roots: string[] = [];
 
@@ -77,5 +83,174 @@ describe("AgentSession persisted configuration", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(records.filter((record) => record.t === "operation").map((record) => record.event))
       .toEqual(["started", "failed"]);
+  }, 20_000);
+
+  test("open loads transcript authority and reapplies restoration targets before returning", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-open-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-open-session",
+      creationId: "config-open-incarnation",
+      persistence: { root, transcript: { preset: "activity" } },
+    });
+    await created.setConfig("model", "beta");
+    const transcriptPath = created.transcriptPath!;
+    await created.stop();
+
+    const opened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-open-session",
+      persistence: { root, transcript: { preset: "activity" } },
+    });
+    expect(opened.continuation.outcome).toEqual({
+      kind: "loaded",
+      activeInternalSessionId: "config-session",
+    });
+    expect(opened.continuation.recordedThreadAvailability).toBe("available");
+    expect(opened.recovery).toEqual({ kind: "clean" });
+    expect(opened.configuration).toEqual({ kind: "matched" });
+    expect(opened.promptability).toEqual({ promptable: true, blockers: [] });
+    expect(opened.session.model).toBe("beta");
+    expect(opened.session.agentSessionId).toBe("config-open-session");
+    await opened.session.stop();
+
+    const scan = await scanTranscriptContinuation(transcriptPath);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    expect(scan.reduction.checkpoint.sessionConfiguration.restorationTargets).toMatchObject([
+      { configId: "model", value: "beta", source: "explicit_selection" },
+    ]);
+    const records = (await readFile(transcriptPath, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records.filter((record) => record.t === "configuration").map((record) => record.event))
+      .toEqual(["selected", "restored"]);
+  }, 20_000);
+
+  test("open reports an unavailable recorded thread and releases transcript ownership", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-missing-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-missing-session",
+      creationId: "config-missing-incarnation",
+      persistence: { root },
+    });
+    await created.stop();
+
+    let failure: unknown;
+    try {
+      await AgentSession.open({
+        adapter,
+        adapterId: "fake",
+        agentSessionId: "config-missing-session",
+        persistence: { root },
+        env: { ...process.env, FAIL_LOAD: "1" } as Record<string, string>,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ContinuationUnavailableError);
+    expect((failure as ContinuationUnavailableError).continuation).toMatchObject({
+      recordedThreadAvailability: "unavailable",
+      attempts: [{ strategy: "load_internal_session", status: "failed" }],
+      outcome: { kind: "unavailable" },
+    });
+
+    const reopened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-missing-session",
+      persistence: { root },
+    });
+    await reopened.session.stop();
+  }, 20_000);
+
+  test("open returns an uncertain session but blocks provider mutation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-uncertain-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-uncertain-session",
+      creationId: "config-uncertain-incarnation",
+      persistence: { root },
+    });
+    const transcriptPath = created.transcriptPath!;
+    await created.stop();
+    const scan = await scanTranscriptContinuation(transcriptPath);
+    const { writer } = await FileSessionLogWriter.resumeTranscript({ path: transcriptPath });
+    await writer.append({
+      v: 2,
+      t: "operation",
+      transcriptId: scan.header.transcriptId,
+      generation: scan.header.generation,
+      agentSessionId: scan.header.agentSessionId,
+      seq: writer.nextSequence,
+      ts: Date.now(),
+      operationId: "crashed-operation",
+      operationKind: "prompt",
+      event: "started",
+      stateRevision: scan.reduction.checkpoint.stateRevision + 1,
+    }, { durable: true });
+    await writer.close();
+
+    const opened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-uncertain-session",
+      persistence: { root },
+    });
+    expect(opened.recovery).toMatchObject({
+      kind: "uncertain",
+      operationId: "crashed-operation",
+    });
+    expect(opened.promptability).toEqual({
+      promptable: false,
+      blockers: ["recovery_required"],
+    });
+    await expect(opened.session.prompt("must not dispatch"))
+      .rejects.toBeInstanceOf(AgentSessionPromptBlockedError);
+    await opened.session.stop();
+  }, 20_000);
+
+  test("a disappeared restoration target is reported and blocks prompting", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-mismatch-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-mismatch-session",
+      creationId: "config-mismatch-incarnation",
+      persistence: { root },
+    });
+    await created.setConfig("model", "beta");
+    await created.stop();
+
+    const opened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-mismatch-session",
+      persistence: { root },
+      env: { ...process.env, OMIT_CONFIG: "1" } as Record<string, string>,
+    });
+    expect(opened.configuration).toEqual({
+      kind: "mismatch",
+      configIds: ["model"],
+      reasons: ["configuration_option_missing"],
+    });
+    expect(opened.promptability).toEqual({
+      promptable: false,
+      blockers: ["configuration_mismatch"],
+    });
+    await expect(opened.session.prompt("must not dispatch"))
+      .rejects.toBeInstanceOf(AgentSessionPromptBlockedError);
+    await opened.session.stop();
   }, 20_000);
 });

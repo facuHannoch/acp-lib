@@ -1610,3 +1610,45 @@ reconciliation, plus a runtime test for standalone checkpoint publication. The f
 mode/reconciliation suite passes 2/2, the targeted metering and persistence suites pass
 208 tests, the complete repository suite passes 595/595, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 7A — direct transcript-backed AgentSession open
+
+Added the first checkpoint-based restoration entry point, `AgentSession.open()`. This
+slice deliberately implements only the safest default continuation strategy: acquire and
+validate the authoritative v2 transcript under its writer lock, validate logical,
+incarnation, adapter, transcript, and optional consumer-checkpoint identity, and ask the
+supplied adapter to load exactly the recorded non-null ACP internal-session ID. It never
+falls back to `session/new`. A failed load throws `ContinuationUnavailableError` with the
+partial continuation report and releases transcript ownership so a later retry can open
+the session.
+
+Successful opens return `AgentSessionOpenResult` with the continuation attempt/outcome,
+transcript recovery status, configuration restoration status, derived promptability, and
+any deterministic repairs made while acquiring the transcript. Conversation availability
+now distinguishes captured, partially truncated, and uncaptured message history; the
+streaming scanner derives truncation without loading transcript content wholesale.
+
+Opening restores the checkpoint's metering state and then reapplies persisted ACP
+configuration targets once in ordinal order. Each required reapplication is its own
+durable `set_config` operation and emits a policy-filtered `restored` configuration
+record. Missing, changed, rejected, or residually different targets become an explicit
+configuration mismatch instead of silently returning a differently configured agent.
+Policy-partial state remains promptable.
+
+Added the public promptability composition and typed `AgentSessionPromptBlockedError`.
+Prompts, harness slash commands, handoffs, mode changes, and configuration changes now
+refuse to dispatch when transcript recovery is uncertain, configuration restoration is
+mismatched, or v2 persistence is poisoned. The same immutable value is exposed on the
+session and its state snapshot.
+
+This is intentionally not the whole Phase 5 surface. Exact-file identity inference,
+registry-only/direct-checkpoint opening, explicit transcript/consumer reconstruction
+strategies, recovery resolution, configuration-mismatch resolution, and manager-backed
+load remain later slices.
+
+Added end-to-end cases for successful load plus configuration reapplication, unavailable
+thread reporting and retry, uncertain-boundary prompt blocking, and disappeared-option
+mismatch blocking. Added scanner coverage for truncated conversation detection. The
+focused restoration suite passes 6/6, scanner tests pass 14/14, the complete repository
+suite passes 600/600, `tsc --noEmit` passes, and
+`git diff --check` is clean.

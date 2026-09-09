@@ -40,6 +40,7 @@ describe("AgentSession state and notifications", () => {
       internalSessionId: session.internalSessionId,
       adapterId: "fake",
       mode: "normal",
+      promptability: { promptable: true, blockers: [] },
     });
     expect(Object.isFrozen(session.state)).toBe(true);
 

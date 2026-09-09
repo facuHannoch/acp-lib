@@ -16,7 +16,7 @@ import { ActivityAggregator, type ActivitySnapshot, type AggregatedRecord } from
 import type { Adapter } from "./adapters.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
-import type { ConfigOptions } from "./config-options.ts";
+import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import { ResponseAccumulator } from "./response.ts";
@@ -63,7 +63,13 @@ import {
   type ResolvedAgentSessionPersistence,
 } from "./persistence/config.ts";
 import { resolveSessionLogPaths } from "./persistence/paths.ts";
-import { createAgentSessionCheckpoint } from "./persistence/checkpoint.ts";
+import {
+  createAgentSessionCheckpoint,
+  validateAgentSessionCheckpoint,
+  type AgentSessionCheckpoint,
+  type JsonValue,
+  type PersistedSessionConfigSelection,
+} from "./persistence/checkpoint.ts";
 import { EMPTY_HISTORY_DIGEST } from "./persistence/reducer.ts";
 import type {
   InternalSessionDescriptor,
@@ -76,7 +82,12 @@ import {
   snapshotSessionConfigurationAfterSelection,
 } from "./persistence/configuration-state.ts";
 import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
-import { sha256CanonicalJson } from "./persistence/integrity.ts";
+import {
+  canonicalizeJson,
+  sha256CanonicalJson,
+  type PersistedMachineCode,
+} from "./persistence/integrity.ts";
+import type { PersistenceRepair, SessionRecoveryStatus } from "./persistence/reducer.ts";
 
 interface PromptQueueItem {
   kind: "prompt";
@@ -137,6 +148,77 @@ export interface AgentSessionState {
   readonly internalSessionId: string | null;
   readonly adapterId: string;
   readonly mode: AgentMode;
+  readonly promptability: AgentSessionPromptability;
+}
+
+export type ConfigurationRestoreStatus =
+  | { readonly kind: "matched" }
+  | { readonly kind: "partial"; readonly omittedConfigIds: readonly string[] }
+  | {
+      readonly kind: "mismatch";
+      readonly configIds: readonly string[];
+      readonly reasons: readonly string[];
+    };
+
+export type PromptBlocker =
+  | "continuation_unavailable"
+  | "recovery_required"
+  | "configuration_mismatch"
+  | "persistence_unhealthy"
+  | "maintenance_pending"
+  | "session_stopped";
+
+export type AgentSessionPromptability =
+  | { readonly promptable: true; readonly blockers: readonly [] }
+  | { readonly promptable: false; readonly blockers: readonly PromptBlocker[] };
+
+export interface ContinuationAttempt {
+  readonly strategy: "load_internal_session";
+  readonly status: "succeeded" | "failed" | "skipped";
+  readonly errorCode?: PersistedMachineCode;
+  readonly reason?: string;
+}
+
+export interface ContinuationReport {
+  readonly recordedAdapterId: string;
+  readonly recordedInternalSessionId: string | null;
+  readonly requestedAdapterId: string;
+  readonly recordedConversationAvailability: "available" | "partial" | "not_captured";
+  readonly recordedThreadAvailability: "available" | "unavailable" | "not_checked";
+  readonly attempts: readonly ContinuationAttempt[];
+  readonly outcome:
+    | { readonly kind: "loaded"; readonly activeInternalSessionId: string }
+    | { readonly kind: "unavailable" };
+}
+
+export interface AgentSessionOpenResult {
+  readonly session: AgentSession;
+  readonly continuation: ContinuationReport;
+  readonly recovery: SessionRecoveryStatus;
+  readonly configuration: ConfigurationRestoreStatus;
+  readonly promptability: AgentSessionPromptability;
+  readonly repairs: readonly PersistenceRepair[];
+}
+
+export class AgentSessionPromptBlockedError extends Error {
+  constructor(readonly blockers: readonly PromptBlocker[]) {
+    super(`AgentSession cannot mutate while blocked: ${blockers.join(", ")}`);
+    this.name = "AgentSessionPromptBlockedError";
+  }
+}
+
+export class ContinuationUnavailableError extends Error {
+  constructor(readonly continuation: ContinuationReport, options?: ErrorOptions) {
+    super("recorded internal session could not be loaded", options);
+    this.name = "ContinuationUnavailableError";
+  }
+}
+
+export class AdapterMismatchError extends Error {
+  constructor(readonly recordedAdapterId: string, readonly requestedAdapterId: string) {
+    super(`adapter mismatch: transcript requires ${recordedAdapterId}, received ${requestedAdapterId}`);
+    this.name = "AdapterMismatchError";
+  }
 }
 
 export interface HandoffOptions {
@@ -361,6 +443,29 @@ export interface AgentSessionConfig {
   title?: string;
 }
 
+/** Direct restoration input. Phase 5A intentionally supports the safe recorded-thread path. */
+export interface AgentSessionOpenConfig extends Omit<
+  AgentSessionConfig,
+  | "agentSessionId"
+  | "creationId"
+  | "providerSession"
+  | "internalSessionId"
+  | "mode"
+  | "persistence"
+  | "sessions"
+> {
+  /** Required for directory/default path resolution; exact-file inference is a later slice. */
+  agentSessionId: string;
+  persistence: AgentSessionPersistenceOptions;
+  /** Optional consumer copy must exactly match transcript authority in this first slice. */
+  checkpoint?: AgentSessionCheckpoint;
+}
+
+interface AgentSessionOpenBootstrap {
+  readonly transcript: TranscriptPersistenceRuntime;
+  readonly transcriptPath: string;
+}
+
 export class AgentSession implements AgentClient, Bridgeable {
   /** Our stable AgentSession id — decoupled from the ACP/harness session id. */
   readonly agentSessionId: string;
@@ -408,8 +513,12 @@ export class AgentSession implements AgentClient, Bridgeable {
   private _mode: AgentMode;
   private _cwd?: string;
   private _title?: string;
+  private readonly openBootstrap: AgentSessionOpenBootstrap | null;
+  private continuationAcquired = true;
+  private _recovery: SessionRecoveryStatus = { kind: "clean" };
+  private _configurationRestore: ConfigurationRestoreStatus = { kind: "matched" };
 
-  private constructor(config: AgentSessionConfig) {
+  private constructor(config: AgentSessionConfig, openBootstrap: AgentSessionOpenBootstrap | null = null) {
     if (config.transcriptPath && config.transcriptDir) {
       throw new Error("AgentSessionConfig cannot specify both transcriptPath and transcriptDir");
     }
@@ -452,6 +561,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       throw new Error("AgentSessionConfig.creationId cannot be blank");
     }
     this.creationId = config.creationId ?? crypto.randomUUID();
+    this.openBootstrap = openBootstrap;
     this._transcriptPath =
       config.transcriptPath ??
       (config.transcriptDir
@@ -532,6 +642,90 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
   }
 
+  /** Restore one logical session by loading the exact provider thread in transcript authority. */
+  static async open(config: AgentSessionOpenConfig): Promise<AgentSessionOpenResult> {
+    const persistence = resolveDirectPersistence(config.persistence);
+    if (persistence === false || persistence.transcript === false) {
+      throw new Error("AgentSession.open() currently requires transcript persistence");
+    }
+    const paths = await resolveSessionLogPaths(persistence, config.agentSessionId);
+    if (!paths.transcriptPath) throw new Error("AgentSession.open() requires a transcript path");
+    if (paths.auditLogPath) {
+      throw new Error("direct v2 audit-log integration is not implemented yet");
+    }
+
+    const transcript = await TranscriptPersistenceRuntime.resume({
+      path: paths.transcriptPath,
+      expected: { agentSessionId: config.agentSessionId },
+    });
+    const checkpoint = transcript.checkpoint;
+    try {
+      validateAgentSessionCheckpoint(config.checkpoint ?? checkpoint, {
+        agentSessionId: config.agentSessionId,
+        incarnationId: checkpoint.incarnationId,
+        adapterId: config.adapterId,
+        transcriptId: checkpoint.transcript?.transcriptId,
+        transcriptGeneration: checkpoint.transcript?.generation,
+        transcriptPath: paths.transcriptPath,
+      });
+      if (config.checkpoint && config.checkpoint.digest !== checkpoint.digest) {
+        throw new Error("consumer checkpoint does not match authoritative transcript checkpoint");
+      }
+      if (checkpoint.adapterId !== config.adapterId) {
+        throw new AdapterMismatchError(checkpoint.adapterId, config.adapterId);
+      }
+      if (checkpoint.mode !== "normal" || !checkpoint.internalSessionId) {
+        const report = unavailableContinuationReport(checkpoint, config.adapterId, transcript, "recorded thread has no loadable ACP identity");
+        throw new ContinuationUnavailableError(report);
+      }
+
+      const { checkpoint: _suppliedCheckpoint, ...runtimeConfig } = config;
+      const session = new AgentSession({
+        ...runtimeConfig,
+        agentSessionId: checkpoint.agentSessionId,
+        creationId: checkpoint.incarnationId,
+        mode: checkpoint.mode,
+        providerSession: {
+          kind: "load",
+          internalSessionId: checkpoint.internalSessionId,
+          onFailure: "error",
+        },
+        metering: {
+          ...config.metering,
+          initialState: checkpoint.metering,
+        },
+      }, { transcript, transcriptPath: paths.transcriptPath });
+
+      try {
+        await session.start();
+      } catch (error) {
+        await session.stop().catch(() => undefined);
+        const report = unavailableContinuationReport(checkpoint, config.adapterId, transcript, String(error));
+        throw new ContinuationUnavailableError(report, { cause: error });
+      }
+      try {
+        const configuration = await session.restoreOpeningConfiguration();
+        session._configurationRestore = configuration;
+        session.emitStateIfChanged();
+        const continuation = successfulContinuationReport(checkpoint, config.adapterId, transcript);
+        return Object.freeze({
+          session,
+          continuation,
+          recovery: structuredClone(session._recovery),
+          configuration: structuredClone(configuration),
+          promptability: session.promptability,
+          repairs: transcript.openingRepairs,
+        });
+      } catch (error) {
+        await session.stop().catch(() => undefined);
+        throw error;
+      }
+    } catch (error) {
+      await transcript.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
   private async start(): Promise<void> {
     if (this.persistence !== false) {
       await this.startPersistent();
@@ -555,6 +749,17 @@ export class AgentSession implements AgentClient, Bridgeable {
   private async startPersistent(): Promise<void> {
     const persistence = this.persistence;
     if (persistence === false) throw new Error("persistent startup requires persistence configuration");
+    if (this.openBootstrap) {
+      this.v2Transcript = this.openBootstrap.transcript;
+      this.v2TranscriptPath = this.openBootstrap.transcriptPath;
+      this._recovery = this.v2Transcript.recovery;
+      const result = await this.controller.start();
+      if (!result.resumed || !result.sessionId) {
+        throw new Error("adapter did not confirm loading the recorded internal session");
+      }
+      this.setInternalSessionId(result.sessionId, false);
+      return;
+    }
     const paths = await resolveSessionLogPaths(persistence, this.agentSessionId);
     if (paths.auditLogPath) {
       throw new Error("direct v2 audit-log integration is not implemented yet");
@@ -714,6 +919,23 @@ export class AgentSession implements AgentClient, Bridgeable {
   get transcriptPath(): string | undefined {
     return this.v2TranscriptPath ?? this._transcriptPath;
   }
+  get recoveryStatus(): SessionRecoveryStatus {
+    return structuredClone(this._recovery);
+  }
+  get configurationRestoreStatus(): ConfigurationRestoreStatus {
+    return structuredClone(this._configurationRestore);
+  }
+  get promptability(): AgentSessionPromptability {
+    const blockers: PromptBlocker[] = [];
+    if (!this.continuationAcquired) blockers.push("continuation_unavailable");
+    if (this._recovery.kind !== "clean") blockers.push("recovery_required");
+    if (this._configurationRestore.kind === "mismatch") blockers.push("configuration_mismatch");
+    if (this.v2Transcript && !this.v2Transcript.healthy) blockers.push("persistence_unhealthy");
+    if (this.phase === "stopped") blockers.push("session_stopped");
+    return blockers.length === 0
+      ? Object.freeze({ promptable: true as const, blockers: Object.freeze([] as const) })
+      : Object.freeze({ promptable: false as const, blockers: Object.freeze(blockers) });
+  }
   /** Immutable current state. Late subscribers read this before listening for deltas. */
   get state(): AgentSessionState {
     return Object.freeze({
@@ -724,6 +946,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       internalSessionId: this._internalSessionId,
       adapterId: this.adapterId,
       mode: this._mode,
+      promptability: this.promptability,
     });
   }
   /** True while one operation is executing. Queued work is exposed independently. */
@@ -761,6 +984,12 @@ export class AgentSession implements AgentClient, Bridgeable {
     return new Promise<AgentSessionPromptResult>((resolve, reject) => {
       if (this.phase === "stopped") {
         reject(new Error("AgentSession is stopped"));
+        return;
+      }
+      try {
+        this.assertPromptable();
+      } catch (error) {
+        reject(error);
         return;
       }
       this.queue.push({
@@ -809,6 +1038,12 @@ export class AgentSession implements AgentClient, Bridgeable {
     return new Promise<HandoffResult>((resolve, reject) => {
       if (this.phase === "stopped") {
         reject(new Error("AgentSession is stopped"));
+        return;
+      }
+      try {
+        this.assertPromptable();
+      } catch (error) {
+        reject(error);
         return;
       }
       this.queue.push({
@@ -1183,6 +1418,91 @@ export class AgentSession implements AgentClient, Bridgeable {
       }
       throw error;
     }
+  }
+
+  private async restoreOpeningConfiguration(): Promise<ConfigurationRestoreStatus> {
+    if (!this.v2Transcript || this.persistence === false) return { kind: "matched" };
+    const saved = this.v2Transcript.checkpoint.sessionConfiguration;
+    const mismatchedIds: string[] = [];
+    const reasons: string[] = [];
+
+    for (const target of [...saved.restorationTargets].sort((a, b) => a.ordinal - b.ordinal)) {
+      const issue = configurationTargetIssue(this.controller.configOptions.get(target.configId), target);
+      if (issue) {
+        mismatchedIds.push(target.configId);
+        reasons.push(issue);
+        continue;
+      }
+      const option = this.controller.configOptions.get(target.configId)!;
+      if (sameJsonValue(option.currentValue, target.value)) continue;
+      if (this._recovery.kind !== "clean") {
+        mismatchedIds.push(target.configId);
+        reasons.push("recovery_required_before_reapplication");
+        continue;
+      }
+      const operationId = this.mintOperationId();
+      await this.v2Transcript.beginOperation(operationId, "set_config");
+      try {
+        await this.v2Transcript.syncBeforeDispatch();
+      } catch (error) {
+        await this.v2Transcript.abortOperation("pre_dispatch_persistence_failure").catch(() => undefined);
+        throw error;
+      }
+      try {
+        await this.controller.setConfig(target.configId, structuredClone(target.value));
+        const observedAt = new Date().toISOString();
+        const snapshot = snapshotSessionConfiguration({
+          adapterId: this.adapterId,
+          configOptions: this.controller.configOptions,
+          policy: this.persistence.sessionConfiguration,
+          restorationTargets: saved.restorationTargets,
+          observedAt,
+        });
+        await this.v2Transcript.appendEvent({
+          kind: "configuration",
+          event: "restored",
+          configId: target.configId,
+          value: target.value,
+          schemaDigest: snapshot.schemaDigest ?? undefined,
+        });
+        await this.v2Transcript.finishOperation("settled", {
+          model: this.model,
+          sessionConfiguration: snapshot,
+          metering: this.metering.currentState,
+        });
+      } catch (error) {
+        await this.v2Transcript.finishOperation("failed", {}, "unknown").catch(() => undefined);
+        mismatchedIds.push(target.configId);
+        reasons.push("reapplication_failed");
+        continue;
+      }
+      const restored = this.controller.configOptions.get(target.configId);
+      if (!restored || !sameJsonValue(restored.currentValue, target.value)) {
+        mismatchedIds.push(target.configId);
+        reasons.push("residual_value_mismatch");
+      }
+    }
+
+    if (mismatchedIds.length > 0) {
+      return Object.freeze({
+        kind: "mismatch" as const,
+        configIds: Object.freeze(mismatchedIds),
+        reasons: Object.freeze(reasons),
+      });
+    }
+    const current = snapshotSessionConfiguration({
+      adapterId: this.adapterId,
+      configOptions: this.controller.configOptions,
+      policy: this.persistence.sessionConfiguration,
+      restorationTargets: saved.restorationTargets,
+    });
+    const omittedConfigIds = [...new Set([
+      ...(saved.restorationFidelity === "partial" ? saved.omittedConfigIds : []),
+      ...current.omittedConfigIds,
+    ])].sort();
+    return saved.restorationFidelity === "partial" || current.restorationFidelity === "partial"
+      ? Object.freeze({ kind: "partial" as const, omittedConfigIds: Object.freeze(omittedConfigIds) })
+      : Object.freeze({ kind: "matched" as const });
   }
 
   private async runSetMode(item: ModeQueueItem): Promise<ConnectResult> {
@@ -1837,6 +2157,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   // --- mode swap (catalog-affecting) -------------------------------------------
   async setMode(mode: AgentMode): Promise<ConnectResult> {
     if (this.phase === "stopped") throw new Error("AgentSession is stopped");
+    this.assertPromptable();
     return await new Promise<ConnectResult>((resolve, reject) => {
       this.queue.push({
         kind: "set_mode",
@@ -1865,6 +2186,11 @@ export class AgentSession implements AgentClient, Bridgeable {
    */
   setConfig(configId: string, value: unknown): Promise<void> {
     if (this.phase === "stopped") return Promise.reject(new Error("AgentSession is stopped"));
+    try {
+      this.assertPromptable();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     let ownedValue: unknown;
     try {
       ownedValue = structuredClone(value);
@@ -2036,10 +2362,18 @@ export class AgentSession implements AgentClient, Bridgeable {
       state.internalSessionId ?? "",
       state.adapterId,
       state.mode,
+      state.promptability.promptable ? "promptable" : state.promptability.blockers.join(","),
     ].join("\u0000");
     if (key === this.lastStateKey) return;
     this.lastStateKey = key;
     this.emit({ kind: "state_changed", state });
+  }
+
+  private assertPromptable(): void {
+    const promptability = this.promptability;
+    if (!promptability.promptable) {
+      throw new AgentSessionPromptBlockedError(promptability.blockers);
+    }
   }
 
   /** Listener failures are observation failures, never session-operation failures. */
@@ -2065,6 +2399,71 @@ export class AgentSession implements AgentClient, Bridgeable {
 
 function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
   return kind === "internal_command" ? "internal_session_command" : kind;
+}
+
+function successfulContinuationReport(
+  checkpoint: AgentSessionCheckpoint,
+  requestedAdapterId: string,
+  transcript: TranscriptPersistenceRuntime,
+): ContinuationReport {
+  return Object.freeze({
+    recordedAdapterId: checkpoint.adapterId,
+    recordedInternalSessionId: checkpoint.internalSessionId,
+    requestedAdapterId,
+    recordedConversationAvailability: transcript.conversationAvailability,
+    recordedThreadAvailability: "available",
+    attempts: Object.freeze([{
+      strategy: "load_internal_session" as const,
+      status: "succeeded" as const,
+    }]),
+    outcome: Object.freeze({
+      kind: "loaded" as const,
+      activeInternalSessionId: checkpoint.internalSessionId!,
+    }),
+  });
+}
+
+function unavailableContinuationReport(
+  checkpoint: AgentSessionCheckpoint,
+  requestedAdapterId: string,
+  transcript: TranscriptPersistenceRuntime,
+  reason: string,
+): ContinuationReport {
+  return Object.freeze({
+    recordedAdapterId: checkpoint.adapterId,
+    recordedInternalSessionId: checkpoint.internalSessionId,
+    requestedAdapterId,
+    recordedConversationAvailability: transcript.conversationAvailability,
+    recordedThreadAvailability: checkpoint.internalSessionId ? "unavailable" : "not_checked",
+    attempts: Object.freeze([{
+      strategy: "load_internal_session" as const,
+      status: checkpoint.internalSessionId ? "failed" as const : "skipped" as const,
+      errorCode: "internal_session_unavailable",
+      reason,
+    }]),
+    outcome: Object.freeze({ kind: "unavailable" as const }),
+  });
+}
+
+function configurationTargetIssue(
+  option: ConfigOption | undefined,
+  target: PersistedSessionConfigSelection,
+): string | null {
+  if (!option) return "configuration_option_missing";
+  if (target.type !== "unknown" && option.type !== target.type) return "configuration_type_changed";
+  if (option.type === "boolean" && typeof target.value !== "boolean") return "configuration_value_invalid";
+  if (option.type === "select" && !(option.allowedValues ?? []).some(
+    (choice) => sameJsonValue(choice.value, target.value),
+  )) return "configuration_value_no_longer_allowed";
+  return null;
+}
+
+function sameJsonValue(left: unknown, right: JsonValue): boolean {
+  try {
+    return canonicalizeJson(left) === canonicalizeJson(right);
+  } catch {
+    return false;
+  }
 }
 
 /** Do not let one notification observer mutate the PromptResult another observer sees. */

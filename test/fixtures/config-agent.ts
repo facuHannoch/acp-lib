@@ -35,6 +35,17 @@ function handle(message: any): void {
     case "session/new":
       send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "config-session", configOptions: configOptions() } });
       return;
+    case "session/load":
+      if (process.env.FAIL_LOAD === "1" || message.params?.sessionId === "missing-session") {
+        send({ jsonrpc: "2.0", id: message.id, error: { code: -32011, message: "session not found" } });
+        return;
+      }
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: { configOptions: process.env.OMIT_CONFIG === "1" ? [] : configOptions() },
+      });
+      return;
     case "session/set_config_option":
       if (message.params?.value === "reject") {
         send({ jsonrpc: "2.0", id: message.id, error: { code: -32010, message: "selection rejected" } });

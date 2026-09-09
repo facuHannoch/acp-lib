@@ -66,6 +66,25 @@ describe("transcript continuation scanner", () => {
     expect(scan.reduction.recovery).toEqual({ kind: "clean" });
   });
 
+  test("reports retained message truncation as partial conversation availability", async () => {
+    const path = await transcriptPath();
+    const checkpoint = initialCheckpoint(path);
+    await writeLines(path, [
+      header(path),
+      checkpointRecord(checkpoint, 2),
+      {
+        ...envelope(3),
+        t: "message",
+        operationId: "op-old",
+        role: "user",
+        text: "shortened",
+        truncation: [{ field: "text", reason: "field_limit", originalBytes: 50_000 }],
+      },
+    ]);
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.conversationTruncated).toBe(true);
+  });
+
   test("reports complete malformed data and requested identity mismatch distinctly", async () => {
     const path = await transcriptPath();
     await writeLines(path, [header(path), checkpointRecord(initialCheckpoint(path), 2)]);

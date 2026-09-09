@@ -90,6 +90,7 @@ export class TranscriptPersistenceRuntime {
     checkpoint: AgentSessionCheckpoint,
     recovery: SessionRecoveryStatus,
     repairs: readonly PersistenceRepair[],
+    private readonly conversationWasTruncated: boolean,
   ) {
     this.selectedCheckpointRecord = selectedCheckpointRecord;
     this.history = history;
@@ -137,6 +138,7 @@ export class TranscriptPersistenceRuntime {
         reduced.checkpoint,
         reduced.recovery,
         [],
+        false,
       );
     } catch (error) {
       await writer.close().catch(() => undefined);
@@ -164,6 +166,7 @@ export class TranscriptPersistenceRuntime {
         checkpoint,
         scan.reduction.recovery,
         scan.reduction.repairs,
+        scan.conversationTruncated,
       );
     } catch (error) {
       await writer.close().catch(() => undefined);
@@ -181,6 +184,15 @@ export class TranscriptPersistenceRuntime {
 
   get openingRepairs(): readonly PersistenceRepair[] {
     return this._openingRepairs.map((repair) => structuredClone(repair));
+  }
+
+  get conversationAvailability(): "available" | "partial" | "not_captured" {
+    if (this.header.effectivePolicy.messages === "none") return "not_captured";
+    return this.conversationWasTruncated ? "partial" : "available";
+  }
+
+  get healthy(): boolean {
+    return this.failure === null;
   }
 
   get nextSequence(): number {

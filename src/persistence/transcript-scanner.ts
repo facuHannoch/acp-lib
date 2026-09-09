@@ -42,6 +42,8 @@ export interface TranscriptContinuationScan {
   /** File size captured before the scan; later appends are excluded from this result. */
   readonly snapshotBytes: number;
   readonly ignoredTrailingBytes: number;
+  /** At least one retained message lost text or structured detail to engraved limits. */
+  readonly conversationTruncated: boolean;
 }
 
 export class TranscriptNotFoundError extends Error {
@@ -111,6 +113,7 @@ async function scanOpenTranscript(
   let structuralTail: TranscriptStructuralRecord[] = [];
   const activations: TranscriptTransitionRecord[] = [];
   let sequence = 0;
+  let conversationTruncated = false;
   let lastCompleteOffset = 0;
   const snapshotSize = (await handle.stat()).size;
 
@@ -155,6 +158,9 @@ async function scanOpenTranscript(
       continue;
     }
     if (record.t === "header") corrupt("transcript generation contains more than one header", nextSequence);
+    if (record.t === "message" && (record.truncation?.length ?? 0) > 0) {
+      conversationTruncated = true;
+    }
 
     if (record.t === "transition" && record.event === "target_activated") activations.push(record);
     if (!isStructural(record)) continue;
@@ -189,6 +195,7 @@ async function scanOpenTranscript(
     lastCompleteOffset,
     snapshotBytes: snapshotSize,
     ignoredTrailingBytes: snapshotSize - lastCompleteOffset,
+    conversationTruncated,
   };
 }
 
