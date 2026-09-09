@@ -25,6 +25,10 @@ import {
   type SessionMaintenance,
   type SessionMaintenancePage,
 } from "./persistence/registry.ts";
+import {
+  importLegacySessionRegistry,
+  type LegacyRegistryImportResult,
+} from "./persistence/legacy-registry-import.ts";
 
 export interface SessionManagerConfig {
   readonly root?: string;
@@ -150,6 +154,11 @@ export class SessionManager {
 
   async listSessionMaintenance(options?: ListSessionMaintenanceOptions): Promise<SessionMaintenancePage> {
     return await this.requireAgentStore("listSessionMaintenance()").listMaintenance(options);
+  }
+
+  /** Explicitly import a compatibility SessionStore after its transcripts were migrated. */
+  async importLegacySessions(source: SessionStore): Promise<LegacyRegistryImportResult> {
+    return importLegacySessionRegistry(source, this.requireAgentStore("importLegacySessions()"));
   }
 
   /** Internal normalization used by the upcoming managed create/load transaction path. */

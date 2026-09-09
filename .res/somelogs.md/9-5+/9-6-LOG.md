@@ -1902,3 +1902,33 @@ thread from this mixed file and returns a clean, promptable logical session.
 
 The complete repository suite passes 626/626, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 9C — explicit legacy registry import
+
+Added `importLegacySessionRegistry()` as the explicit bridge from the deprecated
+`SessionStore` catalog into the v2 `AgentSessionStore`, plus
+`SessionManager.importLegacySessions()` for managed consumers. Import is deterministic,
+create-only, and per-entry: records are processed by stable logical-session ID and each
+result reports `imported`, `already_imported`, `conflict`, or `skipped` with a structured
+reason. One bad legacy row never prevents independent rows from being assessed.
+
+The importer deliberately does not manufacture continuation authority from the sparse
+legacy registry. A row is importable only after its transcript is native v2 or has passed
+through the explicit transcript migration boundary. The transcript checkpoint supplies
+the incarnation, provider-thread identity, adapter/mode, protocol, model, configuration,
+activation state, and canonical history projection; the legacy record contributes its
+catalog metadata such as cwd, title, and historical timestamps. Dirty, repaired,
+unavailable, corrupt, missing, or identity-mismatched transcripts are reported without
+mutating the destination store.
+
+Destination writes use create-only compare-and-swap. An identical concurrent importer
+that loses the race rereads the winner and reports `already_imported`; a different
+incarnation using the same stable logical ID reports `conflict` and never overwrites the
+existing v2 record. Idempotency is based on the imported lineage identities rather than
+record revision, so a later ordinary update to the destination session does not make a
+repeated import falsely conflict.
+
+Tests cover mixed importable/mismatched/missing rows, exact checkpoint-derived authority,
+concurrent import races, repeat import after a destination revision change, and conflicting
+incarnations with preservation of the existing target. The complete repository suite
+passes 629/629, `tsc --noEmit` passes, and `git diff --check` is clean.

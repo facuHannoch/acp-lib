@@ -298,6 +298,13 @@ export type {
   LegacyTranscriptMigrationResult,
   MigrateLegacyTranscriptOptions,
 } from "./persistence/migration.ts";
+export { importLegacySessionRegistry } from "./persistence/legacy-registry-import.ts";
+export type {
+  LegacyRegistryImportEntry,
+  LegacyRegistryImportReason,
+  LegacyRegistryImportResult,
+  LegacyRegistryImportStatus,
+} from "./persistence/legacy-registry-import.ts";
 export type {
   ActivityExecutionState,
   ListTranscriptActivitiesOptions,
