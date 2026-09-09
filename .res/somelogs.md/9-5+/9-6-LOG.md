@@ -1963,3 +1963,31 @@ removal validation and idempotent retry, and CAS failure before filesystem mutat
 
 The complete repository suite passes 633/633, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 10B — managed CLI listing and confirmed deletion
+
+Added top-level `acp-client sessions` and `acp-client delete` commands. These operate on
+the managed logical-session registry and remain separate from the existing `chat` command
+and its single-provider `AgentController` REPL. The CLI therefore does not blur logical
+AgentSession operations with harness-specific internal-session commands.
+
+`sessions` walks the paginated registry snapshot and presents stable logical identity,
+adapter/mode, model, lifecycle/recovery state, artifact availability, and update time.
+Tombstones remain hidden by default and are included explicitly with `--all` or
+`--include-deleted`; `--json` returns the same bounded public summaries rather than raw
+registry/checkpoint state.
+
+`delete` resolves the current incarnation and record revision from the manager, then calls
+the public transactional deletion API. Its artifact and hard-removal choices are separate
+flags. Interactive execution requires the user to type the exact logical session ID;
+non-interactive execution refuses mutation unless `--yes` was supplied explicitly. The
+confirmation preview names transcript, audit, and registry destruction independently.
+
+If a prior CLI deletion stopped after preparing maintenance, repeating the exact flags
+reuses its persisted operation ID, incarnation, and base revision. A different pending
+maintenance kind or deletion intent is reported rather than overwritten. Tests cover
+strict command parsing, normal and tombstone-inclusive presentation, JSON output, exact
+confirmation and cancellation, non-TTY refusal, and prepared-deletion recovery.
+
+The complete repository suite passes 639/639, `tsc --noEmit` passes, and
+`git diff --check` is clean.

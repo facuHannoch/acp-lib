@@ -9,6 +9,9 @@
 //                [--no-activity] [--degraded] [--wire[=FILE]]
 //   acp-client chat [--adapter ID] --adapter-command '["agent","--acp"]'
 //                [--pty-command '["agent"]'] [--adapter-name "My Agent"]
+//   acp-client sessions [--root PATH] [--all] [--json]
+//   acp-client delete AGENT_SESSION_ID [--root PATH] [--delete-transcript]
+//                [--delete-audit-log] [--remove-registry-entry] [--yes]
 //
 //   activity (thinking/tool markers) shows by DEFAULT; --no-activity disables it.
 //   --verbose (-v): lifecycle summaries (connect, session_new, prompt_end)
@@ -25,6 +28,11 @@ import {
 import { createControllerCommands, runRepl } from "../repl/index.ts";
 import { DIM, colorEnabled, paint } from "../repl/colors.ts";
 import { parseCommandArg, resolveCliAdapter } from "./adapter.ts";
+import {
+  ManagedCliUsageError,
+  parseManagedCliCommand,
+  runManagedCliCommand,
+} from "./managed.ts";
 
 interface Args {
   command: string;
@@ -145,9 +153,20 @@ async function chat(args: Args): Promise<void> {
   }
 }
 
-const args = parseArgs(process.argv.slice(2));
-if (args.command !== "chat") {
-  console.error(`unknown command: ${args.command}`);
-  process.exit(1);
+const argv = process.argv.slice(2);
+if (argv[0] === "sessions" || argv[0] === "delete") {
+  try {
+    await runManagedCliCommand(parseManagedCliCommand(argv));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = error instanceof ManagedCliUsageError ? 2 : 1;
+  }
+} else {
+  const args = parseArgs(argv);
+  if (args.command !== "chat") {
+    console.error(`unknown command: ${args.command}`);
+    process.exitCode = 2;
+  } else {
+    await chat(args);
+  }
 }
-await chat(args);
