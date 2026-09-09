@@ -1932,3 +1932,34 @@ Tests cover mixed importable/mismatched/missing rows, exact checkpoint-derived a
 concurrent import races, repeat import after a destination revision change, and conflicting
 incarnations with preservation of the existing target. The complete repository suite
 passes 629/629, `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 10A — transactional managed-session deletion
+
+Added the consumer-facing `SessionManager.deleteAgentSession()` operation and the lower-
+level `deleteManagedAgentSession()` utility. The API requires a stable deletion ID plus
+the expected incarnation and record revision. With no destructive flags it creates a
+tombstone while retaining transcript and audit artifacts; either artifact can be deleted
+explicitly, and registry hard removal is accepted only when no known artifact will remain.
+
+The implementation uses the existing maintenance transaction rather than adding another
+state model. It resolves every currently available artifact, acquires their writer locks
+in canonical absolute-path order, prepares the incarnation/revision-fenced deletion,
+unlinks only requested paths, synchronizes their parent directories, and then atomically
+finalizes either the tombstone or registry removal. Ordinary live writers therefore stop
+deletion before its prepared marker is published rather than leaving an indefinitely
+hidden session.
+
+Interrupted deletion is retryable with the same normalized request. Missing files after a
+partially completed delete are treated idempotently while the prepared maintenance remains
+visible. Hard deletion can also resolve a lost successful return through the existing
+incarnation-scoped completion receipt even though the session record no longer exists.
+Reused stable logical IDs remain protected by the caller's expected incarnation token.
+
+Deletion metadata uses the prepared transaction timestamp, clamped to the existing record
+timestamp so host clock skew cannot move registry time backward; retries therefore produce
+the same lifecycle timestamps. Tests cover default tombstoning, independent artifact
+retention, selective deletion, a failure between unlink and registry finalization, hard-
+removal validation and idempotent retry, and CAS failure before filesystem mutation.
+
+The complete repository suite passes 633/633, `tsc --noEmit` passes, and
+`git diff --check` is clean.

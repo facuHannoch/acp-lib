@@ -305,6 +305,11 @@ export type {
   LegacyRegistryImportResult,
   LegacyRegistryImportStatus,
 } from "./persistence/legacy-registry-import.ts";
+export {
+  AgentSessionDeletionError,
+  deleteManagedAgentSession,
+} from "./persistence/deletion.ts";
+export type { DeleteAgentSessionOptions } from "./persistence/deletion.ts";
 export type {
   ActivityExecutionState,
   ListTranscriptActivitiesOptions,

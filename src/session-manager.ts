@@ -29,6 +29,10 @@ import {
   importLegacySessionRegistry,
   type LegacyRegistryImportResult,
 } from "./persistence/legacy-registry-import.ts";
+import {
+  deleteManagedAgentSession,
+  type DeleteAgentSessionOptions,
+} from "./persistence/deletion.ts";
 
 export interface SessionManagerConfig {
   readonly root?: string;
@@ -159,6 +163,18 @@ export class SessionManager {
   /** Explicitly import a compatibility SessionStore after its transcripts were migrated. */
   async importLegacySessions(source: SessionStore): Promise<LegacyRegistryImportResult> {
     return importLegacySessionRegistry(source, this.requireAgentStore("importLegacySessions()"));
+  }
+
+  /** Tombstone a managed session and optionally delete its known persistence artifacts. */
+  async deleteAgentSession(
+    agentSessionId: string,
+    options: DeleteAgentSessionOptions,
+  ): Promise<void> {
+    await deleteManagedAgentSession(
+      this.requireAgentStore("deleteAgentSession()"),
+      agentSessionId,
+      options,
+    );
   }
 
   /** Internal normalization used by the upcoming managed create/load transaction path. */
