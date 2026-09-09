@@ -204,7 +204,7 @@ export async function readTranscriptLines(
 
   const out: TranscriptLine[] = [];
   for (const raw of content.split(/\r?\n/)) {
-    const line = parseTranscriptLine(raw, options.before, types);
+    const line = parseLegacyTranscriptLine(raw, options.before, types);
     if (line) out.push(line);
   }
   return out;
@@ -298,7 +298,7 @@ async function readTail(
 
       const raws = decoder.decode(body).split(/\r?\n/);
       for (let i = raws.length - 1; i >= 0 && newestFirst.length < limit; i--) {
-        const line = parseTranscriptLine(raws[i]!, before, types);
+        const line = parseLegacyTranscriptLine(raws[i]!, before, types);
         if (line) newestFirst.push(line);
       }
     }
@@ -316,7 +316,7 @@ async function readTail(
  * paths tally what this returns, so narrowing `types` narrows what the budget is spent on
  * without either loop knowing about it.
  */
-function parseTranscriptLine(
+export function parseLegacyTranscriptLine(
   raw: string,
   before?: number,
   types?: Set<string>,

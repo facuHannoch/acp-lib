@@ -309,6 +309,7 @@ export type {
   TranscriptPage,
   TranscriptSnapshotCursor,
   TranscriptTimelineItem,
+  TranscriptReadableRecord,
   TranscriptView,
 } from "./persistence/transcript-reader.ts";
 export type {

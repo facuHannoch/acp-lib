@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import {
+  parseLegacyTranscriptLine,
+  type TranscriptLine as LegacyTranscriptLine,
+  type TranscriptMessageLine as LegacyTranscriptMessageLine,
+} from "../transcript.ts";
 import { canonicalizeJson } from "./integrity.ts";
 import type { JsonObject } from "./checkpoint.ts";
 import {
@@ -62,7 +67,7 @@ export interface TranscriptPage<
   readonly snapshot: S;
 }
 
-export type TranscriptConversationItem = TranscriptMessageRecord;
+export type TranscriptConversationItem = TranscriptMessageRecord | LegacyTranscriptMessageLine;
 export type TranscriptTimelineItem =
   | TranscriptMessageRecord
   | TranscriptReasoningRecord
@@ -72,7 +77,13 @@ export type TranscriptTimelineItem =
   | TranscriptTransitionRecord
   | TranscriptMeteringReferenceRecord
   | TranscriptLifecycleRecord
-  | TranscriptProtocolMetadataRecord;
+  | TranscriptProtocolMetadataRecord
+  | LegacyTranscriptLine;
+
+export type TranscriptReadableRecord =
+  | KnownTranscriptRecord
+  | UnknownTranscriptRecord
+  | LegacyTranscriptLine;
 
 export type ActivityExecutionState = "observed_live" | "historically_open" | "terminal";
 
@@ -138,7 +149,7 @@ interface NavigationPayload extends SnapshotBoundary {
   readonly filterProvided: boolean;
 }
 
-interface PhysicalRecord<T = KnownTranscriptRecord | UnknownTranscriptRecord> {
+interface PhysicalRecord<T = TranscriptReadableRecord> {
   readonly item: T;
   readonly sequence: number;
   readonly start: number;
@@ -162,10 +173,10 @@ export class TranscriptReader {
 
   readPage(options?: ReadTranscriptPageOptions & { readonly view?: "timeline" }): Promise<TranscriptPage<TranscriptTimelineItem>>;
   readPage(options: ReadTranscriptPageOptions & { readonly view: "conversation" }): Promise<TranscriptPage<TranscriptConversationItem>>;
-  readPage(options: ReadTranscriptPageOptions & { readonly view: "records" }): Promise<TranscriptPage<KnownTranscriptRecord | UnknownTranscriptRecord>>;
+  readPage(options: ReadTranscriptPageOptions & { readonly view: "records" }): Promise<TranscriptPage<TranscriptReadableRecord>>;
   async readPage(
     options: ReadTranscriptPageOptions = {},
-  ): Promise<TranscriptPage<KnownTranscriptRecord | UnknownTranscriptRecord>> {
+  ): Promise<TranscriptPage<TranscriptReadableRecord>> {
     const limit = validatedLimit(options.limit);
     const view = options.view ?? "timeline";
     const filter = normalizeTypes(view, options.types);
@@ -203,7 +214,9 @@ export class TranscriptReader {
           navigation.boundaryEnd,
           snapshot.payload.highOffset,
           limit + 1,
-          navigation.boundarySequence + 1,
+          navigation.boundaryStart < legacyBoundary(snapshot.header)
+            ? 1
+            : navigation.boundarySequence + 1,
           (record) => projectRecord(record.item, view, filter),
         );
         hasOlder = true;
@@ -253,6 +266,7 @@ export class TranscriptReader {
       const latest = new Map<string, { record: TranscriptActivityRecord; sequence: number }>();
       for await (const physical of forwardLines(snapshot.handle, 0, snapshot.payload.highOffset, snapshot.header.effectiveLimits.maxRecordBytes)) {
         const parsed = parsePhysical(physical, snapshot.header);
+        if (!parsed) continue;
         if (!isActivityRecord(parsed.item)) continue;
         const previous = latest.get(parsed.item.activityId);
         if (previous && parsed.item.activityRevision <= previous.record.activityRevision) {
@@ -316,6 +330,9 @@ export class TranscriptReader {
         if (highOffset === 0) throw new TranscriptReaderError("transcript has no complete records");
         const high = await readLastPhysical(handle, highOffset, header.effectiveLimits.maxRecordBytes);
         const parsedHigh = parsePhysical(high, header);
+        if (!parsedHigh || parsedHigh.item.v !== 2) {
+          throw new TranscriptReaderError("transcript snapshot has no v2 high-water record");
+        }
         payload = {
           v: CURSOR_VERSION,
           k: "transcript_snapshot",
@@ -346,14 +363,17 @@ export class TranscriptReader {
 }
 
 function projectRecord(
-  record: KnownTranscriptRecord | UnknownTranscriptRecord,
+  record: TranscriptReadableRecord,
   view: TranscriptView,
   filter: TypeFilter,
 ): boolean {
-  if (view === "conversation") return record.t === "message";
-  if (view === "timeline") return TIMELINE_TYPES.has(record.t as TranscriptRecordType)
-    && (!filter.provided || filter.types.includes(record.t as TranscriptRecordType));
-  return !filter.provided || filter.types.includes(record.t as TranscriptRecordType);
+  if (view === "conversation") return record.t === "message" || record.t === "msg";
+  const type = "transcriptId" in record
+    ? record.t as TranscriptRecordType
+    : legacyProjectionType(record);
+  if (view === "timeline") return type !== null && TIMELINE_TYPES.has(type)
+    && (!filter.provided || filter.types.includes(type));
+  return !filter.provided || (type !== null && filter.types.includes(type));
 }
 
 interface TypeFilter {
@@ -416,8 +436,11 @@ async function collectBackward(
   let expectedSequence = expectedFirstSequence;
   for await (const physical of backwardLines(handle, end, header.effectiveLimits.maxRecordBytes)) {
     const parsed = parsePhysical(physical, header);
-    if (parsed.sequence !== expectedSequence) throw new TranscriptReaderError("transcript sequence is not physically contiguous");
-    expectedSequence--;
+    if (!parsed) continue;
+    if (parsed.item.v === 2) {
+      if (parsed.sequence !== expectedSequence) throw new TranscriptReaderError("transcript sequence is not physically contiguous");
+      expectedSequence--;
+    }
     if (match(parsed)) output.push(parsed);
     if (output.length >= count) break;
   }
@@ -437,8 +460,11 @@ async function collectForward(
   let expectedSequence = expectedFirstSequence;
   for await (const physical of forwardLines(handle, start, end, header.effectiveLimits.maxRecordBytes)) {
     const parsed = parsePhysical(physical, header);
-    if (parsed.sequence !== expectedSequence) throw new TranscriptReaderError("transcript sequence is not physically contiguous");
-    expectedSequence++;
+    if (!parsed) continue;
+    if (parsed.item.v === 2) {
+      if (parsed.sequence !== expectedSequence) throw new TranscriptReaderError("transcript sequence is not physically contiguous");
+      expectedSequence++;
+    }
     if (match(parsed)) output.push(parsed);
     if (output.length >= count) break;
   }
@@ -528,8 +554,24 @@ async function* backwardLines(
 function parsePhysical(
   physical: PhysicalLine,
   header: TranscriptHeaderRecord,
-): PhysicalRecord {
+): PhysicalRecord | null {
   if (physical.bytes.byteLength === 0) throw new TranscriptReaderError("transcript contains an empty record");
+  if (physical.start < legacyBoundary(header)) {
+    let raw: string;
+    try {
+      raw = UTF8.decode(physical.bytes);
+    } catch {
+      return null;
+    }
+    const item = parseLegacyTranscriptLine(raw);
+    return item ? {
+      item,
+      sequence: physical.start + 1,
+      start: physical.start,
+      end: physical.end,
+      digest: sha256Bytes(physical.bytes),
+    } : null;
+  }
   let value: unknown;
   try {
     value = JSON.parse(UTF8.decode(physical.bytes));
@@ -585,17 +627,30 @@ function parsePhysical(
 
 async function readHeader(handle: FileHandle, fileSize: number): Promise<TranscriptHeaderRecord> {
   if (fileSize === 0) throw new TranscriptReaderError("transcript is empty");
-  const physical = await firstPhysical(handle, fileSize);
-  if (physical.bytes.byteLength > HARD_MAX_RECORD_BYTES) throw new TranscriptReaderError("transcript header exceeds safety ceiling");
-  let value: unknown;
-  try {
-    value = JSON.parse(UTF8.decode(physical.bytes));
-    validateTranscriptRecord(value);
-  } catch (error) {
-    throw new TranscriptReaderError("transcript header is invalid", { cause: error });
+  const completeOffset = await lastCompleteOffset(handle, fileSize);
+  for await (const physical of forwardLines(handle, 0, completeOffset, HARD_MAX_RECORD_BYTES)) {
+    let value: unknown;
+    try {
+      value = JSON.parse(UTF8.decode(physical.bytes));
+    } catch {
+      continue;
+    }
+    if (!isRecord(value) || value.v !== 2) continue;
+    try {
+      validateTranscriptRecord(value);
+    } catch (error) {
+      throw new TranscriptReaderError("transcript v2 header is invalid", { cause: error });
+    }
+    if (value.t !== "header" || value.seq !== 1) {
+      throw new TranscriptReaderError("first v2 transcript record is not its header");
+    }
+    if (physical.start > 0 && (value.event !== "upgraded"
+      || value.upgradedFrom?.boundaryOffset !== physical.start)) {
+      throw new TranscriptReaderError("mixed transcript legacy boundary is invalid");
+    }
+    return value;
   }
-  if (value.t !== "header" || value.seq !== 1) throw new TranscriptReaderError("first transcript record is not its header");
-  return value;
+  throw new TranscriptReaderError("transcript has no complete v2 header");
 }
 
 async function firstPhysical(handle: FileHandle, fileSize: number): Promise<PhysicalLine> {
@@ -653,7 +708,9 @@ async function validateBoundary(
   const physical = { bytes: bytes.subarray(0, bytes.byteLength - 1), start: cursor.boundaryStart, end: cursor.boundaryEnd };
   let parsed: PhysicalRecord;
   try {
-    parsed = parsePhysical(physical, header);
+    const candidate = parsePhysical(physical, header);
+    if (!candidate) throw new Error("unreadable boundary");
+    parsed = candidate;
   } catch (error) {
     throw new TranscriptCursorInvalidError("transcript cursor boundary is invalid", { cause: error });
   }
@@ -671,7 +728,9 @@ async function validateHighBoundary(
   let parsed: PhysicalRecord;
   try {
     physical = await readLastPhysical(handle, cursor.highOffset, header.effectiveLimits.maxRecordBytes);
-    parsed = parsePhysical(physical, header);
+    const candidate = parsePhysical(physical, header);
+    if (!candidate) throw new Error("unreadable high-water boundary");
+    parsed = candidate;
   } catch (error) {
     throw new TranscriptCursorInvalidError("transcript cursor high-water boundary is invalid", { cause: error });
   }
@@ -883,9 +942,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isActivityRecord(
-  value: KnownTranscriptRecord | UnknownTranscriptRecord,
+  value: TranscriptReadableRecord,
 ): value is TranscriptActivityRecord {
-  return value.t === "activity" && "activityId" in value;
+  return "transcriptId" in value && value.v === 2
+    && value.t === "activity" && "activityId" in value;
+}
+
+function legacyBoundary(header: TranscriptHeaderRecord): number {
+  return header.event === "upgraded" ? header.upgradedFrom!.boundaryOffset : 0;
+}
+
+function legacyProjectionType(record: LegacyTranscriptLine): TranscriptRecordType | null {
+  switch (record.t) {
+    case "msg": return "message";
+    case "activity": return "activity";
+    case "permission": return "permission";
+    case "handoff": return "transition";
+    case "meta": return "protocol";
+    case "raw": return "raw";
+  }
 }
 
 /** @internal Shared byte-scanning primitives for the audit-log reader. */

@@ -1863,3 +1863,42 @@ the next Phase 7 slice.
 
 The complete repository suite passes 624/624, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 9B — mixed v1/v2 scanning, opening, and pagination
+
+Extended the authoritative transcript scanner to recognize a v1 presentation prefix
+followed by the explicit generation-1 upgrade boundary. Before that boundary, malformed
+and unknown v1 lines retain their historical permissive behavior. The first v2 object must
+be the `upgraded` header at the exact byte offset engraved in `upgradedFrom`; all subsequent
+continuation scanning, sequence validation, canonical history folding, checkpoint
+selection, and recovery analysis operate only on the v2 suffix.
+
+Because the continuation scanner now reports the suffix's v2 sequence independently from
+physical legacy lines, the existing `FileSessionLogWriter.resumeTranscript()` and
+`TranscriptPersistenceRuntime.resume()` work unchanged above it. A migrated transcript
+can acquire normal append ownership at sequence 3, persist new operation/content/checkpoint
+records, and reopen using the same reducer and uncertainty rules as a transcript created
+natively as v2.
+
+Updated `TranscriptReader` to locate and validate an upgrade header after a bounded-memory
+legacy scan. Recognized v1 records are decoded with the existing permissive legacy parser
+and exposed as presentation records; malformed and unknown v1 lines remain skipped. The
+conversation view combines legacy `msg` records with v2 `message` records, timeline/record
+filters map compatible legacy categories, and records view can retain recognized legacy
+raw/meta/history records without manufacturing v2 envelopes.
+
+Pagination can cross the declared byte boundary in either direction. V1 order is physical
+file order, while v2 envelope sequence continuity remains checked within the authoritative
+suffix. The snapshot prefix digest binds both regions, so edits to legacy presentation
+history invalidate an existing mixed cursor just as edits to the v2 suffix do. Legacy
+activity is intentionally not folded into v2 offline activity state; the older v1 folding
+API remains its compatibility path.
+
+Added an end-to-end test that migrates a v1 transcript, scans its canonical checkpoint,
+resumes it through the live transcript runtime, appends a new v2 prompt boundary, and pages
+from the v2 message into the v1 message and forward again without overlap. A process-backed
+integration test verifies that ordinary `AgentSession.open()` loads the engraved provider
+thread from this mixed file and returns a clean, promptable logical session.
+
+The complete repository suite passes 626/626, `tsc --noEmit` passes, and
+`git diff --check` is clean.

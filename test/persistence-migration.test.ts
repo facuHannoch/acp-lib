@@ -7,6 +7,9 @@ import {
   LegacyTranscriptMigrationError,
   migrateLegacyTranscript,
 } from "../src/persistence/migration.ts";
+import { TranscriptReader } from "../src/persistence/transcript-reader.ts";
+import { scanTranscriptContinuation } from "../src/persistence/transcript-scanner.ts";
+import { TranscriptPersistenceRuntime } from "../src/persistence/transcript-runtime.ts";
 
 const roots: string[] = [];
 const NOW = new Date("2026-09-09T16:00:00.000Z");
@@ -68,6 +71,61 @@ describe("legacy transcript migration", () => {
       continuation: { ...continuation(), model: "different-model" },
     })).rejects.toBeInstanceOf(LegacyTranscriptMigrationError);
     expect(await readFile(path)).toEqual(bytes);
+  });
+
+  test("the mixed file is continuation authority, remains appendable, and pages into v1", async () => {
+    const path = await legacyFixture(false);
+    const migration = await migrateLegacyTranscript(options(path));
+    const initial = await scanTranscriptContinuation(path, {
+      agentSessionId: "agent-1",
+      transcriptId: migration.header.transcriptId,
+      generation: 1,
+    });
+    expect(initial.selectedCheckpointRecord.seq).toBe(2);
+    expect(initial.reduction.checkpoint.digest).toBe(migration.checkpoint.digest);
+    expect(initial.lastCompleteSequence).toBe(2);
+
+    const legacyConversation = await new TranscriptReader(path).readPage({
+      view: "conversation",
+      limit: 10,
+    });
+    expect(legacyConversation.items).toMatchObject([
+      { v: 1, t: "msg", role: "user", text: "hello" },
+    ]);
+
+    const runtime = await TranscriptPersistenceRuntime.resume({ path });
+    await runtime.beginOperation("op-after-migration", "prompt", NOW.getTime() + 1_000);
+    await runtime.appendEvent({
+      kind: "message",
+      operationId: "op-after-migration",
+      role: "user",
+      text: "after migration",
+    }, NOW.getTime() + 1_100);
+    await runtime.finishOperation("settled", {}, undefined, NOW.getTime() + 2_000);
+    await runtime.close();
+
+    const appended = await scanTranscriptContinuation(path);
+    expect(appended.reduction.recovery).toEqual({ kind: "clean" });
+    expect(appended.lastCompleteSequence).toBe(6);
+    const conversation = await new TranscriptReader(path).readPage({ view: "conversation", limit: 10 });
+    expect(conversation.items.map((item) => [item.v, item.t, item.text])).toEqual([
+      [1, "msg", "hello"],
+      [2, "message", "after migration"],
+    ]);
+    const newest = await new TranscriptReader(path).readPage({ view: "conversation", limit: 1 });
+    expect(newest.items.map((item) => item.text)).toEqual(["after migration"]);
+    const acrossBoundary = await new TranscriptReader(path).readPage({
+      view: "conversation",
+      limit: 1,
+      cursor: newest.olderCursor!,
+    });
+    expect(acrossBoundary.items.map((item) => item.text)).toEqual(["hello"]);
+    const backToV2 = await new TranscriptReader(path).readPage({
+      view: "conversation",
+      limit: 1,
+      cursor: acrossBoundary.newerCursor!,
+    });
+    expect(backToV2.items.map((item) => item.text)).toEqual(["after migration"]);
   });
 
   test("resumes an upgrade header whose initial checkpoint was not installed", async () => {

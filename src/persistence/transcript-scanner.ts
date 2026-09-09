@@ -120,6 +120,41 @@ async function scanOpenTranscript(
   const snapshotSize = (await handle.stat()).size;
 
   for await (const physical of completeLines(handle, snapshotSize)) {
+    if (!header) {
+      const candidate = tryParseJsonObject(physical.bytes);
+      if (!candidate || candidate.v !== 2) {
+        // A linked v1 prefix is presentation-only and retains its permissive reader rules.
+        lastCompleteOffset = physical.endOffset;
+        continue;
+      }
+      let upgrade: KnownTranscriptRecord;
+      try {
+        validateTranscriptRecord(candidate, { transcriptPath: path });
+        upgrade = candidate;
+      } catch (error) {
+        throw new TranscriptCorruptionError("invalid v2 header after legacy prefix", { cause: error });
+      }
+      if (upgrade.t !== "header" || upgrade.seq !== 1) {
+        corrupt("first v2 record must be the transcript header", 1);
+      }
+      if (physical.startOffset > 0) {
+        if (upgrade.event !== "upgraded"
+          || upgrade.upgradedFrom?.boundaryOffset !== physical.startOffset) {
+          corrupt("mixed transcript has an invalid declared legacy boundary", 1);
+        }
+      } else if (upgrade.event === "upgraded" && upgrade.upgradedFrom?.boundaryOffset !== 0) {
+        corrupt("upgrade header boundary does not match its physical position", 1);
+      }
+      assertExpectedHeaderIdentity(upgrade, expected);
+      if (physical.bytes.byteLength > upgrade.effectiveLimits.maxRecordBytes) {
+        corrupt("header exceeds its engraved maxRecordBytes", 1);
+      }
+      header = upgrade;
+      sequence = 1;
+      lastCompleteOffset = physical.endOffset;
+      continue;
+    }
+
     if (physical.bytes.byteLength === 0) corrupt("empty complete line", sequence + 1);
     const maxBytes = header?.effectiveLimits.maxRecordBytes ?? HARD_MAX_RECORD_BYTES;
     if (physical.bytes.byteLength > maxBytes) {
@@ -151,14 +186,6 @@ async function scanOpenTranscript(
       throw new TranscriptCorruptionError(`invalid transcript record at sequence ${nextSequence}`, { cause: error });
     }
 
-    if (!header) {
-      if (record.t !== "header" || record.seq !== 1) corrupt("first complete record must be the transcript header", nextSequence);
-      header = record;
-      if (physical.bytes.byteLength > header.effectiveLimits.maxRecordBytes) {
-        corrupt("header exceeds its engraved maxRecordBytes", nextSequence);
-      }
-      continue;
-    }
     if (record.t === "header") corrupt("transcript generation contains more than one header", nextSequence);
     if (record.t === "message" && (record.truncation?.length ?? 0) > 0) {
       conversationTruncated = true;
@@ -285,6 +312,7 @@ function validateUnknownEnvelope(value: Record<string, unknown>, sequence: numbe
 
 interface CompleteLine {
   bytes: Buffer;
+  startOffset: number;
   endOffset: number;
 }
 
@@ -307,8 +335,9 @@ async function* completeLines(handle: FileHandle, snapshotSize: number): AsyncGe
       const newline = combined.indexOf(0x0a, start);
       if (newline < 0) break;
       const bytes = combined.subarray(start, newline);
+      const startOffset = position - combined.byteLength + start;
       const endOffset = position - combined.byteLength + newline + 1;
-      yield { bytes, endOffset };
+      yield { bytes, startOffset, endOffset };
       start = newline + 1;
     }
     pending = Buffer.from(combined.subarray(start));
@@ -317,6 +346,30 @@ async function* completeLines(handle: FileHandle, snapshotSize: number): AsyncGe
     }
   }
   // A nonempty pending suffix is a torn final line and intentionally ignored.
+}
+
+function tryParseJsonObject(bytes: Buffer): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(UTF8.decode(bytes));
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function assertExpectedHeaderIdentity(
+  header: TranscriptHeaderRecord,
+  expected: TranscriptScanExpectation,
+): void {
+  if (expected.agentSessionId !== undefined && header.agentSessionId !== expected.agentSessionId) {
+    throw new TranscriptIdentityError("agentSessionId does not match requested transcript identity");
+  }
+  if (expected.transcriptId !== undefined && header.transcriptId !== expected.transcriptId) {
+    throw new TranscriptIdentityError("transcriptId does not match requested transcript identity");
+  }
+  if (expected.generation !== undefined && header.generation !== expected.generation) {
+    throw new TranscriptIdentityError("transcript generation does not match requested identity");
+  }
 }
 
 function corrupt(message: string, sequence?: number): never {

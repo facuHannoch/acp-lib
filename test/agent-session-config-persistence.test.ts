@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
 } from "../src/agent-session.ts";
 import { scanTranscriptContinuation } from "../src/persistence/transcript-scanner.ts";
 import { FileSessionLogWriter } from "../src/persistence/session-log-writer.ts";
+import { migrateLegacyTranscript } from "../src/persistence/migration.ts";
 
 const roots: string[] = [];
 
@@ -18,6 +19,57 @@ afterEach(async () => {
 });
 
 describe("AgentSession persisted configuration", () => {
+  test("ordinary open loads a provider thread from an explicitly migrated mixed transcript", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v1-migrated-"));
+    roots.push(root);
+    const agentSessionId = "config-migrated-session";
+    const transcriptPath = join(root, "transcripts", `${agentSessionId}.jsonl`);
+    await mkdir(join(root, "transcripts"), { recursive: true });
+    await writeFile(transcriptPath, `${JSON.stringify({
+      v: 1, t: "msg", role: "user", text: "legacy question", ts: Date.now() - 1_000,
+    })}\n`);
+    const now = new Date();
+    await migrateLegacyTranscript({
+      path: transcriptPath,
+      agentSessionId,
+      transcriptId: "config-migrated-transcript",
+      incarnationId: "config-migrated-incarnation",
+      continuation: {
+        adapterId: "fake",
+        mode: "normal",
+        internalSessionId: "config-session",
+        internalSessionActivatedAt: now.toISOString(),
+        model: "alpha",
+        sessionConfiguration: {
+          adapterId: "fake",
+          effective: {},
+          restorationTargets: [],
+          announcedConfigIds: [],
+          schemaDigest: null,
+          observedAt: now.toISOString(),
+          restorationFidelity: "exact",
+          omittedConfigIds: [],
+        },
+        protocol: { name: "acp", version: 1 },
+      },
+      now: () => now,
+    });
+
+    const opened = await AgentSession.open({
+      adapter: { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] },
+      adapterId: "fake",
+      agentSessionId,
+      persistence: { root },
+    });
+    expect(opened.continuation.outcome).toEqual({
+      kind: "loaded",
+      activeInternalSessionId: "config-session",
+    });
+    expect(opened.recovery).toEqual({ kind: "clean" });
+    expect(opened.session.agentSessionId).toBe(agentSessionId);
+    await opened.session.stop();
+  }, 20_000);
+
   test("serializes setConfig and checkpoints the selected restoration target", async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-config-v2-"));
     roots.push(root);
