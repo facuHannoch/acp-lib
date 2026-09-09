@@ -110,6 +110,15 @@ describe("session-log record schemas", () => {
     }, "sessionConfiguration is invalid audit transition content");
   });
 
+  test("does not require transcript continuation state on audit operation boundaries", () => {
+    expect(() => validateAuditLogRecord(auditRecord({
+      t: "operation",
+      event: "started",
+      operationId: "op-1",
+      operationKind: "prompt",
+    }))).not.toThrow();
+  });
+
   test("rejects unsafe machine codes, malformed truncation, and identity disagreement", () => {
     const record = transcript({
       t: "operation",

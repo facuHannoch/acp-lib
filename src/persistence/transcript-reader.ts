@@ -49,13 +49,17 @@ export interface ReadTranscriptPageOptions {
   readonly types?: readonly TranscriptRecordType[];
 }
 
-export interface TranscriptPage<T> {
+export interface TranscriptPage<
+  T,
+  C = TranscriptCursor,
+  S = TranscriptSnapshotCursor,
+> {
   readonly items: readonly T[];
-  readonly olderCursor: TranscriptCursor | null;
-  readonly newerCursor: TranscriptCursor | null;
+  readonly olderCursor: C | null;
+  readonly newerCursor: C | null;
   readonly hasOlder: boolean;
   readonly hasNewer: boolean;
-  readonly snapshot: TranscriptSnapshotCursor;
+  readonly snapshot: S;
 }
 
 export type TranscriptConversationItem = TranscriptMessageRecord;
@@ -441,11 +445,13 @@ async function collectForward(
   return output;
 }
 
-interface PhysicalLine {
+export interface SessionLogPhysicalLine {
   readonly bytes: Uint8Array;
   readonly start: number;
   readonly end: number;
 }
+
+type PhysicalLine = SessionLogPhysicalLine;
 
 async function* forwardLines(
   handle: FileHandle,
@@ -881,3 +887,19 @@ function isActivityRecord(
 ): value is TranscriptActivityRecord {
   return value.t === "activity" && "activityId" in value;
 }
+
+/** @internal Shared byte-scanning primitives for the audit-log reader. */
+export const SESSION_LOG_READER_INTERNALS = Object.freeze({
+  hardMaxRecordBytes: HARD_MAX_RECORD_BYTES,
+  forwardLines,
+  backwardLines,
+  readBytes,
+  firstPhysical,
+  readLastPhysical,
+  lastCompleteOffset,
+  digestPrefix,
+  sha256Bytes,
+  positiveInteger,
+  nonnegativeInteger,
+  integrityTag,
+});

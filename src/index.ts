@@ -280,6 +280,16 @@ export {
   TranscriptReader,
   TranscriptReaderError,
 } from "./persistence/transcript-reader.ts";
+export {
+  AuditLogCursorInvalidError,
+  AuditLogReader,
+  AuditLogReaderError,
+} from "./persistence/audit-log-reader.ts";
+export type {
+  AuditLogCursor,
+  AuditLogSnapshotCursor,
+  ReadAuditLogPageOptions,
+} from "./persistence/audit-log-reader.ts";
 export type {
   ActivityExecutionState,
   ListTranscriptActivitiesOptions,

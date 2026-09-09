@@ -508,7 +508,7 @@ function validateRecognizedRecord(
       validateCheckpointRecord(record, expected);
       return;
     case "operation":
-      validateOperation(record);
+      validateOperation(record, sink);
       return;
     case "message":
       if (sink !== "transcript") fail("message is invalid audit content");
@@ -630,7 +630,7 @@ function validateCheckpointRecord(record: Record<string, unknown>, expected: Ses
   }
 }
 
-function validateOperation(record: Record<string, unknown>): void {
+function validateOperation(record: Record<string, unknown>, sink: "transcript" | "audit"): void {
   requiredOperationId(record);
   oneOf(record.event, ["started", "settled", "failed", "cancelled", "interrupted", "aborted"], "operation.event");
   oneOf(record.operationKind, ["prompt", "set_config", "internal_session_command", "handoff_summary", "handoff_seed", "switch_seed", "other"], "operation.operationKind");
@@ -641,7 +641,7 @@ function validateOperation(record: Record<string, unknown>): void {
   } else if (record.abortReason !== undefined) {
     fail("operation.abortReason is allowed only for aborted events");
   }
-  if (record.event === "started" || record.event === "aborted") {
+  if (sink === "transcript" && (record.event === "started" || record.event === "aborted")) {
     positiveInteger(record.stateRevision, "operation.stateRevision");
     epochMilliseconds(record.ts, "operation.ts");
   }

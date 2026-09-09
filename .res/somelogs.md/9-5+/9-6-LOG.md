@@ -1792,3 +1792,37 @@ records, empty filters, cursor projection binding, prefix rewrites, malformed/ov
 wrong-kind cursors, snapshot activity folding, the 256-byte cursor budget, and records over
 64 KiB with a UTF-8 split. The complete repository suite passes 616/616, `tsc --noEmit`
 passes, and `git diff --check` is clean.
+
+### Part 8B — audit-log pagination
+
+Added the public `AuditLogReader` with the same bounded, snapshot-stable paging contract as
+the transcript reader while retaining an audit-specific API and record union. The reader
+starts from the newest matching records, returns pages oldest-to-newest, supports exact
+type-filtered older/newer navigation without overlap, and exposes forward-compatible
+unknown audit envelopes through `UnknownAuditLogRecord`.
+
+Audit navigation and snapshot cursors use distinct brands and distinct wire-kind markers;
+they cannot be accepted as transcript cursors even when their sequence and generation
+happen to match. Cursors bind the audit-log identity, generation, inclusive high-water
+boundary, physical page boundary, and exact filter. They detect truncation and rewrites,
+reject malformed or oversized input before using offsets, and fit a header engraved with
+the minimum supported 256-byte cursor size. Concurrent appends stay outside an existing
+walk and appear only in a fresh snapshot.
+
+Extracted only the byte-level JSONL scanning, hashing, and integer-validation primitives
+from the transcript reader as an internal module contract. Transcript and audit parsing,
+schema validation, cursor wire formats, public errors, and projection semantics remain
+separate, so audit security does not become a mechanical projection of transcript content.
+The shared `TranscriptPage` container now carries defaulted cursor/snapshot generic types,
+matching the spec while preserving existing transcript call sites.
+
+The reader tests exposed and fixed an older sink-validation mismatch: audit operation
+starts were being required to carry transcript-only continuation `stateRevision`, despite
+both the declared audit schema and audit projection excluding it. The validator now keeps
+that deterministic recovery requirement on transcript operation starts/aborts only. A
+schema regression test fixes this boundary explicitly.
+
+Tests cover audit reverse navigation, append-stable snapshots, no overlap, filters,
+unknown future records, empty filters, cross-kind cursor rejection, malformed/oversized
+cursors, earlier rewrites, and the 256-byte cursor budget. The complete repository suite
+passes 620/620, `tsc --noEmit` passes, and `git diff --check` is clean.
