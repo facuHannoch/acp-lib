@@ -33,6 +33,11 @@ import {
   deleteManagedAgentSession,
   type DeleteAgentSessionOptions,
 } from "./persistence/deletion.ts";
+import {
+  createManagedAgentSession,
+  type ManagedAgentSessionCreateConfig,
+} from "./persistence/managed-creation.ts";
+import type { AgentSession } from "./agent-session.ts";
 
 export interface SessionManagerConfig {
   readonly root?: string;
@@ -177,7 +182,16 @@ export class SessionManager {
     );
   }
 
-  /** Internal normalization used by the upcoming managed create/load transaction path. */
+  /** Create a transcript-backed logical session under a prepared registry transaction. */
+  async createAgentSession(config: ManagedAgentSessionCreateConfig): Promise<AgentSession> {
+    const store = this.requireAgentStore("createAgentSession()");
+    return await createManagedAgentSession({
+      store,
+      persistence: this.resolveSessionPersistence(config.persistence),
+    }, config);
+  }
+
+  /** Shared normalization used by managed create and the upcoming managed load path. */
   resolveSessionPersistence(
     options?: ManagedSessionPersistenceOptions,
   ): ResolvedAgentSessionPersistence {

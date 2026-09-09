@@ -73,6 +73,7 @@ import {
 } from "./persistence/checkpoint.ts";
 import { EMPTY_HISTORY_DIGEST } from "./persistence/reducer.ts";
 import type {
+  InternalSessionHistoryEntry,
   InternalSessionDescriptor,
   TranscriptHeaderRecord,
   OperationKind,
@@ -91,6 +92,8 @@ import {
   type PersistedMachineCode,
 } from "./persistence/integrity.ts";
 import type { PersistenceRepair, SessionRecoveryStatus } from "./persistence/reducer.ts";
+import type { StagedContinuationState } from "./persistence/registry.ts";
+import type { SessionLogWriterLock } from "./persistence/session-log-writer.ts";
 
 interface PromptQueueItem {
   kind: "prompt";
@@ -559,6 +562,18 @@ interface AgentSessionOpenBootstrap {
   readonly transcriptPath: string;
 }
 
+/** @internal Transaction hooks supplied only by SessionManager managed creation. */
+export interface ManagedAgentSessionCreationBootstrap {
+  readonly requestDigest: string;
+  readonly transcriptLock: SessionLogWriterLock;
+  readonly stageContinuation: (state: StagedContinuationState) => Promise<StagedContinuationState>;
+}
+
+export interface ManagedAgentSessionPersistenceSnapshot {
+  readonly checkpoint: AgentSessionCheckpoint;
+  readonly internalSessionHistory: readonly InternalSessionHistoryEntry[];
+}
+
 export class AgentSession implements AgentClient, Bridgeable {
   /** Our stable AgentSession id — decoupled from the ACP/harness session id. */
   readonly agentSessionId: string;
@@ -610,8 +625,14 @@ export class AgentSession implements AgentClient, Bridgeable {
   private continuationAcquired = true;
   private _recovery: SessionRecoveryStatus = { kind: "clean" };
   private _configurationRestore: ConfigurationRestoreStatus = { kind: "matched" };
+  private readonly managedCreation: ManagedAgentSessionCreationBootstrap | null;
+  private managedPersistenceHealthy = true;
 
-  private constructor(config: AgentSessionConfig, openBootstrap: AgentSessionOpenBootstrap | null = null) {
+  private constructor(
+    config: AgentSessionConfig,
+    openBootstrap: AgentSessionOpenBootstrap | null = null,
+    managedCreation: ManagedAgentSessionCreationBootstrap | null = null,
+  ) {
     if (config.transcriptPath && config.transcriptDir) {
       throw new Error("AgentSessionConfig cannot specify both transcriptPath and transcriptDir");
     }
@@ -655,6 +676,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
     this.creationId = config.creationId ?? crypto.randomUUID();
     this.openBootstrap = openBootstrap;
+    this.managedCreation = managedCreation;
     this._transcriptPath =
       config.transcriptPath ??
       (config.transcriptDir
@@ -731,6 +753,28 @@ export class AgentSession implements AgentClient, Bridgeable {
       return session;
     } catch (error) {
       await session.stop().catch(() => {});
+      throw error;
+    }
+  }
+
+  /** @internal Create while transferring a manager-owned transcript lock and staging hook. */
+  static async createManaged(
+    config: AgentSessionConfig,
+    bootstrap: ManagedAgentSessionCreationBootstrap,
+  ): Promise<AgentSession> {
+    let session: AgentSession;
+    try {
+      session = new AgentSession(config, null, bootstrap);
+    } catch (error) {
+      await bootstrap.transcriptLock.release().catch(() => undefined);
+      throw error;
+    }
+    try {
+      await session.start();
+      return session;
+    } catch (error) {
+      await session.stop().catch(() => undefined);
+      await bootstrap.transcriptLock.release().catch(() => undefined);
       throw error;
     }
   }
@@ -861,7 +905,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     const transcriptPath = paths.transcriptPath;
     const createdAt = new Date().toISOString();
     const transcriptId = crypto.randomUUID();
-    const requestDigest = sha256CanonicalJson({
+    const requestDigest = this.managedCreation?.requestDigest ?? sha256CanonicalJson({
       agentSessionId: this.agentSessionId,
       creationId: this.creationId,
       adapterId: this.adapterId,
@@ -893,28 +937,42 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.v2Transcript = await TranscriptPersistenceRuntime.create({
       path: transcriptPath,
       header,
+      writerLock: this.managedCreation?.transcriptLock,
       initializeCheckpoint: async () => {
         const result = await this.controller.start();
         this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
         const now = new Date().toISOString();
+        const sessionConfiguration = snapshotSessionConfiguration({
+          adapterId: this.adapterId,
+          configOptions: this.controller.configOptions,
+          policy: persistence.sessionConfiguration,
+          observedAt: now,
+        });
+        const observedContinuation: StagedContinuationState = {
+          adapterId: this.adapterId,
+          mode: this._mode,
+          internalSessionId: this._internalSessionId,
+          internalSessionActivatedAt: this._internalSessionId ? now : null,
+          model: this.model,
+          sessionConfiguration,
+          protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
+        };
+        const stagedContinuation = this.managedCreation
+          ? await this.managedCreation.stageContinuation(observedContinuation)
+          : observedContinuation;
         return createAgentSessionCheckpoint({
           agentSessionId: this.agentSessionId,
           incarnationId: this.creationId,
           stateRevision: 1,
           adapterId: this.adapterId,
-          mode: this._mode,
-          internalSessionId: this._internalSessionId,
-          internalSessionActivatedAt: this._internalSessionId ? now : null,
+          mode: stagedContinuation.mode,
+          internalSessionId: stagedContinuation.internalSessionId,
+          internalSessionActivatedAt: stagedContinuation.internalSessionActivatedAt,
           internalSessionHistoryRevision: 0,
           internalSessionHistoryDigest: EMPTY_HISTORY_DIGEST,
-          model: this.model,
-          sessionConfiguration: snapshotSessionConfiguration({
-            adapterId: this.adapterId,
-            configOptions: this.controller.configOptions,
-            policy: persistence.sessionConfiguration,
-            observedAt: now,
-          }),
-          protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
+          model: stagedContinuation.model,
+          sessionConfiguration: stagedContinuation.sessionConfiguration,
+          protocol: stagedContinuation.protocol,
           transcript: { transcriptId, generation: 1, path: transcriptPath, coveredSequence: 1 },
           metering: this.metering.currentState,
           boundary: { status: "settled", lastSettledOperationId: null },
@@ -1332,12 +1390,42 @@ export class AgentSession implements AgentClient, Bridgeable {
   get configurationRestoreStatus(): ConfigurationRestoreStatus {
     return structuredClone(this._configurationRestore);
   }
+
+  /** @internal Current authority used by SessionManager to stage the initial registry row. */
+  getManagedPersistenceSnapshot(): ManagedAgentSessionPersistenceSnapshot {
+    if (!this.v2Transcript) throw new Error("managed persistence snapshot requires a v2 transcript");
+    return Object.freeze({
+      checkpoint: this.v2Transcript.checkpoint,
+      internalSessionHistory: Object.freeze([...this.v2Transcript.internalSessionHistory]),
+    });
+  }
+
+  /** @internal Publish every later transcript checkpoint into the managed registry. */
+  attachManagedCheckpointPublisher(
+    publisher: (
+      checkpoint: AgentSessionCheckpoint,
+      history: readonly InternalSessionHistoryEntry[],
+    ) => Promise<void>,
+  ): void {
+    if (!this.v2Transcript) throw new Error("managed checkpoint publication requires a v2 transcript");
+    this.v2Transcript.setCheckpointPublisher(async (checkpoint, history) => {
+      try {
+        await publisher(checkpoint, history);
+      } catch (error) {
+        this.managedPersistenceHealthy = false;
+        this.emitStateIfChanged();
+        throw error;
+      }
+    });
+  }
   get promptability(): AgentSessionPromptability {
     const blockers: PromptBlocker[] = [];
     if (!this.continuationAcquired) blockers.push("continuation_unavailable");
     if (this._recovery.kind !== "clean") blockers.push("recovery_required");
     if (this._configurationRestore.kind === "mismatch") blockers.push("configuration_mismatch");
-    if (this.v2Transcript && !this.v2Transcript.healthy) blockers.push("persistence_unhealthy");
+    if ((this.v2Transcript && !this.v2Transcript.healthy) || !this.managedPersistenceHealthy) {
+      blockers.push("persistence_unhealthy");
+    }
     if (this.phase === "stopped") blockers.push("session_stopped");
     return blockers.length === 0
       ? Object.freeze({ promptable: true as const, blockers: Object.freeze([] as const) })

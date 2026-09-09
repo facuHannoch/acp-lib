@@ -26,6 +26,7 @@ import {
   FileSessionLogWriter,
   type FileSessionLogWriterOptions,
   type ResumeTranscriptWriterOptions,
+  type SessionLogWriterLock,
 } from "./session-log-writer.ts";
 import type { TranscriptHeaderRecord } from "./records.ts";
 
@@ -56,6 +57,8 @@ export interface CreateTranscriptRuntimeOptions {
   readonly initializeCheckpoint?: () => Promise<AgentSessionCheckpoint>;
   readonly lockTimeoutMs?: number;
   readonly lockRetryMs?: number;
+  /** @internal Ownership transferred from managed creation. */
+  readonly writerLock?: SessionLogWriterLock;
 }
 
 export class TranscriptRuntimeStateError extends Error {
@@ -82,6 +85,10 @@ export class TranscriptPersistenceRuntime {
   } | null = null;
   private failure: Error | null = null;
   private closed = false;
+  private checkpointPublisher: ((
+    checkpoint: AgentSessionCheckpoint,
+    history: readonly InternalSessionHistoryEntry[],
+  ) => Promise<void>) | null = null;
 
   private constructor(
     private readonly writer: FileSessionLogWriter<"transcript">,
@@ -120,6 +127,7 @@ export class TranscriptPersistenceRuntime {
       maxRecordBytes: options.header.effectiveLimits.maxRecordBytes,
       lockTimeoutMs: options.lockTimeoutMs,
       lockRetryMs: options.lockRetryMs,
+      writerLock: options.writerLock,
     };
     const writer = await FileSessionLogWriter.create(writerOptions);
     try {
@@ -205,6 +213,23 @@ export class TranscriptPersistenceRuntime {
     return this.writer.nextSequence;
   }
 
+  get internalSessionHistory(): readonly InternalSessionHistoryEntry[] {
+    return this.history.entries.map((entry) => structuredClone(entry));
+  }
+
+  /** @internal Attach the managed registry projection after creation finalizes. */
+  setCheckpointPublisher(
+    publisher: (
+      checkpoint: AgentSessionCheckpoint,
+      history: readonly InternalSessionHistoryEntry[],
+    ) => Promise<void>,
+  ): void {
+    if (this.checkpointPublisher) {
+      throw new TranscriptRuntimeStateError("managed checkpoint publisher is already attached");
+    }
+    this.checkpointPublisher = publisher;
+  }
+
   async beginOperation(operationId: string, kind: OperationKind, ts = Date.now()): Promise<void> {
     this.assertUsable();
     if (this._recovery.kind !== "clean") throw new TranscriptRuntimeStateError("uncertain transcript recovery must be resolved before dispatch");
@@ -222,6 +247,14 @@ export class TranscriptPersistenceRuntime {
     this._checkpoint = reduced.checkpoint;
     this._recovery = reduced.recovery;
     this.activeOperation = { operationId, kind, started: record };
+    try {
+      await this.publishManagedCheckpoint();
+    } catch (error) {
+      // Registry publication is part of the managed pre-dispatch boundary. Close the
+      // transcript operation truthfully before reporting failure to the caller.
+      await this.abortOperation("pre_dispatch_persistence_failure").catch(() => undefined);
+      throw error;
+    }
   }
 
   async appendEvent(event: NormalizedPersistenceEvent, ts = Date.now()): Promise<boolean> {
@@ -298,6 +331,7 @@ export class TranscriptPersistenceRuntime {
       await this.writer.append(physical, { durable: true });
       const reduced = reduceTranscriptState(this.selectedCheckpointRecord, this.history, [physical]);
       this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery);
+      await this.publishManagedCheckpoint();
       return this.checkpoint;
     } catch (error) {
       this.failure = error instanceof Error ? error : new Error(String(error));
@@ -335,6 +369,7 @@ export class TranscriptPersistenceRuntime {
         reduced.recovery,
         reduced.internalSessionHistory,
       );
+      await this.publishManagedCheckpoint();
       return this.checkpoint;
     } catch (error) {
       this.failure = error instanceof Error ? error : new Error(String(error));
@@ -388,6 +423,7 @@ export class TranscriptPersistenceRuntime {
       );
       this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery);
       this.activeOperation = null;
+      await this.publishManagedCheckpoint();
       return this.checkpoint;
     } catch (error) {
       this.failure = error instanceof Error ? error : new Error(String(error));
@@ -426,6 +462,7 @@ export class TranscriptPersistenceRuntime {
       );
       this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery);
       this.activeOperation = null;
+      await this.publishManagedCheckpoint();
       return this.checkpoint;
     } catch (error) {
       this.failure = error instanceof Error ? error : new Error(String(error));
@@ -488,6 +525,7 @@ export class TranscriptPersistenceRuntime {
       }
       this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery, reduced.internalSessionHistory);
       this.openingStructuralTail = [];
+      await this.publishManagedCheckpoint();
       await this.appendEvent({
         kind: "lifecycle",
         event: "recovery_resolved",
@@ -541,6 +579,10 @@ export class TranscriptPersistenceRuntime {
   private assertUsable(): void {
     if (this.closed) throw new TranscriptRuntimeStateError("transcript persistence runtime is closed");
     if (this.failure) throw new TranscriptRuntimeStateError(`transcript persistence runtime failed: ${this.failure.message}`);
+  }
+
+  private async publishManagedCheckpoint(): Promise<void> {
+    await this.checkpointPublisher?.(this.checkpoint, this.internalSessionHistory);
   }
 }
 

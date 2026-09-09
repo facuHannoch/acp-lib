@@ -1991,3 +1991,52 @@ confirmation and cancellation, non-TTY refusal, and prepared-deletion recovery.
 
 The complete repository suite passes 639/639, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 11A — transcript-backed managed creation
+
+Added `SessionManager.createAgentSession()` for the default normal-ACP, transcript-backed
+managed path. The manager resolves defaults, constraints, and the exact transcript
+destination; mints or accepts stable logical/creation identities; acquires transcript
+ownership before publishing maintenance; and prepares the registry creation before any
+provider process starts. The acquired lock is transferred into `AgentSession` and remains
+owned by the live transcript writer until the returned session stops.
+
+Provider identity is advanced into `CreationMaintenance.stagedContinuation` immediately
+after the harness returns it and before the initial checkpoint is written. Once the
+transcript header/checkpoint are durable, the complete registry record is staged and the
+maintenance transaction atomically finalizes it. Header installation provenance uses the
+same request digest and creation ID as the registry transaction. Existing nonempty
+destinations are rejected before reservation; an interrupted matching creation may remove
+only an artifact whose header proves that exact ownership.
+
+If registry finalization fails after provider/transcript creation, the live session is
+stopped but its staged record remains discoverable. An identical retry finalizes that
+record without creating another provider thread, then opens the recorded thread from the
+authoritative transcript. A retry after a retained completion receipt throws
+`MaintenanceAlreadyCompletedError` and tells the consumer to load instead of pretending
+to reproduce the original live object.
+
+The earlier crash phase is covered independently: if provider continuation was staged but
+the complete record was not, retry removes only the matching creation-owned transcript
+generation, loads the already-staged provider thread, and rebuilds the initial generation.
+The staged continuation snapshot remains immutable; a fresh load observation cannot
+replace its activation timestamp or configuration under the same transaction.
+
+Added a managed checkpoint publisher to the transcript runtime. Every later in-flight or
+settled transcript checkpoint updates the registry projection using incarnation/revision
+CAS. In-flight publication occurs before provider dispatch. If it fails, the transcript
+is closed with a durable aborted boundary, provider work is withheld, and the live
+session exposes `persistence_unhealthy` rather than continuing against stale managed
+state.
+
+This slice deliberately rejects registry-only, audit-backed, and degraded managed
+creation with explicit typed errors. Registry-only creation needs its own checkpoint
+runtime, while audit-backed creation needs coordinated independent audit-log installation;
+neither is simulated through a weaker best-effort path.
+
+Tests cover successful creation, generated registry projection, later configuration
+checkpoint publication, initialized-destination refusal before maintenance, staged-record
+and staged-continuation retries without duplicate provider creation, completed-call
+semantics, explicit unsupported variants, and registry pre-dispatch failure. The complete
+repository suite passes 645/645,
+`tsc --noEmit` passes, and `git diff --check` is clean.

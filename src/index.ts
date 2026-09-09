@@ -310,6 +310,11 @@ export {
   deleteManagedAgentSession,
 } from "./persistence/deletion.ts";
 export type { DeleteAgentSessionOptions } from "./persistence/deletion.ts";
+export {
+  MaintenanceAlreadyCompletedError,
+  ManagedAgentSessionCreationError,
+} from "./persistence/managed-creation.ts";
+export type { ManagedAgentSessionCreateConfig } from "./persistence/managed-creation.ts";
 export type {
   ActivityExecutionState,
   ListTranscriptActivitiesOptions,

@@ -30,6 +30,8 @@ export interface FileSessionLogWriterOptions<K extends SessionLogKind> {
   readonly maxRecordBytes: number;
   readonly lockTimeoutMs?: number;
   readonly lockRetryMs?: number;
+  /** @internal Pre-acquired ownership transferred by a managed transaction coordinator. */
+  readonly writerLock?: SessionLogWriterLock;
 }
 
 export interface ResumeTranscriptWriterOptions {
@@ -72,6 +74,26 @@ export class SessionLogRecordTooLargeError extends SessionLogWriteError {
   }
 }
 
+/** @internal Exclusive session-log ownership which may be transferred into a writer. */
+export interface SessionLogWriterLock {
+  readonly path: string;
+  release(): Promise<void>;
+}
+
+/** @internal Acquire ownership without opening or initializing the target file. */
+export async function acquireSessionLogWriterLock(
+  path: string,
+  options: { readonly lockTimeoutMs?: number; readonly lockRetryMs?: number } = {},
+): Promise<SessionLogWriterLock> {
+  if (!isAbsolute(path)) throw new SessionLogWriteError("session-log path must be absolute");
+  return await acquireLogLock(
+    `${path}.lock`,
+    path,
+    options.lockTimeoutMs ?? 5_000,
+    options.lockRetryMs ?? 20,
+  );
+}
+
 /** @internal Execute maintenance while holding the same ownership lock as live writers. */
 export async function withSessionLogWriterLock<T>(
   path: string,
@@ -79,12 +101,7 @@ export async function withSessionLogWriterLock<T>(
   options: { readonly lockTimeoutMs?: number; readonly lockRetryMs?: number } = {},
 ): Promise<T> {
   if (!isAbsolute(path)) throw new SessionLogWriteError("session-log path must be absolute");
-  const lock = await acquireLogLock(
-    `${path}.lock`,
-    path,
-    options.lockTimeoutMs ?? 5_000,
-    options.lockRetryMs ?? 20,
-  );
+  const lock = await acquireSessionLogWriterLock(path, options);
   try {
     return await operation();
   } finally {
@@ -100,7 +117,7 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
   private readonly limits: PersistenceLimits;
   private readonly includeTruncationDigests: boolean;
   private readonly handle: FileHandle;
-  private readonly lock: OwnedLogLock;
+  private readonly lock: SessionLogWriterLock;
   private readonly expected: SessionLogRecordExpectation;
   private sequence: number;
   private closed = false;
@@ -110,7 +127,7 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
   private constructor(
     options: FileSessionLogWriterOptions<K>,
     handle: FileHandle,
-    lock: OwnedLogLock,
+    lock: SessionLogWriterLock,
     initialSequence = options.header.seq,
   ) {
     this.kind = options.kind;
@@ -138,12 +155,11 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
     const parent = dirname(options.path);
     await mkdir(parent, { recursive: true, mode: 0o700 });
     await chmod(parent, 0o700).catch(() => undefined);
-    const lock = await acquireLogLock(
-      `${options.path}.lock`,
-      options.path,
-      options.lockTimeoutMs ?? 5_000,
-      options.lockRetryMs ?? 20,
-    );
+    const lock = options.writerLock ?? await acquireSessionLogWriterLock(options.path, options);
+    if (lock.path !== options.path) {
+      await lock.release().catch(() => undefined);
+      throw new SessionLogWriteError("pre-acquired writer lock belongs to another path");
+    }
     let handle: FileHandle | undefined;
     try {
       handle = await openUninitializedFile(options.path);
@@ -335,13 +351,12 @@ async function openUninitializedFile(path: string): Promise<FileHandle> {
   return handle;
 }
 
-interface OwnedLogLock { release(): Promise<void> }
 async function acquireLogLock(
   lockPath: string,
   targetPath: string,
   timeoutMs: number,
   retryMs: number,
-): Promise<OwnedLogLock> {
+): Promise<SessionLogWriterLock> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || !Number.isSafeInteger(retryMs) || retryMs < 1) {
     throw new SessionLogWriteError("session-log lock timing is invalid");
   }
@@ -366,8 +381,12 @@ async function acquireLogLock(
       await unlink(lockPath).catch(() => undefined);
       throw new SessionLogWriteError("cannot initialize session-log lock", { cause: error });
     }
+    let released = false;
     return {
+      path: targetPath,
       release: async () => {
+        if (released) return;
+        released = true;
         await handle.close().catch(() => undefined);
         try {
           const current = JSON.parse(await readFile(lockPath, "utf8")) as { token?: unknown };
