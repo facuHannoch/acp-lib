@@ -1547,3 +1547,32 @@ failure. Both close and rescan cleanly, retain the previous thread exactly once,
 the replacement as current, and contain the expected transition/operation sequences.
 The two v2 cases pass 2/2; the complete handoff and handoff-metering regression suites
 pass 9/9; `tsc --noEmit` and `git diff --check` pass.
+
+### Part 6C — serialized durable session configuration
+
+Changed `AgentSession.setConfig()` from an unsynchronized controller proxy into a queued
+session operation. Configuration changes now serialize with prompts and handoffs, expose
+the `configuring` busy phase, and emit ordered started/completed/failed lifecycle
+notifications. Queue cancellation rejects a configuration change that never dispatched
+without creating persistence or metering evidence.
+
+For v2 transcripts, `setConfig` writes and synchronizes an operation start before the ACP
+request. A successful response is treated as the complete current announcement: the
+library recomputes its schema digest and filtered effective values, engraves the explicit
+selection as an ordered restoration target when policy admits it, projects a
+policy-filtered configuration record, and durably publishes the settled checkpoint before
+resolving. The first-class model and metering snapshot are updated in the same checkpoint.
+A harness rejection closes the operation as failed and preserves prior restoration state.
+
+Added `snapshotSessionConfigurationAfterSelection()`. Restoration targets remain unique;
+reselecting an option moves it to the end with a monotonically increasing ordinal so the
+recorded restoration order matches the most recent successful application order.
+Excluded, non-JSON, or otherwise policy-rejected values cannot enter either the checkpoint
+or configuration display record merely because they were explicitly selected.
+
+Added a dedicated ACP configuration fixture plus end-to-end success and rejection tests.
+They verify the live model, persisted effective value, restoration target, lifecycle
+notifications, operation/configuration records, unchanged state after rejection, and clean
+reduction after close. The v2 setConfig suite passes 2/2, configuration-state tests pass
+5/5, the persistence/manager suite passes, `tsc --noEmit` passes, and `git diff --check`
+is clean.

@@ -15,6 +15,16 @@ export interface SnapshotSessionConfigurationOptions {
   readonly observedAt?: string;
 }
 
+export interface SnapshotSessionConfigurationAfterSelectionOptions
+  extends SnapshotSessionConfigurationOptions {
+  readonly selection: {
+    readonly configId: string;
+    readonly type: ConfigOption["type"];
+    readonly value: unknown;
+    readonly recordedAt?: string;
+  };
+}
+
 /**
  * Convert the harness's latest complete option announcement into bounded continuation
  * state. Values are inspected only after their IDs/types pass persistence policy.
@@ -59,6 +69,38 @@ export function snapshotSessionConfiguration(
       options.policy.values === "none" || omittedConfigIds.length > 0 ? "partial" : "exact",
     observedAt,
   });
+}
+
+/** Add one successful explicit selection to the ordered restoration targets. */
+export function snapshotSessionConfigurationAfterSelection(
+  options: SnapshotSessionConfigurationAfterSelectionOptions,
+): SessionConfigurationCheckpoint {
+  const recordedAt = options.selection.recordedAt ?? options.observedAt ?? new Date().toISOString();
+  const explicitlyIncluded = new Set(options.policy.include);
+  const excluded = new Set(options.policy.exclude);
+  const existing = (options.restorationTargets ?? [])
+    .filter((target) => target.configId !== options.selection.configId);
+  const value = toJsonValue(options.selection.value);
+  const candidate: PersistedSessionConfigSelection | null =
+    (value !== null || options.selection.value === null)
+      ? {
+          configId: options.selection.configId,
+          type: options.selection.type,
+          value,
+          ordinal: existing.reduce((max, target) => Math.max(max, target.ordinal), -1) + 1,
+          source: "explicit_selection",
+          recordedAt,
+        }
+      : null;
+  const restorationTargets = candidate && isTargetAdmitted(
+    candidate,
+    options.policy,
+    explicitlyIncluded,
+    excluded,
+  )
+    ? [...existing, candidate]
+    : existing;
+  return snapshotSessionConfiguration({ ...options, restorationTargets });
 }
 
 function isAdmitted(

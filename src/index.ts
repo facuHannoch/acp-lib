@@ -241,8 +241,14 @@ export type {
   TranscriptTerminalCheckpointChanges,
 } from "./persistence/transcript-runtime.ts";
 export { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
-export { snapshotSessionConfiguration } from "./persistence/configuration-state.ts";
-export type { SnapshotSessionConfigurationOptions } from "./persistence/configuration-state.ts";
+export {
+  snapshotSessionConfiguration,
+  snapshotSessionConfigurationAfterSelection,
+} from "./persistence/configuration-state.ts";
+export type {
+  SnapshotSessionConfigurationAfterSelectionOptions,
+  SnapshotSessionConfigurationOptions,
+} from "./persistence/configuration-state.ts";
 export type {
   TranscriptContinuationScan,
   TranscriptScanExpectation,

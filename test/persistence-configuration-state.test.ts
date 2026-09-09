@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { ConfigOptions } from "../src/config-options.ts";
-import { snapshotSessionConfiguration } from "../src/persistence/configuration-state.ts";
+import {
+  snapshotSessionConfiguration,
+  snapshotSessionConfigurationAfterSelection,
+} from "../src/persistence/configuration-state.ts";
 
 const options: ConfigOptions = new Map([
   ["model", { configId: "model", type: "select", currentValue: "sonnet", allowedValues: [{ value: "sonnet" }, { value: "opus" }] }],
@@ -59,5 +62,30 @@ describe("session configuration persistence snapshots", () => {
     const a = snapshotSessionConfiguration({ adapterId: "claude", configOptions: options, policy, observedAt: "2026-01-01T00:00:00.000Z" });
     const b = snapshotSessionConfiguration({ adapterId: "claude", configOptions: reversed, policy, observedAt: "2026-01-01T00:00:00.000Z" });
     expect(a.schemaDigest).toBe(b.schemaDigest);
+  });
+
+  test("successful selections become ordered restoration targets and reselection moves last", () => {
+    const policy = { values: "typed" as const, include: [], exclude: [] };
+    const first = snapshotSessionConfigurationAfterSelection({
+      adapterId: "claude", configOptions: options, policy,
+      selection: { configId: "model", type: "select", value: "sonnet", recordedAt: "2026-01-01T00:00:00.000Z" },
+      observedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const second = snapshotSessionConfigurationAfterSelection({
+      adapterId: "claude", configOptions: options, policy,
+      restorationTargets: first.restorationTargets,
+      selection: { configId: "enabled", type: "boolean", value: true, recordedAt: "2026-01-01T00:00:01.000Z" },
+      observedAt: "2026-01-01T00:00:01.000Z",
+    });
+    const third = snapshotSessionConfigurationAfterSelection({
+      adapterId: "claude", configOptions: options, policy,
+      restorationTargets: second.restorationTargets,
+      selection: { configId: "model", type: "select", value: "opus", recordedAt: "2026-01-01T00:00:02.000Z" },
+      observedAt: "2026-01-01T00:00:02.000Z",
+    });
+
+    expect(third.restorationTargets.map((target) => [target.configId, target.ordinal]))
+      .toEqual([["enabled", 1], ["model", 2]]);
+    expect(third.restorationTargets[1]?.value).toBe("opus");
   });
 });

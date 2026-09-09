@@ -71,7 +71,10 @@ import type {
   OperationKind,
 } from "./persistence/records.ts";
 import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
-import { snapshotSessionConfiguration } from "./persistence/configuration-state.ts";
+import {
+  snapshotSessionConfiguration,
+  snapshotSessionConfigurationAfterSelection,
+} from "./persistence/configuration-state.ts";
 import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
 import { sha256CanonicalJson } from "./persistence/integrity.ts";
 
@@ -95,10 +98,19 @@ interface HandoffQueueItem {
   reject: (error: unknown) => void;
 }
 
-type QueueItem = PromptQueueItem | HandoffQueueItem;
+interface ConfigQueueItem {
+  kind: "set_config";
+  operationId: string;
+  configId: string;
+  value: unknown;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem;
 
 /** What the stable logical session is doing right now. */
-export type AgentSessionPhase = "idle" | "prompting" | "handoff" | "stopped";
+export type AgentSessionPhase = "idle" | "prompting" | "handoff" | "configuring" | "stopped";
 
 /** Authoritative, immutable point-in-time state for orchestration consumers. */
 export interface AgentSessionState {
@@ -151,6 +163,9 @@ export type AgentSessionEvent =
       /** Records produced before and during the failure. */
       meteringRecords: readonly OperationMeteringRecord[];
     }
+  | { kind: "configuration_started"; operationId: string; configId: string }
+  | { kind: "configuration_completed"; operationId: string; configId: string }
+  | { kind: "configuration_failed"; operationId: string; configId: string; error: string }
   /** Latest context-window observation for the ACTIVE provider thread, or null. */
   | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
   /** Latest cumulative provider-reported cost. Telemetry, never asserted to be an invoice. */
@@ -696,7 +711,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
   /** True while one operation is executing. Queued work is exposed independently. */
   get isBusy(): boolean {
-    return this.phase === "prompting" || this.phase === "handoff";
+    return this.phase === "prompting" || this.phase === "handoff" || this.phase === "configuring";
   }
   get queuedOperationCount(): number {
     return this.queue.length;
@@ -799,7 +814,11 @@ export class AgentSession implements AgentClient, Bridgeable {
     try {
       while (this.queue.length > 0) {
         const item = this.queue.shift()!;
-        this.phase = item.kind === "prompt" ? "prompting" : "handoff";
+        this.phase = item.kind === "prompt"
+          ? "prompting"
+          : item.kind === "handoff"
+            ? "handoff"
+            : "configuring";
         this.emitStateIfChanged();
         if (item.kind === "prompt") {
           this.emit({ kind: "turn_started", turnId: item.turnId });
@@ -815,10 +834,20 @@ export class AgentSession implements AgentClient, Bridgeable {
             this.emit({ kind: "turn_failed", turnId: item.turnId, error: String(err) });
             item.reject(err);
           }
-        } else {
+        } else if (item.kind === "handoff") {
           try {
             item.resolve(await this.runHandoff(item));
           } catch (err) {
+            item.reject(err);
+          }
+        } else {
+          this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
+          try {
+            await this.runSetConfig(item);
+            this.emit({ kind: "configuration_completed", operationId: item.operationId, configId: item.configId });
+            item.resolve();
+          } catch (err) {
+            this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
             item.reject(err);
           }
         }
@@ -1038,6 +1067,91 @@ export class AgentSession implements AgentClient, Bridgeable {
       // A rejected handoff cannot return a HandoffResult, but the summary/seed prompts it
       // already ran consumed real tokens; their records travel on the error.
       throw new AgentSessionHandoffError(item.handoffId, records, err);
+    }
+  }
+
+  private async runSetConfig(item: ConfigQueueItem): Promise<void> {
+    if (!this.v2Transcript || this.persistence === false) {
+      await this.controller.setConfig(item.configId, item.value);
+      return;
+    }
+
+    const before = this.v2Transcript.checkpoint;
+    const announced = this.controller.configOptions.get(item.configId);
+    await this.v2Transcript.beginOperation(item.operationId, "set_config");
+    try {
+      await this.v2Transcript.syncBeforeDispatch();
+    } catch (error) {
+      await this.v2Transcript.abortOperation("pre_dispatch_persistence_failure").catch(
+        (abortError) => this.log.warn("transcript_predispatch_abort_failed", { error: String(abortError) }),
+      );
+      throw error;
+    }
+
+    let applied = false;
+    try {
+      await this.controller.setConfig(item.configId, item.value);
+      applied = true;
+      const observedAt = new Date().toISOString();
+      const sessionConfiguration = snapshotSessionConfigurationAfterSelection({
+        adapterId: this.adapterId,
+        configOptions: this.controller.configOptions,
+        policy: this.persistence.sessionConfiguration,
+        restorationTargets: before.sessionConfiguration.restorationTargets,
+        selection: {
+          configId: item.configId,
+          type: announced?.type ?? "unknown",
+          value: item.value,
+          recordedAt: observedAt,
+        },
+        observedAt,
+      });
+      const persistedTarget = sessionConfiguration.restorationTargets.find(
+        (target) => target.configId === item.configId,
+      );
+      await this.v2Transcript.appendEvent({
+        kind: "configuration",
+        event: "selected",
+        configId: item.configId,
+        ...(persistedTarget ? { value: persistedTarget.value } : {}),
+        schemaDigest: sessionConfiguration.schemaDigest ?? undefined,
+      });
+      await this.v2Transcript.finishOperation("settled", {
+        model: this.model,
+        sessionConfiguration,
+        metering: this.metering.currentState,
+      });
+    } catch (error) {
+      if (applied) {
+        // The harness changed even if a later local record failed. Attempt one truthful
+        // checkpoint of the observed state; a poisoned runtime rejects and stays blocked.
+        const observedAt = new Date().toISOString();
+        const sessionConfiguration = snapshotSessionConfigurationAfterSelection({
+          adapterId: this.adapterId,
+          configOptions: this.controller.configOptions,
+          policy: this.persistence.sessionConfiguration,
+          restorationTargets: before.sessionConfiguration.restorationTargets,
+          selection: {
+            configId: item.configId,
+            type: announced?.type ?? "unknown",
+            value: item.value,
+            recordedAt: observedAt,
+          },
+          observedAt,
+        });
+        await this.v2Transcript.finishOperation("failed", {
+          model: this.model,
+          sessionConfiguration,
+          metering: this.metering.currentState,
+        }, "unknown").catch((persistenceError) => {
+          this.log.warn("configuration_failure_checkpoint_failed", { error: String(persistenceError) });
+        });
+      } else {
+        await this.v2Transcript.finishOperation("failed", {}, "unknown").catch(
+          (persistenceError) => this.log.warn("configuration_failure_checkpoint_failed", { error: String(persistenceError) }),
+        );
+      }
+      throw error;
     }
   }
 
@@ -1557,7 +1671,7 @@ export class AgentSession implements AgentClient, Bridgeable {
             metering: null,
           });
         } else {
-          item.reject(new Error("handoff cancelled before it started"));
+          item.reject(new Error(`${item.kind === "handoff" ? "handoff" : "configuration change"} cancelled before it started`));
         }
       }
       this.emitStateIfChanged();
@@ -1605,10 +1719,25 @@ export class AgentSession implements AgentClient, Bridgeable {
    * way, so it is the only route to them once the process is running.
    */
   setConfig(configId: string, value: unknown): Promise<void> {
-    if (this.v2Transcript) {
-      return Promise.reject(new Error("configuration changes with v2 persistence require checkpoint publication"));
+    if (this.phase === "stopped") return Promise.reject(new Error("AgentSession is stopped"));
+    let ownedValue: unknown;
+    try {
+      ownedValue = structuredClone(value);
+    } catch (error) {
+      return Promise.reject(new Error(`configuration value cannot be cloned: ${String(error)}`));
     }
-    return this.controller.setConfig(configId, value);
+    return new Promise<void>((resolve, reject) => {
+      this.queue.push({
+        kind: "set_config",
+        operationId: this.mintOperationId(),
+        configId,
+        value: ownedValue,
+        resolve,
+        reject,
+      });
+      this.emitStateIfChanged();
+      void this.pump();
+    });
   }
   /** Immutable snapshot of commands advertised by the active ACP harness. */
   get internalSessionCommands(): readonly InternalSessionCommand[] {
