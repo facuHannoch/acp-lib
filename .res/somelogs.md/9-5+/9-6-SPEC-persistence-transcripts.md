@@ -355,7 +355,7 @@ Direct `create()` always begins a new logical session. Every resolved
 transcript or audit destination must be absent or an existing zero-byte regular file when
 its lock is acquired. Any recognized header, legacy content, malformed content, or
 unrelated byte rejects creation with `SessionLogAlreadyExistsError`, even when it names
-Only `open()` opens a completed logical session.
+the requested `agentSessionId`. Only `open()` opens a completed logical session.
 
 Strict multi-log initialization uses the generalized maintenance transaction from section
 11. Managed creation reserves `{ kind: "creation" }` in the registry after acquiring all
@@ -3137,6 +3137,10 @@ effective transcript/audit destinations must be distinct normalized files (inclu
 existing file identity). After acquiring those destinations' locks, it validates any
 existing retained or same-request replacement identities before reserving maintenance.
 Invalid consumer intent therefore cannot strand a tombstone behind a prepared operation.
+Preflight materializes omitted defaults and normalized paths into one internal request;
+that exact representation drives the request digest, maintenance targets, artifact
+headers, and installation. Semantically equivalent retry syntax therefore identifies the
+same transaction.
 
 Replacement configuration requires an explicit path; omission never resolves through
 manager defaults. The consumer may deliberately name the former path, but that is an

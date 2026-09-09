@@ -57,6 +57,7 @@ export async function restoreManagedAgentSession(
   validateOptions(agentSessionId, options);
   const record = await store.getAgentSessionRecord(agentSessionId);
   if (!record) throw new AgentSessionStoreConflictError("agent-session record does not exist");
+  options = await normalizeRestorationOptions(record, options);
   if (record.incarnationId !== options.expectedIncarnationId
     || record.recordRevision !== options.expectedRecordRevision) {
     return await completedOrConflict(store, agentSessionId, record, options);
@@ -76,6 +77,11 @@ export async function restoreManagedAgentSession(
   }
   if (!retainedAudit && record.auditLog && options.replacementAuditLog === undefined) {
     throw new AgentSessionRestorationError("deleted audit-log state must be explicitly disabled or replaced");
+  }
+  if (retainedAudit && options.replacementAuditLog !== undefined) {
+    throw new AgentSessionRestorationError(
+      "a retained audit log cannot be replaced during this restoration slice",
+    );
   }
   await validateRestorationRequest(record, options, retainedTranscript, retainedAudit);
   const requestDigest = restorationDigest(agentSessionId, options);
@@ -512,28 +518,6 @@ async function validateRestorationRequest(
     );
   }
 
-  if (options.replacementTranscript) {
-    const resolved = resolveDirectPersistence({
-      transcript: options.replacementTranscript,
-      auditLog: false,
-      sessionConfiguration: record.sessionConfigurationPersistence,
-      limits: record.transcript?.effectiveLimits,
-    });
-    if (resolved === false || resolved.transcript === false) {
-      throw new AgentSessionRestorationError("replacement transcript is disabled");
-    }
-  }
-  if (options.replacementAuditLog) {
-    const resolved = resolveDirectPersistence({
-      transcript: false,
-      auditLog: options.replacementAuditLog,
-      limits: record.auditLog?.effectiveLimits,
-    });
-    if (resolved === false || resolved.auditLog === false) {
-      throw new AgentSessionRestorationError("replacement audit log is disabled");
-    }
-  }
-
   const transcriptPath = retainedTranscript?.path
     ?? (options.replacementTranscript ? options.replacementTranscript.path : null);
   const auditPath = retainedAudit?.path
@@ -543,12 +527,58 @@ async function validateRestorationRequest(
     auditLog: auditPath ? { path: auditPath } : false,
   });
   if (combined === false) throw new AgentSessionRestorationError("restoration path validation failed");
-  const paths = await resolveSessionLogPaths(combined, record.agentSessionId);
-  if (paths.transcriptPath !== transcriptPath || paths.auditLogPath !== auditPath) {
-    throw new AgentSessionRestorationError(
-      "restoration paths must be explicit normalized file paths, not directories",
-    );
+  await resolveSessionLogPaths(combined, record.agentSessionId);
+}
+
+async function normalizeRestorationOptions(
+  record: AgentSessionRecord,
+  options: RestoreAgentSessionOptions,
+): Promise<RestoreAgentSessionOptions> {
+  let replacementTranscript = options.replacementTranscript;
+  if (replacementTranscript) {
+    const resolved = resolveDirectPersistence({
+      transcript: replacementTranscript,
+      auditLog: false,
+      sessionConfiguration: record.sessionConfigurationPersistence,
+      limits: record.transcript?.effectiveLimits,
+    });
+    if (resolved === false || resolved.transcript === false) {
+      throw new AgentSessionRestorationError("replacement transcript is disabled");
+    }
+    const paths = await resolveSessionLogPaths(resolved, record.agentSessionId);
+    if (!paths.transcriptPath) throw new AgentSessionRestorationError("replacement transcript path is absent");
+    replacementTranscript = {
+      path: paths.transcriptPath,
+      preset: resolved.transcript.preset,
+      capture: resolved.transcript.capture,
+      includeTruncationDigests: resolved.transcript.includeTruncationDigests,
+    };
   }
+
+  let replacementAuditLog = options.replacementAuditLog;
+  if (replacementAuditLog) {
+    const resolved = resolveDirectPersistence({
+      transcript: false,
+      auditLog: replacementAuditLog,
+      limits: record.auditLog?.effectiveLimits,
+    });
+    if (resolved === false || resolved.auditLog === false) {
+      throw new AgentSessionRestorationError("replacement audit log is disabled");
+    }
+    const paths = await resolveSessionLogPaths(resolved, record.agentSessionId);
+    if (!paths.auditLogPath) throw new AgentSessionRestorationError("replacement audit-log path is absent");
+    replacementAuditLog = {
+      path: paths.auditLogPath,
+      capture: resolved.auditLog.capture,
+      includeTruncationDigests: resolved.auditLog.includeTruncationDigests,
+    };
+  }
+
+  return {
+    ...options,
+    ...(replacementTranscript !== undefined ? { replacementTranscript } : {}),
+    ...(replacementAuditLog !== undefined ? { replacementAuditLog } : {}),
+  };
 }
 
 async function validateRestorationArtifacts(

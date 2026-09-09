@@ -2328,3 +2328,21 @@ implemented `SessionLogAlreadyExistsError`, and distinguishes creation ordering 
 load-only restoration ordering.
 
 Verification: `tsc --noEmit`, 671/671 repository tests, and `git diff --check` pass.
+
+### Part 21 — normalized restoration identity
+
+Completed restoration preflight normalization. Replacement transcript and audit choices
+now become one resolved internal request with normalized file paths, fully materialized
+capture defaults, and engraved policy. The same representation drives the maintenance
+digest, target descriptors, artifact installation, and completion-receipt lookup, so
+syntactically different but semantically equivalent retries resolve to the same completed
+transaction.
+
+Restoration now rejects any audit replacement/disable choice when the tombstone retained
+its audit generation, matching the existing transcript rule and preventing an ignored
+consumer option. Tests prove that this rejection publishes no maintenance and that an
+equivalent normalized retry receives `MaintenanceAlreadyCompletedError` rather than a
+false request conflict. The dangling creation-error sentence in the specification was
+also repaired.
+
+Verification: `tsc --noEmit`, 671/671 repository tests, and `git diff --check` pass.

@@ -241,6 +241,15 @@ describe("SessionManager.restoreAgentSession", () => {
       expectedRecordRevision: active.recordRevision,
     });
     const deleted = (await manager.getAgentSessionInfo("audited", { includeDeleted: true }))!;
+    await expect(manager.restoreAgentSession("audited", {
+      ...runtimeConfig(),
+      restorationId: "replace-retained-audit",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+      replacementAuditLog: false,
+    })).rejects.toThrow("retained audit log cannot be replaced");
+    expect(await manager.getSessionMaintenance("audited")).toBeNull();
+
     const restored = await manager.restoreAgentSession("audited", {
       ...runtimeConfig(), restorationId: "restore-audited",
       expectedIncarnationId: deleted.incarnationId,
@@ -330,6 +339,21 @@ describe("SessionManager.restoreAgentSession", () => {
     } finally {
       await restored.session.stop();
     }
+    await expect(manager.restoreAgentSession("replace-deleted", {
+      ...runtimeConfig(),
+      restorationId: "restore-replacements",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+      replacementTranscript: {
+        path: join(root, "replacement", "conversation.jsonl"),
+        preset: "conversation",
+        capture: { messages: "text" },
+      },
+      replacementAuditLog: {
+        path: join(root, "replacement", "audit.jsonl"),
+        capture: { lifecycle: true },
+      },
+    })).rejects.toBeInstanceOf(MaintenanceAlreadyCompletedError);
   }, 20_000);
 });
 
