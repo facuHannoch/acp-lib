@@ -2309,3 +2309,22 @@ degraded mode, and combined transcript/audit reconfiguration remain explicit def
 
 Verification: `tsc --noEmit`, 669/669 repository tests, `git diff --check`, and
 `bun pm pack --dry-run` all pass.
+
+### Part 20 — restoration preflight closure
+
+Moved every locally decidable restoration failure ahead of the maintenance reservation.
+V0 restoration now requires the recorded adapter and exactly one
+`load_internal_session` strategy, fully resolves replacement transcript/audit policy and
+limits, and jointly resolves both destinations so normalized-path and existing-file
+aliases are rejected. After acquiring locks, retained and same-request replacement log
+identities are validated before maintenance is prepared. A malformed consumer request can
+therefore be corrected without leaving the tombstone fenced by an unusable transaction.
+
+Added regression coverage proving wrong adapters, empty strategy lists, and colliding
+replacement paths fail without publishing maintenance, followed by successful restoration
+of the same tombstone. The persistence spec now labels the four-row authority table as the
+target architecture, states the narrower managed/direct V0 support explicitly, uses the
+implemented `SessionLogAlreadyExistsError`, and distinguishes creation ordering from
+load-only restoration ordering.
+
+Verification: `tsc --noEmit`, 671/671 repository tests, and `git diff --check` pass.

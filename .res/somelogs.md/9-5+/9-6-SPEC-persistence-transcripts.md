@@ -354,7 +354,7 @@ const opened = await AgentSession.open({
 Direct `create()` always begins a new logical session. Every resolved
 transcript or audit destination must be absent or an existing zero-byte regular file when
 its lock is acquired. Any recognized header, legacy content, malformed content, or
-unrelated byte rejects creation with `AgentSessionAlreadyExistsError`, even when it names
+unrelated byte rejects creation with `SessionLogAlreadyExistsError`, even when it names
 Only `open()` opens a completed logical session.
 
 Strict multi-log initialization uses the generalized maintenance transaction from section
@@ -1240,7 +1240,7 @@ history fold plus checkpoint and structural journal tail determine continuation.
 
 ## 10. Authority and persistence combinations
 
-The supported combinations are:
+The target architecture has four authority combinations:
 
 | Registry | Transcript | Reopen source | Discovery |
 | --- | --- | --- | --- |
@@ -1249,11 +1249,18 @@ The supported combinations are:
 | disabled | enabled | latest valid transcript checkpoint | consumer-supplied path |
 | disabled | disabled | consumer-supplied checkpoint | consumer |
 
-Audit-log enablement does not add rows to this table because it never changes discovery
-or reopen authority. It is an independently validated output log layered on any of
-the four combinations.
+V0 implements the two registry-backed rows through `SessionManager`, plus transcript-only
+direct opening with an explicit `agentSessionId`. Consumer-checkpoint-only direct opening
+is deferred. Direct creation with neither facility remains supported but cannot be reopened
+by V0 from library state. These are implementation limits, not changes to the authority
+model.
 
-With neither facility enabled:
+Audit-log enablement does not add authority rows because it never changes discovery or
+reopening. In the target architecture it can be layered on any row; V0 supports it only on
+registry-backed managed sessions and rejects direct audit persistence before artifact
+creation.
+
+In the target architecture, with neither facility enabled:
 
 - creating a new session remains supported;
 - reopening requires a consumer-supplied `AgentSessionCheckpoint` and consumer-supplied
@@ -3123,6 +3130,14 @@ newly constructed provider thread must be recoverably staged and resumed across 
 replacement-log failure boundary. Supplying another strategy fails before maintenance or
 provider work begins.
 
+Before publishing restoration maintenance, V0 validates the complete local request: the
+adapter ID must equal the recorded adapter, the normalized strategy list must contain
+exactly one `load_internal_session`, replacement policies and limits must resolve, and the
+effective transcript/audit destinations must be distinct normalized files (including
+existing file identity). After acquiring those destinations' locks, it validates any
+existing retained or same-request replacement identities before reserving maintenance.
+Invalid consumer intent therefore cannot strand a tombstone behind a prepared operation.
+
 Replacement configuration requires an explicit path; omission never resolves through
 manager defaults. The consumer may deliberately name the former path, but that is an
 explicit choice and creates a new log identity at generation 1.
@@ -3408,9 +3423,8 @@ change the session state, or manufacture operation failure records.
   results, terminal output, and returned file contents.
 - Enabling an audit log creates a physically separate session log with a distinct identity,
   generation, sequence, path, and effective policy.
-- Audit-only persistence (`transcript: false`, `auditLog: {}`) records operations but does
-  not become a continuation source; reopening still requires the registry or a
-  consumer-supplied checkpoint.
+- Managed audit-only persistence (`transcript: false`, `auditLog: {}`) records operations
+  but does not become a continuation source; V0 reopening requires the registry.
 - The audit log never contains messages, checkpoints, raw ACP traffic, handoff summary
   content, consumer continuation content, session-configuration checkpoints, canonical
   history entries, or consumer reason text. Adding a field to a transcript schema cannot
@@ -3534,9 +3548,12 @@ change the session state, or manufacture operation failure records.
   Ordinary saves/deletes are atomically rejected while a marker exists, and finalization
   verifies the marker's incarnation and base revision. A late registry-only checkpoint
   cannot cross the maintenance fence or resurrect a deleted record.
-- Immediately after a provider returns a managed creation/restoration thread ID, maintenance
-  persists `stagedContinuation` before any log write, sync, or install. Crashes at every
-  following boundary reuse that ID rather than creating another thread.
+- Immediately after a provider returns a managed creation thread ID, maintenance persists
+  `stagedContinuation` before any log write, sync, or install. V0 restoration is load-only:
+  deterministic replacement artifacts may be installed first, but the confirmed recorded
+  identity is staged immediately after load and before configuration replay, transition or
+  checkpoint publication, and registry projection. A future restoration strategy that
+  creates a provider thread must use the stronger creation ordering.
 - A matching explicit retry with no staged continuation repeats provider-thread creation
   and documents the possible orphan; background manager operations never do so. With a
   staged continuation, every retry is prohibited from creating another thread or rerunning

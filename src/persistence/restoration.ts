@@ -25,10 +25,13 @@ import type {
   TranscriptConfig,
 } from "./config.ts";
 import { resolveDirectPersistence } from "./config.ts";
+import { resolveSessionLogPaths } from "./paths.ts";
 import { FileSessionLogWriter } from "./session-log-writer.ts";
 import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { scanTranscriptContinuation } from "./transcript-scanner.ts";
+import { AuditLogReader } from "./audit-log-reader.ts";
+import type { AuditLogHeaderRecord } from "./records.ts";
 
 export interface RestoreAgentSessionOptions extends ManagedAgentSessionLoadConfig {
   readonly restorationId: string;
@@ -74,6 +77,7 @@ export async function restoreManagedAgentSession(
   if (!retainedAudit && record.auditLog && options.replacementAuditLog === undefined) {
     throw new AgentSessionRestorationError("deleted audit-log state must be explicitly disabled or replaced");
   }
+  await validateRestorationRequest(record, options, retainedTranscript, retainedAudit);
   const requestDigest = restorationDigest(agentSessionId, options);
   const transcriptPath = retainedTranscript?.path
     ?? (options.replacementTranscript
@@ -90,6 +94,9 @@ export async function restoreManagedAgentSession(
   let transferred = false;
   let opened: AgentSessionOpenResult | null = null;
   try {
+    await validateRestorationArtifacts(
+      record, options, requestDigest, retainedTranscript, retainedAudit,
+    );
     const proposed = restorationMaintenance(record, options, requestDigest);
     const prepared = await store.prepareMaintenance(agentSessionId, proposed, {
       expectedRecordRevision: options.expectedRecordRevision,
@@ -485,6 +492,126 @@ function validateOptions(id: string, options: RestoreAgentSessionOptions): void 
       "v0 tombstone restoration only supports loading the recorded provider thread",
     );
   }
+}
+
+async function validateRestorationRequest(
+  record: AgentSessionRecord,
+  options: RestoreAgentSessionOptions,
+  retainedTranscript: NonNullable<AgentSessionRecord["transcript"]> | null,
+  retainedAudit: NonNullable<AgentSessionRecord["auditLog"]> | null,
+): Promise<void> {
+  if (options.adapterId !== record.adapterId) {
+    throw new AgentSessionRestorationError(
+      `v0 tombstone restoration requires recorded adapter ${record.adapterId}`,
+    );
+  }
+  const strategies = options.continuation?.strategies;
+  if (strategies && (strategies.length !== 1 || strategies[0]?.kind !== "load_internal_session")) {
+    throw new AgentSessionRestorationError(
+      "v0 tombstone restoration requires exactly one load_internal_session strategy",
+    );
+  }
+
+  if (options.replacementTranscript) {
+    const resolved = resolveDirectPersistence({
+      transcript: options.replacementTranscript,
+      auditLog: false,
+      sessionConfiguration: record.sessionConfigurationPersistence,
+      limits: record.transcript?.effectiveLimits,
+    });
+    if (resolved === false || resolved.transcript === false) {
+      throw new AgentSessionRestorationError("replacement transcript is disabled");
+    }
+  }
+  if (options.replacementAuditLog) {
+    const resolved = resolveDirectPersistence({
+      transcript: false,
+      auditLog: options.replacementAuditLog,
+      limits: record.auditLog?.effectiveLimits,
+    });
+    if (resolved === false || resolved.auditLog === false) {
+      throw new AgentSessionRestorationError("replacement audit log is disabled");
+    }
+  }
+
+  const transcriptPath = retainedTranscript?.path
+    ?? (options.replacementTranscript ? options.replacementTranscript.path : null);
+  const auditPath = retainedAudit?.path
+    ?? (options.replacementAuditLog ? options.replacementAuditLog.path : null);
+  const combined = resolveDirectPersistence({
+    transcript: transcriptPath ? { path: transcriptPath } : false,
+    auditLog: auditPath ? { path: auditPath } : false,
+  });
+  if (combined === false) throw new AgentSessionRestorationError("restoration path validation failed");
+  const paths = await resolveSessionLogPaths(combined, record.agentSessionId);
+  if (paths.transcriptPath !== transcriptPath || paths.auditLogPath !== auditPath) {
+    throw new AgentSessionRestorationError(
+      "restoration paths must be explicit normalized file paths, not directories",
+    );
+  }
+}
+
+async function validateRestorationArtifacts(
+  record: AgentSessionRecord,
+  options: RestoreAgentSessionOptions,
+  requestDigest: string,
+  retainedTranscript: NonNullable<AgentSessionRecord["transcript"]> | null,
+  retainedAudit: NonNullable<AgentSessionRecord["auditLog"]> | null,
+): Promise<void> {
+  if (retainedTranscript) {
+    await scanTranscriptContinuation(retainedTranscript.path, {
+      agentSessionId: record.agentSessionId,
+      transcriptId: retainedTranscript.transcriptId,
+      generation: retainedTranscript.generation,
+    });
+  } else if (options.replacementTranscript && await exists(options.replacementTranscript.path)) {
+    const transcriptId = stableReplacementId(requestDigest, "transcript");
+    const scan = await scanTranscriptContinuation(options.replacementTranscript.path, {
+      agentSessionId: record.agentSessionId,
+      transcriptId,
+      generation: 1,
+    });
+    if (scan.header.installation?.kind !== "restoration"
+      || scan.header.installation.operationId !== options.restorationId
+      || scan.header.installation.requestDigest !== requestDigest
+      || scan.reduction.checkpoint.incarnationId !== record.incarnationId
+      || scan.reduction.checkpoint.stateRevision < record.checkpoint.stateRevision + 1) {
+      throw new AgentSessionRestorationError(
+        "existing replacement transcript does not belong to this restoration",
+      );
+    }
+  }
+
+  if (retainedAudit) {
+    const header = await readAuditHeader(retainedAudit.path);
+    if (header.agentSessionId !== record.agentSessionId
+      || header.auditLogId !== retainedAudit.auditLogId
+      || header.generation !== retainedAudit.generation) {
+      throw new AgentSessionRestorationError("retained audit log identity disagrees with registry");
+    }
+  } else if (options.replacementAuditLog && await exists(options.replacementAuditLog.path)) {
+    const auditLogId = stableReplacementId(requestDigest, "audit");
+    const header = await readAuditHeader(options.replacementAuditLog.path);
+    if (header.agentSessionId !== record.agentSessionId
+      || header.auditLogId !== auditLogId
+      || header.generation !== 1
+      || header.installation?.kind !== "restoration"
+      || header.installation.operationId !== options.restorationId
+      || header.installation.requestDigest !== requestDigest) {
+      throw new AgentSessionRestorationError(
+        "existing replacement audit log does not belong to this restoration",
+      );
+    }
+  }
+}
+
+async function readAuditHeader(path: string): Promise<AuditLogHeaderRecord> {
+  const page = await new AuditLogReader(path).readPage({ limit: 1, types: ["header"] });
+  const header = page.items[0];
+  if (!header || header.t !== "header") {
+    throw new AgentSessionRestorationError("audit log does not contain a valid header");
+  }
+  return header as AuditLogHeaderRecord;
 }
 
 function assertSameContinuation(

@@ -67,6 +67,75 @@ describe("SessionManager.restoreAgentSession", () => {
     })).rejects.toBeInstanceOf(AgentSessionRestorationError);
   }, 20_000);
 
+  test("rejects invalid restoration intent before reserving maintenance", async () => {
+    const { manager } = await setup();
+    const created = await manager.createAgentSession(createConfig());
+    await created.stop();
+    const active = (await manager.getAgentSessionInfo("managed-agent"))!;
+    await manager.deleteAgentSession("managed-agent", {
+      deletionId: "delete-before-invalid-restore",
+      expectedIncarnationId: active.incarnationId,
+      expectedRecordRevision: active.recordRevision,
+    });
+    const deleted = (await manager.getAgentSessionInfo("managed-agent", { includeDeleted: true }))!;
+    const base = {
+      ...runtimeConfig(),
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+    } as const;
+
+    await expect(manager.restoreAgentSession("managed-agent", {
+      ...base,
+      adapterId: "wrong-adapter",
+      restorationId: "wrong-adapter-restore",
+    })).rejects.toThrow("requires recorded adapter fake");
+    expect(await manager.getSessionMaintenance("managed-agent")).toBeNull();
+
+    await expect(manager.restoreAgentSession("managed-agent", {
+      ...base,
+      restorationId: "empty-strategies-restore",
+      continuation: { strategies: [] },
+    })).rejects.toThrow("exactly one load_internal_session strategy");
+    expect(await manager.getSessionMaintenance("managed-agent")).toBeNull();
+
+    const restored = await manager.restoreAgentSession("managed-agent", {
+      ...base,
+      restorationId: "valid-after-invalid-restore",
+    });
+    await restored.session.stop();
+  }, 20_000);
+
+  test("rejects replacement path aliases before reserving maintenance", async () => {
+    const { root, manager } = await setup();
+    const created = await manager.createAgentSession({
+      ...createConfig(),
+      agentSessionId: "alias-agent",
+      creationId: "alias-creation",
+      persistence: { auditLog: {} },
+    });
+    await created.stop();
+    const active = (await manager.getAgentSessionInfo("alias-agent"))!;
+    await manager.deleteAgentSession("alias-agent", {
+      deletionId: "delete-before-alias",
+      expectedIncarnationId: active.incarnationId,
+      expectedRecordRevision: active.recordRevision,
+      deleteTranscript: true,
+      deleteAuditLog: true,
+    });
+    const deleted = (await manager.getAgentSessionInfo("alias-agent", { includeDeleted: true }))!;
+    const path = join(root, "replacement", "same.jsonl");
+
+    await expect(manager.restoreAgentSession("alias-agent", {
+      ...runtimeConfig(),
+      restorationId: "alias-restore",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+      replacementTranscript: { path },
+      replacementAuditLog: { path },
+    })).rejects.toThrow("different files");
+    expect(await manager.getSessionMaintenance("alias-agent")).toBeNull();
+  }, 20_000);
+
   test("resumes a staged restoration after registry finalization fails", async () => {
     const { manager, store } = await setup();
     const created = await manager.createAgentSession(createConfig());
