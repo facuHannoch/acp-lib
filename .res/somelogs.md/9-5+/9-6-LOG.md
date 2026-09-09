@@ -2067,3 +2067,32 @@ Tests cover provider-thread loading, configuration restoration, continued checkp
 publication, transcript-ahead registry repair, missing and deleted identities, and
 adapter-mismatch rejection before process startup. The complete repository suite passes
 649/649, `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 12A — offline checkpoint inspection and transcript reconfiguration
+
+Added `SessionManager.getAgentSessionCheckpoint()` so consumers can resolve continuation
+authority without starting a harness. The default path scans and reduces the configured
+transcript, validates its incarnation and registry relationship, and labels the result as
+authoritative. The explicit `registry_projection` source exposes a stale/lost-transcript
+escape hatch and labels whether that projection is authoritative. Tombstone visibility and
+active maintenance remain explicit.
+
+Added the first offline `reconfigureAgentSessionPersistence()` implementation for
+transcripts. Both replacement and disabling require the exact stopped-session incarnation
+and revision, a consumer-stable operation ID, a validated checkpoint, and explicit
+continuation-loss acknowledgement. Maintenance is prepared before destructive work and
+fences ordinary registry publication. Replacement constructs and synchronizes a fresh
+generation in a sibling file and atomically installs it at the existing v0 path; disabling
+removes and synchronizes the old authority before final registry publication. Exact retries
+are answered through the bounded completion receipt without repeating the mutation.
+
+The session-log writer now distinguishes its temporary physical build path from the final
+logical transcript path used by checkpoint validation. This keeps atomic replacement strict
+without weakening transcript identity checks. Audit-log reconfiguration remains explicitly
+unsupported until the live audit writer is integrated; the method does not pretend a
+metadata-only change is sufficient.
+
+Tests cover offline authority selection, transcript replacement, new generation identity,
+post-replacement provider loading, idempotent completed retry, and acknowledged transcript
+disablement. The complete repository suite passes 652/652, `tsc --noEmit` passes, and
+`git diff --check` is clean.

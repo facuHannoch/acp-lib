@@ -32,6 +32,8 @@ export interface FileSessionLogWriterOptions<K extends SessionLogKind> {
   readonly lockRetryMs?: number;
   /** @internal Pre-acquired ownership transferred by a managed transaction coordinator. */
   readonly writerLock?: SessionLogWriterLock;
+  /** @internal Final logical destination when building an atomic sibling replacement. */
+  readonly logicalPath?: string;
 }
 
 export interface ResumeTranscriptWriterOptions {
@@ -144,7 +146,9 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
         ? (options.header as TranscriptHeaderRecord).transcriptId
         : (options.header as AuditLogHeaderRecord).auditLogId,
       generation: options.header.generation,
-      ...(options.kind === "transcript" ? { transcriptPath: options.path } : {}),
+      ...(options.kind === "transcript"
+        ? { transcriptPath: options.logicalPath ?? options.path }
+        : {}),
     };
   }
 

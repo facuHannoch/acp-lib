@@ -132,6 +132,12 @@ export {
   ManagedAgentSessionNotFoundError,
 } from "./persistence/managed-load.ts";
 export type { ManagedAgentSessionLoadConfig } from "./persistence/managed-load.ts";
+export type {
+  GetAgentSessionCheckpointOptions,
+  ResolvedAgentSessionCheckpoint,
+} from "./persistence/managed-checkpoint.ts";
+export { AgentSessionPersistenceReconfigurationError } from "./persistence/reconfiguration.ts";
+export type { ReconfigureAgentSessionPersistenceOptions } from "./persistence/reconfiguration.ts";
 
 export {
   appendTranscriptLine,

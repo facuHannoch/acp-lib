@@ -66,6 +66,22 @@ describe("SessionManager.loadAgentSession", () => {
     }
   }, 20_000);
 
+  test("resolves transcript authority offline and labels a registry projection escape hatch", async () => {
+    const { manager } = await setup();
+    const created = await manager.createAgentSession(createConfig());
+    await created.setConfig("model", "beta");
+    await created.stop();
+
+    const resolved = await manager.getAgentSessionCheckpoint("managed-agent");
+    expect(resolved).toMatchObject({ source: "transcript", authoritative: true });
+    expect(resolved?.checkpoint.model).toBe("beta");
+    const projected = await manager.getAgentSessionCheckpoint("managed-agent", {
+      source: "registry_projection",
+    });
+    expect(projected).toMatchObject({ source: "registry_projection", authoritative: false });
+    expect(await manager.getAgentSessionCheckpoint("missing")).toBeNull();
+  }, 20_000);
+
   test("rejects absent, deleted, and adapter-mismatched sessions", async () => {
     const { manager } = await setup();
     await expect(manager.loadAgentSession("missing", loadConfig()))

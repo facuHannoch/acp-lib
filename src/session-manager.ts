@@ -43,6 +43,15 @@ import {
   type ManagedAgentSessionLoadConfig,
 } from "./persistence/managed-load.ts";
 import type { AgentSessionOpenResult } from "./agent-session.ts";
+import {
+  getManagedAgentSessionCheckpoint,
+  type GetAgentSessionCheckpointOptions,
+  type ResolvedAgentSessionCheckpoint,
+} from "./persistence/managed-checkpoint.ts";
+import {
+  reconfigureManagedAgentSessionPersistence,
+  type ReconfigureAgentSessionPersistenceOptions,
+} from "./persistence/reconfiguration.ts";
 
 export interface SessionManagerConfig {
   readonly root?: string;
@@ -205,6 +214,30 @@ export class SessionManager {
       this.requireAgentStore("loadAgentSession()"),
       agentSessionId,
       config,
+    );
+  }
+
+  /** Resolve the current continuation checkpoint without starting its harness. */
+  async getAgentSessionCheckpoint(
+    agentSessionId: string,
+    options?: GetAgentSessionCheckpointOptions,
+  ): Promise<ResolvedAgentSessionCheckpoint | null> {
+    return await getManagedAgentSessionCheckpoint(
+      this.requireAgentStore("getAgentSessionCheckpoint()"),
+      agentSessionId,
+      options,
+    );
+  }
+
+  /** Replace or disable stopped-session persistence under a prepared transaction. */
+  async reconfigureAgentSessionPersistence(
+    agentSessionId: string,
+    options: ReconfigureAgentSessionPersistenceOptions,
+  ): Promise<AgentSessionSummary> {
+    return await reconfigureManagedAgentSessionPersistence(
+      this.requireAgentStore("reconfigureAgentSessionPersistence()"),
+      agentSessionId,
+      options,
     );
   }
 
