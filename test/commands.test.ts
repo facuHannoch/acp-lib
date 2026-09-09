@@ -5,6 +5,7 @@ import { SessionManager } from "../src/session-manager.ts";
 import type { SessionRecord, SessionStore } from "../src/session-store.ts";
 import type { Capabilities } from "../src/capabilities.ts";
 import type { ConnectResult } from "../src/client.ts";
+import { AgentController } from "../src/controller.ts";
 
 // --- test doubles ------------------------------------------------------------
 
@@ -125,6 +126,31 @@ describe("createControllerCommands · dispatch", () => {
 // --- introspection commands --------------------------------------------------
 
 describe("createControllerCommands · introspection", () => {
+  test("controller discovery includes descriptions, structured arguments, and mode controls", () => {
+    const controller = new AgentController({
+      adapter: { command: ["agent-acp"], ptyCommand: ["agent"] },
+      adapterId: "test",
+    });
+    const commands = controller.getCommands();
+
+    expect(commands.find((command) => command.id === "config")).toMatchObject({
+      description: "Inspect or change an ACP session configuration option.",
+      arguments: [
+        { name: "configId", required: false },
+        { name: "value", required: false, variadic: true },
+      ],
+    });
+    expect(commands.find((command) => command.id === "degrade")?.available).toBe(true);
+    expect(commands.find((command) => command.id === "upgrade")).toMatchObject({
+      available: false,
+      unavailableReason: "already in normal ACP mode",
+    });
+    expect(commands.find((command) => command.id === "caps")).toMatchObject({
+      available: false,
+      unavailableReason: "controller is not connected",
+    });
+  });
+
   test("/session shows id, adapter and mode", async () => {
     const { out } = await run(makeClient(), "session");
     expect(out).toContain("sess-1");

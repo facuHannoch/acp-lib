@@ -9,6 +9,7 @@ import type {
   HandoffResult,
 } from "../agent-session.ts";
 import type { AgentMode } from "../controller.ts";
+import type { CommandDescriptor } from "../command-descriptors.ts";
 import type { InternalSessionCommand, PromptHandlers, PromptResult } from "../types.ts";
 import { runRepl, type ReplOptions } from "./repl.ts";
 
@@ -40,6 +41,78 @@ export interface AgentSessionCommandHandlers {
   onSlashCommand(command: string, args: string[]): Promise<boolean>;
 }
 
+export type AgentSessionCommandId =
+  | "help"
+  | "session"
+  | "state"
+  | "commands"
+  | "handoff"
+  | "bridge";
+
+export interface AgentSessionCommand extends CommandDescriptor<AgentSessionCommandId> {}
+
+/**
+ * Describe the first-class commands that operate on one stable logical AgentSession.
+ * The result is recomputed so availability reflects the current session state.
+ * REPL-only lifecycle commands such as `/exit` are intentionally not included.
+ */
+export function getAgentSessionCommands(
+  session: Pick<InteractiveAgentSession, "state">,
+): AgentSessionCommand[] {
+  const promptability = session.state.promptability;
+  const always = (descriptor: Omit<AgentSessionCommand, "available">): AgentSessionCommand => ({
+    ...descriptor,
+    available: true,
+  });
+  return [
+    always({
+      id: "help",
+      usage: "/help",
+      description: "Show commands that operate on this logical agent session.",
+      arguments: [],
+    }),
+    always({
+      id: "session",
+      usage: "/session",
+      description: "Show the stable agent-session identity and current provider-thread identity.",
+      arguments: [],
+    }),
+    always({
+      id: "state",
+      usage: "/state",
+      description: "Show lifecycle, queue, transport, and provider-thread state.",
+      arguments: [],
+    }),
+    always({
+      id: "commands",
+      usage: "/commands",
+      description: "List slash commands advertised by the active ACP harness.",
+      arguments: [],
+    }),
+    {
+      id: "handoff",
+      usage: "/handoff [SUMMARY]",
+      description: "Continue in a new provider thread while preserving the agent-session identity.",
+      arguments: [{
+        name: "summary",
+        description: "Optional continuation summary; the current thread generates one when omitted.",
+        required: false,
+        variadic: true,
+      }],
+      available: promptability.promptable,
+      ...(promptability.promptable
+        ? {}
+        : { unavailableReason: `session is not promptable: ${promptability.blockers.join(", ")}` }),
+    },
+    always({
+      id: "bridge",
+      usage: "/bridge",
+      description: "Open the harness's interactive terminal interface.",
+      arguments: [],
+    }),
+  ];
+}
+
 /** Commands that control exactly one stable logical AgentSession. */
 export function createAgentSessionCommands(
   deps: AgentSessionCommandHandlerDeps,
@@ -49,7 +122,7 @@ export function createAgentSessionCommands(
   const onSlashCommand = async (command: string, args: string[]): Promise<boolean> => {
     switch (command) {
       case "help":
-        note("local commands: /help /session /state /commands /handoff [SUMMARY] /bridge /exit");
+        note(`local commands: ${getAgentSessionCommands(session).map((entry) => entry.usage).join(" ")} /exit`);
         note("internal session commands: //name [input]");
         return true;
 

@@ -2360,3 +2360,24 @@ false request conflict. The dangling creation-error sentence in the specificatio
 also repaired.
 
 Verification: `tsc --noEmit`, 671/671 repository tests, and `git diff --check` pass.
+
+### Part 23 — discoverable command metadata
+
+Added an explicit shared descriptor contract for local library commands: stable ID, terminal
+usage, human description, structured positional arguments, dynamic availability, and an
+adjacent unavailability reason. The single-session REPL now exports
+`getAgentSessionCommands(session)` as the discovery surface for `/handoff`, `/bridge`, and
+its introspection commands. `/help` renders from that registry so help and discovery cannot
+quietly drift; `/exit` remains REPL lifecycle rather than an AgentSession operation.
+
+Extended `AgentController.getCommands()` with the same descriptions and argument metadata.
+The controller registry now also includes its previously undisclosed `/degrade` and
+`/upgrade` operations. ACP-dependent availability remains derived from connection and
+negotiated capabilities. Harness-advertised commands retain ACP's native name,
+description, and input hint as the distinct third command source.
+
+Updated the consumer guide with a command-palette example and the dispatch-layer boundary.
+Focused tests cover structured handoff metadata, promptability-driven availability,
+controller arguments, mode controls, and unavailable reasons.
+
+Verification: `tsc --noEmit`, 673/673 repository tests, and `git diff --check` pass.

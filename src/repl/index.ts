@@ -5,8 +5,14 @@ export type {
   InteractiveControllerClient,
 } from "./commands.ts";
 
-export { createAgentSessionCommands, runAgentSessionRepl } from "./agent-session-commands.ts";
+export {
+  createAgentSessionCommands,
+  getAgentSessionCommands,
+  runAgentSessionRepl,
+} from "./agent-session-commands.ts";
 export type {
+  AgentSessionCommand,
+  AgentSessionCommandId,
   AgentSessionCommandHandlerDeps,
   AgentSessionCommandHandlers,
   AgentSessionReplOptions,

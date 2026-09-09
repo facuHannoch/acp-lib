@@ -9,6 +9,7 @@ import type * as schema from "@agentclientprotocol/sdk";
 import type { Adapter } from "./adapters.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
+import type { CommandDescriptor } from "./command-descriptors.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { Logger } from "./logger.ts";
 import type { AcpLauncher } from "./launcher.ts";
@@ -73,14 +74,11 @@ export type ControllerCommandId =
   | "load"
   | "resume"
   | "fork"
-  | "bridge";
+  | "bridge"
+  | "degrade"
+  | "upgrade";
 
-export interface ControllerCommand {
-  id: ControllerCommandId;
-  usage: string;
-  available: boolean;
-  unavailableReason?: string;
-}
+export interface ControllerCommand extends CommandDescriptor<ControllerCommandId> {}
 
 export type ConfigValueParseResult =
   | { ok: true; value: unknown }
@@ -347,58 +345,97 @@ export class AgentController implements AgentClient {
     // The rich ACP commands are unavailable when degraded — `acp` is null there.
     const acp = this.acp;
     const degradedReason = "unavailable in degraded (pty) mode";
+    const acpUnavailableReason = this.current ? degradedReason : "controller is not connected";
     const capabilities = acp ? acp.capabilities : null;
     const session = capabilities?.agent.sessionCapabilities;
+    const command = (
+      descriptor: Omit<ControllerCommand, "available" | "unavailableReason">,
+      available: boolean,
+      unavailableReason?: string,
+    ): ControllerCommand => ({
+      ...descriptor,
+      available,
+      ...(available || !unavailableReason ? {} : { unavailableReason }),
+    });
     return [
-      { id: "caps", usage: "/caps", available: Boolean(acp), unavailableReason: degradedReason },
-      { id: "session", usage: "/session", available: Boolean(this.current) },
+      command({
+        id: "caps",
+        usage: "/caps",
+        description: "Show capabilities negotiated with the active ACP harness.",
+        arguments: [],
+      }, Boolean(acp), acpUnavailableReason),
+      command({
+        id: "session",
+        usage: "/session",
+        description: "Show the active provider-thread identity, adapter, and transport mode.",
+        arguments: [],
+      }, Boolean(this.current), "controller is not connected"),
       {
         id: "login",
         usage: "/login [METHOD]",
+        description: "List authentication methods or authenticate through the active ACP harness.",
+        arguments: [{ name: "method", description: "Advertised authentication method ID.", required: false }],
         available: Boolean(acp),
-        unavailableReason: degradedReason,
+        ...(acp ? {} : { unavailableReason: acpUnavailableReason }),
       },
-      {
+      command({
         id: "new",
         usage: "/new",
-        available: Boolean(acp),
-        unavailableReason: degradedReason,
-      },
-      {
+        description: "Create a fresh provider thread in the active ACP harness.",
+        arguments: [],
+      }, Boolean(acp), acpUnavailableReason),
+      command({
         id: "sessions",
         usage: "/sessions",
-        available: session?.list === true,
-        unavailableReason: acp ? "agent does not support session/list" : degradedReason,
-      },
-      {
+        description: "List provider sessions advertised by the active ACP harness.",
+        arguments: [],
+      }, session?.list === true, acp ? "agent does not support session/list" : acpUnavailableReason),
+      command({
         id: "config",
         usage: "/config [CONFIG_ID [VALUE]]",
-        available: Boolean(acp),
-        unavailableReason: degradedReason,
-      },
-      {
+        description: "Inspect or change an ACP session configuration option.",
+        arguments: [
+          { name: "configId", description: "Advertised configuration option ID.", required: false },
+          { name: "value", description: "New value for the selected option.", required: false, variadic: true },
+        ],
+      }, Boolean(acp), acpUnavailableReason),
+      command({
         id: "load",
         usage: "/load SESSION_ID",
-        available: capabilities?.agent.loadSession === true,
-        unavailableReason: acp ? "load not supported by this agent" : degradedReason,
-      },
-      {
+        description: "Load a provider session by ID.",
+        arguments: [{ name: "sessionId", description: "Provider session ID to load.", required: true }],
+      }, capabilities?.agent.loadSession === true, acp ? "load not supported by this agent" : acpUnavailableReason),
+      command({
         id: "resume",
         usage: "/resume SESSION_ID",
-        available: session?.resume === true,
-        unavailableReason: acp ? "resume not supported by this agent" : degradedReason,
-      },
-      {
+        description: "Resume a provider session by ID.",
+        arguments: [{ name: "sessionId", description: "Provider session ID to resume.", required: true }],
+      }, session?.resume === true, acp ? "resume not supported by this agent" : acpUnavailableReason),
+      command({
         id: "fork",
         usage: "/fork SESSION_ID",
-        available: session?.fork === true,
-        unavailableReason: acp ? "fork not supported by this agent" : degradedReason,
-      },
-      {
+        description: "Fork a provider session into a new provider thread.",
+        arguments: [{ name: "sessionId", description: "Provider session ID to fork.", required: true }],
+      }, session?.fork === true, acp ? "fork not supported by this agent" : acpUnavailableReason),
+      command({
         id: "bridge",
         usage: "/bridge",
-        available: Boolean(this.current),
-      },
+        description: "Open the harness's interactive terminal interface.",
+        arguments: [],
+      }, Boolean(this.current), "controller is not connected"),
+      command({
+        id: "degrade",
+        usage: "/degrade",
+        description: "Replace the ACP connection with the adapter's interactive PTY mode.",
+        arguments: [],
+      }, this.mode !== "degraded" && Boolean(this.config.adapter.ptyCommand),
+      this.mode === "degraded" ? "already in degraded mode" : "adapter has no interactive PTY command"),
+      command({
+        id: "upgrade",
+        usage: "/upgrade",
+        description: "Replace degraded PTY mode with a fresh ACP connection.",
+        arguments: [],
+      }, this.mode === "degraded", "already in normal ACP mode"),
     ];
   }
 

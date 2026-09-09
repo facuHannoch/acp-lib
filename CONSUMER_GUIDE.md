@@ -60,6 +60,7 @@ Interactive helpers are a separate entry point:
 import {
   createAgentSessionCommands,
   dispatchReplInput,
+  getAgentSessionCommands,
   parseReplInput,
   runAgentSessionRepl,
 } from "@qlairoslabs/acp-client/repl";
@@ -452,6 +453,45 @@ await session.executeInternalSessionCommand("status", "verbose");
 ACP sends a harness command as a prompt. `executeInternalSessionCommand()` makes the layer
 explicit and routes it through the logical session's queue, lifecycle, transcript, and
 metering machinery. Advertisement is discovery rather than an allow-list.
+
+## Discover commands for a UI
+
+The library exposes command metadata separately for the two local operation layers. A UI
+bound to one stable logical session can read the AgentSession command registry:
+
+```ts
+const clientCommands = getAgentSessionCommands(session);
+
+for (const command of clientCommands) {
+  renderCommand({
+    name: command.id,
+    description: command.description,
+    arguments: command.arguments,
+    disabled: !command.available,
+    disabledReason: command.unavailableReason,
+  });
+}
+```
+
+This registry contains `/handoff`, `/bridge`, and the introspection commands implemented
+by `createAgentSessionCommands()`. Its availability is recomputed from current session
+state. `/exit` is intentionally absent because it belongs to a particular REPL, not to an
+`AgentSession`.
+
+The lower-level controller exposes its own dynamically negotiated registry:
+
+```ts
+for (const command of controller.getCommands()) {
+  console.log(command.id, command.description, command.arguments);
+  if (!command.available) console.log(command.unavailableReason);
+}
+```
+
+These are provider-thread and transport controls such as `/load`, `/fork`, `/config`, and
+`/degrade`; they are not aliases for logical-session operations. Harness-advertised
+commands remain the third source in `session.internalSessionCommands` and are invoked
+explicitly with `executeInternalSessionCommand()`. A consumer can merge all three sources
+for display while retaining their origin so dispatch never crosses layers accidentally.
 
 ## Configure transcripts
 

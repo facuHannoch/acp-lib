@@ -118,7 +118,7 @@ export function createControllerCommands(
       case "help": {
         note(
           `commands: /help ${client.getCommands().map((c) => c.usage).join(" ")} ` +
-            `/degrade /upgrade /exit`,
+            `/exit`,
         );
         const availableCommands = client.availableCommands;
         if (availableCommands.length > 0) {

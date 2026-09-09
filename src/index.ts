@@ -24,6 +24,7 @@ export {
   parseJsonOrString,
   formatConfigValue,
 } from "./controller.ts";
+export type { CommandArgumentDescriptor, CommandDescriptor } from "./command-descriptors.ts";
 export type {
   AgentControllerConfig,
   AgentMode,

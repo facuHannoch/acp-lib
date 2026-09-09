@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   createAgentSessionCommands,
+  getAgentSessionCommands,
   type InteractiveAgentSession,
 } from "../src/repl/agent-session-commands.ts";
 import { dispatchReplInput, parseReplInput } from "../src/repl/repl.ts";
@@ -20,6 +21,7 @@ function makeSession(overrides: Partial<InteractiveAgentSession> = {}): Interact
       internalSessionId: "provider-1",
       adapterId: "codex",
       mode: "normal",
+      promptability: { promptable: true, blockers: [] },
     },
     isBusy: false,
     queuedOperationCount: 0,
@@ -124,6 +126,28 @@ describe("REPL input namespaces", () => {
 });
 
 describe("single-AgentSession local commands", () => {
+  test("exports first-class command metadata with dynamic availability", () => {
+    const available = getAgentSessionCommands(makeSession());
+    const handoff = available.find((command) => command.id === "handoff");
+    expect(handoff?.description).toContain("new provider thread");
+    expect(handoff?.arguments).toEqual([{
+      name: "summary",
+      description: "Optional continuation summary; the current thread generates one when omitted.",
+      required: false,
+      variadic: true,
+    }]);
+    expect(handoff?.available).toBe(true);
+
+    const blocked = getAgentSessionCommands(makeSession({
+      state: {
+        ...makeSession().state,
+        promptability: { promptable: false, blockers: ["recovery_required"] },
+      },
+    })).find((command) => command.id === "handoff");
+    expect(blocked?.available).toBe(false);
+    expect(blocked?.unavailableReason).toContain("recovery_required");
+  });
+
   test("help contains only one-session operations and explains // routing", async () => {
     const { handled, output } = await runLocal(makeSession(), "help");
     expect(handled).toBe(true);
