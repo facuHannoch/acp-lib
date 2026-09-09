@@ -41,6 +41,8 @@ export interface ResumeTranscriptWriterOptions {
   readonly expected?: TranscriptScanExpectation;
   readonly lockTimeoutMs?: number;
   readonly lockRetryMs?: number;
+  /** @internal Pre-acquired ownership transferred by managed loading/restoration. */
+  readonly writerLock?: SessionLogWriterLock;
 }
 
 export interface ResumedTranscriptWriter {
@@ -183,12 +185,14 @@ export class FileSessionLogWriter<K extends SessionLogKind> {
   ): Promise<ResumedTranscriptWriter> {
     if (!isAbsolute(options.path)) throw new SessionLogWriteError("session-log path must be absolute");
     await inspectResumableTranscript(options.path);
-    const lock = await acquireLogLock(
-      `${options.path}.lock`,
-      options.path,
-      options.lockTimeoutMs ?? 5_000,
-      options.lockRetryMs ?? 20,
+    const lock = options.writerLock ?? await acquireLogLock(
+      `${options.path}.lock`, options.path,
+      options.lockTimeoutMs ?? 5_000, options.lockRetryMs ?? 20,
     );
+    if (lock.path !== options.path) {
+      await lock.release().catch(() => undefined);
+      throw new SessionLogWriteError("pre-acquired writer lock belongs to another path");
+    }
     let handle: FileHandle | undefined;
     try {
       const before = await inspectResumableTranscript(options.path);

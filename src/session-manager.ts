@@ -52,6 +52,10 @@ import {
   reconfigureManagedAgentSessionPersistence,
   type ReconfigureAgentSessionPersistenceOptions,
 } from "./persistence/reconfiguration.ts";
+import {
+  restoreManagedAgentSession,
+  type RestoreAgentSessionOptions,
+} from "./persistence/restoration.ts";
 
 export interface SessionManagerConfig {
   readonly root?: string;
@@ -236,6 +240,18 @@ export class SessionManager {
   ): Promise<AgentSessionSummary> {
     return await reconfigureManagedAgentSessionPersistence(
       this.requireAgentStore("reconfigureAgentSessionPersistence()"),
+      agentSessionId,
+      options,
+    );
+  }
+
+  /** Explicitly reactivate a tombstoned logical session. */
+  async restoreAgentSession(
+    agentSessionId: string,
+    options: RestoreAgentSessionOptions,
+  ): Promise<AgentSessionOpenResult> {
+    return await restoreManagedAgentSession(
+      this.requireAgentStore("restoreAgentSession()"),
       agentSessionId,
       options,
     );

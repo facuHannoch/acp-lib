@@ -75,7 +75,7 @@ export async function loadManagedAgentSession(
   const opened = await AgentSession.open({
     ...config,
     agentSessionId,
-    persistence: persistenceFromRecord(record),
+    persistence: persistenceFromManagedRecord(record),
   });
   try {
     const snapshot = opened.session.getManagedPersistenceSnapshot();
@@ -109,7 +109,7 @@ export async function loadManagedAgentSession(
   }
 }
 
-function persistenceFromRecord(record: AgentSessionRecord): AgentSessionPersistenceOptions {
+export function persistenceFromManagedRecord(record: AgentSessionRecord): AgentSessionPersistenceOptions {
   if (!record.transcript) throw new ManagedAgentSessionAuthorityConflictError("transcript is unavailable");
   return {
     transcript: {

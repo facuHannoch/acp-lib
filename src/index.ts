@@ -138,6 +138,8 @@ export type {
 } from "./persistence/managed-checkpoint.ts";
 export { AgentSessionPersistenceReconfigurationError } from "./persistence/reconfiguration.ts";
 export type { ReconfigureAgentSessionPersistenceOptions } from "./persistence/reconfiguration.ts";
+export { AgentSessionRestorationError } from "./persistence/restoration.ts";
+export type { RestoreAgentSessionOptions } from "./persistence/restoration.ts";
 
 export {
   appendTranscriptLine,

@@ -2096,3 +2096,31 @@ Tests cover offline authority selection, transcript replacement, new generation 
 post-replacement provider loading, idempotent completed retry, and acknowledged transcript
 disablement. The complete repository suite passes 652/652, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 12B — managed tombstone restoration with retained authority
+
+Added `SessionManager.restoreAgentSession()` for tombstones whose authoritative transcript
+was retained. Restoration requires the exact incarnation/revision, a stable restoration ID,
+and an adapter supplied for this operation. The manager acquires transcript ownership before
+preparing maintenance and transfers that lock into the opening runtime, so a live writer
+cannot race a published restoration intent.
+
+The tombstone remains authoritative until the recorded provider thread has loaded and a
+fresh post-restoration checkpoint is durable. The transaction then stages provider
+continuation and the complete active registry projection in separate monotonic steps before
+finalizing. Only after finalization is ongoing checkpoint publication attached. The returned
+`AgentSessionOpenResult` carries the normal continuation, recovery, configuration, repair,
+and promptability reports, so the consumer can see whether the latest thread was actually
+available and what occurred.
+
+Interrupted finalization is resumable: an identical retry recognizes the staged record,
+finalizes it without another restoration mutation, releases transaction ownership, and
+performs an ordinary managed load to return a new live object. Active sessions are not
+silently treated as tombstones. Deleted-transcript replacement and audit-backed restoration
+remain explicit unsupported cases for their dedicated persistence stages.
+
+Managed `AgentSession.open()` now accepts an internal transferred transcript lock, and the
+session exposes an internal durable restoration-checkpoint primitive. Tests cover successful
+reactivation, restored model/provider identity, continued registry publication, active-row
+rejection, and recovery after staged finalization failure. The complete repository suite
+passes 655/655, `tsc --noEmit` passes, and `git diff --check` is clean.

@@ -781,6 +781,21 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   /** Restore one logical session by loading the exact provider thread in transcript authority. */
   static async open(config: AgentSessionOpenConfig): Promise<AgentSessionOpenResult> {
+    return await AgentSession.openWithLock(config);
+  }
+
+  /** @internal Managed open after maintenance acquired the artifact lock. */
+  static async openManaged(
+    config: AgentSessionOpenConfig,
+    transcriptLock: SessionLogWriterLock,
+  ): Promise<AgentSessionOpenResult> {
+    return await AgentSession.openWithLock(config, transcriptLock);
+  }
+
+  private static async openWithLock(
+    config: AgentSessionOpenConfig,
+    transcriptLock?: SessionLogWriterLock,
+  ): Promise<AgentSessionOpenResult> {
     const strategies = normalizeContinuationStrategies(config.continuation);
     const persistence = resolveDirectPersistence(config.persistence);
     if (persistence === false || persistence.transcript === false) {
@@ -795,6 +810,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     const transcript = await TranscriptPersistenceRuntime.resume({
       path: paths.transcriptPath,
       expected: { agentSessionId: config.agentSessionId },
+      writerLock: transcriptLock,
     });
     const checkpoint = transcript.checkpoint;
     try {
@@ -1398,6 +1414,13 @@ export class AgentSession implements AgentClient, Bridgeable {
       checkpoint: this.v2Transcript.checkpoint,
       internalSessionHistory: Object.freeze([...this.v2Transcript.internalSessionHistory]),
     });
+  }
+
+  /** @internal Materialize a durable post-restoration boundary before clearing a tombstone. */
+  async publishManagedRestorationCheckpoint(): Promise<ManagedAgentSessionPersistenceSnapshot> {
+    if (!this.v2Transcript) throw new Error("managed restoration requires a v2 transcript");
+    await this.v2Transcript.publishCheckpoint({});
+    return this.getManagedPersistenceSnapshot();
   }
 
   /** @internal Publish every later transcript checkpoint into the managed registry. */
