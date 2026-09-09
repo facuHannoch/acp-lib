@@ -182,7 +182,7 @@ export type AgentSessionPromptability =
   | { readonly promptable: false; readonly blockers: readonly PromptBlocker[] };
 
 export interface ContinuationAttempt {
-  readonly strategy: "load_internal_session";
+  readonly strategy: ContinuationStrategy["kind"];
   readonly status: "succeeded" | "failed" | "skipped";
   readonly errorCode?: PersistedMachineCode;
   readonly reason?: string;
@@ -197,7 +197,43 @@ export interface ContinuationReport {
   readonly attempts: readonly ContinuationAttempt[];
   readonly outcome:
     | { readonly kind: "loaded"; readonly activeInternalSessionId: string }
+    | {
+        readonly kind: "reconstructed";
+        readonly source: "transcript" | "consumer";
+        readonly activeInternalSessionId: string;
+        readonly transitionId: string;
+      }
     | { readonly kind: "unavailable" };
+}
+
+export interface TranscriptContinuationBuilderContext {
+  readonly agentSessionId: string;
+  readonly checkpoint: AgentSessionCheckpoint;
+  /** Absolute authoritative path. TranscriptReader pagination is added in Phase 6. */
+  readonly transcriptPath: string;
+  readonly targetAdapterId: string;
+}
+
+export type TranscriptContinuationBuilder = (
+  context: TranscriptContinuationBuilderContext,
+) => Promise<{ readonly continuation: string; readonly metadata?: Readonly<Record<string, JsonValue>> }>;
+
+export type ContinuationStrategy =
+  | { readonly kind: "load_internal_session" }
+  | {
+      readonly kind: "new_from_transcript";
+      readonly strategyId: string;
+      readonly buildContinuation: TranscriptContinuationBuilder;
+    }
+  | {
+      readonly kind: "new_from_consumer_continuation";
+      readonly continuationId: string;
+      readonly continuation: string;
+    };
+
+export interface OpenContinuationOptions {
+  /** Defaults to only `load_internal_session`; an empty array is invalid. */
+  readonly strategies?: readonly ContinuationStrategy[];
 }
 
 export interface AgentSessionOpenResult {
@@ -485,6 +521,7 @@ export interface AgentSessionOpenConfig extends Omit<
   persistence: AgentSessionPersistenceOptions;
   /** Optional consumer copy must exactly match transcript authority in this first slice. */
   checkpoint?: AgentSessionCheckpoint;
+  continuation?: OpenContinuationOptions;
 }
 
 interface AgentSessionOpenBootstrap {
@@ -670,6 +707,7 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   /** Restore one logical session by loading the exact provider thread in transcript authority. */
   static async open(config: AgentSessionOpenConfig): Promise<AgentSessionOpenResult> {
+    const strategies = normalizeContinuationStrategies(config.continuation);
     const persistence = resolveDirectPersistence(config.persistence);
     if (persistence === false || persistence.transcript === false) {
       throw new Error("AgentSession.open() currently requires transcript persistence");
@@ -689,7 +727,6 @@ export class AgentSession implements AgentClient, Bridgeable {
       validateAgentSessionCheckpoint(config.checkpoint ?? checkpoint, {
         agentSessionId: config.agentSessionId,
         incarnationId: checkpoint.incarnationId,
-        adapterId: config.adapterId,
         transcriptId: checkpoint.transcript?.transcriptId,
         transcriptGeneration: checkpoint.transcript?.generation,
         transcriptPath: paths.transcriptPath,
@@ -697,25 +734,22 @@ export class AgentSession implements AgentClient, Bridgeable {
       if (config.checkpoint && config.checkpoint.digest !== checkpoint.digest) {
         throw new Error("consumer checkpoint does not match authoritative transcript checkpoint");
       }
-      if (checkpoint.adapterId !== config.adapterId) {
+      if (checkpoint.adapterId !== config.adapterId && !strategies.some(isReconstructionStrategy)) {
         throw new AdapterMismatchError(checkpoint.adapterId, config.adapterId);
       }
-      if (checkpoint.mode !== "normal" || !checkpoint.internalSessionId) {
-        const report = unavailableContinuationReport(checkpoint, config.adapterId, transcript, "recorded thread has no loadable ACP identity");
-        throw new ContinuationUnavailableError(report);
-      }
-
-      const { checkpoint: _suppliedCheckpoint, ...runtimeConfig } = config;
+      const { checkpoint: _suppliedCheckpoint, continuation: _continuation, ...runtimeConfig } = config;
       const session = new AgentSession({
         ...runtimeConfig,
         agentSessionId: checkpoint.agentSessionId,
         creationId: checkpoint.incarnationId,
-        mode: checkpoint.mode,
-        providerSession: {
-          kind: "load",
-          internalSessionId: checkpoint.internalSessionId,
-          onFailure: "error",
-        },
+        mode: "normal",
+        providerSession: checkpoint.internalSessionId
+          ? {
+              kind: "load",
+              internalSessionId: checkpoint.internalSessionId,
+              onFailure: "error",
+            }
+          : { kind: "new" },
         metering: {
           ...config.metering,
           initialState: checkpoint.metering,
@@ -723,17 +757,15 @@ export class AgentSession implements AgentClient, Bridgeable {
       }, { transcript, transcriptPath: paths.transcriptPath });
 
       try {
-        await session.start();
-      } catch (error) {
-        await session.stop().catch(() => undefined);
-        const report = unavailableContinuationReport(checkpoint, config.adapterId, transcript, String(error));
-        throw new ContinuationUnavailableError(report, { cause: error });
-      }
-      try {
-        const configuration = await session.restoreOpeningConfiguration();
+        const continuation = await session.acquireOpeningContinuation(checkpoint, strategies);
+        if (continuation.outcome.kind === "unavailable") {
+          throw new ContinuationUnavailableError(continuation);
+        }
+        const configuration = continuation.outcome.kind === "loaded"
+          ? await session.restoreOpeningConfiguration()
+          : session._configurationRestore;
         session._configurationRestore = configuration;
         session.emitStateIfChanged();
-        const continuation = successfulContinuationReport(checkpoint, config.adapterId, transcript);
         return Object.freeze({
           session,
           continuation,
@@ -860,6 +892,325 @@ export class AgentSession implements AgentClient, Bridgeable {
         });
       },
     });
+  }
+
+  /**
+   * Acquire one live provider thread from an explicit, ordered continuation policy.
+   *
+   * Loading is the only implicit/default behavior. Creating and seeding a replacement
+   * thread can spend tokens and changes routing identity, so it occurs only when the
+   * caller supplied a reconstruction strategy.
+   */
+  private async acquireOpeningContinuation(
+    checkpoint: AgentSessionCheckpoint,
+    strategies: readonly ContinuationStrategy[],
+  ): Promise<ContinuationReport> {
+    if (!this.openBootstrap || this.persistence === false) {
+      throw new Error("opening continuation requires transcript persistence");
+    }
+    this.v2Transcript = this.openBootstrap.transcript;
+    this.v2TranscriptPath = this.openBootstrap.transcriptPath;
+    this._recovery = this.v2Transcript.recovery;
+    this.continuationAcquired = false;
+
+    const attempts: ContinuationAttempt[] = [];
+    let recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"] = "not_checked";
+
+    for (const strategy of strategies) {
+      if (strategy.kind === "load_internal_session") {
+        if (!checkpoint.internalSessionId) {
+          attempts.push(Object.freeze({
+            strategy: strategy.kind,
+            status: "skipped",
+            errorCode: "internal_session_absent",
+            reason: "the continuation checkpoint has no provider thread id",
+          }));
+          continue;
+        }
+        if (checkpoint.adapterId !== this.adapterId) {
+          attempts.push(Object.freeze({
+            strategy: strategy.kind,
+            status: "skipped",
+            errorCode: "adapter_mismatch",
+            reason: `recorded adapter ${checkpoint.adapterId} differs from requested adapter ${this.adapterId}`,
+          }));
+          continue;
+        }
+        if (checkpoint.mode !== "normal") {
+          attempts.push(Object.freeze({
+            strategy: strategy.kind,
+            status: "skipped",
+            errorCode: "internal_session_not_loadable",
+            reason: "degraded provider threads cannot be loaded through ACP",
+          }));
+          continue;
+        }
+        try {
+          const loaded = await this.controller.start();
+          if (!loaded.resumed || !loaded.sessionId) {
+            throw new Error("adapter did not confirm loading the recorded internal session");
+          }
+          if (loaded.sessionId !== checkpoint.internalSessionId) {
+            throw new Error("adapter loaded a different internal session than requested");
+          }
+          this._mode = this.controller.currentMode;
+          this.setInternalSessionId(loaded.sessionId, false);
+          this.continuationAcquired = true;
+          recordedThreadAvailability = "available";
+          attempts.push(Object.freeze({ strategy: strategy.kind, status: "succeeded" }));
+          return continuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
+            kind: "loaded",
+            activeInternalSessionId: loaded.sessionId,
+          });
+        } catch (error) {
+          recordedThreadAvailability = "unavailable";
+          attempts.push(Object.freeze({
+            strategy: strategy.kind,
+            status: "failed",
+            errorCode: "internal_session_unavailable",
+            reason: String(error),
+          }));
+          continue;
+        }
+      }
+
+      if (this._recovery.kind !== "clean") {
+        attempts.push(Object.freeze({
+          strategy: strategy.kind,
+          status: "skipped",
+          errorCode: "recovery_required",
+          reason: "transcript uncertainty must be resolved before activating a replacement thread",
+        }));
+        continue;
+      }
+
+      let continuation: string;
+      const source = strategy.kind === "new_from_transcript" ? "transcript" as const : "consumer" as const;
+      try {
+        continuation = strategy.kind === "new_from_transcript"
+          ? (await strategy.buildContinuation(Object.freeze({
+              agentSessionId: this.agentSessionId,
+              checkpoint: structuredClone(checkpoint),
+              transcriptPath: this.openBootstrap.transcriptPath,
+              targetAdapterId: this.adapterId,
+            }))).continuation
+          : strategy.continuation;
+        if (!continuation.trim()) throw new Error("continuation content cannot be blank");
+      } catch (error) {
+        attempts.push(Object.freeze({
+          strategy: strategy.kind,
+          status: "failed",
+          errorCode: "continuation_build_failed",
+          reason: String(error),
+        }));
+        continue;
+      }
+
+      const transitionId = this.mintOperationId();
+      const transitionKind = checkpoint.adapterId === this.adapterId ? "replacement" as const : "switch" as const;
+      const from = descriptorFromCheckpoint(checkpoint);
+      let to: InternalSessionDescriptor | undefined;
+      let failedAfter: "start" | "target_created" | "target_activated" = "start";
+      await this.v2Transcript.appendTransitionEvent({
+        kind: "transition",
+        transitionId,
+        transitionKind,
+        event: "started",
+        from,
+        reasonCode: "continuation_reconstruction",
+      });
+      try {
+        const created = await this.controller.startFresh();
+        if (!created.sessionId) throw new Error("harness returned no session id for reconstructed continuation");
+        if (created.sessionId === checkpoint.internalSessionId && checkpoint.adapterId === this.adapterId) {
+          throw new Error("harness did not create a replacement internal session");
+        }
+
+        const restored = checkpoint.adapterId === this.adapterId
+          ? await this.restoreConfigurationOnReconstructedTarget(checkpoint.sessionConfiguration)
+          : this.snapshotReconstructedConfiguration([]);
+        this._configurationRestore = restored.status;
+        const transitionAt = new Date().toISOString();
+        to = {
+          internalSessionId: created.sessionId,
+          adapterId: this.adapterId,
+          mode: "normal",
+          model: this.model,
+          sessionConfiguration: restored.snapshot,
+          activatedAt: transitionAt,
+          protocol: { name: "acp", version: 1 },
+        };
+        await this.v2Transcript.appendTransitionEvent({
+          kind: "transition",
+          transitionId,
+          transitionKind,
+          event: "target_created",
+          from,
+          to,
+          reasonCode: "continuation_reconstruction",
+        });
+        failedAfter = "target_created";
+        const current = this.v2Transcript.checkpoint;
+        await this.v2Transcript.activateTransition({
+          kind: "transition",
+          transitionId,
+          transitionKind,
+          event: "target_activated",
+          from,
+          to,
+          ...(from.internalSessionId
+            ? {
+                historyEntry: {
+                  internalSessionId: from.internalSessionId,
+                  adapterId: from.adapterId,
+                  model: from.model,
+                  sessionConfiguration: from.sessionConfiguration,
+                  protocol: from.protocol,
+                  activatedAt: from.activatedAt ?? checkpoint.updatedAt,
+                  deactivatedAt: transitionAt,
+                  transition: {
+                    kind: transitionKind,
+                    transitionId,
+                    reasonCode: "continuation_reconstruction",
+                  },
+                },
+              }
+            : {}),
+          activationState: {
+            resultingStateRevision: current.stateRevision + 1,
+            updatedAt: transitionAt,
+            transitionAt,
+            boundary: current.boundary,
+          },
+          reasonCode: "continuation_reconstruction",
+        });
+        failedAfter = "target_activated";
+        this._mode = "normal";
+        this.setInternalSessionId(created.sessionId, true);
+        await this.v2Transcript.publishCheckpoint({
+          model: this.model,
+          sessionConfiguration: restored.snapshot,
+          metering: this.metering.currentState,
+        });
+
+        const records: OperationMeteringRecord[] = [];
+        const seeded = await this.meteredInternalPrompt(
+          `${transitionId}:seed`,
+          "switch_seed",
+          continuationPrompt(continuation.trim()),
+          records,
+        );
+        if (seeded.status !== "completed") {
+          throw new Error(`continuation seeding ${seeded.status}`);
+        }
+        await this.v2Transcript.appendTransitionEvent({
+          kind: "transition",
+          transitionId,
+          transitionKind,
+          event: "completed",
+          from,
+          to,
+          summary: continuation.trim(),
+          reasonCode: "continuation_reconstruction",
+        });
+        this.continuationAcquired = true;
+        attempts.push(Object.freeze({ strategy: strategy.kind, status: "succeeded" }));
+        return continuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
+          kind: "reconstructed",
+          source,
+          activeInternalSessionId: created.sessionId,
+          transitionId,
+        });
+      } catch (error) {
+        await this.v2Transcript.appendTransitionEvent({
+          kind: "transition",
+          transitionId,
+          transitionKind,
+          event: "failed",
+          from,
+          ...(to ? { to } : {}),
+          failedAfter,
+          reasonCode: "continuation_reconstruction",
+          errorCode: "unknown",
+        }).catch((persistenceError) => {
+          this.log.warn("continuation_failure_transcript_failed", { error: String(persistenceError) });
+        });
+        attempts.push(Object.freeze({
+          strategy: strategy.kind,
+          status: "failed",
+          errorCode: "continuation_reconstruction_failed",
+          reason: String(error),
+        }));
+        // Once activation is durable, another fallback would create a second transition
+        // from a checkpoint the caller never selected. Reopen the newly active target.
+        if (failedAfter === "target_activated") break;
+      }
+    }
+
+    return continuationReport(
+      checkpoint,
+      this.adapterId,
+      this.v2Transcript,
+      recordedThreadAvailability,
+      attempts,
+      { kind: "unavailable" },
+    );
+  }
+
+  private async restoreConfigurationOnReconstructedTarget(
+    saved: SessionConfigurationCheckpoint,
+  ): Promise<{ snapshot: SessionConfigurationCheckpoint; status: ConfigurationRestoreStatus }> {
+    const mismatchedIds: string[] = [];
+    const reasons: string[] = [];
+    for (const target of [...saved.restorationTargets].sort((left, right) => left.ordinal - right.ordinal)) {
+      const issue = configurationTargetIssue(this.controller.configOptions.get(target.configId), target);
+      if (issue) {
+        mismatchedIds.push(target.configId);
+        reasons.push(issue);
+        continue;
+      }
+      const option = this.controller.configOptions.get(target.configId)!;
+      if (!sameJsonValue(option.currentValue, target.value)) {
+        try {
+          await this.controller.setConfig(target.configId, structuredClone(target.value));
+        } catch {
+          mismatchedIds.push(target.configId);
+          reasons.push("reapplication_failed");
+          continue;
+        }
+      }
+      const current = this.controller.configOptions.get(target.configId);
+      if (!current || !sameJsonValue(current.currentValue, target.value)) {
+        mismatchedIds.push(target.configId);
+        reasons.push("residual_value_mismatch");
+      }
+    }
+    if (mismatchedIds.length > 0) {
+      throw new Error(`configuration_mismatch: ${mismatchedIds.map((id, index) => `${id}:${reasons[index]}`).join(",")}`);
+    }
+    return this.snapshotReconstructedConfiguration(saved.restorationTargets, saved);
+  }
+
+  private snapshotReconstructedConfiguration(
+    restorationTargets: readonly PersistedSessionConfigSelection[],
+    prior?: SessionConfigurationCheckpoint,
+  ): { snapshot: SessionConfigurationCheckpoint; status: ConfigurationRestoreStatus } {
+    if (this.persistence === false) throw new Error("configuration snapshot requires persistence");
+    const snapshot = snapshotSessionConfiguration({
+      adapterId: this.adapterId,
+      configOptions: this.controller.configOptions,
+      policy: this.persistence.sessionConfiguration,
+      restorationTargets,
+    });
+    const omittedConfigIds = [...new Set([
+      ...(prior?.restorationFidelity === "partial" ? prior.omittedConfigIds : []),
+      ...snapshot.omittedConfigIds,
+    ])].sort();
+    const status: ConfigurationRestoreStatus = prior?.restorationFidelity === "partial"
+      || snapshot.restorationFidelity === "partial"
+      ? Object.freeze({ kind: "partial", omittedConfigIds: Object.freeze(omittedConfigIds) })
+      : Object.freeze({ kind: "matched" });
+    return { snapshot, status };
   }
 
   // --- identity ----------------------------------------------------------------
@@ -2607,48 +2958,69 @@ function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
   return kind === "internal_command" ? "internal_session_command" : kind;
 }
 
-function successfulContinuationReport(
+function continuationReport(
   checkpoint: AgentSessionCheckpoint,
   requestedAdapterId: string,
   transcript: TranscriptPersistenceRuntime,
+  recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"],
+  attempts: readonly ContinuationAttempt[],
+  outcome: ContinuationReport["outcome"],
 ): ContinuationReport {
   return Object.freeze({
     recordedAdapterId: checkpoint.adapterId,
     recordedInternalSessionId: checkpoint.internalSessionId,
     requestedAdapterId,
     recordedConversationAvailability: transcript.conversationAvailability,
-    recordedThreadAvailability: "available",
-    attempts: Object.freeze([{
-      strategy: "load_internal_session" as const,
-      status: "succeeded" as const,
-    }]),
-    outcome: Object.freeze({
-      kind: "loaded" as const,
-      activeInternalSessionId: checkpoint.internalSessionId!,
-    }),
+    recordedThreadAvailability,
+    attempts: Object.freeze(attempts.map((attempt) => Object.freeze({ ...attempt }))),
+    outcome: Object.freeze({ ...outcome }),
   });
 }
 
-function unavailableContinuationReport(
-  checkpoint: AgentSessionCheckpoint,
-  requestedAdapterId: string,
-  transcript: TranscriptPersistenceRuntime,
-  reason: string,
-): ContinuationReport {
-  return Object.freeze({
-    recordedAdapterId: checkpoint.adapterId,
-    recordedInternalSessionId: checkpoint.internalSessionId,
-    requestedAdapterId,
-    recordedConversationAvailability: transcript.conversationAvailability,
-    recordedThreadAvailability: checkpoint.internalSessionId ? "unavailable" : "not_checked",
-    attempts: Object.freeze([{
-      strategy: "load_internal_session" as const,
-      status: checkpoint.internalSessionId ? "failed" as const : "skipped" as const,
-      errorCode: "internal_session_unavailable",
-      reason,
-    }]),
-    outcome: Object.freeze({ kind: "unavailable" as const }),
-  });
+function descriptorFromCheckpoint(checkpoint: AgentSessionCheckpoint): InternalSessionDescriptor {
+  return {
+    internalSessionId: checkpoint.internalSessionId,
+    adapterId: checkpoint.adapterId,
+    mode: checkpoint.mode,
+    model: checkpoint.model,
+    sessionConfiguration: checkpoint.sessionConfiguration,
+    activatedAt: checkpoint.internalSessionActivatedAt,
+    protocol: checkpoint.protocol,
+  };
+}
+
+function isReconstructionStrategy(strategy: ContinuationStrategy): boolean {
+  return strategy.kind === "new_from_transcript" || strategy.kind === "new_from_consumer_continuation";
+}
+
+function normalizeContinuationStrategies(
+  options: OpenContinuationOptions | undefined,
+): readonly ContinuationStrategy[] {
+  const strategies = options?.strategies ?? [{ kind: "load_internal_session" as const }];
+  if (strategies.length === 0) throw new Error("continuation.strategies cannot be empty");
+  return Object.freeze(strategies.map((strategy): ContinuationStrategy => {
+    if (strategy.kind === "load_internal_session") {
+      return Object.freeze({ kind: strategy.kind });
+    }
+    if (strategy.kind === "new_from_transcript") {
+      if (!strategy.strategyId.trim()) throw new Error("transcript continuation strategyId cannot be blank");
+      if (typeof strategy.buildContinuation !== "function") {
+        throw new Error("transcript continuation strategy requires buildContinuation");
+      }
+      return Object.freeze({
+        kind: strategy.kind,
+        strategyId: strategy.strategyId,
+        buildContinuation: strategy.buildContinuation,
+      });
+    }
+    if (!strategy.continuationId.trim()) throw new Error("consumer continuationId cannot be blank");
+    if (!strategy.continuation.trim()) throw new Error("consumer continuation cannot be blank");
+    return Object.freeze({
+      kind: strategy.kind,
+      continuationId: strategy.continuationId,
+      continuation: strategy.continuation,
+    });
+  }));
 }
 
 function configurationTargetIssue(

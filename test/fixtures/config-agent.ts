@@ -35,7 +35,11 @@ function handle(message: any): void {
       });
       return;
     case "session/new":
-      send({ jsonrpc: "2.0", id: message.id, result: { sessionId: "config-session", configOptions: configOptions() } });
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: { sessionId: process.env.NEW_SESSION_ID ?? "config-session", configOptions: configOptions() },
+      });
       return;
     case "session/load":
       if (process.env.FAIL_LOAD === "1" || message.params?.sessionId === "missing-session") {
@@ -64,6 +68,16 @@ function handle(message: any): void {
       }
       model = String(message.params?.value ?? "");
       send({ jsonrpc: "2.0", id: message.id, result: { configOptions: configOptions() } });
+      return;
+    case "session/prompt":
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          stopReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        },
+      });
       return;
     default:
       send({ jsonrpc: "2.0", id: message.id, result: {} });

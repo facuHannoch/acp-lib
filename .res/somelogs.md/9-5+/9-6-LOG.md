@@ -1679,3 +1679,42 @@ Added a pure helper for accepting effective configuration plus end-to-end tests 
 resolution strategies, including a harness which rejects the first opening-time restore
 and accepts the explicit retry. The focused configuration suites pass 14/14, the complete
 repository suite passes 603/603, `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 7C — ordered continuation and explicit reconstruction
+
+Expanded `AgentSession.open()` from its load-only first slice into the specified ordered
+continuation pipeline. The default remains exactly one `load_internal_session` attempt;
+the library still never creates a replacement thread merely because load failed. Consumers
+can now explicitly add either a transcript continuation builder, identified by a stable
+nonsecret `strategyId`, or supplied portable continuation text, identified separately by
+`continuationId`. Empty policies and blank identities/content fail before harness startup.
+
+Every attempted or locally skipped strategy is retained in `ContinuationReport`. A failed
+recorded-thread load remains visible as `recordedThreadAvailability: "unavailable"` even
+when a later strategy succeeds. A different adapter fails before harness contact unless
+the caller explicitly supplied a reconstruction strategy; with one, the exact-load step
+is skipped and the reconstruction is recorded as an adapter `switch` rather than a same-
+adapter `replacement`.
+
+Fresh reconstruction uses a dedicated controller startup path which ignores the stale
+load target. Before publishing the new internal-session identity it durably records the
+transition start, prepares the target configuration, records target creation, and commits
+target activation plus canonical history. Same-adapter reconstruction reapplies the saved
+ordered restoration targets before activation so the activation checkpoint is truthful.
+Cross-adapter reconstruction deliberately carries no restoration targets because ACP
+configuration identifiers are not portable without an explicit mapping. Uncertain
+transcript recovery blocks replacement activation rather than letting continuation hide
+an unresolved operation boundary.
+
+The portable continuation is sent only after durable activation, through the ordinary
+metering and transcript operation boundary as `switch_seed`. Successful completion then
+closes the transition. If seeding fails after activation, no later fallback is attempted:
+the transcript already names the new target, and a later open can report and load that
+truthful boundary instead of silently creating another thread.
+
+Exported the continuation strategy/builder types through the public barrel and added
+`switch_seed` to the metered operation vocabulary. End-to-end coverage verifies failed
+load followed by consumer reconstruction, same-adapter configuration restoration,
+canonical history, seed metering, and transcript-builder reconstruction onto a different
+adapter. The focused suite passes 10/10, the complete repository suite passes 605/605,
+`tsc --noEmit` passes, and `git diff --check` is clean.

@@ -190,6 +190,19 @@ export class AgentController implements AgentClient {
     return brought.result;
   }
 
+  /** Explicitly create a fresh provider thread, ignoring any startup load target. */
+  async startFresh(): Promise<ConnectResult> {
+    if (this.current) {
+      if (!this.acp) throw new Error("fresh provider sessions require ACP normal mode");
+      return await this.newSession();
+    }
+    const brought = await this.bringUp(this.mode);
+    this.current = brought.client;
+    this.acp = brought.acp;
+    this.attachAvailableCommandSource();
+    return brought.result;
+  }
+
   prompt(
     text: string,
     handlers?: PromptHandlers,

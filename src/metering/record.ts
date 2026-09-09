@@ -21,7 +21,8 @@ export type MeteredOperationKind =
   | "prompt"
   | "internal_command"
   | "handoff_summary"
-  | "handoff_seed";
+  | "handoff_seed"
+  | "switch_seed";
 
 export type OperationOutcome = "completed" | "cancelled" | "error";
 

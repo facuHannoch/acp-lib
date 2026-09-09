@@ -59,6 +59,10 @@ export type {
   ConfigurationMismatchResolutionResult,
   ContinuationAttempt,
   ContinuationReport,
+  ContinuationStrategy,
+  OpenContinuationOptions,
+  TranscriptContinuationBuilder,
+  TranscriptContinuationBuilderContext,
   PromptBlocker,
 } from "./agent-session.ts";
 

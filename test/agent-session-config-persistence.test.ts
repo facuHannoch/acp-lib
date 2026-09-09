@@ -170,6 +170,152 @@ describe("AgentSession persisted configuration", () => {
     await reopened.session.stop();
   }, 20_000);
 
+  test("ordered continuation falls back to a consumer reconstruction after load fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-reconstruct-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-reconstruct-session",
+      creationId: "config-reconstruct-incarnation",
+      persistence: { root },
+    });
+    await created.setConfig("model", "beta");
+    const transcriptPath = created.transcriptPath!;
+    await created.stop();
+
+    const opened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-reconstruct-session",
+      persistence: { root },
+      env: {
+        ...process.env,
+        FAIL_LOAD: "1",
+        NEW_SESSION_ID: "reconstructed-session",
+      } as Record<string, string>,
+      continuation: {
+        strategies: [
+          { kind: "load_internal_session" },
+          {
+            kind: "new_from_consumer_continuation",
+            continuationId: "consumer-summary-1",
+            continuation: "Continue the persisted configuration test.",
+          },
+        ],
+      },
+    });
+    expect(opened.continuation).toMatchObject({
+      recordedThreadAvailability: "unavailable",
+      attempts: [
+        { strategy: "load_internal_session", status: "failed" },
+        { strategy: "new_from_consumer_continuation", status: "succeeded" },
+      ],
+      outcome: {
+        kind: "reconstructed",
+        source: "consumer",
+        activeInternalSessionId: "reconstructed-session",
+      },
+    });
+    expect(opened.configuration).toEqual({ kind: "matched" });
+    expect(opened.session.model).toBe("beta");
+    expect(opened.promptability).toEqual({ promptable: true, blockers: [] });
+    await opened.session.stop();
+
+    const scan = await scanTranscriptContinuation(transcriptPath);
+    expect(scan.reduction.checkpoint.internalSessionId).toBe("reconstructed-session");
+    expect(scan.reduction.checkpoint.internalSessionHistoryRevision).toBe(1);
+    expect(scan.reduction.internalSessionHistory).toMatchObject([{
+      internalSessionId: "config-session",
+      adapterId: "fake",
+      sessionConfiguration: {
+        restorationTargets: [{ configId: "model", value: "beta" }],
+      },
+      transition: { kind: "replacement" },
+    }]);
+    const records = (await readFile(transcriptPath, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records.filter((record) => record.t === "transition").map((record) => [record.kind, record.event]))
+      .toEqual([
+        ["replacement", "started"],
+        ["replacement", "target_created"],
+        ["replacement", "target_activated"],
+        ["replacement", "completed"],
+      ]);
+    expect(records.filter((record) => record.t === "operation").at(-2)).toMatchObject({
+      operationKind: "switch_seed",
+      event: "started",
+    });
+  }, 20_000);
+
+  test("an explicit transcript builder reconstructs onto a different adapter", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-switch-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-switch-session",
+      creationId: "config-switch-incarnation",
+      persistence: { root },
+    });
+    await created.setConfig("model", "beta");
+    const transcriptPath = created.transcriptPath!;
+    await created.stop();
+
+    let builderContext: { recordedAdapterId: string; targetAdapterId: string; transcriptPath: string } | null = null;
+    const opened = await AgentSession.open({
+      adapter,
+      adapterId: "other",
+      agentSessionId: "config-switch-session",
+      persistence: { root },
+      env: { ...process.env, NEW_SESSION_ID: "switched-session" } as Record<string, string>,
+      continuation: {
+        strategies: [{
+          kind: "new_from_transcript",
+          strategyId: "test-builder-v1",
+          buildContinuation: async (context) => {
+            builderContext = {
+              recordedAdapterId: context.checkpoint.adapterId,
+              targetAdapterId: context.targetAdapterId,
+              transcriptPath: context.transcriptPath,
+            };
+            return { continuation: "Continue from the transcript-backed test history." };
+          },
+        }],
+      },
+    });
+    expect(builderContext).toEqual({
+      recordedAdapterId: "fake",
+      targetAdapterId: "other",
+      transcriptPath,
+    });
+    expect(opened.continuation).toMatchObject({
+      recordedThreadAvailability: "not_checked",
+      attempts: [{ strategy: "new_from_transcript", status: "succeeded" }],
+      outcome: {
+        kind: "reconstructed",
+        source: "transcript",
+        activeInternalSessionId: "switched-session",
+      },
+    });
+    // Configuration identifiers do not cross adapter boundaries without an explicit
+    // mapping. The new adapter's announced default becomes effective instead.
+    expect(opened.session.model).toBe("alpha");
+    await opened.session.stop();
+
+    const scan = await scanTranscriptContinuation(transcriptPath);
+    expect(scan.reduction.checkpoint.adapterId).toBe("other");
+    expect(scan.reduction.checkpoint.internalSessionId).toBe("switched-session");
+    expect(scan.reduction.checkpoint.sessionConfiguration.restorationTargets).toEqual([]);
+    expect(scan.reduction.internalSessionHistory.at(-1)).toMatchObject({
+      internalSessionId: "config-session",
+      adapterId: "fake",
+      transition: { kind: "switch" },
+    });
+  }, 20_000);
+
   test("open returns an uncertain session but blocks provider mutation", async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-config-v2-uncertain-"));
     roots.push(root);
