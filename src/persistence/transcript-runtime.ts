@@ -38,7 +38,13 @@ export interface TranscriptTerminalCheckpointChanges {
 export interface CreateTranscriptRuntimeOptions {
   readonly path: string;
   readonly header: TranscriptHeaderRecord;
-  readonly checkpoint: AgentSessionCheckpoint;
+  /** Supplied directly by transaction coordinators that already established the target. */
+  readonly checkpoint?: AgentSessionCheckpoint;
+  /**
+   * Called only after the transcript header and ownership lock are durable. Live-session
+   * creation uses this to establish the provider thread without a dispatch-before-WAL gap.
+   */
+  readonly initializeCheckpoint?: () => Promise<AgentSessionCheckpoint>;
   readonly lockTimeoutMs?: number;
   readonly lockRetryMs?: number;
 }
@@ -92,7 +98,10 @@ export class TranscriptPersistenceRuntime {
    * installation provenance proves that it belongs to that same prepared transaction.
    */
   static async create(options: CreateTranscriptRuntimeOptions): Promise<TranscriptPersistenceRuntime> {
-    assertInitialCheckpoint(options.header, options.path, options.checkpoint);
+    if ((options.checkpoint === undefined) === (options.initializeCheckpoint === undefined)) {
+      throw new TranscriptRuntimeStateError("transcript creation requires exactly one checkpoint source");
+    }
+    if (options.checkpoint) assertInitialCheckpoint(options.header, options.path, options.checkpoint);
     const writerOptions: FileSessionLogWriterOptions<"transcript"> = {
       kind: "transcript",
       path: options.path,
@@ -103,7 +112,9 @@ export class TranscriptPersistenceRuntime {
     };
     const writer = await FileSessionLogWriter.create(writerOptions);
     try {
-      const physical = checkpointRecord(writer.nextSequence, options.checkpoint, options.header);
+      const checkpoint = options.checkpoint ?? await options.initializeCheckpoint!();
+      assertInitialCheckpoint(options.header, options.path, checkpoint);
+      const physical = checkpointRecord(writer.nextSequence, checkpoint, options.header);
       await writer.append(physical, { durable: true });
       const history = reduceInternalSessionHistory([]);
       const reduced = reduceTranscriptState(physical, history, []);

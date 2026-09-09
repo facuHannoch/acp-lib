@@ -1478,3 +1478,39 @@ allowed to corrupt a checkpoint. Tests cover typed capture, unknown-value opt-in
 exclusion and malformed values, and insertion-order-independent schema digests. The
 configuration/checkpoint tests pass 11/11, `tsc --noEmit` passes, and `git diff --check`
 is clean.
+
+### Part 6A — direct AgentSession transcript-v2 prompt path
+
+Added the first public v2 lifecycle slice to `AgentSession.create()`. An explicit
+`persistence` configuration remains opt-in and cannot be mixed with deprecated
+`transcriptPath`/`transcriptDir` or the compatibility `sessions` catalog. Direct v2
+persistence requires caller-retained `agentSessionId` and `creationId`; the latter is the
+checkpoint incarnation. Audit-log creation is rejected explicitly until its independent
+writer coordination is implemented.
+
+Transcript paths and policy are resolved before harness startup. The runtime now accepts
+an initializer callback only after it owns and has durably written the header, so the
+provider thread cannot be created before the local transcript boundary exists. The first
+checkpoint captures the provider ID, model, ACP/PTY protocol, metering state, filtered
+session configuration, empty canonical history, and exact transcript identity.
+
+Prompt execution now opens metering preflight before minting a durable operation, then
+writes `operation(started)` plus the policy-admitted user message and synchronizes them
+before provider dispatch. Folded live activity is projected through the v2 security
+buckets. Completion drains activity, records the assistant response and metering
+reference, and durably publishes the terminal/checkpoint pair with updated model,
+configuration, and metering state. Pre-dispatch persistence failures attempt the required
+aborted compensation; dispatched failures retain partial response/activity and a failed
+terminal. Legacy transcript behavior remains unchanged.
+
+Handoff, mode changes, configuration changes, and metering reconciliation currently fail
+closed on a v2-backed session instead of silently mutating continuation state without a
+checkpoint; their dedicated transition/configuration paths are subsequent parts.
+
+Added an end-to-end subprocess test that creates a v2-backed `AgentSession`, prompts it,
+stops it, rescans the transcript, verifies clean recovery and the advanced checkpoint,
+and checks the physical record order. Added a runtime ordering test proving the header is
+installed before provider initialization executes. The new runtime/AgentSession tests
+pass 7/7, the full legacy AgentSession transcript/state regression set passes 20/20 when
+run outside the restricted subprocess sandbox, `tsc --noEmit` passes, and
+`git diff --check` is clean.

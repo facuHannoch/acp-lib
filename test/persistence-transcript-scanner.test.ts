@@ -203,6 +203,25 @@ describe("transcript continuation scanner", () => {
     await expect(TranscriptPersistenceRuntime.create({ path, header: firstHeader, checkpoint }))
       .rejects.toThrow("cover exactly the transcript header");
   });
+
+  test("live runtime owns and persists the header before provider initialization", async () => {
+    const path = await transcriptPath();
+    const firstHeader = header(path);
+    let initialized = false;
+    const runtime = await TranscriptPersistenceRuntime.create({
+      path,
+      header: firstHeader,
+      initializeCheckpoint: async () => {
+        initialized = true;
+        const installed = (await readFile(path, "utf8")).trim().split("\n");
+        expect(installed).toHaveLength(1);
+        expect(JSON.parse(installed[0]!).t).toBe("header");
+        return initialCheckpoint(path);
+      },
+    });
+    expect(initialized).toBe(true);
+    await runtime.close();
+  });
 });
 
 async function transcriptPath(): Promise<string> {

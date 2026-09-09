@@ -57,6 +57,19 @@ import type {
   TokenUsage,
   WireEntry,
 } from "./types.ts";
+import {
+  resolveDirectPersistence,
+  type AgentSessionPersistenceOptions,
+  type ResolvedAgentSessionPersistence,
+} from "./persistence/config.ts";
+import { resolveSessionLogPaths } from "./persistence/paths.ts";
+import { createAgentSessionCheckpoint } from "./persistence/checkpoint.ts";
+import { EMPTY_HISTORY_DIGEST } from "./persistence/reducer.ts";
+import type { TranscriptHeaderRecord, OperationKind } from "./persistence/records.ts";
+import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
+import { snapshotSessionConfiguration } from "./persistence/configuration-state.ts";
+import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
+import { sha256CanonicalJson } from "./persistence/integrity.ts";
 
 interface PromptQueueItem {
   kind: "prompt";
@@ -269,6 +282,10 @@ export interface AgentSessionConfig {
   wire?: (entry: WireEntry) => void;
   /** Optional catalog. When present, the session records itself here. */
   sessions?: SessionManager;
+  /** New v2 persistence. Direct sessions remain persistence-free when omitted. */
+  persistence?: false | AgentSessionPersistenceOptions;
+  /** Stable creation transaction/incarnation ID; required by direct v2 persistence. */
+  creationId?: string;
   /**
    * Absolute path to an append-only transcript file. This selects history storage only;
    * file existence never selects the provider thread. Omitted means no transcript.
@@ -316,6 +333,11 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly controller: AgentController;
   private readonly sessions?: SessionManager;
   private readonly _transcriptPath?: string;
+  private readonly persistence: false | ResolvedAgentSessionPersistence;
+  private readonly creationId: string;
+  private v2Transcript: TranscriptPersistenceRuntime | null = null;
+  private v2TranscriptPath: string | null = null;
+  private v2ActivityWrite: Promise<void> = Promise.resolve();
   private readonly transcriptActivity: boolean;
   private readonly activityKinds: Set<string>;
   private readonly activityRawOutput: boolean;
@@ -355,6 +377,9 @@ export class AgentSession implements AgentClient, Bridgeable {
     if (config.transcriptPath && config.transcriptDir) {
       throw new Error("AgentSessionConfig cannot specify both transcriptPath and transcriptDir");
     }
+    if (config.persistence !== undefined && (config.transcriptPath || config.transcriptDir)) {
+      throw new Error("AgentSessionConfig cannot combine persistence with deprecated transcript options");
+    }
     if (config.providerSession && config.internalSessionId !== undefined) {
       throw new Error("AgentSessionConfig cannot specify both providerSession and internalSessionId");
     }
@@ -380,6 +405,17 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.agentSessionId = config.agentSessionId ?? crypto.randomUUID();
     this.adapterId = config.adapterId;
     this.sessions = config.sessions;
+    this.persistence = resolveDirectPersistence(config.persistence);
+    if (this.persistence !== false && config.sessions) {
+      throw new Error("direct persistence cannot be combined with a SessionManager; use managed creation");
+    }
+    if (this.persistence !== false && (!config.agentSessionId || !config.creationId)) {
+      throw new Error("direct persistence requires explicit agentSessionId and creationId");
+    }
+    if (config.creationId !== undefined && !config.creationId.trim()) {
+      throw new Error("AgentSessionConfig.creationId cannot be blank");
+    }
+    this.creationId = config.creationId ?? crypto.randomUUID();
     this._transcriptPath =
       config.transcriptPath ??
       (config.transcriptDir
@@ -461,6 +497,10 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
 
   private async start(): Promise<void> {
+    if (this.persistence !== false) {
+      await this.startPersistent();
+      return;
+    }
     const result = await this.controller.start();
     // A resumed thread's counters did not start at zero, so it needs restored state to
     // be attributable.
@@ -473,6 +513,85 @@ export class AgentSession implements AgentClient, Bridgeable {
       ts: Date.now(),
       internalSessionId: this._internalSessionId,
       adapter: this.adapterId,
+    });
+  }
+
+  private async startPersistent(): Promise<void> {
+    const persistence = this.persistence;
+    if (persistence === false) throw new Error("persistent startup requires persistence configuration");
+    const paths = await resolveSessionLogPaths(persistence, this.agentSessionId);
+    if (paths.auditLogPath) {
+      throw new Error("direct v2 audit-log integration is not implemented yet");
+    }
+    if (!paths.transcriptPath || persistence.transcript === false) {
+      const result = await this.controller.start();
+      this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
+      return;
+    }
+
+    const transcriptPath = paths.transcriptPath;
+    const createdAt = new Date().toISOString();
+    const transcriptId = crypto.randomUUID();
+    const requestDigest = sha256CanonicalJson({
+      agentSessionId: this.agentSessionId,
+      creationId: this.creationId,
+      adapterId: this.adapterId,
+      mode: this._mode,
+      transcriptPath,
+      preset: persistence.transcript.preset,
+      capture: persistence.transcript.capture,
+      limits: persistence.limits,
+      includeTruncationDigests: persistence.transcript.includeTruncationDigests,
+    });
+    const header: TranscriptHeaderRecord = {
+      v: 2,
+      t: "header",
+      transcriptId,
+      generation: 1,
+      agentSessionId: this.agentSessionId,
+      seq: 1,
+      ts: Date.parse(createdAt),
+      event: "created",
+      createdAt,
+      preset: persistence.transcript.preset,
+      effectivePolicy: persistence.transcript.capture,
+      effectiveLimits: persistence.limits,
+      includeTruncationDigests: persistence.transcript.includeTruncationDigests,
+      installation: { kind: "creation", operationId: this.creationId, requestDigest },
+    };
+
+    this.v2TranscriptPath = transcriptPath;
+    this.v2Transcript = await TranscriptPersistenceRuntime.create({
+      path: transcriptPath,
+      header,
+      initializeCheckpoint: async () => {
+        const result = await this.controller.start();
+        this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
+        const now = new Date().toISOString();
+        return createAgentSessionCheckpoint({
+          agentSessionId: this.agentSessionId,
+          incarnationId: this.creationId,
+          stateRevision: 1,
+          adapterId: this.adapterId,
+          mode: this._mode,
+          internalSessionId: this._internalSessionId,
+          internalSessionActivatedAt: this._internalSessionId ? now : null,
+          internalSessionHistoryRevision: 0,
+          internalSessionHistoryDigest: EMPTY_HISTORY_DIGEST,
+          model: this.model,
+          sessionConfiguration: snapshotSessionConfiguration({
+            adapterId: this.adapterId,
+            configOptions: this.controller.configOptions,
+            policy: persistence.sessionConfiguration,
+            observedAt: now,
+          }),
+          protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
+          transcript: { transcriptId, generation: 1, path: transcriptPath, coveredSequence: 1 },
+          metering: this.metering.currentState,
+          boundary: { status: "settled", lastSettledOperationId: null },
+          updatedAt: now,
+        });
+      },
     });
   }
 
@@ -557,7 +676,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
   /** Resolved history destination, configured directly or derived from transcriptDir. */
   get transcriptPath(): string | undefined {
-    return this._transcriptPath;
+    return this.v2TranscriptPath ?? this._transcriptPath;
   }
   /** Immutable current state. Late subscribers read this before listening for deltas. */
   get state(): AgentSessionState {
@@ -651,6 +770,9 @@ export class AgentSession implements AgentClient, Bridgeable {
    * coordinate a handoff against in-flight work themselves.
    */
   handoff(options: HandoffOptions = {}): Promise<HandoffResult> {
+    if (this.v2Transcript) {
+      return Promise.reject(new Error("handoff with v2 persistence is not available until its transition boundary is wired"));
+    }
     return new Promise<HandoffResult>((resolve, reject) => {
       if (this.phase === "stopped") {
         reject(new Error("AgentSession is stopped"));
@@ -835,13 +957,41 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
     this.beginTurn(item.turnId);
-    await this.appendTranscript({
-      v: 1,
-      t: "msg",
-      role: "user",
-      text: item.text,
-      ts: Date.now(),
-    });
+    let operation: OpenOperation;
+    if (this.v2Transcript) {
+      let transcriptStarted = false;
+      try {
+        // Metering preflight has no provider side effect. Run it before minting durable
+        // operation evidence so a strict pricing/policy rejection needs no abort record.
+        operation = await this.openMeteredOperation(item);
+        await this.v2Transcript.beginOperation(item.turnId, persistenceOperationKind(item.operationKind));
+        transcriptStarted = true;
+        await this.v2Transcript.appendEvent({
+          kind: "message",
+          operationId: item.turnId,
+          role: "user",
+          text: item.text,
+        });
+        await this.v2Transcript.syncBeforeDispatch();
+      } catch (error) {
+        this.endTurn(item.handlers);
+        if (transcriptStarted) {
+          await this.v2Transcript.abortOperation("pre_dispatch_persistence_failure").catch(
+            (abortError) => this.log.warn("transcript_predispatch_abort_failed", { error: String(abortError) }),
+          );
+        }
+        throw error;
+      }
+    } else {
+      await this.appendTranscript({
+        v: 1,
+        t: "msg",
+        role: "user",
+        text: item.text,
+        ts: Date.now(),
+      });
+      operation = await this.openMeteredOperation(item);
+    }
 
     const chunks: string[] = [];
     const response = new ResponseAccumulator();
@@ -860,7 +1010,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       },
       onActivity: (event) => {
         const result = this.aggregator.apply(event);
-        if (this.transcriptActivity) {
+        if (this.transcriptActivity || this.v2Transcript) {
           for (const record of result.emitted) this.writeActivity(record);
         }
         item.handlers?.onRecord?.(result);
@@ -868,18 +1018,8 @@ export class AgentSession implements AgentClient, Bridgeable {
       },
     };
 
-    // Opened BEFORE dispatch so a strict mode fails preflight rather than after the
-    // provider has already been paid, and so the price in force at start is what applies.
-    const operation = await this.metering.open({
-      operationId: item.turnId,
-      operationKind: item.operationKind,
-      internalSessionId: this._internalSessionId,
-      providerId: this.providerId,
-      model: this.model,
-      degraded: this.controller.isDegraded,
-    });
-
     let closed: OperationMeteringRecord | null = null;
+    let transcriptClosed = false;
     try {
       const res = await this.controller.prompt(item.text, wrappedHandlers, item.attachments);
       // Before the assistant msg: `msg` delimits a turn, so anything still open has to
@@ -901,17 +1041,32 @@ export class AgentSession implements AgentClient, Bridgeable {
       const record = await this.closeOperation(operation, res.status, res.usage);
       closed = record;
       await this.persist();
-      await this.appendTranscript({
-        v: 1,
-        t: "msg",
-        role: "assistant",
-        text: res.text,
-        messages: res.messages,
-        ts: Date.now(),
-        usage: res.usage,
-        stopReason: res.stopReason,
-        status: res.status,
-      });
+      if (this.v2Transcript) {
+        await this.drainV2Activity();
+        await this.v2Transcript.appendEvent({
+          kind: "message",
+          operationId: item.turnId,
+          role: "assistant",
+          text: res.text,
+          structured: { version: 1, messages: res.messages },
+          stopReason: res.stopReason,
+          status: res.status,
+        });
+        await this.finishV2Prompt(res.status, record);
+        transcriptClosed = true;
+      } else {
+        await this.appendTranscript({
+          v: 1,
+          t: "msg",
+          role: "assistant",
+          text: res.text,
+          messages: res.messages,
+          ts: Date.now(),
+          usage: res.usage,
+          stopReason: res.stopReason,
+          status: res.status,
+        });
+      }
       return Object.freeze({ ...res, operationId: item.turnId, metering: record });
     } catch (err) {
       // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
@@ -924,23 +1079,84 @@ export class AgentSession implements AgentClient, Bridgeable {
         : text
           ? Object.freeze([{ text }])
           : Object.freeze([]);
-      await this.appendTranscript({
-        v: 1,
-        t: "msg",
-        role: "assistant",
-        text,
-        messages,
-        ts: Date.now(),
-        stopReason: "error",
-        status: "error",
-      });
+      if (this.v2Transcript) {
+        await this.drainV2Activity().catch(() => undefined);
+        if (!transcriptClosed) {
+          await this.v2Transcript.appendEvent({
+            kind: "message",
+            operationId: item.turnId,
+            role: "assistant",
+            text,
+            structured: { version: 1, messages },
+            stopReason: "error",
+            status: "error",
+          }).catch(() => undefined);
+        }
+      } else {
+        await this.appendTranscript({
+          v: 1,
+          t: "msg",
+          role: "assistant",
+          text,
+          messages,
+          ts: Date.now(),
+          stopReason: "error",
+          status: "error",
+        });
+      }
       // A failed operation may still have consumed tokens, so its record has to survive
       // the rejection rather than only reaching event subscribers.
       // Already metered: the failure happened after the operation closed (a transcript or
       // catalog write), so the record stands and must not be minted a second time.
       const record = closed ?? (await this.closeOperation(operation, "error", null, String(err)));
+      if (this.v2Transcript && !transcriptClosed) {
+        await this.finishV2Prompt("error", record, "unknown").catch(
+          (persistenceError) => this.log.warn("transcript_terminal_write_failed", { error: String(persistenceError) }),
+        );
+      }
       throw new AgentSessionOperationError(item.turnId, record, err);
     }
+  }
+
+  private openMeteredOperation(item: PromptQueueItem): Promise<OpenOperation> {
+    return this.metering.open({
+      operationId: item.turnId,
+      operationKind: item.operationKind,
+      internalSessionId: this._internalSessionId,
+      providerId: this.providerId,
+      model: this.model,
+      degraded: this.controller.isDegraded,
+    });
+  }
+
+  private async finishV2Prompt(
+    status: PromptResult["status"],
+    record: OperationMeteringRecord,
+    errorCode?: "unknown",
+  ): Promise<void> {
+    if (!this.v2Transcript || this.persistence === false) return;
+    const observedAt = new Date().toISOString();
+    await this.v2Transcript.appendEvent({
+      kind: "metering_reference",
+      operationId: record.operationId,
+      meteringRecordId: record.operationId,
+      status: record.usage.status === "metered" ? "available" : "unavailable",
+    });
+    await this.v2Transcript.finishOperation(
+      status === "completed" ? "settled" : status === "cancelled" ? "cancelled" : "failed",
+      {
+        model: this.model,
+        sessionConfiguration: snapshotSessionConfiguration({
+          adapterId: this.adapterId,
+          configOptions: this.controller.configOptions,
+          policy: this.persistence.sessionConfiguration,
+          restorationTargets: this.v2Transcript.checkpoint.sessionConfiguration.restorationTargets,
+          observedAt,
+        }),
+        metering: this.metering.currentState,
+      },
+      errorCode,
+    );
   }
 
   /**
@@ -955,6 +1171,9 @@ export class AgentSession implements AgentClient, Bridgeable {
     before: AgentSessionMeteringState;
     after: AgentSessionMeteringState;
   }> {
+    if (this.v2Transcript) {
+      throw new Error("metering reconciliation with v2 persistence requires checkpoint publication");
+    }
     if (this.isBusy || this.queue.length > 0) {
       throw new Error("reconcileMetering requires an idle session with no queued operations");
     }
@@ -1071,14 +1290,14 @@ export class AgentSession implements AgentClient, Bridgeable {
     const leftover = this.aggregator.startTurn(turnId);
     if (leftover.length > 0) {
       this.log.warn("activity_turn_not_flushed", { records: leftover.length });
-      if (this.transcriptActivity) for (const record of leftover) this.writeActivity(record);
+      if (this.transcriptActivity || this.v2Transcript) for (const record of leftover) this.writeActivity(record);
     }
   }
 
   private endTurn(handlers?: PromptHandlers): void {
     const emitted = this.aggregator.flush();
     if (emitted.length === 0) return;
-    if (this.transcriptActivity) for (const record of emitted) this.writeActivity(record);
+    if (this.transcriptActivity || this.v2Transcript) for (const record of emitted) this.writeActivity(record);
     // Live subscribers need these too: without them, a tool call on a turn that was
     // cancelled or crashed spins forever in the UI. `wireFrames()` handles this shape.
     handlers?.onRecord?.({ current: null, delta: null, emitted });
@@ -1109,9 +1328,22 @@ export class AgentSession implements AgentClient, Bridgeable {
    * holds without blocking the agent's update stream on disk.
    */
   private writeActivity(record: AggregatedRecord): void {
+    if (this.v2Transcript) {
+      const operationId = this.v2Transcript.checkpoint.boundary.status === "in_flight"
+        ? this.v2Transcript.checkpoint.boundary.interruptedOperationId
+        : record.recordId.split(":", 1)[0] ?? record.recordId;
+      this.v2ActivityWrite = this.v2ActivityWrite.then(async () => {
+        await this.v2Transcript!.appendEvent(persistenceEventFromActivity(record, operationId));
+      });
+      return;
+    }
     if (!this._transcriptPath) return;
     if (!this.activityKinds.has(record.event.kind)) return;
     void this.appendTranscript(this.toActivityLine(record));
+  }
+
+  private async drainV2Activity(): Promise<void> {
+    await this.v2ActivityWrite;
   }
 
   private toActivityLine(record: AggregatedRecord): TranscriptActivityLine {
@@ -1172,10 +1404,15 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.phase = "stopped";
     this.emitStateIfChanged();
     await this.controller.stop();
+    await this.drainV2Activity().catch(() => undefined);
+    await this.v2Transcript?.close();
   }
 
   // --- mode swap (catalog-affecting) -------------------------------------------
   async setMode(mode: AgentMode): Promise<ConnectResult> {
+    if (this.v2Transcript) {
+      throw new Error("mode changes with v2 persistence are not available until their transition boundary is wired");
+    }
     const result = await this.controller.setMode(mode);
     this._mode = this.controller.currentMode;
     // The ACP/harness session changes on swap, so context/cost reset with it.
@@ -1198,6 +1435,9 @@ export class AgentSession implements AgentClient, Bridgeable {
    * way, so it is the only route to them once the process is running.
    */
   setConfig(configId: string, value: unknown): Promise<void> {
+    if (this.v2Transcript) {
+      return Promise.reject(new Error("configuration changes with v2 persistence require checkpoint publication"));
+    }
     return this.controller.setConfig(configId, value);
   }
   /** Immutable snapshot of commands advertised by the active ACP harness. */
@@ -1377,6 +1617,10 @@ export class AgentSession implements AgentClient, Bridgeable {
       }
     }
   }
+}
+
+function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
+  return kind === "internal_command" ? "internal_session_command" : kind;
 }
 
 /** Do not let one notification observer mutate the PromptResult another observer sees. */

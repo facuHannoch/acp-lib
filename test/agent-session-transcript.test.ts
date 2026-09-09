@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AgentSession, type AgentSessionConfig } from "../src/agent-session.ts";
@@ -18,6 +18,7 @@ import {
   toActivityRecord,
   type TranscriptActivityLine,
 } from "../src/transcript.ts";
+import { scanTranscriptContinuation } from "../src/persistence/transcript-scanner.ts";
 
 describe("AgentSession transcript config", () => {
   let dir: string;
@@ -40,6 +41,23 @@ describe("AgentSession transcript config", () => {
         transcriptDir: dir,
       }),
     ).rejects.toThrow("cannot specify both transcriptPath and transcriptDir");
+  });
+
+  test("v2 direct persistence requires retained identities and cannot mix legacy paths", async () => {
+    await expect(AgentSession.create({
+      adapter: fakeAdapter(),
+      adapterId: "fake",
+      persistence: { root: dir },
+    })).rejects.toThrow("requires explicit agentSessionId and creationId");
+
+    await expect(AgentSession.create({
+      adapter: fakeAdapter(),
+      adapterId: "fake",
+      agentSessionId: "agent-1",
+      creationId: "creation-1",
+      persistence: { root: dir },
+      transcriptPath: join(dir, "legacy.jsonl"),
+    })).rejects.toThrow("cannot combine persistence with deprecated transcript options");
   });
 
   test("uses transcriptDir with agentSessionId as the file name", async () => {
@@ -74,6 +92,43 @@ describe("AgentSession transcript config", () => {
       },
     ]);
   });
+
+  test("v2 persistence durably brackets a prompt and advances its checkpoint", async () => {
+    const session = await AgentSession.create({
+      adapter: fakeAdapter(),
+      adapterId: "fake",
+      agentSessionId: "persistent-agent",
+      creationId: "persistent-creation",
+      persistence: { root: dir, transcript: { preset: "activity" } },
+    });
+    const initialRevision = 1;
+    try {
+      expect(session.transcriptPath).toBe(join(dir, "transcripts", "persistent-agent.jsonl"));
+      await expect(session.prompt("durable hello")).resolves.toMatchObject({
+        text: "fake reply to: durable hello",
+        status: "completed",
+      });
+    } finally {
+      await session.stop();
+    }
+
+    const scan = await scanTranscriptContinuation(session.transcriptPath!);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    expect(scan.reduction.checkpoint.stateRevision).toBe(initialRevision + 2);
+    expect(scan.reduction.checkpoint.boundary).toMatchObject({ status: "settled" });
+    const records = (await readFile(session.transcriptPath!, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records.map((record) => record.t)).toEqual([
+      "header",
+      "checkpoint",
+      "operation",
+      "message",
+      "message",
+      "metering_reference",
+      "operation",
+      "checkpoint",
+    ]);
+  }, 15_000);
   test("records settled activity records, not raw deltas", async () => {
     const path = await runTerminalTurn({ transcriptActivity: true });
     const activity = await activityLines(path);
