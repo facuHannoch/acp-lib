@@ -1826,3 +1826,40 @@ Tests cover audit reverse navigation, append-stable snapshots, no overlap, filte
 unknown future records, empty filters, cross-kind cursor rejection, malformed/oversized
 cursors, earlier rewrites, and the 256-byte cursor budget. The complete repository suite
 passes 620/620, `tsc --noEmit` passes, and `git diff --check` is clean.
+
+### Part 9A — explicit legacy transcript migration boundary
+
+Added the explicit `migrateLegacyTranscript()` utility. It requires a complete
+`StagedContinuationState`; adapter identity, provider-thread identity, activation time,
+model, session configuration, and protocol are never inferred from legacy presentation
+records. The caller supplies the stable logical session identity, while fresh transcript
+and incarnation identities may either be supplied for deterministic integration or minted
+by the library.
+
+Migration acquires the same exclusive path lock as a live session-log writer, validates
+that the destination is a regular non-symlink file, scans the legacy prefix with bounded
+memory, and preserves v1's permissive malformed/unknown-line behavior. It truncates only
+an incomplete final v1 line. Unrelated v2 content is rejected rather than reclassified as
+legacy history.
+
+The writer establishes authority in two separately synchronized records: a generation-1
+`upgraded` header carrying the exact legacy byte boundary, followed by a canonical initial
+checkpoint at revision 1. That checkpoint has empty canonical routing history, no prior
+transition or metering state, the supplied continuation identity/configuration, and a
+clean boundary. Legacy records remain presentation-only and never enter the v2 reducer.
+
+An interrupted migration whose upgrade header is durable but whose initial checkpoint is
+missing can be resumed explicitly. A completed identical retry returns
+`already_migrated` without appending again; a retry whose continuation disagrees with the
+engraved checkpoint fails without changing the file. This is mutation idempotency, not a
+claim that a lost live object or original return value can be reconstructed.
+
+Added a narrow internal lock helper to the session-log writer so migration and live append
+ownership cannot race while retaining a single lock implementation. Tests cover torn v1
+suffix repair, malformed and unknown legacy lines, exact boundary preservation, canonical
+checkpoint fields, identical retry, conflicting retry, header-only recovery, and rejection
+of unrelated v2 content. Mixed v1/v2 cursor reading and ordinary opening are intentionally
+the next Phase 7 slice.
+
+The complete repository suite passes 624/624, `tsc --noEmit` passes, and
+`git diff --check` is clean.

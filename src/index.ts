@@ -290,6 +290,14 @@ export type {
   AuditLogSnapshotCursor,
   ReadAuditLogPageOptions,
 } from "./persistence/audit-log-reader.ts";
+export {
+  LegacyTranscriptMigrationError,
+  migrateLegacyTranscript,
+} from "./persistence/migration.ts";
+export type {
+  LegacyTranscriptMigrationResult,
+  MigrateLegacyTranscriptOptions,
+} from "./persistence/migration.ts";
 export type {
   ActivityExecutionState,
   ListTranscriptActivitiesOptions,

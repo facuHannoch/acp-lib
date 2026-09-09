@@ -72,6 +72,26 @@ export class SessionLogRecordTooLargeError extends SessionLogWriteError {
   }
 }
 
+/** @internal Execute maintenance while holding the same ownership lock as live writers. */
+export async function withSessionLogWriterLock<T>(
+  path: string,
+  operation: () => Promise<T>,
+  options: { readonly lockTimeoutMs?: number; readonly lockRetryMs?: number } = {},
+): Promise<T> {
+  if (!isAbsolute(path)) throw new SessionLogWriteError("session-log path must be absolute");
+  const lock = await acquireLogLock(
+    `${path}.lock`,
+    path,
+    options.lockTimeoutMs ?? 5_000,
+    options.lockRetryMs ?? 20,
+  );
+  try {
+    return await operation();
+  } finally {
+    await lock.release();
+  }
+}
+
 /** One lifetime-owned append-only transcript or audit-log generation. */
 export class FileSessionLogWriter<K extends SessionLogKind> {
   readonly kind: K;
