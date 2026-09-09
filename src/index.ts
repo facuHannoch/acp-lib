@@ -57,6 +57,8 @@ export type {
   ConfigurationRestoreStatus,
   ConfigurationMismatchResolution,
   ConfigurationMismatchResolutionResult,
+  AgentSessionRecoveryResolution,
+  AgentSessionRecoveryResolutionResult,
   ContinuationAttempt,
   ContinuationReport,
   ContinuationStrategy,

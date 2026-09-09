@@ -37,6 +37,8 @@ export interface TranscriptContinuationScan {
   readonly selectedCheckpointRecord: TranscriptCheckpointRecord;
   readonly historyAtSelectedCheckpoint: TranscriptHistoryReduction;
   readonly reduction: TranscriptReductionResult;
+  /** Structural records physically following the selected checkpoint record. */
+  readonly structuralTailAfterSelectedCheckpoint: readonly TranscriptStructuralRecord[];
   readonly lastCompleteSequence: number;
   readonly lastCompleteOffset: number;
   /** File size captured before the scan; later appends are excluded from this result. */
@@ -191,6 +193,7 @@ async function scanOpenTranscript(
     selectedCheckpointRecord: selected,
     historyAtSelectedCheckpoint: selectedHistory,
     reduction,
+    structuralTailAfterSelectedCheckpoint: structuralTail.map((record) => structuredClone(record)),
     lastCompleteSequence: sequence,
     lastCompleteOffset,
     snapshotBytes: snapshotSize,

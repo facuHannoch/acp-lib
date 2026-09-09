@@ -154,6 +154,89 @@ describe("transcript continuation scanner", () => {
     expect(scan.reduction.repairs).toEqual([]);
   });
 
+  test("live runtime durably accepts a started operation with unknown provider outcome", async () => {
+    const path = await transcriptPath();
+    const initial = initialCheckpoint(path);
+    await writeLines(path, [header(path), checkpointRecord(initial, 2), operation(3, "started", 2)]);
+    const runtime = await TranscriptPersistenceRuntime.resume({ path });
+    expect(runtime.recovery).toEqual({
+      kind: "uncertain", operationId: "op-1", boundary: "started_without_terminal",
+    });
+    const accepted = await runtime.acceptHarnessRecovery(TS + 3_000);
+    expect(accepted.boundary).toEqual({ status: "settled", lastSettledOperationId: "op-1" });
+    expect(runtime.recovery).toEqual({ kind: "clean" });
+    await runtime.close();
+
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    const records = (await readFile(path, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.t === "operation").map((record) => record.event))
+      .toEqual(["started", "interrupted"]);
+    expect(records.at(-1)).toMatchObject({
+      t: "lifecycle",
+      event: "recovery_resolved",
+      detail: { strategy: "accept_harness_state", operationId: "op-1" },
+    });
+  });
+
+  test("live runtime materializes a missing checkpoint without duplicating its terminal", async () => {
+    const path = await transcriptPath();
+    const initial = initialCheckpoint(path);
+    const terminal: TranscriptOperationRecord = {
+      ...envelope(4),
+      t: "operation",
+      operationId: "op-1",
+      operationKind: "prompt",
+      event: "settled",
+    };
+    await writeLines(path, [header(path), checkpointRecord(initial, 2), operation(3, "started", 2), terminal]);
+    const runtime = await TranscriptPersistenceRuntime.resume({ path });
+    expect(runtime.recovery).toEqual({
+      kind: "uncertain", operationId: "op-1", boundary: "terminal_without_checkpoint",
+    });
+    await runtime.acceptHarnessRecovery(TS + 4_000);
+    await runtime.close();
+
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    const records = (await readFile(path, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.t === "operation")).toHaveLength(2);
+  });
+
+  test("live runtime closes a selected in-flight checkpoint without guessing its operation kind", async () => {
+    const path = await transcriptPath();
+    const initial = initialCheckpoint(path);
+    const started = operation(3, "started", 2);
+    const inFlight = createAgentSessionCheckpoint({
+      ...withoutDigest(initial),
+      stateRevision: 2,
+      updatedAt: iso(1_000),
+      transcript: { ...initial.transcript!, coveredSequence: 3 },
+      boundary: {
+        status: "in_flight",
+        lastSettledOperationId: null,
+        interruptedOperationId: "op-1",
+        cause: "operation_started",
+      },
+    });
+    await writeLines(path, [header(path), checkpointRecord(initial, 2), started, checkpointRecord(inFlight, 4)]);
+    const runtime = await TranscriptPersistenceRuntime.resume({ path });
+    expect(runtime.recovery).toEqual({
+      kind: "uncertain", operationId: "op-1", boundary: "in_flight_checkpoint",
+    });
+    await runtime.acceptHarnessRecovery(TS + 4_000);
+    await runtime.close();
+
+    const scan = await scanTranscriptContinuation(path);
+    expect(scan.reduction.recovery).toEqual({ kind: "clean" });
+    const records = (await readFile(path, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.t === "operation").at(-1)).toMatchObject({
+      event: "interrupted",
+      operationKind: "other",
+      errorCode: "recovery_accepted_harness_state",
+    });
+  });
+
   test("live runtime makes target activation and canonical history durable together", async () => {
     const path = await transcriptPath();
     const initial = initialCheckpoint(path);

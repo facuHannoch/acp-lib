@@ -135,7 +135,14 @@ interface ConfigResolutionQueueItem {
   reject: (error: unknown) => void;
 }
 
-type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem | ConfigResolutionQueueItem;
+interface RecoveryResolutionQueueItem {
+  kind: "resolve_recovery";
+  resolution: AgentSessionRecoveryResolution;
+  resolve: (result: AgentSessionRecoveryResolutionResult) => void;
+  reject: (error: unknown) => void;
+}
+
+type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem | ConfigResolutionQueueItem | RecoveryResolutionQueueItem;
 
 /** What the stable logical session is doing right now. */
 export type AgentSessionPhase =
@@ -143,6 +150,7 @@ export type AgentSessionPhase =
   | "prompting"
   | "handoff"
   | "configuring"
+  | "recovering"
   | "switching_mode"
   | "stopped";
 
@@ -257,6 +265,21 @@ export interface ConfigurationMismatchResolutionResult {
   readonly appliedConfigIds: readonly string[];
 }
 
+export type AgentSessionRecoveryResolution =
+  | { readonly strategy: "accept_harness_state" }
+  | {
+      readonly strategy: "start_new_internal_session";
+      /** When omitted, the currently loaded harness thread generates portable context. */
+      readonly continuation?: string;
+    };
+
+export interface AgentSessionRecoveryResolutionResult {
+  readonly previous: Extract<SessionRecoveryStatus, { readonly kind: "uncertain" }>;
+  readonly recovery: Extract<SessionRecoveryStatus, { readonly kind: "clean" }>;
+  /** Present when resolution deliberately replaced the provider thread. */
+  readonly handoff?: HandoffResult;
+}
+
 export class AgentSessionPromptBlockedError extends Error {
   constructor(readonly blockers: readonly PromptBlocker[]) {
     super(`AgentSession cannot mutate while blocked: ${blockers.join(", ")}`);
@@ -326,6 +349,12 @@ export type AgentSessionEvent =
       kind: "configuration_mismatch_resolved";
       configuration: ConfigurationRestoreStatus;
       appliedConfigIds: readonly string[];
+    }
+  | {
+      kind: "recovery_resolved";
+      strategy: AgentSessionRecoveryResolution["strategy"];
+      previous: Extract<SessionRecoveryStatus, { kind: "uncertain" }>;
+      recovery: Extract<SessionRecoveryStatus, { kind: "clean" }>;
     }
   /** Latest context-window observation for the ACTIVE provider thread, or null. */
   | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
@@ -1449,6 +1478,8 @@ export class AgentSession implements AgentClient, Bridgeable {
             ? "handoff"
             : item.kind === "set_config" || item.kind === "resolve_config"
               ? "configuring"
+              : item.kind === "resolve_recovery"
+                ? "recovering"
               : "switching_mode";
         this.emitStateIfChanged();
         if (item.kind === "prompt") {
@@ -1490,6 +1521,12 @@ export class AgentSession implements AgentClient, Bridgeable {
               appliedConfigIds: result.appliedConfigIds,
             });
             item.resolve(result);
+          } catch (err) {
+            item.reject(err);
+          }
+        } else if (item.kind === "resolve_recovery") {
+          try {
+            item.resolve(await this.runResolveRecovery(item.resolution));
           } catch (err) {
             item.reject(err);
           }
@@ -1993,6 +2030,46 @@ export class AgentSession implements AgentClient, Bridgeable {
     return Object.freeze({
       configuration: structuredClone(configuration),
       appliedConfigIds: Object.freeze(appliedConfigIds),
+    });
+  }
+
+  private async runResolveRecovery(
+    resolution: AgentSessionRecoveryResolution,
+  ): Promise<AgentSessionRecoveryResolutionResult> {
+    if (!this.v2Transcript) throw new Error("recovery resolution requires v2 transcript persistence");
+    if (this._recovery.kind !== "uncertain") {
+      throw new Error("recovery resolution requires an uncertain session");
+    }
+    if (!this.v2Transcript.healthy) {
+      throw new AgentSessionPromptBlockedError(["persistence_unhealthy"]);
+    }
+    const previous = structuredClone(this._recovery);
+    await this.v2Transcript.acceptHarnessRecovery();
+    this._recovery = { kind: "clean" };
+    this.emit({
+      kind: "recovery_resolved",
+      strategy: resolution.strategy,
+      previous,
+      recovery: { kind: "clean" },
+    });
+    this.emitStateIfChanged();
+
+    let handoff: HandoffResult | undefined;
+    if (resolution.strategy === "start_new_internal_session") {
+      handoff = await this.runHandoff({
+        kind: "handoff",
+        handoffId: this.mintOperationId(),
+        options: resolution.continuation === undefined
+          ? Object.freeze({})
+          : Object.freeze({ summary: resolution.continuation }),
+        resolve: () => undefined,
+        reject: () => undefined,
+      });
+    }
+    return Object.freeze({
+      previous,
+      recovery: Object.freeze({ kind: "clean" as const }),
+      ...(handoff ? { handoff } : {}),
     });
   }
 
@@ -2665,6 +2742,8 @@ export class AgentSession implements AgentClient, Bridgeable {
             ? "handoff"
             : item.kind === "set_config" || item.kind === "resolve_config"
               ? "configuration change"
+              : item.kind === "resolve_recovery"
+                ? "recovery resolution"
               : "mode change";
           item.reject(new Error(`${label} cancelled before it started`));
         }
@@ -2763,6 +2842,30 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
     return new Promise((resolve, reject) => {
       this.queue.push({ kind: "resolve_config", resolution: owned, resolve, reject });
+      this.emitStateIfChanged();
+      void this.pump();
+    });
+  }
+  resolveRecovery(
+    resolution: AgentSessionRecoveryResolution,
+  ): Promise<AgentSessionRecoveryResolutionResult> {
+    if (this.phase === "stopped") return Promise.reject(new Error("AgentSession is stopped"));
+    if (this._recovery.kind !== "uncertain") {
+      return Promise.reject(new Error("recovery resolution requires an uncertain session"));
+    }
+    if (resolution.strategy === "start_new_internal_session"
+      && resolution.continuation !== undefined
+      && !resolution.continuation.trim()) {
+      return Promise.reject(new Error("recovery continuation cannot be blank"));
+    }
+    const owned: AgentSessionRecoveryResolution = resolution.strategy === "accept_harness_state"
+      ? Object.freeze({ strategy: resolution.strategy })
+      : Object.freeze({
+          strategy: resolution.strategy,
+          ...(resolution.continuation === undefined ? {} : { continuation: resolution.continuation }),
+        });
+    return new Promise((resolve, reject) => {
+      this.queue.push({ kind: "resolve_recovery", resolution: owned, resolve, reject });
       this.emitStateIfChanged();
       void this.pump();
     });

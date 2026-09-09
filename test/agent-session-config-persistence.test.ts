@@ -362,7 +362,84 @@ describe("AgentSession persisted configuration", () => {
     });
     await expect(opened.session.prompt("must not dispatch"))
       .rejects.toBeInstanceOf(AgentSessionPromptBlockedError);
+    const notifications: AgentSessionNotification[] = [];
+    opened.session.subscribe((notification) => notifications.push(notification));
+    const resolution = await opened.session.resolveRecovery({ strategy: "accept_harness_state" });
+    expect(resolution).toMatchObject({
+      previous: { kind: "uncertain", operationId: "crashed-operation" },
+      recovery: { kind: "clean" },
+    });
+    expect(opened.session.promptability).toEqual({ promptable: true, blockers: [] });
+    expect(notifications.some((notification) => notification.event.kind === "recovery_resolved")).toBe(true);
     await opened.session.stop();
+
+    const reopened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-uncertain-session",
+      persistence: { root },
+    });
+    expect(reopened.recovery).toEqual({ kind: "clean" });
+    await reopened.session.stop();
+  }, 20_000);
+
+  test("recovery can explicitly replace the uncertain thread with supplied continuation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-config-v2-recovery-replace-"));
+    roots.push(root);
+    const adapter = { command: ["bun", resolve(import.meta.dir, "fixtures/config-agent.ts")] };
+    const created = await AgentSession.create({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-recovery-replace-session",
+      creationId: "config-recovery-replace-incarnation",
+      persistence: { root },
+    });
+    const transcriptPath = created.transcriptPath!;
+    await created.stop();
+    const scan = await scanTranscriptContinuation(transcriptPath);
+    const { writer } = await FileSessionLogWriter.resumeTranscript({ path: transcriptPath });
+    await writer.append({
+      v: 2,
+      t: "operation",
+      transcriptId: scan.header.transcriptId,
+      generation: scan.header.generation,
+      agentSessionId: scan.header.agentSessionId,
+      seq: writer.nextSequence,
+      ts: Date.now(),
+      operationId: "uncertain-before-replacement",
+      operationKind: "prompt",
+      event: "started",
+      stateRevision: scan.reduction.checkpoint.stateRevision + 1,
+    }, { durable: true });
+    await writer.close();
+
+    const opened = await AgentSession.open({
+      adapter,
+      adapterId: "fake",
+      agentSessionId: "config-recovery-replace-session",
+      persistence: { root },
+      env: { ...process.env, NEW_SESSION_ID: "recovery-replacement" } as Record<string, string>,
+    });
+    const result = await opened.session.resolveRecovery({
+      strategy: "start_new_internal_session",
+      continuation: "Continue after the uncertain operation without repeating its side effects.",
+    });
+    expect(result).toMatchObject({
+      previous: { kind: "uncertain", operationId: "uncertain-before-replacement" },
+      recovery: { kind: "clean" },
+      handoff: {
+        fromInternalSessionId: "config-session",
+        toInternalSessionId: "recovery-replacement",
+      },
+    });
+    expect(opened.session.internalSessionId).toBe("recovery-replacement");
+    expect(opened.session.promptability).toEqual({ promptable: true, blockers: [] });
+    await opened.session.stop();
+
+    const finalScan = await scanTranscriptContinuation(transcriptPath);
+    expect(finalScan.reduction.recovery).toEqual({ kind: "clean" });
+    expect(finalScan.reduction.checkpoint.internalSessionId).toBe("recovery-replacement");
+    expect(finalScan.reduction.internalSessionHistory.at(-1)?.transition.kind).toBe("handoff");
   }, 20_000);
 
   test("a disappeared restoration target is reported and blocks prompting", async () => {

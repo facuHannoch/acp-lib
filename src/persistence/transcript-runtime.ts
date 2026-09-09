@@ -12,6 +12,7 @@ import {
   type PersistenceRepair,
   type SessionRecoveryStatus,
   type TranscriptHistoryReduction,
+  type TranscriptStructuralRecord,
 } from "./reducer.ts";
 import type {
   InternalSessionHistoryEntry,
@@ -91,6 +92,7 @@ export class TranscriptPersistenceRuntime {
     recovery: SessionRecoveryStatus,
     repairs: readonly PersistenceRepair[],
     private readonly conversationWasTruncated: boolean,
+    private openingStructuralTail: readonly TranscriptStructuralRecord[],
   ) {
     this.selectedCheckpointRecord = selectedCheckpointRecord;
     this.history = history;
@@ -139,6 +141,7 @@ export class TranscriptPersistenceRuntime {
         reduced.recovery,
         [],
         false,
+        [],
       );
     } catch (error) {
       await writer.close().catch(() => undefined);
@@ -152,11 +155,13 @@ export class TranscriptPersistenceRuntime {
       let selected = scan.selectedCheckpointRecord;
       let history = scan.historyAtSelectedCheckpoint;
       let checkpoint = scan.reduction.checkpoint;
+      let structuralTail = scan.structuralTailAfterSelectedCheckpoint;
       if (scan.reduction.repairs.length > 0) {
         const record = checkpointRecord(writer.nextSequence, checkpoint, scan.header);
         await writer.append(record, { durable: true });
         selected = record;
         history = reduceInternalSessionHistory(scan.reduction.internalSessionHistory);
+        structuralTail = [];
       }
       return new TranscriptPersistenceRuntime(
         writer,
@@ -167,6 +172,7 @@ export class TranscriptPersistenceRuntime {
         scan.reduction.recovery,
         scan.reduction.repairs,
         scan.conversationTruncated,
+        structuralTail,
       );
     } catch (error) {
       await writer.close().catch(() => undefined);
@@ -427,6 +433,77 @@ export class TranscriptPersistenceRuntime {
     }
   }
 
+  /**
+   * Durably acknowledge an uncertain provider boundary without claiming its outcome.
+   *
+   * The interrupted terminal closes a boundary that had no terminal. When a terminal was
+   * already durable, only its missing checkpoint is materialized. The canonical reducer
+   * validates the complete opening tail before the runtime exposes clean state.
+   */
+  async acceptHarnessRecovery(ts = Date.now()): Promise<AgentSessionCheckpoint> {
+    this.assertUsable();
+    if (this.activeOperation) throw new TranscriptRuntimeStateError("cannot resolve recovery during an active operation");
+    if (this._recovery.kind !== "uncertain") {
+      throw new TranscriptRuntimeStateError("recovery resolution requires an uncertain transcript boundary");
+    }
+    const recovery = this._recovery;
+    const tail = this.openingStructuralTail.map((record) => structuredClone(record));
+    let coveredSequence: number;
+    try {
+      if (recovery.boundary === "terminal_without_checkpoint") {
+        const terminal = [...tail].reverse().find((record) =>
+          record.t === "operation"
+          && record.operationId === recovery.operationId
+          && record.event !== "started");
+        if (!terminal) {
+          throw new TranscriptRuntimeStateError("uncertain terminal boundary has no durable terminal record");
+        }
+        coveredSequence = terminal.seq;
+      } else {
+        const terminal: TranscriptOperationRecord = {
+          ...this.envelope(this.writer.nextSequence, ts),
+          t: "operation",
+          operationId: recovery.operationId,
+          operationKind: operationKindForRecovery(this.selectedCheckpointRecord, tail, recovery.operationId),
+          event: "interrupted",
+          errorCode: "recovery_accepted_harness_state",
+        };
+        await this.writer.append(terminal);
+        tail.push(terminal);
+        coveredSequence = terminal.seq;
+      }
+      const next = createAgentSessionCheckpoint({
+        ...checkpointInput(this._checkpoint),
+        stateRevision: this._checkpoint.stateRevision + 1,
+        transcript: { ...this._checkpoint.transcript!, coveredSequence },
+        boundary: { status: "settled", lastSettledOperationId: recovery.operationId },
+        updatedAt: timestampToIso(ts),
+      });
+      const physical = checkpointRecord(this.writer.nextSequence, next, this.header);
+      await this.writer.append(physical, { durable: true });
+      tail.push(physical);
+      const reduced = reduceTranscriptState(this.selectedCheckpointRecord, this.history, tail);
+      if (reduced.recovery.kind !== "clean") {
+        throw new TranscriptRuntimeStateError("recovery acknowledgement did not produce a clean boundary");
+      }
+      this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery, reduced.internalSessionHistory);
+      this.openingStructuralTail = [];
+      await this.appendEvent({
+        kind: "lifecycle",
+        event: "recovery_resolved",
+        detail: {
+          strategy: "accept_harness_state",
+          operationId: recovery.operationId,
+          priorBoundary: recovery.boundary,
+        },
+      });
+      return this.checkpoint;
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -496,6 +573,22 @@ function timestampToIso(ts: number): string {
   } catch (error) {
     throw new TranscriptRuntimeStateError(`invalid operation timestamp: ${String(error)}`);
   }
+}
+
+function operationKindForRecovery(
+  selected: TranscriptCheckpointRecord,
+  tail: readonly TranscriptStructuralRecord[],
+  operationId: string,
+): OperationKind {
+  const started = [...tail].reverse().find((record) =>
+    record.t === "operation" && record.operationId === operationId && record.event === "started");
+  if (started?.t === "operation") return started.operationKind;
+  // An in-flight materialized checkpoint can be selected after its started record. Its
+  // exact kind is presentation metadata, not continuation state; use the explicit
+  // catch-all rather than guessing a user prompt.
+  if (selected.checkpoint.boundary.status === "in_flight"
+    && selected.checkpoint.boundary.interruptedOperationId === operationId) return "other";
+  throw new TranscriptRuntimeStateError("cannot identify the uncertain operation kind");
 }
 
 function assertInitialCheckpoint(
