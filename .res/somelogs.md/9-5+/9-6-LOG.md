@@ -1428,3 +1428,19 @@ canonical prior-thread history check, and confirmation that no repair remains. T
 complete persistence/manager-focused suite passes 91/91, `tsc --noEmit` passes, and
 `git diff --check` is clean. This completes the persistence primitive needed for wiring
 AgentSession prompts and handoffs without separate sequencing implementations.
+
+### Part 5C — live activity persistence classification
+
+Added `persistenceEventFromActivity()` as the narrow adapter between the existing folded
+activity stream and the v2 persistence projection. Thinking revisions become explicit
+reasoning records; tool identity/status remain structural metadata while raw arguments
+and results occupy their separate capture buckets; and other activity payloads remain
+content. The adapter deliberately performs no serialization or hashing, preserving the
+security invariant that capture filtering discards excluded sensitive values before the
+writer examines them.
+
+Added focused tests proving that the activity preset retains tool lifecycle metadata
+without private arguments/results, detailed capture admits reasoning and tool content,
+and plan payloads remain excluded at the activity level. The projection tests pass 9/9,
+`tsc --noEmit` passes, and `git diff --check` is clean. This is the final classification
+primitive needed before connecting the v2 runtime to `AgentSession` notifications.
