@@ -38,6 +38,40 @@ describe("managed CLI parsing", () => {
     expect(() => parseManagedCliCommand(["delete", "a", "b"])).toThrow("unexpected argument");
     expect(() => parseManagedCliCommand(["sessions", "--yes"])).toThrow("unknown option");
   });
+
+  test("parses the complete managed lifecycle surface", () => {
+    expect(parseManagedCliCommand([
+      "create", "logical-1", "--adapter", "opencode", "--preset", "detailed",
+      "--audit-log", "/tmp/audit.jsonl", "--no-repl",
+    ])).toMatchObject({
+      kind: "create", agentSessionId: "logical-1", adapterId: "opencode",
+      transcript: { preset: "detailed" }, auditLogPath: "/tmp/audit.jsonl", repl: false,
+    });
+    expect(parseManagedCliCommand(["resume", "logical-1", "--no-activity"]))
+      .toMatchObject({ kind: "open", agentSessionId: "logical-1", activity: false });
+    expect(parseManagedCliCommand([
+      "restore", "logical-1", "--replacement-transcript", "/tmp/new.jsonl",
+      "--no-replacement-audit-log",
+    ])).toMatchObject({
+      kind: "restore", agentSessionId: "logical-1",
+      replacementTranscript: { path: "/tmp/new.jsonl" }, replacementAuditLog: false,
+    });
+    expect(parseManagedCliCommand([
+      "reconfigure", "logical-1", "--replace-transcript", "--preset", "conversation", "--yes",
+    ])).toEqual({
+      kind: "reconfigure", root: undefined, agentSessionId: "logical-1",
+      change: { artifact: "transcript", action: "replace", preset: "conversation" }, yes: true,
+    });
+  });
+
+  test("rejects conflicting lifecycle choices", () => {
+    expect(() => parseManagedCliCommand(["create", "--no-transcript", "--transcript", "/tmp/t.jsonl"]))
+      .toThrow("conflicting options");
+    expect(() => parseManagedCliCommand(["reconfigure", "a", "--disable-transcript", "--disable-audit-log"]))
+      .toThrow("exactly one");
+    expect(() => parseManagedCliCommand(["open", "a", "--delete-transcript"]))
+      .toThrow("unknown option");
+  });
 });
 
 describe("managed CLI execution", () => {
@@ -125,6 +159,61 @@ describe("managed CLI execution", () => {
     );
     expect(output).toContain("registry tombstone retained");
     expect(await manager.getSessionMaintenance("agent-1")).toBeNull();
+  });
+
+  test("inspects summaries, checkpoints, and maintenance without starting a harness", async () => {
+    const { manager, store } = await setup();
+    await store.saveAgentSessionRecord(record("agent-1"), { expectedRecordRevision: null, expectedIncarnationId: null });
+    let output = "";
+    await runManagedCliCommand(
+      { kind: "info", agentSessionId: "agent-1", includeDeleted: false, json: true },
+      { out: (value) => { output += value; } }, manager,
+    );
+    expect(JSON.parse(output).agentSessionId).toBe("agent-1");
+
+    output = "";
+    await runManagedCliCommand(
+      { kind: "checkpoint", agentSessionId: "agent-1", includeDeleted: false, registryProjection: true },
+      { out: (value) => { output += value; } }, manager,
+    );
+    expect(JSON.parse(output)).toMatchObject({ source: "registry_projection", checkpoint: { agentSessionId: "agent-1" } });
+
+    output = "";
+    await runManagedCliCommand(
+      { kind: "maintenance", agentSessionId: "agent-1", json: false },
+      { out: (value) => { output += value; } }, manager,
+    );
+    expect(output).toContain("No pending maintenance");
+  });
+
+  test("managed creation hands the stable AgentSession to the session REPL and always stops it", async () => {
+    let stopped = 0;
+    let replSessionId = "";
+    let createConfig: Record<string, unknown> | undefined;
+    const session = {
+      agentSessionId: "logical-1",
+      stop: async () => { stopped++; },
+    };
+    const manager = {
+      getSessionMaintenance: async () => null,
+      createAgentSession: async (config: Record<string, unknown>) => {
+        createConfig = config;
+        return session;
+      },
+    } as unknown as SessionManager;
+
+    await runManagedCliCommand(
+      parseManagedCliCommand(["create", "logical-1", "--adapter", "opencode"]),
+      {
+        out: () => {},
+        runSession: async (value) => { replSessionId = value.agentSessionId; },
+      },
+      manager,
+    );
+
+    expect(createConfig).toMatchObject({ agentSessionId: "logical-1", adapterId: "opencode" });
+    expect(replSessionId).toBe("logical-1");
+    expect(stopped).toBe(1);
   });
 });
 

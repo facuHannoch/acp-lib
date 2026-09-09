@@ -2231,3 +2231,30 @@ constraint rejection before process startup.
 The complete repository suite passes 663/663, `tsc --noEmit` passes, and
 `git diff --check` is clean. At this point the remaining product work begins at the managed
 CLI layer; the consumer-facing SessionManager lifecycle is implemented.
+
+### Part 17 — managed reference-consumer CLI
+
+Completed the opinionated CLI above `SessionManager` while retaining the controller-based
+`chat` command as a separate compatibility surface. The managed command family now covers
+`create`, `open` (`load` and `resume` aliases), `sessions`, `info`, `checkpoint`,
+`maintenance`, `restore`, persistence `reconfigure`, and confirmed `delete`.
+
+Commands which acquire a live logical session enter the public `runAgentSessionRepl()` and
+therefore preserve the command-layer boundary: `/...` controls the stable `AgentSession`,
+while `//...` explicitly invokes a command advertised by its replaceable internal harness
+thread. `--no-repl` supports acquisition/checkpoint/stop workflows. The CLI owns and always
+stops every live session it acquires.
+
+Recorded built-in adapters are resolved automatically for open/restoration; custom adapters
+must provide their launch command again. Managed creation exposes per-session transcript
+path/preset choices, optional independent audit storage, and registry-only mode. Offline
+inspection does not start a harness. Transcript and audit reconfiguration remain distinct
+fenced v0 operations and destructive mutations require an exact session-ID confirmation or
+`--yes`. Interrupted managed creation and restoration commands reuse a matching prepared
+maintenance operation when invoked again for the same logical identity.
+
+Added parser coverage for every lifecycle family, conflicting and command-specific options,
+offline summary/checkpoint/maintenance inspection, and live-session ownership. The complete
+repository suite passes 667/667 and `tsc --noEmit` passes. A repository-wide diff check still
+reports a pre-existing trailing blank line in the separately modified
+`9-6-transcript-policy.md`; the managed CLI files themselves pass `git diff --check`.

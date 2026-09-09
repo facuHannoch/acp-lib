@@ -10,6 +10,11 @@
 //   acp-client chat [--adapter ID] --adapter-command '["agent","--acp"]'
 //                [--pty-command '["agent"]'] [--adapter-name "My Agent"]
 //   acp-client sessions [--root PATH] [--all] [--json]
+//   acp-client create [AGENT_SESSION_ID] [--adapter ID] [--root PATH] [--no-repl]
+//   acp-client open AGENT_SESSION_ID [--adapter-command COMMAND] [--root PATH]
+//   acp-client restore AGENT_SESSION_ID [--replacement-transcript PATH] [--root PATH]
+//   acp-client info|checkpoint|maintenance [AGENT_SESSION_ID] [--root PATH]
+//   acp-client reconfigure AGENT_SESSION_ID --disable-transcript|--replace-transcript
 //   acp-client delete AGENT_SESSION_ID [--root PATH] [--delete-transcript]
 //                [--delete-audit-log] [--remove-registry-entry] [--yes]
 //
@@ -154,7 +159,11 @@ async function chat(args: Args): Promise<void> {
 }
 
 const argv = process.argv.slice(2);
-if (argv[0] === "sessions" || argv[0] === "delete") {
+const managedCommands = new Set([
+  "sessions", "create", "open", "load", "resume", "restore", "info", "checkpoint",
+  "maintenance", "reconfigure", "delete",
+]);
+if (argv[0] && managedCommands.has(argv[0])) {
   try {
     await runManagedCliCommand(parseManagedCliCommand(argv));
   } catch (error) {

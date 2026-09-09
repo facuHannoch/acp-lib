@@ -484,6 +484,31 @@ acp-client chat -v | -d               # verbose lifecycle / debug payloads
 acp-client chat --wire[=FILE]         # dump every raw protocol line (stderr, or ndjson to FILE)
 ```
 
+The managed CLI is the opinionated `SessionManager` consumer. `create`, `open` (also
+`load`/`resume`), and `restore` acquire one stable logical `AgentSession` and enter its
+REPL; `/...` controls that logical session and `//...` explicitly targets the active
+harness thread. Lifecycle and offline inspection remain available as separate commands:
+
+```bash
+acp-client create [AGENT_SESSION_ID] --adapter opencode
+acp-client open AGENT_SESSION_ID
+acp-client sessions [--all] [--json]
+acp-client info AGENT_SESSION_ID [--include-deleted] [--json]
+acp-client checkpoint AGENT_SESSION_ID [--registry-projection]
+acp-client maintenance [AGENT_SESSION_ID] [--json]
+acp-client restore AGENT_SESSION_ID
+acp-client reconfigure AGENT_SESSION_ID --replace-transcript --preset detailed --yes
+acp-client delete AGENT_SESSION_ID --delete-transcript --yes
+```
+
+All managed commands accept `--root`; otherwise the manager uses `ACP_CLIENT_HOME` and
+then `~/.acp-client`. A recorded built-in adapter is resolved automatically on open or
+restore. Supply `--adapter-command` again for a custom adapter. Use `--no-repl` when a
+create/open/restore command should only acquire, report, checkpoint, and stop the session.
+
+The older `chat` command remains the direct `AgentController` CLI for compatibility. It
+manipulates one provider thread and is deliberately separate from the managed catalog.
+
 Activity markers (thinking/tool) show by default; `--no-activity` disables them.
 
 Presets are launch shortcuts, not provider definitions. For a custom harness,
