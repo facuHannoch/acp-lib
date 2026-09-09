@@ -70,6 +70,41 @@ describe("SessionManager persistence maintenance", () => {
     expect(checkpoint).toMatchObject({ source: "registry_projection", authoritative: true });
     expect(checkpoint?.checkpoint.transcript).toBeNull();
   }, 20_000);
+
+  test("replaces and then explicitly disables an audit generation", async () => {
+    const { root, manager } = await setup();
+    const session = await manager.createAgentSession({
+      ...createConfig(),
+      agentSessionId: "audited",
+      creationId: "audited-creation",
+      persistence: { auditLog: {} },
+    });
+    await session.stop();
+    const before = (await manager.getAgentSessionInfo("audited"))!;
+    const path = join(root, "audit-logs", "audited.jsonl");
+    const replaced = await manager.reconfigureAgentSessionPersistence("audited", {
+      reconfigurationId: "replace-audit",
+      expectedIncarnationId: before.incarnationId,
+      expectedRecordRevision: before.recordRevision,
+      auditLog: {
+        action: "replace",
+        config: { path, capture: { tools: "metadata" } },
+        acknowledgeAuditGap: true,
+      },
+    });
+    expect(replaced.auditLogAvailable).toBe(true);
+    const disabled = await manager.reconfigureAgentSessionPersistence("audited", {
+      reconfigurationId: "disable-audit",
+      expectedIncarnationId: replaced.incarnationId,
+      expectedRecordRevision: replaced.recordRevision,
+      auditLog: {
+        action: "disable",
+        deleteExistingLog: true,
+        acknowledgeAuditGap: true,
+      },
+    });
+    expect(disabled.auditLogAvailable).toBe(false);
+  }, 20_000);
 });
 
 async function setup() {

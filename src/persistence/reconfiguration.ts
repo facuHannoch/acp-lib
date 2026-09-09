@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { TranscriptConfig } from "./config.ts";
+import type { AuditLogConfig, TranscriptConfig } from "./config.ts";
 import { resolveDirectPersistence } from "./config.ts";
 import {
   createAgentSessionCheckpoint,
@@ -38,7 +38,9 @@ export interface ReconfigureAgentSessionPersistenceOptions {
         readonly checkpoint: AgentSessionCheckpoint;
         readonly acknowledgeContinuationLoss: true;
       };
-  readonly auditLog?: unknown;
+  readonly auditLog?:
+    | { readonly action: "disable"; readonly deleteExistingLog: true; readonly acknowledgeAuditGap: true }
+    | { readonly action: "replace"; readonly config: AuditLogConfig & { readonly path: string }; readonly acknowledgeAuditGap: true };
 }
 
 export class AgentSessionPersistenceReconfigurationError extends Error {
@@ -54,8 +56,13 @@ export async function reconfigureManagedAgentSessionPersistence(
   options: ReconfigureAgentSessionPersistenceOptions,
 ): Promise<AgentSessionSummary> {
   validateRequest(agentSessionId, options);
+  if (options.auditLog !== undefined && options.transcript === undefined) {
+    return await reconfigureAuditLog(store, agentSessionId, options);
+  }
   if (options.auditLog !== undefined) {
-    throw new AgentSessionPersistenceReconfigurationError("audit-log reconfiguration is not implemented yet");
+    throw new AgentSessionPersistenceReconfigurationError(
+      "v0 applies transcript and audit-log reconfiguration as separate fenced operations",
+    );
   }
   const change = options.transcript!;
   const requestDigest = sha256CanonicalJson({
@@ -157,6 +164,133 @@ export async function reconfigureManagedAgentSessionPersistence(
     );
     return summarizeAgentSessionRecord(next);
   });
+}
+
+async function reconfigureAuditLog(
+  store: AgentSessionStore,
+  agentSessionId: string,
+  options: ReconfigureAgentSessionPersistenceOptions,
+): Promise<AgentSessionSummary> {
+  const change = options.auditLog!;
+  const candidate = await store.getAgentSessionRecord(agentSessionId);
+  const retryPath = candidate?.auditLog?.path ?? (change.action === "replace" ? change.config.path : null);
+  if (!retryPath) throw new AgentSessionPersistenceReconfigurationError("session has no audit log to reconfigure");
+  const requestDigest = sha256CanonicalJson({
+    agentSessionId,
+    reconfigurationId: options.reconfigurationId,
+    expectedIncarnationId: options.expectedIncarnationId,
+    expectedRecordRevision: options.expectedRecordRevision,
+    auditLog: change,
+  });
+  const proposed = auditMaintenance(options, requestDigest, retryPath);
+  if (!candidate
+    || candidate.incarnationId !== options.expectedIncarnationId
+    || candidate.recordRevision !== options.expectedRecordRevision) {
+    const completed = await store.prepareMaintenance(agentSessionId, proposed, {
+      expectedRecordRevision: options.expectedRecordRevision,
+    });
+    if (completed.status === "already_completed" && candidate) return summarizeAgentSessionRecord(candidate);
+    throw new AgentSessionStoreConflictError("agent-session record compare-and-swap failed");
+  }
+  if (!candidate.auditLog) throw new AgentSessionPersistenceReconfigurationError("session has no audit log to reconfigure");
+  if (change.action === "replace" && change.config.path !== candidate.auditLog.path) {
+    throw new AgentSessionPersistenceReconfigurationError("v0 replacement must retain the recorded audit-log path");
+  }
+  return await withSessionLogWriterLock(candidate.auditLog.path, async () => {
+    const record = await requireCurrent(store, agentSessionId, options);
+    const prepared = await store.prepareMaintenance(agentSessionId, proposed, {
+      expectedRecordRevision: options.expectedRecordRevision,
+    });
+    if (prepared.status === "already_completed") return summarizeAgentSessionRecord(record);
+    const at = prepared.maintenance.startedAt < record.updatedAt
+      ? record.updatedAt : prepared.maintenance.startedAt;
+    let auditLog: AgentSessionRecord["auditLog"] = null;
+    if (change.action === "replace") {
+      auditLog = await installAuditReplacement(record, change.config, requestDigest, options.reconfigurationId, at);
+    } else {
+      await removeAndSync(record.auditLog!.path);
+    }
+    const next: AgentSessionRecord = {
+      ...record,
+      recordRevision: record.recordRevision + 1,
+      auditLog,
+      updatedAt: at,
+    };
+    await store.finalizeMaintenance(
+      agentSessionId, record.incarnationId, options.reconfigurationId, requestDigest,
+      { save: next },
+    );
+    return summarizeAgentSessionRecord(next);
+  });
+}
+
+function auditMaintenance(
+  options: ReconfigureAgentSessionPersistenceOptions,
+  requestDigest: string,
+  path: string,
+): PersistenceReconfigurationMaintenance {
+  return {
+    kind: "persistence_reconfiguration",
+    incarnationId: options.expectedIncarnationId,
+    baseRecordRevision: options.expectedRecordRevision,
+    operationId: options.reconfigurationId,
+    requestDigest,
+    status: "prepared",
+    startedAt: new Date().toISOString(),
+    details: {
+      transcript: null,
+      auditLog: options.auditLog!.action === "disable"
+        ? { action: "disable", previousPath: path }
+        : { action: "replace", previousPath: path, replacementPath: path },
+    },
+  };
+}
+
+async function installAuditReplacement(
+  record: AgentSessionRecord,
+  config: AuditLogConfig & { readonly path: string },
+  requestDigest: string,
+  operationId: string,
+  createdAt: string,
+): Promise<NonNullable<AgentSessionRecord["auditLog"]>> {
+  const auditLogId = randomUUID();
+  const tempPath = `${config.path}.replacement-${randomUUID()}`;
+  const resolved = resolveDirectPersistence({
+    transcript: false,
+    auditLog: config,
+    limits: record.auditLog!.effectiveLimits,
+  });
+  if (resolved === false || resolved.auditLog === false) throw new AgentSessionPersistenceReconfigurationError("replacement audit log is disabled");
+  const header = {
+    v: 1 as const, t: "header" as const, auditLogId, generation: 1,
+    agentSessionId: record.agentSessionId, seq: 1, ts: Date.parse(createdAt),
+    event: "replaced" as const, createdAt,
+    effectivePolicy: resolved.auditLog.capture,
+    effectiveLimits: resolved.limits,
+    includeTruncationDigests: resolved.auditLog.includeTruncationDigests,
+    installation: { kind: "persistence_reconfiguration" as const, operationId, requestDigest },
+  };
+  let writer: FileSessionLogWriter<"audit"> | undefined;
+  try {
+    writer = await FileSessionLogWriter.create({
+      kind: "audit", path: tempPath, header,
+      maxRecordBytes: resolved.limits.maxRecordBytes,
+    });
+    await writer.close();
+    writer = undefined;
+    await rename(tempPath, config.path);
+    await syncDirectory(dirname(config.path));
+  } catch (error) {
+    await writer?.close().catch(() => undefined);
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+  return {
+    path: config.path, auditLogId, generation: 1,
+    effectivePolicy: resolved.auditLog.capture,
+    effectiveLimits: resolved.limits,
+    includeTruncationDigests: resolved.auditLog.includeTruncationDigests,
+  };
 }
 
 function proposedMaintenance(
@@ -301,6 +435,13 @@ function validateRequest(id: string, options: ReconfigureAgentSessionPersistence
   }
   if (options.transcript?.action === "replace" && !options.transcript.acknowledgeContinuationLoss) {
     throw new AgentSessionPersistenceReconfigurationError("replacing a transcript requires continuation-loss acknowledgement");
+  }
+  if (options.auditLog?.action === "disable"
+    && (!options.auditLog.deleteExistingLog || !options.auditLog.acknowledgeAuditGap)) {
+    throw new AgentSessionPersistenceReconfigurationError("disabling an audit log requires deletion and audit-gap acknowledgement");
+  }
+  if (options.auditLog?.action === "replace" && !options.auditLog.acknowledgeAuditGap) {
+    throw new AgentSessionPersistenceReconfigurationError("replacing an audit log requires audit-gap acknowledgement");
   }
 }
 

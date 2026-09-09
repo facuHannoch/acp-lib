@@ -2179,3 +2179,30 @@ Tests cover separate artifact creation, registry visibility, explicit operation 
 configuration projections, message exclusion, audit-only load, and sequence continuation.
 The complete repository suite passes 658/658, `tsc --noEmit` passes, and
 `git diff --check` is clean.
+
+### Part 15 — audit maintenance and multi-artifact restoration
+
+Extended offline persistence reconfiguration to audit logs. A stopped managed session can
+replace its recorded audit generation at the same v0 path or explicitly disable and delete
+it, with exact incarnation/revision fencing, stable request identity, prepared maintenance,
+audit-gap acknowledgement, atomic sibling installation, parent synchronization, and bounded
+completion-receipt retry. Transcript and audit changes are deliberately separate v0 fenced
+operations rather than a partially atomic combined mutation.
+
+Expanded tombstone restoration to acquire every retained artifact lock in canonical order
+and resume retained transcript and audit generations together. Audit-only and registry-only
+authority paths use the same restoration checkpoint and staged-record transaction. When a
+tombstone records deliberate transcript/audit deletion, explicit
+`replacementTranscript:false` / `replacementAuditLog:false` converts continuation to a new
+registry-only checkpoint; omission never hides the missing artifact or silently recreates
+its old identity.
+
+Restoration maintenance now records accurate retain/disable actions for both artifacts, and
+the returned session continues writing to every retained sink only after the tombstone has
+been cleared by final CAS. Creating brand-new replacement artifacts as part of restoration
+remains the only deferred restoration variant; it is rejected explicitly rather than
+falling back to an unannounced mode.
+
+Tests cover audit replacement and disablement, retained transcript+audit restoration, and
+explicit restoration after both logs were deleted. The complete repository suite passes
+661/661, `tsc --noEmit` passes, and `git diff --check` is clean.

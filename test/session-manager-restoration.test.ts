@@ -98,6 +98,68 @@ describe("SessionManager.restoreAgentSession", () => {
       await restored.session.stop();
     }
   }, 20_000);
+
+  test("restores a retained transcript and audit log together", async () => {
+    const { manager } = await setup();
+    const created = await manager.createAgentSession({
+      ...createConfig(),
+      agentSessionId: "audited",
+      creationId: "audited-creation",
+      persistence: { auditLog: {} },
+    });
+    await created.stop();
+    const active = (await manager.getAgentSessionInfo("audited"))!;
+    await manager.deleteAgentSession("audited", {
+      deletionId: "delete-audited",
+      expectedIncarnationId: active.incarnationId,
+      expectedRecordRevision: active.recordRevision,
+    });
+    const deleted = (await manager.getAgentSessionInfo("audited", { includeDeleted: true }))!;
+    const restored = await manager.restoreAgentSession("audited", {
+      ...runtimeConfig(), restorationId: "restore-audited",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+    });
+    await restored.session.stop();
+    expect(await manager.getAgentSessionInfo("audited")).toMatchObject({
+      lifecycle: "active", transcriptAvailable: true, auditLogAvailable: true,
+    });
+  }, 20_000);
+
+  test("can explicitly restore after deleted logs as registry-only authority", async () => {
+    const { manager } = await setup();
+    const created = await manager.createAgentSession({
+      ...createConfig(),
+      agentSessionId: "logs-deleted",
+      creationId: "logs-deleted-creation",
+      persistence: { auditLog: {} },
+    });
+    await created.stop();
+    const active = (await manager.getAgentSessionInfo("logs-deleted"))!;
+    await manager.deleteAgentSession("logs-deleted", {
+      deletionId: "delete-logs",
+      expectedIncarnationId: active.incarnationId,
+      expectedRecordRevision: active.recordRevision,
+      deleteTranscript: true,
+      deleteAuditLog: true,
+    });
+    const deleted = (await manager.getAgentSessionInfo("logs-deleted", { includeDeleted: true }))!;
+    const restored = await manager.restoreAgentSession("logs-deleted", {
+      ...runtimeConfig(), restorationId: "restore-without-logs",
+      expectedIncarnationId: deleted.incarnationId,
+      expectedRecordRevision: deleted.recordRevision,
+      replacementTranscript: false,
+      replacementAuditLog: false,
+    });
+    try {
+      expect(restored.continuation.recordedConversationAvailability).toBe("not_captured");
+      expect(await manager.getAgentSessionInfo("logs-deleted")).toMatchObject({
+        lifecycle: "active", transcriptAvailable: false, auditLogAvailable: false,
+      });
+    } finally {
+      await restored.session.stop();
+    }
+  }, 20_000);
 });
 
 async function setup() {

@@ -14,6 +14,9 @@ import {
 } from "./registry.ts";
 import { sha256CanonicalJson } from "./integrity.ts";
 import { acquireSessionLogWriterLock } from "./session-log-writer.ts";
+import type { SessionLogWriterLock } from "./session-log-writer.ts";
+import { AuditPersistenceRuntime } from "./audit-runtime.ts";
+import { createAgentSessionCheckpoint } from "./checkpoint.ts";
 
 export interface RestoreAgentSessionOptions extends ManagedAgentSessionLoadConfig {
   readonly restorationId: string;
@@ -44,23 +47,33 @@ export async function restoreManagedAgentSession(
     return await completedOrConflict(store, agentSessionId, record, options);
   }
   if (!record.deletion) throw new AgentSessionRestorationError("only a deleted managed session can be restored");
-  if (!record.transcript || record.deletion.transcriptDeletedAt) {
+  const retainedTranscript = record.transcript && !record.deletion.transcriptDeletedAt
+    ? record.transcript : null;
+  const retainedAudit = record.auditLog && !record.deletion.auditLogDeletedAt
+    ? record.auditLog : null;
+  if (!retainedTranscript && options.replacementTranscript !== false) {
     throw new AgentSessionRestorationError(
-      "replacement of a deleted transcript is not implemented yet; a retained transcript is required",
+      "a deleted transcript requires explicit replacementTranscript:false or a replacement (not yet implemented)",
     );
   }
-  if (options.replacementTranscript !== undefined) {
+  if (retainedTranscript && options.replacementTranscript !== undefined) {
     throw new AgentSessionRestorationError("a retained transcript cannot be replaced during this restoration slice");
   }
-  if (record.auditLog && !record.deletion.auditLogDeletedAt) {
-    throw new AgentSessionRestorationError("restoration of a retained audit log is not implemented yet");
-  }
-  if (record.deletion.auditLogDeletedAt && options.replacementAuditLog === undefined) {
+  if (!retainedAudit && record.auditLog && options.replacementAuditLog !== false) {
     throw new AgentSessionRestorationError("deleted audit-log state must be explicitly disabled or replaced");
+  }
+  if ((options.replacementTranscript && options.replacementTranscript !== false)
+    || (options.replacementAuditLog && options.replacementAuditLog !== false)) {
+    throw new AgentSessionRestorationError("replacement artifact creation during restoration is not implemented yet");
   }
 
   const requestDigest = restorationDigest(agentSessionId, options);
-  const transcriptLock = await acquireSessionLogWriterLock(record.transcript.path);
+  const locks = await acquireOrderedLocks([
+    retainedTranscript?.path ?? null,
+    retainedAudit?.path ?? null,
+  ]);
+  const transcriptLock = retainedTranscript ? locks.get(retainedTranscript.path) : undefined;
+  const auditLock = retainedAudit ? locks.get(retainedAudit.path) : undefined;
   let transferred = false;
   let opened: AgentSessionOpenResult | null = null;
   try {
@@ -79,17 +92,42 @@ export async function restoreManagedAgentSession(
         agentSessionId, record.incarnationId, options.restorationId, requestDigest,
         { save: prepared.maintenance.details.stagedRecord },
       );
-      await transcriptLock.release();
+      await Promise.all([...locks.values()].map((lock) => lock.release().catch(() => undefined)));
       transferred = true;
       return await loadManagedAgentSession(store, agentSessionId, runtimeOptions(options));
     }
     const runtime = runtimeOptions(options);
+    const authorityRecord = restorationAuthorityRecord(record, retainedTranscript !== null, retainedAudit !== null);
+    const audit = retainedAudit
+      ? await AuditPersistenceRuntime.resume({
+          path: retainedAudit.path,
+          agentSessionId,
+          auditLogId: retainedAudit.auditLogId,
+          generation: retainedAudit.generation,
+          writerLock: auditLock,
+        })
+      : undefined;
     transferred = true;
-    opened = await AgentSession.openManaged({
-      ...runtime,
-      agentSessionId,
-      persistence: persistenceFromManagedRecord({ ...record, auditLog: null }),
-    }, transcriptLock);
+    opened = retainedTranscript
+      ? await AgentSession.openManaged({
+          ...runtime,
+          agentSessionId,
+          persistence: persistenceFromManagedRecord(authorityRecord),
+        }, transcriptLock, audit)
+      : await AgentSession.openManagedRegistry({
+          ...runtime,
+          agentSessionId,
+          checkpoint: authorityRecord.checkpoint,
+          persistence: {
+            transcript: false,
+            auditLog: authorityRecord.auditLog ? {
+              path: authorityRecord.auditLog.path,
+              capture: authorityRecord.auditLog.effectivePolicy,
+              includeTruncationDigests: authorityRecord.auditLog.includeTruncationDigests,
+            } : false,
+            sessionConfiguration: authorityRecord.sessionConfigurationPersistence ?? { values: "typed" },
+          },
+        }, authorityRecord.internalSessionHistory, audit);
     const snapshot = await opened.session.publishManagedRestorationCheckpoint();
     const currentMaintenance = prepared.maintenance;
     const stagedContinuation: StagedContinuationState = {
@@ -101,7 +139,7 @@ export async function restoreManagedAgentSession(
       sessionConfiguration: snapshot.checkpoint.sessionConfiguration,
       protocol: snapshot.checkpoint.protocol,
     };
-    const { deletion: _deletion, ...activeRecord } = record;
+    const { deletion: _deletion, ...activeRecord } = authorityRecord;
     const projected = projectManagedAgentSessionRecord(
       { ...activeRecord, recordRevision: record.recordRevision },
       snapshot.checkpoint,
@@ -142,7 +180,42 @@ export async function restoreManagedAgentSession(
     await opened?.session.stop().catch(() => undefined);
     throw error;
   } finally {
-    if (!transferred) await transcriptLock.release().catch(() => undefined);
+    if (!transferred) {
+      await Promise.all([...locks.values()].map((lock) => lock.release().catch(() => undefined)));
+    }
+  }
+}
+
+function restorationAuthorityRecord(
+  record: AgentSessionRecord,
+  keepTranscript: boolean,
+  keepAudit: boolean,
+): AgentSessionRecord {
+  if (keepTranscript && keepAudit) return record;
+  let checkpoint = record.checkpoint;
+  if (!keepTranscript && checkpoint.transcript) {
+    const { version: _version, digest: _digest, ...input } = checkpoint;
+    checkpoint = createAgentSessionCheckpoint({
+      ...input,
+      stateRevision: checkpoint.stateRevision + 1,
+      transcript: null,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+  return { ...record, checkpoint, transcript: keepTranscript ? record.transcript : null, auditLog: keepAudit ? record.auditLog : null };
+}
+
+async function acquireOrderedLocks(paths: readonly (string | null)[]): Promise<Map<string, SessionLogWriterLock>> {
+  const locks = new Map<string, SessionLogWriterLock>();
+  try {
+    for (const path of [...new Set(paths.filter((value): value is string => value !== null))]
+      .sort((left, right) => left.localeCompare(right))) {
+      locks.set(path, await acquireSessionLogWriterLock(path));
+    }
+    return locks;
+  } catch (error) {
+    await Promise.all([...locks.values()].map((lock) => lock.release().catch(() => undefined)));
+    throw error;
   }
 }
 
@@ -189,10 +262,12 @@ function restorationMaintenance(
     status: "prepared",
     startedAt: new Date().toISOString(),
     details: {
-      transcript: record.transcript
+      transcript: record.transcript && !record.deletion?.transcriptDeletedAt
         ? { action: "retain", path: record.transcript.path }
         : { action: "disable" },
-      auditLog: { action: "disable" },
+      auditLog: record.auditLog && !record.deletion?.auditLogDeletedAt
+        ? { action: "retain", path: record.auditLog.path }
+        : { action: "disable" },
     },
   };
 }
