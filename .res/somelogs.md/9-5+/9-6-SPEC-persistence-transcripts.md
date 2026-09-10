@@ -1679,8 +1679,11 @@ interface TranscriptCheckpointRecord extends TranscriptEnvelope {
 
 interface TranscriptMessageRecord extends TranscriptEnvelope {
   t: "message";
+  operationId: string;
   role: "user" | "assistant";
   text: string;
+  presentation?: TranscriptPresentationMetadata;
+  providerMessageId?: string;
   structured?: TranscriptStructuredMessagesV1;
   status?: string;
   stopReason?: string;
@@ -1694,7 +1697,39 @@ interface TranscriptReasoningRecord extends TranscriptEnvelope {
   /** Complete policy-admitted snapshot at this revision, never a stream delta. */
   text: string;
   status: "in_progress" | "completed";
+  presentation?: TranscriptPresentationMetadata;
 }
+
+interface TranscriptPresentationMetadata {
+  /** Stable logical display identity across revisions. */
+  id: string;
+  /** Physical sequence of the first appended revision. */
+  position: number;
+  /** Strictly increasing logical revision. */
+  revision: number;
+}
+
+type TranscriptPresentationItem =
+  | {
+      kind: "message";
+      id: string; position: number; revision: number; recordSequence: number;
+      operationId: string; transcriptId: string; generation: number;
+      role: "user" | "assistant"; text: string; providerMessageId?: string;
+      status?: string; stopReason?: string;
+    }
+  | {
+      kind: "reasoning";
+      id: string; position: number; revision: number; recordSequence: number;
+      operationId: string; transcriptId: string; generation: number;
+      text: string; status: "in_progress" | "completed";
+    }
+  | {
+      kind: "activity";
+      id: string; position: number; revision: number; recordSequence: number;
+      operationId: string; transcriptId: string; generation: number;
+      activityId: string; activityKind: string;
+      reason: TranscriptActivityRecord["reason"]; status?: string; data: JsonObject;
+    };
 
 interface TranscriptProtocolMetadataRecord extends TranscriptEnvelope {
   t: "protocol";
@@ -2186,6 +2221,25 @@ fully recorded. The operation itself may have succeeded, failed, or been cancell
 Capture policy may remove message content entirely. Structural operation/checkpoint
 records remain valid in that case.
 
+Distinct ACP assistant messages remain distinct records. `PromptResult.text` is only a
+convenience projection and inserts one literal blank line between message texts; it does
+not normalize the text inside either message. Streaming token chunks within one logical
+message do not receive separators.
+
+Presentation metadata is display-only and never participates in checkpoint reduction,
+continuation recovery, or registry authority. The transcript projection may retain it;
+the audit projection always strips it. The live writer serializes every presentation
+record through one queue shared by messages, reasoning, and activities. On the first
+appended revision, `position === record.seq`; later revisions retain that position while
+their physical `record.seq` advances. A stable ID cannot change kind, operation, message
+role, or position, and its revisions increase strictly.
+
+Assistant token chunks are not persisted individually. V0 appends a first usable message
+snapshot, another snapshot before an interleaved presentation item or new assistant
+message, and a terminal snapshot at the operation boundary. Individual message records
+therefore preserve both message boundaries and their position relative to activity
+without turning every streamed token into a JSONL record.
+
 ## 16. Activity lifecycle
 
 The current useful lifecycle is preserved. A tool normally produces two or three
@@ -2212,6 +2266,7 @@ interface TranscriptActivityRecord extends TranscriptEnvelope {
   kind: string;
   status?: string;
   data: Record<string, JsonValue>;
+  presentation?: TranscriptPresentationMetadata;
 }
 ```
 
@@ -2234,6 +2289,10 @@ Rules:
 
 Consumers apply activity records as upserts. They must not assume lifecycle revisions are
 adjacent or present on the same transcript page.
+
+Every revision of a presented activity retains the `position` assigned when that activity
+was first recorded. A tool may therefore be announced, followed by assistant content,
+and settle later without moving below that content after reload.
 
 ### 16.1 Live and historical state
 
@@ -2401,6 +2460,9 @@ type TranscriptCursor = string & { readonly __transcriptCursor: unique symbol };
 type TranscriptSnapshotCursor = string & {
   readonly __transcriptSnapshotCursor: unique symbol;
 };
+type TranscriptPresentationCursor = string & {
+  readonly __transcriptPresentationCursor: unique symbol;
+};
 type AuditLogCursor = string & { readonly __auditLogCursor: unique symbol };
 type AuditLogSnapshotCursor = string & {
   readonly __auditLogSnapshotCursor: unique symbol;
@@ -2447,6 +2509,14 @@ interface TranscriptReader {
     Promise<TranscriptPage<TranscriptConversationItem>>;
   readPage(options: ReadTranscriptPageOptions & { view: "records" }):
     Promise<TranscriptPage<KnownTranscriptRecord | UnknownTranscriptRecord>>;
+  readPresentationPage(options?: {
+    cursor?: TranscriptPresentationCursor;
+    limit?: number;
+  }): Promise<TranscriptPage<
+    TranscriptPresentationItem,
+    TranscriptPresentationCursor,
+    TranscriptSnapshotCursor
+  >>;
 }
 
 interface ReadAuditLogPageOptions {
@@ -2487,6 +2557,18 @@ and cannot be supplied to a transcript reader.
 The limit counts returned projected items, not physical JSONL lines. Readers may scan
 additional records to satisfy a filtered page.
 
+`readPresentationPage()` is the canonical end-user display projection for V2. It folds
+message, reasoning, and activity revisions by stable `id`, orders the resulting logical
+items by their first `position`, and exposes the latest included physical sequence as
+`recordSequence`. Checkpoints, integrity records, and other control machinery never
+appear. The reader keeps at most the requested page plus one candidate while scanning;
+pagination does not require materializing the full conversation in consumer memory.
+
+The V0 presentation projection does not synthesize identities or interleaving for legacy
+V1 records or older V2 records without presentation metadata. Those records remain
+available through `readPage()`. V1 is a migration source, not a permanently equivalent
+presentation format.
+
 `types` is valid with `view: "records"` and with `view: "timeline"` when every requested
 type belongs to the timeline union. It is rejected for `conversation`, and a timeline
 request containing a structural/non-timeline type is rejected. V0 does not introduce a
@@ -2518,6 +2600,15 @@ compatible. This keeps the folded-state query independent from a prior projectio
 Live additions are delivered through `AgentSession` listeners. A later
 `readTranscriptSince(cursor)` may support catch-up/polling, but it is distinct from
 historical pagination.
+
+After a presentation revision is appended, the session emits
+`presentation_recorded`. Its item has exactly the same `id`, `position`, `revision`,
+`recordSequence`, and `operationId` returned by `readPresentationPage()` after reload.
+Streaming callbacks remain provisional. Applications replace or deduplicate committed
+display state by item ID and accept only newer revisions. Establishing an atomic
+history/WebSocket catch-up handshake remains a consumer transport responsibility; the
+library supplies stable snapshots, cursors, and committed identities needed to implement
+that handshake without a byte-offset sidecar.
 
 ### 18.2 Cursor contract
 

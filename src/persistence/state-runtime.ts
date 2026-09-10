@@ -6,8 +6,14 @@ import { sha256CanonicalJson } from "./integrity.ts";
 import type { PersistenceRepair, SessionRecoveryStatus } from "./reducer.ts";
 import type { TranscriptTerminalCheckpointChanges } from "./transcript-runtime.ts";
 import type { PersistedMachineCode } from "./integrity.ts";
+import type { TranscriptPresentationRecord } from "./presentation.ts";
 
 type TransitionEvent = Extract<NormalizedPersistenceEvent, { kind: "transition" }>;
+export type PresentationPersistenceEvent = Extract<
+  NormalizedPersistenceEvent,
+  { kind: "message" | "reasoning" | "activity" }
+>;
+export type { TranscriptPresentationRecord } from "./presentation.ts";
 
 export interface PersistenceStateRuntime {
   readonly checkpoint: AgentSessionCheckpoint;
@@ -19,6 +25,10 @@ export interface PersistenceStateRuntime {
   setCheckpointPublisher(publisher: (checkpoint: AgentSessionCheckpoint, history: readonly InternalSessionHistoryEntry[]) => Promise<void>): void;
   beginOperation(operationId: string, kind: OperationKind, ts?: number): Promise<void>;
   appendEvent(event: NormalizedPersistenceEvent, ts?: number): Promise<boolean>;
+  appendPresentationEvent(
+    event: PresentationPersistenceEvent,
+    ts?: number,
+  ): Promise<TranscriptPresentationRecord | null>;
   appendTransitionEvent(event: Omit<TransitionEvent, "event"> & { readonly event: Exclude<TransitionEvent["event"], "target_activated"> }, options?: { readonly durable?: boolean; readonly ts?: number }): Promise<void>;
   publishCheckpoint(changes: TranscriptTerminalCheckpointChanges, ts?: number): Promise<AgentSessionCheckpoint>;
   activateTransition(event: Omit<TransitionEvent, "event"> & { readonly event: "target_activated" }, ts?: number): Promise<AgentSessionCheckpoint>;
@@ -78,6 +88,7 @@ export class RegistryPersistenceRuntime implements PersistenceStateRuntime {
   }
 
   async appendEvent(): Promise<boolean> { return false; }
+  async appendPresentationEvent(): Promise<null> { return null; }
   async appendTransitionEvent(): Promise<void> {}
   async syncBeforeDispatch(): Promise<void> {}
 

@@ -3,6 +3,11 @@ import type { ActivityEvent, ToolActivity } from "../types.ts";
 import type { JsonObject, JsonValue } from "./checkpoint.ts";
 import type { NormalizedPersistenceEvent } from "./projection.ts";
 
+type NormalizedActivityPersistenceEvent = Extract<
+  NormalizedPersistenceEvent,
+  { kind: "reasoning" | "activity" }
+>;
+
 /**
  * Classify an already-folded live activity record into persistence security buckets.
  * This function deliberately does not serialize or hash values: capture projection gets
@@ -11,7 +16,7 @@ import type { NormalizedPersistenceEvent } from "./projection.ts";
 export function persistenceEventFromActivity(
   record: AggregatedRecord,
   operationId: string,
-): NormalizedPersistenceEvent {
+): NormalizedActivityPersistenceEvent {
   if (record.event.kind === "thinking") {
     return {
       kind: "reasoning",

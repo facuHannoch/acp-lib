@@ -20,6 +20,9 @@ import type {
   OperationKind,
   TranscriptCheckpointRecord,
   TranscriptOperationRecord,
+  TranscriptActivityRecord,
+  TranscriptMessageRecord,
+  TranscriptReasoningRecord,
 } from "./records.ts";
 import type { PersistedMachineCode } from "./integrity.ts";
 import {
@@ -29,7 +32,11 @@ import {
   type SessionLogWriterLock,
 } from "./session-log-writer.ts";
 import type { TranscriptHeaderRecord } from "./records.ts";
-import type { PersistenceStateRuntime } from "./state-runtime.ts";
+import type {
+  PersistenceStateRuntime,
+  PresentationPersistenceEvent,
+  TranscriptPresentationRecord,
+} from "./state-runtime.ts";
 
 export interface TranscriptTerminalCheckpointChanges {
   readonly model?: string | null;
@@ -90,6 +97,12 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     checkpoint: AgentSessionCheckpoint,
     history: readonly InternalSessionHistoryEntry[],
   ) => Promise<void>) | null = null;
+  private readonly presentationStates = new Map<string, {
+    readonly position: number;
+    readonly revision: number;
+    readonly kind: PresentationPersistenceEvent["kind"];
+    readonly operationId: string;
+  }>();
 
   private constructor(
     private readonly writer: FileSessionLogWriter<"transcript">,
@@ -275,6 +288,52 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     try {
       await this.writer.append(record);
       return true;
+    } catch (error) {
+      this.failure = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
+  }
+
+  async appendPresentationEvent(
+    event: PresentationPersistenceEvent,
+    ts = Date.now(),
+  ): Promise<TranscriptPresentationRecord | null> {
+    this.assertUsable();
+    if (!event.presentation) {
+      throw new TranscriptRuntimeStateError("presentation event requires identity and revision");
+    }
+    const existing = this.presentationStates.get(event.presentation.id);
+    if (existing && (existing.kind !== event.kind
+      || existing.operationId !== presentationOperationId(event)
+      || existing.revision >= event.presentation.revision)) {
+      throw new TranscriptRuntimeStateError(`invalid presentation revision for ${event.presentation.id}`);
+    }
+    const position = existing?.position ?? this.writer.nextSequence;
+    const positioned = {
+      ...event,
+      presentation: { ...event.presentation, position },
+    } as PresentationPersistenceEvent;
+    const record = projectTranscriptEvent(positioned, {
+      transcriptId: this.header.transcriptId,
+      generation: this.header.generation,
+      agentSessionId: this.header.agentSessionId,
+      seq: this.writer.nextSequence,
+      ts,
+      policy: this.header.effectivePolicy,
+    });
+    if (!record) return null;
+    if (!isTranscriptPresentationRecord(record)) {
+      throw new TranscriptRuntimeStateError("presentation event projected to a non-presentation record");
+    }
+    try {
+      await this.writer.append(record);
+      this.presentationStates.set(event.presentation.id, {
+        position,
+        revision: event.presentation.revision,
+        kind: event.kind,
+        operationId: presentationOperationId(event),
+      });
+      return structuredClone(record);
     } catch (error) {
       this.failure = error instanceof Error ? error : new Error(String(error));
       throw error;
@@ -585,6 +644,17 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
   private async publishManagedCheckpoint(): Promise<void> {
     await this.checkpointPublisher?.(this.checkpoint, this.internalSessionHistory);
   }
+}
+
+function isTranscriptPresentationRecord(
+  record: ReturnType<typeof projectTranscriptEvent>,
+): record is TranscriptMessageRecord | TranscriptReasoningRecord | TranscriptActivityRecord {
+  return record !== null
+    && (record.t === "message" || record.t === "reasoning" || record.t === "activity");
+}
+
+function presentationOperationId(event: PresentationPersistenceEvent): string {
+  return event.kind === "activity" ? event.activity.operationId : event.operationId;
 }
 
 function checkpointRecord(

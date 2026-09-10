@@ -214,8 +214,18 @@ const unsubscribe = session.subscribe((notification: AgentSessionNotification) =
   if (notification.event.kind === "metering_recorded") {
     persistBillingMetadata(notification.event.record);
   }
+
+  if (notification.event.kind === "presentation_recorded") {
+    upsertChatItem(notification.event.item.id, notification.event.item);
+  }
 });
 ```
+
+`onResponseChunk` and activity callbacks are provisional live streams. A
+`presentation_recorded` notification means the displayed item revision has been appended
+to the V2 transcript. Its ID, first position, revision, record sequence, and operation ID
+are exactly the values the presentation reader returns after a restart. Upsert by `id`
+and ignore revisions older than the one already rendered.
 
 Useful live properties include:
 
@@ -584,6 +594,24 @@ const records = await reader.readPage({
 });
 ```
 
+For an end-user chat timeline, prefer the folded presentation projection:
+
+```ts
+const presentation = await reader.readPresentationPage({ limit: 50 });
+
+for (const item of presentation.items) {
+  // message, reasoning, or activity; activity revisions are already folded.
+  renderOrReplace(item.id, item);
+}
+```
+
+`readPresentationPage()` preserves the order in which logical items first appeared. A
+tool that settles later keeps its original position, and distinct assistant messages stay
+separate around intervening activity. The raw `timeline` view intentionally remains
+available when the consumer needs every physical lifecycle revision rather than a chat
+projection. Presentation pagination scans the snapshot with bounded item memory and does
+not require the consumer to load the entire transcript.
+
 Each page is ordered oldest-first within that page, while the initial page selects the
 newest matching records. Navigate using `olderCursor` and `newerCursor`:
 
@@ -601,6 +629,10 @@ const older = timeline.olderCursor
 Navigation cursors are bound to the snapshot, view, and filter. Reusing one with another
 view or filter fails explicitly. Appends after the snapshot do not reorder the page being
 read, while rewrites before its boundary invalidate the cursor.
+
+Presentation navigation uses its own cursor type and the same stable snapshot semantics.
+V1 and older V2 records without presentation metadata remain readable through `readPage`
+but are not assigned invented interleaving in the folded V2 presentation view.
 
 Fold revisioned activities at the same snapshot:
 

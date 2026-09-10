@@ -248,8 +248,17 @@ export type {
   AuditProjectionContext,
   NormalizedActivityProjection,
   NormalizedPersistenceEvent,
+  NormalizedPresentationMetadata,
   TranscriptProjectionContext,
 } from "./persistence/projection.ts";
+export { presentationItemFromRecord } from "./persistence/presentation.ts";
+export type {
+  TranscriptPresentationActivity,
+  TranscriptPresentationItem,
+  TranscriptPresentationMessage,
+  TranscriptPresentationReasoning,
+  TranscriptPresentationRecord,
+} from "./persistence/presentation.ts";
 export {
   SessionLogTruncationError,
   truncateSessionLogRecord,
@@ -337,9 +346,12 @@ export type {
   PersistedActivityState,
   PersistedActivityStatePage,
   ReadTranscriptPageOptions,
+  ReadTranscriptPresentationPageOptions,
   TranscriptConversationItem,
   TranscriptCursor,
   TranscriptPage,
+  TranscriptPresentationCursor,
+  TranscriptPresentationPage,
   TranscriptSnapshotCursor,
   TranscriptTimelineItem,
   TranscriptReadableRecord,

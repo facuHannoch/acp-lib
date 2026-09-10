@@ -21,6 +21,7 @@ import type {
   TranscriptEnvelope,
   TranscriptLifecycleRecord,
   TranscriptTransitionRecord,
+  TranscriptPresentationMetadata,
   InternalSessionDescriptor,
   InternalSessionHistoryEntry,
 } from "./records.ts";
@@ -64,6 +65,13 @@ export interface NormalizedActivityProjection {
   readonly content?: JsonObject;
 }
 
+export interface NormalizedPresentationMetadata {
+  readonly id: string;
+  readonly revision: number;
+  /** Assigned by the transcript runtime on the first appended revision. */
+  readonly position?: number;
+}
+
 export type NormalizedPersistenceEvent =
   | {
       readonly kind: "operation";
@@ -80,6 +88,8 @@ export type NormalizedPersistenceEvent =
       readonly operationId: string;
       readonly role: "user" | "assistant";
       readonly text: string;
+      readonly providerMessageId?: string;
+      readonly presentation?: NormalizedPresentationMetadata;
       readonly structured?: { readonly version: 1; readonly messages: readonly { readonly messageId?: string; readonly text: string }[] };
       readonly status?: string;
       readonly stopReason?: string;
@@ -91,8 +101,13 @@ export type NormalizedPersistenceEvent =
       readonly operationId: string;
       readonly text: string;
       readonly status: "in_progress" | "completed";
+      readonly presentation?: NormalizedPresentationMetadata;
     }
-  | { readonly kind: "activity"; readonly activity: NormalizedActivityProjection }
+  | {
+      readonly kind: "activity";
+      readonly activity: NormalizedActivityProjection;
+      readonly presentation?: NormalizedPresentationMetadata;
+    }
   | {
       readonly kind: "configuration";
       readonly event: "announced" | "selected" | "restored" | "restore_failed" | "resolved";
@@ -167,17 +182,24 @@ export function projectTranscriptEvent(
       if (context.policy.messages === "none") return null;
       return {
         ...base, t: "message", operationId: event.operationId, role: event.role, text: event.text,
+        ...(event.presentation === undefined ? {} : { presentation: persistedPresentation(event.presentation) }),
+        ...(event.providerMessageId === undefined ? {} : { providerMessageId: event.providerMessageId }),
         ...(event.structured === undefined ? {} : { structured: structuredClone(event.structured) }),
         ...(event.status === undefined ? {} : { status: event.status }),
         ...(event.stopReason === undefined ? {} : { stopReason: event.stopReason }),
       };
     case "reasoning":
       if (context.policy.reasoning === "none") return null;
-      return { ...base, t: "reasoning", reasoningId: event.reasoningId, reasoningRevision: event.reasoningRevision, operationId: event.operationId, text: event.text, status: event.status };
+      return {
+        ...base, t: "reasoning", reasoningId: event.reasoningId,
+        reasoningRevision: event.reasoningRevision, operationId: event.operationId,
+        text: event.text, status: event.status,
+        ...(event.presentation === undefined ? {} : { presentation: persistedPresentation(event.presentation) }),
+      };
     case "activity": {
       const data = activityData(event.activity, context.policy.tools);
       if (!data) return null;
-      return activityRecord(base, event.activity, data);
+      return activityRecord(base, event.activity, data, event.presentation);
     }
     case "configuration": {
       const projected = configurationData(event, context.policy.configuration);
@@ -307,19 +329,32 @@ function activityData(
   return data;
 }
 
-function activityRecord(base: TranscriptEnvelope, activity: NormalizedActivityProjection, data: JsonObject): TranscriptActivityRecord;
-function activityRecord(base: AuditLogEnvelope, activity: NormalizedActivityProjection, data: JsonObject): AuditLogActivityRecord;
+function activityRecord(base: TranscriptEnvelope, activity: NormalizedActivityProjection, data: JsonObject, presentation?: NormalizedPresentationMetadata): TranscriptActivityRecord;
+function activityRecord(base: AuditLogEnvelope, activity: NormalizedActivityProjection, data: JsonObject, presentation?: NormalizedPresentationMetadata): AuditLogActivityRecord;
 function activityRecord(
   base: TranscriptEnvelope | AuditLogEnvelope,
   activity: NormalizedActivityProjection,
   data: JsonObject,
+  presentation?: NormalizedPresentationMetadata,
 ): TranscriptActivityRecord | AuditLogActivityRecord {
   return {
     ...base, t: "activity", activityId: activity.activityId,
     activityRevision: activity.activityRevision, operationId: activity.operationId,
     reason: activity.reason, kind: activity.kind,
     ...(activity.status === undefined ? {} : { status: activity.status }), data,
+    ...("transcriptId" in base && presentation !== undefined
+      ? { presentation: persistedPresentation(presentation) }
+      : {}),
   } as TranscriptActivityRecord | AuditLogActivityRecord;
+}
+
+function persistedPresentation(
+  value: NormalizedPresentationMetadata,
+): TranscriptPresentationMetadata {
+  if (value.position === undefined) {
+    throw new Error("transcript presentation position was not assigned");
+  }
+  return { id: value.id, position: value.position, revision: value.revision };
 }
 
 function configurationData(

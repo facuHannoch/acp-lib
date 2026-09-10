@@ -50,6 +50,30 @@ describe("session-log capture projection", () => {
     expect(projectAuditEvent(reasoning, auditContext({ ...DEFAULT_AUDIT_LOG_CAPTURE, reasoning: "text" }))?.t).toBe("reasoning");
   });
 
+  test("presentation identity stays transcript-only", () => {
+    const event: NormalizedPersistenceEvent = {
+      kind: "activity",
+      activity: {
+        activityId: "tool-1", activityRevision: 2, operationId: "op-1",
+        reason: "settled", kind: "tool", status: "completed",
+        metadata: { providerActivityId: "provider-tool-1" },
+      },
+      presentation: { id: "activity:op-1:tool-1", position: 4, revision: 2 },
+    };
+    const transcript = projectTranscriptEvent(event, {
+      ...transcriptContext(TRANSCRIPT_PRESETS.activity),
+      seq: 5,
+    });
+    expect(transcript).toMatchObject({
+      presentation: { id: "activity:op-1:tool-1", position: 4, revision: 2 },
+    });
+    validateTranscriptRecord(transcript);
+
+    const audit = projectAuditEvent(event, auditContext(DEFAULT_AUDIT_LOG_CAPTURE));
+    expect(audit).not.toHaveProperty("presentation");
+    validateAuditLogRecord(audit);
+  });
+
   test("transition continuation state remains structural while audit gets an explicit stripped descriptor", () => {
     const sessionConfiguration = {
       adapterId: "opencode", schemaDigest: null, announcedConfigIds: [], restorationTargets: [],

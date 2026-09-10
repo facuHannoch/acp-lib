@@ -24,11 +24,17 @@ import {
   type TranscriptTransitionRecord,
   type UnknownTranscriptRecord,
 } from "./records.ts";
+import {
+  presentationItemFromRecord,
+  type TranscriptPresentationItem,
+  type TranscriptPresentationRecord,
+} from "./presentation.ts";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
 const READ_CHUNK_BYTES = 64 * 1024;
 const HARD_MAX_RECORD_BYTES = 16_777_216;
+const HARD_MAX_CURSOR_BYTES = 16_384;
 const CURSOR_VERSION = 1;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -46,6 +52,7 @@ const TIMELINE_TYPES = new Set<TranscriptRecordType>([
 export type TranscriptView = "conversation" | "timeline" | "records";
 export type TranscriptCursor = string & { readonly __transcriptCursor: unique symbol };
 export type TranscriptSnapshotCursor = string & { readonly __transcriptSnapshotCursor: unique symbol };
+export type TranscriptPresentationCursor = string & { readonly __transcriptPresentationCursor: unique symbol };
 
 export interface ReadTranscriptPageOptions {
   readonly cursor?: TranscriptCursor;
@@ -66,6 +73,17 @@ export interface TranscriptPage<
   readonly hasNewer: boolean;
   readonly snapshot: S;
 }
+
+export interface ReadTranscriptPresentationPageOptions {
+  readonly cursor?: TranscriptPresentationCursor;
+  readonly limit?: number;
+}
+
+export type TranscriptPresentationPage = TranscriptPage<
+  TranscriptPresentationItem,
+  TranscriptPresentationCursor,
+  TranscriptSnapshotCursor
+>;
 
 export type TranscriptConversationItem = TranscriptMessageRecord | LegacyTranscriptMessageLine;
 export type TranscriptTimelineItem =
@@ -147,6 +165,13 @@ interface NavigationPayload extends SnapshotBoundary {
   readonly view: TranscriptView;
   readonly types: readonly TranscriptRecordType[];
   readonly filterProvided: boolean;
+}
+
+interface PresentationNavigationPayload extends SnapshotBoundary {
+  readonly k: "transcript_presentation";
+  readonly direction: "older" | "newer";
+  readonly boundaryPosition: number;
+  readonly boundaryId: string;
 }
 
 interface PhysicalRecord<T = TranscriptReadableRecord> {
@@ -237,6 +262,127 @@ export class TranscriptReader {
         newerCursor: hasNewer && last
           ? boundedCursor(
               encodeNavigation(snapshot.payload, "newer", last, view, filter),
+              snapshot.header.effectiveLimits.maxCursorBytes,
+            )
+          : null,
+        hasOlder,
+        hasNewer,
+        snapshot: snapshot.snapshotCursor,
+      });
+    } finally {
+      await snapshot.handle.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Read logical display items in their first-observed order. Revisions are folded by
+   * stable item id; a later activity/message revision never moves the original item.
+   * Legacy records and v2 records without presentation metadata are intentionally absent.
+   */
+  async readPresentationPage(
+    options: ReadTranscriptPresentationPageOptions = {},
+  ): Promise<TranscriptPresentationPage> {
+    const limit = validatedLimit(options.limit);
+    const navigation = options.cursor === undefined
+      ? null
+      : decodePresentationCursor(options.cursor, HARD_MAX_CURSOR_BYTES);
+    const snapshot = navigation
+      ? await this.openSnapshot(
+          encodeCursor(snapshotPayloadFrom(navigation)) as TranscriptSnapshotCursor,
+          "snapshot",
+        )
+      : await this.openSnapshot(undefined, "navigation");
+    try {
+      if (options.cursor !== undefined
+        && Buffer.byteLength(options.cursor, "utf8") > snapshot.header.effectiveLimits.maxCursorBytes) {
+        throw new TranscriptCursorInvalidError("presentation cursor exceeds the transcript's engraved limit");
+      }
+      if (navigation && (navigation.id !== snapshot.payload.id
+        || navigation.generation !== snapshot.payload.generation
+        || navigation.highSequence !== snapshot.payload.highSequence
+        || navigation.highOffset !== snapshot.payload.highOffset
+        || navigation.prefixDigest !== snapshot.payload.prefixDigest)) {
+        throw new TranscriptCursorInvalidError("presentation cursor snapshot changed");
+      }
+
+      // Keep only this page plus one look-ahead item. Every first revision has
+      // position === physical seq, so candidates can be selected while scanning and
+      // later revisions can update only the bounded candidate set.
+      const latest = new Map<string, TranscriptPresentationRecord>();
+      const candidateIds: string[] = [];
+      let boundaryFound = navigation === null;
+      let expectedSequence = 1;
+      for await (const physical of forwardLines(
+        snapshot.handle,
+        legacyBoundary(snapshot.header),
+        snapshot.payload.highOffset,
+        snapshot.header.effectiveLimits.maxRecordBytes,
+      )) {
+        const parsed = parsePhysical(physical, snapshot.header);
+        if (!parsed) continue;
+        if (parsed.sequence !== expectedSequence) {
+          throw new TranscriptReaderError("transcript sequence is not physically contiguous");
+        }
+        expectedSequence++;
+        if (!isPresentationRecord(parsed.item) || !parsed.item.presentation) continue;
+
+        const record = parsed.item;
+        const metadata = record.presentation!;
+        const previous = latest.get(metadata.id);
+        if (previous) {
+          validatePresentationRevision(previous, record);
+          latest.set(metadata.id, record);
+          continue;
+        }
+        if (metadata.position !== record.seq) {
+          // A revision for an item outside this bounded page needs no retained state.
+          continue;
+        }
+        if (navigation && metadata.position === navigation.boundaryPosition) {
+          if (identityTag(metadata.id) !== navigation.boundaryId) {
+            throw new TranscriptCursorInvalidError("presentation cursor boundary changed");
+          }
+          boundaryFound = true;
+        }
+        const eligible = !navigation
+          || (navigation.direction === "older"
+            ? metadata.position < navigation.boundaryPosition
+            : metadata.position > navigation.boundaryPosition);
+        if (!eligible) continue;
+        latest.set(metadata.id, record);
+        candidateIds.push(metadata.id);
+        if (candidateIds.length > limit + 1) {
+          const removeIndex = navigation?.direction === "newer"
+            ? candidateIds.length - 1
+            : 0;
+          const [removed] = candidateIds.splice(removeIndex, 1);
+          if (removed) latest.delete(removed);
+        }
+      }
+      if (!boundaryFound) {
+        throw new TranscriptCursorInvalidError("presentation cursor boundary is absent from its snapshot");
+      }
+
+      const hasExtra = candidateIds.length > limit;
+      const pageIds = navigation?.direction === "newer"
+        ? candidateIds.slice(0, limit)
+        : candidateIds.slice(Math.max(0, candidateIds.length - limit));
+      const selected = pageIds.map((id) => presentationItemFromRecord(latest.get(id)!)!);
+      const hasOlder = navigation?.direction === "newer" ? true : hasExtra;
+      const hasNewer = navigation?.direction === "older" ? true : navigation?.direction === "newer" ? hasExtra : false;
+      const first = selected[0];
+      const last = selected.at(-1);
+      return Object.freeze({
+        items: Object.freeze(selected.map((item) => structuredClone(item))),
+        olderCursor: hasOlder && first
+          ? boundedPresentationCursor(
+              encodePresentationCursor(snapshot.payload, "older", first),
+              snapshot.header.effectiveLimits.maxCursorBytes,
+            )
+          : null,
+        newerCursor: hasNewer && last
+          ? boundedPresentationCursor(
+              encodePresentationCursor(snapshot.payload, "newer", last),
               snapshot.header.effectiveLimits.maxCursorBytes,
             )
           : null,
@@ -760,6 +906,59 @@ function encodeNavigation(
   }) as TranscriptCursor;
 }
 
+function encodePresentationCursor(
+  snapshot: SnapshotPayload,
+  direction: "older" | "newer",
+  boundary: TranscriptPresentationItem,
+): TranscriptPresentationCursor {
+  const wire = [
+    1, "p", snapshot.id, snapshot.generation, snapshot.highSequence,
+    snapshot.highOffset, snapshot.prefixDigest,
+    direction === "older" ? "o" : "n", boundary.position, identityTag(boundary.id),
+  ];
+  return Buffer.from(JSON.stringify(wire), "utf8").toString("base64url") as TranscriptPresentationCursor;
+}
+
+function decodePresentationCursor(
+  cursor: string,
+  maxBytes: number,
+): PresentationNavigationPayload {
+  if (typeof cursor !== "string" || cursor.length === 0 || Buffer.byteLength(cursor, "utf8") > maxBytes) {
+    throw new TranscriptCursorInvalidError("presentation cursor is blank or exceeds its limit");
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(cursor)) {
+    throw new TranscriptCursorInvalidError("presentation cursor is not canonical base64url");
+  }
+  let value: unknown;
+  try {
+    const decoded = Buffer.from(cursor, "base64url");
+    if (decoded.toString("base64url") !== cursor) throw new Error("non-canonical base64url");
+    value = JSON.parse(decoded.toString("utf8"));
+  } catch (error) {
+    throw new TranscriptCursorInvalidError("presentation cursor is malformed", { cause: error });
+  }
+  if (!Array.isArray(value) || value.length !== 10
+    || value[0] !== CURSOR_VERSION || value[1] !== "p"
+    || !integrityTag(value[2]) || !positiveInteger(value[3])
+    || !positiveInteger(value[4]) || !positiveInteger(value[5])
+    || !integrityTag(value[6]) || (value[7] !== "o" && value[7] !== "n")
+    || !positiveInteger(value[8]) || !integrityTag(value[9])) {
+    throw new TranscriptCursorInvalidError("presentation cursor payload is invalid");
+  }
+  return {
+    v: 1,
+    k: "transcript_presentation",
+    id: value[2],
+    generation: value[3] as number,
+    highSequence: value[4] as number,
+    highOffset: value[5] as number,
+    prefixDigest: value[6],
+    direction: value[7] === "o" ? "older" : "newer",
+    boundaryPosition: value[8] as number,
+    boundaryId: value[9] as string,
+  };
+}
+
 function snapshotPayloadFrom(payload: SnapshotBoundary): SnapshotPayload {
   return {
     v: CURSOR_VERSION,
@@ -930,6 +1129,16 @@ function boundedCursor(cursor: TranscriptCursor, maxBytes: number): TranscriptCu
   return cursor;
 }
 
+function boundedPresentationCursor(
+  cursor: TranscriptPresentationCursor,
+  maxBytes: number,
+): TranscriptPresentationCursor {
+  if (Buffer.byteLength(cursor, "utf8") > maxBytes) {
+    throw new TranscriptReaderError("generated transcript presentation cursor exceeds the engraved limit");
+  }
+  return cursor;
+}
+
 function boundedSnapshotCursor(cursor: string, maxBytes: number): TranscriptSnapshotCursor {
   if (Buffer.byteLength(cursor, "utf8") > maxBytes) {
     throw new TranscriptReaderError("generated transcript snapshot cursor exceeds the engraved limit");
@@ -946,6 +1155,29 @@ function isActivityRecord(
 ): value is TranscriptActivityRecord {
   return "transcriptId" in value && value.v === 2
     && value.t === "activity" && "activityId" in value;
+}
+
+function isPresentationRecord(
+  value: TranscriptReadableRecord,
+): value is TranscriptPresentationRecord {
+  return "transcriptId" in value && value.v === 2
+    && (value.t === "message" || value.t === "reasoning" || value.t === "activity");
+}
+
+function validatePresentationRevision(
+  previous: TranscriptPresentationRecord,
+  record: TranscriptPresentationRecord,
+): void {
+  const metadata = record.presentation!;
+  if (previous.t !== record.t
+    || previous.operationId !== record.operationId
+    || previous.presentation!.position !== metadata.position
+    || previous.presentation!.revision >= metadata.revision) {
+    throw new TranscriptReaderError(`invalid presentation revision for ${metadata.id}`);
+  }
+  if (previous.t === "message" && record.t === "message" && previous.role !== record.role) {
+    throw new TranscriptReaderError(`presentation message role changed for ${metadata.id}`);
+  }
 }
 
 function legacyBoundary(header: TranscriptHeaderRecord): number {

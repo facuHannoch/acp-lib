@@ -159,11 +159,22 @@ export interface TranscriptStructuredMessagesV1 {
   readonly messages: readonly TranscriptResponseMessageV1[];
 }
 
+/** Non-authoritative ordering metadata for one logical display item. */
+export interface TranscriptPresentationMetadata {
+  readonly id: string;
+  /** Sequence of this item's first appended transcript revision. */
+  readonly position: number;
+  readonly revision: number;
+}
+
 export interface TranscriptMessageRecord extends TranscriptEnvelope {
   readonly t: "message";
   readonly operationId: string;
   readonly role: "user" | "assistant";
   readonly text: string;
+  readonly presentation?: TranscriptPresentationMetadata;
+  /** Provider-supplied ACP message identity, when one was announced. */
+  readonly providerMessageId?: string;
   readonly structured?: TranscriptStructuredMessagesV1;
   readonly status?: string;
   readonly stopReason?: string;
@@ -176,6 +187,7 @@ export interface TranscriptReasoningRecord extends TranscriptEnvelope {
   readonly operationId: string;
   readonly text: string;
   readonly status: "in_progress" | "completed";
+  readonly presentation?: TranscriptPresentationMetadata;
 }
 
 export interface TranscriptActivityRecord extends TranscriptEnvelope {
@@ -187,6 +199,7 @@ export interface TranscriptActivityRecord extends TranscriptEnvelope {
   readonly kind: string;
   readonly status?: string;
   readonly data: Readonly<Record<string, JsonValue>>;
+  readonly presentation?: TranscriptPresentationMetadata;
 }
 
 export interface TranscriptConfigurationRecord extends TranscriptEnvelope {
@@ -516,6 +529,8 @@ function validateRecognizedRecord(
       if (record.role !== "user" && record.role !== "assistant") fail("message.role is invalid");
       if (typeof record.text !== "string") fail("message.text must be a string");
       if (record.structured !== undefined) validateStructuredMessages(record.structured);
+      optionalNonblank(record.providerMessageId, "message.providerMessageId");
+      if (record.presentation !== undefined) validatePresentation(record.presentation, record.seq as number);
       optionalString(record.status, "message.status");
       optionalString(record.stopReason, "message.stopReason");
       return;
@@ -525,6 +540,13 @@ function validateRecognizedRecord(
       positiveInteger(record.reasoningRevision, "reasoningRevision");
       if (typeof record.text !== "string") fail("reasoning.text must be a string");
       oneOf(record.status, ["in_progress", "completed"], "reasoning.status");
+      if (sink === "audit" && record.presentation !== undefined) fail("presentation is invalid audit reasoning content");
+      if (record.presentation !== undefined) {
+        validatePresentation(record.presentation, record.seq as number);
+        if ((record.presentation as Record<string, unknown>).revision !== record.reasoningRevision) {
+          fail("reasoning presentation revision must equal reasoningRevision");
+        }
+      }
       return;
     case "activity":
       requiredOperationId(record);
@@ -533,6 +555,13 @@ function validateRecognizedRecord(
       oneOf(record.reason, ["announced", "input", "settled", "flushed", "snapshot"], "activity.reason");
       nonblank(record.kind, "activity.kind");
       if (!isRecord(record.data)) fail("activity.data must be an object");
+      if (sink === "audit" && record.presentation !== undefined) fail("presentation is invalid audit activity content");
+      if (record.presentation !== undefined) {
+        validatePresentation(record.presentation, record.seq as number);
+        if ((record.presentation as Record<string, unknown>).revision !== record.activityRevision) {
+          fail("activity presentation revision must equal activityRevision");
+        }
+      }
       return;
     case "configuration":
       oneOf(record.event, ["announced", "selected", "restored", "restore_failed", "resolved"], "configuration.event");
@@ -577,6 +606,16 @@ function validateRecognizedRecord(
       return;
   }
   fail("unreachable record type");
+}
+
+function validatePresentation(value: unknown, recordSequence: number): void {
+  if (!isRecord(value)) fail("presentation must be an object");
+  nonblank(value.id, "presentation.id");
+  positiveInteger(value.position, "presentation.position");
+  positiveInteger(value.revision, "presentation.revision");
+  if ((value.position as number) > recordSequence) {
+    fail("presentation.position cannot follow its record sequence");
+  }
 }
 
 function validateHeader(record: Record<string, unknown>, sink: "transcript" | "audit"): void {

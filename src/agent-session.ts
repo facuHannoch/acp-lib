@@ -53,6 +53,7 @@ import type {
   Attachment,
   PromptHandlers,
   PromptResult,
+  ResponseMessage,
   SessionListEntry,
   TokenUsage,
   WireEntry,
@@ -79,9 +80,17 @@ import type {
   OperationKind,
 } from "./persistence/records.ts";
 import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
-import { RegistryPersistenceRuntime, type PersistenceStateRuntime } from "./persistence/state-runtime.ts";
+import {
+  RegistryPersistenceRuntime,
+  type PersistenceStateRuntime,
+  type PresentationPersistenceEvent,
+} from "./persistence/state-runtime.ts";
 import { AuditPersistenceRuntime, AuditedPersistenceRuntime, type AuditLogIdentity } from "./persistence/audit-runtime.ts";
 import { TranscriptReader } from "./persistence/transcript-reader.ts";
+import {
+  presentationItemFromRecord,
+  type TranscriptPresentationItem,
+} from "./persistence/presentation.ts";
 import {
   snapshotSessionConfiguration,
   snapshotSessionConfigurationAfterSelection,
@@ -336,6 +345,8 @@ export type AgentSessionEvent =
   | { kind: "turn_started"; turnId: string }
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
   | { kind: "turn_failed"; turnId: string; error: string }
+  /** A display item revision was appended to the transcript and can be joined to reloads by id. */
+  | { kind: "presentation_recorded"; item: TranscriptPresentationItem }
   /** The active ACP harness changed the slash commands it advertises. */
   | { kind: "internal_session_commands_changed"; commands: readonly InternalSessionCommand[] }
   | {
@@ -599,7 +610,8 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly creationId: string;
   private v2Transcript: PersistenceStateRuntime | null = null;
   private v2TranscriptPath: string | null = null;
-  private v2ActivityWrite: Promise<void> = Promise.resolve();
+  /** One display queue preserves the live message/activity interleaving seen by consumers. */
+  private v2PresentationWrite: Promise<void> = Promise.resolve();
   private readonly transcriptActivity: boolean;
   private readonly activityKinds: Set<string>;
   private readonly activityRawOutput: boolean;
@@ -2504,13 +2516,16 @@ export class AgentSession implements AgentClient, Bridgeable {
         operation = await this.openMeteredOperation(item);
         await this.v2Transcript.beginOperation(item.turnId, persistenceOperationKind(item.operationKind));
         transcriptStarted = true;
-        await this.v2Transcript.appendEvent({
+        const userRecord = await this.v2Transcript.appendPresentationEvent({
           kind: "message",
           operationId: item.turnId,
           role: "user",
           text: item.text,
+          status: "completed",
+          presentation: { id: `message:${item.turnId}:user`, revision: 1 },
         });
         await this.v2Transcript.syncBeforeDispatch();
+        this.emitPresentationRecord(userRecord);
       } catch (error) {
         this.endTurn(item.handlers);
         if (transcriptStarted) {
@@ -2533,6 +2548,51 @@ export class AgentSession implements AgentClient, Bridgeable {
 
     const chunks: string[] = [];
     const response = new ResponseAccumulator();
+    let assistantOrdinal = 0;
+    let assistantMessage: {
+      readonly id: string;
+      providerMessageId?: string;
+      text: string;
+      revision: number;
+      dirty: boolean;
+    } | null = null;
+    const beginAssistantMessage = (providerMessageId?: string) => {
+      assistantOrdinal++;
+      assistantMessage = {
+        id: `message:${item.turnId}:assistant:${assistantOrdinal}`,
+        ...(providerMessageId === undefined ? {} : { providerMessageId }),
+        text: "",
+        revision: 0,
+        dirty: false,
+      };
+      return assistantMessage;
+    };
+    const flushAssistantMessage = (
+      status: "in_progress" | "completed" | "cancelled" | "error",
+      stopReason?: string,
+      force = false,
+    ) => {
+      if (!this.v2Transcript || !assistantMessage || (!assistantMessage.dirty && !force)) return;
+      assistantMessage.revision++;
+      assistantMessage.dirty = false;
+      const message = assistantMessage;
+      this.queueV2Presentation({
+        kind: "message",
+        operationId: item.turnId,
+        role: "assistant",
+        text: message.text,
+        ...(message.providerMessageId === undefined ? {} : { providerMessageId: message.providerMessageId }),
+        structured: {
+          version: 1,
+          messages: [message.providerMessageId === undefined
+            ? { text: message.text }
+            : { messageId: message.providerMessageId, text: message.text }],
+        },
+        status,
+        ...(stopReason === undefined ? {} : { stopReason }),
+        presentation: { id: message.id, revision: message.revision },
+      });
+    };
     const wrappedHandlers: PromptHandlers = {
       ...item.handlers,
       // Fired from here, from the one aggregator this session owns — nothing below needs
@@ -2543,10 +2603,33 @@ export class AgentSession implements AgentClient, Bridgeable {
         item.handlers?.onChunk?.(chunk);
       },
       onResponseChunk: (chunk) => {
+        const settledReasoning = this.aggregator.closeReasoningBoundary();
+        if (settledReasoning) {
+          if (this.transcriptActivity || this.v2Transcript) this.writeActivity(settledReasoning);
+          item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
+        }
         response.append(chunk);
+        if (this.v2Transcript) {
+          if (chunk.startsMessage) {
+            flushAssistantMessage("completed", undefined, assistantMessage !== null);
+            beginAssistantMessage(chunk.messageId);
+          }
+          const current = assistantMessage ?? beginAssistantMessage(chunk.messageId);
+          if (current.providerMessageId === undefined && chunk.messageId !== undefined) {
+            current.providerMessageId = chunk.messageId;
+          }
+          current.text += chunk.text;
+          current.dirty = true;
+          // Persist the first usable snapshot. Later token chunks remain in memory until
+          // an interleaving item, a new message, or the operation boundary.
+          if (current.revision === 0) flushAssistantMessage("in_progress");
+        }
         item.handlers?.onResponseChunk?.(chunk);
       },
       onActivity: (event) => {
+        // The message snapshot must enter the shared queue before an activity first seen
+        // after it. Later activity revisions keep their original presentation position.
+        flushAssistantMessage("in_progress");
         const result = this.aggregator.apply(event);
         if (this.transcriptActivity || this.v2Transcript) {
           for (const record of result.emitted) this.writeActivity(record);
@@ -2560,6 +2643,18 @@ export class AgentSession implements AgentClient, Bridgeable {
     let transcriptClosed = false;
     try {
       const res = await this.controller.prompt(item.text, wrappedHandlers, item.attachments);
+      if (this.v2Transcript) {
+        if (assistantOrdinal === 0) {
+          for (const message of res.messages) {
+            const current = beginAssistantMessage(message.messageId);
+            current.text = message.text;
+            current.dirty = true;
+            flushAssistantMessage(res.status, res.stopReason, true);
+          }
+        } else {
+          flushAssistantMessage(res.status, res.stopReason, true);
+        }
+      }
       // Before the assistant msg: `msg` delimits a turn, so anything still open has to
       // land inside those fences.
       this.endTurn(item.handlers);
@@ -2580,16 +2675,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       closed = record;
       await this.persist();
       if (this.v2Transcript) {
-        await this.drainV2Activity();
-        await this.v2Transcript.appendEvent({
-          kind: "message",
-          operationId: item.turnId,
-          role: "assistant",
-          text: res.text,
-          structured: { version: 1, messages: res.messages },
-          stopReason: res.stopReason,
-          status: res.status,
-        });
+        await this.drainV2Presentation();
         await this.finishV2Prompt(res.status, record);
         transcriptClosed = true;
       } else {
@@ -2612,24 +2698,23 @@ export class AgentSession implements AgentClient, Bridgeable {
       this.endTurn(item.handlers);
       const structured = response.snapshot();
       const text = structured.length > 0 ? response.text : chunks.join("");
-      const messages = structured.length > 0
+      const messages: readonly ResponseMessage[] = structured.length > 0
         ? structured
         : text
           ? Object.freeze([{ text }])
           : Object.freeze([]);
       if (this.v2Transcript) {
-        await this.drainV2Activity().catch(() => undefined);
-        if (!transcriptClosed) {
-          await this.v2Transcript.appendEvent({
-            kind: "message",
-            operationId: item.turnId,
-            role: "assistant",
-            text,
-            structured: { version: 1, messages },
-            stopReason: "error",
-            status: "error",
-          }).catch(() => undefined);
+        if (!transcriptClosed && assistantOrdinal === 0 && messages.length > 0) {
+          for (const message of messages) {
+            const current = beginAssistantMessage(message.messageId);
+            current.text = message.text;
+            current.dirty = true;
+            flushAssistantMessage("error", "error", true);
+          }
+        } else if (!transcriptClosed) {
+          flushAssistantMessage("error", "error", true);
         }
+        await this.drainV2Presentation().catch(() => undefined);
       } else {
         await this.appendTranscript({
           v: 1,
@@ -2957,8 +3042,13 @@ export class AgentSession implements AgentClient, Bridgeable {
       const operationId = this.v2Transcript.checkpoint.boundary.status === "in_flight"
         ? this.v2Transcript.checkpoint.boundary.interruptedOperationId
         : record.recordId.split(":", 1)[0] ?? record.recordId;
-      this.v2ActivityWrite = this.v2ActivityWrite.then(async () => {
-        await this.v2Transcript!.appendEvent(persistenceEventFromActivity(record, operationId));
+      const projected = persistenceEventFromActivity(record, operationId);
+      this.queueV2Presentation({
+        ...projected,
+        presentation: {
+          id: `${projected.kind}:${operationId}:${record.recordId}`,
+          revision: record.seq,
+        },
       });
       return;
     }
@@ -2967,8 +3057,24 @@ export class AgentSession implements AgentClient, Bridgeable {
     void this.appendTranscript(this.toActivityLine(record));
   }
 
-  private async drainV2Activity(): Promise<void> {
-    await this.v2ActivityWrite;
+  private queueV2Presentation(event: PresentationPersistenceEvent): void {
+    this.v2PresentationWrite = this.v2PresentationWrite.then(async () => {
+      if (!this.v2Transcript) return;
+      const record = await this.v2Transcript.appendPresentationEvent(event);
+      this.emitPresentationRecord(record);
+    });
+  }
+
+  private emitPresentationRecord(
+    record: Awaited<ReturnType<PersistenceStateRuntime["appendPresentationEvent"]>>,
+  ): void {
+    if (!record) return;
+    const item = presentationItemFromRecord(record);
+    if (item) this.emit({ kind: "presentation_recorded", item });
+  }
+
+  private async drainV2Presentation(): Promise<void> {
+    await this.v2PresentationWrite;
   }
 
   private toActivityLine(record: AggregatedRecord): TranscriptActivityLine {
@@ -3036,7 +3142,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.phase = "stopped";
     this.emitStateIfChanged();
     await this.controller.stop();
-    await this.drainV2Activity().catch(() => undefined);
+    await this.drainV2Presentation().catch(() => undefined);
     await this.v2Transcript?.close();
   }
 

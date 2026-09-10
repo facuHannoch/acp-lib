@@ -20,6 +20,52 @@ afterEach(async () => {
 });
 
 describe("v2 transcript pagination", () => {
+  test("folds presentation revisions without moving their first-observed position", async () => {
+    const path = await fixtureTranscript();
+    await appendRecord(path, presentationMessage(13, "message-a", 13, 1, "A", "in_progress"));
+    await appendRecord(path, presentationActivity(14, "tool-c", 14, 1, "announced", "pending"));
+    await appendRecord(path, presentationActivity(15, "tool-c", 14, 2, "settled", "completed"));
+    await appendRecord(path, presentationMessage(16, "message-b", 16, 1, "B", "completed"));
+    await appendRecord(path, presentationMessage(17, "message-a", 13, 2, "A done", "completed"));
+
+    const reader = new TranscriptReader(path);
+    const newest = await reader.readPresentationPage({ limit: 2 });
+    expect(newest.items.map((item) => [item.id, item.position, item.revision, item.recordSequence]))
+      .toEqual([
+        ["tool-c", 14, 2, 15],
+        ["message-b", 16, 1, 16],
+      ]);
+    expect(newest.items[0]).toMatchObject({ kind: "activity", status: "completed" });
+    expect(newest.hasOlder).toBe(true);
+    expect(newest.hasNewer).toBe(false);
+
+    const older = await reader.readPresentationPage({ limit: 2, cursor: newest.olderCursor! });
+    expect(older.items).toEqual([
+      expect.objectContaining({ id: "message-a", position: 13, revision: 2, text: "A done" }),
+    ]);
+    expect(older.hasNewer).toBe(true);
+    const forward = await reader.readPresentationPage({ limit: 2, cursor: older.newerCursor! });
+    expect(forward.items.map((item) => item.id)).toEqual(["tool-c", "message-b"]);
+    expect(forward.snapshot).toBe(newest.snapshot);
+  });
+
+  test("presentation cursors remain on their snapshot and reject another lineage", async () => {
+    const path = await fixtureTranscript();
+    await appendRecord(path, presentationMessage(13, "message-a", 13, 1, "A", "completed"));
+    await appendRecord(path, presentationMessage(14, "message-b", 14, 1, "B", "completed"));
+    const reader = new TranscriptReader(path);
+    const first = await reader.readPresentationPage({ limit: 1 });
+    await appendRecord(path, presentationMessage(15, "message-c", 15, 1, "C", "completed"));
+    const oldSnapshot = await reader.readPresentationPage({ limit: 1, cursor: first.olderCursor! });
+    expect(oldSnapshot.items.map((item) => item.id)).toEqual(["message-a"]);
+    expect(oldSnapshot.snapshot).toBe(first.snapshot);
+
+    const other = await fixtureTranscript();
+    await writeFile(other, (await readFile(other, "utf8")).replaceAll("transcript-1", "transcript-2"));
+    await expect(new TranscriptReader(other).readPresentationPage({ cursor: first.olderCursor! }))
+      .rejects.toBeInstanceOf(TranscriptCursorInvalidError);
+  });
+
   test("returns the newest projected items oldest-first and navigates without overlap", async () => {
     const path = await fixtureTranscript();
     const reader = new TranscriptReader(path);
@@ -248,4 +294,35 @@ function envelope(seq: number) {
     seq,
     ts: TS + seq,
   };
+}
+
+function presentationMessage(
+  seq: number,
+  id: string,
+  position: number,
+  revision: number,
+  text: string,
+  status: string,
+) {
+  return {
+    ...message(seq, "assistant", text),
+    operationId: "op-presentation",
+    status,
+    presentation: { id, position, revision },
+  } as const;
+}
+
+function presentationActivity(
+  seq: number,
+  id: string,
+  position: number,
+  revision: number,
+  reason: "announced" | "settled",
+  status: string,
+) {
+  return {
+    ...activity(seq, id, revision, reason, status),
+    operationId: "op-presentation",
+    presentation: { id, position, revision },
+  } as const;
 }

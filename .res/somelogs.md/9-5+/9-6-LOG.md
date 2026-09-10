@@ -2399,3 +2399,43 @@ Focused tests cover one message, multiple messages, token chunks within a messag
 authored leading/trailing whitespace, and empty entries.
 
 Verification: focused response tests, `tsc --noEmit`, and `git diff --check` pass.
+
+### Part 25 — authoritative V2 presentation ordering
+
+Added a display-only presentation identity to V2 message, reasoning, and activity
+records. Each logical item receives a stable ID, a first-observed transcript position,
+and a monotonic revision; the physical transcript sequence remains the revision's commit
+sequence. Presentation fields are stripped from the independent audit projection and do
+not participate in checkpoint reduction, continuation recovery, registry authority, or
+metering.
+
+Regular prompts now use one ordered presentation queue for user messages, assistant
+message snapshots, reasoning boundaries, and tool/activity revisions. Assistant messages
+are persisted individually instead of as one flattened terminal record. The writer
+records the first usable snapshot, another before interleaved activity or a new message,
+and the terminal snapshot, avoiding per-token JSONL volume. Long-running tools retain
+their announcement position when later input or terminal revisions arrive. A response
+boundary also closes the current reasoning block without falsely closing an active tool.
+
+Added the `presentation_recorded` AgentSession notification. Its item is produced from the
+exact appended record and therefore carries the same ID, position, revision, physical
+record sequence, operation ID, transcript identity, and generation returned after reload.
+Consumers can combine provisional stream callbacks with persisted-history upserts without
+inventing IDs or byte-offset anchors.
+
+Added `TranscriptReader.readPresentationPage()`, with its own opaque navigation cursor
+and the existing transcript snapshot identity. It folds logical revisions, orders items
+by first appearance, excludes continuation/control machinery, remains append-stable while
+paging, rejects wrong lineages or changed boundaries, and retains only the requested page
+plus one candidate in memory while scanning. Existing conversation, timeline, records,
+and activity-state readers remain unchanged. V1 and older V2 records remain readable via
+those physical projections; the new reader does not invent historical interleaving they
+never recorded.
+
+Updated the persistence specification and consumer guide with the schema, ordering,
+stream-to-record lifecycle, pagination contract, and consumer upsert pattern. Added unit
+coverage for projection security, response/reasoning boundaries, revision folding,
+snapshot pagination, lineage rejection, and a real ACP integration proving
+`message A -> tool -> message B` has identical final live and reloaded identities.
+
+Verification: `tsc --noEmit`, 682/682 repository tests, and `git diff --check` pass.

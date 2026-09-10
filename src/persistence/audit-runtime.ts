@@ -3,7 +3,7 @@ import { projectAuditEvent, type NormalizedPersistenceEvent } from "./projection
 import type { InternalSessionHistoryEntry, OperationAbortReason, OperationKind, AuditLogHeaderRecord } from "./records.ts";
 import type { PersistedMachineCode } from "./integrity.ts";
 import type { PersistenceRepair } from "./reducer.ts";
-import type { PersistenceStateRuntime } from "./state-runtime.ts";
+import type { PersistenceStateRuntime, PresentationPersistenceEvent } from "./state-runtime.ts";
 import type { TranscriptTerminalCheckpointChanges } from "./transcript-runtime.ts";
 import { FileSessionLogWriter, type SessionLogWriterLock } from "./session-log-writer.ts";
 
@@ -124,6 +124,14 @@ export class AuditedPersistenceRuntime implements PersistenceStateRuntime {
       this.audit.append(event, false, ts),
     ]);
     return primary || audit;
+  }
+
+  async appendPresentationEvent(event: PresentationPersistenceEvent, ts = Date.now()) {
+    const [primary] = await Promise.all([
+      this.primary.appendPresentationEvent(event, ts),
+      this.audit.append(event, false, ts),
+    ]);
+    return primary;
   }
 
   async appendTransitionEvent(event: Omit<TransitionEvent, "event"> & { readonly event: Exclude<TransitionEvent["event"], "target_activated"> }, options: { readonly durable?: boolean; readonly ts?: number } = {}): Promise<void> {

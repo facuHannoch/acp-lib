@@ -195,6 +195,17 @@ describe("ActivityAggregator — thinking", () => {
     expect(pairs).toEqual(["think-1:settled"]);
   });
 
+  test("an assistant-message boundary closes reasoning without closing a long-running tool", () => {
+    const agg = new ActivityAggregator();
+    agg.startTurn("turn");
+    agg.apply(tool());
+    agg.apply(think("reasoning"));
+    const closed = agg.closeReasoningBoundary();
+    expect(closed).toMatchObject({ reason: "settled", event: { kind: "thinking", text: "reasoning" } });
+    expect(agg.flush().map((record) => [record.recordId, record.reason]))
+      .toEqual([["t1", "flushed"]]);
+  });
+
   test("streams incrementally — deltas are O(text), not O(text²)", () => {
     const agg = new ActivityAggregator();
     const chunk = "0123456789";

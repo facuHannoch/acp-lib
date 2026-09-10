@@ -236,6 +236,14 @@ export class ActivityAggregator {
   }
 
   /**
+   * Close only the current reasoning block when another presentation item begins.
+   * Long-running tools remain open: later revisions keep the tool's first position.
+   */
+  closeReasoningBoundary(): AggregatedRecord | null {
+    return this.closeThinking();
+  }
+
+  /**
    * Full state of the turn so far. A subscriber that joins mid-turn takes this, then
    * discards any frame whose `seq` is not greater than the snapshot's — otherwise a
    * thinking delta already folded into the snapshot would be applied twice.

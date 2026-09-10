@@ -1,10 +1,10 @@
 {
   "name": "@qlairoslabs/acp-client",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "description": "Embeddable Agent Client Protocol (ACP) client library with degraded PTY fallback.",
   "type": "module",
   "module": "src/index.ts",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "author": "Facundo Hannoch <ffacu594@gmail.com>",
   "repository": {
     "type": "git",

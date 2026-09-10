@@ -141,6 +141,7 @@ describe("AgentSession transcript config", () => {
       "operation",
       "message",
       "message",
+      "message",
       "metering_reference",
       "operation",
       "checkpoint",
