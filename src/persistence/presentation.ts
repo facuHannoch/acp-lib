@@ -19,6 +19,8 @@ interface TranscriptPresentationItemBase {
   readonly revision: number;
   /** Physical transcript sequence containing this revision. */
   readonly recordSequence: number;
+  /** Unix epoch milliseconds from the persisted record envelope. */
+  readonly timestamp: number;
   readonly operationId: string;
   readonly transcriptId: string;
   readonly generation: number;
@@ -64,6 +66,7 @@ export function presentationItemFromRecord(
     position: presentation.position,
     revision: presentation.revision,
     recordSequence: record.seq,
+    timestamp: record.ts,
     operationId: record.operationId,
     transcriptId: record.transcriptId,
     generation: record.generation,
