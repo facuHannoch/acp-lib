@@ -48,6 +48,7 @@ import {
   AuditLogReader,
   SessionManager,
   TranscriptReader,
+  formatResponseMessages,
   type Adapter,
   type AgentSessionNotification,
   type PromptHandlers,
@@ -189,13 +190,23 @@ const handlers: PromptHandlers = {
 const result = await session.prompt("Inspect the failing tests.", handlers);
 
 console.log(result.status);
-console.log(result.text);
+for (const message of result.messages) {
+  renderAssistantMessage(message);
+}
+// Only when this consumer explicitly needs one string:
+console.log(formatResponseMessages(result.messages, "\n\n"));
 console.log(result.operationId);
 console.log(result.metering);
 ```
 
 Prompts, configuration changes, handoffs, and other mutations are serialized by each
 `AgentSession`. Multiple different `AgentSession` objects may operate concurrently.
+
+`result.messages` is the canonical response. A prompt operation may contain several
+distinct assistant messages; render them separately when the UI supports that. The
+deprecated `result.text` property is only a compatibility projection and inserts a blank
+line between messages. `formatResponseMessages()` makes any deliberate flattening policy
+consumer-owned.
 
 ## Observe state, context, and usage
 

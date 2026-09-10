@@ -75,7 +75,12 @@ see the [consumer guide](./CONSUMER_GUIDE.md).
 ### One-shot prompt
 
 ```ts
-import { AgentController, ADAPTERS, createConsoleLogger } from "@qlairoslabs/acp-client";
+import {
+  AgentController,
+  ADAPTERS,
+  createConsoleLogger,
+  formatResponseMessages,
+} from "@qlairoslabs/acp-client";
 
 const agent = new AgentController({
   adapter: ADAPTERS.codex,
@@ -89,7 +94,11 @@ const { sessionId, resumed } = await agent.start();
 console.log(resumed ? "resumed" : "new", sessionId);
 
 const result = await agent.prompt("Refactor utils.ts for readability.");
-console.log(result.text, result.stopReason, result.usage);
+for (const message of result.messages) console.log(message.text);
+console.log(result.stopReason, result.usage);
+
+// If this application specifically needs a single string:
+const displayText = formatResponseMessages(result.messages, "\n\n");
 
 await agent.stop();
 ```

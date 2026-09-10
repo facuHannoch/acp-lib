@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { joinResponseMessages, ResponseAccumulator } from "../src/response.ts";
+import {
+  formatResponseMessages,
+  joinResponseMessages,
+  ResponseAccumulator,
+} from "../src/response.ts";
 
 describe("response text projection", () => {
   test("one message remains byte-for-byte unchanged", () => {
@@ -22,5 +26,12 @@ describe("response text projection", () => {
   test("empty entries participate in the documented literal join", () => {
     expect(joinResponseMessages([{ text: "first" }, { text: "" }, { text: "third" }]))
       .toBe("first\n\n\n\nthird");
+  });
+
+  test("consumer formatting makes the flattening policy explicit", () => {
+    const messages = [{ text: "first" }, { text: "second" }];
+    expect(formatResponseMessages(messages, " | ")).toBe("first | second");
+    expect(formatResponseMessages(messages, "")).toBe("firstsecond");
+    expect(() => formatResponseMessages(messages, null as never)).toThrow(TypeError);
   });
 });

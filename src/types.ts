@@ -58,9 +58,13 @@ export type Usage = TokenUsage;
  * call RESOLVES (not rejects) with whatever partial text arrived.
  */
 export interface PromptResult {
-  /** Combined display projection of `messages`, separated by one blank line. */
+  /**
+   * Legacy lossy projection of `messages`, separated by one blank line.
+   * @deprecated Use `messages`, preserving each logical ACP response message. Consumers
+   * that require one string can call `formatResponseMessages` with their own separator.
+   */
   text: string;
-  /** Assistant messages in protocol order, preserving ACP `messageId` boundaries. */
+  /** Canonical assistant result in protocol order, preserving ACP message boundaries. */
   messages: readonly ResponseMessage[];
   /** Raw protocol stop reason: "end_turn" | "cancelled" | "max_tokens" | ... */
   stopReason: string;

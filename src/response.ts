@@ -8,13 +8,28 @@ export interface IncomingResponseChunk {
 }
 
 /**
+ * Explicitly flatten structured response messages using a separator chosen by the
+ * consumer. This is a display conversion; it does not alter the messages themselves.
+ */
+export function formatResponseMessages(
+  messages: readonly ResponseMessage[],
+  separator: string,
+): string {
+  if (typeof separator !== "string") throw new TypeError("response message separator must be a string");
+  return messages.map((message) => message.text).join(separator);
+}
+
+/**
  * Produce the legacy combined-text view without erasing protocol message boundaries.
  * Message text is preserved verbatim; the only inserted content is the boundary between
  * entries. Empty entries therefore participate in the literal join rather than being
  * silently removed.
+ *
+ * @deprecated Use the canonical message array, or call `formatResponseMessages` with an
+ * explicit consumer-selected separator.
  */
 export function joinResponseMessages(messages: readonly ResponseMessage[]): string {
-  return messages.map((message) => message.text).join("\n\n");
+  return formatResponseMessages(messages, "\n\n");
 }
 
 /**
@@ -54,6 +69,7 @@ export class ResponseAccumulator {
       : { text: chunk.text, messageId: chunk.messageId, startsMessage };
   }
 
+  /** @deprecated Prefer `snapshot()` and preserve the distinct response messages. */
   get text(): string {
     return joinResponseMessages(this.entries);
   }

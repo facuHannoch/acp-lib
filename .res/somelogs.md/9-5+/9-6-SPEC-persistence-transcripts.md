@@ -2221,10 +2221,12 @@ fully recorded. The operation itself may have succeeded, failed, or been cancell
 Capture policy may remove message content entirely. Structural operation/checkpoint
 records remain valid in that case.
 
-Distinct ACP assistant messages remain distinct records. `PromptResult.text` is only a
-convenience projection and inserts one literal blank line between message texts; it does
-not normalize the text inside either message. Streaming token chunks within one logical
-message do not receive separators.
+Distinct ACP assistant messages remain distinct records and `PromptResult.messages` is
+the canonical result. `PromptResult.text` is a deprecated, lossy compatibility projection
+which inserts one literal blank line between message texts; it does not normalize the text
+inside either message. Consumers that intentionally need one string use
+`formatResponseMessages(messages, separator)` and choose the separator themselves.
+Streaming token chunks within one logical message do not receive separators.
 
 Presentation metadata is display-only and never participates in checkpoint reduction,
 continuation recovery, or registry authority. The transcript projection may retain it;

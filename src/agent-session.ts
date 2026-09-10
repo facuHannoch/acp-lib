@@ -19,7 +19,7 @@ import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
-import { ResponseAccumulator } from "./response.ts";
+import { formatResponseMessages, ResponseAccumulator } from "./response.ts";
 import { MeteringEngine, type OpenOperation } from "./metering/engine.ts";
 import {
   AgentSessionHandoffError,
@@ -1892,7 +1892,9 @@ export class AgentSession implements AgentClient, Bridgeable {
         if (generated.status !== "completed" || !generated.text.trim()) {
           throw new Error(`handoff summary generation ${generated.status}`);
         }
-        summary = generated.text.trim();
+        // Handoff requires one seed string, so this internal boundary policy is explicit;
+        // it is not treated as the canonical shape of the provider response.
+        summary = formatResponseMessages(generated.messages, "\n\n").trim();
       }
 
       const created = await this.controller.newSession();
@@ -2886,7 +2888,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           kind: "message",
           operationId,
           role: "assistant",
-          text: result.text,
+          text: formatResponseMessages(result.messages, "\n\n"),
           structured: { version: 1, messages: result.messages },
           stopReason: result.stopReason,
           status: result.status,

@@ -2439,3 +2439,23 @@ snapshot pagination, lineage rejection, and a real ACP integration proving
 `message A -> tool -> message B` has identical final live and reloaded identities.
 
 Verification: `tsc --noEmit`, 682/682 repository tests, and `git diff --check` pass.
+
+### Part 26 — canonical structured responses
+
+Made the already-preserved `PromptResult.messages` array the explicitly canonical result
+of an ACP prompt. Marked the scalar `PromptResult.text`, the accumulator text getter, and
+the fixed blank-line join helper as deprecated compatibility projections. This preserves
+0.7.x runtime behavior without claiming that a hardcoded newline is part of ACP response
+semantics.
+
+Added and exported `formatResponseMessages(messages, separator)`. Consumers that truly
+need one string must now make their separator policy explicit; chat-oriented consumers
+can render each response message independently. Internal handoff summary generation also
+uses the helper explicitly because that operation genuinely requires one seed string.
+
+Updated the README, consumer guide, and persistence specification to lead with structured
+messages and describe flattening as a lossy display conversion. Focused tests cover custom
+and empty separators, invalid separator input, and the retained legacy projection.
+
+Verification: focused response-boundary tests, affected ACP handoff/metering/presentation
+integration tests, `tsc --noEmit`, all 683 repository tests, and `git diff --check` pass.
