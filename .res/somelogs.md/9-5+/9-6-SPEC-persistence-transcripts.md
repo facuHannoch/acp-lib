@@ -452,8 +452,34 @@ const info = await sessions.getAgentSessionInfo(created.agentSessionId);
 const loaded = await sessions.loadAgentSession(created.agentSessionId, {
   adapterId: info.adapterId,
   adapter: resolveAdapter(info.adapterId),
+  onOpenProgress(event) {
+    projectManagedOpenProgress(event);
+  },
 });
 ```
+
+Managed creation and loading accept the same ephemeral observation hook:
+
+```ts
+type AgentSessionOpenStage =
+  | { stage: "initializing" }
+  | { stage: "initialized"; capabilities: Capabilities }
+  | {
+      stage: "internal_session_acquired";
+      internalSessionId: string;
+      disposition: "created" | "resumed";
+    }
+  | { stage: "ready"; promptability: AgentSessionPromptability };
+```
+
+Events are invoked in lifecycle order within one managed call. They are presentation
+telemetry, not durable state and not a substitute for the returned object/result. A
+failed call emits no `ready`; an explicit retry begins a new sequence. Continuation
+fallback may restart the same adapter, but capability discovery is reported once and the
+successful internal-session acquisition is reported when it occurs. Listener failures
+are isolated and logged; they never fail, commit, or roll back the managed transaction.
+`ready` is emitted only after registry publication/reconciliation and attachment of the
+live registry publisher, so its promptability matches the returned managed session.
 
 `SessionManager.createAgentSession()` resolves persistence inputs, receives the adapter
 for that operation, acquires log ownership, and prepares the registry creation transaction

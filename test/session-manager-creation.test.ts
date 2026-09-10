@@ -7,6 +7,7 @@ import { FileAgentSessionStore } from "../src/persistence/file-registry-store.ts
 import { scanTranscriptContinuation } from "../src/persistence/transcript-scanner.ts";
 import { SessionManager } from "../src/session-manager.ts";
 import { AuditLogReader } from "../src/persistence/audit-log-reader.ts";
+import type { AgentSessionOpenStage } from "../src/index.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -14,6 +15,48 @@ afterEach(async () => {
 });
 
 describe("SessionManager.createAgentSession", () => {
+  test("reports managed creation progress through durable readiness", async () => {
+    const { manager } = await setup();
+    const events: AgentSessionOpenStage[] = [];
+    const session = await manager.createAgentSession({
+      ...config(),
+      onOpenProgress: (event) => events.push(event),
+    });
+    try {
+      expect(events.map((event) => event.stage)).toEqual([
+        "initializing",
+        "initialized",
+        "internal_session_acquired",
+        "ready",
+      ]);
+      expect(events[1]).toMatchObject({
+        stage: "initialized",
+        capabilities: { agent: { loadSession: true } },
+      });
+      expect(events[2]).toEqual({
+        stage: "internal_session_acquired",
+        internalSessionId: "config-session",
+        disposition: "created",
+      });
+      expect(events[3]).toEqual({ stage: "ready", promptability: session.promptability });
+      expect(await manager.getSessionMaintenance(session.agentSessionId)).toBeNull();
+    } finally {
+      await session.stop();
+    }
+  }, 20_000);
+
+  test("progress-listener failures do not fail managed creation", async () => {
+    const { manager } = await setup();
+    const session = await manager.createAgentSession({
+      ...config(),
+      onOpenProgress() {
+        throw new Error("consumer progress failure");
+      },
+    });
+    expect(session.internalSessionId).toBe("config-session");
+    await session.stop();
+  }, 20_000);
+
   test("creates under maintenance and publishes later transcript checkpoints to the registry", async () => {
     const { root, manager } = await setup();
     const session = await manager.createAgentSession(config());

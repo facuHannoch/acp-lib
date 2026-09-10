@@ -9,7 +9,12 @@
 // Adapter lives HERE, not on the controller: switching adapter = a new AgentSession (the
 // agent dies on switch). Mode-swap (degrade/upgrade) stays within one AgentSession.
 
-import { AgentController, type AgentControllerConfig, type AgentMode } from "./controller.ts";
+import {
+  AgentController,
+  type AgentControllerConfig,
+  type AgentControllerStartEvent,
+  type AgentMode,
+} from "./controller.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
 import { ActivityAggregator, type ActivitySnapshot, type AggregatedRecord } from "./activity.ts";
@@ -105,6 +110,7 @@ import {
 import type { PersistenceRepair, SessionRecoveryStatus } from "./persistence/reducer.ts";
 import type { StagedContinuationState } from "./persistence/registry.ts";
 import type { SessionLogWriterLock } from "./persistence/session-log-writer.ts";
+import type { ManagedOpenProgressReporter } from "./persistence/managed-open-progress.ts";
 
 interface PromptQueueItem {
   kind: "prompt";
@@ -582,6 +588,7 @@ interface AgentSessionOpenBootstrap {
   readonly transcript: PersistenceStateRuntime;
   readonly transcriptPath: string;
   readonly stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>;
+  readonly onOpenProgress?: ManagedOpenProgressReporter;
 }
 
 /** @internal Transaction hooks supplied only by SessionManager managed creation. */
@@ -590,6 +597,7 @@ export interface ManagedAgentSessionCreationBootstrap {
   readonly transcriptLock?: SessionLogWriterLock;
   readonly auditLogLock?: SessionLogWriterLock;
   readonly stageContinuation: (state: StagedContinuationState) => Promise<StagedContinuationState>;
+  readonly onOpenProgress?: ManagedOpenProgressReporter;
 }
 
 export interface ManagedAgentSessionPersistenceSnapshot {
@@ -653,11 +661,14 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly managedCreation: ManagedAgentSessionCreationBootstrap | null;
   private managedPersistenceHealthy = true;
   private managedAuditLog: AuditLogIdentity | null = null;
+  private readonly managedOpenProgress?: ManagedOpenProgressReporter;
+  private managedInitializationReported = false;
 
   private constructor(
     config: AgentSessionConfig,
     openBootstrap: AgentSessionOpenBootstrap | null = null,
     managedCreation: ManagedAgentSessionCreationBootstrap | null = null,
+    managedOpenProgress?: ManagedOpenProgressReporter,
   ) {
     if (config.transcriptPath && config.transcriptDir) {
       throw new Error("AgentSessionConfig cannot specify both transcriptPath and transcriptDir");
@@ -703,6 +714,9 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.creationId = config.creationId ?? crypto.randomUUID();
     this.openBootstrap = openBootstrap;
     this.managedCreation = managedCreation;
+    this.managedOpenProgress = managedOpenProgress
+      ?? managedCreation?.onOpenProgress
+      ?? openBootstrap?.onOpenProgress;
     this._transcriptPath =
       config.transcriptPath ??
       (config.transcriptDir
@@ -766,6 +780,18 @@ export class AgentSession implements AgentClient, Bridgeable {
     });
   }
 
+  private reportManagedControllerProgress(event: AgentControllerStartEvent): void {
+    if (!this.managedOpenProgress) return;
+    // A continuation policy may restart the same adapter after a failed load. The
+    // managed lifecycle reports capability discovery once, while the successful
+    // provider-thread acquisition is reported when it actually occurs.
+    if (event.stage === "initialized") {
+      if (this.managedInitializationReported) return;
+      this.managedInitializationReported = true;
+    }
+    this.managedOpenProgress(event);
+  }
+
   /**
    * Open a logical conversation. `agentSessionId` selects stable identity;
    * `providerSession` independently selects a new or existing provider thread; transcript
@@ -822,8 +848,15 @@ export class AgentSession implements AgentClient, Bridgeable {
     transcriptLock?: SessionLogWriterLock,
     audit?: AuditPersistenceRuntime,
     stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>,
+    onOpenProgress?: ManagedOpenProgressReporter,
   ): Promise<AgentSessionOpenResult> {
-    return await AgentSession.openWithLock(config, transcriptLock, audit, stageContinuation);
+    return await AgentSession.openWithLock(
+      config,
+      transcriptLock,
+      audit,
+      stageContinuation,
+      onOpenProgress,
+    );
   }
 
   /** @internal Restore a registry-authoritative session without a transcript reader. */
@@ -832,6 +865,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     history: readonly InternalSessionHistoryEntry[],
     audit?: AuditPersistenceRuntime,
     stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>,
+    onOpenProgress?: ManagedOpenProgressReporter,
   ): Promise<AgentSessionOpenResult> {
     const checkpoint = config.checkpoint;
     if (!checkpoint || checkpoint.transcript !== null) {
@@ -856,12 +890,12 @@ export class AgentSession implements AgentClient, Bridgeable {
         onFailure: "error",
       },
       metering: { ...config.metering, initialState: checkpoint.metering },
-    });
+    }, null, null, onOpenProgress);
     const primary = new RegistryPersistenceRuntime(checkpoint, history);
     session.v2Transcript = audit ? new AuditedPersistenceRuntime(primary, audit) : primary;
     session.managedAuditLog = audit?.identity ?? null;
     try {
-      const result = await session.controller.start();
+      const result = await session.controller.start((event) => session.reportManagedControllerProgress(event));
       if (!result.resumed || !result.sessionId) {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
@@ -897,6 +931,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     transcriptLock?: SessionLogWriterLock,
     audit?: AuditPersistenceRuntime,
     stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>,
+    onOpenProgress?: ManagedOpenProgressReporter,
   ): Promise<AgentSessionOpenResult> {
     const strategies = normalizeContinuationStrategies(config.continuation);
     const persistence = resolveDirectPersistence(config.persistence);
@@ -955,7 +990,12 @@ export class AgentSession implements AgentClient, Bridgeable {
           ...config.metering,
           initialState: checkpoint.metering,
         },
-      }, { transcript, transcriptPath: paths.transcriptPath, stageContinuation });
+      }, {
+        transcript,
+        transcriptPath: paths.transcriptPath,
+        stageContinuation,
+        onOpenProgress,
+      });
       session.managedAuditLog = audit?.identity ?? null;
 
       try {
@@ -1013,7 +1053,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       this.v2Transcript = this.openBootstrap.transcript;
       this.v2TranscriptPath = this.openBootstrap.transcriptPath;
       this._recovery = this.v2Transcript.recovery;
-      const result = await this.controller.start();
+      const result = await this.controller.start((event) => this.reportManagedControllerProgress(event));
       if (!result.resumed || !result.sessionId) {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
@@ -1051,7 +1091,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
     if (!paths.transcriptPath || persistence.transcript === false) {
       try {
-        const result = await this.controller.start();
+        const result = await this.controller.start((event) => this.reportManagedControllerProgress(event));
         this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
         if (this.managedCreation) {
         const now = new Date().toISOString();
@@ -1122,7 +1162,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       header,
       writerLock: this.managedCreation?.transcriptLock,
       initializeCheckpoint: async () => {
-        const result = await this.controller.start();
+        const result = await this.controller.start((event) => this.reportManagedControllerProgress(event));
         this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
         const now = new Date().toISOString();
         const sessionConfiguration = snapshotSessionConfiguration({
@@ -1218,7 +1258,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           continue;
         }
         try {
-          const loaded = await this.controller.start();
+          const loaded = await this.controller.start((event) => this.reportManagedControllerProgress(event));
           if (!loaded.resumed || !loaded.sessionId) {
             throw new Error("adapter did not confirm loading the recorded internal session");
           }
@@ -1297,7 +1337,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         reasonCode: "continuation_reconstruction",
       });
       try {
-        const created = await this.controller.startFresh();
+        const created = await this.controller.startFresh((event) => this.reportManagedControllerProgress(event));
         if (!created.sessionId) throw new Error("harness returned no session id for reconstructed continuation");
         if (created.sessionId === checkpoint.internalSessionId && checkpoint.adapterId === this.adapterId) {
           throw new Error("harness did not create a replacement internal session");

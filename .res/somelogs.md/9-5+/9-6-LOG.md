@@ -2459,3 +2459,26 @@ and empty separators, invalid separator input, and the retained legacy projectio
 
 Verification: focused response-boundary tests, affected ACP handoff/metering/presentation
 integration tests, `tsc --noEmit`, all 683 repository tests, and `git diff --check` pass.
+
+### Part 27 — managed-open progress
+
+Added an ephemeral `onOpenProgress` callback to managed creation and loading. Both entry
+points now report initialization start, negotiated ACP capabilities, successful internal
+session acquisition with `created`/`resumed` disposition, and final readiness with the
+session's promptability. The public event type uses `internal_session_acquired` rather
+than calling a newly created provider thread "loaded."
+
+The first three lifecycle boundaries are observed while the controller starts; `ready`
+is emitted by the managed coordinator only after maintenance finalization or registry
+reconciliation and live registry-publisher attachment. Progress is deliberately not
+persisted or treated as continuation authority. Listener failures, including rejected
+thenables returned accidentally from a callback, are isolated and logged rather than
+affecting the session transaction.
+
+Updated the consumer guide and persistence specification. Tests cover ordered creation
+and loading events, created-versus-resumed disposition, registry-finalized readiness, and
+listener failure isolation.
+
+Verification: focused managed creation/loading tests, `tsc --noEmit`, and all 686
+repository tests pass. The relevant-file diff passes `git diff --check`; a separate
+in-progress `9-7.md` edit currently has a pre-existing trailing blank line.

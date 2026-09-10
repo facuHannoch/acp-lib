@@ -9,6 +9,7 @@ import {
   ManagedAgentSessionNotFoundError,
 } from "../src/persistence/managed-load.ts";
 import { SessionManager } from "../src/session-manager.ts";
+import type { AgentSessionOpenStage } from "../src/index.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -16,6 +17,38 @@ afterEach(async () => {
 });
 
 describe("SessionManager.loadAgentSession", () => {
+  test("reports managed loading progress through reconciled readiness", async () => {
+    const { manager, store } = await setup();
+    const created = await manager.createAgentSession(createConfig());
+    await created.stop();
+    const events: AgentSessionOpenStage[] = [];
+
+    const opened = await manager.loadAgentSession("managed-agent", {
+      ...loadConfig(),
+      onOpenProgress: (event) => events.push(event),
+    });
+    try {
+      expect(events.map((event) => event.stage)).toEqual([
+        "initializing",
+        "initialized",
+        "internal_session_acquired",
+        "ready",
+      ]);
+      expect(events[2]).toEqual({
+        stage: "internal_session_acquired",
+        internalSessionId: "config-session",
+        disposition: "resumed",
+      });
+      expect(events[3]).toEqual({
+        stage: "ready",
+        promptability: opened.promptability,
+      });
+      expect((await store.getAgentSessionRecord("managed-agent"))?.lastOpenedAt).toBeDefined();
+    } finally {
+      await opened.session.stop();
+    }
+  }, 20_000);
+
   test("loads the recorded provider thread and continues publishing checkpoints", async () => {
     const { manager } = await setup();
     const created = await manager.createAgentSession(createConfig());

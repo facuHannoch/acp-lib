@@ -64,6 +64,15 @@ export interface AgentControllerConfig {
   wire?: (entry: WireEntry) => void;
 }
 
+/** @internal Startup observations used by the managed AgentSession coordinator. */
+export type AgentControllerStartEvent =
+  | { readonly stage: "initialized"; readonly capabilities: Capabilities }
+  | {
+      readonly stage: "internal_session_acquired";
+      readonly internalSessionId: string;
+      readonly disposition: "created" | "resumed";
+    };
+
 export type ControllerCommandId =
   | "caps"
   | "session"
@@ -177,11 +186,11 @@ export class AgentController implements AgentClient {
     return () => this.usageUpdateListeners.delete(listener);
   }
 
-  async start(): Promise<ConnectResult> {
+  async start(onProgress?: (event: AgentControllerStartEvent) => void): Promise<ConnectResult> {
     if (this.current) {
       return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
     }
-    const brought = await this.bringUp(this.mode, this.config.sessionId);
+    const brought = await this.bringUp(this.mode, this.config.sessionId, onProgress);
     this.current = brought.client;
     this.acp = brought.acp;
     this.attachAvailableCommandSource();
@@ -189,12 +198,12 @@ export class AgentController implements AgentClient {
   }
 
   /** Explicitly create a fresh provider thread, ignoring any startup load target. */
-  async startFresh(): Promise<ConnectResult> {
+  async startFresh(onProgress?: (event: AgentControllerStartEvent) => void): Promise<ConnectResult> {
     if (this.current) {
       if (!this.acp) throw new Error("fresh provider sessions require ACP normal mode");
       return await this.newSession();
     }
-    const brought = await this.bringUp(this.mode);
+    const brought = await this.bringUp(this.mode, undefined, onProgress);
     this.current = brought.client;
     this.acp = brought.acp;
     this.attachAvailableCommandSource();
@@ -447,6 +456,7 @@ export class AgentController implements AgentClient {
   private async bringUp(
     mode: AgentMode,
     sessionId?: string,
+    onProgress?: (event: AgentControllerStartEvent) => void,
   ): Promise<{ client: AgentClient; acp: AcpClient | null; result: ConnectResult }> {
     const adapter = this.config.adapter;
     if (mode === "degraded") {
@@ -487,7 +497,8 @@ export class AgentController implements AgentClient {
     // unauthenticated agent may refuse session/new, but we keep the connection up so the
     // user can /login and then create a session. (Auth state is opaque — see SPEC.)
     try {
-      await client.connect();
+      const capabilities = await client.connect();
+      this.reportStartProgress(onProgress, { stage: "initialized", capabilities });
     } catch (err) {
       await client.stop();
       throw err;
@@ -506,7 +517,28 @@ export class AgentController implements AgentClient {
       this.config.logger?.warn("session_start_failed", { error: String(err) });
       result = { sessionId: "", resumed: false };
     }
+    if (result.sessionId) {
+      this.reportStartProgress(onProgress, {
+        stage: "internal_session_acquired",
+        internalSessionId: result.sessionId,
+        disposition: result.resumed ? "resumed" : "created",
+      });
+    }
     return { client, acp: client, result };
+  }
+
+  private reportStartProgress(
+    listener: ((event: AgentControllerStartEvent) => void) | undefined,
+    event: AgentControllerStartEvent,
+  ): void {
+    if (!listener) return;
+    try {
+      listener(event);
+    } catch (error) {
+      this.config.logger?.warn("controller_start_progress_listener_failed", {
+        error: String(error),
+      });
+    }
   }
 
   private requireCurrent(): AgentClient {

@@ -136,6 +136,10 @@ export {
 } from "./persistence/managed-load.ts";
 export type { ManagedAgentSessionLoadConfig } from "./persistence/managed-load.ts";
 export type {
+  AgentSessionOpenStage,
+  AgentSessionOpenProgressListener,
+} from "./persistence/managed-open-progress.ts";
+export type {
   GetAgentSessionCheckpointOptions,
   ResolvedAgentSessionCheckpoint,
 } from "./persistence/managed-checkpoint.ts";

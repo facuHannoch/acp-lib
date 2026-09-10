@@ -50,6 +50,7 @@ import {
   TranscriptReader,
   formatResponseMessages,
   type Adapter,
+  type AgentSessionOpenStage,
   type AgentSessionNotification,
   type PromptHandlers,
 } from "@qlairoslabs/acp-client";
@@ -143,10 +144,16 @@ async function createSession(adapterId: string): Promise<AgentSession> {
     persistence: {
       transcript: { preset: "activity" },
     },
+    onOpenProgress: projectOpenProgress,
   });
 
   liveSessions.set(session.agentSessionId, session);
   return session;
+}
+
+function projectOpenProgress(event: AgentSessionOpenStage): void {
+  // Project this ephemeral event into your own UI/WebSocket protocol.
+  console.log(event.stage, event);
 }
 ```
 
@@ -346,6 +353,7 @@ async function loadSession(agentSessionId: string): Promise<AgentSession> {
     adapter: resolveAdapter(info.adapterId),
     adapterId: info.adapterId,
     defaultPermission: "cancel",
+    onOpenProgress: projectOpenProgress,
   });
 
   console.log(opened.continuation);
@@ -358,6 +366,20 @@ async function loadSession(agentSessionId: string): Promise<AgentSession> {
   return opened.session;
 }
 ```
+
+Managed creation and loading report the same ordered progress vocabulary:
+
+```text
+initializing
+→ initialized (ACP capabilities are available)
+→ internal_session_acquired (created or resumed)
+→ ready (managed persistence is finalized and promptability is known)
+```
+
+The callback exists because the live `AgentSession` is not available for subscription
+until the operation returns. Progress is ephemeral and is not transcript or registry
+authority. A failed operation does not report `ready`, and a retry begins a new sequence.
+Callback failures are logged and do not fail or roll back the managed operation.
 
 Loading never silently creates a replacement provider thread. By default it attempts the
 persisted `internalSessionId`. If that thread is unavailable, continuation reports the

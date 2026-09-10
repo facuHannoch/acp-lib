@@ -16,11 +16,18 @@ import {
   projectManagedAgentSessionRecord,
 } from "./managed-registry.ts";
 import { AuditPersistenceRuntime } from "./audit-runtime.ts";
+import {
+  createManagedOpenProgressReporter,
+  type AgentSessionOpenProgressListener,
+} from "./managed-open-progress.ts";
 
 export interface ManagedAgentSessionLoadConfig extends Omit<
   AgentSessionOpenConfig,
   "agentSessionId" | "persistence" | "checkpoint"
-> {}
+> {
+  /** Observe ephemeral managed-open progress before the open result is returned. */
+  readonly onOpenProgress?: AgentSessionOpenProgressListener;
+}
 
 export class ManagedAgentSessionNotFoundError extends Error {
   constructor(readonly agentSessionId: string) {
@@ -49,6 +56,10 @@ export async function loadManagedAgentSession(
   agentSessionId: string,
   config: ManagedAgentSessionLoadConfig,
 ): Promise<AgentSessionOpenResult> {
+  const reportOpenProgress = createManagedOpenProgressReporter(
+    config.onOpenProgress,
+    config.logger,
+  );
   const [record, maintenance] = await Promise.all([
     store.getAgentSessionRecord(agentSessionId),
     store.getMaintenance(agentSessionId),
@@ -62,6 +73,8 @@ export async function loadManagedAgentSession(
   if (record.adapterId !== config.adapterId && !hasReconstructionStrategy(config)) {
     throw new AdapterMismatchError(record.adapterId, config.adapterId);
   }
+  const { onOpenProgress: _onOpenProgress, ...openConfig } = config;
+  reportOpenProgress({ stage: "initializing" });
 
   const audit = record.auditLog
     ? await AuditPersistenceRuntime.resume({
@@ -75,12 +88,12 @@ export async function loadManagedAgentSession(
   try {
     opened = record.transcript
     ? await AgentSession.openManaged({
-        ...config,
+        ...openConfig,
         agentSessionId,
         persistence: persistenceFromManagedRecord(record),
-      }, undefined, audit)
+      }, undefined, audit, undefined, reportOpenProgress)
     : await AgentSession.openManagedRegistry({
-        ...config,
+        ...openConfig,
         agentSessionId,
         checkpoint: record.checkpoint,
         persistence: {
@@ -88,7 +101,7 @@ export async function loadManagedAgentSession(
           auditLog: false,
           sessionConfiguration: record.sessionConfigurationPersistence ?? { values: "typed" },
         },
-      }, record.internalSessionHistory, audit);
+      }, record.internalSessionHistory, audit, undefined, reportOpenProgress);
   } catch (error) {
     await audit?.close().catch(() => undefined);
     throw error;
@@ -118,6 +131,7 @@ export async function loadManagedAgentSession(
       expectedIncarnationId: current.incarnationId,
     });
     attachManagedRegistryPublisher(opened.session, store);
+    reportOpenProgress({ stage: "ready", promptability: opened.promptability });
     return opened;
   } catch (error) {
     await opened.session.stop().catch(() => undefined);

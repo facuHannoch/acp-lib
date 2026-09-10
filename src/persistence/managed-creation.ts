@@ -27,6 +27,10 @@ import {
 } from "./session-log-writer.ts";
 import { attachManagedRegistryPublisher } from "./managed-registry.ts";
 import { AuditPersistenceRuntime } from "./audit-runtime.ts";
+import {
+  createManagedOpenProgressReporter,
+  type AgentSessionOpenProgressListener,
+} from "./managed-open-progress.ts";
 
 // Retain the former module-level export while the canonical error now applies to every
 // maintenance kind and lives with the shared registry contract.
@@ -50,6 +54,8 @@ export interface ManagedAgentSessionCreateConfig extends Omit<
   readonly creationId?: string;
   readonly mode?: "normal";
   readonly persistence?: ManagedSessionPersistenceOptions;
+  /** Observe ephemeral managed-open progress before the AgentSession is returned. */
+  readonly onOpenProgress?: AgentSessionOpenProgressListener;
 }
 
 export class ManagedAgentSessionCreationError extends Error {
@@ -74,6 +80,10 @@ export async function createManagedAgentSession(
   }
   const agentSessionId = nonblankOrGenerated(config.agentSessionId, "agentSessionId");
   const creationId = nonblankOrGenerated(config.creationId, "creationId");
+  const reportOpenProgress = createManagedOpenProgressReporter(
+    config.onOpenProgress,
+    config.logger,
+  );
   const paths = await resolveSessionLogPaths(context.persistence, agentSessionId);
   const transcriptPath = paths.transcriptPath;
   const requestDigest = sha256CanonicalJson({
@@ -158,20 +168,22 @@ export async function createManagedAgentSession(
           })
         : undefined;
       lockTransferred = true;
+      reportOpenProgress({ stage: "initializing" });
       const opened = active.details.stagedRecord.transcript
         ? await AgentSession.openManaged({
             ...runtimeConfig(config),
             agentSessionId,
             persistence: directPersistence(context.persistence, transcriptPath),
             checkpoint: active.details.stagedRecord.checkpoint,
-          }, transcriptLock, audit)
+          }, transcriptLock, audit, undefined, reportOpenProgress)
         : await AgentSession.openManagedRegistry({
             ...runtimeConfig(config),
             agentSessionId,
             persistence: directPersistence(context.persistence, null),
             checkpoint: active.details.stagedRecord.checkpoint,
-          }, active.details.stagedRecord.internalSessionHistory, audit);
+          }, active.details.stagedRecord.internalSessionHistory, audit, undefined, reportOpenProgress);
       attachManagedRegistryPublisher(opened.session, context.store);
+      reportOpenProgress({ stage: "ready", promptability: opened.session.promptability });
       return opened.session;
     }
 
@@ -191,6 +203,7 @@ export async function createManagedAgentSession(
     }
     const stagedContinuation = active.details.stagedContinuation;
     lockTransferred = true;
+    reportOpenProgress({ stage: "initializing" });
     session = await AgentSession.createManaged({
       ...runtimeConfig(config),
       agentSessionId,
@@ -224,6 +237,7 @@ export async function createManagedAgentSession(
         active = update;
         return state;
       },
+      onOpenProgress: reportOpenProgress,
     });
 
     const snapshot = session.getManagedPersistenceSnapshot();
@@ -246,6 +260,7 @@ export async function createManagedAgentSession(
       { save: record },
     );
     attachManagedRegistryPublisher(session, context.store);
+    reportOpenProgress({ stage: "ready", promptability: session.promptability });
     return session;
   } catch (error) {
     await session?.stop().catch(() => undefined);
@@ -266,6 +281,7 @@ function runtimeConfig(config: ManagedAgentSessionCreateConfig): Omit<
     creationId: _creationId,
     persistence: _persistence,
     mode: _mode,
+    onOpenProgress: _onOpenProgress,
     ...runtime
   } = config;
   return runtime;
