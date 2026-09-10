@@ -2610,8 +2610,8 @@ export class AgentSession implements AgentClient, Bridgeable {
       // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
       // what it was doing, at its real status.
       this.endTurn(item.handlers);
-      const text = chunks.join("");
       const structured = response.snapshot();
+      const text = structured.length > 0 ? response.text : chunks.join("");
       const messages = structured.length > 0
         ? structured
         : text

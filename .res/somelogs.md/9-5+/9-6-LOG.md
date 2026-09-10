@@ -2381,3 +2381,21 @@ Focused tests cover structured handoff metadata, promptability-driven availabili
 controller arguments, mode controls, and unavailable reasons.
 
 Verification: `tsc --noEmit`, 673/673 repository tests, and `git diff --check` pass.
+
+### Part 24 — response message boundaries
+
+Changed the legacy combined response projection so distinct ACP assistant messages are
+separated by one literal blank line while text inside each message remains byte-for-byte
+unchanged. Token chunks still coalesce inside their logical message; separators are added
+only after the response accumulator has identified an actual message boundary. Empty
+messages participate in the same literal join, avoiding undocumented whitespace cleanup.
+
+Prompt failures now prefer the structured response accumulator when boundary-aware chunks
+were received, so partial successful and partial failed responses use the same projection.
+The boundary-aware `messages` array remains authoritative, and the raw `onChunk` callback
+is documented as a stream whose concatenation cannot encode message boundaries.
+
+Focused tests cover one message, multiple messages, token chunks within a message,
+authored leading/trailing whitespace, and empty entries.
+
+Verification: focused response tests, `tsc --noEmit`, and `git diff --check` pass.

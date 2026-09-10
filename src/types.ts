@@ -58,7 +58,7 @@ export type Usage = TokenUsage;
  * call RESOLVES (not rejects) with whatever partial text arrived.
  */
 export interface PromptResult {
-  /** Legacy flattened projection of `messages` (partial if cancelled). */
+  /** Combined display projection of `messages`, separated by one blank line. */
   text: string;
   /** Assistant messages in protocol order, preserving ACP `messageId` boundaries. */
   messages: readonly ResponseMessage[];
@@ -242,7 +242,7 @@ export interface PermissionRequest {
 
 /** Per-prompt callbacks. All optional. */
 export interface PromptHandlers {
-  /** Legacy text-only response stream. Prefer `onResponseChunk` when boundaries matter. */
+  /** Legacy raw text stream. Concatenation does not encode message boundaries. */
   onChunk?: (text: string) => void;
   /** Boundary-aware response stream preserving ACP `messageId`. */
   onResponseChunk?: (chunk: ResponseChunk) => void;

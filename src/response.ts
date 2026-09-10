@@ -8,6 +8,16 @@ export interface IncomingResponseChunk {
 }
 
 /**
+ * Produce the legacy combined-text view without erasing protocol message boundaries.
+ * Message text is preserved verbatim; the only inserted content is the boundary between
+ * entries. Empty entries therefore participate in the literal join rather than being
+ * silently removed.
+ */
+export function joinResponseMessages(messages: readonly ResponseMessage[]): string {
+  return messages.map((message) => message.text).join("\n\n");
+}
+
+/**
  * Fold response deltas without inventing separators. Only a change between two explicit
  * ACP message ids proves that a new assistant message started; missing ids remain part of
  * the current message because no boundary can be inferred safely.
@@ -45,7 +55,7 @@ export class ResponseAccumulator {
   }
 
   get text(): string {
-    return this.entries.map((entry) => entry.text).join("");
+    return joinResponseMessages(this.entries);
   }
 
   snapshot(): readonly ResponseMessage[] {

@@ -71,7 +71,20 @@ describe("AcpClient response boundaries", () => {
       { messageId: "m2", text: "I've finished." },
       { messageId: "m3", text: "I'm running tests." },
     ]);
-    expect(result.text).toBe("I'm checking now.I've finished.I'm running tests.");
+    expect(result.text).toBe("I'm checking now.\n\nI've finished.\n\nI'm running tests.");
+  });
+
+  test("preserves authored whitespace and applies a literal boundary between entries", async () => {
+    const result = await clientWithResponse([
+      { messageId: "m1", text: "\nfirst\n" },
+      { messageId: "m2", text: "\nsecond\n" },
+    ]).prompt("go");
+
+    expect(result.messages).toEqual([
+      { messageId: "m1", text: "\nfirst\n" },
+      { messageId: "m2", text: "\nsecond\n" },
+    ]);
+    expect(result.text).toBe("\nfirst\n\n\n\nsecond\n");
   });
 
   test("does not invent boundaries for chunks with missing ids", async () => {
