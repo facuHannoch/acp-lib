@@ -99,3 +99,39 @@ architectural intent and the evidence used to verify each change.
   widening or duplicating their definitions.
 - The complete test suite is run before committing because this extraction
   touches the central public module and all prompt/lifecycle consumers.
+
+## Step 4 — Serialized conversation operation queue
+
+### Completed
+
+- Added `AgentConversationQueue<T>`, a focused FIFO scheduler that owns serial
+  draining, queued counts, concurrent-drain suppression, and removal of work that
+  has not started.
+- Replaced the `AgentSession` implementation's raw array and `pumping` flag with
+  the extracted queue.
+- Kept operation dispatch and lifecycle meaning in the conversation runtime. The
+  queue intentionally does not know what a prompt, handoff, recovery, mode change,
+  or configuration change means.
+- Preserved the important re-entrant behavior: work queued while another
+  operation is executing is consumed by the active drain without an idle gap.
+- Preserved promise-observation ordering across the new async component boundary:
+  the last operation publishes idle before its caller resumes, while a queued next
+  operation still prevents an intermediate idle state.
+- Preserved cancellation semantics: `interrupt({ clearQueue: true })` receives
+  exactly the queued, undispatched items and resolves/rejects them using the
+  established per-operation rules.
+
+### Files
+
+- `src/agent-conversation-queue.ts`
+- `src/agent-session.ts`
+- `test/agent-conversation-queue.test.ts`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Unit coverage verifies FIFO ordering, absence of overlap, re-entrant enqueue,
+  concurrent drain suppression, and clearing only undispatched work.
+- Existing AgentSession state tests verify queued counts, no false idle state,
+  terminal stop behavior, and cancellation through the integrated queue.
+- Typecheck and the relevant focused suites are run before committing.

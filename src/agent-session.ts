@@ -142,6 +142,7 @@ import type {
   TranscriptContinuationBuilder,
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
+import { AgentConversationQueue } from "./agent-conversation-queue.ts";
 
 export {
   AdapterMismatchError,
@@ -401,8 +402,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly aggregator: ActivityAggregator;
   private readonly log: Logger;
   private transcriptWrite: Promise<void> = Promise.resolve();
-  private queue: QueueItem[] = [];
-  private pumping = false;
+  private readonly operations = new AgentConversationQueue<QueueItem>();
   private phase: AgentSessionPhase = "idle";
   private notificationSeq = 0;
   private readonly listeners = new Set<AgentSessionListener>();
@@ -1454,7 +1454,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     return this.phase !== "idle" && this.phase !== "stopped";
   }
   get queuedOperationCount(): number {
-    return this.queue.length;
+    return this.operations.queuedCount;
   }
   /** Subscribe to future lifecycle changes. The current snapshot is available via state. */
   subscribe(listener: AgentSessionListener): () => void {
@@ -1492,7 +1492,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         reject(error);
         return;
       }
-      this.queue.push({
+      this.operations.enqueue({
         kind: "prompt",
         turnId: this.mintTurnId(),
         operationKind,
@@ -1546,7 +1546,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         reject(error);
         return;
       }
-      this.queue.push({
+      this.operations.enqueue({
         kind: "handoff",
         handoffId: this.mintOperationId(),
         // A queued operation owns its arguments. Do not let a caller mutate the object
@@ -1561,11 +1561,9 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
 
   private async pump(): Promise<void> {
-    if (this.pumping) return;
-    this.pumping = true;
+    if (this.operations.isDraining) return;
     try {
-      while (this.queue.length > 0) {
-        const item = this.queue.shift()!;
+      await this.operations.drain(async (item) => {
         this.phase = item.kind === "prompt"
           ? "prompting"
           : item.kind === "handoff"
@@ -1636,12 +1634,23 @@ export class AgentSession implements AgentClient, Bridgeable {
             item.reject(err);
           }
         }
-      }
+        // Promise consumers must observe the settled public state. The old in-class
+        // loop reached its `finally` synchronously after resolving the last item;
+        // crossing the extracted queue's async callback adds a microtask boundary.
+        // Settle here only when no next item exists, preserving both that ordering and
+        // the no-idle-gap guarantee between queued operations.
+        this.settleIdleIfDrained();
+      });
     } finally {
-      this.pumping = false;
       if (this.phase !== "stopped") this.phase = "idle";
       this.emitStateIfChanged();
     }
+  }
+
+  private settleIdleIfDrained(): void {
+    if (this.operations.queuedCount !== 0 || this.phase === "stopped") return;
+    this.phase = "idle";
+    this.emitStateIfChanged();
   }
 
   private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
@@ -2604,7 +2613,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     before: AgentSessionMeteringState;
     after: AgentSessionMeteringState;
   }> {
-    if (this.isBusy || this.queue.length > 0) {
+    if (this.isBusy || this.operations.queuedCount > 0) {
       throw new Error("reconcileMetering requires an idle session with no queued operations");
     }
     if (!reconciliation.reason?.trim()) {
@@ -2913,7 +2922,7 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   interrupt(options?: InterruptOptions): void {
     if (options?.clearQueue) {
-      const dropped = this.queue.splice(0);
+      const dropped = this.operations.clear();
       for (const item of dropped) {
         if (item.kind === "prompt") {
           // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
@@ -2961,7 +2970,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     if (this.phase === "stopped") throw new Error("AgentSession is stopped");
     this.assertPromptable();
     return await new Promise<ConnectResult>((resolve, reject) => {
-      this.queue.push({
+      this.operations.enqueue({
         kind: "set_mode",
         transitionId: this.mintOperationId(),
         mode,
@@ -3000,7 +3009,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       return Promise.reject(new Error(`configuration value cannot be cloned: ${String(error)}`));
     }
     return new Promise<void>((resolve, reject) => {
-      this.queue.push({
+      this.operations.enqueue({
         kind: "set_config",
         operationId: this.mintOperationId(),
         configId,
@@ -3031,7 +3040,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       return Promise.reject(new Error(`configuration resolution cannot be cloned: ${String(error)}`));
     }
     return new Promise((resolve, reject) => {
-      this.queue.push({ kind: "resolve_config", resolution: owned, resolve, reject });
+      this.operations.enqueue({ kind: "resolve_config", resolution: owned, resolve, reject });
       this.emitStateIfChanged();
       void this.pump();
     });
@@ -3055,7 +3064,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           ...(resolution.continuation === undefined ? {} : { continuation: resolution.continuation }),
         });
     return new Promise((resolve, reject) => {
-      this.queue.push({ kind: "resolve_recovery", resolution: owned, resolve, reject });
+      this.operations.enqueue({ kind: "resolve_recovery", resolution: owned, resolve, reject });
       this.emitStateIfChanged();
       void this.pump();
     });
