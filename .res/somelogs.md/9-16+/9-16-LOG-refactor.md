@@ -135,3 +135,37 @@ architectural intent and the evidence used to verify each change.
 - Existing AgentSession state tests verify queued counts, no false idle state,
   terminal stop behavior, and cancellation through the integrated queue.
 - Typecheck and the relevant focused suites are run before committing.
+
+## Step 5 — Presentation and activity coordination
+
+### Completed
+
+- Added `AgentConversationPresentation`, the conversation-owned runtime for the
+  single lifetime activity aggregator and ordered presentation persistence.
+- Moved turn begin/flush behavior, reasoning-boundary settlement, activity
+  application, legacy JSONL activity filtering/projection/truncation, V2 activity
+  projection, ordered V2 presentation writes, and presentation-item callbacks out
+  of `AgentSession`.
+- Kept the persistence runtime behind a getter because it can be installed during
+  managed creation/open after the conversation object is constructed.
+- Kept public lifecycle emission in `AgentSession`: the extracted runtime reports
+  presentation items through a callback and does not know about session events.
+- Preserved one aggregator for the entire conversation lifetime so its sequence
+  clock never restarts between turns.
+- Preserved fire-and-forget update ingestion and explicit drain points before
+  operation completion/stop.
+
+### Files
+
+- `src/agent-conversation-presentation.ts`
+- `src/agent-session.ts`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Existing activity tests cover folding, deltas, sequence continuity, turn
+  boundaries, filtering, truncation, and legacy transcript behavior.
+- Existing presentation tests cover stable IDs, revisions, message/activity
+  interleaving, persistence, and reload behavior.
+- Typecheck plus those focused suites are run before committing; the full suite is
+  used if the focused boundary stays green.

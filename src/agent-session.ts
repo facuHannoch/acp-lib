@@ -17,7 +17,7 @@ import {
 } from "./controller.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
-import { ActivityAggregator, type ActivitySnapshot, type AggregatedRecord } from "./activity.ts";
+import type { ActivitySnapshot } from "./activity.ts";
 import type { Adapter } from "./adapters.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
@@ -49,7 +49,6 @@ import {
 import type { SessionManager, MergedSession } from "./session-manager.ts";
 import {
   appendTranscriptLine,
-  type TranscriptActivityLine,
   type TranscriptLine,
 } from "./transcript.ts";
 import type {
@@ -88,20 +87,14 @@ import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.t
 import {
   RegistryPersistenceRuntime,
   type PersistenceStateRuntime,
-  type PresentationPersistenceEvent,
 } from "./persistence/state-runtime.ts";
 import { AuditPersistenceRuntime, AuditedPersistenceRuntime, type AuditLogIdentity } from "./persistence/audit-runtime.ts";
 import { TranscriptReader } from "./persistence/transcript-reader.ts";
-import {
-  presentationItemFromRecord,
-  type TranscriptPresentationItem,
-} from "./persistence/presentation.ts";
 import {
   snapshotSessionConfiguration,
   snapshotSessionConfigurationAfterSelection,
   snapshotAcceptedEffectiveConfiguration,
 } from "./persistence/configuration-state.ts";
-import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
 import {
   canonicalizeJson,
   sha256CanonicalJson,
@@ -143,6 +136,7 @@ import type {
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
 import { AgentConversationQueue } from "./agent-conversation-queue.ts";
+import { AgentConversationPresentation } from "./agent-conversation-presentation.ts";
 
 export {
   AdapterMismatchError,
@@ -237,17 +231,6 @@ export interface AgentSessionOpenResult {
   readonly promptability: AgentSessionPromptability;
   readonly repairs: readonly PersistenceRepair[];
 }
-
-const DEFAULT_ACTIVITY_KINDS: Array<ActivityEvent["kind"]> = [
-  "tool",
-  "thinking",
-  "plan",
-  "plan_update",
-  "plan_removed",
-  "usage",
-  "mode",
-  "unknown",
-];
 
 const HANDOFF_SUMMARY_PROMPT = [
   "Create portable continuation context for a new agent thread.",
@@ -387,19 +370,7 @@ export class AgentSession implements AgentClient, Bridgeable {
   private readonly creationId: string;
   private v2Transcript: PersistenceStateRuntime | null = null;
   private v2TranscriptPath: string | null = null;
-  /** One display queue preserves the live message/activity interleaving seen by consumers. */
-  private v2PresentationWrite: Promise<void> = Promise.resolve();
-  private readonly transcriptActivity: boolean;
-  private readonly activityKinds: Set<string>;
-  private readonly activityRawOutput: boolean;
-  private readonly activityMaxBytes: number | null;
-  /**
-   * THE aggregator — one per session for its whole life, never one per turn: `seq` has to
-   * keep counting across turns or a subscriber's discard threshold goes stale (see
-   * `activitySnapshot`). Runs unconditionally, so a snapshot is truthful and `onRecord`
-   * works whether or not a transcript is configured.
-   */
-  private readonly aggregator: ActivityAggregator;
+  private readonly presentation: AgentConversationPresentation;
   private readonly log: Logger;
   private transcriptWrite: Promise<void> = Promise.resolve();
   private readonly operations = new AgentConversationQueue<QueueItem>();
@@ -490,15 +461,16 @@ export class AgentSession implements AgentClient, Bridgeable {
       (config.transcriptDir
         ? join(config.transcriptDir, `${encodeURIComponent(this.agentSessionId)}.jsonl`)
         : undefined);
-    const activity: TranscriptActivityConfig | null =
-      config.transcriptActivity === true ? {} : config.transcriptActivity || null;
-    this.transcriptActivity = activity !== null;
-    this.activityKinds = new Set(activity?.kinds ?? DEFAULT_ACTIVITY_KINDS);
-    this.activityRawOutput = activity?.rawOutput === true;
-    this.activityMaxBytes =
-      activity?.maxBytes != null && activity.maxBytes > 0 ? activity.maxBytes : null;
-    this.aggregator = new ActivityAggregator({ checkpointOnInput: activity?.checkpointOnInput });
     this.log = config.logger ?? noopLogger;
+    this.presentation = new AgentConversationPresentation({
+      activity: config.transcriptActivity,
+      logger: this.log,
+      persistence: () => this.v2Transcript,
+      ...(this._transcriptPath
+        ? { appendLegacyActivity: (line) => this.appendTranscript(line) }
+        : {}),
+      onPresentation: (item) => this.emit({ kind: "presentation_recorded", item }),
+    });
     this._mode = config.mode ?? "normal";
     this._cwd = config.cwd;
     this._title = config.title;
@@ -2344,7 +2316,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           presentation: { id: `message:${item.turnId}:user`, revision: 1 },
         });
         await this.v2Transcript.syncBeforeDispatch();
-        this.emitPresentationRecord(userRecord);
+        this.presentation.emitPersistedRecord(userRecord);
       } catch (error) {
         this.endTurn(item.handlers);
         if (transcriptStarted) {
@@ -2395,7 +2367,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       assistantMessage.revision++;
       assistantMessage.dirty = false;
       const message = assistantMessage;
-      this.queueV2Presentation({
+      this.presentation.queuePresentation({
         kind: "message",
         operationId: item.turnId,
         role: "assistant",
@@ -2422,9 +2394,8 @@ export class AgentSession implements AgentClient, Bridgeable {
         item.handlers?.onChunk?.(chunk);
       },
       onResponseChunk: (chunk) => {
-        const settledReasoning = this.aggregator.closeReasoningBoundary();
+        const settledReasoning = this.presentation.closeReasoningBoundary();
         if (settledReasoning) {
-          if (this.transcriptActivity || this.v2Transcript) this.writeActivity(settledReasoning);
           item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
         }
         response.append(chunk);
@@ -2449,10 +2420,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         // The message snapshot must enter the shared queue before an activity first seen
         // after it. Later activity revisions keep their original presentation position.
         flushAssistantMessage("in_progress");
-        const result = this.aggregator.apply(event);
-        if (this.transcriptActivity || this.v2Transcript) {
-          for (const record of result.emitted) this.writeActivity(record);
-        }
+        const result = this.presentation.applyActivity(event);
         item.handlers?.onRecord?.(result);
         item.handlers?.onActivity?.(event);
       },
@@ -2494,7 +2462,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       closed = record;
       await this.persist();
       if (this.v2Transcript) {
-        await this.drainV2Presentation();
+        await this.presentation.drain();
         await this.finishV2Prompt(res.status, record);
         transcriptClosed = true;
       } else {
@@ -2533,7 +2501,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         } else if (!transcriptClosed) {
           flushAssistantMessage("error", "error", true);
         }
-        await this.drainV2Presentation().catch(() => undefined);
+        await this.presentation.drain().catch(() => undefined);
       } else {
         await this.appendTranscript({
           v: 1,
@@ -2810,26 +2778,15 @@ export class AgentSession implements AgentClient, Bridgeable {
    * activity in its log before the messages around it had loaded.
    */
   activitySnapshot(): ActivitySnapshot {
-    return this.aggregator.snapshot();
+    return this.presentation.snapshot();
   }
 
   private beginTurn(turnId: string): void {
-    // A correct caller always gets an empty array back — both exit paths flush. If one
-    // ever doesn't, keeping the records (loudly) beats dropping them.
-    const leftover = this.aggregator.startTurn(turnId);
-    if (leftover.length > 0) {
-      this.log.warn("activity_turn_not_flushed", { records: leftover.length });
-      if (this.transcriptActivity || this.v2Transcript) for (const record of leftover) this.writeActivity(record);
-    }
+    this.presentation.beginTurn(turnId);
   }
 
   private endTurn(handlers?: PromptHandlers): void {
-    const emitted = this.aggregator.flush();
-    if (emitted.length === 0) return;
-    if (this.transcriptActivity || this.v2Transcript) for (const record of emitted) this.writeActivity(record);
-    // Live subscribers need these too: without them, a tool call on a turn that was
-    // cancelled or crashed spins forever in the UI. `wireFrames()` handles this shape.
-    handlers?.onRecord?.({ current: null, delta: null, emitted });
+    this.presentation.endTurn(handlers);
   }
 
   /**
@@ -2847,77 +2804,6 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   private mintOperationId(): string {
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  }
-
-  /**
-   * Persist one settled record. Filtering lives here, not in the aggregator: the
-   * aggregator owns semantics, the writer owns policy.
-   *
-   * Fire and forget — `appendTranscript` serializes writes in call order, so ordering
-   * holds without blocking the agent's update stream on disk.
-   */
-  private writeActivity(record: AggregatedRecord): void {
-    if (this.v2Transcript) {
-      const operationId = this.v2Transcript.checkpoint.boundary.status === "in_flight"
-        ? this.v2Transcript.checkpoint.boundary.interruptedOperationId
-        : record.recordId.split(":", 1)[0] ?? record.recordId;
-      const projected = persistenceEventFromActivity(record, operationId);
-      this.queueV2Presentation({
-        ...projected,
-        presentation: {
-          id: `${projected.kind}:${operationId}:${record.recordId}`,
-          revision: record.seq,
-        },
-      });
-      return;
-    }
-    if (!this._transcriptPath) return;
-    if (!this.activityKinds.has(record.event.kind)) return;
-    void this.appendTranscript(this.toActivityLine(record));
-  }
-
-  private queueV2Presentation(event: PresentationPersistenceEvent): void {
-    this.v2PresentationWrite = this.v2PresentationWrite.then(async () => {
-      if (!this.v2Transcript) return;
-      const record = await this.v2Transcript.appendPresentationEvent(event);
-      this.emitPresentationRecord(record);
-    });
-  }
-
-  private emitPresentationRecord(
-    record: Awaited<ReturnType<PersistenceStateRuntime["appendPresentationEvent"]>>,
-  ): void {
-    if (!record) return;
-    const item = presentationItemFromRecord(record);
-    if (item) this.emit({ kind: "presentation_recorded", item });
-  }
-
-  private async drainV2Presentation(): Promise<void> {
-    await this.v2PresentationWrite;
-  }
-
-  private toActivityLine(record: AggregatedRecord): TranscriptActivityLine {
-    let fields: Record<string, unknown> = { ...record.event };
-    if (!this.activityRawOutput) delete fields.rawOutput;
-
-    let truncated = false;
-    if (this.activityMaxBytes != null) {
-      const capped = capActivityStrings(fields, this.activityMaxBytes);
-      fields = capped.fields;
-      truncated = capped.truncated;
-    }
-
-    const line: TranscriptActivityLine = {
-      ...fields,
-      v: 1,
-      t: "activity",
-      ts: Date.now(),
-      recordId: record.recordId,
-      reason: record.reason,
-      kind: record.event.kind,
-    };
-    if (truncated) line.truncated = true;
-    return line;
   }
 
   interrupt(options?: InterruptOptions): void {
@@ -2961,7 +2847,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.phase = "stopped";
     this.emitStateIfChanged();
     await this.controller.stop();
-    await this.drainV2Presentation().catch(() => undefined);
+    await this.presentation.drain().catch(() => undefined);
     await this.v2Transcript?.close();
   }
 
@@ -3406,59 +3292,4 @@ function copyPromptResult(result: PromptResult): PromptResult {
     ),
     usage: result.usage ? Object.freeze({ ...result.usage }) : null,
   });
-}
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-/**
- * Cap the fields that can realistically reach megabytes — terminal output, text content,
- * diffs, and a stringified `rawInput` — one field at a time so the JSON structure survives.
- * An oversized `rawInput` object becomes its truncated serialization, which is lossy by
- * design; `truncated: true` on the line says so.
- */
-function capActivityStrings(
-  fields: Record<string, unknown>,
-  maxBytes: number,
-): { fields: Record<string, unknown>; truncated: boolean } {
-  let truncated = false;
-  const cap = (text: string): string => {
-    const bytes = encoder.encode(text);
-    if (bytes.length <= maxBytes) return text;
-    // Back up off a continuation byte (0b10xxxxxx) so a multi-byte character is never
-    // split — decoding a partial sequence would yield U+FFFD.
-    let end = maxBytes;
-    while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
-    truncated = true;
-    return `${decoder.decode(bytes.subarray(0, end))}… [truncated ${bytes.length - end} bytes]`;
-  };
-  const capUnknown = (value: unknown): unknown => {
-    if (typeof value === "string") return cap(value);
-    const text = JSON.stringify(value) ?? "";
-    const capped = cap(text);
-    return capped === text ? value : capped;
-  };
-
-  const out = { ...fields };
-  if (out.rawInput !== undefined) out.rawInput = capUnknown(out.rawInput);
-  if (out.rawOutput !== undefined) out.rawOutput = capUnknown(out.rawOutput);
-  if (typeof out.text === "string") out.text = cap(out.text);
-  if (Array.isArray(out.content)) {
-    out.content = (out.content as unknown[]).map((entry) => {
-      if (entry === null || typeof entry !== "object") return entry;
-      const item = { ...(entry as Record<string, unknown>) };
-      if (typeof item.text === "string") item.text = cap(item.text);
-      if (typeof item.output === "string") item.output = cap(item.output);
-      if (typeof item.oldText === "string") item.oldText = cap(item.oldText);
-      if (typeof item.newText === "string") item.newText = cap(item.newText);
-      // `text` on a content entry is our convenience copy; the block itself still holds it.
-      if (item.content !== null && typeof item.content === "object") {
-        const block = { ...(item.content as Record<string, unknown>) };
-        if (typeof block.text === "string") block.text = cap(block.text);
-        item.content = block;
-      }
-      return item;
-    });
-  }
-  return { fields: out, truncated };
 }
