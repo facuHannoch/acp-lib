@@ -18,6 +18,18 @@ export type {
 export type { AcpLauncher, PreparedLaunch, LaunchKind } from "./launcher.ts";
 
 export {
+  AGENT_CONVERSATION_ID_PREFIX,
+  AGENT_SESSION_ID_PREFIX,
+  createAgentConversationId,
+  createAgentSessionId,
+  isAgentConversationId,
+  isAgentSessionId,
+  parseAgentConversationId,
+  parseAgentSessionId,
+} from "./agent-ids.ts";
+export type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
+
+export {
   AgentController,
   parseConfigValue,
   parseBoolean,

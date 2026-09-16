@@ -41,3 +41,30 @@ architectural intent and the evidence used to verify each change.
   only the newly discussed ownership model, not unrelated protocol decisions.
 - No runtime source changed in this step.
 
+## Step 2 — Stable identifier vocabulary
+
+### Completed
+
+- Added branded `AgentSessionId` and `AgentConversationId` types.
+- Added the authoritative `ags-` and `agc-` prefixes.
+- Added collision-resistant ID generators backed by `randomUUID()`.
+- Added strict predicates and parsers for persisted/external values.
+- Exported the primitives from the package's public surface.
+- Deliberately did not apply the new validation to existing records yet. Current
+  releases accepted arbitrary and UUID-only `agentSessionId` values; rejecting
+  those during a structural refactor would break persisted data and tests. The
+  migration layer will translate legacy IDs explicitly when the new owner is
+  introduced.
+
+### Files
+
+- `src/agent-ids.ts`
+- `src/index.ts`
+- `test/agent-ids.test.ts`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Unit coverage checks prefixing, uniqueness, disjoint namespaces, parsing, and
+  rejection of legacy/invalid shapes.
+- Typecheck and the focused test are run before this step is committed.
