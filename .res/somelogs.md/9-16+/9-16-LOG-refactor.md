@@ -205,3 +205,47 @@ architectural intent and the evidence used to verify each change.
   cross-adapter reconstruction, activation failure, recovery, and configuration
   restoration.
 - Typecheck and the focused continuation suites are run before committing.
+
+## Step 7 — Boundary audit and next API specification
+
+### Completed
+
+- Audited the current runtime after the extractions. `AgentSession` is still large
+  (3,201 lines), but its extracted queue, presentation runtime, continuation
+  policy, contracts, and errors now have one-way dependencies and conversation
+  terminology. The remaining responsibilities are all conversation-level
+  coordination rather than top-level agent ownership.
+- Specified the concrete responsibilities and initial API shapes for
+  `AgentSession`, `AgentConversation`, `AgentConversationManager`, and the optional
+  `AgentSessionManager`.
+- Specified the minimum participant boundary and made attribution explicitly
+  separate from authentication.
+- Specified a domain-oriented `AgentStore` direction so chat reconstruction does
+  not depend on interpreting vague events.
+- Recorded SQLite concurrency requirements: one database per agent, WAL, busy
+  handling, short transactions, database constraints for cross-process races, and
+  no transaction held across a model call.
+- Defined an explicit compatibility sequence for the public `AgentSession` name.
+  The current conversation class is not silently replaced by an owner with
+  different semantics.
+- Defined idempotent legacy migration: one old session becomes one new agent plus
+  one generated `agc` conversation; valid existing `ags` IDs remain unchanged;
+  arbitrary old IDs remain resolvable through aliases; existing artifacts and
+  provider IDs are retained.
+- Listed the identity, discovery, messaging, tool, SQLite schema, blob, and audit
+  questions that must be designed before implementation steps 8–12.
+
+### Files
+
+- `.res/SPEC-agent-session-conversation-boundary.md`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Reviewed all imports of the extracted conversation modules. None imports the
+  `AgentSession` implementation class.
+- Reviewed current README, consumer-guide, CLI, and REPL use of `AgentSession` to
+  identify the compatibility surface that a rename must preserve.
+- Confirmed all six preceding commits are individually scoped and the unrelated
+  pre-existing worktree changes remain uncommitted and untouched.
+- Final typecheck and full test suite are run before this checkpoint is committed.
