@@ -68,3 +68,34 @@ architectural intent and the evidence used to verify each change.
 - Unit coverage checks prefixing, uniqueness, disjoint namespaces, parsing, and
   rejection of legacy/invalid shapes.
 - Typecheck and the focused test are run before this step is committed.
+
+## Step 3 — Conversation contracts and errors
+
+### Completed
+
+- Moved public lifecycle, continuation, recovery, configuration-resolution,
+  handoff, notification, prompt-result, activity-capture, and provider-session
+  contracts out of the 3,600-line implementation module.
+- Moved public conversation errors into a dependency-light error module.
+- Named the new boundary `agent-conversation-*` to reflect that these contracts
+  describe the role which will become `AgentConversation`.
+- Preserved the established `AgentSession*` symbol names temporarily and
+  re-exported every moved symbol from `agent-session.ts`. Existing direct and
+  package-barrel import paths therefore remain source-compatible.
+- Kept `AgentSessionOpenResult` beside the implementation for now because it
+  contains the concrete compatibility class. It will move when the actual
+  `AgentConversation` class boundary exists.
+
+### Files
+
+- `src/agent-conversation-contracts.ts`
+- `src/agent-conversation-errors.ts`
+- `src/agent-session.ts`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Typecheck proves the implementation consumes the extracted contracts without
+  widening or duplicating their definitions.
+- The complete test suite is run before committing because this extraction
+  touches the central public module and all prompt/lifecycle consumers.

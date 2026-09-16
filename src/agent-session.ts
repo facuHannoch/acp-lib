@@ -111,6 +111,69 @@ import type { PersistenceRepair, SessionRecoveryStatus } from "./persistence/red
 import type { StagedContinuationState } from "./persistence/registry.ts";
 import type { SessionLogWriterLock } from "./persistence/session-log-writer.ts";
 import type { ManagedOpenProgressReporter } from "./persistence/managed-open-progress.ts";
+import {
+  AdapterMismatchError,
+  AgentSessionPromptBlockedError,
+  ContinuationUnavailableError,
+  DirectAuditPersistenceUnsupportedError,
+} from "./agent-conversation-errors.ts";
+import type {
+  AgentSessionEvent,
+  AgentSessionListener,
+  AgentSessionNotification,
+  AgentSessionPhase,
+  AgentSessionPromptResult,
+  AgentSessionPromptability,
+  AgentSessionRecoveryResolution,
+  AgentSessionRecoveryResolutionResult,
+  AgentSessionState,
+  ConfigurationMismatchResolution,
+  ConfigurationMismatchResolutionResult,
+  ConfigurationRestoreStatus,
+  ContinuationAttempt,
+  ContinuationReport,
+  ContinuationStrategy,
+  HandoffOptions,
+  HandoffResult,
+  OpenContinuationOptions,
+  PromptBlocker,
+  ProviderSession,
+  TranscriptActivityConfig,
+  TranscriptContinuationBuilder,
+  TranscriptContinuationBuilderContext,
+} from "./agent-conversation-contracts.ts";
+
+export {
+  AdapterMismatchError,
+  AgentSessionPromptBlockedError,
+  ContinuationUnavailableError,
+  DirectAuditPersistenceUnsupportedError,
+} from "./agent-conversation-errors.ts";
+export type {
+  AgentSessionEvent,
+  AgentSessionListener,
+  AgentSessionNotification,
+  AgentSessionPhase,
+  AgentSessionPromptResult,
+  AgentSessionPromptability,
+  AgentSessionRecoveryResolution,
+  AgentSessionRecoveryResolutionResult,
+  AgentSessionState,
+  ConfigurationMismatchResolution,
+  ConfigurationMismatchResolutionResult,
+  ConfigurationRestoreStatus,
+  ContinuationAttempt,
+  ContinuationReport,
+  ContinuationStrategy,
+  HandoffOptions,
+  HandoffResult,
+  OpenContinuationOptions,
+  PromptBlocker,
+  ProviderSession,
+  TranscriptActivityConfig,
+  TranscriptContinuationBuilder,
+  TranscriptContinuationBuilderContext,
+} from "./agent-conversation-contracts.ts";
 
 interface PromptQueueItem {
   kind: "prompt";
@@ -165,106 +228,6 @@ interface RecoveryResolutionQueueItem {
 
 type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem | ConfigResolutionQueueItem | RecoveryResolutionQueueItem;
 
-/** What the stable logical session is doing right now. */
-export type AgentSessionPhase =
-  | "idle"
-  | "prompting"
-  | "handoff"
-  | "configuring"
-  | "recovering"
-  | "switching_mode"
-  | "stopped";
-
-/** Authoritative, immutable point-in-time state for orchestration consumers. */
-export interface AgentSessionState {
-  readonly phase: AgentSessionPhase;
-  /** True only while an operation is executing; queued work is reported separately. */
-  readonly isBusy: boolean;
-  /** Operations waiting behind the active one. Does not count the active operation. */
-  readonly queuedOperationCount: number;
-  readonly agentSessionId: string;
-  readonly internalSessionId: string | null;
-  readonly adapterId: string;
-  readonly mode: AgentMode;
-  readonly promptability: AgentSessionPromptability;
-}
-
-export type ConfigurationRestoreStatus =
-  | { readonly kind: "matched" }
-  | { readonly kind: "partial"; readonly omittedConfigIds: readonly string[] }
-  | {
-      readonly kind: "mismatch";
-      readonly configIds: readonly string[];
-      readonly reasons: readonly string[];
-    };
-
-export type PromptBlocker =
-  | "continuation_unavailable"
-  | "recovery_required"
-  | "configuration_mismatch"
-  | "persistence_unhealthy"
-  | "maintenance_pending"
-  | "session_stopped";
-
-export type AgentSessionPromptability =
-  | { readonly promptable: true; readonly blockers: readonly [] }
-  | { readonly promptable: false; readonly blockers: readonly PromptBlocker[] };
-
-export interface ContinuationAttempt {
-  readonly strategy: ContinuationStrategy["kind"];
-  readonly status: "succeeded" | "failed" | "skipped";
-  readonly errorCode?: PersistedMachineCode;
-  readonly reason?: string;
-}
-
-export interface ContinuationReport {
-  readonly recordedAdapterId: string;
-  readonly recordedInternalSessionId: string | null;
-  readonly requestedAdapterId: string;
-  readonly recordedConversationAvailability: "available" | "partial" | "not_captured";
-  readonly recordedThreadAvailability: "available" | "unavailable" | "not_checked";
-  readonly attempts: readonly ContinuationAttempt[];
-  readonly outcome:
-    | { readonly kind: "loaded"; readonly activeInternalSessionId: string }
-    | {
-        readonly kind: "reconstructed";
-        readonly source: "transcript" | "consumer";
-        readonly activeInternalSessionId: string;
-        readonly transitionId: string;
-      }
-    | { readonly kind: "unavailable" };
-}
-
-export interface TranscriptContinuationBuilderContext {
-  readonly agentSessionId: string;
-  readonly checkpoint: AgentSessionCheckpoint;
-  /** Snapshot-bound access to captured history; the builder decides how much to read. */
-  readonly transcript: TranscriptReader;
-  readonly targetAdapterId: string;
-}
-
-export type TranscriptContinuationBuilder = (
-  context: TranscriptContinuationBuilderContext,
-) => Promise<{ readonly continuation: string; readonly metadata?: Readonly<Record<string, JsonValue>> }>;
-
-export type ContinuationStrategy =
-  | { readonly kind: "load_internal_session" }
-  | {
-      readonly kind: "new_from_transcript";
-      readonly strategyId: string;
-      readonly buildContinuation: TranscriptContinuationBuilder;
-    }
-  | {
-      readonly kind: "new_from_consumer_continuation";
-      readonly continuationId: string;
-      readonly continuation: string;
-    };
-
-export interface OpenContinuationOptions {
-  /** Defaults to only `load_internal_session`; an empty array is invalid. */
-  readonly strategies?: readonly ContinuationStrategy[];
-}
-
 export interface AgentSessionOpenResult {
   readonly session: AgentSession;
   readonly continuation: ContinuationReport;
@@ -272,191 +235,6 @@ export interface AgentSessionOpenResult {
   readonly configuration: ConfigurationRestoreStatus;
   readonly promptability: AgentSessionPromptability;
   readonly repairs: readonly PersistenceRepair[];
-}
-
-export type ConfigurationMismatchResolution =
-  | { readonly strategy: "accept_effective" }
-  | {
-      readonly strategy: "replace_restoration_targets";
-      readonly selections: readonly { readonly configId: string; readonly value: JsonValue }[];
-    };
-
-export interface ConfigurationMismatchResolutionResult {
-  readonly configuration: ConfigurationRestoreStatus;
-  readonly appliedConfigIds: readonly string[];
-}
-
-export type AgentSessionRecoveryResolution =
-  | { readonly strategy: "accept_harness_state" }
-  | {
-      readonly strategy: "start_new_internal_session";
-      /** When omitted, the currently loaded harness thread generates portable context. */
-      readonly continuation?: string;
-    };
-
-export interface AgentSessionRecoveryResolutionResult {
-  readonly previous: Extract<SessionRecoveryStatus, { readonly kind: "uncertain" }>;
-  readonly recovery: Extract<SessionRecoveryStatus, { readonly kind: "clean" }>;
-  /** Present when resolution deliberately replaced the provider thread. */
-  readonly handoff?: HandoffResult;
-}
-
-export class AgentSessionPromptBlockedError extends Error {
-  constructor(readonly blockers: readonly PromptBlocker[]) {
-    super(`AgentSession cannot mutate while blocked: ${blockers.join(", ")}`);
-    this.name = "AgentSessionPromptBlockedError";
-  }
-}
-
-export class ContinuationUnavailableError extends Error {
-  constructor(readonly continuation: ContinuationReport, options?: ErrorOptions) {
-    super("recorded internal session could not be loaded", options);
-    this.name = "ContinuationUnavailableError";
-  }
-}
-
-export class AdapterMismatchError extends Error {
-  constructor(readonly recordedAdapterId: string, readonly requestedAdapterId: string) {
-    super(`adapter mismatch: transcript requires ${recordedAdapterId}, received ${requestedAdapterId}`);
-    this.name = "AdapterMismatchError";
-  }
-}
-
-/** Direct V2 audit creation is deferred until it has the same crash transaction as managed creation. */
-export class DirectAuditPersistenceUnsupportedError extends Error {
-  constructor() {
-    super("direct V2 audit persistence is not supported; use SessionManager.createAgentSession()");
-    this.name = "DirectAuditPersistenceUnsupportedError";
-  }
-}
-
-export interface HandoffOptions {
-  /** Portable continuation context. When omitted, the current thread generates it. */
-  readonly summary?: string;
-}
-
-export interface HandoffResult {
-  readonly handoffId: string;
-  readonly agentSessionId: string;
-  readonly fromInternalSessionId: string | null;
-  readonly toInternalSessionId: string;
-  readonly summary: string;
-  /** One record per token-consuming operation the handoff performed, in order. */
-  readonly meteringRecords: readonly OperationMeteringRecord[];
-}
-
-/** Session-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
-export type AgentSessionEvent =
-  | { kind: "state_changed"; state: AgentSessionState }
-  | { kind: "turn_started"; turnId: string }
-  | { kind: "turn_completed"; turnId: string; result: PromptResult }
-  | { kind: "turn_failed"; turnId: string; error: string }
-  /** A display item revision was appended to the transcript and can be joined to reloads by id. */
-  | { kind: "presentation_recorded"; item: TranscriptPresentationItem }
-  /** The active ACP harness changed the slash commands it advertises. */
-  | { kind: "internal_session_commands_changed"; commands: readonly InternalSessionCommand[] }
-  | {
-      kind: "handoff_started";
-      handoffId: string;
-      fromInternalSessionId: string | null;
-    }
-  | { kind: "handoff_completed"; result: HandoffResult }
-  | {
-      kind: "handoff_failed";
-      handoffId: string;
-      fromInternalSessionId: string | null;
-      toInternalSessionId?: string;
-      error: string;
-      /** Records produced before and during the failure. */
-      meteringRecords: readonly OperationMeteringRecord[];
-    }
-  | { kind: "configuration_started"; operationId: string; configId: string }
-  | { kind: "configuration_completed"; operationId: string; configId: string }
-  | { kind: "configuration_failed"; operationId: string; configId: string; error: string }
-  | { kind: "mode_change_started"; transitionId: string; from: AgentMode; to: AgentMode }
-  | { kind: "mode_change_completed"; transitionId: string; from: AgentMode; to: AgentMode }
-  | { kind: "mode_change_failed"; transitionId: string; from: AgentMode; to: AgentMode; error: string }
-  | {
-      kind: "configuration_mismatch_resolved";
-      configuration: ConfigurationRestoreStatus;
-      appliedConfigIds: readonly string[];
-    }
-  | {
-      kind: "recovery_resolved";
-      strategy: AgentSessionRecoveryResolution["strategy"];
-      previous: Extract<SessionRecoveryStatus, { kind: "uncertain" }>;
-      recovery: Extract<SessionRecoveryStatus, { kind: "clean" }>;
-    }
-  /** Latest context-window observation for the ACTIVE provider thread, or null. */
-  | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
-  /** Latest cumulative provider-reported cost. Telemetry, never asserted to be an invoice. */
-  | { kind: "provider_cost_changed"; providerCost: ProviderCostSnapshot | null }
-  /** One immutable record per observed operation, emitted before its turn completes. */
-  | { kind: "metering_recorded"; record: OperationMeteringRecord }
-  /** A strict mode detected a metering failure; later token-consuming work will reject. */
-  | { kind: "metering_blocked"; reason: string }
-  | { kind: "metering_unblocked" }
-  | {
-      kind: "metering_reconciled";
-      before: AgentSessionMeteringState;
-      after: AgentSessionMeteringState;
-      reason: string;
-      reference?: string;
-      reconciledAt: number;
-    };
-
-/** A prompt result enriched with the operation's metering record. */
-export interface AgentSessionPromptResult extends PromptResult {
-  readonly operationId: string;
-  /**
-   * The operation's record, or null when the operation never reached the provider.
-   *
-   * Null happens only for a queued prompt cancelled before dispatch (§16). Such an
-   * operation consumed nothing, and minting a record for it would put a fabricated
-   * entry in the consumer's ledger — so the field is honestly empty instead.
-   */
-  readonly metering: OperationMeteringRecord | null;
-}
-
-/** Ordered envelope delivered to every AgentSession subscriber. */
-export interface AgentSessionNotification {
-  readonly seq: number;
-  readonly ts: number;
-  readonly agentSessionId: string;
-  readonly event: AgentSessionEvent;
-}
-
-export type AgentSessionListener = (notification: AgentSessionNotification) => void;
-
-/** What to record when `transcriptActivity` is on. */
-export interface TranscriptActivityConfig {
-  /**
-   * Which record kinds to persist. Default: `tool`, `thinking`, `plan`, `plan_update`,
-   * `plan_removed`, `usage`, `mode`, `unknown` — everything except client state
-   * (`commands`, `config`, `session_info`) and `user_message`, which duplicates `t:"msg"`.
-   */
-  kinds?: Array<ActivityEvent["kind"]>;
-  /**
-   * Write an extra line the first time a tool call learns its arguments. Default true —
-   * agents routinely announce a call long before they know what it will run, so without
-   * this a turn that dies mid-call leaves a record naming the tool but not the command.
-   *
-   * This is an aggregator-level knob, so it also shapes `onRecord`'s `emitted` when no
-   * transcript is configured.
-   */
-  checkpointOnInput?: boolean;
-  /**
-   * Persist `rawOutput`. Default false: in practice it is a byte-identical duplicate of
-   * `content` (measured on live Kimi), so it doubles the largest field on the line.
-   */
-  rawOutput?: boolean;
-  /**
-   * Cap each individual string field (terminal output, text content, a stringified
-   * `rawInput`) at this many bytes, appending `… [truncated N bytes]` and marking the
-   * line `truncated: true`. Default off. Per-field on purpose — capping the serialized
-   * line would emit unparseable JSON.
-   */
-  maxBytes?: number;
 }
 
 const DEFAULT_ACTIVITY_KINDS: Array<ActivityEvent["kind"]> = [
@@ -484,16 +262,6 @@ function continuationPrompt(summary: string): string {
     summary,
   ].join("\n");
 }
-
-/** Explicit selection of the provider thread backing a newly opened AgentSession. */
-export type ProviderSession =
-  | { readonly kind: "new" }
-  | {
-      readonly kind: "load";
-      readonly internalSessionId: string;
-      /** Default "error": never silently replace a requested thread. */
-      readonly onFailure?: "error" | "new";
-    };
 
 export interface AgentSessionConfig {
   /** The resolved adapter this conversation talks to. */
