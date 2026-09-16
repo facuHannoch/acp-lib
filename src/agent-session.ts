@@ -137,6 +137,15 @@ import type {
 } from "./agent-conversation-contracts.ts";
 import { AgentConversationQueue } from "./agent-conversation-queue.ts";
 import { AgentConversationPresentation } from "./agent-conversation-presentation.ts";
+import {
+  HANDOFF_SUMMARY_PROMPT,
+  buildContinuationPrompt,
+  createContinuationReport,
+  descriptorFromCheckpoint,
+  isReconstructionStrategy,
+  normalizeContinuationStrategies,
+  stageOpeningContinuation,
+} from "./agent-conversation-continuation.ts";
 
 export {
   AdapterMismatchError,
@@ -230,21 +239,6 @@ export interface AgentSessionOpenResult {
   readonly configuration: ConfigurationRestoreStatus;
   readonly promptability: AgentSessionPromptability;
   readonly repairs: readonly PersistenceRepair[];
-}
-
-const HANDOFF_SUMMARY_PROMPT = [
-  "Create portable continuation context for a new agent thread.",
-  "Summarize the objective, decisions, completed work, current state, important files or identifiers,",
-  "and concrete next steps. Preserve unresolved risks and constraints. Return only the continuation context.",
-].join(" ");
-
-function continuationPrompt(summary: string): string {
-  return [
-    "Continue this conversation using the following portable continuation context.",
-    "Treat it as prior context, not as a new user request. Confirm internally and continue from this state.",
-    "",
-    summary,
-  ].join("\n");
 }
 
 export interface AgentSessionConfig {
@@ -645,7 +639,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         strategy: "load_internal_session",
         status: "succeeded",
       });
-      const continuation = continuationReport(
+      const continuation = createContinuationReport(
         checkpoint, config.adapterId, session.v2Transcript, "available", [attempt],
         { kind: "loaded", activeInternalSessionId: result.sessionId },
       );
@@ -1015,7 +1009,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           this.continuationAcquired = true;
           recordedThreadAvailability = "available";
           attempts.push(Object.freeze({ strategy: strategy.kind, status: "succeeded" }));
-          return continuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
+          return createContinuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
             kind: "loaded",
             activeInternalSessionId: loaded.sessionId,
           });
@@ -1154,7 +1148,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         const seeded = await this.meteredInternalPrompt(
           `${transitionId}:seed`,
           "switch_seed",
-          continuationPrompt(continuation.trim()),
+          buildContinuationPrompt(continuation.trim()),
           records,
         );
         if (seeded.status !== "completed") {
@@ -1172,7 +1166,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         });
         this.continuationAcquired = true;
         attempts.push(Object.freeze({ strategy: strategy.kind, status: "succeeded" }));
-        return continuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
+        return createContinuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
           kind: "reconstructed",
           source,
           activeInternalSessionId: created.sessionId,
@@ -1204,7 +1198,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       }
     }
 
-    return continuationReport(
+    return createContinuationReport(
       checkpoint,
       this.adapterId,
       this.v2Transcript,
@@ -1743,7 +1737,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       const seeded = await this.meteredInternalPrompt(
         `${item.handoffId}:seed`,
         "handoff_seed",
-        continuationPrompt(summary),
+        buildContinuationPrompt(summary),
         records,
       );
       if (seeded.status !== "completed") {
@@ -3144,94 +3138,6 @@ export class AgentSession implements AgentClient, Bridgeable {
 
 function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
   return kind === "internal_command" ? "internal_session_command" : kind;
-}
-
-function continuationReport(
-  checkpoint: AgentSessionCheckpoint,
-  requestedAdapterId: string,
-  transcript: PersistenceStateRuntime,
-  recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"],
-  attempts: readonly ContinuationAttempt[],
-  outcome: ContinuationReport["outcome"],
-): ContinuationReport {
-  return Object.freeze({
-    recordedAdapterId: checkpoint.adapterId,
-    recordedInternalSessionId: checkpoint.internalSessionId,
-    requestedAdapterId,
-    recordedConversationAvailability: transcript.conversationAvailability,
-    recordedThreadAvailability,
-    attempts: Object.freeze(attempts.map((attempt) => Object.freeze({ ...attempt }))),
-    outcome: Object.freeze({ ...outcome }),
-  });
-}
-
-function descriptorFromCheckpoint(checkpoint: AgentSessionCheckpoint): InternalSessionDescriptor {
-  return {
-    internalSessionId: checkpoint.internalSessionId,
-    adapterId: checkpoint.adapterId,
-    mode: checkpoint.mode,
-    model: checkpoint.model,
-    sessionConfiguration: checkpoint.sessionConfiguration,
-    activatedAt: checkpoint.internalSessionActivatedAt,
-    protocol: checkpoint.protocol,
-  };
-}
-
-function isReconstructionStrategy(strategy: ContinuationStrategy): boolean {
-  return strategy.kind === "new_from_transcript" || strategy.kind === "new_from_consumer_continuation";
-}
-
-function normalizeContinuationStrategies(
-  options: OpenContinuationOptions | undefined,
-): readonly ContinuationStrategy[] {
-  const strategies = options?.strategies ?? [{ kind: "load_internal_session" as const }];
-  if (strategies.length === 0) throw new Error("continuation.strategies cannot be empty");
-  return Object.freeze(strategies.map((strategy): ContinuationStrategy => {
-    if (strategy.kind === "load_internal_session") {
-      return Object.freeze({ kind: strategy.kind });
-    }
-    if (strategy.kind === "new_from_transcript") {
-      if (!strategy.strategyId.trim()) throw new Error("transcript continuation strategyId cannot be blank");
-      if (typeof strategy.buildContinuation !== "function") {
-        throw new Error("transcript continuation strategy requires buildContinuation");
-      }
-      return Object.freeze({
-        kind: strategy.kind,
-        strategyId: strategy.strategyId,
-        buildContinuation: strategy.buildContinuation,
-      });
-    }
-    if (!strategy.continuationId.trim()) throw new Error("consumer continuationId cannot be blank");
-    if (!strategy.continuation.trim()) throw new Error("consumer continuation cannot be blank");
-    return Object.freeze({
-      kind: strategy.kind,
-      continuationId: strategy.continuationId,
-      continuation: strategy.continuation,
-    });
-  }));
-}
-
-async function stageOpeningContinuation(
-  stage: ((state: StagedContinuationState) => Promise<StagedContinuationState>) | undefined,
-  checkpoint: AgentSessionCheckpoint,
-  internalSessionId: string,
-): Promise<void> {
-  if (!stage) return;
-  const observed: StagedContinuationState = {
-    adapterId: checkpoint.adapterId,
-    mode: checkpoint.mode,
-    internalSessionId,
-    internalSessionActivatedAt: checkpoint.internalSessionActivatedAt,
-    model: checkpoint.model,
-    sessionConfiguration: checkpoint.sessionConfiguration,
-    protocol: checkpoint.protocol,
-  };
-  const persisted = await stage(observed);
-  if (persisted.adapterId !== observed.adapterId
-    || persisted.mode !== observed.mode
-    || persisted.internalSessionId !== observed.internalSessionId) {
-    throw new Error("staged continuation disagrees with the loaded provider identity");
-  }
 }
 
 function configurationTargetIssue(

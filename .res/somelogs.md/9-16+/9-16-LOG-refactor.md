@@ -169,3 +169,39 @@ architectural intent and the evidence used to verify each change.
   interleaving, persistence, and reload behavior.
 - Typecheck plus those focused suites are run before committing; the full suite is
   used if the focused boundary stays green.
+
+## Step 6 — Continuation and opening policy
+
+### Completed
+
+- Added `agent-conversation-continuation.ts` as the policy boundary used by both
+  ordinary transcript opens and registry-authoritative managed opens.
+- Moved validation and immutable snapshotting of ordered continuation strategies
+  out of the implementation class.
+- Moved reconstruction classification, continuation report construction,
+  checkpoint-to-provider-descriptor mapping, portable continuation prompt
+  construction, the handoff summary prompt, and staged provider-identity
+  verification into that boundary.
+- Left the side-effectful acquisition loop in `AgentSession` for this tranche. It
+  coordinates controller start/fresh-start, configuration restoration, metering,
+  transitions, and mutable recovery state; moving it now would require exposing a
+  broad callback bag rather than producing a real independent component. The new
+  policy module is the seam from which that loop can move once `AgentConversation`
+  owns those dependencies explicitly.
+
+### Files
+
+- `src/agent-conversation-continuation.ts`
+- `src/agent-session.ts`
+- `test/agent-conversation-continuation.test.ts`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Focused tests cover default load-only behavior, policy ownership, rejection of
+  empty/blank strategies, immutable reports, exact provider-identity staging, and
+  portable prompt construction.
+- Existing continuation integration tests cover load failure, ordered fallback,
+  cross-adapter reconstruction, activation failure, recovery, and configuration
+  restoration.
+- Typecheck and the focused continuation suites are run before committing.
