@@ -70,3 +70,11 @@ export type {
   VectorSearchMatch,
   VectorSearchQuery,
 } from "./backend.ts";
+
+export {
+  SqliteAgentPersistence,
+  hasSafeConcurrentWal,
+  requireSqliteSearch,
+} from "./sqlite-backend.ts";
+export type { SqliteAgentPersistenceConfig } from "./sqlite-backend.ts";
+export { SQLITE_AGENT_SCHEMA_VERSION } from "./sqlite-schema.ts";

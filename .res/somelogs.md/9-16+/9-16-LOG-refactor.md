@@ -357,3 +357,51 @@ architectural intent and the evidence used to verify each change.
 - Typecheck and the focused persistence-contract suite passed.
 - A pre-existing audit-creation test failed once in the first parallel full run, then
   passed in isolation; the clean full-suite rerun passed 706 tests with 0 failures.
+
+## Step 11 — SQLite agent persistence
+
+### Completed
+
+- Added a caller-located SQLite backend whose database is permanently bound to one
+  stable `ags` identity and contains any number of `agc` conversations.
+- Added schema migrations for conversations, stable participants, ordered typed
+  records, runtime checkpoints, provider-session history, identity observations and
+  snapshots, the audit outbox, and versioned persistence extensions.
+- Enabled WAL, foreign keys, bounded busy waits, short `BEGIN IMMEDIATE` write
+  transactions, and an upstream-version guard for the multi-connection WAL-reset fix.
+- Assigned conversation-local sequences atomically in SQLite. Multiple backend
+  instances and processes can therefore contend on one agent database without a
+  process-local lock deciding correctness.
+- Added direct message retrieval that preserves authored message boundaries and applies
+  participant filters before pagination.
+- Added external-content FTS5 indexing over immutable record payloads, with search
+  filters, rebuild, and integrity-check operations. SQLite stores the term index but no
+  second shadow copy of the payload text.
+- Added checkpoint compare-and-swap, provider-session activation history, append-only
+  identity observations with projection watermarks, derived identity snapshots, and a
+  durable audit delivery queue.
+- Added transactional extension migrations and post-commit record hooks so vector/RAG
+  implementations can add tables without entering the core schema.
+- Exported the backend from both the root package and the `./persistence` subpath. The
+  existing JSONL runtime remains available and unchanged.
+
+### Files
+
+- `src/persistence/sqlite-schema.ts`
+- `src/persistence/sqlite-backend.ts`
+- `src/persistence/index.ts`
+- `src/index.ts`
+- `test/persistence-sqlite-backend.test.ts`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Focused persistence suites passed: 15 tests, 0 failures.
+- SQLite coverage includes explicit paths, database/agent ownership, reopen and exact
+  chat reconstruction, filtered pagination, two-connection concurrent writes, rollback,
+  FTS5, checkpoints, provider history, identity state, audit delivery, extensions, and
+  safe-version recognition.
+- Typecheck passed.
+- The default parallel full suite exposed an existing timestamp-ordering flake twice;
+  each affected test passed alone. The complete serial regression run passed 715 tests
+  with 0 failures and 2,767 expectations.

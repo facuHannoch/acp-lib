@@ -42,6 +42,13 @@ export {
   resolveConversationRecordCapture,
   searchableText,
 } from "./persistence/backend.ts";
+export {
+  SQLITE_AGENT_SCHEMA_VERSION,
+  SqliteAgentPersistence,
+  hasSafeConcurrentWal,
+  requireSqliteSearch,
+} from "./persistence/index.ts";
+export type { SqliteAgentPersistenceConfig } from "./persistence/index.ts";
 export type {
   AgentConversationSummary,
   AgentPersistenceIdentity,
