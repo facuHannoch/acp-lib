@@ -14,6 +14,8 @@ import {
   type AgentConversationConfig,
 } from "./agent-session.ts";
 import type { AgentMode } from "./controller.ts";
+import type { OperationMeteringRecord } from "./metering/record.ts";
+import type { AgentSessionMeteringState } from "./metering/state.ts";
 import {
   NoopAgentIdentityRuntime,
   composeIdentityPrompt,
@@ -29,6 +31,7 @@ import {
   type ConversationPage,
   type ConversationRecord,
   type ConversationRecordCapturePolicy,
+  type MeteringRecordRetention,
   type NewConversationRecord,
   type ParticipantRef,
   type PersistenceBackend,
@@ -83,6 +86,10 @@ export interface AgentConfig {
   readonly identityTimeoutMs?: number;
   readonly capture?: Partial<ConversationRecordCapturePolicy>;
   readonly conversationDefaults?: AgentConversationRuntimeDefaults;
+  /** Bounded metering state is always persisted; this controls detailed local history. */
+  readonly meteringPersistence?: {
+    readonly meteringRecords?: MeteringRecordRetention;
+  };
 }
 
 export interface CreateAgentConversationConfig {
@@ -147,6 +154,7 @@ export class Agent {
       identityTimeoutMs: config.identityTimeoutMs,
       capture: resolveConversationRecordCapture(config.capture),
       defaults: config.conversationDefaults ?? {},
+      meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
     });
     this.conversations = this.manager;
   }
@@ -211,6 +219,7 @@ interface ManagerSettings {
   readonly identityTimeoutMs?: number;
   readonly capture: ConversationRecordCapturePolicy;
   readonly defaults: AgentConversationRuntimeDefaults;
+  readonly meteringRecords: MeteringRecordRetention;
 }
 
 class DefaultAgentConversationManager implements AgentConversationManager {
@@ -298,6 +307,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     const adapterId = this.resolveAdapterId(config.adapterId);
     const adapter = this.agent.adapters.require(adapterId);
     const runtime = { ...this.settings.defaults, ...config.runtime };
+    const persistedMetering = await this.agent.persistence.metering.state(id);
     const lifecycle = new PersistedConversationLifecycle(
       this.agent,
       id,
@@ -308,6 +318,9 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     try {
       conversation = await AgentConversation.create({
         ...runtime,
+        ...(persistedMetering
+          ? { metering: { ...runtime.metering, initialState: persistedMetering.state } }
+          : {}),
         ...("title" in config && config.title !== undefined ? { title: config.title } : {}),
         adapter,
         adapterId,
@@ -460,6 +473,18 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       captureRuntimeRecord(record, level),
     );
     await this.updateIdentity([persisted]);
+  }
+
+  async meteringRecorded(record: OperationMeteringRecord): Promise<void> {
+    await this.agent.persistence.metering.commit({
+      agentConversationId: this.conversationId,
+      record,
+      meteringRecords: this.settings.meteringRecords,
+    });
+  }
+
+  async meteringStateChanged(state: AgentSessionMeteringState): Promise<void> {
+    await this.agent.persistence.metering.saveState(this.conversationId, state);
   }
 
   private async resolveParticipant(participantId?: string): Promise<ParticipantRef> {

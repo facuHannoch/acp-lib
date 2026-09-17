@@ -94,8 +94,8 @@ Reopen the same database with `Agent.open()` and call
 
 The minimal end-to-end executable example is
 [`smoke-tests/test8-test/index.ts`](./smoke-tests/test8-test/index.ts). It sends `"hi"`
-through a deterministic ACP harness and independently queries SQLite to assert that the
-canonical user-message row contains `"hi"`:
+through an ACP harness and independently queries SQLite to assert that the canonical
+user-message row contains `"hi"`:
 
 ```bash
 bun smoke-tests/test8-test/index.ts
@@ -108,6 +108,44 @@ the database at a caller-selected location for inspection:
 ACP_TEST8_DATA_DIR=./smoke-tests/test8-test/data \
   bun smoke-tests/test8-test/index.ts
 ```
+
+The current smoke scenario defaults to Codex because its second process opening verifies
+that the provider thread remembers prior conversation context. It may use credentials and
+consume model tokens.
+
+### SQLite metering persistence
+
+SQLite-backed agents always persist the bounded metering state needed to restore lifetime
+totals and the active provider-counter baseline. By default they also retain every complete
+`OperationMeteringRecord` locally:
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  defaultAdapterId: "codex",
+  meteringPersistence: {
+    meteringRecords: "all", // default
+  },
+});
+
+const page = await agent.persistence.metering.list(conversationId);
+const records = page.records;
+const state = await agent.persistence.metering.state(conversationId);
+```
+
+Consumers with a separate authoritative billing store can omit the detailed local history:
+
+```ts
+meteringPersistence: {
+  meteringRecords: "none",
+}
+```
+
+`"none"` still writes a minimal operation marker for idempotency and always advances the
+bounded restoration state. It only omits the full serialized metering record. Continue to
+consume `result.metering` or `metering_recorded` notifications when delivering records to
+an external billing repository.
 
 ## Legacy direct and managed sessions
 

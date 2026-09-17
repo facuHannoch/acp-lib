@@ -1,4 +1,6 @@
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
+import type { OperationMeteringRecord } from "../metering/record.ts";
+import type { AgentSessionMeteringState } from "../metering/state.ts";
 
 export type PersistenceJsonPrimitive = string | number | boolean | null;
 export type PersistenceJsonValue =
@@ -369,6 +371,51 @@ export interface ProviderSessionPersistence {
   active(agentConversationId: AgentConversationId): Promise<ProviderSessionRecord | null>;
 }
 
+export type MeteringRecordRetention = "all" | "none";
+
+export interface PersistedConversationMeteringState {
+  readonly agentConversationId: AgentConversationId;
+  readonly revision: number;
+  readonly state: AgentSessionMeteringState;
+  readonly updatedAt: string;
+}
+
+export interface MeteringCommitInput {
+  readonly agentConversationId: AgentConversationId;
+  readonly record: OperationMeteringRecord;
+  readonly meteringRecords: MeteringRecordRetention;
+  readonly updatedAt?: string;
+}
+
+export interface MeteringRecordListOptions {
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export interface MeteringRecordPage {
+  readonly records: readonly OperationMeteringRecord[];
+  readonly nextCursor?: string;
+}
+
+export interface MeteringPersistence {
+  /** Atomically deduplicate the operation and advance its bounded restoration state. */
+  commit(input: MeteringCommitInput): Promise<PersistedConversationMeteringState>;
+  saveState(
+    agentConversationId: AgentConversationId,
+    state: AgentSessionMeteringState,
+    updatedAt?: string,
+  ): Promise<PersistedConversationMeteringState>;
+  state(agentConversationId: AgentConversationId): Promise<PersistedConversationMeteringState | null>;
+  list(
+    agentConversationId: AgentConversationId,
+    options?: MeteringRecordListOptions,
+  ): Promise<MeteringRecordPage>;
+  get(
+    agentConversationId: AgentConversationId,
+    operationId: string,
+  ): Promise<OperationMeteringRecord | null>;
+}
+
 export interface SearchPersistence {
   search(query: SearchQuery): Promise<readonly SearchMatch[]>;
   rebuild(): Promise<void>;
@@ -407,6 +454,7 @@ export interface PersistenceCapabilities {
   readonly auditOutbox: boolean;
   readonly extensions: boolean;
   readonly vectorSearch: boolean;
+  readonly metering: boolean;
 }
 
 export interface PersistenceScope {
@@ -415,6 +463,7 @@ export interface PersistenceScope {
   readonly messages: ConversationMessagePersistence;
   readonly checkpoints: ConversationCheckpointPersistence;
   readonly providerSessions: ProviderSessionPersistence;
+  readonly metering: MeteringPersistence;
   readonly identity?: IdentityPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox?: AuditOutboxPersistence;

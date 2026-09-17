@@ -34,6 +34,10 @@ import {
   type MessageListOptions,
   type MessagePage,
   type MessageRecord,
+  type MeteringCommitInput,
+  type MeteringPersistence,
+  type MeteringRecordListOptions,
+  type MeteringRecordPage,
   type NewConversationRecord,
   type NewIdentityMemoryObservation,
   type ParticipantRef,
@@ -46,6 +50,7 @@ import {
   type PersistenceJsonPrimitive,
   type PersistenceJsonValue,
   type PersistenceScope,
+  type PersistedConversationMeteringState,
   type ProviderSessionPersistence,
   type ProviderSessionRecord,
   type RecordListOptions,
@@ -53,6 +58,8 @@ import {
   type SearchPersistence,
   type SearchQuery,
 } from "./backend.ts";
+import type { OperationMeteringRecord } from "../metering/record.ts";
+import type { AgentSessionMeteringState } from "../metering/state.ts";
 import { installSqliteFts, migrateSqliteAgentSchema } from "./sqlite-schema.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
@@ -110,6 +117,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly messages: ConversationMessagePersistence;
   readonly checkpoints: ConversationCheckpointPersistence;
   readonly providerSessions: ProviderSessionPersistence;
+  readonly metering: MeteringPersistence;
   readonly identity: IdentityPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox: AuditOutboxPersistence;
@@ -136,6 +144,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       auditOutbox: true,
       extensions: true,
       vectorSearch: false,
+      metering: true,
     });
     const scope = this.createScope((work) => this.autoWrite(work), (records) => this.notifyRecordsCommitted(records));
     this.conversations = scope.conversations;
@@ -143,6 +152,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.messages = scope.messages;
     this.checkpoints = scope.checkpoints;
     this.providerSessions = scope.providerSessions;
+    this.metering = scope.metering;
     this.identity = scope.identity!;
     this.search = fullTextSearch ? new SqliteSearchPersistence(database) : undefined;
     this.auditOutbox = scope.auditOutbox!;
@@ -238,6 +248,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       messages: new SqliteConversationMessagePersistence(this.database),
       checkpoints: new SqliteCheckpointPersistence(this.database, runWrite),
       providerSessions: new SqliteProviderSessionPersistence(this.database, runWrite),
+      metering: new SqliteMeteringPersistence(this.database, runWrite),
       identity: new SqliteIdentityPersistence(
         this.database,
         this.identityRecord.agentSessionId,
@@ -730,6 +741,194 @@ class SqliteProviderSessionPersistence implements ProviderSessionPersistence {
     ).get(agentConversationId);
     return row ? providerSessionFromRow(row) : null;
   }
+}
+
+class SqliteMeteringPersistence implements MeteringPersistence {
+  constructor(private readonly database: Database, private readonly runWrite: WriteRunner) {}
+
+  async commit(input: MeteringCommitInput): Promise<PersistedConversationMeteringState> {
+    return await this.runWrite(() => {
+      requireConversation(this.database, input.agentConversationId);
+      const operationId = nonblank(input.record.operationId, "metering operationId");
+      const existing = this.database.query<{ record_json: string | null }, [string, string]>(
+        `SELECT record_json FROM metering_records
+         WHERE agent_conversation_id = ? AND operation_id = ?`,
+      ).get(input.agentConversationId, operationId);
+      const serializedRecord = JSON.stringify(input.record);
+      if (existing) {
+        if (existing.record_json !== null && existing.record_json !== serializedRecord) {
+          throw new PersistenceConflictError(
+            `metering operation already exists with different content: ${operationId}`,
+          );
+        }
+        if (input.meteringRecords === "all" && existing.record_json === null) {
+          runSql(this.database,
+            `UPDATE metering_records SET record_json = ?
+             WHERE agent_conversation_id = ? AND operation_id = ?`,
+            serializedRecord,
+            input.agentConversationId,
+            operationId,
+          );
+        }
+        const current = readMeteringState(this.database, input.agentConversationId);
+        if (!current) {
+          throw new PersistenceConflictError(
+            `metering operation ${operationId} exists without restoration state`,
+          );
+        }
+        return current;
+      }
+
+      const current = readMeteringState(this.database, input.agentConversationId);
+      if (input.record.nextState.agentSessionId !== input.record.agentSessionId) {
+        throw new PersistenceConflictError("metering record and next state belong to different agents");
+      }
+      if (current && input.record.nextState.operationCount !== current.state.operationCount + 1) {
+        throw new PersistenceConflictError(
+          `metering operation count mismatch: expected ${current.state.operationCount + 1}, found ${input.record.nextState.operationCount}`,
+        );
+      }
+      if (!current && input.record.nextState.operationCount !== 1) {
+        throw new PersistenceConflictError(
+          `initial metering operation count must be 1, found ${input.record.nextState.operationCount}`,
+        );
+      }
+
+      runSql(this.database,
+        `INSERT INTO metering_records(
+          agent_conversation_id, operation_id, internal_session_id, adapter_id,
+          operation_kind, outcome, completed_at, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        input.agentConversationId,
+        operationId,
+        input.record.internalSessionId,
+        input.record.provider.adapterId,
+        input.record.operationKind,
+        input.record.outcome,
+        input.record.completedAt,
+        input.meteringRecords === "all" ? serializedRecord : null,
+      );
+
+      const revision = (current?.revision ?? 0) + 1;
+      const updatedAt = input.updatedAt ?? new Date().toISOString();
+      runSql(this.database,
+        `INSERT INTO conversation_metering_state(
+          agent_conversation_id, revision, state_json, updated_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(agent_conversation_id) DO UPDATE SET
+          revision = excluded.revision,
+          state_json = excluded.state_json,
+          updated_at = excluded.updated_at`,
+        input.agentConversationId,
+        revision,
+        JSON.stringify(input.record.nextState),
+        updatedAt,
+      );
+      return Object.freeze({
+        agentConversationId: input.agentConversationId,
+        revision,
+        state: structuredClone(input.record.nextState),
+        updatedAt,
+      });
+    });
+  }
+
+  async state(agentConversationId: AgentConversationId): Promise<PersistedConversationMeteringState | null> {
+    requireConversation(this.database, agentConversationId);
+    return readMeteringState(this.database, agentConversationId);
+  }
+
+  async saveState(
+    agentConversationId: AgentConversationId,
+    state: AgentSessionMeteringState,
+    updatedAt = new Date().toISOString(),
+  ): Promise<PersistedConversationMeteringState> {
+    return await this.runWrite(() => {
+      requireConversation(this.database, agentConversationId);
+      const current = readMeteringState(this.database, agentConversationId);
+      const serialized = JSON.stringify(state);
+      if (current && JSON.stringify(current.state) === serialized) return current;
+      if (current && state.operationCount < current.state.operationCount) {
+        throw new PersistenceConflictError("metering state cannot move to an earlier operation count");
+      }
+      const revision = (current?.revision ?? 0) + 1;
+      runSql(this.database,
+        `INSERT INTO conversation_metering_state(
+          agent_conversation_id, revision, state_json, updated_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(agent_conversation_id) DO UPDATE SET
+          revision = excluded.revision,
+          state_json = excluded.state_json,
+          updated_at = excluded.updated_at`,
+        agentConversationId,
+        revision,
+        serialized,
+        updatedAt,
+      );
+      return Object.freeze({
+        agentConversationId,
+        revision,
+        state: structuredClone(state),
+        updatedAt,
+      });
+    });
+  }
+
+  async list(
+    agentConversationId: AgentConversationId,
+    options: MeteringRecordListOptions = {},
+  ): Promise<MeteringRecordPage> {
+    requireConversation(this.database, agentConversationId);
+    const limit = boundedInteger(options.limit ?? 100, 1, 1_000, "metering list limit");
+    const offset = decodeOffset(options.cursor);
+    const rows = this.database.query<{ record_json: string }, [string, number, number]>(
+      `SELECT record_json FROM metering_records
+       WHERE agent_conversation_id = ? AND record_json IS NOT NULL
+       ORDER BY completed_at, operation_id
+       LIMIT ? OFFSET ?`,
+    ).all(agentConversationId, limit + 1, offset);
+    const hasMore = rows.length > limit;
+    return Object.freeze({
+      records: Object.freeze(rows.slice(0, limit).map((row) => Object.freeze(
+        JSON.parse(row.record_json) as OperationMeteringRecord,
+      ))),
+      ...(hasMore ? { nextCursor: encodeOffset(offset + limit) } : {}),
+    });
+  }
+
+  async get(
+    agentConversationId: AgentConversationId,
+    operationId: string,
+  ): Promise<OperationMeteringRecord | null> {
+    requireConversation(this.database, agentConversationId);
+    const row = this.database.query<{ record_json: string | null }, [string, string]>(
+      `SELECT record_json FROM metering_records
+       WHERE agent_conversation_id = ? AND operation_id = ?`,
+    ).get(agentConversationId, nonblank(operationId, "metering operationId"));
+    return row?.record_json
+      ? Object.freeze(JSON.parse(row.record_json) as OperationMeteringRecord)
+      : null;
+  }
+}
+
+function readMeteringState(
+  database: Database,
+  agentConversationId: AgentConversationId,
+): PersistedConversationMeteringState | null {
+  const row = database.query<{
+    agent_conversation_id: string;
+    revision: number;
+    state_json: string;
+    updated_at: string;
+  }, [string]>(
+    "SELECT * FROM conversation_metering_state WHERE agent_conversation_id = ?",
+  ).get(agentConversationId);
+  return row ? Object.freeze({
+    agentConversationId: row.agent_conversation_id as AgentConversationId,
+    revision: Number(row.revision),
+    state: Object.freeze(JSON.parse(row.state_json) as AgentSessionMeteringState),
+    updatedAt: row.updated_at,
+  }) : null;
 }
 
 class SqliteIdentityPersistence implements IdentityPersistence {
@@ -1314,6 +1513,11 @@ function boundedInteger(value: number, minimum: number, maximum: number, label: 
 
 function nonNegativeInteger(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative integer`);
+  return value;
+}
+
+function nonblank(value: string, label: string): string {
+  if (!value.trim()) throw new Error(`${label} cannot be blank`);
   return value;
 }
 

@@ -2115,6 +2115,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       targetActivated = true;
       this.setInternalSessionId(toInternalSessionId);
+      await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       this.emitStateIfChanged();
       await this.persist();
       await this.recordNativeAction(item.handoffId, action, "checkpoint", {
@@ -2196,6 +2197,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         toInternalSessionId = actualSessionId;
         this.emitStateIfChanged();
         try {
+          await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
           await this.persist();
         } catch (persistError) {
           this.log.warn("handoff_failure_persist_failed", { error: String(persistError) });
@@ -2611,6 +2613,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const result = await this.controller.setMode(item.mode);
       this._mode = this.controller.currentMode;
       this.setInternalSessionId(result.sessionId || null);
+      await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       await this.persist();
       return result;
     }
@@ -2926,6 +2929,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // a worse failure than the one closing early prevents.
       const record = await this.closeOperation(operation, res.status, res.usage);
       closed = record;
+      await this.ownerLifecycle?.meteringRecorded?.(record);
       await this.persist();
       if (this.v2Transcript) {
         await this.presentation.drain();
@@ -3011,6 +3015,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // Already metered: the failure happened after the operation closed (a transcript or
       // catalog write), so the record stands and must not be minted a second time.
       const record = closed ?? (await this.closeOperation(operation, "error", null, String(err)));
+      await this.ownerLifecycle?.meteringRecorded?.(record);
       if (this.v2Transcript && !transcriptClosed) {
         await this.finishV2Prompt("error", record, "unknown").catch(
           (persistenceError) => this.log.warn("transcript_terminal_write_failed", { error: String(persistenceError) }),
@@ -3096,6 +3101,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // Validated first: state is replaced atomically or not at all.
     const { before } = this.metering.reconcile(restoration.state);
     const after = this.metering.currentState;
+    await this.ownerLifecycle?.meteringStateChanged?.(after);
     this.emit({
       kind: "metering_reconciled",
       before,
@@ -3160,6 +3166,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const record = await this.closeOperation(operation, result.status, result.usage);
       records.push(record);
       closed = true;
+      await this.ownerLifecycle?.meteringRecorded?.(record);
       if (this.v2Transcript) {
         await this.v2Transcript.appendEvent({
           kind: "message",
@@ -3179,6 +3186,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         const record = await this.closeOperation(operation, "error", null, String(err));
         records.push(record);
         closed = true;
+        await this.ownerLifecycle?.meteringRecorded?.(record);
       }
       if (this.v2Transcript && !transcriptClosed) {
         const record = records[records.length - 1]!;

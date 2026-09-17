@@ -4,6 +4,8 @@ import type { AgentMode } from "./controller.ts";
 import type { NewConversationRecord, ParticipantRef } from "./persistence/backend.ts";
 import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts";
 import type { ResponseMessage } from "./types.ts";
+import type { OperationMeteringRecord } from "./metering/record.ts";
+import type { AgentSessionMeteringState } from "./metering/state.ts";
 
 export interface OwnedPromptInput {
   readonly operationId: string;
@@ -32,6 +34,10 @@ export interface AgentConversationOwnerLifecycle {
   beforePrompt(input: OwnedPromptInput): Promise<OwnedPromptPreparation>;
   afterPrompt(input: OwnedPromptCompleted): Promise<void>;
   promptFailed(input: OwnedPromptFailed): Promise<void>;
+  /** Durably commit one normalized operation record and its bounded next state. */
+  meteringRecorded?(record: OperationMeteringRecord): Promise<void>;
+  /** Persist a bounded state change that did not itself mint an operation record. */
+  meteringStateChanged?(state: AgentSessionMeteringState): Promise<void>;
   /** Resolve an agent-scoped route for a cross-adapter transition. */
   resolveAdapter?(adapterId: string): Adapter;
   /** Commit the newly active provider route before it becomes observable in memory. */

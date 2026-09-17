@@ -18,6 +18,8 @@ import {
   type NewConversationRecord,
   type PersistenceExtension,
 } from "../src/persistence/index.ts";
+import { emptyMeteringState } from "../src/metering/state.ts";
+import type { OperationMeteringRecord } from "../src/metering/record.ts";
 
 const opened: SqliteAgentPersistence[] = [];
 const directories: string[] = [];
@@ -42,6 +44,7 @@ describe("SQLite agent persistence", () => {
       auditOutbox: true,
       extensions: true,
       vectorSearch: false,
+      metering: true,
     });
 
     await backend.close();
@@ -280,6 +283,54 @@ describe("SQLite agent persistence", () => {
     expect(await backend.auditOutbox.pending()).toHaveLength(0);
   });
 
+  test("commits metering state idempotently with optional detailed record retention", async () => {
+    const { backend, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    const record = meteringRecord(agentSessionId, "meter-op-1", 1);
+
+    const committed = await backend.metering.commit({
+      agentConversationId: conversationId,
+      record,
+      meteringRecords: "all",
+      updatedAt: "2026-09-17T00:00:00.000Z",
+    });
+    expect(committed.revision).toBe(1);
+    expect(await backend.metering.get(conversationId, record.operationId)).toEqual(record);
+    expect((await backend.metering.list(conversationId)).records).toEqual([record]);
+
+    const duplicate = await backend.metering.commit({
+      agentConversationId: conversationId,
+      record,
+      meteringRecords: "all",
+    });
+    expect(duplicate.revision).toBe(1);
+
+    const second = meteringRecord(agentSessionId, "meter-op-2", 2);
+    const stateOnly = await backend.metering.commit({
+      agentConversationId: conversationId,
+      record: second,
+      meteringRecords: "none",
+    });
+    expect(stateOnly.revision).toBe(2);
+    expect(await backend.metering.get(conversationId, second.operationId)).toBeNull();
+    expect((await backend.metering.list(conversationId)).records).toEqual([record]);
+
+    const stateOnlyDuplicate = await backend.metering.commit({
+      agentConversationId: conversationId,
+      record: second,
+      meteringRecords: "none",
+    });
+    expect(stateOnlyDuplicate.revision).toBe(2);
+
+    const saved = await backend.metering.saveState(
+      conversationId,
+      stateOnly.state,
+      "2026-09-17T00:02:00.000Z",
+    );
+    expect(saved.revision).toBe(2);
+  });
+
   test("migrates extensions once and notifies them only after committed records", async () => {
     const directory = await makeDirectory();
     const path = join(directory, "agent.sqlite");
@@ -363,6 +414,36 @@ function message(
     content,
     ...(participantId ? { participantId } : {}),
   };
+}
+
+function meteringRecord(
+  agentSessionId: AgentSessionId,
+  operationId: string,
+  operationCount: number,
+): OperationMeteringRecord {
+  const state = emptyMeteringState(agentSessionId);
+  return Object.freeze({
+    operationId,
+    operationKind: "prompt",
+    outcome: "completed",
+    startedAt: 1,
+    completedAt: 2,
+    agentSessionId,
+    internalSessionId: "internal-metering-1",
+    provider: { adapterId: "test", providerId: null, model: null },
+    provenance: {
+      source: "none",
+      measurement: "unavailable",
+      routing: "unknown",
+      attribution: "unavailable",
+    },
+    usage: { status: "usage_unavailable", reason: "test fixture" },
+    pricingStatus: "not_attributable",
+    contextAfter: null,
+    providerCostAfter: null,
+    costReconciliation: { status: "unavailable", reason: "test fixture" },
+    nextState: Object.freeze({ ...state, operationCount }),
+  });
 }
 
 function now(): string {

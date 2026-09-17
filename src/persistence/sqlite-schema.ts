@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 1;
+export const SQLITE_AGENT_SCHEMA_VERSION = 2;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -91,6 +91,30 @@ CREATE INDEX IF NOT EXISTS provider_sessions_conversation_idx
   ON provider_sessions(agent_conversation_id, activated_at, provider_session_record_id);
 CREATE UNIQUE INDEX IF NOT EXISTS provider_sessions_one_active_idx
   ON provider_sessions(agent_conversation_id) WHERE deactivated_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS metering_records (
+  agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  operation_id TEXT NOT NULL,
+  internal_session_id TEXT,
+  adapter_id TEXT NOT NULL,
+  operation_kind TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  completed_at INTEGER NOT NULL,
+  record_json TEXT,
+  PRIMARY KEY (agent_conversation_id, operation_id)
+);
+
+CREATE INDEX IF NOT EXISTS metering_records_conversation_idx
+  ON metering_records(agent_conversation_id, completed_at, operation_id);
+CREATE INDEX IF NOT EXISTS metering_records_internal_session_idx
+  ON metering_records(internal_session_id, completed_at);
+
+CREATE TABLE IF NOT EXISTS conversation_metering_state (
+  agent_conversation_id TEXT PRIMARY KEY REFERENCES conversations(agent_conversation_id),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  state_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS identity_state (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -191,6 +215,11 @@ export function migrateSqliteAgentSchema(database: Database): void {
       database.query<unknown, [number, string]>(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
       ).run(1, new Date().toISOString());
+    }
+    if (version < 2) {
+      database.query<unknown, [number, string]>(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+      ).run(2, new Date().toISOString());
     }
     database.exec("COMMIT");
   } catch (error) {

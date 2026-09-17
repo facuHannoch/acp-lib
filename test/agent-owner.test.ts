@@ -187,6 +187,50 @@ describe("Agent owner", () => {
     expect((await reopened.persistence.messages.list(conversationId)).messages).toHaveLength(4);
   });
 
+  test("persists metering records and restores bounded state across conversation lifetimes", async () => {
+    const { agent, path } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    const first = await conversation.prompt("meter this turn");
+    expect(first.metering).not.toBeNull();
+    expect((await agent.persistence.metering.list(conversationId)).records).toHaveLength(1);
+    expect((await agent.persistence.metering.state(conversationId))?.state).toEqual(
+      first.metering?.nextState,
+    );
+
+    await agent.close();
+    agents.splice(agents.indexOf(agent), 1);
+    const reopened = await track(Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+    }));
+    const opened = await reopened.conversations.open(conversationId);
+    expect(opened.conversation.meteringSnapshot.restoration.status).toBe("restored");
+    expect(opened.conversation.meteringSnapshot.operationCount).toBe(1);
+
+    const second = await opened.conversation.prompt("meter after reopen");
+    expect(second.metering?.nextState.operationCount).toBe(2);
+    expect((await reopened.persistence.metering.list(conversationId)).records).toHaveLength(2);
+    expect((await reopened.persistence.metering.state(conversationId))?.revision).toBe(2);
+  });
+
+  test("can omit detailed metering records while preserving restoration state", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+      meteringPersistence: { meteringRecords: "none" },
+    }));
+    const conversation = await agent.conversations.create();
+    const result = await conversation.prompt("state only");
+
+    expect(result.metering).not.toBeNull();
+    expect((await agent.persistence.metering.list(conversation.id)).records).toEqual([]);
+    expect((await agent.persistence.metering.state(conversation.id))?.state.operationCount).toBe(1);
+  });
+
   test("adapter registry remains agent-scoped and reflectable", async () => {
     const { agent } = await openAgent();
     agent.adapters.register("second", { command: ["bun", OPERATIONS_AGENT, "second"] });
@@ -229,6 +273,10 @@ describe("Agent owner", () => {
       toInternalSessionId: conversation.internalSessionId,
     });
     expect(switched.targetResult?.text).toContain("continue now");
+    expect((await agent.persistence.metering.list(conversationId)).records.map((record) => record.operationKind)).toEqual([
+      "switch_seed",
+      "internal_command",
+    ]);
     const history = await agent.persistence.providerSessions.list(conversationId);
     expect(history).toHaveLength(2);
     expect(history[0]?.deactivatedAt).toBeDefined();
