@@ -1,38 +1,38 @@
 # Consumer guide
 
 This guide is for applications embedding `@qlairoslabs/acp-client`, especially
-orchestrators that own several logical agent sessions. The library owns ACP communication,
-one live session's operation queue, metering, and optional persistence. The consumer owns
-its collection of live objects, adapter resolution, user interface, and application policy.
+orchestrators that own several agents and conversations. The recommended durable API is
+`Agent`, backed by a caller-located SQLite database. The library owns ACP communication,
+conversation queues, typed records, search, identity lifecycle hooks, and persistence.
+The consumer owns database placement, adapter definitions, user interface, and application
+policy.
+
+`AgentSession` remains the compatibility name for one live `AgentConversation`. The
+older `SessionManager`/JSONL workflow is still supported and documented later in this
+guide, but new durable applications should normally begin with `Agent`.
 
 The package requires Bun 1.3.5 or newer.
 
 ## Mental model
 
-There are three different operation layers:
+There are three primary runtime layers:
 
 | Layer | Main API | Examples |
 |---|---|---|
-| Logical-session management | `SessionManager` | Create, list, load, restore, reconfigure, and delete logical sessions |
-| One stable logical session | `AgentSession` | Prompt, interrupt, handoff, observe state, change configuration, and bridge |
+| Agent identity and persistence | `Agent` | Own SQLite persistence, adapter registry, identity runtime, and conversations |
+| One stable conversation | `AgentConversation` (`AgentSession` compatibility alias) | Prompt, interrupt, handoff, switch adapters, reset, observe state, and configure the harness |
 | Active harness thread | ACP and `internalSessionCommands` | Harness-specific commands such as `/usage` and `/model` |
 
-An `agentSessionId` is the stable identity exposed to the consumer. An
-`internalSessionId` identifies the current provider or harness thread. Handoff and other
-thread replacements may change the latter without changing the former.
+An `agentSessionId` (`ags-*`) identifies the agent. An `agentConversationId` (`agc-*`)
+identifies one of its conversations. An `internalSessionId` identifies the replaceable
+provider or harness thread behind that conversation.
 
 ```text
 consumer
-  └── SessionManager
-        └── AgentSession agent-7           stable logical identity
-              └── internal thread abc      replaceable harness identity
-```
-
-`SessionManager` persists and discovers logical sessions. It does not retain live
-`AgentSession` objects. An orchestrator normally keeps those separately:
-
-```ts
-const liveSessions = new Map<string, AgentSession>();
+  └── Agent ags-…                           stable agent identity + SQLite database
+        └── AgentConversation agc-…         stable conversation identity
+              └── AgentController
+                    └── internal thread abc replaceable harness identity
 ```
 
 ## Install and import
@@ -44,6 +44,7 @@ bun add @qlairoslabs/acp-client
 ```ts
 import {
   ADAPTERS,
+  Agent,
   AgentSession,
   AuditLogReader,
   SessionManager,
@@ -55,6 +56,52 @@ import {
   type PromptHandlers,
 } from "@qlairoslabs/acp-client";
 ```
+
+## Start with one SQLite-backed agent
+
+The database path is explicit and belongs to the consumer. One database contains one
+agent identity and any number of independently addressable conversations.
+
+```ts
+import { Agent, ADAPTERS } from "@qlairoslabs/acp-client";
+
+const agent = await Agent.open({
+  persistence: {
+    kind: "sqlite",
+    path: "/absolute/path/to/state/atlas.sqlite",
+  },
+  adapters: {
+    codex: ADAPTERS.codex,
+  },
+  defaultAdapterId: "codex",
+});
+
+try {
+  const conversation = await agent.conversations.create();
+  const result = await conversation.prompt("hi");
+
+  for (const message of result.messages) {
+    console.log(message.text);
+  }
+} finally {
+  await agent.close();
+}
+```
+
+The user message and each assistant-message boundary are stored as separate typed rows.
+Reopen the same database with `Agent.open()` and call
+`agent.conversations.open(agentConversationId)` to continue its active provider thread.
+
+The minimal end-to-end executable example is
+[`smoke-tests/test8-test/index.ts`](./smoke-tests/test8-test/index.ts). It sends `"hi"`
+through a deterministic ACP harness and independently queries SQLite to assert that the
+canonical user-message row contains `"hi"`.
+
+## Legacy direct and managed sessions
+
+The remaining sections describe the compatibility `AgentSession` and
+`SessionManager`/JSONL APIs. They remain useful when an application needs a transient
+connection or the existing file-oriented persistence model.
 
 Interactive helpers are a separate entry point:
 
