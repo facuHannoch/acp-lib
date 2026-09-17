@@ -96,6 +96,9 @@ try {
     conversationPrompts,
     "canonical conversation does not contain the three user prompts",
   );
+  console.log(
+    `PASS conversation agent=${agent.id} conversation=${conversation.agentConversationId} prompts=${conversationPrompts.length}`,
+  );
 
   const stages: string[] = [];
   const unsubscribe = agent.internalInferences!.subscribe(({ snapshot }) => {
@@ -126,6 +129,9 @@ try {
   for (const stage of ["preparing_input", "starting_harness", "creating_session", "prompting", "completed"]) {
     assert.ok(stages.includes(stage), `missing internal inference stage: ${stage}`);
   }
+  console.log(
+    `PASS inference id=${run.activeAttempt.id} providerSession=${completion.internalSessionId}`,
+  );
 
   const database = new Database(databasePath, { readonly: true });
   try {
@@ -143,10 +149,14 @@ try {
     assert.equal(storedInference.internalSessionId, completion.internalSessionId);
     assert.ok(storedInference.meteringOperationId, "internal inference metering was not persisted");
     assert.equal(JSON.parse(storedInference.resultJson ?? "null")?.metadata, completion.metadata);
+    console.log(
+      `PASS sqlite status=${storedInference.status} purpose=${storedInference.purpose} metered=true`,
+    );
   } finally {
     database.close();
   }
 
+  console.log("PASS internal-inference smoke test");
   console.log(JSON.stringify({
     ok: true,
     databasePath,
