@@ -617,19 +617,19 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     },
   ): Promise<AgentConversation> {
     const releaseSetup = await this.acquireMeteringSetupLock(id);
-    const adapterId = this.resolveAdapterId(config.adapterId);
-    const adapter = this.agent.adapters.require(adapterId);
-    const runtime = { ...this.settings.defaults, ...config.runtime };
-    await this.detachedMeteringBarriers.get(id);
-    const persistedMetering = await this.agent.persistence.metering.state(id);
-    const lifecycle = new PersistedConversationLifecycle(
-      this.agent,
-      id,
-      participants,
-      this.settings,
-    );
     let conversation: AgentConversation | undefined;
     try {
+      const adapterId = this.resolveAdapterId(config.adapterId);
+      const adapter = this.agent.adapters.require(adapterId);
+      const runtime = { ...this.settings.defaults, ...config.runtime };
+      await this.detachedMeteringBarriers.get(id);
+      const persistedMetering = await this.agent.persistence.metering.state(id);
+      const lifecycle = new PersistedConversationLifecycle(
+        this.agent,
+        id,
+        participants,
+        this.settings,
+      );
       conversation = await AgentConversation.create({
         ...runtime,
         ...(persistedMetering
