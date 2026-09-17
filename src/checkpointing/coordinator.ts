@@ -53,9 +53,12 @@ export class ConversationCheckpointCoordinator {
   private async enqueueLatest(conversationId: AgentConversationId): Promise<void> {
     if (this.closed) return;
     const conversation = await this.persistence.conversations.get(conversationId);
-    if (!conversation || conversation.deletedAt || conversation.latestSequence < 1) return;
-    const previous = await this.requireRepository().latest(conversationId);
-    if (previous && previous.coveredSequence >= conversation.latestSequence) return;
+    if (!conversation || conversation.deletedAt) return;
+    const repository = this.requireRepository();
+    const throughSequence = await repository.latestMessageSequence(conversationId);
+    if (throughSequence < 1) return;
+    const previous = await repository.latest(conversationId);
+    if (previous && previous.coveredSequence >= throughSequence) return;
     await this.inferences.enqueue({
       purpose: "conversation_checkpoint",
       agentConversationId: conversationId,
@@ -66,8 +69,8 @@ export class ConversationCheckpointCoordinator {
       },
       ...(previous ? { sourceCheckpointId: previous.checkpointId } : {}),
       sourceFromSequence: previous?.coveredSequence ?? 0,
-      sourceThroughSequence: conversation.latestSequence,
-      requestedThroughSequence: conversation.latestSequence,
+      sourceThroughSequence: throughSequence,
+      requestedThroughSequence: throughSequence,
     });
   }
 

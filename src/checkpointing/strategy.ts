@@ -1,5 +1,5 @@
 import { formatResponseMessages } from "../response.ts";
-import type { MessageRecord, PersistenceJsonValue } from "../persistence/backend.ts";
+import type { ConversationRecord, PersistenceJsonValue } from "../persistence/backend.ts";
 import type {
   InternalInferenceCompletion,
   InternalInferenceStrategy,
@@ -40,18 +40,16 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
     }
     const from = previous?.coveredSequence ?? 0;
     if (through <= from) throw new Error("conversation checkpoint source range is empty");
-    const messages = await readMessages(context.persistence.messages, conversationId, from, through);
-    if (!messages.length) throw new Error("conversation checkpoint source contains no messages");
+    const records = await readRecords(context.persistence.records, conversationId, from, through);
+    if (!records.length) throw new Error("conversation checkpoint source contains no records");
     return Object.freeze({
       prompt: [
         payload.instruction,
         previous
           ? `Previous continuation summary:\n${previous.summary}`
           : "There is no previous continuation summary.",
-        `New canonical messages after sequence ${from} through ${through}:`,
-        JSON.stringify(messages.map(({ sequence, role, participantId, content, status }) => ({
-          sequence, role, ...(participantId ? { participantId } : {}), content, status,
-        }))),
+        `New canonical records after sequence ${from} through ${through}:`,
+        JSON.stringify(records),
       ].join("\n\n"),
       metadata: JSON.stringify({ previousCheckpointId: previous?.checkpointId ?? null, through }),
     });
@@ -75,6 +73,20 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
       generatorInternalInferenceId: result.internalInferenceId,
       summary,
     });
+    await context.persistence.records.append({
+      recordId: `${result.internalInferenceId}:checkpoint`,
+      agentSessionId: context.attempt.agentSessionId,
+      agentConversationId: conversationId,
+      kind: "native_action",
+      timestamp: checkpoint.createdAt,
+      action: "conversation_checkpoint",
+      state: "completed",
+      output: {
+        internalInferenceId: result.internalInferenceId,
+        checkpointId: checkpoint.checkpointId,
+        coveredSequence: checkpoint.coveredSequence,
+      },
+    });
     return Object.freeze({
       internalInferenceId: result.internalInferenceId,
       rootInternalInferenceId: context.attempt.rootId,
@@ -91,20 +103,20 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
     if (message.includes("source changed") || message.includes("coverage") || message.includes("source range")) {
       return { kind: "terminal" as const, code: "checkpoint_source_conflict" };
     }
-    if (message.includes("empty summary") || message.includes("no messages")) {
+    if (message.includes("empty summary") || message.includes("no records")) {
       return { kind: "terminal" as const, code: "invalid_checkpoint_result" };
     }
     return { kind: "retryable" as const, code: "checkpoint_inference_failed" };
   }
 }
 
-async function readMessages(
-  repository: Parameters<InternalInferenceStrategy["prepare"]>[0]["persistence"]["messages"],
+async function readRecords(
+  repository: Parameters<InternalInferenceStrategy["prepare"]>[0]["persistence"]["records"],
   conversationId: Parameters<typeof repository.list>[0],
   afterSequence: number,
   throughSequence: number,
-): Promise<readonly MessageRecord[]> {
-  const messages: MessageRecord[] = [];
+): Promise<readonly ConversationRecord[]> {
+  const records: ConversationRecord[] = [];
   let cursor: string | undefined;
   do {
     const page = await repository.list(conversationId, {
@@ -113,8 +125,8 @@ async function readMessages(
       limit: 1_000,
       ...(cursor ? { cursor } : {}),
     });
-    messages.push(...page.messages);
+    records.push(...page.records);
     cursor = page.nextCursor;
   } while (cursor);
-  return Object.freeze(messages);
+  return Object.freeze(records);
 }

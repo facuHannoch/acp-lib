@@ -40,6 +40,14 @@ implements ConversationRecoveryCheckpointRepository {
     return Number(row?.count ?? 0);
   }
 
+  async latestMessageSequence(agentConversationId: AgentConversationId): Promise<number> {
+    const row = this.database.query<{ sequence: number }, [string]>(
+      `SELECT COALESCE(MAX(sequence), 0) AS sequence FROM conversation_records
+       WHERE agent_conversation_id = ? AND kind = 'message'`,
+    ).get(agentConversationId);
+    return Number(row?.sequence ?? 0);
+  }
+
   async latest(agentConversationId: AgentConversationId): Promise<ConversationRecoveryCheckpoint | null> {
     const row = this.database.query<CheckpointRow, [string]>(
       `SELECT * FROM conversation_recovery_checkpoints

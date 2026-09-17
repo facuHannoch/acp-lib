@@ -87,6 +87,7 @@ export function snapshotOf(record: InternalInferenceAttemptRecord): InternalInfe
   return Object.freeze({
     id: record.internalInferenceId,
     rootId: record.rootInternalInferenceId,
+    agentSessionId: record.agentSessionId,
     ...(record.retryOfInternalInferenceId ? { retryOfId: record.retryOfInternalInferenceId } : {}),
     revision: record.revision,
     purpose: record.purpose,

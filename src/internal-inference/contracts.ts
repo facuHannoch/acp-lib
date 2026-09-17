@@ -68,6 +68,7 @@ export interface InternalInferenceCompletion {
 export interface InternalInferenceSnapshot {
   readonly id: InternalInferenceId;
   readonly rootId: InternalInferenceId;
+  readonly agentSessionId: AgentSessionId;
   readonly retryOfId?: InternalInferenceId;
   readonly revision: number;
   readonly purpose: InternalInferencePurpose;
