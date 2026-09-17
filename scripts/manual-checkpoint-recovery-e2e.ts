@@ -38,7 +38,12 @@ try {
   assert.equal(initial.status, "completed", "initial provider prompt failed");
   const checkpoint = await waitForCheckpoint(firstAgent, conversationId);
   assert.ok(checkpoint.summary.trim(), "generated checkpoint summary is empty");
-  assert.equal(checkpoint.coveredSequence, 2, "checkpoint did not cover the initial turn");
+  const initialMessages = await firstAgent.persistence.messages.list(conversationId);
+  assert.equal(
+    checkpoint.coveredSequence,
+    initialMessages.messages.at(-1)?.sequence,
+    "checkpoint did not cover the initial turn's final message boundary",
+  );
   console.log(
     `PASS checkpoint id=${checkpoint.checkpointId} inference=${checkpoint.generatorInternalInferenceId}`,
   );
