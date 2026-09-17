@@ -275,6 +275,12 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
             record: meteringRecord,
             meteringRecords: this.config.meteringRecords ?? "all",
           });
+        } else if (meteringRecord) {
+          await persistence.metering.commitAgent({
+            agentSessionId: attempt.agentSessionId,
+            record: meteringRecord,
+            meteringRecords: this.config.meteringRecords ?? "all",
+          });
         }
         return await persistence.internalInferences!.complete({
           internalInferenceId: attempt.internalInferenceId,
@@ -327,6 +333,12 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
           record: meteringRecord,
           meteringRecords: this.config.meteringRecords ?? "all",
         });
+      } else if (meteringRecord) {
+        await persistence.metering.commitAgent({
+          agentSessionId: attempt.agentSessionId,
+          record: meteringRecord,
+          meteringRecords: this.config.meteringRecords ?? "all",
+        });
       }
       await persistence.internalInferences!.fail({
         internalInferenceId: attempt.internalInferenceId,
@@ -354,6 +366,12 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
       if (meteringRecord && attempt.agentConversationId) {
         await persistence.metering.commit({
           agentConversationId: attempt.agentConversationId,
+          record: meteringRecord,
+          meteringRecords: this.config.meteringRecords ?? "all",
+        });
+      } else if (meteringRecord) {
+        await persistence.metering.commitAgent({
+          agentSessionId: attempt.agentSessionId,
           record: meteringRecord,
           meteringRecords: this.config.meteringRecords ?? "all",
         });

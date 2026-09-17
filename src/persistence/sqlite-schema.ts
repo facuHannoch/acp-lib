@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 3;
+export const SQLITE_AGENT_SCHEMA_VERSION = 4;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -111,6 +111,28 @@ CREATE INDEX IF NOT EXISTS metering_records_internal_session_idx
 
 CREATE TABLE IF NOT EXISTS conversation_metering_state (
   agent_conversation_id TEXT PRIMARY KEY REFERENCES conversations(agent_conversation_id),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  state_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_metering_records (
+  agent_session_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  internal_session_id TEXT,
+  adapter_id TEXT NOT NULL,
+  operation_kind TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  completed_at INTEGER NOT NULL,
+  record_json TEXT,
+  PRIMARY KEY (agent_session_id, operation_id)
+);
+
+CREATE INDEX IF NOT EXISTS agent_metering_records_scope_idx
+  ON agent_metering_records(agent_session_id, completed_at, operation_id);
+
+CREATE TABLE IF NOT EXISTS agent_metering_state (
+  agent_session_id TEXT PRIMARY KEY,
   revision INTEGER NOT NULL CHECK (revision >= 1),
   state_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -290,6 +312,11 @@ export function migrateSqliteAgentSchema(database: Database): void {
       database.query<unknown, [number, string]>(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
       ).run(3, new Date().toISOString());
+    }
+    if (version < 4) {
+      database.query<unknown, [number, string]>(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+      ).run(4, new Date().toISOString());
     }
     database.exec("COMMIT");
   } catch (error) {

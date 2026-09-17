@@ -178,6 +178,39 @@ describe("internal inference manager", () => {
     await agent.close();
   });
 
+  test("meters agent-level internal work without assigning it to a conversation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-inference-agent-metering-"));
+    roots.push(root);
+    const runtime: InternalInferenceRuntime = {
+      async run(request, _signal, lifecycle) {
+        await lifecycle?.sessionStarted({ internalSessionId: "agent-provider", model: null });
+        return {
+          ...result(request.internalInferenceId, request.adapterId, "identity"),
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+        };
+      },
+    };
+    const identity = { ...testStrategy(), purpose: "identity_update" as const };
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      conversationDefaults: { metering: { pricing: false } },
+      internalInference: { runtime, strategies: [identity] },
+    });
+    const run = await agent.internalInferences!.enqueue({
+      purpose: "identity_update",
+      input: { version: 1, strategyId: "test", payload: { prompt: "identity" } },
+    });
+
+    await run.result;
+    expect((await agent.persistence.metering.agentState(agent.id))?.state.operationCount).toBe(1);
+    const records = await agent.persistence.metering.listAgent(agent.id);
+    expect(records.records).toHaveLength(1);
+    expect(records.records[0]?.operationKind).toBe("identity_update");
+    await agent.close();
+  });
+
   test("serializes detached metering for concurrent work on one closed conversation", async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-inference-metering-concurrency-"));
     roots.push(root);

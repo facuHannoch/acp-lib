@@ -189,7 +189,6 @@ export class Agent {
         strategies: config.internalInference.strategies,
         meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
         beginMetering: async (attempt, session) => {
-          if (!attempt.agentConversationId) return null;
           return await this.manager.beginInternalInferenceMetering(attempt, session);
         },
         resolveAdapterId: async (requestedAdapterId, agentConversationId) => {
@@ -284,6 +283,7 @@ interface ManagerSettings {
 class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
   private readonly detachedMeteringBarriers = new Map<AgentConversationId, Promise<void>>();
+  private agentMeteringBarrier: Promise<void> | undefined;
 
   constructor(private readonly agent: Agent, private readonly settings: ManagerSettings) {}
 
@@ -361,8 +361,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     session: { readonly internalSessionId: string; readonly model: string | null },
   ): Promise<import("./internal-inference/contracts.ts").InternalInferenceMeteringOperation | null> {
     const conversationId = attempt.agentConversationId;
-    if (!conversationId) return null;
-    const conversation = this.live.get(conversationId);
+    const conversation = conversationId ? this.live.get(conversationId) : undefined;
     if (conversation && conversation.state.phase !== "stopped") {
       const operation = await conversation.beginDetachedMetering({
         operationId: attempt.id,
@@ -385,16 +384,21 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       };
     }
 
-    const previous = this.detachedMeteringBarriers.get(conversationId) ?? Promise.resolve();
+    const previous = conversationId
+      ? this.detachedMeteringBarriers.get(conversationId) ?? Promise.resolve()
+      : this.agentMeteringBarrier ?? Promise.resolve();
     let release!: () => void;
     const ownBarrier = new Promise<void>((resolve) => { release = resolve; });
     const barrier = previous.then(() => ownBarrier);
-    this.detachedMeteringBarriers.set(conversationId, barrier);
+    if (conversationId) this.detachedMeteringBarriers.set(conversationId, barrier);
+    else this.agentMeteringBarrier = barrier;
     try {
       // Detached operations for one closed conversation must restore and commit in order.
       // Otherwise two workers can derive the same next operation count from one snapshot.
       await previous;
-      const persisted = await this.agent.persistence.metering.state(conversationId);
+      const persisted = conversationId
+        ? await this.agent.persistence.metering.state(conversationId)
+        : await this.agent.persistence.metering.agentState(this.agent.id);
       const meteringConfig = this.settings.defaults.metering;
       const engine = new MeteringEngine({
       agentSessionId: this.agent.id,
@@ -434,15 +438,19 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       settled: () => {
         if (settled) return;
         settled = true;
-        if (this.detachedMeteringBarriers.get(conversationId) === barrier) {
+        if (conversationId && this.detachedMeteringBarriers.get(conversationId) === barrier) {
           this.detachedMeteringBarriers.delete(conversationId);
+        } else if (!conversationId && this.agentMeteringBarrier === barrier) {
+          this.agentMeteringBarrier = undefined;
         }
         release();
       },
       };
     } catch (error) {
-      if (this.detachedMeteringBarriers.get(conversationId) === barrier) {
+      if (conversationId && this.detachedMeteringBarriers.get(conversationId) === barrier) {
         this.detachedMeteringBarriers.delete(conversationId);
+      } else if (!conversationId && this.agentMeteringBarrier === barrier) {
+        this.agentMeteringBarrier = undefined;
       }
       release();
       throw error;

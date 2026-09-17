@@ -388,6 +388,20 @@ export interface MeteringCommitInput {
   readonly updatedAt?: string;
 }
 
+export interface PersistedAgentMeteringState {
+  readonly agentSessionId: AgentSessionId;
+  readonly revision: number;
+  readonly state: AgentSessionMeteringState;
+  readonly updatedAt: string;
+}
+
+export interface AgentMeteringCommitInput {
+  readonly agentSessionId: AgentSessionId;
+  readonly record: OperationMeteringRecord;
+  readonly meteringRecords: MeteringRecordRetention;
+  readonly updatedAt?: string;
+}
+
 export interface MeteringRecordListOptions {
   readonly limit?: number;
   readonly cursor?: string;
@@ -415,6 +429,14 @@ export interface MeteringPersistence {
     agentConversationId: AgentConversationId,
     operationId: string,
   ): Promise<OperationMeteringRecord | null>;
+  /** Agent-level scope for internal work that was not caused by a conversation. */
+  commitAgent(input: AgentMeteringCommitInput): Promise<PersistedAgentMeteringState>;
+  agentState(agentSessionId: AgentSessionId): Promise<PersistedAgentMeteringState | null>;
+  listAgent(
+    agentSessionId: AgentSessionId,
+    options?: MeteringRecordListOptions,
+  ): Promise<MeteringRecordPage>;
+  getAgent(agentSessionId: AgentSessionId, operationId: string): Promise<OperationMeteringRecord | null>;
 }
 
 export interface SearchPersistence {
