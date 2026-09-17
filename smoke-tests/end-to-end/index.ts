@@ -142,6 +142,17 @@ try {
     `PASS reopened agent=${reopenedAgent.id} conversation=${conversationId} answer=3 messages=${persistedAfterRecall.messages.length}`,
   );
 
+  const latestMessageSequence = persistedAfterRecall.messages.at(-1)?.sequence;
+  assert.ok(latestMessageSequence, "reopened conversation has no persisted message boundary");
+  const checkpoint = await waitForCheckpoint(
+    reopenedAgent,
+    conversationId,
+    latestMessageSequence,
+  );
+  assert.ok(checkpoint.summary.trim(), "recovery checkpoint summary is empty");
+  console.log(
+    `PASS checkpoint id=${checkpoint.checkpointId} coveredSequence=${checkpoint.coveredSequence}`,
+  );
 
   const internalSessionId = conversationAfterReopening.internalSessionId;
   assert.ok(internalSessionId, "reopened conversation has no internal session id");
@@ -157,8 +168,28 @@ try {
     assert.equal(confirmation, "y", "expected 'y' or 'skip'");
 
     thirdAgent = await openAgent();
-    const thirdOpen = await thirdAgent.conversations.open(conversationId);
+    const recoveryStages: string[] = [];
+    const thirdOpen = await thirdAgent.conversations.open(conversationId, {
+      onRecoveryProgress: (event) => {
+        recoveryStages.push(event.stage);
+        console.log(
+          `RECOVERY ${event.stage}${event.checkpointId ? ` ${event.checkpointId}` : ""}`,
+        );
+      },
+    });
     assert.equal(thirdOpen.conversation.id, conversationId);
+    assert.equal(thirdOpen.providerSession, "recovered");
+    assert.equal(thirdOpen.recovery?.checkpointId, checkpoint.checkpointId);
+    assert.equal(thirdOpen.recovery?.previousInternalSessionId, internalSessionId);
+    assert.notEqual(thirdOpen.recovery?.newInternalSessionId, internalSessionId);
+    assert.deepEqual(recoveryStages, [
+      "load_failed",
+      "loading_checkpoint",
+      "loading_checkpoint",
+      "creating_session",
+      "seeding",
+      "completed",
+    ]);
 
     const recoveryResult = await thirdOpen.conversation.prompt(recallPrompt);
     assert.equal(recoveryResult.status, "completed", "recovered conversation recall prompt failed");
@@ -275,7 +306,24 @@ async function openAgent(defaultAdapterId = adapterId): Promise<Agent> {
     },
     adapters,
     defaultAdapterId,
+    ...(defaultAdapterId === "codex" ? { checkpointing: {} } : {}),
   });
+}
+
+async function waitForCheckpoint(
+  agent: Agent,
+  conversationId: AgentConversationId,
+  throughSequence: number,
+) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const checkpoint = await agent.checkpointing?.latest(conversationId);
+    if (checkpoint && checkpoint.coveredSequence >= throughSequence) return checkpoint;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `timed out waiting for recovery checkpoint through sequence ${throughSequence}`,
+  );
 }
 
 function assertSqliteMetering(

@@ -8,6 +8,11 @@ import { createConversationRecoveryCheckpointId } from "./ids.ts";
 
 export const CONVERSATION_CHECKPOINT_STRATEGY_ID = "conversation-checkpoint-v1";
 
+const CHECKPOINT_READ_ONLY_INSTRUCTION = [
+  "Do not execute commands, use tools, inspect files, or modify the environment.",
+  "Only summarize the records supplied in this prompt.",
+].join(" ");
+
 export type ConversationCheckpointPayload = {
   readonly instruction: string;
 };
@@ -45,6 +50,7 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
     return Object.freeze({
       prompt: [
         payload.instruction,
+        CHECKPOINT_READ_ONLY_INSTRUCTION,
         previous
           ? `Previous continuation summary:\n${previous.summary}`
           : "There is no previous continuation summary.",

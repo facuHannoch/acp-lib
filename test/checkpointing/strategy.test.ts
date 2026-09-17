@@ -79,6 +79,10 @@ describe("conversation checkpoint strategy", () => {
 
     expect(second?.summary).toBe("Second summary");
     expect(second?.previousCheckpointId).toBe(first?.checkpointId);
+    expect(prompts[0]).toContain(
+      "Do not execute commands, use tools, inspect files, or modify the environment.",
+    );
+    expect(prompts[0]).toContain("Only summarize the records supplied in this prompt.");
     expect(prompts[0]).toContain("hello");
     expect(prompts[1]).toContain("First summary");
     expect(prompts[1]).toContain("two plus two");
