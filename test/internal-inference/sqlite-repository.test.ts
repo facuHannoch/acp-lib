@@ -183,6 +183,40 @@ describe("SQLite internal inference repository", () => {
     expect(await repository.getAttempt(activeId)).not.toBeNull();
     await backend.close();
   });
+
+  test("allows only one lease winner across independent SQLite connections", async () => {
+    const { backend, conversationId } = await fixture();
+    const second = await SqliteAgentPersistence.open({
+      path: backend.path,
+      agentSessionId: backend.identityRecord.agentSessionId,
+    });
+    const id = createInternalInferenceId();
+    await backend.internalInferences.enqueue({
+      internalInferenceId: id,
+      agentSessionId: backend.identityRecord.agentSessionId,
+      agentConversationId: conversationId,
+      purpose: "conversation_checkpoint",
+      adapterId: "test",
+      input: { version: 1, strategyId: "checkpoint", payload: null },
+    });
+
+    const claims = await Promise.all([
+      backend.internalInferences.claimNext({
+        workerId: "process-a",
+        leaseToken: "lease-a",
+        leaseDurationMs: 30_000,
+      }),
+      second.internalInferences.claimNext({
+        workerId: "process-b",
+        leaseToken: "lease-b",
+        leaseDurationMs: 30_000,
+      }),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect(claims.find(Boolean)?.attempt.internalInferenceId).toBe(id);
+    await second.close();
+    await backend.close();
+  });
 });
 
 async function fixture() {
