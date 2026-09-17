@@ -2,6 +2,7 @@ import { Database, type Changes } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
+  createAgentSessionId,
   isAgentConversationId,
   isAgentSessionId,
   type AgentConversationId,
@@ -89,7 +90,8 @@ interface IdentityRow {
 
 export interface SqliteAgentPersistenceConfig {
   readonly path: string;
-  readonly agentSessionId: AgentSessionId;
+  /** Required to create with a chosen identity; omitted reuses an existing identity or mints one. */
+  readonly agentSessionId?: AgentSessionId;
   readonly metadata?: string;
   readonly busyTimeoutMs?: number;
   readonly extensions?: readonly PersistenceExtension[];
@@ -148,7 +150,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   }
 
   static async open(config: SqliteAgentPersistenceConfig): Promise<SqliteAgentPersistence> {
-    if (!isAgentSessionId(config.agentSessionId)) {
+    if (config.agentSessionId !== undefined && !isAgentSessionId(config.agentSessionId)) {
       throw new Error(`invalid agent session id for SQLite persistence: ${config.agentSessionId}`);
     }
     if (!config.path.trim()) throw new Error("SQLite persistence path cannot be blank");
@@ -177,7 +179,13 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       database.exec("PRAGMA synchronous = NORMAL");
       migrateSqliteAgentSchema(database);
       const fullTextSearch = installSqliteFts(database);
-      const identityRecord = initializeAgentIdentity(database, config.agentSessionId, config.metadata);
+      const existingIdentity = database.query<{ agent_session_id: string }, []>(
+        "SELECT agent_session_id FROM agent_identity WHERE singleton = 1",
+      ).get();
+      const agentSessionId = config.agentSessionId
+        ?? (existingIdentity?.agent_session_id as AgentSessionId | undefined)
+        ?? createAgentSessionId();
+      const identityRecord = initializeAgentIdentity(database, agentSessionId, config.metadata);
       const backend = new SqliteAgentPersistence(path, database, identityRecord, fullTextSearch);
       for (const extension of config.extensions ?? []) await backend.installExtension(extension);
       return backend;

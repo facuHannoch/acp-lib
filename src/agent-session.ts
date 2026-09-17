@@ -19,6 +19,15 @@ import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
 import type { ActivitySnapshot } from "./activity.ts";
 import type { Adapter } from "./adapters.ts";
+import {
+  createAgentConversationId,
+  isAgentConversationId,
+  isAgentSessionId,
+  type AgentConversationId,
+  type AgentSessionId,
+} from "./agent-ids.ts";
+import type { ParticipantRef } from "./persistence/backend.ts";
+import type { AgentConversationOwnerLifecycle } from "./agent-conversation-owner.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
@@ -194,6 +203,7 @@ interface PromptQueueItem {
   /** How this operation is classified in its metering record. */
   operationKind: MeteredOperationKind;
   text: string;
+  participantId?: string;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
   resolve: (r: AgentSessionPromptResult) => void;
@@ -318,6 +328,14 @@ export interface AgentSessionConfig {
    */
   internalSessionId?: string;
   title?: string;
+  /** Stable conversation identity when this runtime is owned by an Agent. */
+  agentConversationId?: AgentConversationId;
+  /** Stable owning agent identity. Omitted for detached compatibility conversations. */
+  ownerAgentSessionId?: AgentSessionId;
+  /** Other sides of this conversation. The owning agent is implied. */
+  participants?: readonly ParticipantRef[];
+  /** @internal Installed by AgentConversationManager. */
+  ownerLifecycle?: AgentConversationOwnerLifecycle;
 }
 
 /** Direct restoration input. Phase 5A intentionally supports the safe recorded-thread path. */
@@ -364,6 +382,8 @@ export interface ManagedAgentSessionPersistenceSnapshot {
 export class AgentConversation implements AgentClient, Bridgeable {
   /** Compatibility logical id — decoupled from the ACP/harness session id. */
   readonly agentSessionId: string;
+  readonly agentConversationId: AgentConversationId;
+  readonly ownerAgentSessionId: AgentSessionId | null;
   readonly adapterId: string;
 
   private readonly controller: AgentController;
@@ -405,6 +425,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private managedAuditLog: AuditLogIdentity | null = null;
   private readonly managedOpenProgress?: ManagedOpenProgressReporter;
   private managedInitializationReported = false;
+  private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
+  private _participants: ParticipantRef[];
 
   private constructor(
     config: AgentSessionConfig,
@@ -441,6 +463,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // IDs are opaque provider/consumer values. Validate blankness above, but never
     // normalize a nonblank identifier and accidentally select a different session.
     this.agentSessionId = config.agentSessionId ?? crypto.randomUUID();
+    if (config.agentConversationId !== undefined && !isAgentConversationId(config.agentConversationId)) {
+      throw new Error(`invalid agent conversation id: ${config.agentConversationId}`);
+    }
+    if (config.ownerAgentSessionId !== undefined && !isAgentSessionId(config.ownerAgentSessionId)) {
+      throw new Error(`invalid owner agent session id: ${config.ownerAgentSessionId}`);
+    }
+    if (config.ownerAgentSessionId !== undefined && config.agentSessionId !== config.ownerAgentSessionId) {
+      throw new Error("owned AgentConversation agentSessionId must equal ownerAgentSessionId");
+    }
+    this.agentConversationId = config.agentConversationId ?? createAgentConversationId();
+    this.ownerAgentSessionId = config.ownerAgentSessionId
+      ?? (isAgentSessionId(this.agentSessionId) ? this.agentSessionId : null);
+    this.ownerLifecycle = config.ownerLifecycle;
+    this._participants = (config.participants ?? []).map((participant) => Object.freeze({ ...participant }));
     this.adapterId = config.adapterId;
     this.sessions = config.sessions;
     this.persistence = resolveDirectPersistence(config.persistence);
@@ -1278,6 +1314,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return this._internalSessionId;
   }
 
+  /** Canonical `agc-` identity. */
+  get id(): AgentConversationId {
+    return this.agentConversationId;
+  }
+
+  /** Owning `ags-` identity, or null for a detached compatibility conversation. */
+  get ownerId(): AgentSessionId | null {
+    return this.ownerAgentSessionId;
+  }
+
+  get participants(): readonly ParticipantRef[] {
+    return Object.freeze(this._participants.map((participant) => Object.freeze({ ...participant })));
+  }
+
   /**
    * Latest context-window observation for the ACTIVE provider thread, or null.
    *
@@ -1450,11 +1500,23 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return this.enqueuePrompt(text, "prompt", handlers, attachments);
   }
 
+  /** Prompt while attributing the caller to a stable participant identity. */
+  promptFrom(
+    participantId: string,
+    text: string,
+    handlers?: PromptHandlers,
+    attachments?: Attachment[],
+  ): Promise<AgentSessionPromptResult> {
+    if (!participantId.trim()) return Promise.reject(new Error("participant id cannot be blank"));
+    return this.enqueuePrompt(text, "prompt", handlers, attachments, participantId.trim());
+  }
+
   private enqueuePrompt(
     text: string,
     operationKind: MeteredOperationKind,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
+    participantId?: string,
   ): Promise<AgentSessionPromptResult> {
     return new Promise<AgentSessionPromptResult>((resolve, reject) => {
       if (this.phase === "stopped") {
@@ -1472,6 +1534,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         turnId: this.mintTurnId(),
         operationKind,
         text,
+        ...(participantId ? { participantId } : {}),
         handlers,
         attachments,
         resolve,
@@ -2300,6 +2363,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
+    const owned = this.ownerLifecycle
+      ? await this.ownerLifecycle.beforePrompt({
+          operationId: item.turnId,
+          agentSessionId: this.ownerAgentSessionId!,
+          agentConversationId: this.agentConversationId,
+          ...(item.participantId ? { participantId: item.participantId } : {}),
+          text: item.text,
+        })
+      : undefined;
+    if (owned?.participant && !this._participants.some((participant) => participant.id === owned.participant!.id)) {
+      this._participants = [...this._participants, Object.freeze({ ...owned.participant })];
+    }
+    const providerText = owned?.providerText ?? item.text;
     this.beginTurn(item.turnId);
     let operation: OpenOperation;
     if (this.v2Transcript) {
@@ -2431,8 +2507,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
     let closed: OperationMeteringRecord | null = null;
     let transcriptClosed = false;
+    let providerSettled = false;
     try {
-      const res = await this.controller.prompt(item.text, wrappedHandlers, item.attachments);
+      const res = await this.controller.prompt(providerText, wrappedHandlers, item.attachments);
+      providerSettled = true;
       if (this.v2Transcript) {
         if (assistantOrdinal === 0) {
           for (const message of res.messages) {
@@ -2481,7 +2559,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
           status: res.status,
         });
       }
-      return Object.freeze({ ...res, operationId: item.turnId, metering: record });
+      const result = Object.freeze({ ...res, operationId: item.turnId, metering: record });
+      await this.ownerLifecycle?.afterPrompt({
+        operationId: item.turnId,
+        agentSessionId: this.ownerAgentSessionId!,
+        agentConversationId: this.agentConversationId,
+        ...(item.participantId ? { participantId: item.participantId } : {}),
+        text: item.text,
+        result,
+      });
+      return result;
     } catch (err) {
       // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
       // what it was doing, at its real status.
@@ -2493,6 +2580,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
         : text
           ? Object.freeze([{ text }])
           : Object.freeze([]);
+      if (!providerSettled) {
+        await this.ownerLifecycle?.promptFailed({
+          operationId: item.turnId,
+          agentSessionId: this.ownerAgentSessionId!,
+          agentConversationId: this.agentConversationId,
+          ...(item.participantId ? { participantId: item.participantId } : {}),
+          text: item.text,
+          messages,
+          error: err,
+        }).catch((persistenceError) => {
+          this.log.warn("owned_prompt_failure_persistence_failed", { error: String(persistenceError) });
+        });
+      }
       if (this.v2Transcript) {
         if (!transcriptClosed && assistantOrdinal === 0 && messages.length > 0) {
           for (const message of messages) {

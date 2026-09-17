@@ -1,6 +1,6 @@
 # Agent persistence, search, and identity
 
-Status: accepted design for implementation steps 8–12.
+Status: implemented foundation for steps 8–12; deferred items remain listed below.
 
 This document extends `ARCHITECTURE-agent-conversations.md` and
 `SPEC-agent-session-conversation-boundary.md`. It fixes the contracts required to

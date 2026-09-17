@@ -29,6 +29,29 @@ export {
 } from "./agent-ids.ts";
 export type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 
+export { Agent } from "./agent.ts";
+export type {
+  AgentConfig,
+  AgentConversationManager,
+  AgentConversationRuntimeDefaults,
+  AgentPersistenceConfig,
+  CreateAgentConversationConfig,
+  OpenAgentConversationConfig,
+  OpenOwnedAgentConversationResult,
+} from "./agent.ts";
+export { AgentAdapterRegistry } from "./agent-adapter-registry.ts";
+export type { AgentAdapterRegistration } from "./agent-adapter-registry.ts";
+export { NoopAgentIdentityRuntime, composeIdentityPrompt } from "./identity.ts";
+export type {
+  AgentIdentityRuntime,
+  IdentityConsistency,
+  IdentityLoadInput,
+  IdentitySynchronizationInput,
+  IdentityUpdateInput,
+  IdentityWatermark,
+  LoadedIdentityContext,
+} from "./identity.ts";
+
 export {
   CONVERSATION_RECORD_KINDS,
   DEFAULT_CONVERSATION_RECORD_CAPTURE,

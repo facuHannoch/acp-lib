@@ -13,6 +13,7 @@ export type {
   ManagedAgentConversationCreationBootstrap,
   ManagedAgentConversationPersistenceSnapshot,
 } from "./agent-session.ts";
+export type { AgentConversationOwnerLifecycle } from "./agent-conversation-owner.ts";
 export type {
   AgentConversationEvent,
   AgentConversationListener,

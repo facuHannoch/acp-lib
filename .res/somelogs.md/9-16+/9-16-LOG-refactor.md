@@ -405,3 +405,61 @@ architectural intent and the evidence used to verify each change.
 - The default parallel full suite exposed an existing timestamp-ordering flake twice;
   each affected test passed alone. The complete serial regression run passed 715 tests
   with 0 failures and 2,767 expectations.
+
+## Step 12 — Agent owner, conversation manager, adapters, and identity lifecycle
+
+### Completed
+
+- Added `Agent` as the durable `ags-` owner of persistence, identity, an adapter
+  registry, and a collection of `agc-` conversations. Existing `AgentSession` remains
+  the exact compatibility alias for one `AgentConversation`.
+- Added explicit SQLite and custom-backend construction. A caller still chooses the
+  database path; reopening that path without repeating an ID recovers its permanent
+  agent identity, while a supplied conflicting ID is rejected.
+- Added the agent-scoped `AgentAdapterRegistry`, default-adapter resolution, runtime
+  registration/replacement/removal, and adapter-aware conversation creation/opening.
+- Added `AgentConversationManager.create/open/get/list/delete`, live-instance reuse,
+  provider-thread activation history, and orderly agent shutdown.
+- Added canonical `agentConversationId`, nullable compatibility `ownerId`, and immutable
+  participant snapshots to the existing conversation runtime without changing the
+  `AgentSession` constructor alias or legacy state shape.
+- Added `promptFrom(participantId, ...)`. New IDs become local user participants; known
+  agent/user/external kinds retain their existing attribution. This is continuity, not
+  authentication.
+- Added the always-invoked `AgentIdentityRuntime` with `load`, `update`, optional
+  synchronization, eventual/through-current consistency vocabulary, and a no-op default.
+- Identity preambles are sent privately to the provider and never replace the canonical
+  user message. Identity updates receive only records after those records commit, and no
+  model or identity call runs inside a SQLite transaction.
+- Managed prompts now persist the original user message and every assistant message as
+  separate ordered records. Capture policy remains independent, and message-free capture
+  still invokes the identity lifecycle with an empty committed-record set.
+- Kept the existing conversation control plane intact, including busy/queue state,
+  configuration reflection, announced harness commands, capabilities, and low-level
+  connection access.
+
+### Files
+
+- `src/agent.ts`
+- `src/agent-adapter-registry.ts`
+- `src/identity.ts`
+- `src/agent-conversation-owner.ts`
+- `src/agent-session.ts`
+- `src/agent-conversation.ts`
+- `src/persistence/sqlite-backend.ts`
+- `src/index.ts`
+- `package.json`
+- `test/agent-owner.test.ts`
+- `.res/SPEC-agent-persistence-identity.md`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Agent integration coverage proves multiple conversations per database, stable owner
+  identity, adapter reflection, identity load/update ordering, private prompt context,
+  exact assistant boundaries, participant attribution, and restart recovery.
+- Typecheck and the focused compatibility/persistence suites passed.
+- One complete run reached 720 passing tests plus the known unrelated millisecond
+  timestamp-ordering failure; that exact restoration test passed immediately in
+  isolation. The final complete serial rerun passed 721 tests with 0 failures and
+  2,796 expectations.
