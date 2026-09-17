@@ -28,6 +28,7 @@ export function isMissingProviderSessionError(
   ].join(" ").toLowerCase();
   return [
     "failed to resolve rollout path",
+    "no rollout found for thread id",
     "session not found",
     "unknown session",
     "no such session",

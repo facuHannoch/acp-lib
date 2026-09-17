@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "../../src/agent.ts";
 import type { ConversationRecoveryProgress } from "../../src/checkpointing/recovery.ts";
+import { isMissingProviderSessionError } from "../../src/checkpointing/recovery.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -12,6 +13,14 @@ afterEach(async () => {
 });
 
 describe("checkpoint recovery", () => {
+  test("recognizes Codex missing-rollout errors without treating arbitrary failures as missing", () => {
+    expect(isMissingProviderSessionError({
+      message: "Internal error",
+      data: { details: "no rollout found for thread id missing-id" },
+    })).toBeTrue();
+    expect(isMissingProviderSessionError(new Error("authentication failed"))).toBeFalse();
+  });
+
   test("creates and seeds a new provider session when the recorded one is missing", async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-checkpoint-recovery-"));
     roots.push(root);
