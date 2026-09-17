@@ -3658,7 +3658,13 @@ export type ManagedAgentConversationCreationBootstrap = ManagedAgentSessionCreat
 export type ManagedAgentConversationPersistenceSnapshot = ManagedAgentSessionPersistenceSnapshot;
 
 function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
-  return kind === "internal_command" ? "internal_session_command" : kind;
+  if (kind === "internal_command") return "internal_session_command";
+  if (
+    kind === "conversation_checkpoint"
+    || kind === "conversation_recovery"
+    || kind === "identity_update"
+  ) return "other";
+  return kind;
 }
 
 function ownHandoffOptions(options: HandoffOptions): HandoffOptions {

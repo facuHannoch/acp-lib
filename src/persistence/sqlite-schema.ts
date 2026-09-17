@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 2;
+export const SQLITE_AGENT_SCHEMA_VERSION = 3;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -116,6 +116,71 @@ CREATE TABLE IF NOT EXISTS conversation_metering_state (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS internal_inference_chains (
+  root_internal_inference_id TEXT PRIMARY KEY,
+  agent_session_id TEXT NOT NULL,
+  agent_conversation_id TEXT REFERENCES conversations(agent_conversation_id),
+  purpose TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'failed', 'cancelled')),
+  active_internal_inference_id TEXT,
+  requested_through_sequence INTEGER CHECK (
+    requested_through_sequence IS NULL OR requested_through_sequence >= 0
+  ),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  error TEXT
+);
+
+DROP INDEX IF EXISTS internal_inference_one_active_chain_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS internal_inference_one_active_checkpoint_chain_idx
+  ON internal_inference_chains(
+    agent_session_id,
+    COALESCE(agent_conversation_id, ''),
+    purpose
+  ) WHERE status = 'active' AND purpose = 'conversation_checkpoint';
+
+CREATE TABLE IF NOT EXISTS internal_inferences (
+  internal_inference_id TEXT PRIMARY KEY,
+  root_internal_inference_id TEXT NOT NULL REFERENCES internal_inference_chains(root_internal_inference_id),
+  retry_of_internal_inference_id TEXT REFERENCES internal_inferences(internal_inference_id),
+  attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+  agent_session_id TEXT NOT NULL,
+  agent_conversation_id TEXT REFERENCES conversations(agent_conversation_id),
+  purpose TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+  adapter_id TEXT NOT NULL,
+  execution_profile_id TEXT,
+  input_json TEXT NOT NULL,
+  model TEXT,
+  internal_session_id TEXT,
+  source_checkpoint_id TEXT,
+  source_from_sequence INTEGER CHECK (source_from_sequence IS NULL OR source_from_sequence >= 0),
+  source_through_sequence INTEGER CHECK (source_through_sequence IS NULL OR source_through_sequence >= 0),
+  requested_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  next_attempt_at TEXT,
+  worker_id TEXT,
+  lease_token TEXT,
+  lease_expires_at TEXT,
+  heartbeat_at TEXT,
+  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  result_json TEXT,
+  error TEXT,
+  failure_code TEXT,
+  metering_operation_id TEXT,
+  metadata TEXT,
+  UNIQUE (root_internal_inference_id, attempt_number)
+);
+
+CREATE INDEX IF NOT EXISTS internal_inferences_claim_idx
+  ON internal_inferences(status, next_attempt_at, requested_at, internal_inference_id);
+CREATE INDEX IF NOT EXISTS internal_inferences_chain_idx
+  ON internal_inferences(root_internal_inference_id, attempt_number);
+CREATE INDEX IF NOT EXISTS internal_inferences_lease_idx
+  ON internal_inferences(status, lease_expires_at);
+
 CREATE TABLE IF NOT EXISTS identity_state (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   observed_through_sequence INTEGER NOT NULL DEFAULT 0,
@@ -220,6 +285,11 @@ export function migrateSqliteAgentSchema(database: Database): void {
       database.query<unknown, [number, string]>(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
       ).run(2, new Date().toISOString());
+    }
+    if (version < 3) {
+      database.query<unknown, [number, string]>(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+      ).run(3, new Date().toISOString());
     }
     database.exec("COMMIT");
   } catch (error) {

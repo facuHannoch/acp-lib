@@ -41,6 +41,7 @@
     "./activity": "./src/activity.ts",
     "./conversation": "./src/agent-conversation.ts",
     "./agent": "./src/agent.ts",
+    "./internal-inference": "./src/internal-inference/index.ts",
     "./persistence": "./src/persistence/index.ts",
     "./repl": "./src/repl/index.ts",
     "./degraded": "./src/degraded/index.ts",

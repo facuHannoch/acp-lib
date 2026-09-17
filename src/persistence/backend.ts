@@ -1,6 +1,7 @@
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
+import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 
 export type PersistenceJsonPrimitive = string | number | boolean | null;
 export type PersistenceJsonValue =
@@ -464,6 +465,7 @@ export interface PersistenceScope {
   readonly checkpoints: ConversationCheckpointPersistence;
   readonly providerSessions: ProviderSessionPersistence;
   readonly metering: MeteringPersistence;
+  readonly internalInferences?: InternalInferenceRepository;
   readonly identity?: IdentityPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox?: AuditOutboxPersistence;

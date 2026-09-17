@@ -44,6 +44,15 @@ import type {
   OwnedPromptFailed,
   OwnedPromptInput,
 } from "./agent-conversation-owner.ts";
+import {
+  resolveInternalInferenceConfig,
+  type InternalInferenceConfig,
+} from "./internal-inference/config.ts";
+import type {
+  InternalInferenceManager,
+  InternalInferenceStrategy,
+} from "./internal-inference/contracts.ts";
+import { DefaultInternalInferenceManager } from "./internal-inference/coordination/manager.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -90,6 +99,9 @@ export interface AgentConfig {
   readonly meteringPersistence?: {
     readonly meteringRecords?: MeteringRecordRetention;
   };
+  readonly internalInference?: InternalInferenceConfig & {
+    readonly strategies: readonly InternalInferenceStrategy[];
+  };
 }
 
 export interface CreateAgentConversationConfig {
@@ -133,6 +145,7 @@ export class Agent {
   readonly identity: AgentIdentityRuntime;
   readonly adapters: AgentAdapterRegistry;
   readonly conversations: AgentConversationManager;
+  readonly internalInferences?: InternalInferenceManager;
 
   private readonly manager: DefaultAgentConversationManager;
   private closed = false;
@@ -157,6 +170,21 @@ export class Agent {
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
     });
     this.conversations = this.manager;
+    if (config.internalInference) {
+      const settings = resolveInternalInferenceConfig(config.internalInference);
+      if (!settings.runtime) throw new Error("internal inference requires a runtime");
+      if (!persistence.internalInferences) {
+        throw new Error("persistence backend does not support internal inference");
+      }
+      this.internalInferences = new DefaultInternalInferenceManager({
+        agentSessionId: id,
+        repository: persistence.internalInferences,
+        persistence,
+        runtime: settings.runtime,
+        settings,
+        strategies: config.internalInference.strategies,
+      });
+    }
   }
 
   static async open(config: AgentConfig): Promise<Agent> {
@@ -209,6 +237,7 @@ export class Agent {
     if (this.closed) return;
     this.closed = true;
     await this.manager.stopAll();
+    await (this.internalInferences as DefaultInternalInferenceManager | undefined)?.close();
     await this.persistence.close();
   }
 }

@@ -61,6 +61,8 @@ import {
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import { installSqliteFts, migrateSqliteAgentSchema } from "./sqlite-schema.ts";
+import { SqliteInternalInferenceRepository } from "../internal-inference/persistence/sqlite-repository.ts";
+import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 type WriteRunner = <T>(work: () => T) => Promise<T>;
@@ -118,6 +120,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly checkpoints: ConversationCheckpointPersistence;
   readonly providerSessions: ProviderSessionPersistence;
   readonly metering: MeteringPersistence;
+  readonly internalInferences: InternalInferenceRepository;
   readonly identity: IdentityPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox: AuditOutboxPersistence;
@@ -153,6 +156,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.checkpoints = scope.checkpoints;
     this.providerSessions = scope.providerSessions;
     this.metering = scope.metering;
+    this.internalInferences = scope.internalInferences!;
     this.identity = scope.identity!;
     this.search = fullTextSearch ? new SqliteSearchPersistence(database) : undefined;
     this.auditOutbox = scope.auditOutbox!;
@@ -249,6 +253,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       checkpoints: new SqliteCheckpointPersistence(this.database, runWrite),
       providerSessions: new SqliteProviderSessionPersistence(this.database, runWrite),
       metering: new SqliteMeteringPersistence(this.database, runWrite),
+      internalInferences: new SqliteInternalInferenceRepository(this.database, runWrite),
       identity: new SqliteIdentityPersistence(
         this.database,
         this.identityRecord.agentSessionId,
