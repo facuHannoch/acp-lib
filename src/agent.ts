@@ -352,6 +352,7 @@ interface ManagerSettings {
 
 class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
+  private readonly openings = new Map<AgentConversationId, Promise<OpenOwnedAgentConversationResult>>();
   private readonly detachedMeteringBarriers = new Map<AgentConversationId, Promise<void>>();
   private agentMeteringBarrier: Promise<void> | undefined;
 
@@ -381,6 +382,21 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     if (existing && existing.state.phase !== "stopped") {
       return Object.freeze({ conversation: existing, providerSession: "already_open" });
     }
+    const pending = this.openings.get(id);
+    if (pending) return await pending;
+    const opening = this.openOnce(id, config);
+    this.openings.set(id, opening);
+    try {
+      return await opening;
+    } finally {
+      if (this.openings.get(id) === opening) this.openings.delete(id);
+    }
+  }
+
+  private async openOnce(
+    id: AgentConversationId,
+    config: OpenAgentConversationConfig,
+  ): Promise<OpenOwnedAgentConversationResult> {
     const summary = await this.agent.persistence.conversations.get(id);
     if (!summary || summary.deletedAt) throw new Error(`unknown active conversation: ${id}`);
     const active = await this.agent.persistence.providerSessions.active(id);
@@ -476,6 +492,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
   }
 
   async stopAll(): Promise<void> {
+    await Promise.allSettled([...this.openings.values()]);
     const conversations = [...this.live.values()];
     this.live.clear();
     await Promise.allSettled(conversations.map((conversation) => conversation.stop()));

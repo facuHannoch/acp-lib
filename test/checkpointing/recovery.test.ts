@@ -43,11 +43,16 @@ describe("checkpoint recovery", () => {
 
     const progress: ConversationRecoveryProgress[] = [];
     const reopenedAgent = await Agent.open(config);
-    const opened = await reopenedAgent.conversations.open(conversationId, {
-      onRecoveryProgress: (event) => progress.push(event),
-    });
+    const [opened, concurrentOpen] = await Promise.all([
+      reopenedAgent.conversations.open(conversationId, {
+        onRecoveryProgress: (event) => progress.push(event),
+      }),
+      reopenedAgent.conversations.open(conversationId),
+    ]);
 
     expect(opened.providerSession).toBe("recovered");
+    expect(concurrentOpen.conversation).toBe(opened.conversation);
+    expect(concurrentOpen.providerSession).toBe("recovered");
     expect(opened.recovery?.checkpointId).toBe(checkpoint?.checkpointId);
     expect(opened.recovery?.previousInternalSessionId).toBe(oldSessionId);
     expect(opened.recovery?.recoveredThroughSequence).toBe(latestSequence);
