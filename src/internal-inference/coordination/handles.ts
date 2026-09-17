@@ -94,6 +94,13 @@ export function snapshotOf(record: InternalInferenceAttemptRecord): InternalInfe
     stage: record.status === "running" ? "prompting" : record.status,
     adapterId: record.adapterId,
     ...(record.agentConversationId ? { agentConversationId: record.agentConversationId } : {}),
+    ...(record.sourceCheckpointId ? { sourceCheckpointId: record.sourceCheckpointId } : {}),
+    ...(record.sourceFromSequence === undefined
+      ? {}
+      : { sourceFromSequence: record.sourceFromSequence }),
+    ...(record.sourceThroughSequence === undefined
+      ? {}
+      : { sourceThroughSequence: record.sourceThroughSequence }),
     requestedAt: record.requestedAt,
     ...(record.startedAt ? { startedAt: record.startedAt } : {}),
     ...(record.completedAt ? { completedAt: record.completedAt } : {}),

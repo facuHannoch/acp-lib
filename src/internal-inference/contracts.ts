@@ -75,6 +75,9 @@ export interface InternalInferenceSnapshot {
   readonly stage: InternalInferenceStage;
   readonly adapterId: string;
   readonly agentConversationId?: AgentConversationId;
+  readonly sourceCheckpointId?: string;
+  readonly sourceFromSequence?: number;
+  readonly sourceThroughSequence?: number;
   readonly requestedAt: string;
   readonly startedAt?: string;
   readonly completedAt?: string;
