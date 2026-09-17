@@ -1784,6 +1784,34 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
+  /** @internal Seed a newly created provider thread from a durable recovery checkpoint. */
+  async seedRecoveryContext(text: string): Promise<PromptResult> {
+    if (!text.trim()) throw new Error("recovery context cannot be blank");
+    const recoveryId = `recovery-${crypto.randomUUID()}`;
+    const records: OperationMeteringRecord[] = [];
+    await this.recordNativeAction(recoveryId, "conversation_recovery", "started");
+    try {
+      const result = await this.meteredInternalPrompt(
+        recoveryId,
+        "conversation_recovery",
+        text,
+        records,
+      );
+      if (result.status !== "completed") {
+        throw new Error(`conversation recovery seed ${result.status}`);
+      }
+      await this.recordNativeAction(recoveryId, "conversation_recovery", "completed", {
+        output: { internalSessionId: this._internalSessionId },
+      });
+      return result;
+    } catch (error) {
+      await this.recordNativeAction(recoveryId, "conversation_recovery", "failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+      throw error;
+    }
+  }
+
   /** Start a blank provider thread without generating or installing continuation context. */
   reset(options: {
     readonly targetAdapterId?: string;

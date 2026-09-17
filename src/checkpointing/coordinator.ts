@@ -21,7 +21,7 @@ export class ConversationCheckpointCoordinator {
         event.snapshot.purpose === "conversation_checkpoint"
         && event.snapshot.status === "completed"
         && event.snapshot.agentConversationId
-      ) void this.scheduleIfDue(event.snapshot.agentConversationId);
+      ) void this.scheduleIfDue(event.snapshot.agentConversationId).catch(() => undefined);
     });
   }
 

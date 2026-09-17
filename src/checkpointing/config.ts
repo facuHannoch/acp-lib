@@ -9,6 +9,15 @@ export interface ConversationCheckpointingConfig {
   readonly enabled?: boolean;
   readonly schedule?: ConversationCheckpointSchedule;
   readonly summaryInstruction?: string;
+  readonly recovery?: ConversationRecoveryConfig;
+}
+
+export interface ConversationRecoveryConfig {
+  readonly onLoadFailure?: "recover" | "error";
+  /** ACP has no standardized missing-session error, so consumers may override detection. */
+  readonly isMissingProviderSession?: (error: unknown) => boolean;
+  readonly seedInstruction?: string;
+  readonly maxTailMessages?: number;
 }
 
 export interface ResolvedConversationCheckpointingConfig {
@@ -16,6 +25,14 @@ export interface ResolvedConversationCheckpointingConfig {
   readonly milestones: readonly number[];
   readonly everyAfterMilestones: number;
   readonly summaryInstruction: string;
+  readonly recovery: ResolvedConversationRecoveryConfig;
+}
+
+export interface ResolvedConversationRecoveryConfig {
+  readonly onLoadFailure: "recover" | "error";
+  readonly isMissingProviderSession?: (error: unknown) => boolean;
+  readonly seedInstruction: string;
+  readonly maxTailMessages: number;
 }
 
 const DEFAULT_MILESTONES = Object.freeze([1, 5, 10, 15, 30, 50]);
@@ -39,11 +56,26 @@ export function resolveConversationCheckpointingConfig(
     "relevant resources, and the latest conversational state. Do not invent information.",
     "Return only the continuation summary.",
   ].join(" ");
+  const maxTailMessages = config.recovery?.maxTailMessages ?? 100;
+  if (!Number.isSafeInteger(maxTailMessages) || maxTailMessages < 0 || maxTailMessages > 10_000) {
+    throw new Error("checkpoint recovery maxTailMessages must be between 0 and 10000");
+  }
   return Object.freeze({
     enabled: config.enabled ?? true,
     milestones: Object.freeze(milestones),
     everyAfterMilestones,
     summaryInstruction,
+    recovery: Object.freeze({
+      onLoadFailure: config.recovery?.onLoadFailure ?? "recover",
+      ...(config.recovery?.isMissingProviderSession
+        ? { isMissingProviderSession: config.recovery.isMissingProviderSession }
+        : {}),
+      seedInstruction: config.recovery?.seedInstruction?.trim() || [
+        "Restore the following private continuation context for this conversation.",
+        "Do not answer it as a user request. Use it to continue naturally when the next user message arrives.",
+      ].join(" "),
+      maxTailMessages,
+    }),
   });
 }
 

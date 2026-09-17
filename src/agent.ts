@@ -62,8 +62,13 @@ import {
   ConversationCheckpointCoordinator,
   ConversationCheckpointStrategy,
   CONVERSATION_CHECKPOINT_STRATEGY_ID,
+  buildRecoverySeed,
+  isMissingProviderSessionError,
   resolveConversationCheckpointingConfig,
   type ConversationCheckpointingConfig,
+  type ConversationRecoveryProgress,
+  type ConversationRecoveryResult,
+  type ResolvedConversationCheckpointingConfig,
 } from "./checkpointing/index.ts";
 
 export type AgentPersistenceConfig =
@@ -133,11 +138,13 @@ export interface OpenAgentConversationConfig {
   readonly mode?: AgentMode;
   readonly mcpServers?: schema.McpServer[];
   readonly runtime?: AgentConversationRuntimeDefaults;
+  readonly onRecoveryProgress?: (event: ConversationRecoveryProgress) => void;
 }
 
 export interface OpenOwnedAgentConversationResult {
   readonly conversation: AgentConversation;
-  readonly providerSession: "already_open" | "loaded" | "new";
+  readonly providerSession: "already_open" | "loaded" | "new" | "recovered";
+  readonly recovery?: ConversationRecoveryResult;
 }
 
 export interface AgentConversationManager {
@@ -175,6 +182,9 @@ export class Agent {
     this.persistence = persistence;
     this.identity = identity;
     this.adapters = adapters;
+    const checkpointing = config.checkpointing
+      ? resolveConversationCheckpointingConfig(config.checkpointing)
+      : null;
     this.manager = new DefaultAgentConversationManager(this, {
       defaultAdapterId: config.defaultAdapterId,
       identityConsistency: config.identityConsistency ?? "eventual",
@@ -182,11 +192,9 @@ export class Agent {
       capture: resolveConversationRecordCapture(config.capture),
       defaults: config.conversationDefaults ?? {},
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
+      checkpointing,
     });
     this.conversations = this.manager;
-    const checkpointing = config.checkpointing
-      ? resolveConversationCheckpointingConfig(config.checkpointing)
-      : null;
     if (checkpointing?.enabled) {
       const messageCapture = resolveConversationRecordCapture(config.capture).message;
       if (messageCapture !== "content" && messageCapture !== "raw") {
@@ -339,6 +347,7 @@ interface ManagerSettings {
   readonly capture: ConversationRecordCapturePolicy;
   readonly defaults: AgentConversationRuntimeDefaults;
   readonly meteringRecords: MeteringRecordRetention;
+  readonly checkpointing: ResolvedConversationCheckpointingConfig | null;
 }
 
 class DefaultAgentConversationManager implements AgentConversationManager {
@@ -380,20 +389,75 @@ class DefaultAgentConversationManager implements AgentConversationManager {
         `conversation ${id} is active on ${active.adapterId}; use a conversation switch instead of loading it with ${config.adapterId}`,
       );
     }
-    const conversation = await this.start(id, summary.participants, {
+    const startConfig = {
       ...config,
       runtime: {
         ...(summary.title ? { title: summary.title } : {}),
         ...config.runtime,
       },
       adapterId: config.adapterId ?? active?.adapterId,
-      providerSession: active ? "load" : "new",
-      internalSessionId: active?.internalSessionId,
-    });
-    return Object.freeze({
-      conversation,
-      providerSession: active ? "loaded" : "new",
-    });
+    };
+    try {
+      const conversation = await this.start(id, summary.participants, {
+        ...startConfig,
+        providerSession: active ? "load" : "new",
+        internalSessionId: active?.internalSessionId,
+      });
+      return Object.freeze({
+        conversation,
+        providerSession: active ? "loaded" : "new",
+      });
+    } catch (error) {
+      const recovery = this.settings.checkpointing?.recovery;
+      if (
+        !active
+        || recovery?.onLoadFailure !== "recover"
+        || !isMissingProviderSessionError(error, recovery.isMissingProviderSession)
+      ) throw error;
+      config.onRecoveryProgress?.({ stage: "load_failed" });
+      config.onRecoveryProgress?.({ stage: "loading_checkpoint" });
+      const checkpoint = await this.agent.persistence.recoveryCheckpoints?.latest(id);
+      if (!checkpoint) throw error;
+      config.onRecoveryProgress?.({ stage: "loading_checkpoint", checkpointId: checkpoint.checkpointId });
+      const seed = await buildRecoverySeed(
+        this.agent.persistence.messages,
+        id,
+        checkpoint,
+        summary.latestSequence,
+        recovery,
+      );
+      config.onRecoveryProgress?.({ stage: "creating_session", checkpointId: checkpoint.checkpointId });
+      const conversation = await this.start(id, summary.participants, {
+        ...startConfig,
+        providerSession: "new",
+        deferProviderSessionPersistence: true,
+      });
+      try {
+        config.onRecoveryProgress?.({ stage: "seeding", checkpointId: checkpoint.checkpointId });
+        await conversation.seedRecoveryContext(seed.prompt);
+        await this.persistProviderSession(conversation, id, conversation.adapterId, {
+          transitionId: `recovery-${randomUUID()}`,
+          metadata: JSON.stringify({
+            recoveryCheckpointId: checkpoint.checkpointId,
+            previousInternalSessionId: active.internalSessionId,
+            recoveredThroughSequence: seed.recoveredThroughSequence,
+          }),
+        });
+      } catch (recoveryError) {
+        this.live.delete(id);
+        await conversation.stop().catch(() => undefined);
+        throw recoveryError;
+      }
+      const result: ConversationRecoveryResult = Object.freeze({
+        checkpointId: checkpoint.checkpointId,
+        coveredSequence: checkpoint.coveredSequence,
+        recoveredThroughSequence: seed.recoveredThroughSequence,
+        previousInternalSessionId: active.internalSessionId,
+        newInternalSessionId: conversation.internalSessionId!,
+      });
+      config.onRecoveryProgress?.({ stage: "completed", checkpointId: checkpoint.checkpointId });
+      return Object.freeze({ conversation, providerSession: "recovered", recovery: result });
+    }
   }
 
   async get(id: AgentConversationId): Promise<AgentConversationSummary | null> {
@@ -524,6 +588,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     config: (CreateAgentConversationConfig | OpenAgentConversationConfig) & {
       readonly providerSession: "new" | "load";
       readonly internalSessionId?: string;
+      readonly deferProviderSessionPersistence?: boolean;
     },
   ): Promise<AgentConversation> {
     const adapterId = this.resolveAdapterId(config.adapterId);
@@ -565,16 +630,8 @@ class DefaultAgentConversationManager implements AgentConversationManager {
           if (this.live.get(id) === conversation) this.live.delete(id);
         }
       });
-      if (conversation.internalSessionId) {
-        await this.agent.persistence.providerSessions.append({
-          providerSessionRecordId: `provider-${randomUUID()}`,
-          agentConversationId: id,
-          internalSessionId: conversation.internalSessionId,
-          adapterId,
-          mode: conversation.mode,
-          ...(conversation.model ? { model: conversation.model } : {}),
-          activatedAt: new Date().toISOString(),
-        });
+      if (conversation.internalSessionId && !config.deferProviderSessionPersistence) {
+        await this.persistProviderSession(conversation, id, adapterId);
       }
       return conversation;
     } catch (error) {
@@ -590,6 +647,25 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     const registrations = this.agent.adapters.list();
     if (registrations.length === 1) return registrations[0]!.id;
     throw new Error("adapterId is required when an Agent has no unique default adapter");
+  }
+
+  private async persistProviderSession(
+    conversation: AgentConversation,
+    id: AgentConversationId,
+    adapterId: string,
+    extra: { readonly transitionId?: string; readonly metadata?: string } = {},
+  ): Promise<void> {
+    if (!conversation.internalSessionId) throw new Error("provider session has no internal session id");
+    await this.agent.persistence.providerSessions.append({
+      providerSessionRecordId: `provider-${randomUUID()}`,
+      agentConversationId: id,
+      internalSessionId: conversation.internalSessionId,
+      adapterId,
+      mode: conversation.mode,
+      ...(conversation.model ? { model: conversation.model } : {}),
+      activatedAt: new Date().toISOString(),
+      ...extra,
+    });
   }
 }
 
