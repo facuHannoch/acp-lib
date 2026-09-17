@@ -609,14 +609,30 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   private queueOwnedRecord(record: NewConversationRecord): void {
     if (!this.ownerLifecycle?.record) return;
-    this.ownerRecordWrite = this.ownerRecordWrite.then(() => this.ownerLifecycle!.record!(record));
+    this.ownerRecordWrite = this.ownerRecordWrite
+      .then(() => this.ownerLifecycle!.record!(record))
+      .catch((error) => {
+        this.markManagedPersistenceUnhealthy();
+        throw error;
+      });
   }
 
   private async recordOwned(record: NewConversationRecord): Promise<void> {
     if (!this.ownerLifecycle?.record) return;
-    const write = this.ownerRecordWrite.then(() => this.ownerLifecycle!.record!(record));
+    const write = this.ownerRecordWrite
+      .then(() => this.ownerLifecycle!.record!(record))
+      .catch((error) => {
+        this.markManagedPersistenceUnhealthy();
+        throw error;
+      });
     this.ownerRecordWrite = write;
     await write;
+  }
+
+  private markManagedPersistenceUnhealthy(): void {
+    if (!this.managedPersistenceHealthy) return;
+    this.managedPersistenceHealthy = false;
+    this.emitStateIfChanged();
   }
 
   private queueProtocolRecord(entry: WireEntry): void {
@@ -2063,20 +2079,22 @@ export class AgentConversation implements AgentClient, Bridgeable {
         failedAfter = "target_activated";
       }
       const activatedAt = new Date().toISOString();
-      await this.ownerLifecycle?.transitionActivated?.({
-        transitionId: item.handoffId,
-        agentConversationId: this.agentConversationId,
-        internalSessionId: toInternalSessionId,
-        adapterId: targetAdapterId,
-        mode: targetMode,
-        ...(activeModel(targetController.configOptions)
-          ? { model: activeModel(targetController.configOptions)! }
-          : {}),
-        activatedAt,
-      });
-      await this.recordNativeAction(item.handoffId, action, "checkpoint", {
-        output: { stage: "target_activated", internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
-      });
+      try {
+        await this.ownerLifecycle?.transitionActivated?.({
+          transitionId: item.handoffId,
+          agentConversationId: this.agentConversationId,
+          internalSessionId: toInternalSessionId,
+          adapterId: targetAdapterId,
+          mode: targetMode,
+          ...(activeModel(targetController.configOptions)
+            ? { model: activeModel(targetController.configOptions)! }
+            : {}),
+          activatedAt,
+        });
+      } catch (error) {
+        this.markManagedPersistenceUnhealthy();
+        throw error;
+      }
 
       const previousController = this.controller;
       if (targetController !== previousController) {
@@ -2094,14 +2112,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
           enforcement: this.meteringConfig.enforcement ?? "best_effort",
         });
         this.bindController(targetController);
-        await previousController.stop().catch((error) => {
-          this.log.warn("handoff_previous_controller_stop_failed", { error: String(error) });
-        });
       }
       targetActivated = true;
       this.setInternalSessionId(toInternalSessionId);
       this.emitStateIfChanged();
       await this.persist();
+      await this.recordNativeAction(item.handoffId, action, "checkpoint", {
+        output: { stage: "target_activated", internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+      });
+      if (targetController !== previousController) {
+        await previousController.stop().catch((error) => {
+          this.log.warn("handoff_previous_controller_stop_failed", { error: String(error) });
+        });
+      }
 
       if (continuation.kind !== "none") {
         const seeded = await this.meteredInternalPrompt(
