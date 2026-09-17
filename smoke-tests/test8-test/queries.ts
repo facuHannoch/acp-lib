@@ -6,6 +6,16 @@ export interface StoredMessageRow {
   readonly content: string;
 }
 
+export interface StoredMeteringRecordRow {
+  readonly operationId: string;
+  readonly recordJson: string | null;
+}
+
+export interface StoredMeteringStateRow {
+  readonly revision: number;
+  readonly stateJson: string;
+}
+
 /** Query canonical persistence directly, independently of the library repositories. */
 export function findStoredUserMessage(
   database: Database,
@@ -41,4 +51,29 @@ export function listStoredMessages(
       AND kind = 'message'
     ORDER BY sequence
   `).all(agentConversationId);
+}
+
+/** Query one normalized metering operation independently of the persistence API. */
+export function findStoredMeteringRecord(
+  database: Database,
+  agentConversationId: string,
+  operationId: string,
+): StoredMeteringRecordRow | null {
+  return database.query<StoredMeteringRecordRow, [string, string]>(`
+    SELECT operation_id AS operationId, record_json AS recordJson
+    FROM metering_records
+    WHERE agent_conversation_id = ? AND operation_id = ?
+  `).get(agentConversationId, operationId);
+}
+
+/** Read the bounded state used to restore metering after a process restart. */
+export function findStoredMeteringState(
+  database: Database,
+  agentConversationId: string,
+): StoredMeteringStateRow | null {
+  return database.query<StoredMeteringStateRow, [string]>(`
+    SELECT revision, state_json AS stateJson
+    FROM conversation_metering_state
+    WHERE agent_conversation_id = ?
+  `).get(agentConversationId);
 }
