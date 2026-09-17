@@ -30,6 +30,44 @@ export {
 export type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 
 export {
+  CONVERSATION_RECORD_KINDS,
+  DEFAULT_CONVERSATION_RECORD_CAPTURE,
+  IMPLICIT_USER_PARTICIPANT_ID,
+  PARTICIPANT_KINDS,
+  PersistenceCapabilityError,
+  PersistenceConflictError,
+  isConversationRecordKind,
+  isParticipantKind,
+  normalizeParticipantRef,
+  resolveConversationRecordCapture,
+  searchableText,
+} from "./persistence/backend.ts";
+export type {
+  AgentConversationSummary,
+  AgentPersistenceIdentity,
+  ConversationRecord,
+  ConversationRecordCapturePolicy,
+  ConversationRecordEnvelope,
+  ConversationRecordKind,
+  IdentityMemoryObservation,
+  MessageRecord,
+  NewConversationRecord,
+  ParticipantKind,
+  ParticipantRef,
+  PersistedContent,
+  PersistedContentBlock,
+  PersistedIdentitySnapshot,
+  PersistenceBackend,
+  PersistenceCapabilities,
+  PersistenceExtension,
+  PersistenceJsonValue,
+  PersistenceScope,
+  SearchMatch,
+  SearchQuery,
+  VectorIndex,
+} from "./persistence/backend.ts";
+
+export {
   AgentController,
   parseConfigValue,
   parseBoolean,

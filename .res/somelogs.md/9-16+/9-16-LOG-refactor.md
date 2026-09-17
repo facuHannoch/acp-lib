@@ -319,3 +319,41 @@ architectural intent and the evidence used to verify each change.
 - Focused startup, handoff, and managed-load suites passed.
 - Typecheck passed.
 - Full suite passed: 700 tests, 0 failures.
+
+## Step 10 — Backend-neutral persistence contracts
+
+### Completed
+
+- Added the agent-scoped `PersistenceBackend` and transaction scope with direct
+  conversation, record, message, checkpoint, provider-session, identity, search, audit
+  outbox, and extension operations.
+- Added stable participant references with the accepted `agent`, `user`, and `external`
+  vocabulary plus the reserved implicit-user identity.
+- Added the ordered record envelope and typed message, tool-call, permission,
+  configuration, protocol, native action, future agent action, thinking, and activity
+  records.
+- Kept exact messages as first-class records and added a dedicated message retrieval
+  contract so chat reconstruction never depends on private event reduction.
+- Added immutable capture-policy resolution independently from query filters.
+- Added identity observation, derived snapshot, projection-watermark, vector-index,
+  search, durable audit-outbox, and persistence-extension contracts.
+- Added per-record searchable text projection without joining separate messages.
+- Added a `./persistence` package subpath while retaining all existing persistence APIs.
+
+### Files
+
+- `src/persistence/backend.ts`
+- `src/persistence/index.ts`
+- `src/index.ts`
+- `package.json`
+- `test/persistence-backend-contracts.test.ts`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Contract tests cover participant normalization, implicit identity, strict record kinds,
+  immutable capture expansion, message-boundary-preserving search projection, and tool
+  search content.
+- Typecheck and the focused persistence-contract suite passed.
+- A pre-existing audit-creation test failed once in the first parallel full run, then
+  passed in isolation; the clean full-suite rerun passed 706 tests with 0 failures.
