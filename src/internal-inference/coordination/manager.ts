@@ -57,6 +57,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     abort: AbortController;
     leaseToken: string;
     attempt: InternalInferenceAttemptRecord;
+    metering: InternalInferenceMeteringOperation | null;
   }>();
   private readonly fenced = new Set<InternalInferenceId>();
   private readonly pollIntervalMs: number;
@@ -147,6 +148,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     }
     for (const [id, execution] of this.active) {
       this.fenced.add(id);
+      execution.metering?.settled();
       const canRetry = execution.attempt.attemptNumber < this.config.settings.retry.maxAttempts;
       await this.config.repository.fail({
         internalInferenceId: id,
@@ -194,6 +196,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
           abort,
           leaseToken,
           attempt: claimed.attempt,
+          metering: null,
         });
         this.publishAttempt(claimed.attempt);
         void this.execute(claimed.attempt, abort, leaseToken).catch(() => {});
@@ -247,6 +250,8 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         stageChanged: (stage) => this.publishProgress(attempt.internalInferenceId, stage),
         sessionStarted: async (session) => {
           metering = await this.config.beginMetering?.(snapshotOf(attempt), session) ?? null;
+          const active = this.active.get(attempt.internalInferenceId);
+          if (active) active.metering = metering;
         },
       });
       if (this.fenced.has(attempt.internalInferenceId)) return;
@@ -285,7 +290,6 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
               : {}),
         });
       });
-      (metering as InternalInferenceMeteringOperation | null)?.settled();
       this.publishAttempt(completed);
       await this.refreshRun(attempt.rootInternalInferenceId);
       await this.pruneTerminal();
@@ -296,17 +300,14 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         meteringRecord = await openedMetering.close({ outcome: abort.signal.aborted ? "cancelled" : "error", error })
           .catch(() => null);
       }
-      try {
-        if (this.closed && abort.signal.aborted) {
-          await this.recordShutdownInterruption(attempt, leaseToken, error, meteringRecord);
-        } else {
-          await this.recordFailure(attempt, leaseToken, error, meteringRecord);
-        }
-      } finally {
-        (metering as InternalInferenceMeteringOperation | null)?.settled();
+      if (this.closed && abort.signal.aborted) {
+        await this.recordShutdownInterruption(attempt, leaseToken, error, meteringRecord);
+      } else {
+        await this.recordFailure(attempt, leaseToken, error, meteringRecord);
       }
     } finally {
       clearInterval(heartbeat);
+      (metering as InternalInferenceMeteringOperation | null)?.settled();
       this.active.delete(attempt.internalInferenceId);
       this.wake();
     }

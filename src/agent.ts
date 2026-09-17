@@ -385,10 +385,15 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       };
     }
 
+    const previous = this.detachedMeteringBarriers.get(conversationId) ?? Promise.resolve();
     let release!: () => void;
-    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const ownBarrier = new Promise<void>((resolve) => { release = resolve; });
+    const barrier = previous.then(() => ownBarrier);
     this.detachedMeteringBarriers.set(conversationId, barrier);
     try {
+      // Detached operations for one closed conversation must restore and commit in order.
+      // Otherwise two workers can derive the same next operation count from one snapshot.
+      await previous;
       const persisted = await this.agent.persistence.metering.state(conversationId);
       const meteringConfig = this.settings.defaults.metering;
       const engine = new MeteringEngine({

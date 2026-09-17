@@ -177,6 +177,59 @@ describe("internal inference manager", () => {
       .toBe("conversation_checkpoint");
     await agent.close();
   });
+
+  test("serializes detached metering for concurrent work on one closed conversation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-inference-metering-concurrency-"));
+    roots.push(root);
+    let sessionNumber = 0;
+    const runtime: InternalInferenceRuntime = {
+      async run(request, _signal, lifecycle) {
+        sessionNumber += 1;
+        await lifecycle?.sessionStarted({
+          internalSessionId: `detached-provider-${sessionNumber}`,
+          model: null,
+        });
+        return {
+          ...result(request.internalInferenceId, request.adapterId, request.purpose),
+          usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 },
+        };
+      },
+    };
+    const checkpoint = testStrategy();
+    const identity = { ...testStrategy(), purpose: "identity_update" as const };
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      conversationDefaults: { metering: { pricing: false } },
+      internalInference: {
+        runtime,
+        strategies: [checkpoint, identity],
+        maxConcurrency: 2,
+      },
+    });
+    const conversationId = createAgentConversationId();
+    await agent.persistence.conversations.create({
+      agentSessionId: agent.id,
+      agentConversationId: conversationId,
+    });
+    const first = await agent.internalInferences!.enqueue({
+      purpose: "conversation_checkpoint",
+      agentConversationId: conversationId,
+      input: { version: 1, strategyId: "test", payload: { prompt: "first" } },
+    });
+    const second = await agent.internalInferences!.enqueue({
+      purpose: "identity_update",
+      agentConversationId: conversationId,
+      input: { version: 1, strategyId: "test", payload: { prompt: "second" } },
+    });
+
+    await Promise.all([first.result, second.result]);
+    const state = await agent.persistence.metering.state(conversationId);
+    expect(state?.state.operationCount).toBe(2);
+    expect((await agent.persistence.metering.list(conversationId)).records).toHaveLength(2);
+    await agent.close();
+  });
 });
 
 function testStrategy(retry = false): InternalInferenceStrategy<{ prompt: string }> {
