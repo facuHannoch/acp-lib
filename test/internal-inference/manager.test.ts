@@ -17,6 +17,19 @@ afterEach(async () => {
 });
 
 describe("internal inference manager", () => {
+  test("constructs the default harness runtime from agent configuration", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-inference-default-runtime-"));
+    roots.push(root);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      internalInference: { strategies: [testStrategy()] },
+    });
+    expect(agent.internalInferences).toBeDefined();
+    await agent.close();
+  });
+
   test("executes in the background and reopens a durable completed run", async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-inference-manager-"));
     roots.push(root);

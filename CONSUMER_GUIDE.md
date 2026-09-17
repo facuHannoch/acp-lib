@@ -212,7 +212,7 @@ const agent = await Agent.open({
   adapters: { codex: ADAPTERS.codex },
   defaultAdapterId: "codex",
   internalInference: {
-    runtime,
+    runtime, // optional; omit to use the agent's harness adapter and runtime defaults
     strategies: [strategy],
     adapter: "same",
     maxConcurrency: 1,

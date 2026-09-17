@@ -57,6 +57,7 @@ import type {
 } from "./internal-inference/contracts.ts";
 import { DefaultInternalInferenceManager } from "./internal-inference/coordination/manager.ts";
 import type { InternalInferenceSnapshot } from "./internal-inference/contracts.ts";
+import { HarnessInternalInferenceRuntime } from "./internal-inference/runtime/harness-runtime.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -176,15 +177,38 @@ export class Agent {
     this.conversations = this.manager;
     if (config.internalInference) {
       const settings = resolveInternalInferenceConfig(config.internalInference);
-      if (!settings.runtime) throw new Error("internal inference requires a runtime");
       if (!persistence.internalInferences) {
         throw new Error("persistence backend does not support internal inference");
       }
+      const runtime = settings.runtime ?? new HarnessInternalInferenceRuntime({
+        controllerConfig: (request) => ({
+          adapter: adapters.require(request.adapterId),
+          adapterId: request.adapterId,
+          ...(config.conversationDefaults?.launcher
+            ? { launcher: config.conversationDefaults.launcher }
+            : {}),
+          ...(config.conversationDefaults?.execPrefix
+            ? { execPrefix: config.conversationDefaults.execPrefix }
+            : {}),
+          ...(config.conversationDefaults?.env ? { env: config.conversationDefaults.env } : {}),
+          ...(config.conversationDefaults?.cwd ? { cwd: config.conversationDefaults.cwd } : {}),
+          ...(config.conversationDefaults?.clientInfo
+            ? { clientInfo: config.conversationDefaults.clientInfo }
+            : {}),
+          ...(config.conversationDefaults?.clientCapabilities
+            ? { clientCapabilities: config.conversationDefaults.clientCapabilities }
+            : {}),
+          ...(config.conversationDefaults?.logger
+            ? { logger: config.conversationDefaults.logger }
+            : {}),
+          ...(config.conversationDefaults?.wire ? { wire: config.conversationDefaults.wire } : {}),
+        }),
+      });
       this.internalInferences = new DefaultInternalInferenceManager({
         agentSessionId: id,
         repository: persistence.internalInferences,
         persistence,
-        runtime: settings.runtime,
+        runtime,
         settings,
         strategies: config.internalInference.strategies,
         meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
@@ -265,8 +289,8 @@ export class Agent {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.manager.stopAll();
     await (this.internalInferences as DefaultInternalInferenceManager | undefined)?.close();
+    await this.manager.stopAll();
     await this.persistence.close();
   }
 }
