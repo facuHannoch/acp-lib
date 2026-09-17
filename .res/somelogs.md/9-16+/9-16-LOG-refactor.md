@@ -249,3 +249,41 @@ architectural intent and the evidence used to verify each change.
 - Confirmed all six preceding commits are individually scoped and the unrelated
   pre-existing worktree changes remain uncommitted and untouched.
 - Final typecheck and full test suite are run before this checkpoint is committed.
+
+## Step 8 — Persistence, search, identity, and transition contracts
+
+### Completed
+
+- Fixed `Agent` as the compatibility-safe top-level owner name and retained the existing
+  `AgentSession` meaning until it can become a deprecated `AgentConversation` facade.
+- Reduced the initial participant vocabulary to `agent`, `user`, and `external`, with
+  mutable display names and attribution explicitly separate from authentication.
+- Defined the common ordered record envelope, initial typed record families, exact
+  message-boundary rule, and independent capture/query policies.
+- Defined one caller-located SQLite database per agent as the online default, JSONL as a
+  compatibility/per-conversation/export backend, and audit as an independent sink with a
+  durable-outbox option.
+- Defined external-content FTS5 search, per-kind searchable projections, capability
+  detection, rebuild/integrity operations, and an optional vector-index boundary.
+- Defined versioned persistence extensions so RAG tables can later live in the same agent
+  database without becoming part of the core schema.
+- Defined identity as append-only observations plus derived snapshots and watermarks,
+  with `eventual` and `through-current` loading and an always-invoked no-op default.
+- Unified handoff, cross-adapter switch, and reset as one recoverable transition. Added
+  generated, consumer-provided, and absent continuation modes; custom summary guidance;
+  and an optional atomic target prompt.
+- Explicitly deferred markers, group routing, inter-agent messaging transports,
+  AI-backed consolidation, and a concrete vector implementation.
+
+### Files
+
+- `.res/SPEC-agent-persistence-identity.md`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Confirmed the contract preserves current handoff behavior through the compatibility
+  shorthand while providing the adapter registry required for a later switch.
+- Confirmed every long-running model operation lies outside a SQLite transaction.
+- Documentation-only step; the pre-step baseline passed typecheck, 698 unit tests, and
+  the deterministic transcript, operations, and metering smoke tests.
