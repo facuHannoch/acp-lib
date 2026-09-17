@@ -384,9 +384,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
   readonly agentSessionId: string;
   readonly agentConversationId: AgentConversationId;
   readonly ownerAgentSessionId: AgentSessionId | null;
-  readonly adapterId: string;
+  private _adapterId: string;
+  private activeAdapter: Adapter;
 
-  private readonly controller: AgentController;
+  private controller: AgentController;
+  private readonly controllerDefaults: Omit<
+    AgentControllerConfig,
+    "adapter" | "adapterId" | "mode" | "sessionId" | "sessionLoadFailure"
+  >;
+  private detachControllerCommands: (() => void) | null = null;
+  private detachControllerUsage: (() => void) | null = null;
   private readonly sessions?: SessionManager;
   private readonly _transcriptPath?: string;
   private readonly persistence: false | ResolvedAgentSessionPersistence;
@@ -402,7 +409,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly listeners = new Set<AgentSessionListener>();
   private lastStateKey = "";
   private _internalSessionId: string | null;
-  private readonly metering: MeteringEngine;
+  private metering: MeteringEngine;
+  private readonly meteringConfig: MeteringConfig;
   private _contextWindow: ContextWindowStatus | null = null;
   private _providerCost: ProviderCostSnapshot | null = null;
   /**
@@ -477,7 +485,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       ?? (isAgentSessionId(this.agentSessionId) ? this.agentSessionId : null);
     this.ownerLifecycle = config.ownerLifecycle;
     this._participants = (config.participants ?? []).map((participant) => Object.freeze({ ...participant }));
-    this.adapterId = config.adapterId;
+    this._adapterId = config.adapterId;
+    this.activeAdapter = config.adapter;
     this.sessions = config.sessions;
     this.persistence = resolveDirectPersistence(config.persistence);
     if (this.persistence !== false && config.sessions) {
@@ -514,6 +523,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this._cwd = config.cwd;
     this._title = config.title;
     this._internalSessionId = requestedInternalSessionId ?? null;
+    this.meteringConfig = Object.freeze({ ...(config.metering ?? {}) });
     this.metering = new MeteringEngine({
       agentSessionId: this.agentSessionId,
       adapterId: config.adapterId,
@@ -531,18 +541,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // not, and needs restored state to be attributable.
       createdActiveThread: providerSession.kind === "new",
     });
-    this.controller = new AgentController({
-      adapter: config.adapter,
-      adapterId: config.adapterId,
-      mode: this._mode,
+    this.controllerDefaults = {
       launcher: config.launcher,
       execPrefix: config.execPrefix,
       env: config.env,
       cwd: config.cwd,
-      sessionId: requestedInternalSessionId,
-      sessionLoadFailure: providerSession.kind === "load"
-        ? providerSession.onFailure ?? "error"
-        : undefined,
       mcpServers: config.mcpServers,
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,
@@ -550,12 +553,41 @@ export class AgentConversation implements AgentClient, Bridgeable {
       clientHandlers: config.clientHandlers,
       logger: config.logger,
       wire: config.wire,
+    };
+    this.controller = this.createController(config.adapter, config.adapterId, this._mode, {
+      sessionId: requestedInternalSessionId,
+      sessionLoadFailure: providerSession.kind === "load"
+        ? providerSession.onFailure ?? "error"
+        : undefined,
     });
-    this.controller.subscribeAvailableCommands((commands) => {
-      this.emit({ kind: "internal_session_commands_changed", commands });
+    this.bindController(this.controller);
+  }
+
+  private createController(
+    adapter: Adapter,
+    adapterId: string,
+    mode: AgentMode,
+    startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure"> = {},
+  ): AgentController {
+    return new AgentController({
+      ...this.controllerDefaults,
+      adapter,
+      adapterId,
+      mode,
+      ...startup,
     });
-    this.controller.subscribeUsageUpdate((update, sessionId) => {
-      this.applyUsageUpdate(update, sessionId);
+  }
+
+  private bindController(controller: AgentController): void {
+    this.detachControllerCommands?.();
+    this.detachControllerUsage?.();
+    this.detachControllerCommands = controller.subscribeAvailableCommands((commands) => {
+      if (this.controller === controller) {
+        this.emit({ kind: "internal_session_commands_changed", commands });
+      }
+    });
+    this.detachControllerUsage = controller.subscribeUsageUpdate((update, sessionId) => {
+      if (this.controller === controller) this.applyUsageUpdate(update, sessionId);
     });
   }
 
@@ -1314,6 +1346,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return this._internalSessionId;
   }
 
+  /** Active adapter route. It changes only after a durable switch activation. */
+  get adapterId(): string {
+    return this._adapterId;
+  }
+
   /** Canonical `agc-` identity. */
   get id(): AgentConversationId {
     return this.agentConversationId;
@@ -1589,12 +1626,46 @@ export class AgentConversation implements AgentClient, Bridgeable {
         handoffId: this.mintOperationId(),
         // A queued operation owns its arguments. Do not let a caller mutate the object
         // while it waits behind an active prompt and silently change the handoff.
-        options: Object.freeze({ ...options }),
+        options: ownHandoffOptions(options),
         resolve,
         reject,
       });
       this.emitStateIfChanged();
       void this.pump();
+    });
+  }
+
+  /** Cross-adapter handoff. The owning Agent resolves `targetAdapterId` in its registry. */
+  switch(
+    targetAdapterId: string,
+    options: Omit<HandoffOptions, "target" | "summary"> = {},
+  ): Promise<HandoffResult> {
+    if (!targetAdapterId.trim()) return Promise.reject(new Error("target adapter id cannot be blank"));
+    return this.handoff({
+      ...options,
+      target: { adapterId: targetAdapterId.trim() },
+    });
+  }
+
+  /** Start a blank provider thread without generating or installing continuation context. */
+  reset(options: {
+    readonly targetAdapterId?: string;
+    readonly mode?: AgentMode;
+    readonly config?: Readonly<Record<string, unknown>>;
+    readonly targetPrompt?: string;
+  } = {}): Promise<HandoffResult> {
+    return this.handoff({
+      continuation: { kind: "none" },
+      ...(options.targetPrompt === undefined ? {} : { targetPrompt: options.targetPrompt }),
+      ...((options.targetAdapterId ?? options.mode ?? options.config) === undefined
+        ? {}
+        : {
+            target: {
+              adapterId: options.targetAdapterId ?? this.adapterId,
+              ...(options.mode === undefined ? {} : { mode: options.mode }),
+              ...(options.config === undefined ? {} : { config: options.config }),
+            },
+          }),
     });
   }
 
@@ -1693,10 +1764,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
     const fromInternalSessionId = this._internalSessionId;
+    const fromAdapterId = this.adapterId;
+    const targetAdapterId = item.options.target?.adapterId ?? fromAdapterId;
+    const targetMode = item.options.target?.mode ?? this._mode;
+    const continuation = normalizeHandoffContinuation(item.options);
+    const transitionKind = targetAdapterId === fromAdapterId ? "handoff" as const : "switch" as const;
     const fromDescriptor = this.v2Transcript ? this.v2Descriptor() : null;
     let toInternalSessionId: string | undefined;
     let toDescriptor: InternalSessionDescriptor | undefined;
     let summary: string | undefined;
+    let targetController: AgentController | null = null;
+    let resolvedTargetAdapter: Adapter | null = null;
+    let targetActivated = false;
     let failedAfter: "start" | "target_created" | "target_activated" = "start";
     // Records accumulate as they complete, so a handoff that fails partway still reports
     // the operations it already paid for.
@@ -1710,10 +1789,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
       await this.v2Transcript.appendTransitionEvent({
         kind: "transition",
         transitionId: item.handoffId,
-        transitionKind: "handoff",
+        transitionKind,
         event: "started",
         from: fromDescriptor,
-        ...(item.options.summary !== undefined ? { summary: item.options.summary } : {}),
+        ...(continuation.kind === "provided" ? { summary: continuation.content } : {}),
       });
     } else {
       await this.appendTranscript({
@@ -1723,25 +1802,24 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ts: Date.now(),
         handoffId: item.handoffId,
         fromInternalSessionId,
-        ...(item.options.summary !== undefined ? { summary: item.options.summary } : {}),
+        ...(continuation.kind === "provided" ? { summary: continuation.content } : {}),
       });
     }
 
     try {
-      if (this.controller.isDegraded) {
-        throw new Error("handoff requires ACP (normal) mode");
+      if (continuation.kind !== "none" && this.controller.isDegraded) {
+        throw new Error("handoff continuation requires ACP (normal) mode");
       }
 
-      if (item.options.summary !== undefined) {
-        if (!item.options.summary.trim()) throw new Error("handoff summary cannot be blank");
+      if (continuation.kind === "provided") {
         // A supplied summary removes the generation operation entirely, so no
         // `:summary` record is ever minted for it.
-        summary = item.options.summary;
-      } else {
+        summary = continuation.content;
+      } else if (continuation.kind === "generated") {
         const generated = await this.meteredInternalPrompt(
           `${item.handoffId}:summary`,
           "handoff_summary",
-          HANDOFF_SUMMARY_PROMPT,
+          continuation.summaryPrompt,
           records,
         );
         if (generated.status !== "completed" || !generated.text.trim()) {
@@ -1750,13 +1828,39 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // Handoff requires one seed string, so this internal boundary policy is explicit;
         // it is not treated as the canonical shape of the provider response.
         summary = formatResponseMessages(generated.messages, "\n\n").trim();
+      } else {
+        summary = "";
       }
 
-      const created = await this.controller.newSession();
+      const replacingController = targetAdapterId !== fromAdapterId || targetMode !== this._mode;
+      let created: ConnectResult;
+      if (replacingController) {
+        const adapter = targetAdapterId === fromAdapterId
+          ? this.activeAdapter
+          : this.ownerLifecycle?.resolveAdapter?.(targetAdapterId);
+        if (!adapter) {
+          throw new Error(
+            `cannot resolve adapter ${targetAdapterId}; cross-adapter switch requires an Agent-owned conversation`,
+          );
+        }
+        resolvedTargetAdapter = adapter;
+        targetController = this.createController(adapter, targetAdapterId, targetMode);
+        created = await targetController.startFresh();
+      } else {
+        if (this.controller.isDegraded) {
+          throw new Error("starting a fresh provider thread requires ACP (normal) mode");
+        }
+        targetController = this.controller;
+        created = await targetController.newSession();
+      }
       if (!created.sessionId) throw new Error("harness returned no session id for handoff");
       toInternalSessionId = created.sessionId;
-      if (toInternalSessionId === fromInternalSessionId) {
+      if (!replacingController && toInternalSessionId === fromInternalSessionId) {
         throw new Error("harness did not replace the internal session during handoff");
+      }
+
+      for (const [configId, value] of Object.entries(item.options.target?.config ?? {})) {
+        await targetController.setConfig(configId, value);
       }
 
       if (this.v2Transcript) {
@@ -1765,7 +1869,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         await this.v2Transcript.appendTransitionEvent({
           kind: "transition",
           transitionId: item.handoffId,
-          transitionKind: "handoff",
+          transitionKind,
           event: "target_created",
           from: fromDescriptor,
           to: toDescriptor,
@@ -1775,7 +1879,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         await this.v2Transcript.activateTransition({
           kind: "transition",
           transitionId: item.handoffId,
-          transitionKind: "handoff",
+          transitionKind,
           event: "target_activated",
           from: fromDescriptor,
           to: toDescriptor,
@@ -1789,7 +1893,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
                   protocol: fromDescriptor.protocol,
                   activatedAt: fromDescriptor.activatedAt!,
                   deactivatedAt: transitionAt,
-                  transition: { kind: "handoff", transitionId: item.handoffId },
+                  transition: { kind: transitionKind, transitionId: item.handoffId },
                 },
               }
             : {}),
@@ -1802,18 +1906,65 @@ export class AgentConversation implements AgentClient, Bridgeable {
         });
         failedAfter = "target_activated";
       }
+      const activatedAt = new Date().toISOString();
+      await this.ownerLifecycle?.transitionActivated?.({
+        transitionId: item.handoffId,
+        agentConversationId: this.agentConversationId,
+        internalSessionId: toInternalSessionId,
+        adapterId: targetAdapterId,
+        mode: targetMode,
+        ...(activeModel(targetController.configOptions)
+          ? { model: activeModel(targetController.configOptions)! }
+          : {}),
+        activatedAt,
+      });
+
+      const previousController = this.controller;
+      if (targetController !== previousController) {
+        this.controller = targetController;
+        this.activeAdapter = resolvedTargetAdapter!;
+        this._adapterId = targetAdapterId;
+        this._mode = targetMode;
+        this.metering = new MeteringEngine({
+          ...this.meteringConfig,
+          agentSessionId: this.agentSessionId,
+          adapterId: targetAdapterId,
+          initialState: this.metering.currentState,
+          createdActiveThread: true,
+          pricing: this.meteringConfig.pricing ?? createModelsDevResolver(),
+          enforcement: this.meteringConfig.enforcement ?? "best_effort",
+        });
+        this.bindController(targetController);
+        await previousController.stop().catch((error) => {
+          this.log.warn("handoff_previous_controller_stop_failed", { error: String(error) });
+        });
+      }
+      targetActivated = true;
       this.setInternalSessionId(toInternalSessionId);
       this.emitStateIfChanged();
       await this.persist();
 
-      const seeded = await this.meteredInternalPrompt(
-        `${item.handoffId}:seed`,
-        "handoff_seed",
-        buildContinuationPrompt(summary),
-        records,
-      );
-      if (seeded.status !== "completed") {
-        throw new Error(`handoff continuation seeding ${seeded.status}`);
+      if (continuation.kind !== "none") {
+        const seeded = await this.meteredInternalPrompt(
+          `${item.handoffId}:seed`,
+          transitionKind === "switch" ? "switch_seed" : "handoff_seed",
+          buildContinuationPrompt(summary),
+          records,
+        );
+        if (seeded.status !== "completed") {
+          throw new Error(`handoff continuation seeding ${seeded.status}`);
+        }
+      }
+      if (item.options.targetPrompt !== undefined) {
+        const prompted = await this.meteredInternalPrompt(
+          `${item.handoffId}:target`,
+          "internal_command",
+          item.options.targetPrompt,
+          records,
+        );
+        if (prompted.status !== "completed") {
+          throw new Error(`handoff target prompt ${prompted.status}`);
+        }
       }
 
       const result: HandoffResult = Object.freeze({
@@ -1821,6 +1972,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         agentSessionId: this.agentSessionId,
         fromInternalSessionId,
         toInternalSessionId,
+        ...(transitionKind === "switch" ? { fromAdapterId, toAdapterId: targetAdapterId } : {}),
         summary,
         meteringRecords: Object.freeze([...records]),
       });
@@ -1828,7 +1980,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         await this.v2Transcript.appendTransitionEvent({
           kind: "transition",
           transitionId: item.handoffId,
-          transitionKind: "handoff",
+          transitionKind,
           event: "completed",
           from: fromDescriptor,
           to: toDescriptor,
@@ -1867,7 +2019,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         await this.v2Transcript.appendTransitionEvent({
           kind: "transition",
           transitionId: item.handoffId,
-          transitionKind: "handoff",
+          transitionKind,
           event: "failed",
           from: fromDescriptor,
           ...(toDescriptor ? { to: toDescriptor } : {}),
@@ -1889,6 +2041,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
           ...(summary !== undefined ? { summary } : {}),
           error,
         });
+      }
+      if (!targetActivated && targetController && targetController !== this.controller) {
+        await targetController.stop().catch(() => undefined);
       }
       this.emit({
         kind: "handoff_failed",
@@ -3259,6 +3414,63 @@ export type ManagedAgentConversationPersistenceSnapshot = ManagedAgentSessionPer
 
 function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
   return kind === "internal_command" ? "internal_session_command" : kind;
+}
+
+function ownHandoffOptions(options: HandoffOptions): HandoffOptions {
+  return Object.freeze({
+    ...(options.summary === undefined ? {} : { summary: options.summary }),
+    ...(options.target === undefined
+      ? {}
+      : {
+          target: Object.freeze({
+            adapterId: options.target.adapterId,
+            ...(options.target.mode === undefined ? {} : { mode: options.target.mode }),
+            ...(options.target.config === undefined
+              ? {}
+              : { config: Object.freeze({ ...options.target.config }) }),
+          }),
+        }),
+    ...(options.continuation === undefined
+      ? {}
+      : { continuation: Object.freeze({ ...options.continuation }) }),
+    ...(options.targetPrompt === undefined ? {} : { targetPrompt: options.targetPrompt }),
+  });
+}
+
+function normalizeHandoffContinuation(options: HandoffOptions):
+  | { readonly kind: "generated"; readonly summaryPrompt: string }
+  | { readonly kind: "provided"; readonly content: string }
+  | { readonly kind: "none" } {
+  if (options.summary !== undefined && options.continuation !== undefined) {
+    throw new Error("handoff cannot combine deprecated summary with continuation");
+  }
+  if (options.target && !options.target.adapterId.trim()) {
+    throw new Error("handoff target adapter id cannot be blank");
+  }
+  if (options.targetPrompt !== undefined && !options.targetPrompt.trim()) {
+    throw new Error("handoff target prompt cannot be blank");
+  }
+  if (options.summary !== undefined) {
+    if (!options.summary.trim()) throw new Error("handoff summary cannot be blank");
+    return Object.freeze({ kind: "provided", content: options.summary });
+  }
+  const continuation = options.continuation ?? { kind: "generated" as const };
+  if (continuation.kind === "provided") {
+    if (!continuation.content.trim()) throw new Error("handoff continuation cannot be blank");
+    return Object.freeze({ kind: "provided", content: continuation.content });
+  }
+  if (continuation.kind === "none") return Object.freeze({ kind: "none" });
+  if (continuation.summaryPrompt !== undefined && !continuation.summaryPrompt.trim()) {
+    throw new Error("handoff summary prompt cannot be blank");
+  }
+  if (continuation.summaryInstructions !== undefined && !continuation.summaryInstructions.trim()) {
+    throw new Error("handoff summary instructions cannot be blank");
+  }
+  const base = continuation.summaryPrompt ?? HANDOFF_SUMMARY_PROMPT;
+  const summaryPrompt = continuation.summaryInstructions === undefined
+    ? base
+    : `${base}\n\nAdditional summary instructions:\n${continuation.summaryInstructions}`;
+  return Object.freeze({ kind: "generated", summaryPrompt });
 }
 
 function configurationTargetIssue(

@@ -141,8 +141,27 @@ export interface AgentSessionRecoveryResolutionResult {
 }
 
 export interface HandoffOptions {
-  /** Portable continuation context. When omitted, the current thread generates it. */
+  /** @deprecated Shorthand for `continuation: { kind: "provided", content: summary }`. */
   readonly summary?: string;
+  /** Target provider. Omitted means a fresh thread on the current adapter and mode. */
+  readonly target?: {
+    readonly adapterId: string;
+    readonly mode?: AgentMode;
+    readonly config?: Readonly<Record<string, unknown>>;
+  };
+  /** How portable context is produced. Defaults to a generated summary. */
+  readonly continuation?:
+    | {
+        readonly kind: "generated";
+        /** Appended to the library's summary prompt. */
+        readonly summaryInstructions?: string;
+        /** Replaces the library's summary prompt entirely. */
+        readonly summaryPrompt?: string;
+      }
+    | { readonly kind: "provided"; readonly content: string }
+    | { readonly kind: "none" };
+  /** Optional first instruction sent after continuation context has been installed. */
+  readonly targetPrompt?: string;
 }
 
 export interface HandoffResult {
@@ -150,6 +169,10 @@ export interface HandoffResult {
   readonly agentSessionId: string;
   readonly fromInternalSessionId: string | null;
   readonly toInternalSessionId: string;
+  /** Present when the handoff crossed adapter routes. */
+  readonly fromAdapterId?: string;
+  /** Present when the handoff crossed adapter routes. */
+  readonly toAdapterId?: string;
   readonly summary: string;
   /** One record per token-consuming operation the handoff performed, in order. */
   readonly meteringRecords: readonly OperationMeteringRecord[];

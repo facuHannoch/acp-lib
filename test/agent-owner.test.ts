@@ -136,6 +136,68 @@ describe("Agent owner", () => {
     expect(conversation.adapterId).toBe("second");
     expect(conversation.internalSessionCommands[0]?.name).toBe("status");
   });
+
+  test("switch preserves the agc identity, changes adapter, and recovers the activated target", async () => {
+    const directory = await makeDirectory();
+    const path = join(directory, "agent.sqlite");
+    const adapters = {
+      bob: { command: ["bun", OPERATIONS_AGENT, "bob"] },
+      atlas: { command: ["bun", OPERATIONS_AGENT, "atlas"] },
+    };
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters,
+      defaultAdapterId: "bob",
+    }));
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    const oldProviderSessionId = conversation.internalSessionId;
+
+    const switched = await conversation.switch("atlas", {
+      continuation: { kind: "provided", content: "portable continuation context" },
+    });
+    expect(conversation.id).toBe(conversationId);
+    expect(conversation.adapterId).toBe("atlas");
+    expect(conversation.internalSessionId).toStartWith("atlas-thread-");
+    expect(switched).toMatchObject({
+      fromAdapterId: "bob",
+      toAdapterId: "atlas",
+      fromInternalSessionId: oldProviderSessionId,
+      toInternalSessionId: conversation.internalSessionId,
+    });
+    const history = await agent.persistence.providerSessions.list(conversationId);
+    expect(history).toHaveLength(2);
+    expect(history[0]?.deactivatedAt).toBeDefined();
+    expect(await agent.persistence.providerSessions.active(conversationId)).toMatchObject({
+      adapterId: "atlas",
+      internalSessionId: conversation.internalSessionId,
+      transitionId: switched.handoffId,
+    });
+
+    await agent.close();
+    agents.splice(agents.indexOf(agent), 1);
+    const reopened = await track(Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters,
+      defaultAdapterId: "bob",
+    }));
+    const recovered = await reopened.conversations.open(conversationId);
+    expect(recovered.providerSession).toBe("loaded");
+    expect(recovered.conversation.adapterId).toBe("atlas");
+    expect(recovered.conversation.internalSessionId).toBe(switched.toInternalSessionId);
+  });
+
+  test("reset starts a blank thread without summary or seed operations", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const oldProviderSessionId = conversation.internalSessionId;
+    const reset = await conversation.reset();
+
+    expect(reset.summary).toBe("");
+    expect(reset.meteringRecords).toEqual([]);
+    expect(reset.toInternalSessionId).not.toBe(oldProviderSessionId);
+    expect(conversation.adapterId).toBe("operations");
+  });
 });
 
 class RecordingIdentity implements AgentIdentityRuntime {

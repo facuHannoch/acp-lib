@@ -1,4 +1,6 @@
 import type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
+import type { Adapter } from "./adapters.ts";
+import type { AgentMode } from "./controller.ts";
 import type { ParticipantRef } from "./persistence/backend.ts";
 import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts";
 import type { ResponseMessage } from "./types.ts";
@@ -30,4 +32,16 @@ export interface AgentConversationOwnerLifecycle {
   beforePrompt(input: OwnedPromptInput): Promise<OwnedPromptPreparation>;
   afterPrompt(input: OwnedPromptCompleted): Promise<void>;
   promptFailed(input: OwnedPromptFailed): Promise<void>;
+  /** Resolve an agent-scoped route for a cross-adapter transition. */
+  resolveAdapter?(adapterId: string): Adapter;
+  /** Commit the newly active provider route before it becomes observable in memory. */
+  transitionActivated?(input: {
+    readonly transitionId: string;
+    readonly agentConversationId: AgentConversationId;
+    readonly internalSessionId: string;
+    readonly adapterId: string;
+    readonly mode: AgentMode;
+    readonly model?: string;
+    readonly activatedAt: string;
+  }): Promise<void>;
 }

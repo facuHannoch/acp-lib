@@ -428,6 +428,31 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     await this.updateIdentity(await this.appendMessages(records));
   }
 
+  resolveAdapter(adapterId: string) {
+    return this.agent.adapters.require(adapterId);
+  }
+
+  async transitionActivated(input: {
+    readonly transitionId: string;
+    readonly agentConversationId: AgentConversationId;
+    readonly internalSessionId: string;
+    readonly adapterId: string;
+    readonly mode: AgentMode;
+    readonly model?: string;
+    readonly activatedAt: string;
+  }): Promise<void> {
+    await this.agent.persistence.providerSessions.append({
+      providerSessionRecordId: `provider-${randomUUID()}`,
+      agentConversationId: input.agentConversationId,
+      internalSessionId: input.internalSessionId,
+      adapterId: input.adapterId,
+      mode: input.mode,
+      ...(input.model ? { model: input.model } : {}),
+      activatedAt: input.activatedAt,
+      transitionId: input.transitionId,
+    });
+  }
+
   private async resolveParticipant(participantId?: string): Promise<ParticipantRef> {
     const id = participantId
       ?? (this.initialParticipants.length === 1
