@@ -113,7 +113,7 @@ try {
     ).get(conversationId);
     assert.equal(Number(recoveryMetering?.count ?? 0), 1, "recovery metering was not persisted");
     assert.equal(
-      verification.query<{ result: string }, []>("PRAGMA integrity_check").get()?.result,
+      verification.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()?.integrity_check,
       "ok",
     );
   } finally {
