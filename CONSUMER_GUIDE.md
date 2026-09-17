@@ -132,6 +132,10 @@ const agent = await Agent.open({
 const page = await agent.persistence.metering.list(conversationId);
 const records = page.records;
 const state = await agent.persistence.metering.state(conversationId);
+
+// Internal work not caused by a conversation has a separate agent-level scope.
+const internalState = await agent.persistence.metering.agentState(agent.id);
+const internalRecords = await agent.persistence.metering.listAgent(agent.id);
 ```
 
 Consumers with a separate authoritative billing store can omit the detailed local history:
@@ -146,6 +150,101 @@ meteringPersistence: {
 bounded restoration state. It only omits the full serialized metering record. Continue to
 consume `result.metering` or `metering_recorded` notifications when delivering records to
 an external billing repository.
+
+### Run durable internal inference
+
+`internalInference` is agent-scoped background model work for checkpoint, recovery, and
+identity features. It is not a participant turn and does not write its prompt or output
+into the visible transcript. Attempts are queued in SQLite, leased to one worker, retried
+with a new `aii-…` attempt ID, observable, cancellable, and resumed when the database is
+reopened.
+
+Consumers register versioned strategies. A strategy derives a prompt from durable input,
+then validates and publishes the result inside the transaction that completes the attempt.
+The generic runtime deliberately does not define checkpoint or identity artifact schemas.
+
+```ts
+import {
+  ADAPTERS,
+  Agent,
+  HarnessInternalInferenceRuntime,
+  type InternalInferenceStrategy,
+} from "@qlairoslabs/acp-client";
+
+const strategy: InternalInferenceStrategy<{ throughSequence: number }> = {
+  strategyId: "checkpoint-v1",
+  purpose: "conversation_checkpoint",
+  version: 1,
+  validatePayload(value) {
+    const sequence = (value as { throughSequence?: unknown }).throughSequence;
+    if (!Number.isSafeInteger(sequence)) throw new Error("invalid sequence");
+    return { throughSequence: sequence as number };
+  },
+  async prepare(_context, input) {
+    // A real strategy reads the canonical records in this range here.
+    return { prompt: `Summarize through sequence ${input.throughSequence}. Do not use tools.` };
+  },
+  async complete(context, result) {
+    // Validate and write the artifact through context.persistence here.
+    return {
+      internalInferenceId: result.internalInferenceId,
+      rootInternalInferenceId: context.attempt.rootId,
+      internalSessionId: result.internalSessionId,
+      purpose: context.attempt.purpose,
+      completedAt: new Date().toISOString(),
+    };
+  },
+  classifyError() {
+    return { kind: "retryable", code: "provider_failure" };
+  },
+};
+
+const runtime = new HarnessInternalInferenceRuntime({
+  controllerConfig: (request) => ({
+    adapter: ADAPTERS.codex,
+    adapterId: request.adapterId,
+    cwd: process.cwd(),
+  }),
+});
+
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  defaultAdapterId: "codex",
+  internalInference: {
+    runtime,
+    strategies: [strategy],
+    adapter: "same",
+    maxConcurrency: 1,
+    retry: { maxAttempts: 3, backoffMs: [1_000, 10_000, 60_000] },
+    retention: { retain: 100 },
+  },
+});
+
+const run = await agent.internalInferences!.enqueue({
+  purpose: "conversation_checkpoint",
+  agentConversationId: conversation.agentConversationId,
+  input: {
+    strategyId: "checkpoint-v1",
+    version: 1,
+    payload: { throughSequence: 42 },
+  },
+  requestedThroughSequence: 42,
+});
+
+const unsubscribe = run.subscribe(({ snapshot }) => {
+  console.log(snapshot.stage, snapshot.status);
+});
+const completion = await run.result;
+unsubscribe();
+```
+
+The harness runtime starts a fresh disposable provider session and inherits the supplied
+launcher, environment, working directory, and container boundary. Empty MCP/client
+handlers and cancelled permission requests do not disable filesystem or terminal tools
+built into the harness; enforce that boundary with the launcher or container when needed.
+Custom runtimes should call `lifecycle.sessionStarted(...)` before prompting so strict
+metering preflight can run. Completed custom results are metered as a fallback.
 
 ## Legacy direct and managed sessions
 
