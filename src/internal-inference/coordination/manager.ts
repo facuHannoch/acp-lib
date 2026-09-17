@@ -10,9 +10,11 @@ import type {
   InternalInferenceEvent,
   InternalInferenceId,
   InternalInferenceManager,
+  InternalInferenceListOptions,
   InternalInferenceRun,
   InternalInferenceRunSnapshot,
   InternalInferenceSnapshot,
+  InternalInferenceSnapshotPage,
   InternalInferenceStrategy,
 } from "../contracts.ts";
 import type { ResolvedInternalInferenceConfig } from "../config.ts";
@@ -30,6 +32,10 @@ export interface DefaultInternalInferenceManagerConfig {
   readonly runtime: NonNullable<ResolvedInternalInferenceConfig["runtime"]>;
   readonly settings: ResolvedInternalInferenceConfig;
   readonly strategies: readonly InternalInferenceStrategy[];
+  readonly resolveAdapterId: (
+    requestedAdapterId: string | undefined,
+    agentConversationId: EnqueueInternalInferenceRequest["agentConversationId"],
+  ) => string | Promise<string>;
   readonly pollIntervalMs?: number;
 }
 
@@ -61,13 +67,17 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     this.assertOpen();
     const strategy = this.registry.require(request.purpose, request.input.strategyId, request.input.version);
     strategy.validatePayload(request.input.payload);
+    const adapterId = await this.config.resolveAdapterId(
+      request.adapterId,
+      request.agentConversationId,
+    );
     const id = createInternalInferenceId();
     const persisted = await this.config.repository.enqueue({
       internalInferenceId: id,
       agentSessionId: this.config.agentSessionId,
       ...(request.agentConversationId ? { agentConversationId: request.agentConversationId } : {}),
       purpose: request.purpose,
-      adapterId: request.adapterId,
+      adapterId,
       ...(request.executionProfileId ? { executionProfileId: request.executionProfileId } : {}),
       input: request.input,
       ...(request.sourceCheckpointId ? { sourceCheckpointId: request.sourceCheckpointId } : {}),
@@ -95,6 +105,14 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     const attempt = await this.config.repository.getAttempt(activeId);
     if (!attempt) return null;
     return this.ownRun(chain, attempt);
+  }
+
+  async list(options: InternalInferenceListOptions = {}): Promise<InternalInferenceSnapshotPage> {
+    const page = await this.config.repository.list(options);
+    return Object.freeze({
+      attempts: Object.freeze(page.attempts.map((record) => snapshotOf(record))),
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    });
   }
 
   async cancel(rootId: InternalInferenceId, reason?: string): Promise<void> {

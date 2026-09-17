@@ -28,15 +28,16 @@ describe("internal inference manager", () => {
     const agent = await Agent.open({
       persistence: { kind: "sqlite", path },
       adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
       internalInference: { runtime, strategies: [strategy] },
     });
     const run = await agent.internalInferences!.enqueue({
       purpose: "conversation_checkpoint",
-      adapterId: "test",
       input: { version: 1, strategyId: "test", payload: { prompt: "summarize" } },
     });
     const completion = await run.result;
     expect(completion.artifactId).toBe("summary");
+    expect((await agent.internalInferences!.list({ rootId: run.rootId })).attempts).toHaveLength(1);
     const rootId = run.rootId;
     const agentId = agent.id;
     await agent.close();
@@ -45,6 +46,7 @@ describe("internal inference manager", () => {
       id: agentId,
       persistence: { kind: "sqlite", path },
       adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
       internalInference: { runtime, strategies: [strategy] },
     });
     const restored = await reopened.internalInferences!.getRun(rootId);

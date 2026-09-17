@@ -90,7 +90,7 @@ export interface InternalInferencePage {
   readonly nextCursor?: string;
 }
 
-export interface InternalInferenceListOptions {
+export interface InternalInferenceRecordListOptions {
   readonly agentConversationId?: AgentConversationId;
   readonly purpose?: InternalInferencePurpose;
   readonly status?: InternalInferenceStatus;

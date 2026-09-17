@@ -183,6 +183,27 @@ export class Agent {
         runtime: settings.runtime,
         settings,
         strategies: config.internalInference.strategies,
+        resolveAdapterId: async (requestedAdapterId, agentConversationId) => {
+          if (requestedAdapterId) {
+            adapters.require(requestedAdapterId);
+            return requestedAdapterId;
+          }
+          if (settings.adapter !== "same") {
+            adapters.require(settings.adapter);
+            return settings.adapter;
+          }
+          if (agentConversationId) {
+            const active = await persistence.providerSessions.active(agentConversationId);
+            if (active) {
+              adapters.require(active.adapterId);
+              return active.adapterId;
+            }
+          }
+          const fallback = config.defaultAdapterId ?? adapters.list()[0]?.id;
+          if (!fallback) throw new Error("internal inference could not resolve an adapter");
+          adapters.require(fallback);
+          return fallback;
+        },
       });
     }
   }

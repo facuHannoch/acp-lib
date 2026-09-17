@@ -7,7 +7,7 @@ import type {
   FailInternalInferenceInput,
   InternalInferenceAttemptRecord,
   InternalInferenceChainRecord,
-  InternalInferenceListOptions,
+  InternalInferenceRecordListOptions,
   InternalInferencePage,
   RecoverExpiredInternalInferenceInput,
 } from "./records.ts";
@@ -29,5 +29,5 @@ export interface InternalInferenceRepository {
   cancel(rootId: InternalInferenceId, reason?: string): Promise<InternalInferenceChainRecord>;
   getAttempt(id: InternalInferenceId): Promise<InternalInferenceAttemptRecord | null>;
   getChain(rootId: InternalInferenceId): Promise<InternalInferenceChainRecord | null>;
-  list(options?: InternalInferenceListOptions): Promise<InternalInferencePage>;
+  list(options?: InternalInferenceRecordListOptions): Promise<InternalInferencePage>;
 }

@@ -121,7 +121,8 @@ export interface InternalInferenceRun extends StatefulSubscribable<InternalInfer
 export interface EnqueueInternalInferenceRequest {
   readonly purpose: InternalInferencePurpose;
   readonly agentConversationId?: AgentConversationId;
-  readonly adapterId: string;
+  /** Overrides the configured policy; otherwise the manager resolves and snapshots it. */
+  readonly adapterId?: string;
   readonly executionProfileId?: string;
   readonly input: InternalInferenceInputDescriptor;
   readonly sourceCheckpointId?: string;
@@ -135,7 +136,22 @@ export interface InternalInferenceManager extends Subscribable<InternalInference
   enqueue(request: EnqueueInternalInferenceRequest): Promise<InternalInferenceRun>;
   getAttempt(id: InternalInferenceId): Promise<InternalInference | null>;
   getRun(rootId: InternalInferenceId): Promise<InternalInferenceRun | null>;
+  list(options?: InternalInferenceListOptions): Promise<InternalInferenceSnapshotPage>;
   cancel(rootId: InternalInferenceId, reason?: string): Promise<void>;
+}
+
+export interface InternalInferenceListOptions {
+  readonly agentConversationId?: AgentConversationId;
+  readonly purpose?: InternalInferencePurpose;
+  readonly status?: InternalInferenceStatus;
+  readonly rootId?: InternalInferenceId;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export interface InternalInferenceSnapshotPage {
+  readonly attempts: readonly InternalInferenceSnapshot[];
+  readonly nextCursor?: string;
 }
 
 export interface InternalInferenceRuntime {

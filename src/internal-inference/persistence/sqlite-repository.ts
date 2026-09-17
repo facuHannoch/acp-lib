@@ -18,7 +18,7 @@ import type {
   FailInternalInferenceInput,
   InternalInferenceAttemptRecord,
   InternalInferenceChainRecord,
-  InternalInferenceListOptions,
+  InternalInferenceRecordListOptions,
   InternalInferencePage,
   RecoverExpiredInternalInferenceInput,
 } from "./records.ts";
@@ -365,7 +365,7 @@ export class SqliteInternalInferenceRepository implements InternalInferenceRepos
     return this.getChainSync(rootId);
   }
 
-  async list(options: InternalInferenceListOptions = {}): Promise<InternalInferencePage> {
+  async list(options: InternalInferenceRecordListOptions = {}): Promise<InternalInferencePage> {
     const limit = boundedLimit(options.limit ?? 100);
     const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
     const clauses: string[] = [];
