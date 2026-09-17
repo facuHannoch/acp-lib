@@ -15,6 +15,7 @@ import {
 } from "./agent-session.ts";
 import type { AgentMode } from "./controller.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
+import type { MeteredOperationKind } from "./metering/record.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
 import {
   NoopAgentIdentityRuntime,
@@ -53,6 +54,7 @@ import type {
   InternalInferenceStrategy,
 } from "./internal-inference/contracts.ts";
 import { DefaultInternalInferenceManager } from "./internal-inference/coordination/manager.ts";
+import type { InternalInferenceSnapshot } from "./internal-inference/contracts.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -183,6 +185,11 @@ export class Agent {
         runtime: settings.runtime,
         settings,
         strategies: config.internalInference.strategies,
+        meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
+        beginMetering: async (attempt, session) => {
+          if (!attempt.agentConversationId) return null;
+          return await this.manager.beginInternalInferenceMetering(attempt, session);
+        },
         resolveAdapterId: async (requestedAdapterId, agentConversationId) => {
           if (requestedAdapterId) {
             adapters.require(requestedAdapterId);
@@ -344,6 +351,34 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     const conversations = [...this.live.values()];
     this.live.clear();
     await Promise.allSettled(conversations.map((conversation) => conversation.stop()));
+  }
+
+  async beginInternalInferenceMetering(
+    attempt: InternalInferenceSnapshot,
+    session: { readonly internalSessionId: string; readonly model: string | null },
+  ): Promise<import("./internal-inference/contracts.ts").InternalInferenceMeteringOperation | null> {
+    const conversationId = attempt.agentConversationId;
+    if (!conversationId) return null;
+    const conversation = this.live.get(conversationId);
+    if (!conversation || conversation.state.phase === "stopped") return null;
+    const operation = await conversation.beginDetachedMetering({
+      operationId: attempt.id,
+      operationKind: internalInferenceMeteringKind(attempt.purpose),
+      internalSessionId: session.internalSessionId,
+      model: session.model,
+    });
+    let closed = false;
+    return {
+      close: async ({ outcome, result, error }) => {
+        if (closed) throw new Error(`internal inference metering already closed: ${attempt.id}`);
+        closed = true;
+        return await conversation.closeDetachedMetering(operation, {
+          outcome,
+          usage: result?.usage ?? null,
+          ...(error ? { usageFailureReason: String(error) } : {}),
+        });
+      },
+    };
   }
 
   private async start(
@@ -577,6 +612,15 @@ function normalizeParticipants(participants?: readonly ParticipantRef[]): readon
     seen.add(participant.id);
   }
   return Object.freeze(values);
+}
+
+function internalInferenceMeteringKind(purpose: string): MeteredOperationKind {
+  if (
+    purpose === "conversation_checkpoint"
+    || purpose === "conversation_recovery"
+    || purpose === "identity_update"
+  ) return purpose;
+  return "internal_command";
 }
 
 function capturedMessageContent(

@@ -38,7 +38,7 @@ import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import { formatResponseMessages, ResponseAccumulator } from "./response.ts";
-import { MeteringEngine, type OpenOperation } from "./metering/engine.ts";
+import { MeteringEngine, type OpenDetachedOperation, type OpenOperation } from "./metering/engine.ts";
 import {
   AgentSessionHandoffError,
   AgentSessionOperationError,
@@ -1512,6 +1512,37 @@ export class AgentConversation implements AgentClient, Bridgeable {
       blockedReason: this.metering.blockedReason,
       outstandingReports: this.metering.outstandingReports(this._internalSessionId),
       lastOperation: this.metering.lastOperation,
+    });
+  }
+
+  /** @internal Meter disposable provider work without replacing this conversation's baseline. */
+  beginDetachedMetering(input: {
+    operationId: string;
+    operationKind: MeteredOperationKind;
+    internalSessionId: string;
+    model: string | null;
+  }): Promise<OpenDetachedOperation> {
+    return this.metering.openDetached({
+      ...input,
+      providerId: this.providerId,
+    });
+  }
+
+  /** @internal Completes a detached rating unit; the owner persists its returned record. */
+  async closeDetachedMetering(
+    operation: OpenDetachedOperation,
+    input: {
+      outcome: "completed" | "cancelled" | "error";
+      usage: TokenUsage | null;
+      usageFailureReason?: string;
+    },
+  ): Promise<OperationMeteringRecord> {
+    return await this.metering.closeDetached(operation, {
+      outcome: input.outcome,
+      reportedCumulative: input.usage,
+      ...(input.usageFailureReason ? { usageFailureReason: input.usageFailureReason } : {}),
+      contextAfter: this._contextWindow,
+      providerCostAfter: this._providerCost,
     });
   }
 

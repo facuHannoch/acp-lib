@@ -1,8 +1,9 @@
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
+import type { OperationMeteringRecord, OperationOutcome } from "../metering/record.ts";
 import type { StatefulSubscribable, Subscribable } from "../observation/contracts.ts";
 import type { PersistenceJsonValue, PersistenceScope } from "../persistence/backend.ts";
-import type { ResponseMessage } from "../types.ts";
+import type { ResponseMessage, TokenUsage } from "../types.ts";
 
 export type InternalInferenceId = `aii-${string}`;
 export type BuiltinInternalInferencePurpose =
@@ -42,20 +43,13 @@ export interface InternalInferenceRequest {
   readonly metadata?: string;
 }
 
-export interface InternalInferenceUsage {
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
-  readonly totalTokens?: number;
-  readonly raw?: PersistenceJsonValue;
-}
-
 export interface InternalInferenceResult {
   readonly internalInferenceId: InternalInferenceId;
   readonly internalSessionId: string;
   readonly adapterId: string;
   readonly model: string | null;
   readonly messages: readonly ResponseMessage[];
-  readonly usage: InternalInferenceUsage | null;
+  readonly usage: TokenUsage | null;
   readonly stopReason?: string;
   readonly metadata?: string;
 }
@@ -155,7 +149,26 @@ export interface InternalInferenceSnapshotPage {
 }
 
 export interface InternalInferenceRuntime {
-  run(request: InternalInferenceRequest, signal?: AbortSignal): Promise<InternalInferenceResult>;
+  run(
+    request: InternalInferenceRequest,
+    signal?: AbortSignal,
+    lifecycle?: InternalInferenceRuntimeLifecycle,
+  ): Promise<InternalInferenceResult>;
+}
+
+export interface InternalInferenceRuntimeLifecycle {
+  sessionStarted(input: {
+    readonly internalSessionId: string;
+    readonly model: string | null;
+  }): void | Promise<void>;
+}
+
+export interface InternalInferenceMeteringOperation {
+  close(input: {
+    readonly outcome: OperationOutcome;
+    readonly result?: InternalInferenceResult;
+    readonly error?: unknown;
+  }): Promise<OperationMeteringRecord>;
 }
 
 export type InternalInferenceRetryDisposition =

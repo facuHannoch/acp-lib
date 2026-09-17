@@ -3,6 +3,7 @@ import type {
   InternalInferenceRequest,
   InternalInferenceResult,
   InternalInferenceRuntime,
+  InternalInferenceRuntimeLifecycle,
 } from "../contracts.ts";
 
 export interface HarnessInternalInferenceRuntimeConfig {
@@ -16,6 +17,7 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
   async run(
     request: InternalInferenceRequest,
     signal?: AbortSignal,
+    lifecycle?: InternalInferenceRuntimeLifecycle,
   ): Promise<InternalInferenceResult> {
     const inherited = this.config.controllerConfig(request);
     const controller = new AgentController({
@@ -32,6 +34,7 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
     try {
       if (signal?.aborted) throw abortError();
       const connection = await controller.startFresh();
+      await lifecycle?.sessionStarted({ internalSessionId: connection.sessionId, model: null });
       if (signal?.aborted) throw abortError();
       const result = await controller.prompt(request.prompt);
       if (result.status !== "completed") {

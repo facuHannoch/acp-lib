@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionId } from "../../agent-ids.ts";
 import type { PersistenceBackend } from "../../persistence/backend.ts";
+import type { OperationMeteringRecord } from "../../metering/record.ts";
 import { SubscriptionHub } from "../../observation/subscription-hub.ts";
 import { createInternalInferenceId } from "../ids.ts";
 import type {
@@ -10,6 +11,7 @@ import type {
   InternalInferenceEvent,
   InternalInferenceId,
   InternalInferenceManager,
+  InternalInferenceMeteringOperation,
   InternalInferenceListOptions,
   InternalInferenceRun,
   InternalInferenceRunSnapshot,
@@ -36,6 +38,11 @@ export interface DefaultInternalInferenceManagerConfig {
     requestedAdapterId: string | undefined,
     agentConversationId: EnqueueInternalInferenceRequest["agentConversationId"],
   ) => string | Promise<string>;
+  readonly beginMetering?: (
+    attempt: InternalInferenceSnapshot,
+    session: { readonly internalSessionId: string; readonly model: string | null },
+  ) => Promise<InternalInferenceMeteringOperation | null>;
+  readonly meteringRecords?: import("../../persistence/backend.ts").MeteringRecordRetention;
   readonly pollIntervalMs?: number;
 }
 
@@ -187,6 +194,8 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     abort: AbortController,
     leaseToken: string,
   ): Promise<void> {
+    let metering: InternalInferenceMeteringOperation | null = null;
+    let meteringRecord: OperationMeteringRecord | null = null;
     const heartbeat = setInterval(() => {
       void this.config.repository.heartbeat(
         attempt.internalInferenceId,
@@ -212,8 +221,16 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         prompt: prepared.prompt,
         ...(prepared.cwd ? { cwd: prepared.cwd } : {}),
         ...(prepared.metadata ? { metadata: prepared.metadata } : {}),
-      }, abort.signal);
+      }, abort.signal, {
+        sessionStarted: async (session) => {
+          metering = await this.config.beginMetering?.(snapshotOf(attempt), session) ?? null;
+        },
+      });
       if (this.fenced.has(attempt.internalInferenceId)) return;
+      const openedMetering = metering as InternalInferenceMeteringOperation | null;
+      meteringRecord = openedMetering
+        ? await openedMetering.close({ outcome: "completed", result })
+        : null;
       if (this.fenced.has(attempt.internalInferenceId)) return;
       const completed = await this.config.persistence.transaction(async (persistence) => {
         const completion = await strategy.complete({
@@ -223,6 +240,13 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         if (this.fenced.has(attempt.internalInferenceId)) {
           throw new Error("internal inference was fenced during completion");
         }
+        if (meteringRecord && attempt.agentConversationId) {
+          await persistence.metering.commit({
+            agentConversationId: attempt.agentConversationId,
+            record: meteringRecord,
+            meteringRecords: this.config.meteringRecords ?? "all",
+          });
+        }
         return await persistence.internalInferences!.complete({
           internalInferenceId: attempt.internalInferenceId,
           workerId: this.workerId,
@@ -230,7 +254,11 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
           completion,
           ...(result.model ? { model: result.model } : {}),
           internalSessionId: result.internalSessionId,
-          ...(completion.meteringOperationId ? { meteringOperationId: completion.meteringOperationId } : {}),
+          ...(meteringRecord
+            ? { meteringOperationId: meteringRecord.operationId }
+            : completion.meteringOperationId
+              ? { meteringOperationId: completion.meteringOperationId }
+              : {}),
         });
       });
       this.publishAttempt(completed);
@@ -242,7 +270,12 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         await this.recordShutdownInterruption(attempt, leaseToken, error);
         return;
       }
-      await this.recordFailure(attempt, leaseToken, error);
+      const openedMetering = metering as InternalInferenceMeteringOperation | null;
+      if (openedMetering && !meteringRecord) {
+        meteringRecord = await openedMetering.close({ outcome: abort.signal.aborted ? "cancelled" : "error", error })
+          .catch(() => null);
+      }
+      await this.recordFailure(attempt, leaseToken, error, meteringRecord);
     } finally {
       clearInterval(heartbeat);
       this.active.delete(attempt.internalInferenceId);
@@ -270,26 +303,36 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     attempt: InternalInferenceAttemptRecord,
     leaseToken: string,
     error: unknown,
+    meteringRecord: OperationMeteringRecord | null,
   ): Promise<void> {
     const strategy = this.registry.get(attempt.purpose, attempt.input.strategyId, attempt.input.version);
     const disposition = strategy?.classifyError(error) ?? { kind: "terminal" as const, code: "unknown_strategy" };
     const canRetry = disposition.kind === "retryable"
       && attempt.attemptNumber < this.config.settings.retry.maxAttempts;
     const delay = retryDelay(this.config.settings.retry.backoffMs, attempt.attemptNumber);
-    const failed = await this.config.repository.fail({
-      internalInferenceId: attempt.internalInferenceId,
-      workerId: this.workerId,
-      leaseToken,
-      error: error instanceof Error ? error.message : String(error),
-      failureCode: disposition.code,
-      ...(canRetry
-        ? {
-            retry: {
-              internalInferenceId: createInternalInferenceId(),
-              nextAttemptAt: new Date(Date.now() + delay).toISOString(),
-            },
-          }
-        : {}),
+    const failed = await this.config.persistence.transaction(async (persistence) => {
+      if (meteringRecord && attempt.agentConversationId) {
+        await persistence.metering.commit({
+          agentConversationId: attempt.agentConversationId,
+          record: meteringRecord,
+          meteringRecords: this.config.meteringRecords ?? "all",
+        });
+      }
+      return await persistence.internalInferences!.fail({
+        internalInferenceId: attempt.internalInferenceId,
+        workerId: this.workerId,
+        leaseToken,
+        error: error instanceof Error ? error.message : String(error),
+        failureCode: disposition.code,
+        ...(canRetry
+          ? {
+              retry: {
+                internalInferenceId: createInternalInferenceId(),
+                nextAttemptAt: new Date(Date.now() + delay).toISOString(),
+              },
+            }
+          : {}),
+      });
     });
     this.publishAttempt(failed);
     await this.refreshRun(attempt.rootInternalInferenceId);
