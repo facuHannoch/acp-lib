@@ -53,7 +53,11 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
   private readonly workerId = `iiw-${randomUUID()}`;
   private readonly attempts = new Map<InternalInferenceId, AttemptHandle>();
   private readonly runs = new Map<InternalInferenceId, RunHandle>();
-  private readonly active = new Map<InternalInferenceId, { abort: AbortController; leaseToken: string }>();
+  private readonly active = new Map<InternalInferenceId, {
+    abort: AbortController;
+    leaseToken: string;
+    attempt: InternalInferenceAttemptRecord;
+  }>();
   private readonly fenced = new Set<InternalInferenceId>();
   private readonly pollIntervalMs: number;
   private timer?: ReturnType<typeof setTimeout>;
@@ -140,7 +144,18 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     while (this.active.size && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
     }
-    for (const id of this.active.keys()) this.fenced.add(id);
+    for (const [id, execution] of this.active) {
+      this.fenced.add(id);
+      const canRetry = execution.attempt.attemptNumber < this.config.settings.retry.maxAttempts;
+      await this.config.repository.fail({
+        internalInferenceId: id,
+        workerId: this.workerId,
+        leaseToken: execution.leaseToken,
+        error: "agent shutdown interrupted internal inference",
+        failureCode: "shutdown_interrupted",
+        ...(canRetry ? { retry: { internalInferenceId: createInternalInferenceId() } } : {}),
+      }).catch(() => undefined);
+    }
     this.hub.clear();
   }
 
@@ -174,7 +189,11 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         });
         if (!claimed) break;
         const abort = new AbortController();
-        this.active.set(claimed.attempt.internalInferenceId, { abort, leaseToken });
+        this.active.set(claimed.attempt.internalInferenceId, {
+          abort,
+          leaseToken,
+          attempt: claimed.attempt,
+        });
         this.publishAttempt(claimed.attempt);
         void this.execute(claimed.attempt, abort, leaseToken).catch(() => {});
       }

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Agent } from "../../src/agent.ts";
+import { SqliteAgentPersistence } from "../../src/persistence/sqlite-backend.ts";
 import type {
   InternalInferenceResult,
   InternalInferenceRuntime,
@@ -84,6 +85,43 @@ describe("internal inference manager", () => {
     expect(calls).toBe(2);
     await agent.close();
   });
+
+  test("fences an abort-ignoring runtime and durably schedules shutdown recovery", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-inference-shutdown-"));
+    roots.push(root);
+    const path = join(root, "agent.sqlite");
+    const runtime: InternalInferenceRuntime = {
+      async run() {
+        return await new Promise<InternalInferenceResult>(() => {});
+      },
+    };
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      internalInference: {
+        runtime,
+        strategies: [testStrategy(true)],
+        shutdownGraceMs: 0,
+        retry: { maxAttempts: 2, backoffMs: [0] },
+      },
+    });
+    const run = await agent.internalInferences!.enqueue({
+      purpose: "conversation_checkpoint",
+      input: { version: 1, strategyId: "test", payload: { prompt: "never finishes" } },
+    });
+    await waitFor(() => run.activeAttempt.snapshot.status === "running");
+    const agentId = agent.id;
+    await agent.close();
+
+    const persistence = await SqliteAgentPersistence.open({ path, agentSessionId: agentId });
+    const chain = await persistence.internalInferences.getChain(run.rootId);
+    expect(chain?.status).toBe("active");
+    expect(chain?.activeInternalInferenceId).not.toBe(run.rootId);
+    expect((await persistence.internalInferences.getAttempt(run.rootId))?.failureCode)
+      .toBe("shutdown_interrupted");
+    await persistence.close();
+  });
 });
 
 function testStrategy(retry = false): InternalInferenceStrategy<{ prompt: string }> {
@@ -127,4 +165,12 @@ function result(id: `aii-${string}`, adapterId: string, text: string): InternalI
     usage: null,
     stopReason: "end_turn",
   };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for internal inference state");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
