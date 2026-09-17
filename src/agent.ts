@@ -353,6 +353,7 @@ interface ManagerSettings {
 class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
   private readonly openings = new Map<AgentConversationId, Promise<OpenOwnedAgentConversationResult>>();
+  private readonly meteringSetupLocks = new Map<AgentConversationId, Promise<void>>();
   private readonly detachedMeteringBarriers = new Map<AgentConversationId, Promise<void>>();
   private agentMeteringBarrier: Promise<void> | undefined;
 
@@ -503,38 +504,44 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     session: { readonly internalSessionId: string; readonly model: string | null },
   ): Promise<import("./internal-inference/contracts.ts").InternalInferenceMeteringOperation | null> {
     const conversationId = attempt.agentConversationId;
-    const conversation = conversationId ? this.live.get(conversationId) : undefined;
-    if (conversation && conversation.state.phase !== "stopped") {
-      const operation = await conversation.beginDetachedMetering({
-        operationId: attempt.id,
-        operationKind: internalInferenceMeteringKind(attempt.purpose),
-        internalSessionId: session.internalSessionId,
-        model: session.model,
-      });
-      let closed = false;
-      return {
-        close: async ({ outcome, result, error }) => {
-          if (closed) throw new Error(`internal inference metering already closed: ${attempt.id}`);
-          closed = true;
-          return await conversation.closeDetachedMetering(operation, {
-            outcome,
-            usage: result?.usage ?? null,
-            ...(error ? { usageFailureReason: String(error) } : {}),
-          });
-        },
-        settled() {},
-      };
-    }
-
-    const previous = conversationId
-      ? this.detachedMeteringBarriers.get(conversationId) ?? Promise.resolve()
-      : this.agentMeteringBarrier ?? Promise.resolve();
-    let release!: () => void;
-    const ownBarrier = new Promise<void>((resolve) => { release = resolve; });
-    const barrier = previous.then(() => ownBarrier);
-    if (conversationId) this.detachedMeteringBarriers.set(conversationId, barrier);
-    else this.agentMeteringBarrier = barrier;
+    const releaseSetup = conversationId
+      ? await this.acquireMeteringSetupLock(conversationId)
+      : () => {};
+    let barrier: Promise<void> | undefined;
+    let releaseBarrier = () => {};
     try {
+      const conversation = conversationId ? this.live.get(conversationId) : undefined;
+      if (conversation && conversation.state.phase !== "stopped") {
+        const operation = await conversation.beginDetachedMetering({
+          operationId: attempt.id,
+          operationKind: internalInferenceMeteringKind(attempt.purpose),
+          internalSessionId: session.internalSessionId,
+          model: session.model,
+        });
+        let closed = false;
+        releaseSetup();
+        return {
+          close: async ({ outcome, result, error }) => {
+            if (closed) throw new Error(`internal inference metering already closed: ${attempt.id}`);
+            closed = true;
+            return await conversation.closeDetachedMetering(operation, {
+              outcome,
+              usage: result?.usage ?? null,
+              ...(error ? { usageFailureReason: String(error) } : {}),
+            });
+          },
+          settled() {},
+        };
+      }
+
+      const previous = conversationId
+        ? this.detachedMeteringBarriers.get(conversationId) ?? Promise.resolve()
+        : this.agentMeteringBarrier ?? Promise.resolve();
+      const ownBarrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+      barrier = previous.then(() => ownBarrier);
+      if (conversationId) this.detachedMeteringBarriers.set(conversationId, barrier);
+      else this.agentMeteringBarrier = barrier;
+      releaseSetup();
       // Detached operations for one closed conversation must restore and commit in order.
       // Otherwise two workers can derive the same next operation count from one snapshot.
       await previous;
@@ -585,16 +592,17 @@ class DefaultAgentConversationManager implements AgentConversationManager {
         } else if (!conversationId && this.agentMeteringBarrier === barrier) {
           this.agentMeteringBarrier = undefined;
         }
-        release();
+        releaseBarrier();
       },
       };
     } catch (error) {
-      if (conversationId && this.detachedMeteringBarriers.get(conversationId) === barrier) {
+      releaseSetup();
+      if (barrier && conversationId && this.detachedMeteringBarriers.get(conversationId) === barrier) {
         this.detachedMeteringBarriers.delete(conversationId);
-      } else if (!conversationId && this.agentMeteringBarrier === barrier) {
+      } else if (barrier && !conversationId && this.agentMeteringBarrier === barrier) {
         this.agentMeteringBarrier = undefined;
       }
-      release();
+      releaseBarrier();
       throw error;
     }
   }
@@ -608,6 +616,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       readonly deferProviderSessionPersistence?: boolean;
     },
   ): Promise<AgentConversation> {
+    const releaseSetup = await this.acquireMeteringSetupLock(id);
     const adapterId = this.resolveAdapterId(config.adapterId);
     const adapter = this.agent.adapters.require(adapterId);
     const runtime = { ...this.settings.defaults, ...config.runtime };
@@ -655,7 +664,25 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       this.live.delete(id);
       await conversation?.stop().catch(() => undefined);
       throw error;
+    } finally {
+      releaseSetup();
     }
+  }
+
+  private async acquireMeteringSetupLock(id: AgentConversationId): Promise<() => void> {
+    const previous = this.meteringSetupLocks.get(id) ?? Promise.resolve();
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const current = previous.then(() => gate);
+    this.meteringSetupLocks.set(id, current);
+    await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (this.meteringSetupLocks.get(id) === current) this.meteringSetupLocks.delete(id);
+      releaseGate();
+    };
   }
 
   private resolveAdapterId(requested?: string): string {
