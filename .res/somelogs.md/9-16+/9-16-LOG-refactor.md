@@ -287,3 +287,35 @@ architectural intent and the evidence used to verify each change.
 - Confirmed every long-running model operation lies outside a SQLite transaction.
 - Documentation-only step; the pre-step baseline passed typecheck, 698 unit tests, and
   the deterministic transcript, operations, and metering smoke tests.
+
+## Step 9 — AgentConversation runtime boundary
+
+### Completed
+
+- Renamed the actual conversation runtime class to `AgentConversation` without adding a
+  wrapper or second lifecycle.
+- Preserved `AgentSession` as an exported alias to the exact same constructor, keeping
+  static creation/opening, `instanceof`, and existing imports compatible.
+- Added conversation-first aliases for configuration, opening, state, events,
+  notifications, prompt results, recovery, and managed persistence contracts.
+- Added a canonical `agent-conversation.ts` entry point and the `./conversation` package
+  subpath.
+- Kept existing error names and persisted vocabulary unchanged in this structural step.
+
+### Files
+
+- `src/agent-session.ts`
+- `src/agent-conversation.ts`
+- `src/agent-conversation-contracts.ts`
+- `src/index.ts`
+- `package.json`
+- `test/agent-conversation-compatibility.test.ts`
+- `.res/somelogs.md/9-16+/9-16-LOG-refactor.md`
+
+### Verification
+
+- Compatibility tests prove both public names are the same constructor and expose the
+  same static factories.
+- Focused startup, handoff, and managed-load suites passed.
+- Typecheck passed.
+- Full suite passed: 700 tests, 0 failures.

@@ -221,6 +221,17 @@ export interface AgentSessionNotification {
 
 export type AgentSessionListener = (notification: AgentSessionNotification) => void;
 
+/** Conversation-first names. The AgentSession forms remain compatibility aliases. */
+export type AgentConversationPhase = AgentSessionPhase;
+export type AgentConversationState = AgentSessionState;
+export type AgentConversationPromptability = AgentSessionPromptability;
+export type AgentConversationPromptResult = AgentSessionPromptResult;
+export type AgentConversationEvent = AgentSessionEvent;
+export type AgentConversationNotification = AgentSessionNotification;
+export type AgentConversationListener = AgentSessionListener;
+export type AgentConversationRecoveryResolution = AgentSessionRecoveryResolution;
+export type AgentConversationRecoveryResolutionResult = AgentSessionRecoveryResolutionResult;
+
 /** What to record when transcript activity capture is on. */
 export interface TranscriptActivityConfig {
   kinds?: Array<ActivityEvent["kind"]>;
@@ -238,4 +249,3 @@ export type ProviderSession =
       /** Default "error": never silently replace a requested thread. */
       readonly onFailure?: "error" | "new";
     };
-

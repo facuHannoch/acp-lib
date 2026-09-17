@@ -1,13 +1,13 @@
-// AgentSession — the durable conversation and the library's FRONT FACE. This is what a
-// consumer (the orchestration hub, the CLI) holds: a conversation with a stable identity
-// that persists across reconnects/mode-swaps, backed by a SessionManager catalog.
+// AgentConversation — one durable conversation and the library's compatibility front
+// face. Existing consumers still import this constructor as `AgentSession`; both names
+// refer to the same class while the new agent-level owner is introduced.
 //
 // It owns identity (our `agentSessionId`, adapter, mode, internalSessionId, title) and persistence, and
 // HOLDS an AgentController for the live connection (the control plane). It implements
 // AgentClient, so the REPL and any caller can prompt it directly.
 //
-// Adapter lives HERE, not on the controller: switching adapter = a new AgentSession (the
-// agent dies on switch). Mode-swap (degrade/upgrade) stays within one AgentSession.
+// Adapter ownership remains here during the compatibility tranche. The later Agent owner
+// supplies the adapter registry used by cross-adapter conversation transitions.
 
 import {
   AgentController,
@@ -154,6 +154,15 @@ export {
   DirectAuditPersistenceUnsupportedError,
 } from "./agent-conversation-errors.ts";
 export type {
+  AgentConversationEvent,
+  AgentConversationListener,
+  AgentConversationNotification,
+  AgentConversationPhase,
+  AgentConversationPromptResult,
+  AgentConversationPromptability,
+  AgentConversationRecoveryResolution,
+  AgentConversationRecoveryResolutionResult,
+  AgentConversationState,
   AgentSessionEvent,
   AgentSessionListener,
   AgentSessionNotification,
@@ -233,7 +242,7 @@ interface RecoveryResolutionQueueItem {
 type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem | ConfigResolutionQueueItem | RecoveryResolutionQueueItem;
 
 export interface AgentSessionOpenResult {
-  readonly session: AgentSession;
+  readonly session: AgentConversation;
   readonly continuation: ContinuationReport;
   readonly recovery: SessionRecoveryStatus;
   readonly configuration: ConfigurationRestoreStatus;
@@ -352,8 +361,8 @@ export interface ManagedAgentSessionPersistenceSnapshot {
   readonly auditLog: AuditLogIdentity | null;
 }
 
-export class AgentSession implements AgentClient, Bridgeable {
-  /** Our stable AgentSession id — decoupled from the ACP/harness session id. */
+export class AgentConversation implements AgentClient, Bridgeable {
+  /** Compatibility logical id — decoupled from the ACP/harness session id. */
   readonly agentSessionId: string;
   readonly adapterId: string;
 
@@ -532,12 +541,12 @@ export class AgentSession implements AgentClient, Bridgeable {
    * options independently select history storage. No catalog or transcript is read
    * implicitly. Consumers compose a catalog record back into this method when reopening.
    */
-  static async create(config: AgentSessionConfig): Promise<AgentSession> {
+  static async create(config: AgentSessionConfig): Promise<AgentConversation> {
     const directPersistence = resolveDirectPersistence(config.persistence);
     if (directPersistence !== false && directPersistence.auditLog !== false) {
       throw new DirectAuditPersistenceUnsupportedError();
     }
-    const session = new AgentSession(config);
+    const session = new AgentConversation(config);
     try {
       await session.start();
       return session;
@@ -551,10 +560,10 @@ export class AgentSession implements AgentClient, Bridgeable {
   static async createManaged(
     config: AgentSessionConfig,
     bootstrap: ManagedAgentSessionCreationBootstrap,
-  ): Promise<AgentSession> {
-    let session: AgentSession;
+  ): Promise<AgentConversation> {
+    let session: AgentConversation;
     try {
-      session = new AgentSession(config, null, bootstrap);
+      session = new AgentConversation(config, null, bootstrap);
     } catch (error) {
       await bootstrap.transcriptLock?.release().catch(() => undefined);
       await bootstrap.auditLogLock?.release().catch(() => undefined);
@@ -573,7 +582,7 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   /** Restore one logical session by loading the exact provider thread in transcript authority. */
   static async open(config: AgentSessionOpenConfig): Promise<AgentSessionOpenResult> {
-    return await AgentSession.openWithLock(config);
+    return await AgentConversation.openWithLock(config);
   }
 
   /** @internal Managed open after maintenance acquired the artifact lock. */
@@ -584,7 +593,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>,
     onOpenProgress?: ManagedOpenProgressReporter,
   ): Promise<AgentSessionOpenResult> {
-    return await AgentSession.openWithLock(
+    return await AgentConversation.openWithLock(
       config,
       transcriptLock,
       audit,
@@ -613,7 +622,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       throw new Error("registry-managed open has no recorded internal session id");
     }
     const { checkpoint: _checkpoint, continuation: _continuation, ...runtime } = config;
-    const session = new AgentSession({
+    const session = new AgentConversation({
       ...runtime,
       agentSessionId: checkpoint.agentSessionId,
       creationId: checkpoint.incarnationId,
@@ -708,7 +717,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         throw new AdapterMismatchError(checkpoint.adapterId, config.adapterId);
       }
       const { checkpoint: _suppliedCheckpoint, continuation: _continuation, ...runtimeConfig } = config;
-      const session = new AgentSession({
+      const session = new AgentConversation({
         ...runtimeConfig,
         agentSessionId: checkpoint.agentSessionId,
         creationId: checkpoint.incarnationId,
@@ -3135,6 +3144,18 @@ export class AgentSession implements AgentClient, Bridgeable {
     }
   }
 }
+
+/**
+ * @deprecated `AgentSession` is the compatibility name for one conversation. New code
+ * should use `AgentConversation`; the forthcoming `Agent` object owns conversations.
+ */
+export { AgentConversation as AgentSession };
+
+export type AgentConversationConfig = AgentSessionConfig;
+export type AgentConversationOpenConfig = AgentSessionOpenConfig;
+export type AgentConversationOpenResult = AgentSessionOpenResult;
+export type ManagedAgentConversationCreationBootstrap = ManagedAgentSessionCreationBootstrap;
+export type ManagedAgentConversationPersistenceSnapshot = ManagedAgentSessionPersistenceSnapshot;
 
 function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
   return kind === "internal_command" ? "internal_session_command" : kind;

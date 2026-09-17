@@ -47,6 +47,7 @@ export type {
 } from "./controller.ts";
 
 export {
+  AgentConversation,
   AgentSession,
   AgentSessionPromptBlockedError,
   AdapterMismatchError,
@@ -54,6 +55,18 @@ export {
   DirectAuditPersistenceUnsupportedError,
 } from "./agent-session.ts";
 export type {
+  AgentConversationConfig,
+  AgentConversationOpenConfig,
+  AgentConversationOpenResult,
+  AgentConversationPromptability,
+  AgentConversationPhase,
+  AgentConversationState,
+  AgentConversationEvent,
+  AgentConversationNotification,
+  AgentConversationListener,
+  AgentConversationPromptResult,
+  AgentConversationRecoveryResolution,
+  AgentConversationRecoveryResolutionResult,
   AgentSessionConfig,
   AgentSessionOpenConfig,
   AgentSessionOpenResult,
