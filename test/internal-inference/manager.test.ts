@@ -102,6 +102,7 @@ describe("internal inference manager", () => {
     expect((await run.result).artifactId).toBe("retried");
     expect(run.activeAttempt.snapshot.attemptNumber).toBe(2);
     expect(calls).toBe(2);
+    expect((await agent.persistence.metering.agentState(agent.id))?.state.operationCount).toBe(1);
     await agent.close();
   });
 

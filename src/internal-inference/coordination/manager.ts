@@ -254,6 +254,16 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
           if (active) active.metering = metering;
         },
       });
+      // Custom runtimes may omit the early lifecycle notification. They lose metering
+      // preflight, but their completed provider work must still be accounted for.
+      if (!metering && this.config.beginMetering) {
+        metering = await this.config.beginMetering(snapshotOf(attempt), {
+          internalSessionId: result.internalSessionId,
+          model: result.model,
+        });
+        const active = this.active.get(attempt.internalInferenceId);
+        if (active) active.metering = metering;
+      }
       if (this.fenced.has(attempt.internalInferenceId)) return;
       this.publishProgress(attempt.internalInferenceId, "persisting_result");
       const openedMetering = metering as InternalInferenceMeteringOperation | null;
