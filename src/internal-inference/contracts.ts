@@ -188,6 +188,8 @@ export interface PreparedInternalInference {
 
 export interface InternalInferencePreparationContext {
   readonly attempt: InternalInferenceSnapshot;
+  /** Canonical agent persistence used to derive the prompt from durable source data. */
+  readonly persistence: PersistenceScope;
   readonly signal?: AbortSignal;
 }
 

@@ -234,7 +234,11 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
       );
       this.publishProgress(attempt.internalInferenceId, "preparing_input");
       const payload = strategy.validatePayload(attempt.input.payload);
-      const prepared = await strategy.prepare({ attempt: snapshotOf(attempt), signal: abort.signal }, payload);
+      const prepared = await strategy.prepare({
+        attempt: snapshotOf(attempt),
+        persistence: this.config.persistence,
+        signal: abort.signal,
+      }, payload);
       this.publishProgress(attempt.internalInferenceId, "starting_harness");
       const result = await this.config.runtime.run({
         internalInferenceId: attempt.internalInferenceId,

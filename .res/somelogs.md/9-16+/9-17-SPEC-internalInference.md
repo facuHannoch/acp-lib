@@ -196,6 +196,10 @@ export interface InternalInferenceStrategy<TPayload = PersistenceJsonValue> {
 }
 ```
 
+`InternalInferencePreparationContext.persistence` exposes the agent persistence scope for
+read access, so strategies can derive prompts from canonical conversation records without
+capturing an `Agent` or duplicating transcript data in the queued descriptor.
+
 `messages` is canonical. A flattened `text` may be provided as a convenience projection,
 but checkpoint or identity code must make its flattening policy explicit when message
 boundaries matter.

@@ -180,9 +180,13 @@ const strategy: InternalInferenceStrategy<{ throughSequence: number }> = {
     if (!Number.isSafeInteger(sequence)) throw new Error("invalid sequence");
     return { throughSequence: sequence as number };
   },
-  async prepare(_context, input) {
-    // A real strategy reads the canonical records in this range here.
-    return { prompt: `Summarize through sequence ${input.throughSequence}. Do not use tools.` };
+  async prepare(context, input) {
+    const page = await context.persistence.messages.list(context.attempt.agentConversationId!, {
+      throughSequence: input.throughSequence,
+    });
+    return {
+      prompt: `Summarize this conversation. Do not use tools.\n${JSON.stringify(page.messages)}`,
+    };
   },
   async complete(context, result) {
     // Validate and write the artifact through context.persistence here.
