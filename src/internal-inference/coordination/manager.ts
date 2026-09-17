@@ -285,21 +285,26 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
               : {}),
         });
       });
+      (metering as InternalInferenceMeteringOperation | null)?.settled();
       this.publishAttempt(completed);
       await this.refreshRun(attempt.rootInternalInferenceId);
       await this.pruneTerminal();
     } catch (error) {
       if (this.fenced.has(attempt.internalInferenceId)) return;
-      if (this.closed && abort.signal.aborted) {
-        await this.recordShutdownInterruption(attempt, leaseToken, error);
-        return;
-      }
       const openedMetering = metering as InternalInferenceMeteringOperation | null;
       if (openedMetering && !meteringRecord) {
         meteringRecord = await openedMetering.close({ outcome: abort.signal.aborted ? "cancelled" : "error", error })
           .catch(() => null);
       }
-      await this.recordFailure(attempt, leaseToken, error, meteringRecord);
+      try {
+        if (this.closed && abort.signal.aborted) {
+          await this.recordShutdownInterruption(attempt, leaseToken, error, meteringRecord);
+        } else {
+          await this.recordFailure(attempt, leaseToken, error, meteringRecord);
+        }
+      } finally {
+        (metering as InternalInferenceMeteringOperation | null)?.settled();
+      }
     } finally {
       clearInterval(heartbeat);
       this.active.delete(attempt.internalInferenceId);
@@ -311,15 +316,25 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     attempt: InternalInferenceAttemptRecord,
     leaseToken: string,
     error: unknown,
+    meteringRecord: OperationMeteringRecord | null,
   ): Promise<void> {
     const canRetry = attempt.attemptNumber < this.config.settings.retry.maxAttempts;
-    await this.config.repository.fail({
-      internalInferenceId: attempt.internalInferenceId,
-      workerId: this.workerId,
-      leaseToken,
-      error: error instanceof Error ? error.message : "agent shutdown interrupted internal inference",
-      failureCode: "shutdown_interrupted",
-      ...(canRetry ? { retry: { internalInferenceId: createInternalInferenceId() } } : {}),
+    await this.config.persistence.transaction(async (persistence) => {
+      if (meteringRecord && attempt.agentConversationId) {
+        await persistence.metering.commit({
+          agentConversationId: attempt.agentConversationId,
+          record: meteringRecord,
+          meteringRecords: this.config.meteringRecords ?? "all",
+        });
+      }
+      await persistence.internalInferences!.fail({
+        internalInferenceId: attempt.internalInferenceId,
+        workerId: this.workerId,
+        leaseToken,
+        error: error instanceof Error ? error.message : "agent shutdown interrupted internal inference",
+        failureCode: "shutdown_interrupted",
+        ...(canRetry ? { retry: { internalInferenceId: createInternalInferenceId() } } : {}),
+      });
     });
   }
 

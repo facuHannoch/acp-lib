@@ -16,6 +16,8 @@ import {
 import type { AgentMode } from "./controller.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
 import type { MeteredOperationKind } from "./metering/record.ts";
+import { MeteringEngine } from "./metering/engine.ts";
+import { createModelsDevResolver } from "./metering/catalog/index.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
 import {
   NoopAgentIdentityRuntime,
@@ -281,6 +283,7 @@ interface ManagerSettings {
 
 class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
+  private readonly detachedMeteringBarriers = new Map<AgentConversationId, Promise<void>>();
 
   constructor(private readonly agent: Agent, private readonly settings: ManagerSettings) {}
 
@@ -360,25 +363,85 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     const conversationId = attempt.agentConversationId;
     if (!conversationId) return null;
     const conversation = this.live.get(conversationId);
-    if (!conversation || conversation.state.phase === "stopped") return null;
-    const operation = await conversation.beginDetachedMetering({
+    if (conversation && conversation.state.phase !== "stopped") {
+      const operation = await conversation.beginDetachedMetering({
+        operationId: attempt.id,
+        operationKind: internalInferenceMeteringKind(attempt.purpose),
+        internalSessionId: session.internalSessionId,
+        model: session.model,
+      });
+      let closed = false;
+      return {
+        close: async ({ outcome, result, error }) => {
+          if (closed) throw new Error(`internal inference metering already closed: ${attempt.id}`);
+          closed = true;
+          return await conversation.closeDetachedMetering(operation, {
+            outcome,
+            usage: result?.usage ?? null,
+            ...(error ? { usageFailureReason: String(error) } : {}),
+          });
+        },
+        settled() {},
+      };
+    }
+
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    this.detachedMeteringBarriers.set(conversationId, barrier);
+    try {
+      const persisted = await this.agent.persistence.metering.state(conversationId);
+      const meteringConfig = this.settings.defaults.metering;
+      const engine = new MeteringEngine({
+      agentSessionId: this.agent.id,
+      adapterId: attempt.adapterId,
+      enforcement: meteringConfig?.enforcement ?? "best_effort",
+      pricing: meteringConfig?.pricing ?? createModelsDevResolver(),
+      ...(persisted ? { initialState: persisted.state } : {}),
+      createdActiveThread: false,
+      ...(meteringConfig?.counterInterpretation
+        ? { counterInterpretation: meteringConfig.counterInterpretation }
+        : {}),
+      ...(meteringConfig?.inferenceSource
+        ? { inferenceSource: meteringConfig.inferenceSource }
+        : {}),
+    });
+      const operation = await engine.openDetached({
       operationId: attempt.id,
       operationKind: internalInferenceMeteringKind(attempt.purpose),
       internalSessionId: session.internalSessionId,
+      providerId: null,
       model: session.model,
     });
-    let closed = false;
-    return {
+      let closed = false;
+      let settled = false;
+      return {
       close: async ({ outcome, result, error }) => {
         if (closed) throw new Error(`internal inference metering already closed: ${attempt.id}`);
         closed = true;
-        return await conversation.closeDetachedMetering(operation, {
+        return await engine.closeDetached(operation, {
           outcome,
-          usage: result?.usage ?? null,
+          reportedCumulative: result?.usage ?? null,
           ...(error ? { usageFailureReason: String(error) } : {}),
+          contextAfter: null,
+          providerCostAfter: null,
         });
       },
-    };
+      settled: () => {
+        if (settled) return;
+        settled = true;
+        if (this.detachedMeteringBarriers.get(conversationId) === barrier) {
+          this.detachedMeteringBarriers.delete(conversationId);
+        }
+        release();
+      },
+      };
+    } catch (error) {
+      if (this.detachedMeteringBarriers.get(conversationId) === barrier) {
+        this.detachedMeteringBarriers.delete(conversationId);
+      }
+      release();
+      throw error;
+    }
   }
 
   private async start(
@@ -392,6 +455,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     const adapterId = this.resolveAdapterId(config.adapterId);
     const adapter = this.agent.adapters.require(adapterId);
     const runtime = { ...this.settings.defaults, ...config.runtime };
+    await this.detachedMeteringBarriers.get(id);
     const persistedMetering = await this.agent.persistence.metering.state(id);
     const lifecycle = new PersistedConversationLifecycle(
       this.agent,

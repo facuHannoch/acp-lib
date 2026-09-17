@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Agent } from "../../src/agent.ts";
+import { createAgentConversationId } from "../../src/agent-ids.ts";
 import { SqliteAgentPersistence } from "../../src/persistence/sqlite-backend.ts";
 import type {
   InternalInferenceResult,
@@ -139,6 +140,42 @@ describe("internal inference manager", () => {
     expect((await persistence.internalInferences.getAttempt(run.rootId))?.failureCode)
       .toBe("shutdown_interrupted");
     await persistence.close();
+  });
+
+  test("meters restored background work before its conversation is opened", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-inference-metering-"));
+    roots.push(root);
+    const runtime: InternalInferenceRuntime = {
+      async run(request, _signal, lifecycle) {
+        await lifecycle?.sessionStarted({ internalSessionId: "detached-provider", model: null });
+        return {
+          ...result(request.internalInferenceId, request.adapterId, "metered"),
+          usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        };
+      },
+    };
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      conversationDefaults: { metering: { pricing: false } },
+      internalInference: { runtime, strategies: [testStrategy()] },
+    });
+    const conversationId = createAgentConversationId();
+    await agent.persistence.conversations.create({
+      agentSessionId: agent.id,
+      agentConversationId: conversationId,
+    });
+    const run = await agent.internalInferences!.enqueue({
+      purpose: "conversation_checkpoint",
+      agentConversationId: conversationId,
+      input: { version: 1, strategyId: "test", payload: { prompt: "meter" } },
+    });
+    await run.result;
+    expect((await agent.persistence.metering.state(conversationId))?.state.operationCount).toBe(1);
+    expect((await agent.persistence.metering.list(conversationId)).records[0]?.operationKind)
+      .toBe("conversation_checkpoint");
+    await agent.close();
   });
 });
 

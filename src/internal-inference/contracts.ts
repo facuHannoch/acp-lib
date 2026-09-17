@@ -172,6 +172,8 @@ export interface InternalInferenceMeteringOperation {
     readonly result?: InternalInferenceResult;
     readonly error?: unknown;
   }): Promise<OperationMeteringRecord>;
+  /** Releases restoration barriers after the record transaction settles. */
+  settled(): void;
 }
 
 export type InternalInferenceRetryDisposition =
