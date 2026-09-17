@@ -48,6 +48,9 @@ describe("checkpoint recovery", () => {
     expect((await conversation.prompt("this happened after the checkpoint")).status).toBe("completed");
     const latestSequence = (await firstAgent.persistence.conversations.get(conversationId))!.latestSequence;
     const oldSessionId = conversation.internalSessionId!;
+    // Leave another checkpoint durably queued across shutdown. On reopen its metering
+    // setup races with provider-session recovery unless ownership selection is serialized.
+    await firstAgent.checkpointing!.request(conversationId);
     await firstAgent.close();
 
     const progress: ConversationRecoveryProgress[] = [];
@@ -86,6 +89,12 @@ describe("checkpoint recovery", () => {
       record.kind === "native_action"
       && record.action === "conversation_recovery"
       && record.state === "completed")).toBeTrue();
+    await waitFor(async () =>
+      ((await reopenedAgent.checkpointing!.latest(conversationId))?.coveredSequence ?? 0)
+        >= latestSequence);
+    const metering = await reopenedAgent.persistence.metering.list(conversationId);
+    expect(metering.records.map((record) => record.nextState.operationCount))
+      .toEqual(metering.records.map((_, index) => index + 1));
     await reopenedAgent.close();
   }, 15_000);
 });
