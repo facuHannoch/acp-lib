@@ -63,6 +63,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
   private timer?: ReturnType<typeof setTimeout>;
   private pumping = false;
   private closed = false;
+  private eventSequence = 0;
 
   constructor(private readonly config: DefaultInternalInferenceManagerConfig) {
     this.registry = new InternalInferenceStrategyRegistry(config.strategies);
@@ -229,8 +230,10 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         attempt.input.strategyId,
         attempt.input.version,
       );
+      this.publishProgress(attempt.internalInferenceId, "preparing_input");
       const payload = strategy.validatePayload(attempt.input.payload);
       const prepared = await strategy.prepare({ attempt: snapshotOf(attempt), signal: abort.signal }, payload);
+      this.publishProgress(attempt.internalInferenceId, "starting_harness");
       const result = await this.config.runtime.run({
         internalInferenceId: attempt.internalInferenceId,
         purpose: attempt.purpose,
@@ -241,11 +244,13 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         ...(prepared.cwd ? { cwd: prepared.cwd } : {}),
         ...(prepared.metadata ? { metadata: prepared.metadata } : {}),
       }, abort.signal, {
+        stageChanged: (stage) => this.publishProgress(attempt.internalInferenceId, stage),
         sessionStarted: async (session) => {
           metering = await this.config.beginMetering?.(snapshotOf(attempt), session) ?? null;
         },
       });
       if (this.fenced.has(attempt.internalInferenceId)) return;
+      this.publishProgress(attempt.internalInferenceId, "persisting_result");
       const openedMetering = metering as InternalInferenceMeteringOperation | null;
       meteringRecord = openedMetering
         ? await openedMetering.close({ outcome: "completed", result })
@@ -381,10 +386,28 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     const handle = this.ownAttempt(record);
     const event: InternalInferenceEvent = {
       kind: "changed",
+      sequence: ++this.eventSequence,
       inferenceId: record.internalInferenceId,
       rootId: record.rootInternalInferenceId,
       revision: record.revision,
       snapshot: handle.snapshot,
+    };
+    handle.emit(event);
+    this.hub.emit(event);
+  }
+
+  private publishProgress(id: InternalInferenceId, stage: InternalInferenceSnapshot["stage"]): void {
+    const handle = this.attempts.get(id);
+    if (!handle) return;
+    handle.setStage(stage);
+    const snapshot = handle.snapshot;
+    const event: InternalInferenceEvent = {
+      kind: "changed",
+      sequence: ++this.eventSequence,
+      inferenceId: id,
+      rootId: snapshot.rootId,
+      revision: snapshot.revision,
+      snapshot,
     };
     handle.emit(event);
     this.hub.emit(event);
@@ -432,6 +455,10 @@ class AttemptHandle implements InternalInference {
     if (record.revision < this.current.revision) return;
     this.current = snapshotOf(record);
     this.settle(record);
+  }
+  setStage(stage: InternalInferenceSnapshot["stage"]): void {
+    if (this.current.status !== "running") return;
+    this.current = Object.freeze({ ...this.current, stage });
   }
   private settle(record: InternalInferenceAttemptRecord): void {
     if (record.status === "completed" && record.completion) this.deferred.resolve(record.completion);

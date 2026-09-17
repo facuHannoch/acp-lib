@@ -93,6 +93,8 @@ export interface InternalInferenceRunSnapshot {
 
 export interface InternalInferenceEvent {
   readonly kind: "changed";
+  /** Monotonic within one manager process, including ephemeral progress changes. */
+  readonly sequence: number;
   readonly inferenceId: InternalInferenceId;
   readonly rootId: InternalInferenceId;
   readonly revision: number;
@@ -157,6 +159,7 @@ export interface InternalInferenceRuntime {
 }
 
 export interface InternalInferenceRuntimeLifecycle {
+  stageChanged?(stage: Extract<InternalInferenceStage, "creating_session" | "prompting">): void;
   sessionStarted(input: {
     readonly internalSessionId: string;
     readonly model: string | null;

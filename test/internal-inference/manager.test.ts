@@ -21,7 +21,10 @@ describe("internal inference manager", () => {
     roots.push(root);
     const path = join(root, "agent.sqlite");
     const runtime: InternalInferenceRuntime = {
-      async run(request) {
+      async run(request, _signal, lifecycle) {
+        lifecycle?.stageChanged?.("creating_session");
+        await lifecycle?.sessionStarted({ internalSessionId: "provider-test", model: "test" });
+        lifecycle?.stageChanged?.("prompting");
         return result(request.internalInferenceId, request.adapterId, "summary");
       },
     };
@@ -32,12 +35,27 @@ describe("internal inference manager", () => {
       defaultAdapterId: "test",
       internalInference: { runtime, strategies: [strategy] },
     });
+    const progress: Array<{ sequence: number; stage: string }> = [];
+    agent.internalInferences!.subscribe((event) => {
+      progress.push({ sequence: event.sequence, stage: event.snapshot.stage });
+    });
     const run = await agent.internalInferences!.enqueue({
       purpose: "conversation_checkpoint",
       input: { version: 1, strategyId: "test", payload: { prompt: "summarize" } },
     });
     const completion = await run.result;
     expect(completion.artifactId).toBe("summary");
+    expect(progress.map((entry) => entry.stage)).toEqual(expect.arrayContaining([
+      "preparing_input",
+      "starting_harness",
+      "creating_session",
+      "prompting",
+      "persisting_result",
+      "completed",
+    ]));
+    expect(progress.map((entry) => entry.sequence)).toEqual(
+      [...progress.map((entry) => entry.sequence)].sort((a, b) => a - b),
+    );
     expect((await agent.internalInferences!.list({ rootId: run.rootId })).attempts).toHaveLength(1);
     const rootId = run.rootId;
     const agentId = agent.id;

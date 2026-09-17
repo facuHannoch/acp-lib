@@ -33,9 +33,11 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
     signal?.addEventListener("abort", abort, { once: true });
     try {
       if (signal?.aborted) throw abortError();
+      lifecycle?.stageChanged?.("creating_session");
       const connection = await controller.startFresh();
       await lifecycle?.sessionStarted({ internalSessionId: connection.sessionId, model: null });
       if (signal?.aborted) throw abortError();
+      lifecycle?.stageChanged?.("prompting");
       const result = await controller.prompt(request.prompt);
       if (result.status !== "completed") {
         throw new Error(`internal inference prompt ${result.status}: ${result.stopReason}`);
