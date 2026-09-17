@@ -372,7 +372,7 @@ export interface ProviderSessionPersistence {
   active(agentConversationId: AgentConversationId): Promise<ProviderSessionRecord | null>;
 }
 
-export type MeteringRecordRetention = "all" | "none";
+export type MeteringRecordRetention = "all" | "none" | { readonly retain: number };
 
 export interface PersistedConversationMeteringState {
   readonly agentConversationId: AgentConversationId;

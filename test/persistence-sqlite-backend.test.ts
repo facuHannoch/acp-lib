@@ -329,6 +329,16 @@ describe("SQLite agent persistence", () => {
       "2026-09-17T00:02:00.000Z",
     );
     expect(saved.revision).toBe(2);
+
+    const third = meteringRecord(agentSessionId, "meter-op-3", 3);
+    await backend.metering.commit({
+      agentConversationId: conversationId,
+      record: third,
+      meteringRecords: { retain: 1 },
+    });
+    expect((await backend.metering.list(conversationId)).records).toEqual([third]);
+    expect(await backend.metering.get(conversationId, record.operationId)).toBeNull();
+    expect((await backend.metering.state(conversationId))?.state.operationCount).toBe(3);
   });
 
   test("migrates extensions once and notifies them only after committed records", async () => {

@@ -811,7 +811,7 @@ class SqliteMeteringPersistence implements MeteringPersistence {
         input.record.operationKind,
         input.record.outcome,
         input.record.completedAt,
-        input.meteringRecords === "all" ? serializedRecord : null,
+        input.meteringRecords === "none" ? null : serializedRecord,
       );
 
       const revision = (current?.revision ?? 0) + 1;
@@ -829,6 +829,25 @@ class SqliteMeteringPersistence implements MeteringPersistence {
         JSON.stringify(input.record.nextState),
         updatedAt,
       );
+      if (typeof input.meteringRecords === "object") {
+        const retain = boundedInteger(
+          input.meteringRecords.retain,
+          0,
+          1_000_000,
+          "metering record retention",
+        );
+        runSql(this.database,
+          `UPDATE metering_records SET record_json = NULL
+           WHERE agent_conversation_id = ? AND operation_id NOT IN (
+             SELECT operation_id FROM metering_records
+             WHERE agent_conversation_id = ? AND record_json IS NOT NULL
+             ORDER BY completed_at DESC, operation_id DESC LIMIT ?
+           )`,
+          input.agentConversationId,
+          input.agentConversationId,
+          retain,
+        );
+      }
       return Object.freeze({
         agentConversationId: input.agentConversationId,
         revision,
