@@ -95,7 +95,19 @@ Reopen the same database with `Agent.open()` and call
 The minimal end-to-end executable example is
 [`smoke-tests/test8-test/index.ts`](./smoke-tests/test8-test/index.ts). It sends `"hi"`
 through a deterministic ACP harness and independently queries SQLite to assert that the
-canonical user-message row contains `"hi"`.
+canonical user-message row contains `"hi"`:
+
+```bash
+bun smoke-tests/test8-test/index.ts
+```
+
+By default it owns and removes a temporary directory. Set `ACP_TEST8_DATA_DIR` to retain
+the database at a caller-selected location for inspection:
+
+```bash
+ACP_TEST8_DATA_DIR=./smoke-tests/test8-test/data \
+  bun smoke-tests/test8-test/index.ts
+```
 
 ## Legacy direct and managed sessions
 
