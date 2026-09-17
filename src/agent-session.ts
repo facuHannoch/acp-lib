@@ -17,7 +17,7 @@ import {
 } from "./controller.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
-import type { ActivitySnapshot } from "./activity.ts";
+import type { ActivitySnapshot, AggregatedRecord } from "./activity.ts";
 import type { Adapter } from "./adapters.ts";
 import {
   createAgentConversationId,
@@ -26,7 +26,11 @@ import {
   type AgentConversationId,
   type AgentSessionId,
 } from "./agent-ids.ts";
-import type { ParticipantRef } from "./persistence/backend.ts";
+import type {
+  NewConversationRecord,
+  ParticipantRef,
+  PersistenceJsonValue,
+} from "./persistence/backend.ts";
 import type { AgentConversationOwnerLifecycle } from "./agent-conversation-owner.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
@@ -66,6 +70,8 @@ import type {
   Attachment,
   PromptHandlers,
   PromptResult,
+  PermissionOutcome,
+  PermissionRequest,
   ResponseMessage,
   SessionListEntry,
   TokenUsage,
@@ -435,6 +441,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private managedInitializationReported = false;
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
+  private ownerRecordWrite: Promise<void> = Promise.resolve();
+  private readonly defaultPermission: "approve" | "cancel";
 
   private constructor(
     config: AgentSessionConfig,
@@ -484,6 +492,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.ownerAgentSessionId = config.ownerAgentSessionId
       ?? (isAgentSessionId(this.agentSessionId) ? this.agentSessionId : null);
     this.ownerLifecycle = config.ownerLifecycle;
+    this.defaultPermission = config.defaultPermission ?? "cancel";
     this._participants = (config.participants ?? []).map((participant) => Object.freeze({ ...participant }));
     this._adapterId = config.adapterId;
     this.activeAdapter = config.adapter;
@@ -552,7 +561,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
       clientCapabilities: config.clientCapabilities,
       clientHandlers: config.clientHandlers,
       logger: config.logger,
-      wire: config.wire,
+      ...(config.wire || this.ownerLifecycle
+        ? {
+            wire: (entry: WireEntry) => {
+              config.wire?.(entry);
+              this.queueProtocolRecord(entry);
+            },
+          }
+        : {}),
     };
     this.controller = this.createController(config.adapter, config.adapterId, this._mode, {
       sessionId: requestedInternalSessionId,
@@ -588,6 +604,72 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
     this.detachControllerUsage = controller.subscribeUsageUpdate((update, sessionId) => {
       if (this.controller === controller) this.applyUsageUpdate(update, sessionId);
+    });
+  }
+
+  private queueOwnedRecord(record: NewConversationRecord): void {
+    if (!this.ownerLifecycle?.record) return;
+    this.ownerRecordWrite = this.ownerRecordWrite.then(() => this.ownerLifecycle!.record!(record));
+  }
+
+  private async recordOwned(record: NewConversationRecord): Promise<void> {
+    if (!this.ownerLifecycle?.record) return;
+    const write = this.ownerRecordWrite.then(() => this.ownerLifecycle!.record!(record));
+    this.ownerRecordWrite = write;
+    await write;
+  }
+
+  private queueProtocolRecord(entry: WireEntry): void {
+    if (!this.ownerAgentSessionId || !this.ownerLifecycle?.record) return;
+    let message: PersistenceJsonValue;
+    try {
+      message = JSON.parse(entry.line) as PersistenceJsonValue;
+    } catch {
+      message = entry.line;
+    }
+    this.queueOwnedRecord({
+      recordId: `protocol-${crypto.randomUUID()}`,
+      agentSessionId: this.ownerAgentSessionId,
+      agentConversationId: this.agentConversationId,
+      kind: "protocol",
+      timestamp: new Date(entry.ts).toISOString(),
+      direction: entry.dir === "err" ? "error" : entry.dir,
+      ...(protocolMethod(message) ? { method: protocolMethod(message)! } : {}),
+      message,
+    });
+  }
+
+  private queueActivityRecords(turnId: string, records: readonly AggregatedRecord[]): void {
+    if (!this.ownerAgentSessionId) return;
+    for (const record of records) {
+      this.queueOwnedRecord(runtimeRecordFromActivity(
+        this.ownerAgentSessionId,
+        this.agentConversationId,
+        turnId,
+        record,
+      ));
+    }
+  }
+
+  private async recordNativeAction(
+    transitionId: string,
+    action: string,
+    state: "started" | "checkpoint" | "completed" | "failed",
+    details: { readonly input?: unknown; readonly output?: unknown; readonly error?: string } = {},
+  ): Promise<void> {
+    if (!this.ownerAgentSessionId) return;
+    await this.recordOwned({
+      recordId: `${transitionId}:native:${state}:${crypto.randomUUID()}`,
+      agentSessionId: this.ownerAgentSessionId,
+      agentConversationId: this.agentConversationId,
+      kind: "native_action",
+      timestamp: new Date().toISOString(),
+      action,
+      transitionId,
+      state,
+      ...(details.input === undefined ? {} : { input: toPersistenceJsonValue(details.input) }),
+      ...(details.output === undefined ? {} : { output: toPersistenceJsonValue(details.output) }),
+      ...(details.error === undefined ? {} : { error: details.error }),
     });
   }
 
@@ -1638,12 +1720,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
   /** Cross-adapter handoff. The owning Agent resolves `targetAdapterId` in its registry. */
   switch(
     targetAdapterId: string,
-    options: Omit<HandoffOptions, "target" | "summary"> = {},
+    options: Omit<HandoffOptions, "target" | "summary"> & {
+      readonly mode?: AgentMode;
+      readonly config?: Readonly<Record<string, unknown>>;
+    } = {},
   ): Promise<HandoffResult> {
     if (!targetAdapterId.trim()) return Promise.reject(new Error("target adapter id cannot be blank"));
     return this.handoff({
-      ...options,
-      target: { adapterId: targetAdapterId.trim() },
+      continuation: options.continuation,
+      targetPrompt: options.targetPrompt,
+      target: {
+        adapterId: targetAdapterId.trim(),
+        ...(options.mode === undefined ? {} : { mode: options.mode }),
+        ...(options.config === undefined ? {} : { config: options.config }),
+      },
     });
   }
 
@@ -1706,10 +1796,52 @@ export class AgentConversation implements AgentClient, Bridgeable {
         } else if (item.kind === "set_config") {
           this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
           try {
+            if (this.ownerAgentSessionId) {
+              await this.recordOwned({
+                recordId: `${item.operationId}:configuration:started`,
+                agentSessionId: this.ownerAgentSessionId,
+                agentConversationId: this.agentConversationId,
+                kind: "configuration",
+                timestamp: new Date().toISOString(),
+                operation: "set",
+                configId: item.configId,
+                value: toPersistenceJsonValue(item.value),
+                status: "started",
+              });
+            }
             await this.runSetConfig(item);
+            if (this.ownerAgentSessionId) {
+              await this.recordOwned({
+                recordId: `${item.operationId}:configuration:completed`,
+                agentSessionId: this.ownerAgentSessionId,
+                agentConversationId: this.agentConversationId,
+                kind: "configuration",
+                timestamp: new Date().toISOString(),
+                operation: "set",
+                configId: item.configId,
+                value: toPersistenceJsonValue(item.value),
+                status: "completed",
+              });
+            }
             this.emit({ kind: "configuration_completed", operationId: item.operationId, configId: item.configId });
             item.resolve();
           } catch (err) {
+            if (this.ownerAgentSessionId) {
+              await this.recordOwned({
+                recordId: `${item.operationId}:configuration:failed`,
+                agentSessionId: this.ownerAgentSessionId,
+                agentConversationId: this.agentConversationId,
+                kind: "configuration",
+                timestamp: new Date().toISOString(),
+                operation: "set",
+                configId: item.configId,
+                value: toPersistenceJsonValue(item.value),
+                status: "failed",
+                error: String(err),
+              }).catch((persistenceError) => this.log.warn("configuration_failure_persistence_failed", {
+                error: String(persistenceError),
+              }));
+            }
             this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
             item.reject(err);
           }
@@ -1735,10 +1867,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
           const from = this._mode;
           this.emit({ kind: "mode_change_started", transitionId: item.transitionId, from, to: item.mode });
           try {
+            await this.recordNativeAction(item.transitionId, "mode_change", "started", {
+              input: { from, to: item.mode },
+            });
             const result = await this.runSetMode(item);
+            await this.recordNativeAction(item.transitionId, "mode_change", "completed", {
+              output: { mode: item.mode, internalSessionId: result.sessionId || null },
+            });
             this.emit({ kind: "mode_change_completed", transitionId: item.transitionId, from, to: item.mode });
             item.resolve(result);
           } catch (err) {
+            await this.recordNativeAction(item.transitionId, "mode_change", "failed", {
+              error: String(err),
+            }).catch(() => undefined);
             this.emit({ kind: "mode_change_failed", transitionId: item.transitionId, from, to: item.mode, error: String(err) });
             item.reject(err);
           }
@@ -1769,10 +1910,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const targetMode = item.options.target?.mode ?? this._mode;
     const continuation = normalizeHandoffContinuation(item.options);
     const transitionKind = targetAdapterId === fromAdapterId ? "handoff" as const : "switch" as const;
+    const action = continuation.kind === "none" && transitionKind === "handoff"
+      ? "reset"
+      : transitionKind;
     const fromDescriptor = this.v2Transcript ? this.v2Descriptor() : null;
     let toInternalSessionId: string | undefined;
     let toDescriptor: InternalSessionDescriptor | undefined;
     let summary: string | undefined;
+    let targetResult: PromptResult | undefined;
     let targetController: AgentController | null = null;
     let resolvedTargetAdapter: Adapter | null = null;
     let targetActivated = false;
@@ -1784,6 +1929,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
       kind: "handoff_started",
       handoffId: item.handoffId,
       fromInternalSessionId,
+    });
+    await this.recordNativeAction(item.handoffId, action, "started", {
+      input: {
+        fromAdapterId,
+        targetAdapterId,
+        targetMode,
+        continuation: continuation.kind,
+      },
     });
     if (this.v2Transcript) {
       await this.v2Transcript.appendTransitionEvent({
@@ -1835,9 +1988,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const replacingController = targetAdapterId !== fromAdapterId || targetMode !== this._mode;
       let created: ConnectResult;
       if (replacingController) {
-        const adapter = targetAdapterId === fromAdapterId
+        const adapter = item.options.target?.adapter ?? (targetAdapterId === fromAdapterId
           ? this.activeAdapter
-          : this.ownerLifecycle?.resolveAdapter?.(targetAdapterId);
+          : this.ownerLifecycle?.resolveAdapter?.(targetAdapterId));
         if (!adapter) {
           throw new Error(
             `cannot resolve adapter ${targetAdapterId}; cross-adapter switch requires an Agent-owned conversation`,
@@ -1862,6 +2015,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
       for (const [configId, value] of Object.entries(item.options.target?.config ?? {})) {
         await targetController.setConfig(configId, value);
       }
+      await this.recordNativeAction(item.handoffId, action, "checkpoint", {
+        output: { stage: "target_created", internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+      });
 
       if (this.v2Transcript) {
         const transitionAt = new Date().toISOString();
@@ -1918,6 +2074,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
           : {}),
         activatedAt,
       });
+      await this.recordNativeAction(item.handoffId, action, "checkpoint", {
+        output: { stage: "target_activated", internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+      });
 
       const previousController = this.controller;
       if (targetController !== previousController) {
@@ -1965,6 +2124,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         if (prompted.status !== "completed") {
           throw new Error(`handoff target prompt ${prompted.status}`);
         }
+        targetResult = copyPromptResult(prompted);
       }
 
       const result: HandoffResult = Object.freeze({
@@ -1974,6 +2134,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         toInternalSessionId,
         ...(transitionKind === "switch" ? { fromAdapterId, toAdapterId: targetAdapterId } : {}),
         summary,
+        ...(targetResult ? { targetResult } : {}),
         meteringRecords: Object.freeze([...records]),
       });
       if (this.v2Transcript) {
@@ -1998,6 +2159,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
           summary,
         });
       }
+      await this.recordNativeAction(item.handoffId, action, "completed", {
+        output: { internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+      });
       this.emit({ kind: "handoff_completed", result });
       return result;
     } catch (err) {
@@ -2045,6 +2209,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (!targetActivated && targetController && targetController !== this.controller) {
         await targetController.stop().catch(() => undefined);
       }
+      await this.recordNativeAction(item.handoffId, action, "failed", { error }).catch(
+        (persistenceError) => this.log.warn("native_action_failure_persistence_failed", {
+          error: String(persistenceError),
+        }),
+      );
       this.emit({
         kind: "handoff_failed",
         handoffId: item.handoffId,
@@ -2552,7 +2721,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         await this.v2Transcript.syncBeforeDispatch();
         this.presentation.emitPersistedRecord(userRecord);
       } catch (error) {
-        this.endTurn(item.handlers);
+        this.endTurn(item.turnId, item.handlers);
         if (transcriptStarted) {
           await this.v2Transcript.abortOperation("pre_dispatch_persistence_failure").catch(
             (abortError) => this.log.warn("transcript_predispatch_abort_failed", { error: String(abortError) }),
@@ -2630,6 +2799,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       onResponseChunk: (chunk) => {
         const settledReasoning = this.presentation.closeReasoningBoundary();
         if (settledReasoning) {
+          this.queueActivityRecords(item.turnId, [settledReasoning]);
           item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
         }
         response.append(chunk);
@@ -2655,8 +2825,45 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // after it. Later activity revisions keep their original presentation position.
         flushAssistantMessage("in_progress");
         const result = this.presentation.applyActivity(event);
+        this.queueActivityRecords(item.turnId, result.emitted);
         item.handlers?.onRecord?.(result);
         item.handlers?.onActivity?.(event);
+      },
+      onPermissionRequest: async (request) => {
+        const permissionBase = `${item.turnId}:permission:${request.toolCallId}`;
+        if (this.ownerAgentSessionId) {
+          await this.recordOwned({
+            recordId: `${permissionBase}:requested`,
+            agentSessionId: this.ownerAgentSessionId,
+            agentConversationId: this.agentConversationId,
+            kind: "permission",
+            timestamp: new Date().toISOString(),
+            permissionId: request.toolCallId,
+            state: "requested",
+            request: toPersistenceJsonValue({
+              toolCallId: request.toolCallId,
+              ...(request.title ? { title: request.title } : {}),
+              options: request.options,
+              raw: request.raw,
+            }),
+          });
+        }
+        const outcome = item.handlers?.onPermissionRequest
+          ? await item.handlers.onPermissionRequest(request)
+          : defaultPermissionOutcome(request, this.defaultPermission);
+        if (this.ownerAgentSessionId) {
+          await this.recordOwned({
+            recordId: `${permissionBase}:resolved`,
+            agentSessionId: this.ownerAgentSessionId,
+            agentConversationId: this.agentConversationId,
+            kind: "permission",
+            timestamp: new Date().toISOString(),
+            permissionId: request.toolCallId,
+            state: "resolved",
+            outcome: permissionRecordOutcome(request, outcome),
+          });
+        }
+        return outcome;
       },
     };
 
@@ -2680,7 +2887,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       // Before the assistant msg: `msg` delimits a turn, so anything still open has to
       // land inside those fences.
-      this.endTurn(item.handlers);
+      this.endTurn(item.turnId, item.handlers);
       if (!this._title && item.text.trim()) {
         this._title = item.text.trim().replace(/\s+/g, " ").slice(0, 60);
       }
@@ -2723,11 +2930,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
         text: item.text,
         result,
       });
+      await this.ownerRecordWrite;
       return result;
     } catch (err) {
       // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
       // what it was doing, at its real status.
-      this.endTurn(item.handlers);
+      this.endTurn(item.turnId, item.handlers);
       const structured = response.snapshot();
       const text = structured.length > 0 ? response.text : chunks.join("");
       const messages: readonly ResponseMessage[] = structured.length > 0
@@ -2748,6 +2956,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
           this.log.warn("owned_prompt_failure_persistence_failed", { error: String(persistenceError) });
         });
       }
+      await this.ownerRecordWrite.catch((persistenceError) => {
+        this.log.warn("owned_runtime_persistence_failed", { error: String(persistenceError) });
+      });
       if (this.v2Transcript) {
         if (!transcriptClosed && assistantOrdinal === 0 && messages.length > 0) {
           for (const message of messages) {
@@ -3043,8 +3254,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.presentation.beginTurn(turnId);
   }
 
-  private endTurn(handlers?: PromptHandlers): void {
-    this.presentation.endTurn(handlers);
+  private endTurn(turnId: string, handlers?: PromptHandlers): void {
+    this.queueActivityRecords(turnId, this.presentation.endTurn(handlers));
   }
 
   /**
@@ -3105,6 +3316,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.phase = "stopped";
     this.emitStateIfChanged();
     await this.controller.stop();
+    await this.ownerRecordWrite.catch((error) => {
+      this.log.warn("owned_runtime_persistence_failed", { error: String(error) });
+    });
     await this.presentation.drain().catch(() => undefined);
     await this.v2Transcript?.close();
   }
@@ -3425,6 +3639,21 @@ function ownHandoffOptions(options: HandoffOptions): HandoffOptions {
           target: Object.freeze({
             adapterId: options.target.adapterId,
             ...(options.target.mode === undefined ? {} : { mode: options.target.mode }),
+            ...(options.target.adapter === undefined
+              ? {}
+              : {
+                  adapter: Object.freeze({
+                    ...options.target.adapter,
+                    command: Object.freeze([...options.target.adapter.command]) as unknown as string[],
+                    ...(options.target.adapter.ptyCommand
+                      ? {
+                          ptyCommand: Object.freeze([
+                            ...options.target.adapter.ptyCommand,
+                          ]) as unknown as string[],
+                        }
+                      : {}),
+                  }),
+                }),
             ...(options.target.config === undefined
               ? {}
               : { config: Object.freeze({ ...options.target.config }) }),
@@ -3460,6 +3689,9 @@ function normalizeHandoffContinuation(options: HandoffOptions):
     return Object.freeze({ kind: "provided", content: continuation.content });
   }
   if (continuation.kind === "none") return Object.freeze({ kind: "none" });
+  if (continuation.summaryPrompt !== undefined && continuation.summaryInstructions !== undefined) {
+    throw new Error("handoff generated continuation cannot combine summaryPrompt and summaryInstructions");
+  }
   if (continuation.summaryPrompt !== undefined && !continuation.summaryPrompt.trim()) {
     throw new Error("handoff summary prompt cannot be blank");
   }
@@ -3519,6 +3751,111 @@ function sameJsonValue(left: unknown, right: JsonValue): boolean {
   } catch {
     return false;
   }
+}
+
+function runtimeRecordFromActivity(
+  agentSessionId: AgentSessionId,
+  agentConversationId: AgentConversationId,
+  turnId: string,
+  record: AggregatedRecord,
+): NewConversationRecord {
+  const timestamp = new Date().toISOString();
+  const recordId = `${turnId}:runtime:${record.recordId}:${record.seq}`;
+  const event = record.event;
+  if (event.kind === "thinking") {
+    return {
+      recordId,
+      agentSessionId,
+      agentConversationId,
+      kind: "thinking",
+      timestamp,
+      thinkingId: record.recordId,
+      state: record.reason === "settled" || record.reason === "flushed" ? "completed" : "in_progress",
+      content: event.text,
+      ...(event.messageId ? { metadata: JSON.stringify({ providerMessageId: event.messageId }) } : {}),
+    };
+  }
+  if (event.kind === "tool") {
+    const terminal = event.status === "completed" || event.status === "failed";
+    const state = event.status === "failed"
+      ? "failed" as const
+      : terminal
+        ? "completed" as const
+        : record.reason === "input"
+          ? "input" as const
+          : record.reason === "flushed"
+            ? "failed" as const
+            : "announced" as const;
+    const output = event.rawOutput !== undefined || event.content !== undefined
+      ? [{
+          type: "json" as const,
+          value: toPersistenceJsonValue({
+            ...(event.rawOutput === undefined ? {} : { rawOutput: event.rawOutput }),
+            ...(event.content === undefined ? {} : { content: event.content }),
+            ...(event.locations === undefined ? {} : { locations: event.locations }),
+          }),
+        }]
+      : undefined;
+    return {
+      recordId,
+      agentSessionId,
+      agentConversationId,
+      kind: "tool_call",
+      timestamp,
+      toolCallId: event.toolCallId,
+      state,
+      ...(event.title || event.toolKind ? { name: event.title ?? event.toolKind } : {}),
+      ...(event.rawInput === undefined ? {} : { input: toPersistenceJsonValue(event.rawInput) }),
+      ...(output === undefined ? {} : { output }),
+      ...(state === "failed" ? { error: `tool call ended with status ${event.status}` } : {}),
+      metadata: JSON.stringify({ providerStatus: event.status, toolKind: event.toolKind }),
+    };
+  }
+  return {
+    recordId,
+    agentSessionId,
+    agentConversationId,
+    kind: "activity",
+    timestamp,
+    activityId: record.recordId,
+    activityType: event.kind,
+    state: record.reason === "announced" || record.reason === "input" ? "in_progress" : "completed",
+    data: toPersistenceJsonValue(event),
+    metadata: JSON.stringify({ reason: record.reason }),
+  };
+}
+
+function protocolMethod(message: PersistenceJsonValue): string | undefined {
+  if (message === null || Array.isArray(message) || typeof message !== "object") return undefined;
+  const method = (message as { readonly method?: unknown }).method;
+  return typeof method === "string" ? method : undefined;
+}
+
+function toPersistenceJsonValue(value: unknown): PersistenceJsonValue {
+  if (value === undefined) return null;
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? String(value) : JSON.parse(serialized) as PersistenceJsonValue;
+}
+
+function defaultPermissionOutcome(
+  request: PermissionRequest,
+  policy: "approve" | "cancel",
+): PermissionOutcome {
+  if (policy === "cancel") return { outcome: "cancelled" };
+  const allow = request.options.find((option) => option.kind === "allow_once")
+    ?? request.options.find((option) => option.kind === "allow_always");
+  return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
+}
+
+function permissionRecordOutcome(
+  request: PermissionRequest,
+  outcome: PermissionOutcome,
+): "approved" | "denied" | "cancelled" {
+  if (outcome.outcome === "cancelled") return "cancelled";
+  const selected = request.options.find((option) => option.optionId === outcome.optionId);
+  return selected?.kind === "allow_once" || selected?.kind === "allow_always"
+    ? "approved"
+    : "denied";
 }
 
 /** Do not let one notification observer mutate the PromptResult another observer sees. */

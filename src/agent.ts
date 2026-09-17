@@ -453,6 +453,15 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     });
   }
 
+  async record(record: NewConversationRecord): Promise<void> {
+    const level = this.settings.capture[record.kind];
+    if (level === "none") return;
+    const persisted = await this.agent.persistence.records.append(
+      captureRuntimeRecord(record, level),
+    );
+    await this.updateIdentity([persisted]);
+  }
+
   private async resolveParticipant(participantId?: string): Promise<ParticipantRef> {
     const id = participantId
       ?? (this.initialParticipants.length === 1
@@ -500,6 +509,52 @@ function capturedMessageContent(
   capture: ConversationRecordCapturePolicy,
 ): string {
   return capture.message === "metadata" ? "" : content;
+}
+
+function captureRuntimeRecord(
+  record: NewConversationRecord,
+  level: ConversationRecordCapturePolicy[keyof ConversationRecordCapturePolicy],
+): NewConversationRecord {
+  if (level !== "metadata") return record;
+  switch (record.kind) {
+    case "message":
+      return { ...record, content: "" };
+    case "tool_call":
+      return {
+        recordId: record.recordId,
+        agentSessionId: record.agentSessionId,
+        agentConversationId: record.agentConversationId,
+        kind: record.kind,
+        timestamp: record.timestamp,
+        ...(record.metadata ? { metadata: record.metadata } : {}),
+        toolCallId: record.toolCallId,
+        state: record.state,
+        ...(record.name ? { name: record.name } : {}),
+      };
+    case "permission":
+      return {
+        recordId: record.recordId,
+        agentSessionId: record.agentSessionId,
+        agentConversationId: record.agentConversationId,
+        kind: record.kind,
+        timestamp: record.timestamp,
+        ...(record.metadata ? { metadata: record.metadata } : {}),
+        permissionId: record.permissionId,
+        state: record.state,
+        ...(record.outcome ? { outcome: record.outcome } : {}),
+      };
+    case "configuration":
+      return { ...record, value: undefined };
+    case "protocol":
+      return { ...record, message: undefined };
+    case "native_action":
+    case "agent_action":
+      return { ...record, input: undefined, output: undefined };
+    case "thinking":
+      return { ...record, content: "" };
+    case "activity":
+      return { ...record, content: undefined, data: undefined };
+  }
 }
 
 export { AgentAdapterRegistry, NoopAgentIdentityRuntime, composeIdentityPrompt };

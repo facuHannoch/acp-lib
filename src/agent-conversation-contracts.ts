@@ -1,4 +1,5 @@
 import type { AgentMode } from "./controller.ts";
+import type { Adapter } from "./adapters.ts";
 import type { ContextWindowStatus, ProviderCostSnapshot } from "./metering/context.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
@@ -146,6 +147,8 @@ export interface HandoffOptions {
   /** Target provider. Omitted means a fresh thread on the current adapter and mode. */
   readonly target?: {
     readonly adapterId: string;
+    /** Explicit route for a detached conversation that has no owning Agent registry. */
+    readonly adapter?: Adapter;
     readonly mode?: AgentMode;
     readonly config?: Readonly<Record<string, unknown>>;
   };
@@ -174,6 +177,8 @@ export interface HandoffResult {
   /** Present when the handoff crossed adapter routes. */
   readonly toAdapterId?: string;
   readonly summary: string;
+  /** Result of `targetPrompt`, when one was supplied. */
+  readonly targetResult?: PromptResult;
   /** One record per token-consuming operation the handoff performed, in order. */
   readonly meteringRecords: readonly OperationMeteringRecord[];
 }

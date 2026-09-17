@@ -12,6 +12,8 @@ import {
 
 const OPERATIONS_AGENT = resolve(import.meta.dir, "../smoke-tests/test5-operations/operations-agent.ts");
 const PRESENTATION_AGENT = resolve(import.meta.dir, "fixtures/presentation-agent.ts");
+const PERMISSION_ORDER_AGENT = resolve(import.meta.dir, "fixtures/permission-order-agent.ts");
+const CONFIG_AGENT = resolve(import.meta.dir, "fixtures/config-agent.ts");
 const agents: Agent[] = [];
 const directories: string[] = [];
 
@@ -56,7 +58,9 @@ describe("Agent owner", () => {
       prompt: "hello atlas",
       consistency: "eventual",
     });
-    expect(identity.updates.map((update) => update.records.map((record) => record.role))).toEqual([
+    expect(identity.updates.flatMap((update) => update.records)
+      .filter((record) => record.kind === "message")
+      .map((record) => [record.role])).toEqual([
       ["user"],
       ["assistant"],
     ]);
@@ -88,6 +92,64 @@ describe("Agent owner", () => {
       "A before tool",
       "B after tool",
     ]);
+    const toolRecords = (await agent.persistence.records.list(conversation.id, {
+      kinds: ["tool_call"],
+    })).records;
+    expect(toolRecords.map((record) => record.kind === "tool_call" && record.state)).toEqual([
+      "announced",
+      "completed",
+    ]);
+  });
+
+  test("captures permission decisions and raw ACP traffic under per-kind policy", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { permission: { command: ["bun", PERMISSION_ORDER_AGENT] } },
+      defaultAdapterId: "permission",
+      capture: {
+        tool_call: "content",
+        permission: "content",
+        protocol: "raw",
+      },
+      conversationDefaults: { defaultPermission: "approve" },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("run the tool");
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 1_000 })).records;
+    const permissions = records.filter((record) => record.kind === "permission");
+    expect(permissions.map((record) => record.state)).toEqual(["requested", "resolved"]);
+    expect(permissions[1]).toMatchObject({ outcome: "approved" });
+    expect(records.filter((record) => record.kind === "tool_call")
+      .map((record) => record.kind === "tool_call" && record.state)).toEqual([
+        "announced",
+        "completed",
+      ]);
+    expect(records.some((record) =>
+      record.kind === "protocol" && record.method === "session/request_permission"
+    )).toBe(true);
+  });
+
+  test("captures configuration lifecycle without discarding earlier states", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { config: { command: ["bun", CONFIG_AGENT] } },
+      defaultAdapterId: "config",
+      capture: { configuration: "content" },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.setConfig("model", "beta");
+
+    const records = (await agent.persistence.records.list(conversation.id, {
+      kinds: ["configuration"],
+    })).records;
+    expect(records.map((record) => record.kind === "configuration" && record.status)).toEqual([
+      "started",
+      "completed",
+    ]);
+    expect(records[1]).toMatchObject({ configId: "model", value: "beta" });
   });
 
   test("promptFrom adds a stable local participant without treating it as authentication", async () => {
@@ -155,6 +217,7 @@ describe("Agent owner", () => {
 
     const switched = await conversation.switch("atlas", {
       continuation: { kind: "provided", content: "portable continuation context" },
+      targetPrompt: "continue now",
     });
     expect(conversation.id).toBe(conversationId);
     expect(conversation.adapterId).toBe("atlas");
@@ -165,6 +228,7 @@ describe("Agent owner", () => {
       fromInternalSessionId: oldProviderSessionId,
       toInternalSessionId: conversation.internalSessionId,
     });
+    expect(switched.targetResult?.text).toContain("continue now");
     const history = await agent.persistence.providerSessions.list(conversationId);
     expect(history).toHaveLength(2);
     expect(history[0]?.deactivatedAt).toBeDefined();
@@ -173,6 +237,15 @@ describe("Agent owner", () => {
       internalSessionId: conversation.internalSessionId,
       transitionId: switched.handoffId,
     });
+    const nativeActions = (await agent.persistence.records.list(conversationId, {
+      kinds: ["native_action"],
+    })).records;
+    expect(nativeActions.map((record) => record.kind === "native_action" && record.state)).toEqual([
+      "started",
+      "checkpoint",
+      "checkpoint",
+      "completed",
+    ]);
 
     await agent.close();
     agents.splice(agents.indexOf(agent), 1);

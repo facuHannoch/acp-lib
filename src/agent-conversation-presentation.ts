@@ -80,11 +80,12 @@ export class AgentConversationPresentation {
     for (const record of leftover) this.#writeActivity(record);
   }
 
-  endTurn(handlers?: PromptHandlers): void {
+  endTurn(handlers?: PromptHandlers): readonly AggregatedRecord[] {
     const emitted = this.#aggregator.flush();
-    if (emitted.length === 0) return;
+    if (emitted.length === 0) return emitted;
     for (const record of emitted) this.#writeActivity(record);
     handlers?.onRecord?.({ current: null, delta: null, emitted });
+    return emitted;
   }
 
   closeReasoningBoundary(): AggregatedRecord | null {
@@ -211,4 +212,3 @@ function capActivityStrings(
   }
   return { fields: out, truncated };
 }
-
