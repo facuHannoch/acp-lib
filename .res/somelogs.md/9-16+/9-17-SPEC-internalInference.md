@@ -1,6 +1,7 @@
 # Internal inference runtime specification
 
-Status: proposed design; implementation pending.
+Status: generic runtime implemented. Checkpoint scheduling/recovery and identity-specific
+artifact strategies remain separate follow-up features.
 
 This document defines library-initiated model work that is not a participant turn in an
 `AgentConversation`. Initial consumers are continuous conversation checkpoint generation,
@@ -165,7 +166,17 @@ export interface InternalInferenceRuntime {
   run(
     request: InternalInferenceRequest,
     signal?: AbortSignal,
+    lifecycle?: InternalInferenceRuntimeLifecycle,
   ): Promise<InternalInferenceResult>;
+}
+
+export interface InternalInferenceRuntimeLifecycle {
+  stageChanged?(stage: "creating_session" | "prompting"): void;
+  /** Call before prompting so metering preflight can run. */
+  sessionStarted(input: {
+    readonly internalSessionId: string;
+    readonly model: string | null;
+  }): void | Promise<void>;
 }
 
 export interface InternalInferenceStrategy<TPayload = PersistenceJsonValue> {
@@ -715,7 +726,8 @@ Proposed agent configuration:
 const agent = await Agent.open({
   // existing configuration
   internalInference: {
-    runtime: new HarnessInternalInferenceRuntime(),
+    // Optional: omitting runtime uses the agent's registered harness adapter and defaults.
+    runtime: new HarnessInternalInferenceRuntime(...),
     adapter: "same",
     maxConcurrency: 1,
     retry: {
