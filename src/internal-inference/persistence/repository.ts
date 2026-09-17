@@ -30,4 +30,6 @@ export interface InternalInferenceRepository {
   getAttempt(id: InternalInferenceId): Promise<InternalInferenceAttemptRecord | null>;
   getChain(rootId: InternalInferenceId): Promise<InternalInferenceChainRecord | null>;
   list(options?: InternalInferenceRecordListOptions): Promise<InternalInferencePage>;
+  /** Keep the newest terminal runs and delete older complete retry lineages atomically. */
+  pruneTerminal(retainRuns: number): Promise<number>;
 }

@@ -235,6 +235,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
       });
       this.publishAttempt(completed);
       await this.refreshRun(attempt.rootInternalInferenceId);
+      await this.pruneTerminal();
     } catch (error) {
       if (this.fenced.has(attempt.internalInferenceId)) return;
       if (this.closed && abort.signal.aborted) {
@@ -292,6 +293,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     });
     this.publishAttempt(failed);
     await this.refreshRun(attempt.rootInternalInferenceId);
+    if (!canRetry) await this.pruneTerminal();
   }
 
   private ownAttempt(record: InternalInferenceAttemptRecord): AttemptHandle {
@@ -339,6 +341,11 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
 
   private assertOpen(): void {
     if (this.closed) throw new Error("internal inference manager is closed");
+  }
+
+  private async pruneTerminal(): Promise<void> {
+    const retention = this.config.settings.retention;
+    if (retention !== "all") await this.config.repository.pruneTerminal(retention.retain);
   }
 }
 

@@ -405,6 +405,27 @@ export class SqliteInternalInferenceRepository implements InternalInferenceRepos
     };
   }
 
+  async pruneTerminal(retainRuns: number): Promise<number> {
+    if (!Number.isSafeInteger(retainRuns) || retainRuns < 0) {
+      throw new Error("internal inference retention must be a non-negative integer");
+    }
+    return await this.runWrite(() => {
+      const roots = this.database.query<{ root_internal_inference_id: string }, [number]>(
+        `SELECT root_internal_inference_id FROM internal_inference_chains
+         WHERE status IN ('completed', 'failed', 'cancelled')
+         ORDER BY updated_at DESC, root_internal_inference_id DESC
+         LIMIT -1 OFFSET ?`,
+      ).all(retainRuns).map((row) => row.root_internal_inference_id);
+      if (!roots.length) return 0;
+      const placeholders = roots.map(() => "?").join(", ");
+      this.database.query(`DELETE FROM internal_inferences WHERE root_internal_inference_id IN (${placeholders})`)
+        .run(...roots);
+      this.database.query(`DELETE FROM internal_inference_chains WHERE root_internal_inference_id IN (${placeholders})`)
+        .run(...roots);
+      return roots.length;
+    });
+  }
+
   private requireClaimed(id: string): ClaimedInternalInference {
     const attempt = this.getAttemptSync(id as InternalInferenceId);
     if (!attempt) throw new Error(`internal inference attempt disappeared: ${id}`);

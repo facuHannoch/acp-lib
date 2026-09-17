@@ -134,6 +134,55 @@ describe("SQLite internal inference repository", () => {
     expect((await repository.getChain(rootId))?.activeInternalInferenceId).toBe(retryId);
     await backend.close();
   });
+
+  test("prunes complete retry lineages without touching active work", async () => {
+    const { backend } = await fixture();
+    const repository = backend.internalInferences;
+    for (let index = 0; index < 3; index += 1) {
+      const id = createInternalInferenceId();
+      await repository.enqueue({
+        internalInferenceId: id,
+        agentSessionId: backend.identityRecord.agentSessionId,
+        purpose: "conversation_recovery",
+        adapterId: "test",
+        input: { version: 1, strategyId: "recovery", payload: { index } },
+        requestedAt: `2026-01-01T00:00:0${index}.000Z`,
+      });
+      await repository.claimNext({
+        workerId: `worker-${index}`,
+        leaseToken: `lease-${index}`,
+        leaseDurationMs: 30_000,
+        now: `2026-01-01T00:00:0${index}.000Z`,
+      });
+      await repository.complete({
+        internalInferenceId: id,
+        workerId: `worker-${index}`,
+        leaseToken: `lease-${index}`,
+        internalSessionId: `provider-${index}`,
+        completedAt: `2026-01-01T00:00:0${index}.500Z`,
+        completion: {
+          internalInferenceId: id,
+          rootInternalInferenceId: id,
+          internalSessionId: `provider-${index}`,
+          purpose: "conversation_recovery",
+          completedAt: `2026-01-01T00:00:0${index}.500Z`,
+        },
+      });
+    }
+    const activeId = createInternalInferenceId();
+    await repository.enqueue({
+      internalInferenceId: activeId,
+      agentSessionId: backend.identityRecord.agentSessionId,
+      purpose: "identity_update",
+      adapterId: "test",
+      input: { version: 1, strategyId: "identity", payload: null },
+    });
+
+    expect(await repository.pruneTerminal(1)).toBe(2);
+    expect((await repository.list()).attempts).toHaveLength(2);
+    expect(await repository.getAttempt(activeId)).not.toBeNull();
+    await backend.close();
+  });
 });
 
 async function fixture() {
