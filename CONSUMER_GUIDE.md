@@ -250,6 +250,70 @@ built into the harness; enforce that boundary with the launcher or container whe
 Custom runtimes should call `lifecycle.sessionStarted(...)` before prompting so strict
 metering preflight can run. Completed custom results are metered as a fallback.
 
+### Generate recovery checkpoints and recover missing provider sessions
+
+Enable `checkpointing` on an SQLite-backed `Agent` to generate rolling continuation
+summaries outside the visible provider thread:
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  defaultAdapterId: "codex",
+  checkpointing: {
+    schedule: {
+      milestones: [1, 5, 10, 15, 30, 50],
+      everyAfterMilestones: 50,
+    },
+    recovery: {
+      onLoadFailure: "recover", // default
+      maxTailMessages: 100,
+    },
+  },
+});
+```
+
+Checkpoint generation is durably enqueued after the configured successful response counts;
+the visible prompt does not wait for the summary model call. Each new checkpoint combines
+the previous summary with canonical records added since its covered message boundary.
+Checkpoint artifacts and their `conversation_checkpoint` timeline actions are committed in
+the same transaction as the generating internal inference.
+
+```ts
+const checkpoint = await agent.checkpointing!.latest(conversationId);
+
+// Explicitly request a checkpoint outside the configured milestones.
+await agent.checkpointing!.request(conversationId);
+```
+
+When `conversations.open()` cannot load the recorded provider session and the error is
+classified as a missing session, the agent creates a fresh provider thread and privately
+seeds it from the latest checkpoint plus canonical messages written after that checkpoint.
+The seed is metered as `conversation_recovery` and recorded as a native action; it is not a
+user or assistant transcript message.
+
+```ts
+const opened = await agent.conversations.open(conversationId, {
+  onRecoveryProgress(event) {
+    console.log(event.stage, event.checkpointId);
+  },
+});
+
+if (opened.providerSession === "recovered") {
+  console.log(opened.recovery);
+}
+```
+
+ACP does not standardize missing-session errors. The default classifier recognizes common
+“session not found,” “does not exist,” and missing Codex rollout-path failures. A harness
+with different errors can provide `recovery.isMissingProviderSession(error)`. Authentication,
+network, and arbitrary internal failures remain fatal by default. Set `onLoadFailure:
+"error"` to disable automatic recovery.
+
+Checkpointing requires message capture at `"content"` or `"raw"`. The checkpoint is a
+continuation aid, not the authoritative transcript: complete messages and other records
+remain independently queryable from SQLite.
+
 ## Legacy direct and managed sessions
 
 The remaining sections describe the compatibility `AgentSession` and
