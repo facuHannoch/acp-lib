@@ -235,6 +235,7 @@ try {
   assert.equal(metered.metering.operationId, metered.operationId);
   assert.equal(metered.metering.usage.status, "metered", "test adapter usage was not metered");
   if (metered.metering.usage.status === "metered") {
+    assert.equal(metered.metering.usage.reportedCumulative.totalTokens, 8);
     assert.equal(metered.metering.usage.reportedCumulative.inputTokens, 3);
     assert.equal(metered.metering.usage.reportedCumulative.outputTokens, 5);
   }
