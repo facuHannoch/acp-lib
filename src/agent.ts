@@ -58,6 +58,13 @@ import type {
 import { DefaultInternalInferenceManager } from "./internal-inference/coordination/manager.ts";
 import type { InternalInferenceSnapshot } from "./internal-inference/contracts.ts";
 import { HarnessInternalInferenceRuntime } from "./internal-inference/runtime/harness-runtime.ts";
+import {
+  ConversationCheckpointCoordinator,
+  ConversationCheckpointStrategy,
+  CONVERSATION_CHECKPOINT_STRATEGY_ID,
+  resolveConversationCheckpointingConfig,
+  type ConversationCheckpointingConfig,
+} from "./checkpointing/index.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -105,8 +112,9 @@ export interface AgentConfig {
     readonly meteringRecords?: MeteringRecordRetention;
   };
   readonly internalInference?: InternalInferenceConfig & {
-    readonly strategies: readonly InternalInferenceStrategy[];
+    readonly strategies?: readonly InternalInferenceStrategy[];
   };
+  readonly checkpointing?: ConversationCheckpointingConfig;
 }
 
 export interface CreateAgentConversationConfig {
@@ -151,6 +159,7 @@ export class Agent {
   readonly adapters: AgentAdapterRegistry;
   readonly conversations: AgentConversationManager;
   readonly internalInferences?: InternalInferenceManager;
+  readonly checkpointing?: ConversationCheckpointCoordinator;
 
   private readonly manager: DefaultAgentConversationManager;
   private closed = false;
@@ -175,8 +184,18 @@ export class Agent {
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
     });
     this.conversations = this.manager;
-    if (config.internalInference) {
-      const settings = resolveInternalInferenceConfig(config.internalInference);
+    const checkpointing = config.checkpointing
+      ? resolveConversationCheckpointingConfig(config.checkpointing)
+      : null;
+    if (checkpointing?.enabled) {
+      const messageCapture = resolveConversationRecordCapture(config.capture).message;
+      if (messageCapture !== "content" && messageCapture !== "raw") {
+        throw new Error("conversation checkpointing requires message capture at content or raw level");
+      }
+    }
+    if (config.internalInference || checkpointing?.enabled) {
+      const inferenceConfig = config.internalInference ?? {};
+      const settings = resolveInternalInferenceConfig(inferenceConfig);
       if (!persistence.internalInferences) {
         throw new Error("persistence backend does not support internal inference");
       }
@@ -204,13 +223,23 @@ export class Agent {
           ...(config.conversationDefaults?.wire ? { wire: config.conversationDefaults.wire } : {}),
         }),
       });
+      const strategies = [...(inferenceConfig.strategies ?? [])];
+      if (checkpointing?.enabled) {
+        if (strategies.some((strategy) =>
+          strategy.purpose === "conversation_checkpoint"
+          && strategy.strategyId === CONVERSATION_CHECKPOINT_STRATEGY_ID
+          && strategy.version === 1)) {
+          throw new Error("the built-in conversation checkpoint strategy is already registered");
+        }
+        strategies.push(new ConversationCheckpointStrategy());
+      }
       this.internalInferences = new DefaultInternalInferenceManager({
         agentSessionId: id,
         repository: persistence.internalInferences,
         persistence,
         runtime,
         settings,
-        strategies: config.internalInference.strategies,
+        strategies,
         meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
         beginMetering: async (attempt, session) => {
           return await this.manager.beginInternalInferenceMetering(attempt, session);
@@ -237,6 +266,13 @@ export class Agent {
           return fallback;
         },
       });
+      if (checkpointing?.enabled) {
+        this.checkpointing = new ConversationCheckpointCoordinator(
+          persistence,
+          this.internalInferences,
+          checkpointing,
+        );
+      }
     }
   }
 
@@ -289,6 +325,7 @@ export class Agent {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.checkpointing?.close();
     await (this.internalInferences as DefaultInternalInferenceManager | undefined)?.close();
     await this.manager.stopAll();
     await this.persistence.close();
@@ -586,6 +623,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       participantId: participant.id,
       content: capturedMessageContent(input.text, this.settings.capture),
       status: "completed",
+      metadata: JSON.stringify({ operationId: input.operationId }),
     }]);
     await this.updateIdentity(records);
     return Object.freeze({
@@ -606,9 +644,15 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       role: "assistant",
       content: capturedMessageContent(message.text, this.settings.capture),
       status,
-      ...(message.messageId ? { metadata: JSON.stringify({ providerMessageId: message.messageId }) } : {}),
+      metadata: JSON.stringify({
+        operationId: input.operationId,
+        ...(message.messageId ? { providerMessageId: message.messageId } : {}),
+      }),
     }));
     await this.updateIdentity(await this.appendMessages(records));
+    if (status === "completed") {
+      await this.agent.checkpointing?.afterSuccessfulResponse(this.conversationId);
+    }
   }
 
   async promptFailed(input: OwnedPromptFailed): Promise<void> {
@@ -622,7 +666,10 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       role: "assistant",
       content: capturedMessageContent(message.text, this.settings.capture),
       status: "failed",
-      ...(message.messageId ? { metadata: JSON.stringify({ providerMessageId: message.messageId }) } : {}),
+      metadata: JSON.stringify({
+        operationId: input.operationId,
+        ...(message.messageId ? { providerMessageId: message.messageId } : {}),
+      }),
     }));
     await this.updateIdentity(await this.appendMessages(records));
   }

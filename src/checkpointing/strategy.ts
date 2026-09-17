@@ -8,9 +8,9 @@ import { createConversationRecoveryCheckpointId } from "./ids.ts";
 
 export const CONVERSATION_CHECKPOINT_STRATEGY_ID = "conversation-checkpoint-v1";
 
-export interface ConversationCheckpointPayload {
+export type ConversationCheckpointPayload = {
   readonly instruction: string;
-}
+};
 
 export class ConversationCheckpointStrategy
 implements InternalInferenceStrategy<ConversationCheckpointPayload> {

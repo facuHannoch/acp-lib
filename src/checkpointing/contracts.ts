@@ -32,6 +32,8 @@ export interface ConversationRecoveryCheckpointListOptions {
 }
 
 export interface ConversationRecoveryCheckpointRepository {
+  /** Count completed provider turns using the stable operation ID on assistant messages. */
+  successfulResponseCount(agentConversationId: AgentConversationId): Promise<number>;
   latest(agentConversationId: AgentConversationId): Promise<ConversationRecoveryCheckpoint | null>;
   get(checkpointId: ConversationRecoveryCheckpointId): Promise<ConversationRecoveryCheckpoint | null>;
   list(

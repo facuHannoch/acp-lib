@@ -28,6 +28,18 @@ export class SqliteConversationRecoveryCheckpointRepository
 implements ConversationRecoveryCheckpointRepository {
   constructor(private readonly database: Database, private readonly runWrite: WriteRunner) {}
 
+  async successfulResponseCount(agentConversationId: AgentConversationId): Promise<number> {
+    const row = this.database.query<{ count: number }, [string]>(
+      `SELECT COUNT(DISTINCT json_extract(metadata, '$.operationId')) AS count
+       FROM conversation_records
+       WHERE agent_conversation_id = ? AND kind = 'message'
+         AND json_extract(payload_json, '$.role') = 'assistant'
+         AND json_extract(payload_json, '$.status') = 'completed'
+         AND json_extract(metadata, '$.operationId') IS NOT NULL`,
+    ).get(agentConversationId);
+    return Number(row?.count ?? 0);
+  }
+
   async latest(agentConversationId: AgentConversationId): Promise<ConversationRecoveryCheckpoint | null> {
     const row = this.database.query<CheckpointRow, [string]>(
       `SELECT * FROM conversation_recovery_checkpoints
