@@ -15,6 +15,9 @@ import {
 } from "./agent-session.ts";
 import type { AgentMode } from "./controller.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
+import type { MeteredOperationKind } from "./metering/record.ts";
+import { MeteringEngine } from "./metering/engine.ts";
+import { createModelsDevResolver } from "./metering/catalog/index.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
 import {
   NoopAgentIdentityRuntime,
@@ -44,6 +47,17 @@ import type {
   OwnedPromptFailed,
   OwnedPromptInput,
 } from "./agent-conversation-owner.ts";
+import {
+  resolveInternalInferenceConfig,
+  type InternalInferenceConfig,
+} from "./internal-inference/config.ts";
+import type {
+  InternalInferenceManager,
+  InternalInferenceStrategy,
+} from "./internal-inference/contracts.ts";
+import { DefaultInternalInferenceManager } from "./internal-inference/coordination/manager.ts";
+import type { InternalInferenceSnapshot } from "./internal-inference/contracts.ts";
+import { HarnessInternalInferenceRuntime } from "./internal-inference/runtime/harness-runtime.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -90,6 +104,9 @@ export interface AgentConfig {
   readonly meteringPersistence?: {
     readonly meteringRecords?: MeteringRecordRetention;
   };
+  readonly internalInference?: InternalInferenceConfig & {
+    readonly strategies: readonly InternalInferenceStrategy[];
+  };
 }
 
 export interface CreateAgentConversationConfig {
@@ -133,6 +150,7 @@ export class Agent {
   readonly identity: AgentIdentityRuntime;
   readonly adapters: AgentAdapterRegistry;
   readonly conversations: AgentConversationManager;
+  readonly internalInferences?: InternalInferenceManager;
 
   private readonly manager: DefaultAgentConversationManager;
   private closed = false;
@@ -157,6 +175,69 @@ export class Agent {
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
     });
     this.conversations = this.manager;
+    if (config.internalInference) {
+      const settings = resolveInternalInferenceConfig(config.internalInference);
+      if (!persistence.internalInferences) {
+        throw new Error("persistence backend does not support internal inference");
+      }
+      const runtime = settings.runtime ?? new HarnessInternalInferenceRuntime({
+        controllerConfig: (request) => ({
+          adapter: adapters.require(request.adapterId),
+          adapterId: request.adapterId,
+          ...(config.conversationDefaults?.launcher
+            ? { launcher: config.conversationDefaults.launcher }
+            : {}),
+          ...(config.conversationDefaults?.execPrefix
+            ? { execPrefix: config.conversationDefaults.execPrefix }
+            : {}),
+          ...(config.conversationDefaults?.env ? { env: config.conversationDefaults.env } : {}),
+          ...(config.conversationDefaults?.cwd ? { cwd: config.conversationDefaults.cwd } : {}),
+          ...(config.conversationDefaults?.clientInfo
+            ? { clientInfo: config.conversationDefaults.clientInfo }
+            : {}),
+          ...(config.conversationDefaults?.clientCapabilities
+            ? { clientCapabilities: config.conversationDefaults.clientCapabilities }
+            : {}),
+          ...(config.conversationDefaults?.logger
+            ? { logger: config.conversationDefaults.logger }
+            : {}),
+          ...(config.conversationDefaults?.wire ? { wire: config.conversationDefaults.wire } : {}),
+        }),
+      });
+      this.internalInferences = new DefaultInternalInferenceManager({
+        agentSessionId: id,
+        repository: persistence.internalInferences,
+        persistence,
+        runtime,
+        settings,
+        strategies: config.internalInference.strategies,
+        meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
+        beginMetering: async (attempt, session) => {
+          return await this.manager.beginInternalInferenceMetering(attempt, session);
+        },
+        resolveAdapterId: async (requestedAdapterId, agentConversationId) => {
+          if (requestedAdapterId) {
+            adapters.require(requestedAdapterId);
+            return requestedAdapterId;
+          }
+          if (settings.adapter !== "same") {
+            adapters.require(settings.adapter);
+            return settings.adapter;
+          }
+          if (agentConversationId) {
+            const active = await persistence.providerSessions.active(agentConversationId);
+            if (active) {
+              adapters.require(active.adapterId);
+              return active.adapterId;
+            }
+          }
+          const fallback = config.defaultAdapterId ?? adapters.list()[0]?.id;
+          if (!fallback) throw new Error("internal inference could not resolve an adapter");
+          adapters.require(fallback);
+          return fallback;
+        },
+      });
+    }
   }
 
   static async open(config: AgentConfig): Promise<Agent> {
@@ -208,6 +289,7 @@ export class Agent {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await (this.internalInferences as DefaultInternalInferenceManager | undefined)?.close();
     await this.manager.stopAll();
     await this.persistence.close();
   }
@@ -224,6 +306,8 @@ interface ManagerSettings {
 
 class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
+  private readonly detachedMeteringBarriers = new Map<AgentConversationId, Promise<void>>();
+  private agentMeteringBarrier: Promise<void> | undefined;
 
   constructor(private readonly agent: Agent, private readonly settings: ManagerSettings) {}
 
@@ -296,6 +380,107 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     await Promise.allSettled(conversations.map((conversation) => conversation.stop()));
   }
 
+  async beginInternalInferenceMetering(
+    attempt: InternalInferenceSnapshot,
+    session: { readonly internalSessionId: string; readonly model: string | null },
+  ): Promise<import("./internal-inference/contracts.ts").InternalInferenceMeteringOperation | null> {
+    const conversationId = attempt.agentConversationId;
+    const conversation = conversationId ? this.live.get(conversationId) : undefined;
+    if (conversation && conversation.state.phase !== "stopped") {
+      const operation = await conversation.beginDetachedMetering({
+        operationId: attempt.id,
+        operationKind: internalInferenceMeteringKind(attempt.purpose),
+        internalSessionId: session.internalSessionId,
+        model: session.model,
+      });
+      let closed = false;
+      return {
+        close: async ({ outcome, result, error }) => {
+          if (closed) throw new Error(`internal inference metering already closed: ${attempt.id}`);
+          closed = true;
+          return await conversation.closeDetachedMetering(operation, {
+            outcome,
+            usage: result?.usage ?? null,
+            ...(error ? { usageFailureReason: String(error) } : {}),
+          });
+        },
+        settled() {},
+      };
+    }
+
+    const previous = conversationId
+      ? this.detachedMeteringBarriers.get(conversationId) ?? Promise.resolve()
+      : this.agentMeteringBarrier ?? Promise.resolve();
+    let release!: () => void;
+    const ownBarrier = new Promise<void>((resolve) => { release = resolve; });
+    const barrier = previous.then(() => ownBarrier);
+    if (conversationId) this.detachedMeteringBarriers.set(conversationId, barrier);
+    else this.agentMeteringBarrier = barrier;
+    try {
+      // Detached operations for one closed conversation must restore and commit in order.
+      // Otherwise two workers can derive the same next operation count from one snapshot.
+      await previous;
+      const persisted = conversationId
+        ? await this.agent.persistence.metering.state(conversationId)
+        : await this.agent.persistence.metering.agentState(this.agent.id);
+      const meteringConfig = this.settings.defaults.metering;
+      const engine = new MeteringEngine({
+      agentSessionId: this.agent.id,
+      adapterId: attempt.adapterId,
+      enforcement: meteringConfig?.enforcement ?? "best_effort",
+      pricing: meteringConfig?.pricing ?? createModelsDevResolver(),
+      ...(persisted ? { initialState: persisted.state } : {}),
+      createdActiveThread: false,
+      ...(meteringConfig?.counterInterpretation
+        ? { counterInterpretation: meteringConfig.counterInterpretation }
+        : {}),
+      ...(meteringConfig?.inferenceSource
+        ? { inferenceSource: meteringConfig.inferenceSource }
+        : {}),
+    });
+      const operation = await engine.openDetached({
+      operationId: attempt.id,
+      operationKind: internalInferenceMeteringKind(attempt.purpose),
+      internalSessionId: session.internalSessionId,
+      providerId: null,
+      model: session.model,
+    });
+      let closed = false;
+      let settled = false;
+      return {
+      close: async ({ outcome, result, error }) => {
+        if (closed) throw new Error(`internal inference metering already closed: ${attempt.id}`);
+        closed = true;
+        return await engine.closeDetached(operation, {
+          outcome,
+          reportedCumulative: result?.usage ?? null,
+          ...(error ? { usageFailureReason: String(error) } : {}),
+          contextAfter: null,
+          providerCostAfter: null,
+        });
+      },
+      settled: () => {
+        if (settled) return;
+        settled = true;
+        if (conversationId && this.detachedMeteringBarriers.get(conversationId) === barrier) {
+          this.detachedMeteringBarriers.delete(conversationId);
+        } else if (!conversationId && this.agentMeteringBarrier === barrier) {
+          this.agentMeteringBarrier = undefined;
+        }
+        release();
+      },
+      };
+    } catch (error) {
+      if (conversationId && this.detachedMeteringBarriers.get(conversationId) === barrier) {
+        this.detachedMeteringBarriers.delete(conversationId);
+      } else if (!conversationId && this.agentMeteringBarrier === barrier) {
+        this.agentMeteringBarrier = undefined;
+      }
+      release();
+      throw error;
+    }
+  }
+
   private async start(
     id: AgentConversationId,
     participants: readonly ParticipantRef[],
@@ -307,6 +492,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     const adapterId = this.resolveAdapterId(config.adapterId);
     const adapter = this.agent.adapters.require(adapterId);
     const runtime = { ...this.settings.defaults, ...config.runtime };
+    await this.detachedMeteringBarriers.get(id);
     const persistedMetering = await this.agent.persistence.metering.state(id);
     const lifecycle = new PersistedConversationLifecycle(
       this.agent,
@@ -527,6 +713,15 @@ function normalizeParticipants(participants?: readonly ParticipantRef[]): readon
     seen.add(participant.id);
   }
   return Object.freeze(values);
+}
+
+function internalInferenceMeteringKind(purpose: string): MeteredOperationKind {
+  if (
+    purpose === "conversation_checkpoint"
+    || purpose === "conversation_recovery"
+    || purpose === "identity_update"
+  ) return purpose;
+  return "internal_command";
 }
 
 function capturedMessageContent(

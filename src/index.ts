@@ -28,6 +28,8 @@ export {
   parseAgentSessionId,
 } from "./agent-ids.ts";
 export type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
+export * from "./observation/index.ts";
+export * from "./internal-inference/index.ts";
 
 export { Agent } from "./agent.ts";
 export type {
@@ -81,6 +83,7 @@ export type {
   ConversationRecordKind,
   IdentityMemoryObservation,
   MessageRecord,
+  AgentMeteringCommitInput,
   MeteringCommitInput,
   MeteringPersistence,
   MeteringRecordListOptions,
@@ -92,6 +95,7 @@ export type {
   PersistedContent,
   PersistedContentBlock,
   PersistedIdentitySnapshot,
+  PersistedAgentMeteringState,
   PersistedConversationMeteringState,
   PersistenceBackend,
   PersistenceCapabilities,

@@ -22,7 +22,10 @@ export type MeteredOperationKind =
   | "internal_command"
   | "handoff_summary"
   | "handoff_seed"
-  | "switch_seed";
+  | "switch_seed"
+  | "conversation_checkpoint"
+  | "conversation_recovery"
+  | "identity_update";
 
 export type OperationOutcome = "completed" | "cancelled" | "error";
 

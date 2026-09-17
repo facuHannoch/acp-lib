@@ -1,6 +1,7 @@
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
+import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 
 export type PersistenceJsonPrimitive = string | number | boolean | null;
 export type PersistenceJsonValue =
@@ -371,7 +372,7 @@ export interface ProviderSessionPersistence {
   active(agentConversationId: AgentConversationId): Promise<ProviderSessionRecord | null>;
 }
 
-export type MeteringRecordRetention = "all" | "none";
+export type MeteringRecordRetention = "all" | "none" | { readonly retain: number };
 
 export interface PersistedConversationMeteringState {
   readonly agentConversationId: AgentConversationId;
@@ -382,6 +383,20 @@ export interface PersistedConversationMeteringState {
 
 export interface MeteringCommitInput {
   readonly agentConversationId: AgentConversationId;
+  readonly record: OperationMeteringRecord;
+  readonly meteringRecords: MeteringRecordRetention;
+  readonly updatedAt?: string;
+}
+
+export interface PersistedAgentMeteringState {
+  readonly agentSessionId: AgentSessionId;
+  readonly revision: number;
+  readonly state: AgentSessionMeteringState;
+  readonly updatedAt: string;
+}
+
+export interface AgentMeteringCommitInput {
+  readonly agentSessionId: AgentSessionId;
   readonly record: OperationMeteringRecord;
   readonly meteringRecords: MeteringRecordRetention;
   readonly updatedAt?: string;
@@ -414,6 +429,14 @@ export interface MeteringPersistence {
     agentConversationId: AgentConversationId,
     operationId: string,
   ): Promise<OperationMeteringRecord | null>;
+  /** Agent-level scope for internal work that was not caused by a conversation. */
+  commitAgent(input: AgentMeteringCommitInput): Promise<PersistedAgentMeteringState>;
+  agentState(agentSessionId: AgentSessionId): Promise<PersistedAgentMeteringState | null>;
+  listAgent(
+    agentSessionId: AgentSessionId,
+    options?: MeteringRecordListOptions,
+  ): Promise<MeteringRecordPage>;
+  getAgent(agentSessionId: AgentSessionId, operationId: string): Promise<OperationMeteringRecord | null>;
 }
 
 export interface SearchPersistence {
@@ -464,6 +487,7 @@ export interface PersistenceScope {
   readonly checkpoints: ConversationCheckpointPersistence;
   readonly providerSessions: ProviderSessionPersistence;
   readonly metering: MeteringPersistence;
+  readonly internalInferences?: InternalInferenceRepository;
   readonly identity?: IdentityPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox?: AuditOutboxPersistence;

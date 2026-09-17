@@ -15,6 +15,7 @@ import {
   isConversationRecordKind,
   normalizeParticipantRef,
   type AgentConversationSummary,
+  type AgentMeteringCommitInput,
   type AgentPersistenceIdentity,
   type AuditOutboxItem,
   type AuditOutboxPersistence,
@@ -51,6 +52,7 @@ import {
   type PersistenceJsonValue,
   type PersistenceScope,
   type PersistedConversationMeteringState,
+  type PersistedAgentMeteringState,
   type ProviderSessionPersistence,
   type ProviderSessionRecord,
   type RecordListOptions,
@@ -61,6 +63,8 @@ import {
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import { installSqliteFts, migrateSqliteAgentSchema } from "./sqlite-schema.ts";
+import { SqliteInternalInferenceRepository } from "../internal-inference/persistence/sqlite-repository.ts";
+import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 type WriteRunner = <T>(work: () => T) => Promise<T>;
@@ -118,6 +122,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly checkpoints: ConversationCheckpointPersistence;
   readonly providerSessions: ProviderSessionPersistence;
   readonly metering: MeteringPersistence;
+  readonly internalInferences: InternalInferenceRepository;
   readonly identity: IdentityPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox: AuditOutboxPersistence;
@@ -153,6 +158,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.checkpoints = scope.checkpoints;
     this.providerSessions = scope.providerSessions;
     this.metering = scope.metering;
+    this.internalInferences = scope.internalInferences!;
     this.identity = scope.identity!;
     this.search = fullTextSearch ? new SqliteSearchPersistence(database) : undefined;
     this.auditOutbox = scope.auditOutbox!;
@@ -249,6 +255,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       checkpoints: new SqliteCheckpointPersistence(this.database, runWrite),
       providerSessions: new SqliteProviderSessionPersistence(this.database, runWrite),
       metering: new SqliteMeteringPersistence(this.database, runWrite),
+      internalInferences: new SqliteInternalInferenceRepository(this.database, runWrite),
       identity: new SqliteIdentityPersistence(
         this.database,
         this.identityRecord.agentSessionId,
@@ -806,7 +813,7 @@ class SqliteMeteringPersistence implements MeteringPersistence {
         input.record.operationKind,
         input.record.outcome,
         input.record.completedAt,
-        input.meteringRecords === "all" ? serializedRecord : null,
+        input.meteringRecords === "none" ? null : serializedRecord,
       );
 
       const revision = (current?.revision ?? 0) + 1;
@@ -824,6 +831,25 @@ class SqliteMeteringPersistence implements MeteringPersistence {
         JSON.stringify(input.record.nextState),
         updatedAt,
       );
+      if (typeof input.meteringRecords === "object") {
+        const retain = boundedInteger(
+          input.meteringRecords.retain,
+          0,
+          1_000_000,
+          "metering record retention",
+        );
+        runSql(this.database,
+          `UPDATE metering_records SET record_json = NULL
+           WHERE agent_conversation_id = ? AND operation_id NOT IN (
+             SELECT operation_id FROM metering_records
+             WHERE agent_conversation_id = ? AND record_json IS NOT NULL
+             ORDER BY completed_at DESC, operation_id DESC LIMIT ?
+           )`,
+          input.agentConversationId,
+          input.agentConversationId,
+          retain,
+        );
+      }
       return Object.freeze({
         agentConversationId: input.agentConversationId,
         revision,
@@ -909,6 +935,124 @@ class SqliteMeteringPersistence implements MeteringPersistence {
       ? Object.freeze(JSON.parse(row.record_json) as OperationMeteringRecord)
       : null;
   }
+
+  async commitAgent(input: AgentMeteringCommitInput): Promise<PersistedAgentMeteringState> {
+    return await this.runWrite(() => {
+      if (input.agentSessionId !== input.record.agentSessionId) {
+        throw new PersistenceConflictError("agent metering record belongs to another agent");
+      }
+      const operationId = nonblank(input.record.operationId, "metering operationId");
+      const existing = this.database.query<{ record_json: string | null }, [string, string]>(
+        `SELECT record_json FROM agent_metering_records
+         WHERE agent_session_id = ? AND operation_id = ?`,
+      ).get(input.agentSessionId, operationId);
+      const serializedRecord = JSON.stringify(input.record);
+      if (existing) {
+        if (existing.record_json !== null && existing.record_json !== serializedRecord) {
+          throw new PersistenceConflictError(
+            `agent metering operation already exists with different content: ${operationId}`,
+          );
+        }
+        if (input.meteringRecords === "all" && existing.record_json === null) {
+          runSql(this.database,
+            `UPDATE agent_metering_records SET record_json = ?
+             WHERE agent_session_id = ? AND operation_id = ?`,
+            serializedRecord, input.agentSessionId, operationId,
+          );
+        }
+        const current = readAgentMeteringState(this.database, input.agentSessionId);
+        if (!current) {
+          throw new PersistenceConflictError(
+            `agent metering operation ${operationId} exists without restoration state`,
+          );
+        }
+        return current;
+      }
+
+      const current = readAgentMeteringState(this.database, input.agentSessionId);
+      const expectedCount = (current?.state.operationCount ?? 0) + 1;
+      if (input.record.nextState.operationCount !== expectedCount) {
+        throw new PersistenceConflictError(
+          `agent metering operation count mismatch: expected ${expectedCount}, found ${input.record.nextState.operationCount}`,
+        );
+      }
+      runSql(this.database,
+        `INSERT INTO agent_metering_records(
+          agent_session_id, operation_id, internal_session_id, adapter_id,
+          operation_kind, outcome, completed_at, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        input.agentSessionId, operationId, input.record.internalSessionId,
+        input.record.provider.adapterId, input.record.operationKind, input.record.outcome,
+        input.record.completedAt, input.meteringRecords === "none" ? null : serializedRecord,
+      );
+      const revision = (current?.revision ?? 0) + 1;
+      const updatedAt = input.updatedAt ?? new Date().toISOString();
+      runSql(this.database,
+        `INSERT INTO agent_metering_state(agent_session_id, revision, state_json, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(agent_session_id) DO UPDATE SET
+           revision = excluded.revision,
+           state_json = excluded.state_json,
+           updated_at = excluded.updated_at`,
+        input.agentSessionId, revision, JSON.stringify(input.record.nextState), updatedAt,
+      );
+      if (typeof input.meteringRecords === "object") {
+        const retain = boundedInteger(input.meteringRecords.retain, 0, 1_000_000, "metering record retention");
+        runSql(this.database,
+          `UPDATE agent_metering_records SET record_json = NULL
+           WHERE agent_session_id = ? AND operation_id NOT IN (
+             SELECT operation_id FROM agent_metering_records
+             WHERE agent_session_id = ? AND record_json IS NOT NULL
+             ORDER BY completed_at DESC, operation_id DESC LIMIT ?
+           )`,
+          input.agentSessionId, input.agentSessionId, retain,
+        );
+      }
+      return Object.freeze({
+        agentSessionId: input.agentSessionId,
+        revision,
+        state: structuredClone(input.record.nextState),
+        updatedAt,
+      });
+    });
+  }
+
+  async agentState(agentSessionId: AgentSessionId): Promise<PersistedAgentMeteringState | null> {
+    return readAgentMeteringState(this.database, agentSessionId);
+  }
+
+  async listAgent(
+    agentSessionId: AgentSessionId,
+    options: MeteringRecordListOptions = {},
+  ): Promise<MeteringRecordPage> {
+    const limit = boundedInteger(options.limit ?? 100, 1, 1_000, "metering list limit");
+    const offset = decodeOffset(options.cursor);
+    const rows = this.database.query<{ record_json: string }, [string, number, number]>(
+      `SELECT record_json FROM agent_metering_records
+       WHERE agent_session_id = ? AND record_json IS NOT NULL
+       ORDER BY completed_at, operation_id LIMIT ? OFFSET ?`,
+    ).all(agentSessionId, limit + 1, offset);
+    const hasMore = rows.length > limit;
+    return Object.freeze({
+      records: Object.freeze(rows.slice(0, limit).map((row) => Object.freeze(
+        JSON.parse(row.record_json) as OperationMeteringRecord,
+      ))),
+      ...(hasMore ? { nextCursor: encodeOffset(offset + limit) } : {}),
+    });
+  }
+
+  async getAgent(
+    agentSessionId: AgentSessionId,
+    operationId: string,
+  ): Promise<OperationMeteringRecord | null> {
+    const row = this.database.query<{ record_json: string | null }, [string, string]>(
+      `SELECT record_json FROM agent_metering_records
+       WHERE agent_session_id = ? AND operation_id = ?`,
+    ).get(agentSessionId, nonblank(operationId, "metering operationId"));
+    return row?.record_json
+      ? Object.freeze(JSON.parse(row.record_json) as OperationMeteringRecord)
+      : null;
+  }
 }
 
 function readMeteringState(
@@ -925,6 +1069,24 @@ function readMeteringState(
   ).get(agentConversationId);
   return row ? Object.freeze({
     agentConversationId: row.agent_conversation_id as AgentConversationId,
+    revision: Number(row.revision),
+    state: Object.freeze(JSON.parse(row.state_json) as AgentSessionMeteringState),
+    updatedAt: row.updated_at,
+  }) : null;
+}
+
+function readAgentMeteringState(
+  database: Database,
+  agentSessionId: AgentSessionId,
+): PersistedAgentMeteringState | null {
+  const row = database.query<{
+    agent_session_id: string;
+    revision: number;
+    state_json: string;
+    updated_at: string;
+  }, [string]>("SELECT * FROM agent_metering_state WHERE agent_session_id = ?").get(agentSessionId);
+  return row ? Object.freeze({
+    agentSessionId: row.agent_session_id as AgentSessionId,
     revision: Number(row.revision),
     state: Object.freeze(JSON.parse(row.state_json) as AgentSessionMeteringState),
     updatedAt: row.updated_at,

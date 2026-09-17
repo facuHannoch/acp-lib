@@ -157,6 +157,11 @@ export interface CloseOperationInput {
   readonly billingFacts?: BillingFacts;
 }
 
+export interface OpenDetachedOperation {
+  readonly engine: MeteringEngine;
+  readonly operation: OpenOperation;
+}
+
 const UNKNOWN_APPLICABILITY: Readonly<Record<TokenCategory, CategoryApplicability>> = Object.freeze({
   input: "unknown",
   output: "unknown",
@@ -351,6 +356,48 @@ export class MeteringEngine {
       sequenceHighWaterAtOpen:
         this.options.inferenceSource?.sequenceHighWater?.(input.internalSessionId) ?? 0,
     });
+  }
+
+  /**
+   * Open work on a disposable provider thread without changing the visible thread's
+   * cumulative-counter baseline. The returned unit must be closed with closeDetached().
+   */
+  async openDetached(input: {
+    operationId: string;
+    operationKind: MeteredOperationKind;
+    internalSessionId: string;
+    providerId: string | null;
+    model: string | null;
+  }): Promise<OpenDetachedOperation> {
+    const engine = new MeteringEngine({
+      ...this.options,
+      initialState: emptyMeteringState(this.options.agentSessionId),
+      createdActiveThread: true,
+    });
+    const operation = await engine.open({ ...input, degraded: false });
+    return Object.freeze({ engine, operation });
+  }
+
+  /** Accrue a disposable thread's operation while preserving the visible baseline. */
+  async closeDetached(
+    detached: OpenDetachedOperation,
+    input: CloseOperationInput,
+  ): Promise<OperationMeteringRecord> {
+    const detachedRecord = await detached.engine.close(detached.operation, input);
+    const attributable = detachedRecord.usage.status === "metered"
+      ? detachedRecord.usage.attributable
+      : null;
+    this.state = accrueOperation(this.state, {
+      attributable,
+      applicability: detached.operation.policy?.categoryApplicability ?? null,
+      baseline: this.baseline,
+    });
+    const record = Object.freeze({ ...detachedRecord, nextState: this.state });
+    this._lastOperation = record;
+    if (detached.engine.blocked && !this._blocked) {
+      this.block(detached.engine.blockedReason ?? "detached metering failed");
+    }
+    return record;
   }
 
   private async resolvePolicy(
