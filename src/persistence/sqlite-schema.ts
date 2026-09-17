@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 4;
+export const SQLITE_AGENT_SCHEMA_VERSION = 5;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -203,6 +203,23 @@ CREATE INDEX IF NOT EXISTS internal_inferences_chain_idx
 CREATE INDEX IF NOT EXISTS internal_inferences_lease_idx
   ON internal_inferences(status, lease_expires_at);
 
+CREATE TABLE IF NOT EXISTS conversation_recovery_checkpoints (
+  checkpoint_id TEXT PRIMARY KEY,
+  agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  covered_sequence INTEGER NOT NULL CHECK (covered_sequence >= 1),
+  previous_checkpoint_id TEXT REFERENCES conversation_recovery_checkpoints(checkpoint_id),
+  generator_internal_inference_id TEXT NOT NULL UNIQUE REFERENCES internal_inferences(internal_inference_id),
+  summary TEXT NOT NULL CHECK (length(summary) > 0),
+  created_at TEXT NOT NULL,
+  metadata TEXT,
+  UNIQUE (agent_conversation_id, revision),
+  UNIQUE (agent_conversation_id, covered_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS recovery_checkpoints_latest_idx
+  ON conversation_recovery_checkpoints(agent_conversation_id, revision DESC);
+
 CREATE TABLE IF NOT EXISTS identity_state (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   observed_through_sequence INTEGER NOT NULL DEFAULT 0,
@@ -317,6 +334,11 @@ export function migrateSqliteAgentSchema(database: Database): void {
       database.query<unknown, [number, string]>(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
       ).run(4, new Date().toISOString());
+    }
+    if (version < 5) {
+      database.query<unknown, [number, string]>(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+      ).run(5, new Date().toISOString());
     }
     database.exec("COMMIT");
   } catch (error) {
