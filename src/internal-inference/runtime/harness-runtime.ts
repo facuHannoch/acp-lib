@@ -1,4 +1,5 @@
 import { AgentController, type AgentControllerConfig } from "../../controller.ts";
+import type { PromptResult } from "../../types.ts";
 import type {
   InternalInferenceRequest,
   InternalInferenceResult,
@@ -8,6 +9,15 @@ import type {
 
 export interface HarnessInternalInferenceRuntimeConfig {
   controllerConfig(request: InternalInferenceRequest): AgentControllerConfig;
+  /** Test/custom seam; production defaults to AgentController. */
+  createController?(config: AgentControllerConfig): InternalInferenceController;
+}
+
+export interface InternalInferenceController {
+  startFresh(): Promise<{ sessionId: string }>;
+  prompt(text: string): Promise<PromptResult>;
+  interrupt(): void;
+  stop(): Promise<void>;
 }
 
 /** Executes one internal inference in a fresh, disposable ACP provider session. */
@@ -20,7 +30,7 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
     lifecycle?: InternalInferenceRuntimeLifecycle,
   ): Promise<InternalInferenceResult> {
     const inherited = this.config.controllerConfig(request);
-    const controller = new AgentController({
+    const controllerConfig: AgentControllerConfig = {
       ...inherited,
       adapterId: request.adapterId,
       cwd: request.cwd ?? inherited.cwd,
@@ -28,7 +38,9 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
       mcpServers: [],
       defaultPermission: "cancel",
       clientHandlers: {},
-    });
+    };
+    const controller = this.config.createController?.(controllerConfig)
+      ?? new AgentController(controllerConfig);
     const abort = () => controller.interrupt();
     signal?.addEventListener("abort", abort, { once: true });
     try {
