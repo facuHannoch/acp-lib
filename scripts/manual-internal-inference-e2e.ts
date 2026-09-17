@@ -53,6 +53,7 @@ const agent = await Agent.open({
 
 try {
   const stages: string[] = [];
+  const unsubscribe = agent.internalInferences!.subscribe(({ snapshot }) => stages.push(snapshot.stage));
   const run = await agent.internalInferences!.enqueue({
     purpose: "identity_update",
     input: {
@@ -61,7 +62,6 @@ try {
       payload: { prompt: `Respond with exactly ${expected} and nothing else. Do not use tools.` },
     },
   });
-  const unsubscribe = run.subscribe(({ snapshot }) => stages.push(snapshot.stage));
   const completion = await run.result;
   unsubscribe();
 
@@ -72,6 +72,9 @@ try {
   }
   const metering = await agent.persistence.metering.agentState(agent.id);
   if (metering?.state.operationCount !== 1) throw new Error("agent-scoped metering was not persisted");
+  for (const expectedStage of ["preparing_input", "starting_harness", "creating_session", "prompting", "completed"]) {
+    if (!stages.includes(expectedStage)) throw new Error(`missing progress stage: ${expectedStage}`);
+  }
 
   console.log(JSON.stringify({
     ok: true,
