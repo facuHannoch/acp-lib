@@ -104,6 +104,12 @@ uses `content_json`. Tool calls, permissions, configuration, actions, thinking, 
 activities retain meaningful lifecycle transitions as independently sequenced records.
 Raw ACP protocol bodies remain JSON because their external shape is intentionally open.
 
+`activity` is reserved for model activity such as plans. Complete session observations
+such as usage, available commands, mode/config announcements, session metadata, echoed
+user messages, and unknown protocol updates are not reclassified as model activity.
+Their semantic state is retained by the relevant configuration, metering, or checkpoint
+storage, while consumers that need exact diagnostic traffic can enable protocol capture.
+
 FTS5 indexes deliberately extracted searchable text rather than serialized record JSON.
 The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
 protocol bodies are not searched implicitly.
