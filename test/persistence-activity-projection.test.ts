@@ -42,6 +42,24 @@ describe("folded activity persistence classification", () => {
     expect(JSON.stringify(metadata)).not.toContain("secret plan");
     expect(JSON.stringify(projectTranscriptEvent(event, context(TRANSCRIPT_PRESETS.detailed)))).toContain("secret plan");
   });
+
+  test("does not turn session state or unknown protocol updates into model activity", () => {
+    for (const event of [
+      { kind: "usage" as const, used: 12, size: 100 },
+      { kind: "commands" as const, commands: [] },
+      { kind: "mode" as const, modeId: "code" },
+      { kind: "session_info" as const, title: "New title" },
+      { kind: "config" as const, configOptions: [] },
+      { kind: "unknown" as const, sessionUpdate: "future_update", raw: { value: 1 } },
+    ]) {
+      expect(persistenceEventFromActivity({
+        recordId: `state-${event.kind}`,
+        seq: 5,
+        reason: "snapshot",
+        event,
+      }, "op-1")).toBeNull();
+    }
+  });
 });
 
 function tool(): AggregatedRecord {

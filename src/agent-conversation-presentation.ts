@@ -18,7 +18,9 @@ import type { TranscriptActivityLine } from "./transcript.ts";
 import type { ActivityEvent, PromptHandlers } from "./types.ts";
 import type { TranscriptActivityConfig } from "./agent-conversation-contracts.ts";
 
-const DEFAULT_ACTIVITY_KINDS: ReadonlyArray<ActivityEvent["kind"]> = [
+// Legacy JSONL v1 exposed these provider updates under its broad `activity`
+// contract. Keep that compatibility surface isolated from V2 classification.
+const LEGACY_DEFAULT_ACTIVITY_KINDS: ReadonlyArray<ActivityEvent["kind"]> = [
   "tool",
   "thinking",
   "plan",
@@ -58,7 +60,7 @@ export class AgentConversationPresentation {
   constructor(options: AgentConversationPresentationOptions) {
     const activity = options.activity === true ? {} : options.activity || null;
     this.#captureLegacyActivity = activity !== null;
-    this.#activityKinds = new Set(activity?.kinds ?? DEFAULT_ACTIVITY_KINDS);
+    this.#activityKinds = new Set(activity?.kinds ?? LEGACY_DEFAULT_ACTIVITY_KINDS);
     this.#includeRawOutput = activity?.rawOutput === true;
     this.#maxActivityBytes =
       activity?.maxBytes != null && activity.maxBytes > 0 ? activity.maxBytes : null;
@@ -128,6 +130,7 @@ export class AgentConversationPresentation {
         ? persistence.checkpoint.boundary.interruptedOperationId
         : record.recordId.split(":", 1)[0] ?? record.recordId;
       const projected = persistenceEventFromActivity(record, operationId);
+      if (!projected) return;
       this.queuePresentation({
         ...projected,
         presentation: {

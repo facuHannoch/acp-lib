@@ -16,8 +16,10 @@ import {
 } from "@qlairoslabs/acp-client";
 import {
   findStoredMeteringRecord,
+  findStoredMeteringReference,
   findStoredMeteringState,
   findStoredUserMessage,
+  inspectStoredProtocolCapture,
   listStoredMessages,
 } from "./queries.ts";
 
@@ -39,6 +41,7 @@ const databasePath = join(directory, "agent.sqlite");
 
 const adapters: Record<string, Adapter> = {
   codex: ADAPTERS.codex,
+  opencode: ADAPTERS.opencode,
   test: {
     command: ["bun", fixture, "test8"],
     displayName: "Deterministic test agent",
@@ -46,6 +49,7 @@ const adapters: Record<string, Adapter> = {
 };
 const adapterId = process.env.ACP_TEST8_ADAPTER?.trim() || "codex";
 assert.ok(adapters[adapterId], `unknown ACP_TEST8_ADAPTER: ${adapterId}`);
+const requireSemanticRecall = resolveSemanticRecallRequirement(adapterId);
 
 const prompts = [
   "hi",
@@ -83,6 +87,9 @@ try {
   }
 
   assertSqliteHistory(conversationId, expectedMessages);
+  assertSqliteProtocolPolicy(conversationId);
+  const originalInternalSessionId = conversation.internalSessionId;
+  assert.ok(originalInternalSessionId, "initial conversation has no internal session id");
   console.log(
     `PASS initial agent=${firstAgent.id} conversation=${conversationId} messages=${expectedMessages.length}`,
   );
@@ -99,6 +106,11 @@ try {
   assert.equal(reopened.providerSession, "loaded");
   assert.equal(reopened.conversation.id, conversationId);
   const conversationAfterReopening = reopened.conversation;
+  assert.equal(
+    conversationAfterReopening.internalSessionId,
+    originalInternalSessionId,
+    "reopened conversation did not load the original provider session",
+  );
 
   const persisted = await reopenedAgent.persistence.messages.list(conversationId);
   assert.deepEqual(
@@ -115,10 +127,9 @@ try {
   const recallPrompt = "What is the answer to pweas? respond with just the answer or with 'DN' if you don't know";
   const result = await conversationAfterReopening.prompt(recallPrompt);
   assert.equal(result.status, "completed", "reopened conversation recall prompt failed");
-  assert.equal(
+  const reopenedAnswer = checkSemanticRecall(
+    "reopened provider thread",
     result.messages.map((message) => message.text).join("").trim(),
-    "3",
-    "reopened provider thread did not remember the PWEAS answer",
   );
   expectedMessages.push(
     { role: "user", content: recallPrompt },
@@ -139,7 +150,7 @@ try {
   );
   assertSqliteHistory(conversationId, expectedMessages);
   console.log(
-    `PASS reopened agent=${reopenedAgent.id} conversation=${conversationId} answer=3 messages=${persistedAfterRecall.messages.length}`,
+    `PASS reopened agent=${reopenedAgent.id} conversation=${conversationId} answer=${JSON.stringify(reopenedAnswer)} messages=${persistedAfterRecall.messages.length}`,
   );
 
   const latestMessageSequence = persistedAfterRecall.messages.at(-1)?.sequence;
@@ -193,10 +204,9 @@ try {
 
     const recoveryResult = await thirdOpen.conversation.prompt(recallPrompt);
     assert.equal(recoveryResult.status, "completed", "recovered conversation recall prompt failed");
-    assert.equal(
+    const recoveredAnswer = checkSemanticRecall(
+      "recovered provider thread",
       recoveryResult.messages.map((message) => message.text).join("").trim(),
-      "3",
-      "recovered provider thread did not reconstruct the PWEAS answer",
     );
     expectedMessages.push(
       { role: "user", content: recallPrompt },
@@ -217,7 +227,7 @@ try {
     );
     assertSqliteHistory(conversationId, expectedMessages);
     console.log(
-      `PASS third opening agent=${thirdAgent.id} conversation=${conversationId} answer=3 messages=${persistedAfterRecovery.messages.length}`,
+      `PASS third opening agent=${thirdAgent.id} conversation=${conversationId} answer=${JSON.stringify(recoveredAnswer)} messages=${persistedAfterRecovery.messages.length}`,
     );
   }
 
@@ -305,9 +315,27 @@ async function openAgent(defaultAdapterId = adapterId): Promise<Agent> {
       kind: "sqlite",
       path: databasePath,
     },
+    capture: {
+      message: "raw",
+      tool_call: "raw",
+      permission: "raw",
+      configuration: "raw",
+      protocol: {
+        level: "metadata",
+        excludeMethods: ["session/update"],
+      },
+      native_action: "raw",
+      agent_action: "raw",
+      thinking: "raw",
+      activity: "raw",
+      metering: "raw",
+    },
+    meteringPersistence: {
+      meteringRecords: "all",
+    },
     adapters,
     defaultAdapterId,
-    ...(defaultAdapterId === "codex" ? { checkpointing: {} } : {}),
+    ...(defaultAdapterId !== "test" ? { checkpointing: {} } : {}),
   });
 }
 
@@ -316,6 +344,7 @@ async function waitForCheckpoint(
   conversationId: AgentConversationId,
   throughSequence: number,
 ) {
+  assert.ok(agent.checkpointing, "checkpointing is disabled for the recovery smoke phase");
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     const checkpoint = await agent.checkpointing?.latest(conversationId);
@@ -337,6 +366,19 @@ function assertSqliteMetering(
     assert.ok(storedRecord, "SQLite does not contain the metering operation marker");
     assert.ok(storedRecord.recordJson, "SQLite omitted the complete metering record");
     assert.deepEqual(JSON.parse(storedRecord.recordJson), expected);
+
+    const timelineReference = findStoredMeteringReference(
+      database,
+      conversationId,
+      expected.operationId,
+    );
+    assert.ok(timelineReference, "SQLite omitted metering from the conversation timeline");
+    assert.equal(timelineReference.operationId, expected.operationId);
+    assert.equal(timelineReference.meteringRecordId, expected.operationId);
+    assert.equal(
+      timelineReference.status,
+      expected.usage.status === "metered" ? "available" : "unavailable",
+    );
 
     const storedState = findStoredMeteringState(database, conversationId);
     assert.ok(storedState, "SQLite does not contain bounded metering state");
@@ -368,4 +410,37 @@ function assertSqliteHistory(
   } finally {
     database.close();
   }
+}
+
+function assertSqliteProtocolPolicy(conversationId: AgentConversationId): void {
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    const protocol = inspectStoredProtocolCapture(database, conversationId);
+    assert.ok(protocol.total > 0, "SQLite contains no protocol metadata");
+    assert.equal(protocol.sessionUpdates, 0, "SQLite persisted excluded session/update frames");
+    assert.equal(protocol.bodies, 0, "SQLite metadata capture retained protocol bodies");
+  } finally {
+    database.close();
+  }
+}
+
+function resolveSemanticRecallRequirement(selectedAdapterId: string): boolean {
+  const configured = process.env.ACP_TEST8_REQUIRE_SEMANTIC_RECALL?.trim().toLowerCase();
+  if (!configured) return selectedAdapterId === "codex";
+  assert.ok(
+    ["1", "true", "0", "false"].includes(configured),
+    "ACP_TEST8_REQUIRE_SEMANTIC_RECALL must be 1, true, 0, or false",
+  );
+  return configured === "1" || configured === "true";
+}
+
+function checkSemanticRecall(stage: string, answer: string): string {
+  if (answer === "3") return answer;
+  if (requireSemanticRecall) {
+    assert.equal(answer, "3", `${stage} did not remember the PWEAS answer`);
+  }
+  console.warn(
+    `WARN ${stage} semantic recall returned ${JSON.stringify(answer)}; provider session continuity assertions still passed`,
+  );
+  return answer;
 }

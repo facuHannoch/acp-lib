@@ -128,6 +128,7 @@ async function readRecords(
     const page = await repository.list(conversationId, {
       afterSequence,
       throughSequence,
+      kinds: ["message"],
       limit: 1_000,
       ...(cursor ? { cursor } : {}),
     });

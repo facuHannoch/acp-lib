@@ -77,6 +77,13 @@ async function runTurn(message: any): Promise<void> {
   const update = (u: unknown) =>
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: u } });
 
+  if (JSON.stringify(message.params?.prompt ?? "").includes("classify activity")) {
+    update({
+      sessionUpdate: "plan",
+      entries: [{ content: "Run the requested tool", priority: "high", status: "in_progress" }],
+    });
+  }
+
   // 0. Thought chunks, but only when the prompt asks — the other tests pin an exact line
   //    sequence and thinking would add to it. Real agents stream a block a few words at a
   //    time (live Kimi: 8 notifications for one block), which is the shape the fold has to

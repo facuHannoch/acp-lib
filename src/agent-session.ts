@@ -658,12 +658,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private queueActivityRecords(turnId: string, records: readonly AggregatedRecord[]): void {
     if (!this.ownerAgentSessionId) return;
     for (const record of records) {
-      this.queueOwnedRecord(runtimeRecordFromActivity(
+      const runtimeRecord = runtimeRecordFromActivity(
         this.ownerAgentSessionId,
         this.agentConversationId,
         turnId,
         record,
-      ));
+      );
+      if (runtimeRecord) this.queueOwnedRecord(runtimeRecord);
     }
   }
 
@@ -3854,7 +3855,7 @@ function runtimeRecordFromActivity(
   agentConversationId: AgentConversationId,
   turnId: string,
   record: AggregatedRecord,
-): NewConversationRecord {
+): NewConversationRecord | null {
   const timestamp = new Date().toISOString();
   const recordId = `${turnId}:runtime:${record.recordId}:${record.seq}`;
   const event = record.event;
@@ -3907,18 +3908,37 @@ function runtimeRecordFromActivity(
       metadata: JSON.stringify({ providerStatus: event.status, toolKind: event.toolKind }),
     };
   }
-  return {
-    recordId,
-    agentSessionId,
-    agentConversationId,
-    kind: "activity",
-    timestamp,
-    activityId: record.recordId,
-    activityType: event.kind,
-    state: record.reason === "announced" || record.reason === "input" ? "in_progress" : "completed",
-    data: toPersistenceJsonValue(event),
-    metadata: JSON.stringify({ reason: record.reason }),
-  };
+  switch (event.kind) {
+    case "plan":
+    case "plan_update":
+    case "plan_removed":
+      return {
+        recordId,
+        agentSessionId,
+        agentConversationId,
+        kind: "activity",
+        timestamp,
+        activityId: record.recordId,
+        activityType: event.kind,
+        state: "completed",
+        data: toPersistenceJsonValue(event),
+      };
+    case "user_message":
+    case "commands":
+    case "mode":
+    case "usage":
+    case "session_info":
+    case "config":
+    case "unknown":
+      // These are conversation echo, session state, or diagnostic protocol updates.
+      // Their semantic state is persisted by messages/configuration/metering/checkpoints;
+      // exact frames are independently available through raw protocol capture.
+      return null;
+    case "tool_update":
+      // Folded updates return above as tool records. An unfurled tool_update is not a
+      // self-contained model activity, so it must not be persisted independently.
+      return null;
+  }
 }
 
 function protocolMethod(message: PersistenceJsonValue): string | undefined {

@@ -14,6 +14,7 @@ const OPERATIONS_AGENT = resolve(import.meta.dir, "../smoke-tests/test5-operatio
 const PRESENTATION_AGENT = resolve(import.meta.dir, "fixtures/presentation-agent.ts");
 const PERMISSION_ORDER_AGENT = resolve(import.meta.dir, "fixtures/permission-order-agent.ts");
 const CONFIG_AGENT = resolve(import.meta.dir, "fixtures/config-agent.ts");
+const TERMINAL_AGENT = resolve(import.meta.dir, "fixtures/terminal-agent.ts");
 const agents: Agent[] = [];
 const directories: string[] = [];
 
@@ -101,6 +102,29 @@ describe("Agent owner", () => {
     ]);
   });
 
+  test("does not misclassify provider session observations as model activity", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { terminal: { command: ["bun", TERMINAL_AGENT] } },
+      defaultAdapterId: "terminal",
+      capture: { activity: "content", tool_call: "content" },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("classify activity and run a tool");
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 1_000 })).records;
+    const activities = records.filter((record) => record.kind === "activity");
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      kind: "activity",
+      activityType: "plan",
+      state: "completed",
+    });
+    expect(activities[0]?.metadata).toBeUndefined();
+    expect(records.filter((record) => record.kind === "tool_call")).not.toEqual([]);
+  });
+
   test("captures permission decisions and raw ACP traffic under per-kind policy", async () => {
     const directory = await makeDirectory();
     const agent = await track(Agent.open({
@@ -129,6 +153,34 @@ describe("Agent owner", () => {
     expect(records.some((record) =>
       record.kind === "protocol" && record.method === "session/request_permission"
     )).toBe(true);
+  });
+
+  test("filters high-volume protocol methods before persistence", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { terminal: { command: ["bun", TERMINAL_AGENT] } },
+      defaultAdapterId: "terminal",
+      capture: {
+        protocol: {
+          level: "metadata",
+          excludeMethods: ["session/update"],
+        },
+      },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("filter protocol updates");
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 1_000 })).records;
+    const protocol = records.filter((record) => record.kind === "protocol");
+    expect(protocol.length).toBeGreaterThan(0);
+    expect(protocol.some((record) => record.method === "initialize")).toBe(true);
+    expect(protocol.some((record) => record.method === "session/prompt")).toBe(true);
+    expect(protocol.some((record) => record.method === "session/update")).toBe(false);
+    expect(protocol.every((record) => record.message === undefined)).toBe(true);
+    expect(records.map((record) => record.sequence)).toEqual(
+      Array.from({ length: records.length }, (_, index) => index + 1),
+    );
   });
 
   test("captures configuration lifecycle without discarding earlier states", async () => {
@@ -194,6 +246,13 @@ describe("Agent owner", () => {
     const first = await conversation.prompt("meter this turn");
     expect(first.metering).not.toBeNull();
     expect((await agent.persistence.metering.list(conversationId)).records).toHaveLength(1);
+    expect((await agent.persistence.records.list(conversationId, { kinds: ["metering"] })).records)
+      .toEqual([expect.objectContaining({
+        kind: "metering",
+        operationId: first.operationId,
+        meteringRecordId: first.operationId,
+        status: "available",
+      })]);
     expect((await agent.persistence.metering.state(conversationId))?.state).toEqual(
       first.metering?.nextState,
     );
@@ -213,6 +272,8 @@ describe("Agent owner", () => {
     expect(second.metering?.nextState.operationCount).toBe(2);
     expect((await reopened.persistence.metering.list(conversationId)).records).toHaveLength(2);
     expect((await reopened.persistence.metering.state(conversationId))?.revision).toBe(2);
+    expect((await reopened.persistence.records.list(conversationId, { kinds: ["metering"] })).records)
+      .toHaveLength(2);
   });
 
   test("can omit detailed metering records while preserving restoration state", async () => {
@@ -229,6 +290,8 @@ describe("Agent owner", () => {
     expect(result.metering).not.toBeNull();
     expect((await agent.persistence.metering.list(conversation.id)).records).toEqual([]);
     expect((await agent.persistence.metering.state(conversation.id))?.state.operationCount).toBe(1);
+    expect((await agent.persistence.records.list(conversation.id, { kinds: ["metering"] })).records)
+      .toHaveLength(1);
   });
 
   test("adapter registry remains agent-scoped and reflectable", async () => {

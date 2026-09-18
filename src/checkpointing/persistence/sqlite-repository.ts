@@ -30,12 +30,13 @@ implements ConversationRecoveryCheckpointRepository {
 
   async successfulResponseCount(agentConversationId: AgentConversationId): Promise<number> {
     const row = this.database.query<{ count: number }, [string]>(
-      `SELECT COUNT(DISTINCT json_extract(metadata, '$.operationId')) AS count
-       FROM conversation_records
-       WHERE agent_conversation_id = ? AND kind = 'message'
-         AND json_extract(payload_json, '$.role') = 'assistant'
-         AND json_extract(payload_json, '$.status') = 'completed'
-         AND json_extract(metadata, '$.operationId') IS NOT NULL`,
+      `SELECT COUNT(DISTINCT r.operation_id) AS count
+       FROM conversation_records r
+       JOIN conversation_messages m ON m.record_row_id = r.row_id
+       WHERE r.agent_conversation_id = ? AND r.kind = 'message'
+         AND m.role = 'assistant'
+         AND m.status = 'completed'
+         AND r.operation_id IS NOT NULL`,
     ).get(agentConversationId);
     return Number(row?.count ?? 0);
   }

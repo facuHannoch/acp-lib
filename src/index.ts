@@ -66,6 +66,7 @@ export {
   isParticipantKind,
   normalizeParticipantRef,
   resolveConversationRecordCapture,
+  shouldCaptureProtocolMethod,
   searchableText,
 } from "./persistence/backend.ts";
 export {
@@ -79,6 +80,7 @@ export type {
   AgentConversationSummary,
   AgentPersistenceIdentity,
   ConversationRecord,
+  ConversationRecordCaptureConfig,
   ConversationRecordCapturePolicy,
   ConversationRecordEnvelope,
   ConversationRecordKind,
@@ -90,6 +92,12 @@ export type {
   MeteringRecordListOptions,
   MeteringRecordPage,
   MeteringRecordRetention,
+  MeteringReferenceRecord,
+  ProtocolRecordCapture,
+  ProtocolRecordCaptureLevel,
+  ProtocolRecordCaptureOptions,
+  RecordCaptureLevel,
+  ResolvedProtocolRecordCapturePolicy,
   NewConversationRecord,
   ParticipantKind,
   ParticipantRef,

@@ -92,13 +92,62 @@ The user message and each assistant-message boundary are stored as separate type
 Reopen the same database with `Agent.open()` and call
 `agent.conversations.open(agentConversationId)` to continue its active provider thread.
 
+SQLite keeps ordering and type-specific content separate. `conversation_records` is a
+narrow canonical envelope containing the conversation-local sequence, kind, timestamp,
+operation correlation, and optional metadata. Every envelope has exactly one typed detail
+row in tables such as `conversation_messages`, `conversation_tool_call_events`, or
+`conversation_activity_events`. A mixed timeline is read as one envelope page followed by
+bounded, batched subtype hydration; it never performs one query per record.
+
+Messages store ordinary text directly in `content_text`; structured or multimodal content
+uses `content_json`. Tool calls, permissions, configuration, actions, thinking, and
+activities retain meaningful lifecycle transitions as independently sequenced records.
+Raw ACP protocol bodies remain JSON because their external shape is intentionally open.
+Each completed metered operation adds an ordered `metering` reference whose complete
+financial record remains in `metering_records`; the timeline does not duplicate billing
+payloads.
+
+`activity` is reserved for model activity such as plans. Complete session observations
+such as usage, available commands, mode/config announcements, session metadata, echoed
+user messages, and unknown protocol updates are not reclassified as model activity.
+Their semantic state is retained by the relevant configuration, metering, or checkpoint
+storage, while consumers that need exact diagnostic traffic can enable protocol capture.
+
+SQLite protocol capture supports `"none"`, `"metadata"`, and `"raw"`; protocol
+`"content"` is rejected because coalesced content already belongs to the typed semantic
+records. Exact method filters provide a compact protocol skeleton without persisting the
+high-volume update stream:
+
+```ts
+capture: {
+  protocol: {
+    level: "metadata",
+    excludeMethods: ["session/update"],
+  },
+}
+```
+
+`includeMethods` is also available and cannot be combined with `excludeMethods`. Both use
+exact ACP method names. Methodless JSON-RPC responses remain captured because their method
+cannot be determined without correlating request IDs. Filtering happens before canonical
+sequence allocation, so omitted frames create neither rows nor sequence gaps.
+
+FTS5 indexes deliberately extracted searchable text rather than serialized record JSON.
+The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
+protocol bodies are not searched implicitly.
+
+Schema version 7 adds ordered metering references to the typed layout. Pre-release
+version-6 SQLite files are not migrated because they were used only by development smoke
+tests. Opening one fails with a clear recreate instruction; remove the old smoke-test
+database and run the scenario again.
+
 The minimal end-to-end executable example is
-[`smoke-tests/test8-test/index.ts`](./smoke-tests/test8-test/index.ts). It sends `"hi"`
+[`smoke-tests/end-to-end/index.ts`](./smoke-tests/end-to-end/index.ts). It sends `"hi"`
 through an ACP harness and independently queries SQLite to assert that the canonical
 user-message row contains `"hi"`:
 
 ```bash
-bun smoke-tests/test8-test/index.ts
+bun smoke-tests/end-to-end/index.ts
 ```
 
 By default it owns and removes a temporary directory. Set `ACP_TEST8_DATA_DIR` to retain
@@ -106,12 +155,18 @@ the database at a caller-selected location for inspection:
 
 ```bash
 ACP_TEST8_DATA_DIR=./smoke-tests/test8-test/data \
-  bun smoke-tests/test8-test/index.ts
+  bun smoke-tests/end-to-end/index.ts
 ```
 
 The current smoke scenario defaults to Codex because its second process opening verifies
 that the provider thread remembers prior conversation context. It may use credentials and
 consume model tokens.
+
+Provider-session identity and persisted history are always hard assertions. Exact semantic
+recall is also required by default for Codex, while other adapters report a warning because
+their selected model may ignore correctly loaded context. Set
+`ACP_TEST8_REQUIRE_SEMANTIC_RECALL=1` to require the exact recall assertion for any adapter,
+or `0` to make it observational.
 
 ### SQLite metering persistence
 
@@ -146,8 +201,9 @@ meteringPersistence: {
 }
 ```
 
-`"none"` still writes a minimal operation marker for idempotency and always advances the
-bounded restoration state. It only omits the full serialized metering record. Continue to
+`"none"` still writes a minimal operation marker for idempotency, adds the independently
+configured conversation-timeline reference, and always advances the bounded restoration
+state. It only omits the full serialized metering record. Continue to
 consume `result.metering` or `metering_recorded` notifications when delivering records to
 an external billing repository.
 

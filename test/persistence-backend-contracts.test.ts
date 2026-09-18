@@ -7,6 +7,7 @@ import {
   normalizeParticipantRef,
   resolveConversationRecordCapture,
   searchableText,
+  shouldCaptureProtocolMethod,
   type MessageRecord,
   type ToolCallRecord,
 } from "../src/persistence/index.ts";
@@ -36,19 +37,40 @@ describe("persistence backend contracts", () => {
   });
 
   test("capture overrides are immutable, complete, and reject unknown input", () => {
-    const resolved = resolveConversationRecordCapture({ thinking: "content", protocol: "raw" });
+    const resolved = resolveConversationRecordCapture({
+      thinking: "content",
+      protocol: { level: "metadata", excludeMethods: ["session/update"] },
+    });
     expect(resolved).toEqual({
       ...DEFAULT_CONVERSATION_RECORD_CAPTURE,
       thinking: "content",
-      protocol: "raw",
+      protocol: {
+        level: "metadata",
+        includeMethods: [],
+        excludeMethods: ["session/update"],
+      },
     });
     expect(Object.isFrozen(resolved)).toBe(true);
+    expect(Object.isFrozen(resolved.protocol.excludeMethods)).toBe(true);
     expect(() => resolveConversationRecordCapture({ message: "invalid" as "none" })).toThrow(
       "invalid capture level",
     );
     expect(() => resolveConversationRecordCapture({ future: "content" } as never)).toThrow(
       "unknown record capture kind",
     );
+    expect(() => resolveConversationRecordCapture({ protocol: "content" as "raw" })).toThrow(
+      "invalid capture level for protocol",
+    );
+    expect(() => resolveConversationRecordCapture({
+      protocol: { level: "metadata", includeMethods: ["initialize"], excludeMethods: ["session/update"] },
+    })).toThrow("cannot combine includeMethods and excludeMethods");
+
+    const included = resolveConversationRecordCapture({
+      protocol: { level: "metadata", includeMethods: ["initialize"] },
+    }).protocol;
+    expect(shouldCaptureProtocolMethod(included, "initialize")).toBe(true);
+    expect(shouldCaptureProtocolMethod(included, "session/update")).toBe(false);
+    expect(shouldCaptureProtocolMethod(included, undefined)).toBe(true);
   });
 
   test("record-kind detection is strict", () => {

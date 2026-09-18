@@ -64,6 +64,16 @@ describe("conversation checkpoint strategy", () => {
     const first = await agent.persistence.recoveryCheckpoints!.latest(conversationId);
     expect(first?.summary).toBe("First summary");
 
+    await agent.persistence.records.append({
+      recordId: "raw-protocol-noise",
+      agentSessionId: agent.id,
+      agentConversationId: conversationId,
+      kind: "protocol",
+      timestamp: new Date().toISOString(),
+      direction: "in",
+      method: "session/update",
+      message: { secretNoise: "must not reach checkpoint inference" },
+    });
     await appendMessagePair(agent, conversationId, "two plus two", "four", 2);
     const secondRun = await agent.internalInferences!.enqueue({
       purpose: "conversation_checkpoint",
@@ -71,8 +81,8 @@ describe("conversation checkpoint strategy", () => {
       input: checkpointInput(),
       sourceCheckpointId: first!.checkpointId,
       sourceFromSequence: first!.coveredSequence,
-      sourceThroughSequence: 4,
-      requestedThroughSequence: 4,
+      sourceThroughSequence: 6,
+      requestedThroughSequence: 6,
     });
     await secondRun.result;
     const second = await agent.persistence.recoveryCheckpoints!.latest(conversationId);
@@ -86,7 +96,9 @@ describe("conversation checkpoint strategy", () => {
     expect(prompts[0]).toContain("hello");
     expect(prompts[1]).toContain("First summary");
     expect(prompts[1]).toContain("two plus two");
+    expect(prompts[1]).toContain("four");
     expect(prompts[1]).not.toContain('"content":"hello"');
+    expect(prompts[1]).not.toContain("must not reach checkpoint inference");
     await agent.close();
   });
 

@@ -13,11 +13,21 @@ afterEach(async () => {
 });
 
 describe("checkpoint recovery", () => {
-  test("recognizes Codex missing-rollout errors without treating arbitrary failures as missing", () => {
+  test("recognizes provider missing-session errors without treating arbitrary failures as missing", () => {
     expect(isMissingProviderSessionError({
       message: "Internal error",
       data: { details: "no rollout found for thread id missing-id" },
     })).toBeTrue();
+    expect(isMissingProviderSessionError({
+      code: -32603,
+      message: "Internal error: OpenCode service failure",
+      data: { service: "session" },
+    })).toBeTrue();
+    expect(isMissingProviderSessionError({
+      code: -32603,
+      message: "Internal error: OpenCode service failure",
+      data: { service: "provider" },
+    })).toBeFalse();
     expect(isMissingProviderSessionError(new Error("authentication failed"))).toBeFalse();
   });
 
