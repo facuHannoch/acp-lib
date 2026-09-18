@@ -21,9 +21,19 @@ export function isMissingProviderSessionError(
   override?: (error: unknown) => boolean,
 ): boolean {
   if (override) return override(error);
-  const value = error as { message?: unknown; data?: unknown } | null;
+  const value = error as { code?: unknown; message?: unknown; data?: unknown } | null;
+  const message = typeof value?.message === "string" ? value.message : String(error);
+  const data = isRecord(value?.data) ? value.data : undefined;
+  // OpenCode's ACP adapter currently collapses a deleted session into this generic
+  // service error. The service discriminator is the only machine-readable signal it
+  // exposes, so keep the match deliberately exact and scoped to the session service.
+  if (
+    value?.code === -32603
+    && message.toLowerCase() === "internal error: opencode service failure"
+    && data?.service === "session"
+  ) return true;
   const text = [
-    typeof value?.message === "string" ? value.message : String(error),
+    message,
     safeJson(value?.data),
   ].join(" ").toLowerCase();
   return [
@@ -35,6 +45,10 @@ export function isMissingProviderSessionError(
     "session does not exist",
     "file does not exist",
   ].some((pattern) => text.includes(pattern));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export async function buildRecoverySeed(
