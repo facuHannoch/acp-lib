@@ -41,6 +41,7 @@ const databasePath = join(directory, "agent.sqlite");
 
 const adapters: Record<string, Adapter> = {
   codex: ADAPTERS.codex,
+  opencode: ADAPTERS.opencode,
   test: {
     command: ["bun", fixture, "test8"],
     displayName: "Deterministic test agent",
