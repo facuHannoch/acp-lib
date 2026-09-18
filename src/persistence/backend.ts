@@ -162,16 +162,44 @@ type WithoutSequence<T> = T extends ConversationRecord ? Omit<T, "sequence"> : n
 export type NewConversationRecord = WithoutSequence<ConversationRecord>;
 
 export type RecordCaptureLevel = "none" | "metadata" | "content" | "raw";
-export type ConversationRecordCapturePolicy = Readonly<
-  Record<ConversationRecordKind, RecordCaptureLevel>
+export type ProtocolRecordCaptureLevel = "none" | "metadata" | "raw";
+export interface ProtocolRecordCaptureOptions {
+  readonly level: ProtocolRecordCaptureLevel;
+  /** Exact ACP method names. Methodless responses are always retained. */
+  readonly includeMethods?: readonly string[];
+  /** Exact ACP method names. Applied before sequence allocation. */
+  readonly excludeMethods?: readonly string[];
+}
+export type ProtocolRecordCapture = ProtocolRecordCaptureLevel | ProtocolRecordCaptureOptions;
+type NonProtocolRecordKind = Exclude<ConversationRecordKind, "protocol">;
+export type ConversationRecordCaptureConfig = Readonly<
+  Partial<Record<NonProtocolRecordKind, RecordCaptureLevel>> & {
+    readonly protocol?: ProtocolRecordCapture;
+  }
 >;
+export type ResolvedProtocolRecordCapturePolicy = Readonly<{
+  level: ProtocolRecordCaptureLevel;
+  includeMethods: readonly string[];
+  excludeMethods: readonly string[];
+}>;
+export type ConversationRecordCapturePolicy = Readonly<
+  Record<NonProtocolRecordKind, RecordCaptureLevel> & {
+    readonly protocol: ResolvedProtocolRecordCapturePolicy;
+  }
+>;
+
+const DEFAULT_PROTOCOL_RECORD_CAPTURE: ResolvedProtocolRecordCapturePolicy = Object.freeze({
+  level: "none",
+  includeMethods: Object.freeze([]),
+  excludeMethods: Object.freeze([]),
+});
 
 export const DEFAULT_CONVERSATION_RECORD_CAPTURE: ConversationRecordCapturePolicy = Object.freeze({
   message: "content",
   tool_call: "metadata",
   permission: "metadata",
   configuration: "metadata",
-  protocol: "none",
+  protocol: DEFAULT_PROTOCOL_RECORD_CAPTURE,
   native_action: "metadata",
   agent_action: "metadata",
   thinking: "none",
@@ -588,17 +616,84 @@ export function isConversationRecordKind(value: unknown): value is ConversationR
 }
 
 export function resolveConversationRecordCapture(
-  override: Partial<Record<ConversationRecordKind, RecordCaptureLevel>> = {},
+  override: ConversationRecordCaptureConfig = {},
 ): ConversationRecordCapturePolicy {
-  const resolved = { ...DEFAULT_CONVERSATION_RECORD_CAPTURE };
-  for (const [kind, level] of Object.entries(override)) {
+  const resolved: Record<string, unknown> = { ...DEFAULT_CONVERSATION_RECORD_CAPTURE };
+  for (const [kind, value] of Object.entries(override)) {
     if (!isConversationRecordKind(kind)) throw new Error(`unknown record capture kind: ${kind}`);
-    if (!["none", "metadata", "content", "raw"].includes(String(level))) {
-      throw new Error(`invalid capture level for ${kind}: ${String(level)}`);
+    if (kind === "protocol") {
+      resolved.protocol = resolveProtocolRecordCapture(value as ProtocolRecordCapture);
+      continue;
     }
-    resolved[kind] = level as RecordCaptureLevel;
+    if (!["none", "metadata", "content", "raw"].includes(String(value))) {
+      throw new Error(`invalid capture level for ${kind}: ${String(value)}`);
+    }
+    resolved[kind] = value as RecordCaptureLevel;
   }
-  return Object.freeze(resolved);
+  return Object.freeze(resolved) as ConversationRecordCapturePolicy;
+}
+
+export function shouldCaptureProtocolMethod(
+  policy: ResolvedProtocolRecordCapturePolicy,
+  method: string | undefined,
+): boolean {
+  if (!method) return true;
+  if (policy.excludeMethods.includes(method)) return false;
+  return policy.includeMethods.length === 0 || policy.includeMethods.includes(method);
+}
+
+function resolveProtocolRecordCapture(
+  value: ProtocolRecordCapture,
+): ResolvedProtocolRecordCapturePolicy {
+  if (typeof value === "string") {
+    if (!["none", "metadata", "raw"].includes(value)) {
+      throw new Error(`invalid capture level for protocol: ${value}`);
+    }
+    return Object.freeze({
+      level: value as ProtocolRecordCaptureLevel,
+      includeMethods: Object.freeze([]),
+      excludeMethods: Object.freeze([]),
+    });
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid protocol capture policy");
+  }
+  for (const key of Object.keys(value)) {
+    if (!["level", "includeMethods", "excludeMethods"].includes(key)) {
+      throw new Error(`unknown protocol capture option: ${key}`);
+    }
+  }
+  if (!["none", "metadata", "raw"].includes(String(value.level))) {
+    throw new Error(`invalid capture level for protocol: ${String(value.level)}`);
+  }
+  const includeMethods = normalizeProtocolMethods(value.includeMethods, "includeMethods");
+  const excludeMethods = normalizeProtocolMethods(value.excludeMethods, "excludeMethods");
+  if (includeMethods.length && excludeMethods.length) {
+    throw new Error("protocol capture cannot combine includeMethods and excludeMethods");
+  }
+  return Object.freeze({
+    level: value.level,
+    includeMethods,
+    excludeMethods,
+  });
+}
+
+function normalizeProtocolMethods(
+  value: readonly string[] | undefined,
+  field: string,
+): readonly string[] {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value)) throw new Error(`protocol capture ${field} must be an array`);
+  const methods = value.map((method) => {
+    if (typeof method !== "string" || !method.trim()) {
+      throw new Error(`protocol capture ${field} contains a blank method`);
+    }
+    return method.trim();
+  });
+  if (new Set(methods).size !== methods.length) {
+    throw new Error(`protocol capture ${field} contains duplicate methods`);
+  }
+  return Object.freeze(methods);
 }
 
 /** Text projection for one record. Record boundaries remain separate search documents. */

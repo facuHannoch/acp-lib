@@ -19,6 +19,7 @@ import {
   findStoredMeteringReference,
   findStoredMeteringState,
   findStoredUserMessage,
+  inspectStoredProtocolCapture,
   listStoredMessages,
 } from "./queries.ts";
 
@@ -84,6 +85,7 @@ try {
   }
 
   assertSqliteHistory(conversationId, expectedMessages);
+  assertSqliteProtocolPolicy(conversationId);
   console.log(
     `PASS initial agent=${firstAgent.id} conversation=${conversationId} messages=${expectedMessages.length}`,
   );
@@ -311,7 +313,10 @@ async function openAgent(defaultAdapterId = adapterId): Promise<Agent> {
       tool_call: "raw",
       permission: "raw",
       configuration: "raw",
-      protocol: "raw",
+      protocol: {
+        level: "metadata",
+        excludeMethods: ["session/update"],
+      },
       native_action: "raw",
       agent_action: "raw",
       thinking: "raw",
@@ -394,6 +399,18 @@ function assertSqliteHistory(
       expectedMessages,
       "SQLite message history does not match the four prompt results",
     );
+  } finally {
+    database.close();
+  }
+}
+
+function assertSqliteProtocolPolicy(conversationId: AgentConversationId): void {
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    const protocol = inspectStoredProtocolCapture(database, conversationId);
+    assert.ok(protocol.total > 0, "SQLite contains no protocol metadata");
+    assert.equal(protocol.sessionUpdates, 0, "SQLite persisted excluded session/update frames");
+    assert.equal(protocol.bodies, 0, "SQLite metadata capture retained protocol bodies");
   } finally {
     database.close();
   }

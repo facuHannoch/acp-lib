@@ -155,6 +155,34 @@ describe("Agent owner", () => {
     )).toBe(true);
   });
 
+  test("filters high-volume protocol methods before persistence", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { terminal: { command: ["bun", TERMINAL_AGENT] } },
+      defaultAdapterId: "terminal",
+      capture: {
+        protocol: {
+          level: "metadata",
+          excludeMethods: ["session/update"],
+        },
+      },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("filter protocol updates");
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 1_000 })).records;
+    const protocol = records.filter((record) => record.kind === "protocol");
+    expect(protocol.length).toBeGreaterThan(0);
+    expect(protocol.some((record) => record.method === "initialize")).toBe(true);
+    expect(protocol.some((record) => record.method === "session/prompt")).toBe(true);
+    expect(protocol.some((record) => record.method === "session/update")).toBe(false);
+    expect(protocol.every((record) => record.message === undefined)).toBe(true);
+    expect(records.map((record) => record.sequence)).toEqual(
+      Array.from({ length: records.length }, (_, index) => index + 1),
+    );
+  });
+
   test("captures configuration lifecycle without discarding earlier states", async () => {
     const directory = await makeDirectory();
     const agent = await track(Agent.open({

@@ -9,6 +9,7 @@ export {
   isParticipantKind,
   normalizeParticipantRef,
   resolveConversationRecordCapture,
+  shouldCaptureProtocolMethod,
   searchableText,
 } from "./backend.ts";
 export type {
@@ -25,6 +26,7 @@ export type {
   ConversationPage,
   ConversationPersistence,
   ConversationRecord,
+  ConversationRecordCaptureConfig,
   ConversationRecordCapturePolicy,
   ConversationRecordEnvelope,
   ConversationRecordKind,
@@ -45,6 +47,10 @@ export type {
   MeteringRecordPage,
   MeteringRecordRetention,
   MeteringReferenceRecord,
+  ProtocolRecordCapture,
+  ProtocolRecordCaptureLevel,
+  ProtocolRecordCaptureOptions,
+  ResolvedProtocolRecordCapturePolicy,
   NativeActionRecord,
   NewConversationRecord,
   NewIdentityMemoryObservation,

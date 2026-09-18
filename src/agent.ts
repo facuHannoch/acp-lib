@@ -29,16 +29,19 @@ import {
   IMPLICIT_USER_PARTICIPANT_ID,
   normalizeParticipantRef,
   resolveConversationRecordCapture,
+  shouldCaptureProtocolMethod,
   type AgentConversationSummary,
   type ConversationListOptions,
   type ConversationPage,
   type ConversationRecord,
+  type ConversationRecordCaptureConfig,
   type ConversationRecordCapturePolicy,
   type MeteringRecordRetention,
   type NewConversationRecord,
   type ParticipantRef,
   type PersistenceBackend,
   type PersistenceExtension,
+  type RecordCaptureLevel,
 } from "./persistence/backend.ts";
 import { SqliteAgentPersistence } from "./persistence/sqlite-backend.ts";
 import type {
@@ -110,7 +113,7 @@ export interface AgentConfig {
   readonly identity?: AgentIdentityRuntime;
   readonly identityConsistency?: IdentityConsistency;
   readonly identityTimeoutMs?: number;
-  readonly capture?: Partial<ConversationRecordCapturePolicy>;
+  readonly capture?: ConversationRecordCaptureConfig;
   readonly conversationDefaults?: AgentConversationRuntimeDefaults;
   /** Bounded metering state is always persisted; this controls detailed local history. */
   readonly meteringPersistence?: {
@@ -820,8 +823,14 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
   }
 
   async record(record: NewConversationRecord): Promise<void> {
-    const level = this.settings.capture[record.kind];
+    const level = record.kind === "protocol"
+      ? this.settings.capture.protocol.level
+      : this.settings.capture[record.kind];
     if (level === "none") return;
+    if (
+      record.kind === "protocol"
+      && !shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method)
+    ) return;
     const persisted = await this.agent.persistence.records.append(
       captureRuntimeRecord(record, level),
     );
@@ -917,7 +926,7 @@ function capturedMessageContent(
 
 function captureRuntimeRecord(
   record: NewConversationRecord,
-  level: ConversationRecordCapturePolicy[keyof ConversationRecordCapturePolicy],
+  level: RecordCaptureLevel,
 ): NewConversationRecord {
   if (level !== "metadata") return record;
   switch (record.kind) {
