@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 5;
+export const SQLITE_AGENT_SCHEMA_VERSION = 6;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -56,8 +56,8 @@ CREATE TABLE IF NOT EXISTS conversation_records (
   sequence INTEGER NOT NULL CHECK (sequence > 0),
   kind TEXT NOT NULL,
   timestamp TEXT NOT NULL,
+  operation_id TEXT,
   metadata TEXT,
-  payload_json TEXT NOT NULL,
   UNIQUE (agent_conversation_id, sequence)
 );
 
@@ -65,6 +65,126 @@ CREATE INDEX IF NOT EXISTS conversation_records_kind_idx
   ON conversation_records(agent_conversation_id, kind, sequence);
 CREATE INDEX IF NOT EXISTS conversation_records_time_idx
   ON conversation_records(timestamp, agent_conversation_id);
+CREATE INDEX IF NOT EXISTS conversation_records_operation_idx
+  ON conversation_records(agent_conversation_id, operation_id, sequence)
+  WHERE operation_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('assistant', 'user')),
+  participant_id TEXT REFERENCES participants(participant_id),
+  content_text TEXT,
+  content_json TEXT,
+  status TEXT CHECK (status IS NULL OR status IN ('in_progress', 'completed', 'cancelled', 'failed')),
+  search_text TEXT NOT NULL,
+  CHECK ((content_text IS NULL) <> (content_json IS NULL)),
+  CHECK (content_json IS NULL OR json_valid(content_json))
+);
+
+CREATE INDEX IF NOT EXISTS conversation_messages_participant_idx
+  ON conversation_messages(participant_id, record_row_id)
+  WHERE participant_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS conversation_tool_call_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  tool_call_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('announced', 'input', 'completed', 'failed')),
+  name TEXT,
+  input_json TEXT,
+  output_text TEXT,
+  output_json TEXT,
+  error TEXT,
+  search_text TEXT NOT NULL,
+  CHECK (input_json IS NULL OR json_valid(input_json)),
+  CHECK (output_json IS NULL OR json_valid(output_json)),
+  CHECK (NOT (output_text IS NOT NULL AND output_json IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS conversation_tool_calls_identity_idx
+  ON conversation_tool_call_events(tool_call_id, record_row_id);
+
+CREATE TABLE IF NOT EXISTS conversation_permission_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  permission_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('requested', 'resolved')),
+  request_json TEXT,
+  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('approved', 'denied', 'cancelled')),
+  CHECK (request_json IS NULL OR json_valid(request_json))
+);
+
+CREATE INDEX IF NOT EXISTS conversation_permissions_identity_idx
+  ON conversation_permission_events(permission_id, record_row_id);
+
+CREATE TABLE IF NOT EXISTS conversation_configuration_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  operation TEXT NOT NULL CHECK (operation IN ('set', 'restore', 'accept_effective', 'replace')),
+  config_id TEXT,
+  value_json TEXT,
+  status TEXT NOT NULL CHECK (status IN ('started', 'completed', 'failed')),
+  error TEXT,
+  CHECK (value_json IS NULL OR json_valid(value_json))
+);
+
+CREATE TABLE IF NOT EXISTS conversation_protocol_records (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  direction TEXT NOT NULL CHECK (direction IN ('in', 'out', 'error')),
+  method TEXT,
+  message_json TEXT,
+  CHECK (message_json IS NULL OR json_valid(message_json))
+);
+
+CREATE TABLE IF NOT EXISTS conversation_native_action_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  transition_id TEXT,
+  state TEXT NOT NULL CHECK (state IN ('started', 'checkpoint', 'completed', 'failed')),
+  input_json TEXT,
+  output_json TEXT,
+  error TEXT,
+  CHECK (input_json IS NULL OR json_valid(input_json)),
+  CHECK (output_json IS NULL OR json_valid(output_json))
+);
+
+CREATE TABLE IF NOT EXISTS conversation_agent_action_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('requested', 'completed', 'failed')),
+  input_json TEXT,
+  output_json TEXT,
+  error TEXT,
+  CHECK (input_json IS NULL OR json_valid(input_json)),
+  CHECK (output_json IS NULL OR json_valid(output_json))
+);
+
+CREATE TABLE IF NOT EXISTS conversation_thinking_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  thinking_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('in_progress', 'completed', 'failed')),
+  content_text TEXT,
+  content_json TEXT,
+  CHECK ((content_text IS NULL) <> (content_json IS NULL)),
+  CHECK (content_json IS NULL OR json_valid(content_json))
+);
+
+CREATE INDEX IF NOT EXISTS conversation_thinking_identity_idx
+  ON conversation_thinking_events(thinking_id, record_row_id);
+
+CREATE TABLE IF NOT EXISTS conversation_activity_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  activity_id TEXT NOT NULL,
+  activity_type TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('in_progress', 'completed', 'failed')),
+  content_text TEXT,
+  content_json TEXT,
+  data_json TEXT,
+  search_text TEXT NOT NULL,
+  CHECK (NOT (content_text IS NOT NULL AND content_json IS NOT NULL)),
+  CHECK (content_json IS NULL OR json_valid(content_json)),
+  CHECK (data_json IS NULL OR json_valid(data_json))
+);
+
+CREATE INDEX IF NOT EXISTS conversation_activities_identity_idx
+  ON conversation_activity_events(activity_id, record_row_id);
 
 CREATE TABLE IF NOT EXISTS conversation_checkpoints (
   agent_conversation_id TEXT PRIMARY KEY REFERENCES conversations(agent_conversation_id),
@@ -282,63 +402,89 @@ CREATE TABLE IF NOT EXISTS persistence_extensions (
 `;
 
 const FTS_SCHEMA = `
-CREATE VIRTUAL TABLE IF NOT EXISTS conversation_record_fts USING fts5(
-  payload_json,
-  content = 'conversation_records',
-  content_rowid = 'row_id',
+CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(
+  search_text,
+  content = 'conversation_messages',
+  content_rowid = 'record_row_id',
   tokenize = 'unicode61'
 );
 
-CREATE TRIGGER IF NOT EXISTS conversation_records_fts_insert
-AFTER INSERT ON conversation_records BEGIN
-  INSERT INTO conversation_record_fts(rowid, payload_json)
-  VALUES (new.row_id, new.payload_json);
+CREATE TRIGGER IF NOT EXISTS conversation_messages_fts_insert
+AFTER INSERT ON conversation_messages BEGIN
+  INSERT INTO conversation_messages_fts(rowid, search_text)
+  VALUES (new.record_row_id, new.search_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS conversation_records_fts_delete
-AFTER DELETE ON conversation_records BEGIN
-  INSERT INTO conversation_record_fts(conversation_record_fts, rowid, payload_json)
-  VALUES ('delete', old.row_id, old.payload_json);
+CREATE TRIGGER IF NOT EXISTS conversation_messages_fts_delete
+AFTER DELETE ON conversation_messages BEGIN
+  INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, search_text)
+  VALUES ('delete', old.record_row_id, old.search_text);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS conversation_tool_calls_fts USING fts5(
+  search_text,
+  content = 'conversation_tool_call_events',
+  content_rowid = 'record_row_id',
+  tokenize = 'unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS conversation_tool_calls_fts_insert
+AFTER INSERT ON conversation_tool_call_events BEGIN
+  INSERT INTO conversation_tool_calls_fts(rowid, search_text)
+  VALUES (new.record_row_id, new.search_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversation_tool_calls_fts_delete
+AFTER DELETE ON conversation_tool_call_events BEGIN
+  INSERT INTO conversation_tool_calls_fts(conversation_tool_calls_fts, rowid, search_text)
+  VALUES ('delete', old.record_row_id, old.search_text);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS conversation_activities_fts USING fts5(
+  search_text,
+  content = 'conversation_activity_events',
+  content_rowid = 'record_row_id',
+  tokenize = 'unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS conversation_activities_fts_insert
+AFTER INSERT ON conversation_activity_events BEGIN
+  INSERT INTO conversation_activities_fts(rowid, search_text)
+  VALUES (new.record_row_id, new.search_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS conversation_activities_fts_delete
+AFTER DELETE ON conversation_activity_events BEGIN
+  INSERT INTO conversation_activities_fts(conversation_activities_fts, rowid, search_text)
+  VALUES ('delete', old.record_row_id, old.search_text);
 END;
 `;
 
 export function migrateSqliteAgentSchema(database: Database): void {
   database.exec("BEGIN IMMEDIATE");
   try {
+    const hasMigrations = database.query<{ present: number }, []>(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+    ).get() !== null;
+    if (hasMigrations) {
+      const existing = Number(database.query<{ version: number }, []>(
+        "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
+      ).get()?.version ?? 0);
+      if (existing !== 0 && existing !== SQLITE_AGENT_SCHEMA_VERSION) {
+        throw new Error(
+          `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
+        );
+      }
+    }
     database.exec(BASE_SCHEMA);
     const row = database.query<{ version: number }, []>(
       "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
     ).get();
     const version = Number(row?.version ?? 0);
-    if (version > SQLITE_AGENT_SCHEMA_VERSION) {
-      throw new Error(
-        `SQLite agent schema ${version} is newer than supported ${SQLITE_AGENT_SCHEMA_VERSION}`,
-      );
-    }
-    if (version < 1) {
+    if (version < SQLITE_AGENT_SCHEMA_VERSION) {
       database.query<unknown, [number, string]>(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-      ).run(1, new Date().toISOString());
-    }
-    if (version < 2) {
-      database.query<unknown, [number, string]>(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-      ).run(2, new Date().toISOString());
-    }
-    if (version < 3) {
-      database.query<unknown, [number, string]>(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-      ).run(3, new Date().toISOString());
-    }
-    if (version < 4) {
-      database.query<unknown, [number, string]>(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-      ).run(4, new Date().toISOString());
-    }
-    if (version < 5) {
-      database.query<unknown, [number, string]>(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-      ).run(5, new Date().toISOString());
+      ).run(SQLITE_AGENT_SCHEMA_VERSION, new Date().toISOString());
     }
     database.exec("COMMIT");
   } catch (error) {
@@ -353,14 +499,17 @@ export function installSqliteFts(database: Database): boolean {
   ).get();
   if (Number(row?.enabled ?? 0) !== 1) return false;
 
-  const existed = database.query<{ present: number }, []>(
-    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'conversation_record_fts'",
-  ).get() !== null;
+  const existed = ["conversation_messages_fts", "conversation_tool_calls_fts", "conversation_activities_fts"]
+    .every((name) => database.query<{ present: number }, [string]>(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(name) !== null);
   database.exec("BEGIN IMMEDIATE");
   try {
     database.exec(FTS_SCHEMA);
     if (!existed) {
-      database.exec("INSERT INTO conversation_record_fts(conversation_record_fts) VALUES ('rebuild')");
+      database.exec("INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild')");
+      database.exec("INSERT INTO conversation_tool_calls_fts(conversation_tool_calls_fts) VALUES ('rebuild')");
+      database.exec("INSERT INTO conversation_activities_fts(conversation_activities_fts) VALUES ('rebuild')");
     }
     database.exec("COMMIT");
     return true;
