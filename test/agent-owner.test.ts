@@ -14,6 +14,7 @@ const OPERATIONS_AGENT = resolve(import.meta.dir, "../smoke-tests/test5-operatio
 const PRESENTATION_AGENT = resolve(import.meta.dir, "fixtures/presentation-agent.ts");
 const PERMISSION_ORDER_AGENT = resolve(import.meta.dir, "fixtures/permission-order-agent.ts");
 const CONFIG_AGENT = resolve(import.meta.dir, "fixtures/config-agent.ts");
+const TERMINAL_AGENT = resolve(import.meta.dir, "fixtures/terminal-agent.ts");
 const agents: Agent[] = [];
 const directories: string[] = [];
 
@@ -99,6 +100,29 @@ describe("Agent owner", () => {
       "announced",
       "completed",
     ]);
+  });
+
+  test("does not misclassify provider session observations as model activity", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { terminal: { command: ["bun", TERMINAL_AGENT] } },
+      defaultAdapterId: "terminal",
+      capture: { activity: "content", tool_call: "content" },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("classify activity and run a tool");
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 1_000 })).records;
+    const activities = records.filter((record) => record.kind === "activity");
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      kind: "activity",
+      activityType: "plan",
+      state: "completed",
+    });
+    expect(activities[0]?.metadata).toBeUndefined();
+    expect(records.filter((record) => record.kind === "tool_call")).not.toEqual([]);
   });
 
   test("captures permission decisions and raw ACP traffic under per-kind policy", async () => {

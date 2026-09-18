@@ -16,7 +16,7 @@ type NormalizedActivityPersistenceEvent = Extract<
 export function persistenceEventFromActivity(
   record: AggregatedRecord,
   operationId: string,
-): NormalizedActivityPersistenceEvent {
+): NormalizedActivityPersistenceEvent | null {
   if (record.event.kind === "thinking") {
     return {
       kind: "reasoning",
@@ -35,17 +35,31 @@ export function persistenceEventFromActivity(
     };
   }
 
-  return {
-    kind: "activity",
-    activity: {
-      activityId: record.recordId,
-      activityRevision: record.seq,
-      operationId,
-      reason: record.reason,
-      kind: record.event.kind,
-      content: { event: record.event as unknown as JsonValue },
-    },
-  };
+  switch (record.event.kind) {
+    case "plan":
+    case "plan_update":
+    case "plan_removed":
+      return {
+        kind: "activity",
+        activity: {
+          activityId: record.recordId,
+          activityRevision: record.seq,
+          operationId,
+          reason: record.reason,
+          kind: record.event.kind,
+          content: { event: record.event as unknown as JsonValue },
+        },
+      };
+    case "user_message":
+    case "commands":
+    case "mode":
+    case "usage":
+    case "session_info":
+    case "config":
+    case "unknown":
+    case "tool_update":
+      return null;
+  }
 }
 
 function toolProjection(
