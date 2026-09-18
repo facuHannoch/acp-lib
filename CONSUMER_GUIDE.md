@@ -162,6 +162,12 @@ The current smoke scenario defaults to Codex because its second process opening 
 that the provider thread remembers prior conversation context. It may use credentials and
 consume model tokens.
 
+Provider-session identity and persisted history are always hard assertions. Exact semantic
+recall is also required by default for Codex, while other adapters report a warning because
+their selected model may ignore correctly loaded context. Set
+`ACP_TEST8_REQUIRE_SEMANTIC_RECALL=1` to require the exact recall assertion for any adapter,
+or `0` to make it observational.
+
 ### SQLite metering persistence
 
 SQLite-backed agents always persist the bounded metering state needed to restore lifetime
