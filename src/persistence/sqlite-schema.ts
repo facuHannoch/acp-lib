@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS conversations_updated_idx
 
 CREATE TABLE IF NOT EXISTS participants (
   participant_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('agent', 'user', 'external')),
   name TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -54,7 +54,17 @@ CREATE TABLE IF NOT EXISTS conversation_records (
   agent_session_id TEXT NOT NULL,
   agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
   sequence INTEGER NOT NULL CHECK (sequence > 0),
-  kind TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'message',
+    'tool_call',
+    'permission',
+    'configuration',
+    'protocol',
+    'native_action',
+    'agent_action',
+    'thinking',
+    'activity'
+  )),
   timestamp TEXT NOT NULL,
   operation_id TEXT,
   metadata TEXT,
