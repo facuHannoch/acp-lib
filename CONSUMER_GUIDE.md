@@ -92,13 +92,33 @@ The user message and each assistant-message boundary are stored as separate type
 Reopen the same database with `Agent.open()` and call
 `agent.conversations.open(agentConversationId)` to continue its active provider thread.
 
+SQLite keeps ordering and type-specific content separate. `conversation_records` is a
+narrow canonical envelope containing the conversation-local sequence, kind, timestamp,
+operation correlation, and optional metadata. Every envelope has exactly one typed detail
+row in tables such as `conversation_messages`, `conversation_tool_call_events`, or
+`conversation_activity_events`. A mixed timeline is read as one envelope page followed by
+bounded, batched subtype hydration; it never performs one query per record.
+
+Messages store ordinary text directly in `content_text`; structured or multimodal content
+uses `content_json`. Tool calls, permissions, configuration, actions, thinking, and
+activities retain meaningful lifecycle transitions as independently sequenced records.
+Raw ACP protocol bodies remain JSON because their external shape is intentionally open.
+
+FTS5 indexes deliberately extracted searchable text rather than serialized record JSON.
+The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
+protocol bodies are not searched implicitly.
+
+Schema version 6 introduces this typed layout. Pre-release version-5 SQLite files are not
+migrated because they were used only by development smoke tests. Opening one fails with a
+clear recreate instruction; remove the old smoke-test database and run the scenario again.
+
 The minimal end-to-end executable example is
-[`smoke-tests/test8-test/index.ts`](./smoke-tests/test8-test/index.ts). It sends `"hi"`
+[`smoke-tests/end-to-end/index.ts`](./smoke-tests/end-to-end/index.ts). It sends `"hi"`
 through an ACP harness and independently queries SQLite to assert that the canonical
 user-message row contains `"hi"`:
 
 ```bash
-bun smoke-tests/test8-test/index.ts
+bun smoke-tests/end-to-end/index.ts
 ```
 
 By default it owns and removes a temporary directory. Set `ACP_TEST8_DATA_DIR` to retain
@@ -106,7 +126,7 @@ the database at a caller-selected location for inspection:
 
 ```bash
 ACP_TEST8_DATA_DIR=./smoke-tests/test8-test/data \
-  bun smoke-tests/test8-test/index.ts
+  bun smoke-tests/end-to-end/index.ts
 ```
 
 The current smoke scenario defaults to Codex because its second process opening verifies
