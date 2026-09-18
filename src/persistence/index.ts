@@ -44,6 +44,7 @@ export type {
   MeteringRecordListOptions,
   MeteringRecordPage,
   MeteringRecordRetention,
+  MeteringReferenceRecord,
   NativeActionRecord,
   NewConversationRecord,
   NewIdentityMemoryObservation,

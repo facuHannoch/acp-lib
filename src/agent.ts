@@ -829,11 +829,28 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
   }
 
   async meteringRecorded(record: OperationMeteringRecord): Promise<void> {
-    await this.agent.persistence.metering.commit({
-      agentConversationId: this.conversationId,
-      record,
-      meteringRecords: this.settings.meteringRecords,
+    const level = this.settings.capture.metering;
+    let reference: ConversationRecord | undefined;
+    await this.agent.persistence.transaction(async (persistence) => {
+      await persistence.metering.commit({
+        agentConversationId: this.conversationId,
+        record,
+        meteringRecords: this.settings.meteringRecords,
+      });
+      if (level === "none") return;
+      reference = await persistence.records.append(captureRuntimeRecord({
+        recordId: `${record.operationId}:metering`,
+        agentSessionId: this.agent.id,
+        agentConversationId: this.conversationId,
+        kind: "metering",
+        timestamp: new Date(record.completedAt).toISOString(),
+        operationId: record.operationId,
+        meteringRecordId: record.operationId,
+        status: record.usage.status === "metered" ? "available" : "unavailable",
+        metadata: JSON.stringify({ operationId: record.operationId }),
+      }, level));
     });
+    if (reference) await this.updateIdentity([reference]);
   }
 
   async meteringStateChanged(state: AgentSessionMeteringState): Promise<void> {
@@ -941,6 +958,8 @@ function captureRuntimeRecord(
       return { ...record, content: "" };
     case "activity":
       return { ...record, content: undefined, data: undefined };
+    case "metering":
+      return record;
   }
 }
 

@@ -90,6 +90,7 @@ export type {
   MeteringRecordListOptions,
   MeteringRecordPage,
   MeteringRecordRetention,
+  MeteringReferenceRecord,
   NewConversationRecord,
   ParticipantKind,
   ParticipantRef,

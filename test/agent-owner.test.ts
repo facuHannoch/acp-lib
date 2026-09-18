@@ -218,6 +218,13 @@ describe("Agent owner", () => {
     const first = await conversation.prompt("meter this turn");
     expect(first.metering).not.toBeNull();
     expect((await agent.persistence.metering.list(conversationId)).records).toHaveLength(1);
+    expect((await agent.persistence.records.list(conversationId, { kinds: ["metering"] })).records)
+      .toEqual([expect.objectContaining({
+        kind: "metering",
+        operationId: first.operationId,
+        meteringRecordId: first.operationId,
+        status: "available",
+      })]);
     expect((await agent.persistence.metering.state(conversationId))?.state).toEqual(
       first.metering?.nextState,
     );
@@ -237,6 +244,8 @@ describe("Agent owner", () => {
     expect(second.metering?.nextState.operationCount).toBe(2);
     expect((await reopened.persistence.metering.list(conversationId)).records).toHaveLength(2);
     expect((await reopened.persistence.metering.state(conversationId))?.revision).toBe(2);
+    expect((await reopened.persistence.records.list(conversationId, { kinds: ["metering"] })).records)
+      .toHaveLength(2);
   });
 
   test("can omit detailed metering records while preserving restoration state", async () => {
@@ -253,6 +262,8 @@ describe("Agent owner", () => {
     expect(result.metering).not.toBeNull();
     expect((await agent.persistence.metering.list(conversation.id)).records).toEqual([]);
     expect((await agent.persistence.metering.state(conversation.id))?.state.operationCount).toBe(1);
+    expect((await agent.persistence.records.list(conversation.id, { kinds: ["metering"] })).records)
+      .toHaveLength(1);
   });
 
   test("adapter registry remains agent-scoped and reflectable", async () => {

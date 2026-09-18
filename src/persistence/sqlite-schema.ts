@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 6;
+export const SQLITE_AGENT_SCHEMA_VERSION = 7;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS conversation_records (
     'native_action',
     'agent_action',
     'thinking',
-    'activity'
+    'activity',
+    'metering'
   )),
   timestamp TEXT NOT NULL,
   operation_id TEXT,
@@ -195,6 +196,16 @@ CREATE TABLE IF NOT EXISTS conversation_activity_events (
 
 CREATE INDEX IF NOT EXISTS conversation_activities_identity_idx
   ON conversation_activity_events(activity_id, record_row_id);
+
+CREATE TABLE IF NOT EXISTS conversation_metering_references (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  operation_id TEXT NOT NULL,
+  metering_record_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('available', 'partial', 'unavailable'))
+);
+
+CREATE INDEX IF NOT EXISTS conversation_metering_operation_idx
+  ON conversation_metering_references(operation_id, record_row_id);
 
 CREATE TABLE IF NOT EXISTS conversation_checkpoints (
   agent_conversation_id TEXT PRIMARY KEY REFERENCES conversations(agent_conversation_id),

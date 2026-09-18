@@ -16,6 +16,7 @@ import {
 } from "@qlairoslabs/acp-client";
 import {
   findStoredMeteringRecord,
+  findStoredMeteringReference,
   findStoredMeteringState,
   findStoredUserMessage,
   listStoredMessages,
@@ -315,6 +316,7 @@ async function openAgent(defaultAdapterId = adapterId): Promise<Agent> {
       agent_action: "raw",
       thinking: "raw",
       activity: "raw",
+      metering: "raw",
     },
     meteringPersistence: {
       meteringRecords: "all",
@@ -351,6 +353,19 @@ function assertSqliteMetering(
     assert.ok(storedRecord, "SQLite does not contain the metering operation marker");
     assert.ok(storedRecord.recordJson, "SQLite omitted the complete metering record");
     assert.deepEqual(JSON.parse(storedRecord.recordJson), expected);
+
+    const timelineReference = findStoredMeteringReference(
+      database,
+      conversationId,
+      expected.operationId,
+    );
+    assert.ok(timelineReference, "SQLite omitted metering from the conversation timeline");
+    assert.equal(timelineReference.operationId, expected.operationId);
+    assert.equal(timelineReference.meteringRecordId, expected.operationId);
+    assert.equal(
+      timelineReference.status,
+      expected.usage.status === "metered" ? "available" : "unavailable",
+    );
 
     const storedState = findStoredMeteringState(database, conversationId);
     assert.ok(storedState, "SQLite does not contain bounded metering state");

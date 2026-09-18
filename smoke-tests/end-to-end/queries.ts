@@ -16,6 +16,13 @@ export interface StoredMeteringStateRow {
   readonly stateJson: string;
 }
 
+export interface StoredMeteringReferenceRow {
+  readonly sequence: number;
+  readonly operationId: string;
+  readonly meteringRecordId: string;
+  readonly status: "available" | "partial" | "unavailable";
+}
+
 /** Query canonical persistence directly, independently of the library repositories. */
 export function findStoredUserMessage(
   database: Database,
@@ -65,6 +72,26 @@ export function findStoredMeteringRecord(
     SELECT operation_id AS operationId, record_json AS recordJson
     FROM metering_records
     WHERE agent_conversation_id = ? AND operation_id = ?
+  `).get(agentConversationId, operationId);
+}
+
+/** Locate the ordered timeline reference independently of the metering repository. */
+export function findStoredMeteringReference(
+  database: Database,
+  agentConversationId: string,
+  operationId: string,
+): StoredMeteringReferenceRow | null {
+  return database.query<StoredMeteringReferenceRow, [string, string]>(`
+    SELECT
+      r.sequence,
+      m.operation_id AS operationId,
+      m.metering_record_id AS meteringRecordId,
+      m.status
+    FROM conversation_records r
+    JOIN conversation_metering_references m ON m.record_row_id = r.row_id
+    WHERE r.agent_conversation_id = ?
+      AND r.kind = 'metering'
+      AND m.operation_id = ?
   `).get(agentConversationId, operationId);
 }
 

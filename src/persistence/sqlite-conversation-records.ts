@@ -23,6 +23,7 @@ export interface ConversationRecordRow {
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 
 export function operationIdFromRecord(record: NewConversationRecord): string | null {
+  if (record.kind === "metering") return record.operationId;
   if (!record.metadata) return null;
   try {
     const metadata = JSON.parse(record.metadata) as { operationId?: unknown };
@@ -179,6 +180,17 @@ export function insertConversationRecordDetail(
       );
       return;
     }
+    case "metering":
+      run(database,
+        `INSERT INTO conversation_metering_references(
+          record_row_id, operation_id, metering_record_id, status
+        ) VALUES (?, ?, ?, ?)`,
+        rowId,
+        record.operationId,
+        record.meteringRecordId,
+        record.status,
+      );
+      return;
   }
 }
 
@@ -224,6 +236,7 @@ const DETAIL_TABLES: Readonly<Record<ConversationRecordKind, string>> = Object.f
   agent_action: "conversation_agent_action_events",
   thinking: "conversation_thinking_events",
   activity: "conversation_activity_events",
+  metering: "conversation_metering_references",
 });
 
 function recordFromRows(
@@ -329,6 +342,14 @@ function recordFromRows(
           ? { content: decodeContent(detail.content_text, detail.content_json) }
           : {}),
         ...(detail.data_json !== null ? { data: decodeJson(detail.data_json) } : {}),
+      });
+    case "metering":
+      return Object.freeze({
+        ...envelope,
+        kind: "metering",
+        operationId: string(detail.operation_id),
+        meteringRecordId: string(detail.metering_record_id),
+        status: string(detail.status) as "available" | "partial" | "unavailable",
       });
   }
 }

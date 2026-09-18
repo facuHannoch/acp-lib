@@ -178,6 +178,11 @@ describe("SQLite agent persistence", () => {
         kind: "activity", timestamp: now(), activityId: "activity-1", activityType: "terminal",
         state: "completed", content: "compiled successfully", data: { exitCode: 0 },
       },
+      {
+        recordId: "typed-metering", agentSessionId, agentConversationId: conversationId,
+        kind: "metering", timestamp: now(), operationId: "operation-1",
+        meteringRecordId: "metering-1", status: "available",
+      },
     ];
 
     const appended = await backend.records.appendMany(records);
@@ -201,6 +206,7 @@ describe("SQLite agent persistence", () => {
         "conversation_agent_action_events",
         "conversation_thinking_events",
         "conversation_activity_events",
+        "conversation_metering_references",
       ]) {
         expect(inspection.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count)
           .toBe(1);
@@ -490,18 +496,18 @@ describe("SQLite agent persistence", () => {
     expect(hasSafeConcurrentWal("3.49.1")).toBe(false);
   });
 
-  test("rejects the obsolete JSON-payload schema with a recreate instruction", async () => {
+  test("rejects the previous pre-release schema with a recreate instruction", async () => {
     const directory = await makeDirectory();
     const path = join(directory, "agent.sqlite");
     const old = new Database(path, { create: true, readwrite: true });
     old.exec(`
       CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-      INSERT INTO schema_migrations(version, applied_at) VALUES (5, '2026-09-17T00:00:00.000Z');
+      INSERT INTO schema_migrations(version, applied_at) VALUES (6, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(6);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(7);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 5 is incompatible with 6; recreate the database",
+      "SQLite agent schema 6 is incompatible with 7; recreate the database",
     );
   });
 });

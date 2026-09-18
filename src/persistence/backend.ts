@@ -32,6 +32,7 @@ export const CONVERSATION_RECORD_KINDS = [
   "agent_action",
   "thinking",
   "activity",
+  "metering",
 ] as const;
 
 export type ConversationRecordKind = (typeof CONVERSATION_RECORD_KINDS)[number];
@@ -138,6 +139,13 @@ export interface ActivityRecord extends ConversationRecordEnvelope<"activity"> {
   readonly data?: PersistenceJsonValue;
 }
 
+/** Ordered conversation-timeline pointer to the complete financial record. */
+export interface MeteringReferenceRecord extends ConversationRecordEnvelope<"metering"> {
+  readonly operationId: string;
+  readonly meteringRecordId: string;
+  readonly status: "available" | "partial" | "unavailable";
+}
+
 export type ConversationRecord =
   | MessageRecord
   | ToolCallRecord
@@ -147,7 +155,8 @@ export type ConversationRecord =
   | NativeActionRecord
   | AgentActionRecord
   | ThinkingRecord
-  | ActivityRecord;
+  | ActivityRecord
+  | MeteringReferenceRecord;
 
 type WithoutSequence<T> = T extends ConversationRecord ? Omit<T, "sequence"> : never;
 export type NewConversationRecord = WithoutSequence<ConversationRecord>;
@@ -167,6 +176,7 @@ export const DEFAULT_CONVERSATION_RECORD_CAPTURE: ConversationRecordCapturePolic
   agent_action: "metadata",
   thinking: "none",
   activity: "metadata",
+  metering: "metadata",
 });
 
 export interface AgentPersistenceIdentity {
@@ -610,6 +620,8 @@ export function searchableText(record: ConversationRecord): string {
       return [record.action, jsonText(record.input), jsonText(record.output), record.error].filter(Boolean).join("\n");
     case "activity":
       return [record.activityType, contentText(record.content), jsonText(record.data)].filter(Boolean).join("\n");
+    case "metering":
+      return [record.operationId, record.meteringRecordId, record.status].join("\n");
   }
 }
 
