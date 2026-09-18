@@ -113,6 +113,25 @@ user messages, and unknown protocol updates are not reclassified as model activi
 Their semantic state is retained by the relevant configuration, metering, or checkpoint
 storage, while consumers that need exact diagnostic traffic can enable protocol capture.
 
+SQLite protocol capture supports `"none"`, `"metadata"`, and `"raw"`; protocol
+`"content"` is rejected because coalesced content already belongs to the typed semantic
+records. Exact method filters provide a compact protocol skeleton without persisting the
+high-volume update stream:
+
+```ts
+capture: {
+  protocol: {
+    level: "metadata",
+    excludeMethods: ["session/update"],
+  },
+}
+```
+
+`includeMethods` is also available and cannot be combined with `excludeMethods`. Both use
+exact ACP method names. Methodless JSON-RPC responses remain captured because their method
+cannot be determined without correlating request IDs. Filtering happens before canonical
+sequence allocation, so omitted frames create neither rows nor sequence gaps.
+
 FTS5 indexes deliberately extracted searchable text rather than serialized record JSON.
 The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
 protocol bodies are not searched implicitly.
