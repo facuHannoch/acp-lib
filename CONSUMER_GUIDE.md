@@ -103,6 +103,9 @@ Messages store ordinary text directly in `content_text`; structured or multimoda
 uses `content_json`. Tool calls, permissions, configuration, actions, thinking, and
 activities retain meaningful lifecycle transitions as independently sequenced records.
 Raw ACP protocol bodies remain JSON because their external shape is intentionally open.
+Each completed metered operation adds an ordered `metering` reference whose complete
+financial record remains in `metering_records`; the timeline does not duplicate billing
+payloads.
 
 `activity` is reserved for model activity such as plans. Complete session observations
 such as usage, available commands, mode/config announcements, session metadata, echoed
@@ -114,9 +117,10 @@ FTS5 indexes deliberately extracted searchable text rather than serialized recor
 The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
 protocol bodies are not searched implicitly.
 
-Schema version 6 introduces this typed layout. Pre-release version-5 SQLite files are not
-migrated because they were used only by development smoke tests. Opening one fails with a
-clear recreate instruction; remove the old smoke-test database and run the scenario again.
+Schema version 7 adds ordered metering references to the typed layout. Pre-release
+version-6 SQLite files are not migrated because they were used only by development smoke
+tests. Opening one fails with a clear recreate instruction; remove the old smoke-test
+database and run the scenario again.
 
 The minimal end-to-end executable example is
 [`smoke-tests/end-to-end/index.ts`](./smoke-tests/end-to-end/index.ts). It sends `"hi"`
@@ -172,8 +176,9 @@ meteringPersistence: {
 }
 ```
 
-`"none"` still writes a minimal operation marker for idempotency and always advances the
-bounded restoration state. It only omits the full serialized metering record. Continue to
+`"none"` still writes a minimal operation marker for idempotency, adds the independently
+configured conversation-timeline reference, and always advances the bounded restoration
+state. It only omits the full serialized metering record. Continue to
 consume `result.metering` or `metering_recorded` notifications when delivering records to
 an external billing repository.
 
