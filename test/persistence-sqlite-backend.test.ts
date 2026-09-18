@@ -13,6 +13,7 @@ import {
   IMPLICIT_USER_PARTICIPANT_ID,
   PersistenceConflictError,
   SqliteAgentPersistence,
+  SQLITE_AGENT_SCHEMA_VERSION,
   hasSafeConcurrentWal,
   requireSqliteSearch,
   type NewConversationRecord,
@@ -120,6 +121,95 @@ describe("SQLite agent persistence", () => {
     expect(second.messages.map((record) => record.content)).toEqual(["a2"]);
   });
 
+  test("round-trips every record kind through typed subtype tables", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    const records: NewConversationRecord[] = [
+      {
+        ...message(
+          agentSessionId,
+          conversationId,
+          "typed-message",
+          "user",
+          "hello",
+          IMPLICIT_USER_PARTICIPANT_ID,
+        ),
+        status: "completed",
+        metadata: JSON.stringify({ submittedBy: "bob" }),
+      },
+      {
+        recordId: "typed-tool", agentSessionId, agentConversationId: conversationId,
+        kind: "tool_call", timestamp: now(), toolCallId: "tool-1", state: "completed",
+        name: "terminal.exec", input: { command: "bun test" }, output: [{ type: "text", text: "all green" }],
+      },
+      {
+        recordId: "typed-permission", agentSessionId, agentConversationId: conversationId,
+        kind: "permission", timestamp: now(), permissionId: "permission-1", state: "resolved",
+        request: { command: "bun test" }, outcome: "approved",
+      },
+      {
+        recordId: "typed-configuration", agentSessionId, agentConversationId: conversationId,
+        kind: "configuration", timestamp: now(), operation: "set", configId: "model",
+        value: "gpt-test", status: "completed",
+      },
+      {
+        recordId: "typed-protocol", agentSessionId, agentConversationId: conversationId,
+        kind: "protocol", timestamp: now(), direction: "in", method: "session/update",
+        message: { jsonrpc: "2.0" },
+      },
+      {
+        recordId: "typed-native", agentSessionId, agentConversationId: conversationId,
+        kind: "native_action", timestamp: now(), action: "switch", transitionId: "switch-1",
+        state: "completed", input: { from: "a" }, output: { to: "b" },
+      },
+      {
+        recordId: "typed-agent", agentSessionId, agentConversationId: conversationId,
+        kind: "agent_action", timestamp: now(), action: "send_message", state: "requested",
+        input: { target: "atlas" },
+      },
+      {
+        recordId: "typed-thinking", agentSessionId, agentConversationId: conversationId,
+        kind: "thinking", timestamp: now(), thinkingId: "thinking-1", state: "completed",
+        content: [{ type: "text", text: "consider alternatives" }],
+      },
+      {
+        recordId: "typed-activity", agentSessionId, agentConversationId: conversationId,
+        kind: "activity", timestamp: now(), activityId: "activity-1", activityType: "terminal",
+        state: "completed", content: "compiled successfully", data: { exitCode: 0 },
+      },
+    ];
+
+    const appended = await backend.records.appendMany(records);
+    expect(appended.map(({ sequence: _sequence, ...record }) => record)).toEqual(records);
+    expect((await backend.records.list(conversationId)).records).toEqual(appended);
+    for (const record of appended) expect(await backend.records.get(record.recordId)).toEqual(record);
+
+    const inspection = new Database(path, { readonly: true });
+    try {
+      const columns = inspection.query<{ name: string }, []>("PRAGMA table_info(conversation_records)")
+        .all().map(({ name }) => name);
+      expect(columns).not.toContain("payload_json");
+      expect(columns).toContain("operation_id");
+      for (const table of [
+        "conversation_messages",
+        "conversation_tool_call_events",
+        "conversation_permission_events",
+        "conversation_configuration_events",
+        "conversation_protocol_records",
+        "conversation_native_action_events",
+        "conversation_agent_action_events",
+        "conversation_thinking_events",
+        "conversation_activity_events",
+      ]) {
+        expect(inspection.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count)
+          .toBe(1);
+      }
+    } finally {
+      inspection.close();
+    }
+  });
+
   test("serializes concurrent writers into one monotonic conversation sequence", async () => {
     const directory = await makeDirectory();
     const path = join(directory, "agent.sqlite");
@@ -182,6 +272,17 @@ describe("SQLite agent persistence", () => {
         input: { command: "bun test" },
         output: "all green",
       },
+      {
+        recordId: "search-activity",
+        agentSessionId,
+        agentConversationId: conversationId,
+        kind: "activity",
+        timestamp: now(),
+        activityId: "activity-search",
+        activityType: "terminal",
+        state: "completed",
+        content: "deployed nebula service",
+      },
     ]);
 
     const search = requireSqliteSearch(backend);
@@ -191,14 +292,22 @@ describe("SQLite agent persistence", () => {
     expect((await search.search({ text: "terminal", kinds: ["tool_call"] }))[0]?.recordId).toBe(
       "search-tool",
     );
+    expect((await search.search({ text: "nebula", kinds: ["activity"] }))[0]?.recordId).toBe(
+      "search-activity",
+    );
     await search.integrityCheck();
 
     const inspection = new Database(path, { readonly: true });
     try {
-      const shadow = inspection.query<{ name: string }, []>(
-        "SELECT name FROM sqlite_master WHERE name = 'conversation_record_fts_content'",
-      ).get();
-      expect(shadow).toBeNull();
+      for (const name of [
+        "conversation_messages_fts_content",
+        "conversation_tool_calls_fts_content",
+        "conversation_activities_fts_content",
+      ]) {
+        expect(inspection.query<{ name: string }, [string]>(
+          "SELECT name FROM sqlite_master WHERE name = ?",
+        ).get(name)).toBeNull();
+      }
     } finally {
       inspection.close();
     }
@@ -379,6 +488,21 @@ describe("SQLite agent persistence", () => {
     expect(hasSafeConcurrentWal("3.44.6")).toBe(true);
     expect(hasSafeConcurrentWal("3.51.2")).toBe(false);
     expect(hasSafeConcurrentWal("3.49.1")).toBe(false);
+  });
+
+  test("rejects the obsolete JSON-payload schema with a recreate instruction", async () => {
+    const directory = await makeDirectory();
+    const path = join(directory, "agent.sqlite");
+    const old = new Database(path, { create: true, readwrite: true });
+    old.exec(`
+      CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+      INSERT INTO schema_migrations(version, applied_at) VALUES (5, '2026-09-17T00:00:00.000Z');
+    `);
+    old.close();
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(6);
+    await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
+      "SQLite agent schema 5 is incompatible with 6; recreate the database",
+    );
   });
 });
 

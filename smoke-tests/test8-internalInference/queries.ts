@@ -23,12 +23,13 @@ export function listStoredMessages(
 ): readonly StoredMessageRow[] {
   return database.query<StoredMessageRow, [string]>(`
     SELECT
-      sequence,
-      json_extract(payload_json, '$.role') AS role,
-      json_extract(payload_json, '$.content') AS content
-    FROM conversation_records
-    WHERE agent_conversation_id = ? AND kind = 'message'
-    ORDER BY sequence
+      r.sequence,
+      m.role,
+      m.content_text AS content
+    FROM conversation_records r
+    JOIN conversation_messages m ON m.record_row_id = r.row_id
+    WHERE r.agent_conversation_id = ? AND r.kind = 'message'
+    ORDER BY r.sequence
   `).all(agentConversationId);
 }
 

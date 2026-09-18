@@ -101,10 +101,11 @@ try {
   const verification = new Database(databasePath, { readonly: true, strict: true });
   try {
     const recoveryAction = verification.query<{ count: number }, [string]>(
-      `SELECT COUNT(*) AS count FROM conversation_records
-       WHERE agent_conversation_id = ? AND kind = 'native_action'
-         AND json_extract(payload_json, '$.action') = 'conversation_recovery'
-         AND json_extract(payload_json, '$.state') = 'completed'`,
+      `SELECT COUNT(*) AS count FROM conversation_records r
+       JOIN conversation_native_action_events a ON a.record_row_id = r.row_id
+       WHERE r.agent_conversation_id = ? AND r.kind = 'native_action'
+         AND a.action = 'conversation_recovery'
+         AND a.state = 'completed'`,
     ).get(conversationId);
     assert.equal(Number(recoveryAction?.count ?? 0), 1, "completed recovery action was not persisted");
     const recoveryMetering = verification.query<{ count: number }, [string]>(
