@@ -67,6 +67,13 @@ import { SqliteInternalInferenceRepository } from "../internal-inference/persist
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 import type { ConversationRecoveryCheckpointRepository } from "../checkpointing/contracts.ts";
 import { SqliteConversationRecoveryCheckpointRepository } from "../checkpointing/persistence/sqlite-repository.ts";
+import {
+  hydrateConversationRecords,
+  insertConversationRecordDetail,
+  operationIdFromRecord,
+  sameConversationRecord,
+  type ConversationRecordRow,
+} from "./sqlite-conversation-records.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 type WriteRunner = <T>(work: () => T) => Promise<T>;
@@ -80,18 +87,6 @@ interface ConversationRow {
   latest_sequence: number;
   deleted_at: string | null;
   metadata: string | null;
-}
-
-interface RecordRow {
-  row_id: number;
-  record_id: string;
-  agent_session_id: string;
-  agent_conversation_id: string;
-  sequence: number;
-  kind: string;
-  timestamp: string;
-  metadata: string | null;
-  payload_json: string;
 }
 
 interface IdentityRow {
@@ -495,10 +490,10 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
   }
 
   async get(recordId: string): Promise<ConversationRecord | null> {
-    const row = this.database.query<RecordRow, [string]>(
+    const row = this.database.query<ConversationRecordRow, [string]>(
       "SELECT * FROM conversation_records WHERE record_id = ?",
     ).get(recordId);
-    return row ? recordFromRow(row) : null;
+    return row ? hydrateConversationRecords(this.database, [row])[0]! : null;
   }
 
   async list(
@@ -526,7 +521,7 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
       parameters.push(...options.kinds);
     }
     parameters.push(limit + 1, offset);
-    const rows = this.database.query<RecordRow, SqlValue[]>(
+    const rows = this.database.query<ConversationRecordRow, SqlValue[]>(
       `SELECT * FROM conversation_records
        WHERE ${where.join(" AND ")}
        ORDER BY sequence
@@ -534,7 +529,7 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
     ).all(...parameters);
     const hasMore = rows.length > limit;
     return Object.freeze({
-      records: Object.freeze(rows.slice(0, limit).map(recordFromRow)),
+      records: hydrateConversationRecords(this.database, rows.slice(0, limit)),
       ...(hasMore ? { nextCursor: encodeOffset(offset + limit) } : {}),
     });
   }
@@ -551,28 +546,23 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
     const normalized = input.kind === "message" && input.role === "user" && !input.participantId
       ? { ...input, participantId: IMPLICIT_USER_PARTICIPANT_ID }
       : input;
-    if (normalized.kind === "message" && normalized.role === "user" && normalized.participantId) {
+    if (normalized.kind === "message" && normalized.participantId) {
       const known = this.database.query<{ kind: ParticipantRef["kind"]; name: string | null }, [string]>(
         "SELECT kind, name FROM participants WHERE participant_id = ?",
       ).get(normalized.participantId);
       ensureParticipantDirect(this.database, normalized.agentConversationId, {
         id: normalized.participantId,
-        kind: known?.kind ?? "user",
+        kind: known?.kind ?? (normalized.role === "user" ? "user" : "agent"),
         ...(known?.name ? { name: known.name } : {}),
       }, normalized.timestamp);
     }
-    const payloadJson = JSON.stringify(recordPayload(normalized));
-    const existing = this.database.query<RecordRow, [string]>(
+    const existing = this.database.query<ConversationRecordRow, [string]>(
       "SELECT * FROM conversation_records WHERE record_id = ?",
     ).get(normalized.recordId);
     if (existing) {
-      if (existing.agent_session_id === normalized.agentSessionId
-        && existing.agent_conversation_id === normalized.agentConversationId
-        && existing.kind === normalized.kind
-        && existing.timestamp === normalized.timestamp
-        && existing.metadata === (normalized.metadata ?? null)
-        && existing.payload_json === payloadJson) {
-        return recordFromRow(existing);
+      const hydrated = hydrateConversationRecords(this.database, [existing])[0]!;
+      if (sameConversationRecord(hydrated, normalized)) {
+        return hydrated;
       }
       throw new PersistenceConflictError(`record id already exists with different content: ${normalized.recordId}`);
     }
@@ -584,20 +574,24 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
        RETURNING latest_sequence AS sequence`,
     ).get(new Date().toISOString(), normalized.agentConversationId);
     if (!next) throw new Error(`conversation is deleted: ${normalized.agentConversationId}`);
-    runSql(this.database,
+    const inserted = this.database.query<{ row_id: number }, SqlValue[]>(
       `INSERT INTO conversation_records(
         record_id, agent_session_id, agent_conversation_id, sequence,
-        kind, timestamp, metadata, payload_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        kind, timestamp, operation_id, metadata
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      RETURNING row_id`,
+    ).get(
       normalized.recordId,
       normalized.agentSessionId,
       normalized.agentConversationId,
       next.sequence,
       normalized.kind,
       normalized.timestamp,
+      operationIdFromRecord(normalized),
       normalized.metadata ?? null,
-      payloadJson,
     );
+    if (!inserted) throw new Error(`could not persist conversation record: ${normalized.recordId}`);
+    insertConversationRecordDetail(this.database, Number(inserted.row_id), normalized);
     return Object.freeze({ ...normalized, sequence: next.sequence }) as ConversationRecord;
   }
 }
@@ -612,30 +606,31 @@ class SqliteConversationMessagePersistence implements ConversationMessagePersist
     requireConversation(this.database, agentConversationId);
     const limit = boundedInteger(options.limit ?? 100, 1, 1_000, "message limit");
     const offset = decodeOffset(options.cursor);
-    const where = ["agent_conversation_id = ?", "kind = 'message'"];
+    const where = ["r.agent_conversation_id = ?", "r.kind = 'message'"];
     const parameters: SqlValue[] = [agentConversationId];
     if (options.afterSequence !== undefined) {
-      where.push("sequence > ?");
+      where.push("r.sequence > ?");
       parameters.push(nonNegativeInteger(options.afterSequence, "afterSequence"));
     }
     if (options.throughSequence !== undefined) {
-      where.push("sequence <= ?");
+      where.push("r.sequence <= ?");
       parameters.push(nonNegativeInteger(options.throughSequence, "throughSequence"));
     }
     if (options.participantIds?.length) {
-      where.push(`json_extract(payload_json, '$.participantId') IN (${options.participantIds.map(() => "?").join(", ")})`);
+      where.push(`m.participant_id IN (${options.participantIds.map(() => "?").join(", ")})`);
       parameters.push(...options.participantIds);
     }
     parameters.push(limit + 1, offset);
-    const rows = this.database.query<RecordRow, SqlValue[]>(
-      `SELECT * FROM conversation_records
+    const rows = this.database.query<ConversationRecordRow, SqlValue[]>(
+      `SELECT r.* FROM conversation_records r
+       JOIN conversation_messages m ON m.record_row_id = r.row_id
        WHERE ${where.join(" AND ")}
-       ORDER BY sequence
+       ORDER BY r.sequence
        LIMIT ? OFFSET ?`,
     ).all(...parameters);
     const hasMore = rows.length > limit;
     return Object.freeze({
-      messages: Object.freeze(rows.slice(0, limit).map(recordFromRow) as MessageRecord[]),
+      messages: hydrateConversationRecords(this.database, rows.slice(0, limit)) as readonly MessageRecord[],
       ...(hasMore ? { nextCursor: encodeOffset(offset + limit) } : {}),
     });
   }
@@ -1234,51 +1229,14 @@ class SqliteSearchPersistence implements SearchPersistence {
   async search(query: SearchQuery): Promise<readonly SearchMatch[]> {
     if (!query.text.trim()) throw new Error("search text cannot be blank");
     const limit = boundedInteger(query.limit ?? 50, 1, 500, "search limit");
-    const where = ["conversation_record_fts MATCH ?"];
-    const parameters: SqlValue[] = [query.text];
-    if (query.conversationIds?.length) {
-      where.push(`r.agent_conversation_id IN (${query.conversationIds.map(() => "?").join(", ")})`);
-      parameters.push(...query.conversationIds);
-    }
-    if (query.kinds?.length) {
-      where.push(`r.kind IN (${query.kinds.map(() => "?").join(", ")})`);
-      parameters.push(...query.kinds);
-    }
-    if (query.participantIds?.length) {
-      where.push(`json_extract(r.payload_json, '$.participantId') IN (${query.participantIds.map(() => "?").join(", ")})`);
-      parameters.push(...query.participantIds);
-    }
-    if (query.after) {
-      where.push("r.timestamp >= ?");
-      parameters.push(query.after);
-    }
-    if (query.before) {
-      where.push("r.timestamp <= ?");
-      parameters.push(query.before);
-    }
-    parameters.push(limit);
-    const rows = this.database.query<{
-      record_id: string;
-      agent_conversation_id: string;
-      sequence: number;
-      kind: string;
-      score: number;
-      snippet: string | null;
-    }, SqlValue[]>(
-      `SELECT
-         r.record_id,
-         r.agent_conversation_id,
-         r.sequence,
-         r.kind,
-         bm25(conversation_record_fts) AS score,
-         snippet(conversation_record_fts, 0, '[', ']', '…', 32) AS snippet
-       FROM conversation_record_fts
-       JOIN conversation_records r ON r.row_id = conversation_record_fts.rowid
-       WHERE ${where.join(" AND ")}
-       ORDER BY score, r.sequence
-       LIMIT ?`,
-    ).all(...parameters);
-    return Object.freeze(rows.map((row): SearchMatch => Object.freeze({
+    const requested = query.kinds?.length
+      ? query.kinds
+      : (["message", "tool_call", "activity"] as const);
+    const searchable = requested.filter((kind): kind is "message" | "tool_call" | "activity" =>
+      kind === "message" || kind === "tool_call" || kind === "activity");
+    const rows = searchable.flatMap((kind) => searchRecordKind(this.database, kind, query, limit));
+    rows.sort((left, right) => left.score - right.score || left.sequence - right.sequence);
+    return Object.freeze(rows.slice(0, limit).map((row): SearchMatch => Object.freeze({
       recordId: row.record_id,
       agentConversationId: row.agent_conversation_id as AgentConversationId,
       sequence: Number(row.sequence),
@@ -1289,14 +1247,80 @@ class SqliteSearchPersistence implements SearchPersistence {
   }
 
   async rebuild(): Promise<void> {
-    this.database.exec("INSERT INTO conversation_record_fts(conversation_record_fts) VALUES ('rebuild')");
+    for (const table of SEARCH_FTS_TABLES) {
+      this.database.exec(`INSERT INTO ${table}(${table}) VALUES ('rebuild')`);
+    }
   }
 
   async integrityCheck(): Promise<void> {
-    this.database.exec(
-      "INSERT INTO conversation_record_fts(conversation_record_fts, rank) VALUES ('integrity-check', 1)",
-    );
+    for (const table of SEARCH_FTS_TABLES) {
+      this.database.exec(`INSERT INTO ${table}(${table}, rank) VALUES ('integrity-check', 1)`);
+    }
   }
+}
+
+const SEARCH_FTS_TABLES = [
+  "conversation_messages_fts",
+  "conversation_tool_calls_fts",
+  "conversation_activities_fts",
+] as const;
+
+interface SearchRow {
+  readonly record_id: string;
+  readonly agent_conversation_id: string;
+  readonly sequence: number;
+  readonly kind: string;
+  readonly score: number;
+  readonly snippet: string | null;
+}
+
+function searchRecordKind(
+  database: Database,
+  kind: "message" | "tool_call" | "activity",
+  query: SearchQuery,
+  limit: number,
+): SearchRow[] {
+  if (query.participantIds?.length && kind !== "message") return [];
+  const table = kind === "message"
+    ? "conversation_messages_fts"
+    : kind === "tool_call"
+      ? "conversation_tool_calls_fts"
+      : "conversation_activities_fts";
+  const detailTable = kind === "message" ? "conversation_messages" : null;
+  const where = [`${table} MATCH ?`, "r.kind = ?"];
+  const parameters: SqlValue[] = [query.text, kind];
+  if (query.conversationIds?.length) {
+    where.push(`r.agent_conversation_id IN (${query.conversationIds.map(() => "?").join(", ")})`);
+    parameters.push(...query.conversationIds);
+  }
+  if (query.participantIds?.length) {
+    where.push(`d.participant_id IN (${query.participantIds.map(() => "?").join(", ")})`);
+    parameters.push(...query.participantIds);
+  }
+  if (query.after) {
+    where.push("r.timestamp >= ?");
+    parameters.push(query.after);
+  }
+  if (query.before) {
+    where.push("r.timestamp <= ?");
+    parameters.push(query.before);
+  }
+  parameters.push(limit);
+  return database.query<SearchRow, SqlValue[]>(
+    `SELECT
+       r.record_id,
+       r.agent_conversation_id,
+       r.sequence,
+       r.kind,
+       bm25(${table}) AS score,
+       snippet(${table}, 0, '[', ']', '…', 32) AS snippet
+     FROM ${table}
+     JOIN conversation_records r ON r.row_id = ${table}.rowid
+     ${detailTable ? `JOIN ${detailTable} d ON d.record_row_id = r.row_id` : ""}
+     WHERE ${where.join(" AND ")}
+     ORDER BY score, r.sequence
+     LIMIT ?`,
+  ).all(...parameters);
 }
 
 class SqliteAuditOutboxPersistence implements AuditOutboxPersistence {
@@ -1523,33 +1547,6 @@ function ensureParticipantDirect(
   return participant;
 }
 
-function recordPayload(record: NewConversationRecord): Record<string, unknown> {
-  const {
-    recordId: _recordId,
-    agentSessionId: _agentSessionId,
-    agentConversationId: _agentConversationId,
-    kind: _kind,
-    timestamp: _timestamp,
-    metadata: _metadata,
-    ...payload
-  } = record;
-  return payload;
-}
-
-function recordFromRow(row: RecordRow): ConversationRecord {
-  const payload = parseObject(row.payload_json);
-  return Object.freeze({
-    recordId: row.record_id,
-    agentSessionId: row.agent_session_id as AgentSessionId,
-    agentConversationId: row.agent_conversation_id as AgentConversationId,
-    sequence: Number(row.sequence),
-    kind: row.kind,
-    timestamp: row.timestamp,
-    ...(row.metadata !== null ? { metadata: row.metadata } : {}),
-    ...payload,
-  }) as ConversationRecord;
-}
-
 function providerSessionFromRow(row: Record<string, unknown>): ProviderSessionRecord {
   return Object.freeze({
     providerSessionRecordId: String(row.provider_session_record_id),
@@ -1636,14 +1633,6 @@ function extensionRegistrationFromRow(row: {
 
 function parseJson(value: string): PersistenceJsonValue {
   return JSON.parse(value) as PersistenceJsonValue;
-}
-
-function parseObject(value: string): Record<string, unknown> {
-  const parsed = JSON.parse(value) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("persisted conversation record payload is not an object");
-  }
-  return parsed as Record<string, unknown>;
 }
 
 function parseStringArray(value: string): string[] {
