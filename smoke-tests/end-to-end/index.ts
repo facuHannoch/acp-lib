@@ -328,7 +328,7 @@ async function openAgent(defaultAdapterId = adapterId): Promise<Agent> {
     },
     adapters,
     defaultAdapterId,
-    ...(defaultAdapterId === "codex" ? { checkpointing: {} } : {}),
+    ...(defaultAdapterId !== "test" ? { checkpointing: {} } : {}),
   });
 }
 
@@ -337,6 +337,7 @@ async function waitForCheckpoint(
   conversationId: AgentConversationId,
   throughSequence: number,
 ) {
+  assert.ok(agent.checkpointing, "checkpointing is disabled for the recovery smoke phase");
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     const checkpoint = await agent.checkpointing?.latest(conversationId);
