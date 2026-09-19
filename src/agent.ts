@@ -27,6 +27,7 @@ import {
 } from "./identity.ts";
 import {
   IMPLICIT_USER_PARTICIPANT_ID,
+  PersistenceCapabilityError,
   normalizeParticipantRef,
   resolveConversationRecordCapture,
   shouldCaptureProtocolMethod,
@@ -41,9 +42,17 @@ import {
   type ParticipantRef,
   type PersistenceBackend,
   type PersistenceExtension,
+  type PersistenceScope,
   type RecordCaptureLevel,
 } from "./persistence/backend.ts";
 import { SqliteAgentPersistence } from "./persistence/sqlite-backend.ts";
+import {
+  projectAgentAuditObservation,
+  resolveAgentAuditLogConfig,
+  type AgentAuditLogConfig,
+  type NormalizedAgentObservation,
+  type ResolvedAgentAuditLogConfig,
+} from "./audit/index.ts";
 import type {
   AgentConversationOwnerLifecycle,
   OwnedPromptCompleted,
@@ -123,6 +132,7 @@ export interface AgentConfig {
     readonly strategies?: readonly InternalInferenceStrategy[];
   };
   readonly checkpointing?: ConversationCheckpointingConfig;
+  readonly auditLog?: false | AgentAuditLogConfig;
 }
 
 export interface CreateAgentConversationConfig {
@@ -180,6 +190,7 @@ export class Agent {
     identity: AgentIdentityRuntime,
     adapters: AgentAdapterRegistry,
     config: AgentConfig,
+    private readonly auditLog: ResolvedAgentAuditLogConfig | null,
   ) {
     this.id = id;
     this.persistence = persistence;
@@ -196,6 +207,7 @@ export class Agent {
       defaults: config.conversationDefaults ?? {},
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
       checkpointing,
+      auditLog,
     });
     this.conversations = this.manager;
     if (checkpointing?.enabled) {
@@ -288,6 +300,10 @@ export class Agent {
   }
 
   static async open(config: AgentConfig): Promise<Agent> {
+    const auditLog = config.auditLog && resolveAgentAuditLogConfig(config.auditLog);
+    if (auditLog && config.persistence.kind === "custom") {
+      throw new PersistenceCapabilityError("auditOutbox");
+    }
     const registrations = Array.isArray(config.adapters)
       ? config.adapters
       : Object.entries(config.adapters).map(([id, adapter]) => ({ id, adapter }));
@@ -320,13 +336,29 @@ export class Agent {
       });
       id = persistence.identityRecord.agentSessionId;
     }
-    return new Agent(
-      id,
-      persistence,
-      config.identity ?? new NoopAgentIdentityRuntime(),
-      adapters,
-      config,
-    );
+    try {
+      if (auditLog) {
+        if (!persistence.auditOutbox) throw new PersistenceCapabilityError("auditOutbox");
+        const state = await persistence.auditOutbox.state();
+        await persistence.auditOutbox.initialize(
+          state?.auditLogId ?? `audlog-${randomUUID()}`,
+          auditLog.captureFingerprint,
+        );
+      }
+      const agent = new Agent(
+        id,
+        persistence,
+        config.identity ?? new NoopAgentIdentityRuntime(),
+        adapters,
+        config,
+        auditLog || null,
+      );
+      await agent.recordAgentAuditObservation("agent_lifecycle", "opened");
+      return agent;
+    } catch (error) {
+      await persistence.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   static async create(config: AgentConfig): Promise<Agent> {
@@ -336,10 +368,40 @@ export class Agent {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.checkpointing?.close();
-    await (this.internalInferences as DefaultInternalInferenceManager | undefined)?.close();
-    await this.manager.stopAll();
-    await this.persistence.close();
+    let shutdownError: unknown;
+    try {
+      this.checkpointing?.close();
+      await (this.internalInferences as DefaultInternalInferenceManager | undefined)?.close();
+      await this.manager.stopAll();
+      await this.recordAgentAuditObservation("agent_lifecycle", "closed");
+    } catch (error) {
+      shutdownError = error;
+    }
+    try {
+      await this.persistence.close();
+    } catch (error) {
+      if (shutdownError !== undefined) {
+        throw new AggregateError([shutdownError, error], "agent shutdown and persistence close both failed");
+      }
+      throw error;
+    }
+    if (shutdownError !== undefined) throw shutdownError;
+  }
+
+  private async recordAgentAuditObservation(
+    kind: "agent_lifecycle" | "identity" | "internal_inference",
+    state: string,
+  ): Promise<void> {
+    const auditLog = this.auditLog;
+    if (!auditLog) return;
+    await enqueueAuditObservation(this.persistence, {
+      scope: "agent",
+      sourceObservationId: `${kind}-${randomUUID()}`,
+      agentSessionId: this.id,
+      kind,
+      occurredAt: new Date().toISOString(),
+      state,
+    }, auditLog);
   }
 }
 
@@ -351,6 +413,7 @@ interface ManagerSettings {
   readonly defaults: AgentConversationRuntimeDefaults;
   readonly meteringRecords: MeteringRecordRetention;
   readonly checkpointing: ResolvedConversationCheckpointingConfig | null;
+  readonly auditLog: ResolvedAgentAuditLogConfig | null;
 }
 
 class DefaultAgentConversationManager implements AgentConversationManager {
@@ -744,7 +807,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       timestamp: new Date().toISOString(),
       role: "user",
       participantId: participant.id,
-      content: capturedMessageContent(input.text, this.settings.capture),
+      content: input.text,
       status: "completed",
       metadata: JSON.stringify({ operationId: input.operationId }),
     }]);
@@ -765,7 +828,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       kind: "message",
       timestamp,
       role: "assistant",
-      content: capturedMessageContent(message.text, this.settings.capture),
+      content: message.text,
       status,
       metadata: JSON.stringify({
         operationId: input.operationId,
@@ -787,7 +850,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       kind: "message",
       timestamp,
       role: "assistant",
-      content: capturedMessageContent(message.text, this.settings.capture),
+      content: message.text,
       status: "failed",
       metadata: JSON.stringify({
         operationId: input.operationId,
@@ -823,18 +886,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
   }
 
   async record(record: NewConversationRecord): Promise<void> {
-    const level = record.kind === "protocol"
-      ? this.settings.capture.protocol.level
-      : this.settings.capture[record.kind];
-    if (level === "none") return;
-    if (
-      record.kind === "protocol"
-      && !shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method)
-    ) return;
-    const persisted = await this.agent.persistence.records.append(
-      captureRuntimeRecord(record, level),
-    );
-    await this.updateIdentity([persisted]);
+    await this.updateIdentity(await this.persistObservations([record]));
   }
 
   async meteringRecorded(record: OperationMeteringRecord): Promise<void> {
@@ -846,8 +898,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         record,
         meteringRecords: this.settings.meteringRecords,
       });
-      if (level === "none") return;
-      reference = await persistence.records.append(captureRuntimeRecord({
+      const timelineRecord: NewConversationRecord = {
         recordId: `${record.operationId}:metering`,
         agentSessionId: this.agent.id,
         agentConversationId: this.conversationId,
@@ -857,7 +908,19 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         meteringRecordId: record.operationId,
         status: record.usage.status === "metered" ? "available" : "unavailable",
         metadata: JSON.stringify({ operationId: record.operationId }),
-      }, level));
+      };
+      if (level !== "none") {
+        reference = await persistence.records.append(captureRuntimeRecord(timelineRecord, level));
+      }
+      if (this.settings.auditLog) {
+        await enqueueAuditObservation(persistence, {
+          scope: "conversation",
+          sourceObservationId: timelineRecord.recordId,
+          operationId: record.operationId,
+          record: timelineRecord,
+          meteringRecord: record,
+        }, this.settings.auditLog);
+      }
     });
     if (reference) await this.updateIdentity([reference]);
   }
@@ -883,8 +946,42 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
   private async appendMessages(
     records: readonly NewConversationRecord[],
   ): Promise<readonly ConversationRecord[]> {
-    if (this.settings.capture.message === "none" || records.length === 0) return Object.freeze([]);
-    return await this.agent.persistence.records.appendMany(records);
+    return await this.persistObservations(records);
+  }
+
+  private async persistObservations(
+    records: readonly NewConversationRecord[],
+  ): Promise<readonly ConversationRecord[]> {
+    if (records.length === 0) return Object.freeze([]);
+    if (!this.settings.auditLog && records.every((record) => {
+      if (record.kind !== "protocol") return this.settings.capture[record.kind] === "none";
+      return this.settings.capture.protocol.level === "none"
+        || !shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method);
+    })) return Object.freeze([]);
+    const persisted: ConversationRecord[] = [];
+    await this.agent.persistence.transaction(async (persistence) => {
+      for (const record of records) {
+        const level = record.kind === "protocol"
+          ? this.settings.capture.protocol.level
+          : this.settings.capture[record.kind];
+        const canonicalAccepted = level !== "none" && (
+          record.kind !== "protocol"
+          || shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method)
+        );
+        if (canonicalAccepted) {
+          persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
+        }
+        if (this.settings.auditLog) {
+          await enqueueAuditObservation(persistence, {
+            scope: "conversation",
+            sourceObservationId: record.recordId,
+            operationId: operationIdFromMetadata(record.metadata),
+            record,
+          }, this.settings.auditLog);
+        }
+      }
+    });
+    return Object.freeze(persisted);
   }
 
   private async updateIdentity(records: readonly ConversationRecord[]): Promise<void> {
@@ -915,13 +1012,6 @@ function internalInferenceMeteringKind(purpose: string): MeteredOperationKind {
     || purpose === "identity_update"
   ) return purpose;
   return "internal_command";
-}
-
-function capturedMessageContent(
-  content: string,
-  capture: ConversationRecordCapturePolicy,
-): string {
-  return capture.message === "metadata" ? "" : content;
 }
 
 function captureRuntimeRecord(
@@ -969,6 +1059,39 @@ function captureRuntimeRecord(
       return { ...record, content: undefined, data: undefined };
     case "metering":
       return record;
+  }
+}
+
+async function enqueueAuditObservation(
+  persistence: PersistenceBackend | PersistenceScope,
+  observation: NormalizedAgentObservation,
+  config: ResolvedAgentAuditLogConfig,
+): Promise<void> {
+  const projected = projectAgentAuditObservation(observation, config.capture);
+  if (!projected) return;
+  if (!persistence.auditOutbox) throw new PersistenceCapabilityError("auditOutbox");
+  await persistence.auditOutbox.enqueue({
+    outboxId: `aud-${randomUUID()}`,
+    sourceObservationId: projected.sourceObservationId,
+    ...(projected.sourceRecordId ? { sourceRecordId: projected.sourceRecordId } : {}),
+    ...(projected.operationId ? { operationId: projected.operationId } : {}),
+    ...(projected.agentConversationId ? { agentConversationId: projected.agentConversationId } : {}),
+    occurredAt: projected.occurredAt,
+    kind: projected.kind,
+    captureLevel: projected.captureLevel,
+    captureFingerprint: config.captureFingerprint,
+    payload: projected.payload,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+function operationIdFromMetadata(metadata: string | undefined): string | undefined {
+  if (!metadata) return undefined;
+  try {
+    const value = JSON.parse(metadata) as { operationId?: unknown };
+    return typeof value.operationId === "string" && value.operationId ? value.operationId : undefined;
+  } catch {
+    return undefined;
   }
 }
 

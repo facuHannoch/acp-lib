@@ -74,6 +74,46 @@ describe("Agent owner", () => {
     expect(messages[1]).toMatchObject({ role: "assistant" });
   });
 
+  test("captures audit observations independently from canonical conversation policy", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+      capture: { message: "none", activity: "none", tool_call: "none", metering: "none" },
+      auditLog: {
+        directory: join(directory, "audit"),
+        capture: {
+          message: "content",
+          activity: "none",
+          tool_call: "none",
+          metering: "none",
+        },
+      },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("audit-only message");
+
+    expect((await agent.persistence.messages.list(conversation.id)).messages).toHaveLength(0);
+    const pending = await agent.persistence.auditOutbox.pending(100);
+    const messages = pending.filter((item) => item.kind === "message");
+    expect(messages.map((item) => item.payload)).toEqual([
+      expect.objectContaining({ role: "user", content: "audit-only message" }),
+      expect.objectContaining({ role: "assistant" }),
+    ]);
+    expect(messages.every((item) => item.agentConversationId === conversation.id)).toBe(true);
+    expect((await agent.persistence.auditOutbox.state())?.lastAllocatedSequence).toBe(pending.length);
+  });
+
+  test("rejects version-2 audit configuration for a custom persistence backend", async () => {
+    const { agent } = await openAgent();
+    await expect(Agent.open({
+      persistence: { kind: "custom", backend: agent.persistence },
+      adapters: operationsAdapters(),
+      auditLog: { directory: "/tmp/audit-not-opened" },
+    })).rejects.toThrow("persistence capability is unavailable: auditOutbox");
+  });
+
   test("preserves every assistant message boundary in canonical persistence", async () => {
     const directory = await makeDirectory();
     const agent = await track(Agent.open({
