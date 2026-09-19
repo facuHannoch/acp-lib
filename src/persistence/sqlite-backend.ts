@@ -20,6 +20,7 @@ import {
   type AgentMeteringCommitInput,
   type AgentPersistenceIdentity,
   type AuditOutboxItem,
+  type AuditOutboxBacklog,
   type AuditOutboxPersistence,
   type ConversationCheckpointPersistence,
   type ConversationListOptions,
@@ -1404,6 +1405,24 @@ class SqliteAuditOutboxPersistence implements AuditOutboxPersistence {
 
   async state(): Promise<AgentAuditState | null> {
     return readAuditState(this.database);
+  }
+
+  async backlog(): Promise<AuditOutboxBacklog> {
+    const row = this.database.query<{
+      pending_count: number;
+      pending_payload_bytes: number;
+      oldest_pending_at: string | null;
+    }, []>(
+      `SELECT COUNT(*) AS pending_count,
+              COALESCE(SUM(payload_bytes), 0) AS pending_payload_bytes,
+              MIN(created_at) AS oldest_pending_at
+       FROM audit_outbox`,
+    ).get()!;
+    return Object.freeze({
+      pendingCount: Number(row.pending_count),
+      pendingPayloadBytes: Number(row.pending_payload_bytes),
+      ...(row.oldest_pending_at !== null ? { oldestPendingAt: row.oldest_pending_at } : {}),
+    });
   }
 
   async enqueue(item: NewAuditOutboxItem): Promise<AuditOutboxItem> {

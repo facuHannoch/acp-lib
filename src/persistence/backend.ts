@@ -384,6 +384,12 @@ export interface AgentAuditState {
   readonly updatedAt: string;
 }
 
+export interface AuditOutboxBacklog {
+  readonly pendingCount: number;
+  readonly pendingPayloadBytes: number;
+  readonly oldestPendingAt?: string;
+}
+
 export interface PersistenceExtensionRegistration {
   readonly extensionId: string;
   readonly schemaVersion: number;
@@ -527,6 +533,7 @@ export interface IdentityPersistence {
 export interface AuditOutboxPersistence {
   initialize(auditLogId: string, captureFingerprint: string, now?: string): Promise<AgentAuditState>;
   state(): Promise<AgentAuditState | null>;
+  backlog(): Promise<AuditOutboxBacklog>;
   enqueue(item: NewAuditOutboxItem): Promise<AuditOutboxItem>;
   head(): Promise<AuditOutboxItem | null>;
   pending(limit?: number, now?: string): Promise<readonly AuditOutboxItem[]>;

@@ -4,11 +4,14 @@ import type { FileHandle } from "node:fs/promises";
 import type { AgentSessionId } from "../agent-ids.ts";
 import type {
   AgentAuditState,
+  AuditOutboxBacklog,
   AuditOutboxItem,
   PersistenceBackend,
 } from "../persistence/backend.ts";
 import { canonicalizeJson } from "../persistence/integrity.ts";
 import { SqliteOwnerLock, SqliteOwnerLockConflictError } from "../persistence/sqlite-owner-lock.ts";
+import { SubscriptionHub } from "../observation/subscription-hub.ts";
+import type { StatefulSubscribable, Unsubscribe } from "../observation/contracts.ts";
 import type { ResolvedAgentAuditLogConfig } from "./config.ts";
 
 export interface AgentAuditSegmentHeaderV2 {
@@ -39,6 +42,54 @@ export interface AgentAuditEntryV2 {
   readonly payload: AuditOutboxItem["payload"];
 }
 
+export type AgentAuditRuntimeState = "idle" | "delivering" | "backoff" | "blocked" | "stopped";
+
+export interface AgentAuditSnapshot {
+  readonly state: AgentAuditRuntimeState;
+  readonly pendingCount: number;
+  readonly pendingPayloadBytes: number;
+  readonly oldestPendingAt?: string;
+  readonly lastAllocatedSequence: number;
+  readonly lastDeliveredSequence: number;
+  readonly headAttemptCount?: number;
+  readonly headLastError?: string;
+  readonly activeSegmentGeneration: number;
+  readonly activeSegmentBytes: number;
+  readonly directory: string;
+  readonly filePrefix: string;
+  readonly rotation: ResolvedAgentAuditLogConfig["rotation"];
+  readonly retry: ResolvedAgentAuditLogConfig["retry"];
+  readonly captureFingerprint: string;
+}
+
+export type AgentAuditNotificationKind =
+  | "pending"
+  | "batch_started"
+  | "batch_completed"
+  | "batch_failed"
+  | "backoff_started"
+  | "backoff_ended"
+  | "blocked"
+  | "flush_completed"
+  | "flush_timed_out"
+  | "stopped";
+
+export interface AgentAuditNotification {
+  readonly kind: AgentAuditNotificationKind;
+  readonly at: string;
+  readonly snapshot: AgentAuditSnapshot;
+}
+
+export interface AgentAuditFlushOptions {
+  readonly timeoutMs?: number;
+}
+
+export type AgentAuditFlushResult = Readonly<{
+  status: "delivered" | "pending" | "blocked" | "timed_out";
+  throughSequence: number;
+  deliveredThroughSequence: number;
+}>;
+
 export class AuditLogDestinationInUseError extends Error {
   constructor(readonly directory: string, readonly filePrefix: string, options?: ErrorOptions) {
     super(`audit log destination is already owned: ${join(directory, filePrefix)}`, options);
@@ -60,14 +111,26 @@ export class AuditLogHistoryMissingError extends Error {
   }
 }
 
+export class AuditLogDestinationBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuditLogDestinationBlockedError";
+  }
+}
+
 /** One agent-owned background writer. Rotation and tail recovery are layered onto this core. */
-export class AgentAuditRuntime {
+export class AgentAuditRuntime
+  implements StatefulSubscribable<AgentAuditSnapshot, AgentAuditNotification> {
   readonly directory: string;
   readonly filePrefix: string;
 
   private running = true;
+  private runtimeState: AgentAuditRuntimeState = "idle";
+  private syncedBatch?: readonly string[];
   private wake?: () => void;
   private readonly loop: Promise<void>;
+  private readonly subscriptions = new SubscriptionHub<AgentAuditNotification>();
+  private currentSnapshot: AgentAuditSnapshot;
   private constructor(
     private readonly persistence: PersistenceBackend,
     private readonly agentSessionId: AgentSessionId,
@@ -76,9 +139,11 @@ export class AgentAuditRuntime {
     private readonly ownerLock: SqliteOwnerLock,
     private readonly segmentPath: string,
     private readonly file: FileHandle,
+    initialSnapshot: AgentAuditSnapshot,
   ) {
     this.directory = config.directory;
     this.filePrefix = config.filePrefix;
+    this.currentSnapshot = initialSnapshot;
     this.loop = this.run();
   }
 
@@ -106,6 +171,12 @@ export class AgentAuditRuntime {
     try {
       await initializeFirstSegment(segmentPath, directory, input.agentSessionId, input.auditState);
       const file = await open(segmentPath, "a+", 0o600);
+      const [backlog, segment] = await Promise.all([
+        input.persistence.auditOutbox!.backlog(),
+        file.stat(),
+      ]);
+      const head = await input.persistence.auditOutbox!.head();
+      const initialSnapshot = makeSnapshot("idle", config, input.auditState, backlog, head, segment.size);
       return new AgentAuditRuntime(
         input.persistence,
         input.agentSessionId,
@@ -114,6 +185,7 @@ export class AgentAuditRuntime {
         ownerLock,
         segmentPath,
         file,
+        initialSnapshot,
       );
     } catch (error) {
       ownerLock.close();
@@ -123,10 +195,85 @@ export class AgentAuditRuntime {
 
   notifyPending(): void {
     this.wake?.();
+    this.emitCached("pending");
+  }
+
+  get snapshot(): AgentAuditSnapshot {
+    return this.currentSnapshot;
+  }
+
+  subscribe(listener: (event: AgentAuditNotification) => void): Unsubscribe {
+    return this.subscriptions.subscribe(listener);
+  }
+
+  async status(): Promise<AgentAuditSnapshot> {
+    if (this.runtimeState === "stopped") {
+      if (this.currentSnapshot.state !== "stopped") {
+        this.currentSnapshot = Object.freeze({ ...this.currentSnapshot, state: "stopped" });
+      }
+      return this.currentSnapshot;
+    }
+    const [state, backlog, head, segment] = await Promise.all([
+      this.persistence.auditOutbox!.state(),
+      this.persistence.auditOutbox!.backlog(),
+      this.persistence.auditOutbox!.head(),
+      this.file.stat(),
+    ]);
+    if (!state) throw new Error("agent audit state is unavailable");
+    this.currentSnapshot = makeSnapshot(
+      this.runtimeState,
+      this.config,
+      state,
+      backlog,
+      head,
+      segment.size,
+    );
+    return this.currentSnapshot;
+  }
+
+  async flush(options: AgentAuditFlushOptions = {}): Promise<AgentAuditFlushResult> {
+    const timeoutMs = boundedNonNegative(options.timeoutMs ?? 30_000, "audit flush timeoutMs");
+    const state = await this.persistence.auditOutbox!.state();
+    if (!state) throw new Error("agent audit state is unavailable");
+    const throughSequence = state.lastAllocatedSequence;
+    const deadline = Date.now() + timeoutMs;
+    this.notifyPending();
+    while (true) {
+      const snapshot = await this.status();
+      if (snapshot.lastDeliveredSequence >= throughSequence) {
+        const result = flushResult("delivered", throughSequence, snapshot.lastDeliveredSequence);
+        await this.publish("flush_completed");
+        return result;
+      }
+      if (snapshot.state === "blocked") {
+        return flushResult("blocked", throughSequence, snapshot.lastDeliveredSequence);
+      }
+      if (snapshot.state === "stopped") {
+        return flushResult("pending", throughSequence, snapshot.lastDeliveredSequence);
+      }
+      if (Date.now() >= deadline) {
+        const result = flushResult("timed_out", throughSequence, snapshot.lastDeliveredSequence);
+        await this.publish("flush_timed_out");
+        return result;
+      }
+      await Bun.sleep(Math.min(20, Math.max(1, deadline - Date.now())));
+    }
+  }
+
+  async retry(): Promise<void> {
+    if (this.runtimeState === "blocked") throw new AuditLogDestinationBlockedError("audit destination is blocked");
+    if (!this.running) throw new Error("audit runtime is stopped");
+    await this.persistence.auditOutbox!.retryHead();
+    if (this.runtimeState === "backoff") {
+      this.runtimeState = "idle";
+      await this.publish("backoff_ended");
+    }
+    this.notifyPending();
   }
 
   async close(): Promise<void> {
     if (!this.running) return;
+    await this.flush({ timeoutMs: this.config.shutdownGraceMs });
     this.running = false;
     this.wake?.();
     try {
@@ -138,28 +285,74 @@ export class AgentAuditRuntime {
         this.ownerLock.close();
       }
     }
+    this.runtimeState = "stopped";
+    await this.publish("stopped");
+    this.subscriptions.clear();
   }
 
   private async run(): Promise<void> {
     while (this.running) {
-      const pending = await this.persistence.auditOutbox!.pending(100);
+      if (this.runtimeState === "blocked") {
+        await this.waitForWork();
+        continue;
+      }
+      let pending: readonly AuditOutboxItem[];
+      try {
+        pending = await this.persistence.auditOutbox!.pending(100);
+      } catch (error) {
+        this.runtimeState = "blocked";
+        await this.publish("blocked");
+        await this.waitForWork();
+        continue;
+      }
       if (pending.length === 0) {
+        if (this.runtimeState === "backoff") {
+          this.runtimeState = "idle";
+          await this.publish("backoff_ended");
+        }
         await this.waitForWork();
         continue;
       }
       try {
+        this.runtimeState = "delivering";
+        await this.publish("batch_started");
         await this.deliver(pending);
+        this.runtimeState = "idle";
+        await this.publish("batch_completed");
       } catch (error) {
+        if (error instanceof AuditLogDestinationBlockedError) {
+          this.runtimeState = "blocked";
+          await this.publish("blocked");
+          await this.waitForWork();
+          continue;
+        }
         const head = pending[0]!;
-        const delay = retryDelay(this.config, head.attemptCount + 1);
+        const delay = retryDelay(this.config, head.attemptCount + 1, Math.random());
         const nextAttemptAt = new Date(Date.now() + delay).toISOString();
         await this.persistence.auditOutbox!.markFailed(head.outboxId, safeError(error), nextAttemptAt);
+        this.runtimeState = "backoff";
+        await this.publish("batch_failed");
+        await this.publish("backoff_started");
         await this.waitForWork(delay);
+        if (this.runtimeState === "backoff") {
+          this.runtimeState = "idle";
+          await this.publish("backoff_ended");
+        }
       }
     }
   }
 
   private async deliver(items: readonly AuditOutboxItem[]): Promise<void> {
+    const outboxIds = items.map((item) => item.outboxId);
+    if (this.syncedBatch) {
+      if (
+        this.syncedBatch.length !== outboxIds.length
+        || this.syncedBatch.some((id, index) => id !== outboxIds[index])
+      ) throw new AuditLogDestinationBlockedError("synced audit batch no longer matches the pending head");
+      await this.persistence.auditOutbox!.acknowledge(this.syncedBatch);
+      this.syncedBatch = undefined;
+      return;
+    }
     const lines = items.map((item) => canonicalizeJson(toAuditEntry(
       this.auditState.auditLogId,
       this.agentSessionId,
@@ -168,7 +361,9 @@ export class AgentAuditRuntime {
     await this.file.writeFile(lines.join(""), "utf8");
     await this.file.sync();
     await assertSameOpenFile(this.file, this.segmentPath);
-    await this.persistence.auditOutbox!.acknowledge(items.map((item) => item.outboxId));
+    this.syncedBatch = Object.freeze(outboxIds);
+    await this.persistence.auditOutbox!.acknowledge(outboxIds);
+    this.syncedBatch = undefined;
   }
 
   private async waitForWork(maxDelayMs = 1_000): Promise<void> {
@@ -183,6 +378,28 @@ export class AgentAuditRuntime {
       }
       this.wake = done;
     });
+  }
+
+  private async publish(kind: AgentAuditNotificationKind): Promise<void> {
+    try {
+      await this.status();
+    } catch {
+      // The state transition remains observable through the cached snapshot.
+      this.currentSnapshot = Object.freeze({ ...this.currentSnapshot, state: this.runtimeState });
+    }
+    this.subscriptions.emit(Object.freeze({
+      kind,
+      at: new Date().toISOString(),
+      snapshot: this.currentSnapshot,
+    }));
+  }
+
+  private emitCached(kind: AgentAuditNotificationKind): void {
+    this.subscriptions.emit(Object.freeze({
+      kind,
+      at: new Date().toISOString(),
+      snapshot: this.currentSnapshot,
+    }));
   }
 }
 
@@ -285,20 +502,27 @@ async function syncDirectory(directory: string): Promise<void> {
 }
 
 async function assertSameOpenFile(file: FileHandle, path: string): Promise<void> {
-  const [opened, named] = await Promise.all([file.stat(), open(path, "r")]);
+  let named: FileHandle;
   try {
+    named = await open(path, "r");
+  } catch (error) {
+    throw new AuditLogDestinationBlockedError(`active audit segment is unavailable: ${path}`);
+  }
+  try {
+    const opened = await file.stat();
     const current = await named.stat();
     if (opened.dev !== current.dev || opened.ino !== current.ino) {
-      throw new Error(`active audit segment was replaced: ${path}`);
+      throw new AuditLogDestinationBlockedError(`active audit segment was replaced: ${path}`);
     }
   } finally {
     await named.close();
   }
 }
 
-function retryDelay(config: ResolvedAgentAuditLogConfig, attempt: number): number {
+function retryDelay(config: ResolvedAgentAuditLogConfig, attempt: number, random: number): number {
   const exponent = Math.max(0, Math.min(30, attempt - 1));
-  return Math.min(config.retry.maxDelayMs, config.retry.initialDelayMs * 2 ** exponent);
+  const base = Math.min(config.retry.maxDelayMs, config.retry.initialDelayMs * 2 ** exponent);
+  return Math.max(1, Math.round(base * (0.9 + Math.min(1, Math.max(0, random)) * 0.2)));
 }
 
 function safeError(error: unknown): string {
@@ -307,4 +531,44 @@ function safeError(error: unknown): string {
 
 function isNodeErrorCode(error: unknown, code: string): boolean {
   return !!error && typeof error === "object" && "code" in error && error.code === code;
+}
+
+function makeSnapshot(
+  state: AgentAuditRuntimeState,
+  config: ResolvedAgentAuditLogConfig,
+  audit: AgentAuditState,
+  backlog: AuditOutboxBacklog,
+  head: AuditOutboxItem | null,
+  activeSegmentBytes: number,
+): AgentAuditSnapshot {
+  return Object.freeze({
+    state,
+    pendingCount: backlog.pendingCount,
+    pendingPayloadBytes: backlog.pendingPayloadBytes,
+    ...(backlog.oldestPendingAt ? { oldestPendingAt: backlog.oldestPendingAt } : {}),
+    lastAllocatedSequence: audit.lastAllocatedSequence,
+    lastDeliveredSequence: audit.lastDeliveredSequence,
+    ...(head ? { headAttemptCount: head.attemptCount } : {}),
+    ...(head?.lastError ? { headLastError: head.lastError } : {}),
+    activeSegmentGeneration: 1,
+    activeSegmentBytes,
+    directory: config.directory,
+    filePrefix: config.filePrefix,
+    rotation: config.rotation,
+    retry: config.retry,
+    captureFingerprint: audit.captureFingerprint,
+  });
+}
+
+function flushResult(
+  status: AgentAuditFlushResult["status"],
+  throughSequence: number,
+  deliveredThroughSequence: number,
+): AgentAuditFlushResult {
+  return Object.freeze({ status, throughSequence, deliveredThroughSequence });
+}
+
+function boundedNonNegative(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative safe integer`);
+  return value;
 }

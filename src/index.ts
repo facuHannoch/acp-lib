@@ -81,6 +81,7 @@ export type { SqliteAgentPersistenceConfig } from "./persistence/index.ts";
 export type {
   AgentConversationSummary,
   AgentAuditState,
+  AuditOutboxBacklog,
   AgentPersistenceIdentity,
   ConversationRecord,
   ConversationRecordCaptureConfig,

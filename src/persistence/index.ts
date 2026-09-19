@@ -19,6 +19,7 @@ export type {
   AgentAuditState,
   AgentPersistenceIdentity,
   AuditOutboxItem,
+  AuditOutboxBacklog,
   AuditOutboxPersistence,
   ConfigurationRecord,
   ConversationCheckpointPersistence,

@@ -10,6 +10,7 @@ import {
   resolveAgentAuditLogConfig,
 } from "../src/audit/index.ts";
 import { SqliteAgentPersistence } from "../src/persistence/sqlite-backend.ts";
+import type { AuditOutboxPersistence, PersistenceBackend } from "../src/persistence/backend.ts";
 
 const roots: string[] = [];
 const backends: SqliteAgentPersistence[] = [];
@@ -42,7 +43,8 @@ describe("agent audit delivery runtime", () => {
       createdAt: "2026-09-19T00:00:00.001Z",
     });
     fixture.runtime.notifyPending();
-    await waitUntil(async () => (await fixture.backend.auditOutbox.head()) === null);
+    const flushed = await fixture.runtime.flush({ timeoutMs: 3_000 });
+    expect(flushed).toMatchObject({ status: "delivered", throughSequence: 1, deliveredThroughSequence: 1 });
 
     const lines = (await readFile(join(fixture.auditDirectory, "audit.000001.jsonl"), "utf8"))
       .trimEnd().split("\n").map((line) => JSON.parse(line));
@@ -62,6 +64,73 @@ describe("agent audit delivery runtime", () => {
       payload: { role: "user", content: "hello" },
     });
     expect((await fixture.backend.auditOutbox.state())?.lastDeliveredSequence).toBe(1);
+    expect(await fixture.runtime.status()).toMatchObject({
+      state: "idle",
+      pendingCount: 0,
+      lastAllocatedSequence: 1,
+      lastDeliveredSequence: 1,
+    });
+  });
+
+  test("backs off after an acknowledgement failure and retries without appending the batch twice", async () => {
+    const root = await makeRoot();
+    const backend = await createBackend(root, "agent.sqlite");
+    const auditDirectory = join(root, "audit");
+    const config = resolveAgentAuditLogConfig({
+      directory: auditDirectory,
+      retry: { initialDelayMs: 60_000, maxDelayMs: 60_000 },
+    });
+    const state = await backend.auditOutbox.initialize("audit-log-1", config.captureFingerprint);
+    let failures = 1;
+    const flakyOutbox = proxyOutbox(backend.auditOutbox, async (ids, deliveredAt) => {
+      if (failures-- > 0) throw new Error("simulated acknowledgement failure");
+      return await backend.auditOutbox.acknowledge(ids, deliveredAt);
+    });
+    const persistence = new Proxy(backend, {
+      get(target, property, receiver) {
+        if (property === "auditOutbox") return flakyOutbox;
+        return Reflect.get(target, property, receiver);
+      },
+    }) as PersistenceBackend;
+    const runtime = await AgentAuditRuntime.open({
+      persistence,
+      agentSessionId: backend.identityRecord.agentSessionId,
+      config,
+      auditState: state,
+    });
+    runtimes.push(runtime);
+    const notifications: string[] = [];
+    runtime.subscribe(() => { throw new Error("isolated subscriber"); });
+    runtime.subscribe((event) => notifications.push(event.kind));
+    await backend.auditOutbox.enqueue({
+      outboxId: "outbox-1",
+      sourceObservationId: "source-1",
+      occurredAt: "2026-09-19T00:00:00.000Z",
+      kind: "agent_lifecycle",
+      captureLevel: "metadata",
+      captureFingerprint: config.captureFingerprint,
+      payload: { state: "opened" },
+      createdAt: "2026-09-19T00:00:00.000Z",
+    });
+    runtime.notifyPending();
+    await waitUntil(async () => (await runtime.status()).state === "backoff");
+    expect(await runtime.status()).toMatchObject({
+      pendingCount: 1,
+      pendingPayloadBytes: expect.any(Number),
+      headAttemptCount: 1,
+      headLastError: "Error: simulated acknowledgement failure",
+    });
+    expect(await runtime.flush({ timeoutMs: 0 })).toMatchObject({ status: "timed_out", throughSequence: 1 });
+    expect((await readFile(join(auditDirectory, "audit.000001.jsonl"), "utf8")).trimEnd().split("\n"))
+      .toHaveLength(2);
+
+    await runtime.retry();
+    expect(await runtime.flush({ timeoutMs: 3_000 })).toMatchObject({ status: "delivered" });
+    expect((await readFile(join(auditDirectory, "audit.000001.jsonl"), "utf8")).trimEnd().split("\n"))
+      .toHaveLength(2);
+    expect(notifications).toContain("batch_failed");
+    expect(notifications).toContain("backoff_started");
+    expect(notifications).toContain("batch_completed");
   });
 
   test("prevents two different agent databases from owning one destination", async () => {
@@ -136,4 +205,17 @@ async function waitUntil(check: () => Promise<boolean>): Promise<void> {
     await Bun.sleep(10);
   }
   throw new Error("timed out waiting for audit delivery");
+}
+
+function proxyOutbox(
+  target: AuditOutboxPersistence,
+  acknowledge: AuditOutboxPersistence["acknowledge"],
+): AuditOutboxPersistence {
+  return new Proxy(target, {
+    get(value, property) {
+      if (property === "acknowledge") return acknowledge;
+      const member = Reflect.get(value, property);
+      return typeof member === "function" ? member.bind(value) : member;
+    },
+  });
 }
