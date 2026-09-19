@@ -1,6 +1,6 @@
 import { Database, type Changes } from "bun:sqlite";
-import { mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, realpath } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   createAgentSessionId,
   isAgentConversationId,
@@ -74,6 +74,7 @@ import {
   sameConversationRecord,
   type ConversationRecordRow,
 } from "./sqlite-conversation-records.ts";
+import { SqliteOwnerLock, SqliteOwnerLockConflictError } from "./sqlite-owner-lock.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 type WriteRunner = <T>(work: () => T) => Promise<T>;
@@ -107,6 +108,16 @@ export interface SqliteAgentPersistenceConfig {
   readonly allowUnsafeWalVersion?: boolean;
 }
 
+export class AgentDatabaseInUseError extends Error {
+  readonly path: string;
+
+  constructor(path: string, options?: ErrorOptions) {
+    super(`agent database already has an active runtime owner: ${path}`, options);
+    this.name = "AgentDatabaseInUseError";
+    this.path = path;
+  }
+}
+
 /** One caller-located SQLite database containing exactly one agent and its conversations. */
 export class SqliteAgentPersistence implements PersistenceBackend {
   readonly path: string;
@@ -136,6 +147,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     database: Database,
     identityRecord: AgentPersistenceIdentity,
     fullTextSearch: boolean,
+    private readonly ownerLock?: SqliteOwnerLock,
   ) {
     this.path = path;
     this.database = database;
@@ -169,10 +181,26 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       throw new Error(`invalid agent session id for SQLite persistence: ${config.agentSessionId}`);
     }
     if (!config.path.trim()) throw new Error("SQLite persistence path cannot be blank");
-    const path = config.path === ":memory:" ? config.path : resolve(config.path);
-    if (path !== ":memory:") await mkdir(dirname(path), { recursive: true });
+    const path = config.path === ":memory:" ? config.path : await canonicalSqlitePath(config.path);
+    let ownerLock: SqliteOwnerLock | undefined;
+    if (path !== ":memory:") {
+      try {
+        ownerLock = await SqliteOwnerLock.acquire(path, `${path}.agent-owner.sqlite`);
+      } catch (error) {
+        if (error instanceof SqliteOwnerLockConflictError) {
+          throw new AgentDatabaseInUseError(path, { cause: error });
+        }
+        throw error;
+      }
+    }
 
-    const database = new Database(path, { create: true, readwrite: true, strict: true });
+    let database: Database;
+    try {
+      database = new Database(path, { create: true, readwrite: true, strict: true });
+    } catch (error) {
+      ownerLock?.close();
+      throw error;
+    }
     try {
       const busyTimeoutMs = boundedInteger(config.busyTimeoutMs ?? 5_000, 1, 60_000, "busyTimeoutMs");
       database.exec("PRAGMA foreign_keys = ON");
@@ -201,11 +229,15 @@ export class SqliteAgentPersistence implements PersistenceBackend {
         ?? (existingIdentity?.agent_session_id as AgentSessionId | undefined)
         ?? createAgentSessionId();
       const identityRecord = initializeAgentIdentity(database, agentSessionId, config.metadata);
-      const backend = new SqliteAgentPersistence(path, database, identityRecord, fullTextSearch);
+      const backend = new SqliteAgentPersistence(path, database, identityRecord, fullTextSearch, ownerLock);
       for (const extension of config.extensions ?? []) await backend.installExtension(extension);
       return backend;
     } catch (error) {
-      database.close();
+      try {
+        database.close();
+      } finally {
+        ownerLock?.close();
+      }
       throw error;
     }
   }
@@ -234,8 +266,12 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     if (this.closed) return;
     await this.writeTail;
     this.closed = true;
-    // sqlite3_close_v2 safely finalizes Bun's cached prepared statements.
-    this.database.close();
+    try {
+      // sqlite3_close_v2 safely finalizes Bun's cached prepared statements.
+      this.database.close();
+    } finally {
+      this.ownerLock?.close();
+    }
   }
 
   private createScope(
@@ -1658,6 +1694,22 @@ function decodeOffset(cursor: string | undefined): number {
   const match = /^offset:(\d+)$/.exec(decoded);
   if (!match) throw new Error("invalid persistence cursor");
   return nonNegativeInteger(Number(match[1]), "persistence cursor");
+}
+
+async function canonicalSqlitePath(input: string): Promise<string> {
+  const resolved = resolve(input);
+  const parent = dirname(resolved);
+  await mkdir(parent, { recursive: true });
+  try {
+    return await realpath(resolved);
+  } catch (error) {
+    if (!isNodeErrorCode(error, "ENOENT")) throw error;
+    return join(await realpath(parent), basename(resolved));
+  }
+}
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return !!error && typeof error === "object" && "code" in error && error.code === code;
 }
 
 function boundedInteger(value: number, minimum: number, maximum: number, label: string): number {

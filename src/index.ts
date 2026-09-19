@@ -70,6 +70,7 @@ export {
   searchableText,
 } from "./persistence/backend.ts";
 export {
+  AgentDatabaseInUseError,
   SQLITE_AGENT_SCHEMA_VERSION,
   SqliteAgentPersistence,
   hasSafeConcurrentWal,

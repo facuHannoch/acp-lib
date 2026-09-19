@@ -87,6 +87,7 @@ export type {
 } from "./backend.ts";
 
 export {
+  AgentDatabaseInUseError,
   SqliteAgentPersistence,
   hasSafeConcurrentWal,
   requireSqliteSearch,

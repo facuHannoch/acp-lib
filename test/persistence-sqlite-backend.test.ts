@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
 } from "../src/agent-ids.ts";
 import {
   IMPLICIT_USER_PARTICIPANT_ID,
+  AgentDatabaseInUseError,
   PersistenceConflictError,
   SqliteAgentPersistence,
   SQLITE_AGENT_SCHEMA_VERSION,
@@ -216,17 +217,15 @@ describe("SQLite agent persistence", () => {
     }
   });
 
-  test("serializes concurrent writers into one monotonic conversation sequence", async () => {
+  test("serializes concurrent writes through one owner into a monotonic conversation sequence", async () => {
     const directory = await makeDirectory();
     const path = join(directory, "agent.sqlite");
     const agentSessionId = createAgentSessionId();
-    const first = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
-    const second = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    const backend = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
     const conversationId = createAgentConversationId();
-    await first.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
 
     await Promise.all(Array.from({ length: 40 }, (_, index) => {
-      const backend = index % 2 === 0 ? first : second;
       return backend.records.append(message(
         agentSessionId,
         conversationId,
@@ -236,11 +235,50 @@ describe("SQLite agent persistence", () => {
       ));
     }));
 
-    const page = await first.records.list(conversationId, { limit: 100 });
+    const page = await backend.records.list(conversationId, { limit: 100 });
     expect(page.records).toHaveLength(40);
     expect(page.records.map((record) => record.sequence)).toEqual(
       Array.from({ length: 40 }, (_, index) => index + 1),
     );
+  });
+
+  test("rejects a second runtime owner and releases ownership on close", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    await expect(SqliteAgentPersistence.open({ path, agentSessionId })).rejects.toBeInstanceOf(
+      AgentDatabaseInUseError,
+    );
+
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+    const reopened = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    expect(reopened.identityRecord.agentSessionId).toBe(agentSessionId);
+    expect((await stat(`${path}.agent-owner.sqlite`)).mode & 0o777).toBe(0o600);
+  });
+
+  test("releases cross-process ownership when the owner process terminates", async () => {
+    const directory = await makeDirectory();
+    const path = join(directory, "agent.sqlite");
+    const readyPath = join(directory, "ready");
+    const holder = Bun.spawn([
+      process.execPath,
+      join(import.meta.dir, "fixtures", "sqlite-owner-holder.ts"),
+      path,
+      readyPath,
+    ], { stdout: "ignore", stderr: "pipe" });
+
+    try {
+      await waitForPath(readyPath, holder);
+      await expect(SqliteAgentPersistence.open({ path })).rejects.toBeInstanceOf(AgentDatabaseInUseError);
+      holder.kill("SIGKILL");
+      await holder.exited;
+      const reopened = await track(SqliteAgentPersistence.open({ path }));
+      expect(reopened.path).toBe(path);
+    } finally {
+      if (holder.exitCode === null) {
+        holder.kill("SIGKILL");
+        await holder.exited;
+      }
+    }
   });
 
   test("rolls back a multi-repository transaction", async () => {
@@ -534,6 +572,23 @@ async function track(promise: Promise<SqliteAgentPersistence>): Promise<SqliteAg
   const backend = await promise;
   opened.push(backend);
   return backend;
+}
+
+async function waitForPath(path: string, process_: ReturnType<typeof Bun.spawn>): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      if (process_.exitCode !== null) {
+        const stderr = await new Response(process_.stderr).text();
+        throw new Error(`SQLite owner fixture exited before acquiring ownership: ${stderr}`);
+      }
+      await Bun.sleep(20);
+    }
+  }
+  throw new Error("timed out waiting for SQLite owner fixture");
 }
 
 function message(
