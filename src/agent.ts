@@ -49,6 +49,7 @@ import { SqliteAgentPersistence } from "./persistence/sqlite-backend.ts";
 import {
   projectAgentAuditObservation,
   resolveAgentAuditLogConfig,
+  AgentAuditRuntime,
   type AgentAuditLogConfig,
   type NormalizedAgentObservation,
   type ResolvedAgentAuditLogConfig,
@@ -180,6 +181,7 @@ export class Agent {
   readonly conversations: AgentConversationManager;
   readonly internalInferences?: InternalInferenceManager;
   readonly checkpointing?: ConversationCheckpointCoordinator;
+  readonly audit?: AgentAuditRuntime;
 
   private readonly manager: DefaultAgentConversationManager;
   private closed = false;
@@ -191,11 +193,13 @@ export class Agent {
     adapters: AgentAdapterRegistry,
     config: AgentConfig,
     private readonly auditLog: ResolvedAgentAuditLogConfig | null,
+    audit: AgentAuditRuntime | undefined,
   ) {
     this.id = id;
     this.persistence = persistence;
     this.identity = identity;
     this.adapters = adapters;
+    this.audit = audit;
     const checkpointing = config.checkpointing
       ? resolveConversationCheckpointingConfig(config.checkpointing)
       : null;
@@ -336,14 +340,21 @@ export class Agent {
       });
       id = persistence.identityRecord.agentSessionId;
     }
+    let audit: AgentAuditRuntime | undefined;
     try {
       if (auditLog) {
         if (!persistence.auditOutbox) throw new PersistenceCapabilityError("auditOutbox");
         const state = await persistence.auditOutbox.state();
-        await persistence.auditOutbox.initialize(
+        const initialized = await persistence.auditOutbox.initialize(
           state?.auditLogId ?? `audlog-${randomUUID()}`,
           auditLog.captureFingerprint,
         );
+        audit = await AgentAuditRuntime.open({
+          persistence,
+          agentSessionId: id,
+          config: auditLog,
+          auditState: initialized,
+        });
       }
       const agent = new Agent(
         id,
@@ -352,10 +363,12 @@ export class Agent {
         adapters,
         config,
         auditLog || null,
+        audit,
       );
       await agent.recordAgentAuditObservation("agent_lifecycle", "opened");
       return agent;
     } catch (error) {
+      await audit?.close().catch(() => undefined);
       await persistence.close().catch(() => undefined);
       throw error;
     }
@@ -377,15 +390,20 @@ export class Agent {
     } catch (error) {
       shutdownError = error;
     }
+    const cleanupErrors: unknown[] = [];
+    try {
+      await this.audit?.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
     try {
       await this.persistence.close();
     } catch (error) {
-      if (shutdownError !== undefined) {
-        throw new AggregateError([shutdownError, error], "agent shutdown and persistence close both failed");
-      }
-      throw error;
+      cleanupErrors.push(error);
     }
-    if (shutdownError !== undefined) throw shutdownError;
+    if (shutdownError !== undefined) cleanupErrors.unshift(shutdownError);
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "agent shutdown failed");
   }
 
   private async recordAgentAuditObservation(
@@ -402,6 +420,7 @@ export class Agent {
       occurredAt: new Date().toISOString(),
       state,
     }, auditLog);
+    this.audit?.notifyPending();
   }
 }
 
@@ -922,6 +941,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         }, this.settings.auditLog);
       }
     });
+    if (this.settings.auditLog) this.agent.audit?.notifyPending();
     if (reference) await this.updateIdentity([reference]);
   }
 
@@ -981,6 +1001,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         }
       }
     });
+    if (this.settings.auditLog) this.agent.audit?.notifyPending();
     return Object.freeze(persisted);
   }
 

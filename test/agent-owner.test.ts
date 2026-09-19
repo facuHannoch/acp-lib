@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -95,14 +95,18 @@ describe("Agent owner", () => {
     await conversation.prompt("audit-only message");
 
     expect((await agent.persistence.messages.list(conversation.id)).messages).toHaveLength(0);
-    const pending = await agent.persistence.auditOutbox.pending(100);
-    const messages = pending.filter((item) => item.kind === "message");
+    await waitUntil(async () => {
+      const state = await agent.persistence.auditOutbox.state();
+      return !!state && state.lastDeliveredSequence === state.lastAllocatedSequence;
+    });
+    const lines = (await readFile(join(directory, "audit", "audit.000001.jsonl"), "utf8"))
+      .trimEnd().split("\n").slice(1).map((line) => JSON.parse(line));
+    const messages = lines.filter((item) => item.kind === "message");
     expect(messages.map((item) => item.payload)).toEqual([
       expect.objectContaining({ role: "user", content: "audit-only message" }),
       expect.objectContaining({ role: "assistant" }),
     ]);
     expect(messages.every((item) => item.agentConversationId === conversation.id)).toBe(true);
-    expect((await agent.persistence.auditOutbox.state())?.lastAllocatedSequence).toBe(pending.length);
   });
 
   test("rejects version-2 audit configuration for a custom persistence backend", async () => {
@@ -469,4 +473,13 @@ async function track(agentPromise: Promise<Agent>): Promise<Agent> {
   const agent = await agentPromise;
   agents.push(agent);
   return agent;
+}
+
+async function waitUntil(check: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("timed out waiting for condition");
 }
