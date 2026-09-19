@@ -5,114 +5,150 @@ release.
 
 ## 1. Purpose
 
-SQLite is the canonical online persistence store for an `Agent`, but canonical storage
-and audit delivery have different responsibilities. Canonical records reconstruct chats,
-restore runtime state, support search, and retain provider history. An audit log is an
-independently filtered operational stream delivered to a caller-selected destination.
+SQLite is the canonical online persistence store for an `Agent`. It reconstructs chats,
+restores runtime state, supports search, and retains provider history. An audit log has a
+different purpose: it is a separately filtered, append-only operational record written to
+a caller-selected location.
 
-This specification defines the first agent-wide audit runtime:
+This specification defines one durable audit stream per `Agent`/`AgentSession`:
 
-- audit projection independent from canonical conversation capture;
+- capture independent from canonical conversation capture;
 - transactional SQLite outbox creation;
-- asynchronous, resumable delivery;
-- rotated JSONL segments at a caller-selected location;
-- stable ordering across all conversations owned by one agent;
-- observable failures and explicit drain controls; and
-- bounded duplication without silent loss after crashes.
+- asynchronous and resumable JSONL delivery;
+- size- and age-based rotation;
+- one agent-wide order across all of the agent's conversations;
+- observable backlog and delivery failures; and
+- at-least-once delivery without silent loss after a crash.
 
-The existing per-session JSONL audit implementation remains a compatibility system. The
-new format is version 2 and is not disguised as another generation of the legacy format.
+The version-2 agent audit stream is separate from the existing version-1 per-session JSONL
+audit implementation. The legacy implementation remains available through the legacy
+`SessionManager` API.
 
-## 2. Goals
+## 2. Scope and accepted limitations
 
-The initial runtime must:
+The first implementation intentionally chooses a small ownership and delivery model.
 
-1. keep external filesystem I/O outside SQLite transactions and prompt latency;
-2. commit canonical state and corresponding audit intent atomically;
-3. preserve audit intent while a destination is unavailable or not configured;
-4. allow one agent to deliver differently filtered streams to multiple destinations;
-5. preserve a monotonic logical agent-wide order within each destination;
-6. rotate without splitting or corrupting a JSONL record;
-7. recover from process termination during append, sync, rotation, or acknowledgement;
-8. expose backlog, failure, delivery, and rotation progress programmatically;
-9. avoid retaining a second permanent copy of full delivered payloads in SQLite; and
-10. retain the consumer's authority over paths, capture, retention, and deployment.
+It supports:
 
-## 3. Non-goals
+- one SQLite database per agent;
+- one active owning `Agent` runtime per SQLite database;
+- any number of concurrent `AgentConversation` instances and ACP subprocesses owned by
+  that runtime;
+- one logical audit stream for all conversations owned by the agent; and
+- one configured JSONL destination for that stream.
 
-The first implementation does not provide:
+It does not initially support:
 
-- cryptographic authenticity, signatures, or tamper-proof storage;
-- encryption at rest;
-- automatic upload to an external compliance service;
+- several independent `Agent` instances concurrently opening the same SQLite database;
+- multiple simultaneous audit destinations;
+- live audit reconfiguration while an `Agent` is open;
 - exactly-once delivery across SQLite and a filesystem;
-- compression of sealed segments;
-- automatic deletion of sealed audit files;
-- a synchronous mode capable of undoing an already executed model or tool operation;
-- audit import into canonical conversation history; or
-- compatibility between the version-2 agent-wide reader and legacy version-1 files.
+- automatic backfill for periods in which audit capture was disabled;
+- automatic replacement of lost audit history;
+- permanent per-entry delivery receipts in SQLite;
+- independent removal or archival of individual audit segments;
+- automatic deletion or compression of sealed segments;
+- cryptographic authenticity, signing, hash chaining, or tamper resistance;
+- encryption at rest;
+- remote audit sinks; or
+- agent audit delivery through custom persistence backends.
 
-External immutable sinks, compression, retention policies, signing, and encryption may be
-added behind the same destination abstraction later.
+These are accepted boundaries, not partially implemented guarantees. Multi-process agent
+ownership would require leases, fencing, configuration coordination, and cross-process
+worker ownership throughout the agent runtime. Multiple destinations would require
+destination-specific delivery state and retention. Both may be added when an actual use
+case justifies that system-wide complexity.
 
-## 4. Terminology
+## 3. Terminology
 
-- **Canonical state**: typed SQLite conversation records and the other tables required to
-  restore an agent.
-- **Audit observation**: a normalized domain observation offered independently to each
-  configured audit destination.
-- **Audit event**: one immutable projected payload produced for an observation and capture
-  fingerprint. Destinations with the same fingerprint may share it.
-- **Audit delivery**: durable SQLite outbox and receipt state connecting one audit event
-  to one destination.
-- **Audit entry**: the physical version-2 JSONL envelope written for one delivery.
-- **Destination**: a stable logical audit receiver selected by a consumer-defined ID.
-- **Sink**: the implementation that physically delivers entries for a destination.
-- **Segment**: one JSONL file in a rotating destination stream.
-- **Receipt**: compact SQLite event/delivery state retained after an audit payload is
-  delivered.
-- **Audit sequence**: a monotonically increasing logical integer scoped to one destination
-  and one agent database. It orders accepted entries from all conversations of that agent;
-  an at-least-once physical retry may repeat the same integer for the same delivery.
+- **Canonical state**: typed SQLite conversation records and the other tables used to
+  restore the agent.
+- **Observation**: one immutable normalized domain occurrence produced by a controller or
+  agent runtime.
+- **Audit item**: one projected observation waiting in the SQLite audit outbox.
+- **Audit entry**: the physical version-2 JSONL representation of an audit item.
+- **Audit stream**: all rotated JSONL segments belonging to one stable `auditLogId`.
+- **Audit sequence**: a monotonically increasing logical integer scoped to the agent's
+  audit stream.
+- **Segment**: one numbered JSONL file in the stream.
 
-`agentSessionId` remains the stable `ags-...` agent identity. An audit entry may also
-carry an `agentConversationId`, but agent-level observations need not belong to an
-`agc-...` conversation.
+A bounded contiguous range of audit sequences may appear more than once physically after
+a crash, but each repeated sequence must carry the same `outboxId` and payload digest as
+its first occurrence. Deduplicating by `outboxId` produces the logical stream.
 
-## 5. Core invariants
+`agentSessionId` remains the stable `ags-...` agent identity. An entry may carry an
+`agentConversationId`, but agent-level observations do not fabricate one.
 
-1. SQLite remains authoritative for agent state. Audit delivery never becomes the source
-   used to restore a conversation.
-2. Audit capture and canonical capture are independent. Either may retain an observation
-   that the other omits.
-3. If an observation changes canonical state and is accepted by an audit policy, the
-   canonical mutation and outbox enqueue commit in the same SQLite transaction.
-4. No SQLite transaction remains open while writing, syncing, rotating, reading, or
-   locking external files.
-5. Prompt completion does not wait for external audit delivery.
-6. Audit event payloads and pending deliveries are immutable. Later policy changes do not
-   rewrite them.
-7. Each destination is delivered strictly in `auditSequence` order. A failed head entry
-   blocks later entries for that destination but never blocks another destination.
-8. An external append is acknowledged in SQLite only after the written bytes are synced.
-9. A crash may cause a duplicate entry, but it must not cause a silently lost entry.
-10. Every physical entry contains a stable `outboxId`, allowing consumers and readers to
-    deduplicate retries.
-11. Rotation never changes audit, conversation, or canonical record sequence numbers.
-12. Missing destination configuration leaves work pending. It never reroutes, drops, or
-    marks entries delivered.
-13. Audit-delivery observations do not recursively create audit entries.
-14. An audit sink cannot make an agent database depend on a home-directory path. All
-    destination locations are caller-selected.
-15. One normalized observation is produced per domain occurrence. Audit destinations do
-    not independently normalize or deep-clone the original provider payload.
-16. Projection, serialization, and hashing occur once per unique capture fingerprint for
-    an observation, not once per destination when policies are identical.
-17. Physical delivery may repeat one sequence only for the same outbox ID and payload
-    digest. The deduplicated logical stream is strictly increasing.
-18. Reprocessing one stable source observation under the same capture-policy revision is
-    idempotent: it resolves to the same event/delivery identities and consumes no new
-    audit sequence.
+## 4. Core invariants
+
+1. SQLite remains authoritative for agent state. Audit files are never used to restore a
+   conversation.
+2. Canonical capture and audit capture are independent.
+3. When one observation changes canonical state and is accepted by the audit policy, the
+   canonical mutation and audit enqueue commit in the same SQLite transaction.
+4. Filesystem I/O never occurs inside a SQLite transaction.
+5. Prompt completion never waits for JSONL delivery.
+6. Pending audit payloads are immutable.
+7. Audit items are delivered in strict sequence order. A failed head item blocks later
+   audit delivery but does not block normal agent work.
+8. Every segment file touched by a batch is synced before the corresponding outbox rows
+   are removed.
+9. A crash may duplicate a complete physical entry but must not silently lose an accepted
+   audit item.
+10. Rotation does not change audit, conversation, or canonical record sequences.
+11. Audit delivery mechanics do not recursively create audit entries.
+12. Identity continues to consume committed canonical records, not independently captured
+    audit projections.
+13. The library fails closed when a second `Agent` runtime attempts to own the same SQLite
+    database.
+14. Only one live audit writer may own a resolved `(directory, filePrefix)` namespace.
+
+## 5. SQLite agent ownership
+
+The single-owner rule applies to the complete SQLite-backed agent, not only to audit. One
+owner may manage many concurrent conversations and ACP provider processes.
+
+Before opening or migrating a file-backed agent database, `SqliteAgentPersistence` must:
+
+1. resolve a canonical database path, resolving symlink aliases where possible;
+2. reject a duplicate path already owned by another `Agent` in the current process;
+3. open a small SQLite ownership sidecar at `<database>.agent-owner.sqlite`;
+4. set the sidecar to zero busy timeout and exclusive locking mode;
+5. execute a write probe that acquires and retains the sidecar's exclusive SQLite file
+   lock; and
+6. retain that sidecar connection until the main persistence backend closes.
+
+`SQLITE_BUSY` or `SQLITE_LOCKED` during the ownership probe is mapped to
+`AgentDatabaseInUseError` before an `Agent` is returned. Ownership acquisition does not
+wait for the normal configurable database busy timeout. The error identifies the canonical
+database path but does not expose unrelated process details.
+
+The sidecar contains no agent state and its existence is not ownership. Ownership is the
+live SQLite file lock held by its connection. Closing or terminating the owner process
+releases that lock without PID checks, heartbeats, timeout-based takeover, or stale-file
+deletion. The persistent sidecar can be reused on the next open.
+
+The helper uses SQLite's ordinary rollback journal rather than WAL. Its acquisition is a
+zero-wait `locking_mode=EXCLUSIVE` write transaction against a singleton probe table; after
+commit, the connection retains the exclusive file lock until close. The probe value is
+diagnostic only and never participates in stale-owner decisions.
+
+The main agent database remains in ordinary WAL mode. External read-only inspection may
+continue subject to SQLite's normal WAL rules. Direct external writes are unsupported
+because they bypass library invariants, and another library runtime must always honor the
+ownership sidecar.
+
+`:memory:` databases do not share storage and use only the process-local ownership guard.
+Custom persistence backends retain responsibility for their own ownership model,
+but version-2 agent audit configuration is rejected for custom backends in the first
+release.
+
+The ownership sidecar is an implementation detail, not another persistence backend,
+lease system, or source of agent truth.
+
+If any later stage of `Agent.open()` fails, every acquired sidecar connection and main
+database connection is closed in reverse order before the error is returned. Normal close
+uses `finally` semantics so an audit cleanup error cannot silently strand agent ownership.
 
 ## 6. Public configuration
 
@@ -125,24 +161,12 @@ interface AgentConfig {
 }
 
 interface AgentAuditLogConfig {
-  readonly destinations: readonly AgentAuditDestinationConfig[];
-  readonly shutdownGraceMs?: number;
-  readonly receiptRetention?: "all" | "none" | { readonly retain: number };
-}
-
-interface AgentAuditDestinationConfig {
-  /** Stable across process and path changes. */
-  readonly id: string;
-  readonly sink: JsonlAuditSinkConfig;
+  readonly directory: string;
+  readonly filePrefix?: string;
   readonly capture?: AgentAuditCaptureConfig;
   readonly rotation?: AuditRotationConfig;
   readonly retry?: AuditRetryConfig;
-}
-
-interface JsonlAuditSinkConfig {
-  readonly kind: "jsonl";
-  readonly directory: string;
-  readonly filePrefix?: string;
+  readonly shutdownGraceMs?: number;
 }
 
 interface AuditRotationConfig {
@@ -156,34 +180,40 @@ interface AuditRetryConfig {
 }
 ```
 
-`auditLog` capture and delivery are disabled when absent or `false`. An enabled
-configuration must contain at least one destination. Destination IDs must be unique,
-non-empty, at most 128 UTF-8 bytes,
-and restricted to letters, digits, `.`, `_`, and `-` so they are safe in diagnostics and
-manifest identities.
+Audit capture and delivery are disabled when `auditLog` is absent or `false`. Disabling
+does not delete existing state or pending outbox items, but observations occurring while
+disabled are not captured and are never implicitly backfilled.
 
-Disabling a previously used audit runtime never erases its pending work. The agent opens a
-lightweight suspended audit-maintenance facade when persisted destination state exists, so
-status can report pending/unconfigured work; it starts no delivery worker and captures no
-new observations until configuration is supplied again. A database that has never enabled
-audit pays no audit-state lookup beyond the persistence-open metadata needed to establish
-that fact.
+The resolved directory is caller-selected. Relative paths resolve once against the
+process working directory during `Agent.open()`. The library does not invent a home
+directory or other default destination.
 
-The first implementation supports multiple destinations. This matches the existing
-outbox's destination identity and avoids baking a single local file into the agent model.
+The directory is created when absent. During open, the agent uses the same SQLite-sidecar
+locking helper to acquire `<prefix>.writer-owner.sqlite` with zero wait and holds that
+connection for the lifetime of the audit worker. A conflict throws
+`AuditLogDestinationInUseError`.
 
-The resolved `(directory, filePrefix)` namespace must be unique among destinations in one
-agent configuration. `filePrefix` is immutable for a destination stream; changing it
-requires a new destination ID. Two different agent databases may not concurrently own the
-same resolved namespace.
+The destination filesystem must therefore support SQLite file locking, exclusive file
+creation, file sync, and the ordinary append semantics used by the JSONL writer. Mounts
+that do not provide those guarantees are unsupported rather than silently downgraded.
 
-Relative directories resolve once against the process working directory during
-`Agent.open()`. The resolved location is exposed by runtime inspection. The database does
-not invent a default directory.
+On first enablement, `auditLogId` is committed to the agent database and the first segment
+is synchronously reserved with exclusive file creation. Its synced header establishes the
+durable identity of the namespace. If a segment already exists, its audit and agent
+identities must match SQLite; otherwise open throws `AuditLogIdentityConflictError` before
+the worker starts.
+
+`filePrefix` defaults to `audit` and must be a safe filename component rather than a path.
+New sidecars and segment files use owner-only permissions where supported. Existing
+directory permissions are not silently changed.
+
+The directory must be non-blank. The prefix must be non-empty, at most 128 UTF-8 bytes,
+contain only letters, digits, `.`, `_`, and `-`, and must not equal `.` or `..`. Numeric
+settings are bounded safe integers; retry delay must not decrease, shutdown grace may be
+zero, and at least one rotation trigger must remain enabled. Invalid configuration fails
+during `Agent.open()` before runtime work starts.
 
 ### 6.1 Defaults
-
-The JSONL sink defaults are:
 
 ```ts
 rotation: {
@@ -197,31 +227,24 @@ retry: {
 }
 
 shutdownGraceMs: 2_000
-
-receiptRetention: { retain: 100_000 }
 ```
 
 Either rotation trigger may be disabled explicitly with `false`; omission selects its
-default. Resolved configuration always has at least one active trigger. `maxBytes`
-includes the segment header and newline delimiters. `maxAgeMs` is measured from segment
-creation, but an idle destination does not create or rotate empty files.
+default. At least one trigger must remain enabled. `maxBytes` includes the segment header,
+entry bytes, and newline delimiters. Time-based rotation is lazy and does not create empty
+daily segments.
 
-Retry delay grows exponentially and is capped by `maxDelayMs`. A small randomized jitter
-prevents several processes from retrying at one instant. Tests inject deterministic time
-and jitter.
+Retry delay grows exponentially up to `maxDelayMs` with small randomized jitter. Tests
+inject deterministic time and jitter.
 
-Receipt retention is agent-wide and applies only after durable external delivery; it does
-not delete audit segments or pending work. `none` removes compact receipts immediately,
-`all` keeps them indefinitely, and `{ retain }` keeps the newest completed delivery
-receipts per destination. Shared event receipts are removed only when no pending or
-retained delivery references remain. Destination high-water state survives receipt
-pruning.
+Audit projection uses the same JSON-depth, record-size, captured-field, and truncation
+limits as canonical persistence. The first release adds no second limits configuration.
+The effective limits and projection schema version participate in the capture fingerprint.
 
 ## 7. Audit capture
 
-`AgentAuditCaptureConfig` uses the typed conversation vocabulary but remains audit-specific.
-It preserves useful legacy distinctions such as tool input without output, permission
-decision without request content, and selected configuration without full definitions:
+Audit capture uses the typed conversation vocabulary while preserving useful operational
+distinctions:
 
 ```ts
 interface AgentAuditCaptureConfig {
@@ -239,11 +262,10 @@ interface AgentAuditCaptureConfig {
   readonly agent_lifecycle?: RecordCaptureLevel;
   readonly identity?: RecordCaptureLevel;
   readonly internal_inference?: RecordCaptureLevel;
-  readonly audit_administration?: RecordCaptureLevel;
 }
 ```
 
-The initial default is deliberately operational rather than conversational:
+The operationally conservative default is:
 
 ```ts
 const DEFAULT_AGENT_AUDIT_CAPTURE = {
@@ -252,812 +274,621 @@ const DEFAULT_AGENT_AUDIT_CAPTURE = {
   permission: "decision",
   configuration: "selections",
   protocol: "none",
-  native_action: "content",
-  agent_action: "content",
+  native_action: "metadata",
+  agent_action: "metadata",
   thinking: "none",
   activity: "metadata",
   metering: "summary",
   agent_lifecycle: "metadata",
   identity: "metadata",
   internal_inference: "metadata",
-  audit_administration: "metadata",
 };
 ```
 
-The levels mean:
+The general levels mean:
 
-- `none`: do not create an outbox item;
-- `metadata`: keep identity, state, correlation, timing, and structural metadata but omit
-  potentially sensitive content;
-- `content`: keep the normalized domain content appropriate to the record kind; and
-- `raw`: keep the complete supported domain payload after structural validation and
-  configured size limits.
+- `none`: do not enqueue the observation;
+- `metadata`: preserve identity, state, correlation, timing, and structural metadata while
+  omitting domain content;
+- `content`: preserve normalized domain content; and
+- `raw`: preserve the complete supported normalized payload, subject to persistence limits.
 
-The specialized levels mean:
+Specialized levels mean:
 
-- tool `input`: keep tool identity and normalized input but omit output;
-- permission `decision`: keep permission identity, options, selected outcome, and timing
-  but omit content not needed to explain the decision;
-- configuration `selections`: keep effective selections but omit announced definitions;
-- configuration `definitions`: keep selections and announced definitions;
-- metering `summary`: keep normalized token categories, measurement status, provider/model
-  identity, and rated/provider cost summaries; and
-- metering `raw`: keep the complete validated `OperationMeteringRecord`, subject to limits.
+- tool `input`: preserve tool identity and input but omit output;
+- permission `decision`: preserve the request identity, offered options, outcome, and
+  timing without unrelated content;
+- configuration `selections`: preserve effective selections but not announced definitions;
+- configuration `definitions`: preserve selections and announced definitions;
+- metering `summary`: preserve normalized token categories, measurement status,
+  provider/model identity, and rated/provider cost summaries; and
+- metering `raw`: preserve the validated `OperationMeteringRecord` subject to limits.
 
-For kinds without a specialized vocabulary, `RecordCaptureLevel` retains its canonical
-meaning. `metadata` is structural minimization, not a guarantee that consumer-supplied
-metadata is non-sensitive.
-
-Protocol capture retains its existing `none | metadata | raw` levels and exact method
+Protocol capture retains its existing `none | metadata | raw` levels and exact ACP method
 filters. Raw protocol capture is never enabled by default.
 
-Capture projection occurs from the normalized observation before canonical capture
-removes fields. Consequently, an audit destination may retain tool details even when the
-canonical conversation policy stores only metadata. The projected audit payload itself
-is stored in SQLite until delivery and therefore remains subject to the consumer's data
-classification and database-access policy.
+The capture fingerprint is a canonical SHA-256 hash of the resolved capture policy,
+protocol filters, projection schema version, and effective persistence limits. It is
+diagnostic data recorded with each item; it is not an ownership or delivery identity.
 
-Capture is configured per destination. One destination may retain only permission and
-configuration decisions while another keeps a more detailed diagnostic stream. Agent-level
-capture keys apply to observations that have no conversation ID; they are not fabricated
-conversation records.
+Payload digests use the same library-owned canonical JSON encoder. Object-key ordering,
+number encoding, and string escaping are therefore stable between outbox creation,
+delivery, and reader verification.
 
-The capture fingerprint is a canonical hash of every projection-affecting input: resolved
-capture policy, protocol filters, projection schema version, and truncation/size policy.
-The destination policy revision increments only when that resolved projection contract
-changes; reopening with an equivalent configuration preserves the revision. Two
-destinations share an event payload only when this fingerprint is identical.
+Consumer-supplied metadata can itself contain sensitive information. `metadata` means
+structural minimization, not a security classification.
 
-## 8. Auditable observations
+## 8. Normalized observation boundary
 
-The first implementation accepts all current typed conversation record kinds:
-
-- messages;
-- tool-call lifecycle events;
-- permission requests and resolutions;
-- configuration announcements and selections;
-- protocol records;
-- conversation-native actions such as handoff, switch, reset, and recovery;
-- future agent-initiated actions;
-- thinking blocks;
-- model activity; and
-- metering references and their permitted projected summary.
-
-It also accepts agent-level lifecycle observations needed to interpret the stream:
-
-- agent audit runtime opened and closed;
-- destination configuration became available or unavailable;
-- identity snapshot publication;
-- internal-inference lifecycle when its purpose is auditable; and
-- explicit consumer-invoked audit configuration, retry, and flush requests, plus future
-  abandonment operations.
-
-Agent-level kinds use a separate discriminated union rather than fabricating a
-conversation ID. The initial implementation may deliver conversation observations first,
-but the envelope and schema must not require every entry to belong to a conversation.
-
-Sink delivery attempts, retry timers, leases, and segment housekeeping remain runtime
-telemetry and receipts. They do not recursively enter the audit stream.
-
-### 8.1 Normalized observation boundary
-
-Independent audit capture requires one ephemeral boundary before canonical capture:
+Independent audit capture requires one internal boundary before canonical capture:
 
 ```text
 controller/runtime occurrence
-  -> immutable normalized domain observation
+  -> immutable normalized observation
        -> canonical projection and persistence
-       -> zero or more audit projections and deliveries
+       -> optional audit projection and outbox enqueue
        -> identity update from committed canonical records
 ```
 
-`NormalizedAgentObservation` is a discriminated union of conversation and agent-level
-observations. It is not a public event log, database table, background queue, or second
-copy of provider traffic. It owns or references the already-normalized values needed by
-projectors. Large content is not deep-cloned merely because more than one projector may
-inspect it.
+`NormalizedAgentObservation` is an internal discriminated union of conversation and
+agent-level occurrences. It is not a public event bus, database table, durable queue, or
+second copy of provider traffic. It owns or references the already-normalized values
+needed by projectors, and projectors do not deep-clone large values merely to inspect them.
 
-The current canonical pipeline applies capture while constructing records. Implementation
-must move that decision after normalization so audit can independently accept an
-observation that canonical capture rejects. This refactor must not silently broaden
-identity input: identity continues to receive committed canonical records unless the
-identity contract is separately changed.
+The boundary covers current conversation record kinds:
 
-When audit is disabled, the compiled audit plan is absent and the observation takes the
-canonical path without audit projection, serialization, hashing, allocation, or worker
-startup. When enabled, policies are compiled during `Agent.open()` and observations are
-projected lazily only for unique accepting capture fingerprints.
+- message;
+- tool-call lifecycle;
+- permission request and resolution;
+- configuration announcement and selection;
+- protocol traffic;
+- native actions such as handoff, switch, reset, and recovery;
+- future agent-initiated actions;
+- thinking;
+- model activity; and
+- metering.
 
-This boundary is internal. It does not replace `AgentConversation` notifications or the
-canonical `ConversationRecord` API.
+It also permits agent-level observations for agent open/close, identity publication, and
+internal-inference lifecycle. Agent-level observations use their own union members and do
+not fabricate a conversation ID.
 
-## 9. Projection and transactional enqueue
+Runtime delivery attempts, retry timers, rotation, flushes, and manual retry requests are
+telemetry rather than auditable domain observations. They never enter the outbox.
 
-For each normalized observation:
+When audit is disabled, no audit policy evaluation, projection, serialization, hashing,
+outbox write, or audit worker scheduling occurs. The normalization needed by canonical
+persistence remains shared rather than duplicated.
 
-1. evaluate the compiled policy for every configured destination;
-2. group accepting destinations by capture fingerprint;
-3. project, serialize, and hash one immutable audit event per unique fingerprint;
-4. allocate the next destination-scoped `auditSequence` and stable outbox ID for every
-   accepted destination;
-5. create delivery rows referencing the shared projected events;
-6. commit the canonical mutation, projected events, destination sequence advancement, and
-   all corresponding deliveries in one SQLite transaction; and
-7. notify the background delivery runtime only after commit.
+## 9. Transactional enqueue and idempotency
 
-Every observation has a stable `sourceObservationId` minted before its durable operation.
-For canonical records this normally derives from the canonical record ID; agent-level
-operations persist or derive an equally stable operation/event ID. Event and outbox
-idempotency keys derive from source observation, capture fingerprint/revision, and
-destination. Repeating an ambiguously completed transaction therefore finds the same rows
-and verifies the same payload digest instead of allocating a second sequence. Same-key
+For an accepted observation, the persistence path:
+
+1. projects the audit payload from the normalized observation;
+2. serializes and hashes that payload once;
+3. allocates the next audit sequence;
+4. creates a stable outbox ID; and
+5. commits the canonical mutation, sequence advancement, and outbox row in one SQLite
+   transaction.
+
+If canonical capture rejects an observation but audit accepts it, the audit item commits
+in its own short SQLite transaction. If audit rejects it, no sequence is consumed.
+
+Every accepted observation has a stable `sourceObservationId` minted before the durable
+operation. Canonical records normally use their stable record ID. Agent-level observations
+use their stable operation/event ID. While an item is pending, `sourceObservationId` is
+unique in the outbox. Repeating an ambiguously completed enqueue finds the same row and
+verifies the same digest rather than allocating a second sequence. Same-source,
 different-payload reuse is a persistence conflict.
 
-Once an event/delivery linkage has committed, replaying that source observation resolves
-the persisted linkage rather than reevaluating it under a newer policy. A rejected
-observation creates no audit state and is not later replayed as a backfill. Historical
-backfill, if introduced, is a distinct explicit operation with its own source identity.
+Delivered rows are deleted, so the first version does not preserve an indefinite
+source-observation deduplication index. The runtime does not replay already committed
+domain observations after their delivery. Arbitrary historical replay using the same
+source identity is unsupported. Canonical uniqueness continues to protect canonical
+records independently.
 
-If canonical capture rejects the observation but audit accepts it, steps 3–6 still commit
-audit events and deliveries. If audit rejects it, no audit sequence is consumed for that
-destination.
-Each destination therefore has a contiguous logical sequence for the entries it accepted.
+An enqueue failure aborts the SQLite transaction. If a model or tool already performed an
+external action, the library cannot undo it; the owning operation reports persistence
+failure rather than claiming that durable bookkeeping succeeded.
 
-Several destinations with the same capture fingerprint share one event payload and digest
-but retain independent outbox IDs, sequences, retry state, and receipts. Different
-fingerprints produce different projected events. Event payloads are removed only after
-every referencing delivery is durably acknowledged.
+Post-commit `recordsCommitted` extension hooks cannot implement this guarantee. Audit
+projection and enqueue must participate directly in the SQLite transaction that writes
+canonical state.
 
-An outbox enqueue failure aborts the SQLite transaction. If the provider already
-performed an external action, the library cannot undo it; the operation surfaces a
-persistence failure and must not falsely report that all durable bookkeeping succeeded.
-This is the same unavoidable boundary as other post-provider canonical persistence.
+## 10. SQLite schema
 
-Persistence extension `recordsCommitted` hooks are not sufficient for audit creation
-because they run after a canonical commit and cannot provide atomicity. The SQLite write
-path needs a transaction-aware audit projector/enqueue participant.
+The pre-release SQLite schema advances from version 7 to version 8. Version 8 is intended
+to become the first published durable SQLite agent schema.
 
-## 10. Version-2 audit envelope
+### 10.1 Audit state
 
-Every delivered entry uses an envelope independent of its projected payload:
+One agent-owned state row contains:
+
+- stable `auditLogId`, generated when audit is first enabled;
+- last allocated audit sequence;
+- last delivered audit sequence;
+- current capture fingerprint; and
+- creation/update timestamps.
+
+Filesystem generation and file position are discovered from the destination. SQLite does
+not pretend that an external append and a database update can be one atomic transaction.
+
+### 10.2 Pending outbox
+
+Each pending row contains:
+
+- `outboxId`;
+- unique audit sequence;
+- unique pending `sourceObservationId`;
+- optional source record/operation/conversation identities;
+- occurrence timestamp;
+- observation kind and capture level;
+- capture fingerprint;
+- immutable projected payload and SHA-256 digest;
+- creation time;
+- attempt count and next-attempt time; and
+- a byte-bounded last error.
+
+The outbox contains pending work only. After a synced batch is acknowledged, one short
+SQLite transaction advances the contiguous delivered high-water mark and deletes those
+rows. The JSONL stream is the durable delivery history; SQLite retains no permanent
+per-entry receipt.
+
+The existing development-only `audit_outbox` schema may be replaced before schema version
+8 is published.
+
+## 11. Version-2 JSONL format
+
+The destination contains numbered segments:
+
+```text
+<prefix>.000001.jsonl
+<prefix>.000002.jsonl
+<prefix>.000003.jsonl
+...
+```
+
+Generation numbers use at least six digits for lexical order but are not capped at
+`999999`.
+
+Each segment starts with one header:
+
+```ts
+interface AgentAuditSegmentHeaderV2 {
+  readonly v: 2;
+  readonly t: "header";
+  readonly auditLogId: string;
+  readonly agentSessionId: AgentSessionId;
+  readonly generation: number;
+  readonly createdAt: string;
+  readonly firstAuditSequence: number;
+}
+```
+
+Every following complete line is one entry:
 
 ```ts
 interface AgentAuditEntryV2 {
   readonly v: 2;
   readonly t: "audit";
-  readonly eventId: string;
+  readonly auditLogId: string;
   readonly outboxId: string;
-  readonly destinationId: string;
   readonly auditSequence: number;
   readonly agentSessionId: AgentSessionId;
   readonly agentConversationId?: AgentConversationId;
   readonly sourceRecordId?: string;
-  readonly sourceSequence?: number;
   readonly operationId?: string;
-  readonly timestamp: string;
+  readonly occurredAt: string;
   readonly kind: string;
   readonly captureLevel:
     | "metadata" | "input" | "decision" | "selections" | "definitions"
     | "content" | "summary" | "raw";
-  readonly capturePolicyRevision: number;
   readonly captureFingerprint: string;
   readonly payloadSha256: string;
   readonly payload: PersistenceJsonValue;
 }
 ```
 
-`outboxId` identifies one delivery to one destination. The same observation delivered to
-two destinations has two outbox IDs and may have different payloads. Destinations with an
-identical capture fingerprint may reference the same event ID, payload, and digest.
-`sourceRecordId` and `sourceSequence` are present when a canonical record exists; their
-absence for an audit-only or agent-level observation is valid.
+`occurredAt` is the domain occurrence time, not enqueue or delivery time. Outbox creation
+and delivery timing remain runtime/SQLite diagnostics.
 
-Timestamps are ISO-8601 UTC strings in the new format. Readers must not use timestamps to
-establish order; `auditSequence` is authoritative within a destination.
-
-## 11. SQLite schema and migration
-
-This feature changes the pre-release SQLite schema from version 7 to version 8. Version 8
-is intended to be the first published durable SQLite schema.
-
-The schema must represent:
-
-### 11.1 Destination state
-
-- destination ID;
-- stable stream ID once the destination is first materialized;
-- last allocated audit sequence;
-- last completed sequence;
-- current retry/error summary;
-- resolved delivery-configuration fingerprint and revision;
-- capture fingerprint and capture-policy revision;
-- update timestamps; and
-- optional worker lease/fencing state.
-
-The resolved filesystem directory is consumer configuration and is not authoritative
-database identity. A container may mount the same destination at a different path while
-retaining its destination ID.
-
-### 11.2 Projected audit events
-
-One event row contains:
-
-- event ID;
-- normalized source identity and kind;
-- stable source-observation ID and idempotency key;
-- capture level and capture fingerprint;
-- immutable projected payload and SHA-256 digest;
-- creation time; and
-- the number/state of referencing deliveries.
-
-The payload is serialized and hashed once. Destinations share the row only when their
-capture fingerprints and resulting projection are identical. The payload remains until
-all referencing deliveries are acknowledged, after which the event becomes a compact
-source/digest receipt.
-
-### 11.3 Outbox deliveries and receipts
-
-Each delivery row contains:
-
-- outbox ID;
-- referenced event ID;
-- destination ID and audit sequence, unique together;
-- destination capture-policy revision;
-- stable delivery idempotency key, unique per destination/source/policy revision;
-- creation time;
-- retry count, next-attempt time, and last error;
-- lease owner, fencing token, and lease expiry while claimed;
-- delivered time;
-- segment generation and segment record sequence;
-- optional byte offset/length for diagnostics; and
-- delivery receipt state.
-
-After durable delivery, the delivery row becomes a compact receipt. The event/digest,
-source identity, destination sequence, segment location, and delivery time remain. Once
-every delivery referencing an event is complete, its full payload is removed. The first
-release applies the configured bounded receipt policy transactionally after delivery.
-Pruning receipts never deletes external audit evidence or changes destination high-water
-state.
-
-The current `audit_outbox` table is development-only and may be migrated or replaced as
-part of schema version 8 before publication.
-
-### 11.4 Backend contract
-
-The current four-method `AuditOutboxPersistence` CRUD surface is insufficient. The v2
-contract must expose transaction-scoped batch enqueue/sequence allocation, destination
-state, ordered claiming with leases/fencing, retry transitions, and atomic delivery
-receipt compaction. These operations remain backend-domain methods rather than public SQL.
-
-`PersistenceCapabilities.auditOutbox: boolean` is replaced or supplemented by a
-structured audit capability that explicitly advertises transactional enqueue, leasing,
-and receipts. A custom backend is eligible only when those guarantees participate in its
-`PersistenceBackend.transaction()` boundary. Merely storing arbitrary outbox rows is not
-enough.
+Readers establish order from generation and physical position, and establish logical
+order from `auditSequence`. Timestamps are never ordering keys.
 
 ## 12. Delivery worker
 
-`Agent.open()` starts one audit coordinator when audit is enabled. It discovers pending
-destinations and schedules delivery without delaying conversation startup.
+An enabled agent owns one audit worker. It starts after `Agent.open()` has validated the
+destination and schedules work without delaying conversation startup beyond that
+validation.
 
-Delivery is serialized per destination and may run concurrently across destinations.
-For a destination, the worker:
+The worker:
 
-1. finds the lowest undelivered audit sequence;
-2. atomically acquires or renews its SQLite lease with a fencing token;
-3. validates destination configuration and filesystem identity;
-4. opens or recovers the active segment;
-5. appends one or more contiguous entries;
-6. syncs the file bytes;
-7. transactionally marks those deliveries complete, creates their receipts, and compacts
-   any shared event whose deliveries are now all complete; and
-8. continues with the next contiguous batch.
+1. selects a bounded contiguous batch beginning with the lowest pending sequence whose
+   retry time has arrived;
+2. opens or recovers the active segment;
+3. rotates before the next entry when required;
+4. serializes each complete envelope to one newline-delimited buffer;
+5. appends the batch, rotating between entries when necessary;
+6. syncs every segment file touched by the batch;
+7. transactionally advances the delivered high-water mark and deletes the batch; and
+8. yields before taking more work.
 
-Rows are never acknowledged before the sync in step 6. A crash between steps 6 and 7 may
-cause the same stable outbox ID to be appended again. This is the accepted at-least-once
-boundary.
+A crash between steps 6 and 7 leaves the rows pending and can append the bounded batch
+again. The physical sequence can therefore rewind over that batch before continuing. This
+is the sole normal duplicate boundary. Stable outbox IDs and payload digests make the
+replayed range detectable.
 
-### 12.1 Cross-process ownership
+While the process remains alive, a synced-but-unacknowledged batch is retained as worker
+state and only its SQLite acknowledgement is retried; its bytes are not deliberately
+appended again. On reopen, recovery compares the complete physical tail with the pending
+head. An exact same-ID/same-digest suffix is synced again and acknowledged without
+rewriting it. If complete physical entries extend beyond SQLite's delivered high-water
+mark but do not exactly match a contiguous pending prefix, the destination is blocked;
+the writer does not append past unexplained data.
 
-SQLite leases fence multiple processes using the same agent database. A lease has a
-bounded expiry and monotonically increasing fencing token. An expired worker may not mark
-delivery after another worker acquires a newer token.
+Retryable I/O failure updates the head row's attempt count, bounded error, and next retry
+time. Later sequences remain blocked to preserve order. Exponential backoff does not block
+canonical agent operations.
 
-A destination namespace also contains a filesystem lock and manifest identity. The
-namespace is `(resolved directory, filePrefix)`, not the whole directory, so intentionally
-different prefixes may coexist. It prevents two different agent databases from writing
-the same stream concurrently. The identity binds a stable random `streamId` to agent ID,
-destination ID, prefix, and format version. An identity mismatch fails closed and leaves
-outbox rows pending.
+The worker reads bounded pages and batches, does not mirror the entire backlog in memory,
+and never holds a SQLite transaction while performing filesystem I/O.
 
-### 12.2 Retry behavior
+## 13. Rotation and crash recovery
 
-Retryable I/O failures increment `attemptCount`, store a bounded diagnostic string, and
-schedule exponential backoff. Configuration absence and identity mismatch are blocked
-states rather than hot retries. Authentication-style failures for future remote sinks may
-define their own retry classification.
+Before appending the next entry, the worker rotates when:
 
-A failed destination never stalls prompts or another destination. It remains visible
-through status and subscriptions until repaired, retried, or explicitly handled by a
-future abandonment API.
-
-## 13. JSONL destination layout
-
-A destination directory contains:
-
-```text
-<prefix>.manifest.json
-<prefix>.lock
-<prefix>.000001.jsonl
-<prefix>.000002.jsonl
-...
-```
-
-`filePrefix` defaults to `audit`. A prefix is a filename component, not a path. Generation
-numbers have a minimum six-digit padding for lexical order but are not capped at 999999;
-readers use the numeric manifest value.
-
-Each segment starts with exactly one header:
-
-```ts
-interface AgentAuditSegmentHeaderV2 {
-  readonly v: 2;
-  readonly t: "header";
-  readonly streamId: string;
-  readonly agentSessionId: AgentSessionId;
-  readonly destinationId: string;
-  readonly generation: number;
-  readonly createdAt: string;
-  readonly firstAuditSequence: number;
-  readonly capturePolicyRevision: number;
-  readonly captureFingerprint: string;
-}
-```
-
-The manifest records destination identity, active generation, and sealed segment metadata
-including first/last audit sequence, byte length, creation/seal times, and SHA-256 digest.
-The digest detects accidental corruption but is not proof against an attacker who can
-rewrite both segment and manifest.
-
-Manifest replacement uses write-temporary, sync, atomic rename, and parent-directory sync
-where supported. A reader can reconstruct segment ordering from validated headers if the
-manifest is missing or interrupted; reconstruction is explicit and reported, not silent.
-
-Files created by the library use owner-only permissions where supported. Existing
-directory permissions are never silently changed.
-
-The first segment of a destination creates its stream ID. Once any sequence has been
-delivered, an empty directory is not accepted as a transparent relocation: the consumer
-must restore the matching manifest/segments or configure a new destination ID. A future
-explicit audit-epoch operation may acknowledge a lost/unavailable prior stream. This
-prevents a mount mistake from silently splitting one destination across unrelated files.
-
-## 14. Rotation algorithm
-
-Before appending the next entry, rotate when:
-
-- the active segment has entries and adding the next complete line would exceed
+- the active segment contains entries and adding the next complete line would exceed
   `maxBytes`; or
-- the active segment has entries and its age has reached `maxAgeMs`; or
-- the next entry's capture fingerprint or destination policy revision differs from the
-  active segment header.
-
-Rotation performs:
-
-1. stop accepting appends for that destination;
-2. sync and close the active segment;
-3. compute its byte length and SHA-256 digest;
-4. atomically record it as sealed in the manifest;
-5. allocate the next generation;
-6. create, sync, and validate the next segment header;
-7. atomically update the active generation; and
-8. resume delivery.
+- the active segment contains entries and its age has reached `maxAgeMs`.
 
 A single entry larger than `maxBytes` is written intact to an otherwise empty segment and
-that segment is rotated before another entry. Normal configured record limits should make
-this exceptional. No entry is split or truncated merely to satisfy rotation.
+that segment receives no further entries. Entries are not split to satisfy rotation.
 
-Time-based rotation is lazy: an idle destination creates no empty daily files. The next
-append rotates an expired non-empty segment before writing the entry.
+Rotation closes and syncs the current segment. The next generation is created lazily when
+the next entry is available. Segment creation is exclusive. Its header is written and
+synced before its first entry, and the parent directory is synced where the platform
+supports directory sync. Failure of a supported sync operation is a delivery failure.
 
-Compression and sealed-file deletion are intentionally outside this algorithm.
+No manifest is required in version 2. On open, the writer lists files matching the exact
+prefix, parses generation numbers, requires a contiguous generation sequence beginning at
+one, and validates every segment header against the stored `auditLogId` and agent identity.
+It inspects complete entries only as needed to validate the active tail and its continuity
+with SQLite state. Full forensic validation belongs to the reader.
 
-## 15. Crash recovery
+An incomplete final entry line in the highest generation is a torn append and may be
+truncated. If the highest-generation file contains only an incomplete header and no
+complete entry, it may be removed and recreated because the header was never established.
+A complete malformed line, complete invalid header, generation gap, identity mismatch, or
+sequence conflict fails closed. Recovery never removes a complete valid entry merely
+because its outbox row remains pending.
 
-When opening an existing destination, the writer validates:
+Physical replay ranges are allowed only when every repeated audit sequence matches the
+recent original outbox ID and payload digest. The replay range is bounded by the maximum
+delivery batch size. After deduplication, logical sequences must be strictly increasing
+without an unexplained gap.
 
-- lock/identity ownership;
-- manifest structure and destination identity;
-- segment header identity and generation;
-- non-decreasing physical audit sequences;
-- any repeated sequence has the same outbox ID and payload digest;
-- complete newline-delimited records; and
-- sealed-segment size and digest where present.
+The first stream initialization stores `auditLogId` in SQLite before creating its first
+segment. The segment materializes that existing identity; it does not mint another one.
+This removes an ambiguous database/filesystem identity race.
 
-An incomplete final line in the active segment is a torn append. Recovery may truncate
-only that incomplete suffix after recording a recovery notification. It must never remove
-a complete line merely because SQLite has not acknowledged it.
+The first release does not checksum sealed segments. It detects structural corruption
+while reading but does not claim protection against undetectable modification.
 
-If a complete final entry is present but its outbox row is still pending, the worker may
-append it again under the basic at-least-once contract. A later optimization may recognize
-the tail's matching outbox ID and acknowledge it without duplication, but correctness
-must not depend on that optimization.
+All generations remain part of one stream and must remain present. Independent archival
+or deletion of older segments is unsupported until a manifest/retention contract exists.
+Before acknowledging a batch, the writer verifies that every open segment touched by the
+batch is still the file named by its expected path and has not been unlinked. A mismatch
+blocks acknowledgement. Consumers must not rename, replace, truncate, or delete stream
+files while the writer is active; unavoidable external races with hostile filesystem
+mutation are outside the guarantee.
 
-The physical stream may therefore contain adjacent duplicates in one segment or across a
-rotation boundary. After deduplication by outbox ID, sequences must be strictly increasing
-without an unexplained gap. Reusing one sequence for a different outbox ID or digest is
-corruption.
+## 14. Destination continuity and configuration lifecycle
 
-Corruption before the active segment's final incomplete line, a sealed digest mismatch,
-or an identity mismatch fails closed. The worker exposes the destination as blocked and
-does not skip ahead or create an unrelated replacement stream.
+Audit configuration is immutable for the lifetime of one open `Agent`. To change capture,
+rotation, retry, directory, or prefix, the consumer closes and reopens the agent.
 
-## 16. Runtime API and observability
+Pending rows already contain their projected payload and therefore remain valid after a
+capture-policy change. New observations use the newly resolved capture fingerprint. A
+single stream may legitimately contain entries created under several capture policies;
+each entry declares its fingerprint and level. Policy changes do not force rotation.
 
-An enabled agent, or an agent with persisted prior audit state, exposes an audit runtime:
+On reopen:
+
+- an empty destination is accepted only when no sequence has previously been delivered;
+- a non-empty destination must contain a contiguous stream with the same `auditLogId` and
+  agent identity;
+- changing directory or prefix is allowed only when the matching stream has been moved or
+  mounted there; and
+- if SQLite says entries were delivered but the matching files are missing, open with
+  audit enabled throws `AuditLogHistoryMissingError`.
+
+Version 2 has no reset, abandonment, or “start replacement stream” operation. A consumer
+must restore missing history or run with audit disabled. Deliberately acknowledging a lost
+stream and beginning a new epoch is deferred because it requires an explicit destructive
+contract.
+
+## 15. Runtime API and observability
+
+An agent opened with audit enabled exposes:
 
 ```ts
 interface AgentAuditRuntime
   extends StatefulSubscribable<AgentAuditSnapshot, AgentAuditNotification> {
-  status(destinationId?: string): Promise<AgentAuditStatus>;
+  status(): Promise<AgentAuditStatus>;
   flush(options?: AgentAuditFlushOptions): Promise<AgentAuditFlushResult>;
-  retry(destinationId?: string): Promise<void>;
-  reconfigure(
-    destinationId: string,
-    config: AgentAuditDestinationConfig,
-    expectedConfigurationRevision: number,
-  ): Promise<AgentAuditDestinationStatus>;
+  retry(): Promise<void>;
 }
 ```
 
-`status()` reports, per destination:
+`status()` includes:
 
-- state: `idle | delivering | backoff | unconfigured | blocked | stopped`;
-- pending count and oldest pending timestamp;
-- last allocated and delivered sequences;
-- configuration and capture-policy revisions/fingerprints;
-- attempt count and bounded last error;
-- active segment generation and bytes; and
-- resolved sink location when currently configured.
+- state: `idle | delivering | backoff | blocked | stopped`;
+- pending item count and approximate pending payload bytes;
+- oldest pending timestamp;
+- last allocated and delivered audit sequences;
+- attempt count and bounded last error for the head item;
+- active segment generation and bytes;
+- resolved directory and prefix; and
+- resolved rotation/retry settings and the current capture fingerprint.
 
-Notifications include:
+Notifications include pending work, batch start/completion/failure, entering or leaving
+backoff, rotation, recovery, blocked state, and flush completion/timeout. Notifications
+are observational; a throwing subscriber is isolated from delivery state.
 
-- outbox entries became pending;
-- delivery batch started/completed/failed;
-- destination entered or left backoff;
-- destination is missing configuration;
-- lease ownership changed;
-- segment rotated or recovered;
-- destination became blocked by corruption/identity mismatch; and
-- flush completed or timed out.
+`flush()` captures the last allocated sequence when called and waits only for delivery
+through that boundary. It accepts a timeout and returns a structured delivered, pending,
+blocked, or timed-out result. The flush request itself is not audited.
 
-Notifications are observational. A throwing subscriber is isolated and cannot change
-delivery state.
+`retry()` clears the head item's retry delay and wakes the worker. It cannot bypass a
+blocked destination. The retry request and resulting delivery attempt are not audited.
 
-### 16.1 Flush
+When audit is disabled, `agent.audit` is absent. Existing pending work remains in SQLite
+and becomes observable again when the agent is reopened with audit enabled.
 
-`flush()` captures the highest allocated sequence for each selected destination when the
-call begins. When `audit_administration` capture accepts flush requests, the request is
-enqueued first and included in that captured boundary. Delivery batches, automatic retry
-timers, and flush completion notifications do not recursively create audit entries. The
-call waits only for the captured boundaries, not for observations created later.
-It accepts a timeout and returns a structured result for delivered, pending, blocked, and
-timed-out destinations. It does not silently wait forever.
-
-### 16.2 Retry
-
-`retry()` clears retry delay for selected retryable destinations and wakes the worker. It
-does not bypass identity/corruption blocks and does not fabricate missing configuration.
-When accepted by `audit_administration` capture, the consumer retry request is enqueued
-before the delay is cleared; the resulting automatic delivery attempt is not audited.
-
-## 17. Agent shutdown
+## 16. Agent shutdown
 
 Normal `agent.close()`:
 
-1. stops accepting new canonical work;
-2. transactionally enqueues the audit-visible close lifecycle observation;
-3. stops claiming new delivery batches;
-4. allows an in-progress append/sync/acknowledgement critical section to settle for at
-   most `shutdownGraceMs`;
-5. fences any unresolved SQLite lease so late continuations cannot acknowledge;
-6. closes or releases local filesystem resources when safe; and
-7. returns without waiting indefinitely for the complete backlog.
+1. stops accepting new agent operations;
+2. transactionally enqueues the close lifecycle observation when its policy accepts it;
+3. asks the audit worker to deliver through that new high-water mark;
+4. waits for the worker for at most `shutdownGraceMs`;
+5. stops scheduling further batches;
+6. waits for any already-started append/sync/acknowledgement critical section to settle;
+7. closes local audit resources and the audit-writer ownership sidecar; and
+8. closes persistence and its agent-owner sidecar.
 
-An expired/fenced worker may have appended bytes but may never acknowledge them. The
-filesystem lock is the external-write fence: a replacement worker does not append until
-the prior lock is released or provably stale. Leases are renewed before a batch, batches
-are bounded, and the acknowledgement transaction verifies the fencing token.
+`shutdownGraceMs` bounds the attempt to drain through the close observation; it cannot
+cancel an operating-system append or sync already in progress. If the timeout expires, no
+new batch starts, but `close()` still waits for the active critical section before closing
+persistence and releasing ownership. This prevents a replacement owner from overlapping
+an old writer. A hung filesystem operation can therefore delay close beyond the grace
+period. Any rows not transactionally acknowledged remain pending for the next open. The
+close observation is durably retained but is not guaranteed to reach JSONL before close
+returns.
 
-Pending rows, including an undelivered close observation, remain durable for the next
-open. A consumer that requires a drained local
-sink calls `agent.audit.flush({ timeoutMs })` before `agent.close()` and handles the
-result explicitly. That pre-close flush does not include the close observation; normal
-close makes only the bounded delivery attempt described above.
+Explicit callers that require a drained destination call `agent.audit.flush({ timeoutMs })`
+before close and handle the result. That flush does not include the later close observation.
 
-Process termination at any point relies on the outbox, lease, and segment recovery rules;
-shutdown hooks are an optimization, not the correctness boundary.
+Process termination relies on outbox and torn-tail recovery. Shutdown hooks improve normal
+behavior but are not the correctness boundary.
 
-## 18. Configuration changes
+## 17. Reader
 
-Destination ID is stable identity. Reopening the same ID at a different mounted path is
-allowed only when the namespace manifest carries the same stream, agent, destination, and
-prefix identity. Pointing an existing ID at an unrelated directory fails closed.
-
-`Agent.open()` installs a new destination or validates an equivalent persisted
-configuration. It never silently changes an existing destination policy. Different
-capture, rotation, or retry settings produce a configuration conflict and require explicit
-`reconfigure()` with the expected persisted revision. A different prefix or sink format
-is a stream-identity conflict and requires a new destination ID.
-
-Reconfiguration uses compare-and-swap against a destination configuration revision. It
-updates resolved delivery configuration atomically. A separate capture-policy revision
-increments only when the projection contract/fingerprint changes; capture changes affect
-only new audit observations, while rotation/retry changes affect subsequent delivery work.
-Pending payloads retain the projection created under their original policy. A capture
-fingerprint on each shared event, plus the destination policy revision and fingerprint in
-each delivery entry/segment, makes the boundary visible. The writer rotates before the
-first entry with a new revision or fingerprint, including when old-policy and new-policy
-entries were both queued before delivery.
-
-Every transactional enqueue supplies the capture-policy revision it projected against. A
-stale process observing a capture revision conflict stops accepting new operations that
-would require that audit destination and reports a configuration conflict; it may not
-silently omit or enqueue under the retired policy. A delivery worker supplies the broader
-configuration revision when claiming a lease and stops when that revision is stale.
-Consumers using one agent database from several processes must coordinate reconfiguration
-and reopen/reconfigure stale processes.
-
-Changing capture or rotation policy is allowed under one destination ID. Changing
-`filePrefix`, format version, agent identity, or stream ID is not an ordinary policy
-change and requires a new destination or a future explicit reconfiguration operation.
-
-If a destination is absent on reopen:
-
-- its pending rows remain unchanged;
-- it is reported as `unconfigured`;
-- no attempt count is consumed; and
-- configuring the same destination ID later resumes delivery.
-
-Enabling a new destination captures only observations committed after that destination is
-installed. It does not backfill historical canonical records. Historical export/backfill
-would be a separate explicit operation because canonical capture may not contain the data
-an audit policy would have selected at occurrence time.
-
-Removing or abandoning pending audit work requires a future explicit destructive API with
-an acknowledgement of the audit gap. Merely omitting configuration is never abandonment.
-
-## 19. Reader
-
-A new agent-wide reader opens one destination directory as a logical ordered stream:
+The version-2 reader exposes separate logical and physical modes:
 
 ```ts
 const reader = await AgentAuditLogReader.open({
   directory: "/audit/atlas",
+  filePrefix: "audit",
 });
 
 const page = await reader.readPage({
+  mode: "logical", // or "physical"
   limit: 100,
-  afterSequence: 500,
-  deduplicate: true,
+  cursor,
 });
 ```
 
-The reader:
+On the first page, the reader captures a snapshot boundary consisting of the highest
+generation and its complete byte offset. Returned cursors bind:
 
-- validates directory, manifest, headers, generations, and line envelopes;
-- paginates across segment boundaries;
-- orders by audit sequence, never filename timestamp;
-- can return the physical at-least-once stream for forensic use;
-- can deduplicate stable outbox IDs for a logical projection;
-- reports gaps, duplicates, torn tails, and corrupt sealed segments explicitly; and
-- never mutates or repairs files unless a separate recovery API is invoked.
+- audit-log identity;
+- reader mode;
+- snapshot generation and high offset; and
+- current generation and byte offset.
 
-Physical pagination cursors encode stream ID, segment generation, and byte/record
-position; `auditSequence` alone cannot identify a physical position because a retry may
-repeat it. Logical deduplicated cursors additionally bind the last outbox ID and logical
-sequence. Cursors are snapshot-bound so later rotation or appends do not silently change
-the page traversal they represent.
+Logical cursors additionally retain a bounded recent window of sequence, outbox ID, and
+digest tuples. The window is at least the maximum delivery batch size, allowing a complete
+replayed batch to be validated and deduplicated across page and segment boundaries. The
+delivery batch bound is chosen so this state remains within the existing cursor safety
+limit. Duplicate entries do not evict their corresponding logical entries from the
+window. Physical mode returns every complete entry for forensic inspection.
 
-Legacy `AuditLogReader` remains responsible for version-1 per-session files.
+The reader validates filenames, contiguous generations, headers, envelopes, JSON, payload
+digests, ordering, duplicates, and the active snapshot boundary. It reports torn tails,
+gaps, malformed records, and conflicts explicitly. It never repairs or mutates files.
 
-## 20. Failure semantics
+Legacy `AuditLogReader` remains responsible for version-1 per-session audit files.
 
-There are three distinct failures:
+## 18. Failure semantics
 
-1. **Projection/enqueue failure**: the SQLite transaction fails. The owning operation
-   reports persistence failure because durable audit intent was not committed.
-2. **Delivery failure**: canonical work and outbox intent remain committed. Normal agent
-   work continues; the destination enters retry/backoff or blocked state.
-3. **Flush failure/timeout**: the explicit caller request returns a structured incomplete
-   result. It does not erase pending work.
+There are four distinct failure classes:
 
-The first release supports only durable asynchronous delivery. A future `required`
-delivery mode may delay reporting successful finalization until a sink acknowledgement,
-but documentation must state that it still cannot undo an already executed provider or
-tool side effect.
+1. **Ownership failure**: another runtime owns the SQLite database. `Agent.open()` throws
+   `AgentDatabaseInUseError`; another live writer owns the audit namespace and open throws
+   `AuditLogDestinationInUseError`; or a namespace carries another durable identity and
+   open throws `AuditLogIdentityConflictError`.
+2. **Projection/enqueue failure**: the SQLite transaction rolls back and the owning
+   operation reports persistence failure.
+3. **Delivery failure**: canonical state and pending audit intent remain committed. Normal
+   agent work continues while audit delivery enters backoff or blocked state.
+4. **Flush failure/timeout**: the explicit call returns a structured incomplete result and
+   leaves pending work intact.
 
-## 21. Performance requirements
+Audit delivery is asynchronous and cannot undo a model or tool side effect. A future
+synchronous-required mode would still be unable to reverse an already executed external
+action.
 
-The normalized observation boundary is a logical split, not a second durable stream. The
-implementation must satisfy:
+## 19. Performance and capacity
 
-- audit capture/delivery disabled performs no per-observation audit projection,
-  serialization, hashing, allocation, background scheduling, or outbox queries; a database
-  with prior audit state may expose one suspended maintenance snapshot during open;
-- kind-level routing may discard an occurrence before materializing expensive content when
-  canonical, audit, and identity policies all reject it;
-- normalization happens once and large payloads are not deep-cloned per projector;
-- destination policies are compiled during open rather than reparsed per observation;
-- projection/serialization/hashing happens once per unique accepting capture fingerprint;
-- one `audit_events` payload may serve several destination deliveries;
-- all event/delivery rows for one occurrence join the canonical transaction rather than
-  opening a transaction per destination;
-- protocol updates remain excluded by default and filtering occurs before expensive raw
-  serialization;
-- workers fetch bounded pages and do not mirror a durable backlog in JavaScript memory;
-- file appends and syncs are batched within bounded byte/record limits;
-- one short SQLite transaction acknowledges a synced batch; and
-- delivery workers yield between batches so receipt writes do not starve canonical agent
-  writes in SQLite's single-writer path.
+The normalized observation boundary is a logical split rather than another durable event
+stream. The implementation must ensure:
 
-Performance cost with one ordinary destination is therefore one compiled-policy decision,
-one accepted projection/serialization, and one event plus delivery addition to the
-existing SQLite transaction. Cost scales with unique capture projections and accepted
-destinations, not merely with the number of configured destinations.
+- audit disabled performs no audit serialization, hashing, writes, or worker scheduling;
+- normalization happens once and large values are not deep-cloned per projector;
+- the resolved policy is compiled during open;
+- each accepted observation is projected, serialized, and hashed once;
+- audit enqueue joins the canonical transaction rather than opening an extra transaction;
+- workers use bounded pages and byte/record batches;
+- acknowledgement uses one short SQLite transaction per synced batch; and
+- workers yield between batches so audit acknowledgement does not starve canonical writes
+  in SQLite's single-writer path.
 
-Raw protocol capture is an explicit high-volume mode. The documentation must warn that
-streamed `session/update` traffic can dominate database growth and write throughput.
+Raw protocol capture is an explicit high-volume mode. Streamed `session/update` traffic
+can dominate database growth and write throughput.
 
-Compact receipt count follows the configured retention policy. `all` remains intentionally
-unbounded; the bounded default prevents ordinary delivery history from growing forever.
-Status exposes retained receipt count, and database users retain normal SQLite maintenance
-responsibility because deleting rows does not itself shrink the database file.
+If the destination remains unavailable, pending audit data grows without a fixed bound.
+Dropping data would violate audit durability, while blocking prompts would violate the
+asynchronous contract. Version 2 therefore chooses durable growth plus observable pending
+count/bytes. Consumers must monitor status and provide adequate database capacity.
 
-## 22. Security and privacy
+Deleting delivered outbox rows does not immediately shrink the SQLite file. Normal SQLite
+checkpointing and maintenance behavior still applies.
 
-- Audit files are plaintext unless the consumer supplies an encrypted filesystem or a
-  future encrypted sink.
-- Capture defaults omit messages, thinking, and raw protocol traffic.
-- Paths, errors, and configuration diagnostics must not include captured payload bodies.
-- Error strings persisted in retry state are byte-bounded.
-- Payloads pass the same JSON depth, record-size, and captured-field limits used by
-  canonical persistence, with explicit truncation metadata where supported.
-- Sink configuration and directory permissions remain the consumer's deployment
-  responsibility.
-- A destination may contain more sensitive data than canonical conversation capture;
+## 20. Security and privacy
+
+- Audit files and pending payloads are plaintext unless the consumer supplies encrypted
+  storage.
+- Defaults omit messages, thinking, action contents, and raw protocol traffic.
+- Paths, status, errors, and configuration diagnostics never include payload bodies.
+- Persisted delivery errors are byte-bounded.
+- Audit projection uses established persistence validation and truncation rules.
+- Directory ownership and permissions remain the consumer's deployment responsibility.
+- A configured audit policy may retain more sensitive data than canonical capture;
   documentation must call this out directly.
+- SQLite sidecar locks coordinate library runtimes but are not protection from a hostile
+  process that ignores or deletes ownership files.
+- Stream files must not be externally rotated, replaced, or deleted while the agent owns
+  the destination. Rotation is owned by the library.
 
-## 23. Compatibility and release boundary
+## 21. Compatibility and release boundary
 
-- Existing `SessionManager`/legacy JSONL audit behavior is unchanged.
-- `AgentConfig.auditLog` is additive.
+- Existing legacy `SessionManager` transcript and audit behavior remains unchanged.
+- `AgentConfig.auditLog` is additive for the SQLite-backed `Agent` API.
 - Version-1 and version-2 readers are separate and explicit.
-- The pre-release version-7 SQLite schema may be upgraded or recreated during development.
-- Version 8 becomes the first published durable SQLite schema; later releases require
-  forward migrations rather than a recreate instruction.
-- Audit disabled creates no new external files or outbox growth; prior pending state is
-  retained and exposed through the suspended maintenance facade.
-- Custom persistence backends advertise the structured transactional-audit capability.
-  Enabling audit on a backend without batch enqueue, destination sequencing, leasing, and
-  receipt guarantees fails during `Agent.open()` rather than degrading silently.
+- Audit-enabled custom persistence fails during `Agent.open()` with a capability error.
+- The development-only schema version 7 may be upgraded or recreated before publication.
+- Schema version 8 becomes the first published durable SQLite schema; later releases
+  require forward migrations.
+- Audit disabled creates no external files or new outbox rows and does not delete pending
+  work.
 
-## 24. Required tests
+## 22. Required tests
 
-### 24.1 Configuration
+### 22.1 Ownership
 
-- rejects duplicate/invalid destination IDs and invalid bounds;
-- rejects colliding `(directory, filePrefix)` namespaces;
-- resolves caller-selected directories predictably;
-- validates `all`, `none`, and bounded receipt retention;
-- preserves independent destination capture policies;
-- preserves agent-level capture settings and specialized tool/permission/configuration
-  projections;
-- requires compare-and-swap for policy changes and rejects stale multi-process capture or
-  delivery revisions;
-- rejects audit enablement on an incapable custom backend; and
-- exposes prior pending state as suspended/unconfigured without capturing new observations
-  when audit is reopened disabled.
+- invalid paths, prefixes, numeric bounds, or fully disabled rotation are rejected;
+- audit configuration on a custom persistence backend is rejected;
+- a second `Agent.open()` for the same canonical path fails immediately;
+- path aliases and symlinks cannot bypass process-local or sidecar ownership;
+- many concurrent conversations and ACP subprocesses work through one owner;
+- normal close and process termination release ownership;
+- a remaining sidecar after process termination does not prevent reopen;
+- external read-only access to the main database remains possible; and
+- two different agent databases cannot concurrently own one audit namespace.
 
-### 24.2 Transactionality and ordering
+### 22.2 Capture and transactionality
 
-- canonical mutation and outbox enqueue both commit or both roll back;
-- replaying an ambiguously completed source observation reuses event/delivery IDs and does
-  not allocate another sequence;
-- audit accepts an observation canonical capture omitted;
-- identity still receives only committed canonical records;
-- concurrent conversations produce one monotonic sequence per destination;
-- destinations sharing a fingerprint reuse one event payload while retaining independent
-  contiguous sequences and deliveries;
-- different fingerprints produce independent projected events; and
-- delivery never advances past a failed head item.
+- canonical mutation and accepted audit enqueue commit or roll back together;
+- audit may accept an observation canonical capture omits;
+- canonical identity input remains unchanged;
+- enqueue retry while pending reuses source/outbox identity and sequence;
+- same-source, different-payload reuse is rejected;
+- all supported observation kinds obey their capture levels; and
+- audit-disabled observations perform no audit projection, hash, or write.
 
-### 24.3 Delivery and recovery
+### 22.3 Ordering and delivery
 
-- resumes a durable backlog after close/reopen;
-- retries with bounded backoff;
-- fences competing processes and expired workers;
-- tolerates append-before-ack crashes through stable duplicate IDs;
-- accepts only same-ID/same-digest physical duplicate sequences and rejects conflicting
-  sequence reuse;
-- never acknowledges before sync;
-- leaves missing destinations pending without burning retries;
-- compacts shared payloads only after every referencing delivery completes;
-- prunes compact receipts without deleting pending rows or destination high-water state;
-- fences acknowledgement after shutdown timeout; and
-- does not backfill a destination enabled after historical observations.
+- concurrent conversations allocate one contiguous agent-wide sequence;
+- delivery never passes a failed head item;
+- a synced batch is removed and advances the high-water mark atomically;
+- append-before-ack crash produces only bounded same-ID/same-digest replay ranges;
+- delivery resumes after close/reopen;
+- bounded backoff and manual retry work; and
+- an unavailable destination grows an observable durable backlog without blocking prompts.
 
-### 24.4 Rotation
+### 22.4 Rotation and recovery
 
-- rotates on size and age independently;
-- never splits a record;
-- handles one oversized entry;
-- maintains generation and sequence continuity;
-- rotates when destination policy revision or capture fingerprint changes;
-- atomically recovers interrupted manifest replacement;
-- truncates only an incomplete active tail;
-- rejects sealed-segment corruption, namespace identity mismatch, and silent relocation
-  to an empty replacement directory; and
-- emits rotation/recovery notifications.
+- rotation works independently by size and age;
+- no entry is split;
+- oversized entries occupy a segment alone;
+- generations remain contiguous;
+- headers preserve audit-log and agent identity;
+- segment creation is exclusive and persists the directory entry before acknowledgement;
+- initialization persists `auditLogId` before file creation;
+- an incomplete header-only highest generation is safely recreated;
+- only an incomplete highest-segment tail is truncated;
+- complete malformed records, generation gaps, identity mismatch, and conflicting
+  duplicates fail closed;
+- moving/mounting the complete stream permits a directory change;
+- an empty or unrelated replacement directory is rejected after delivery began; and
+- replacing or unlinking the active segment prevents SQLite acknowledgement.
 
-### 24.5 API and reader
+### 22.5 Runtime and shutdown
 
-- status reflects idle, delivery, backoff, unconfigured, and blocked states;
-- flush uses a captured high-water mark and respects timeout;
-- close settles the active critical section without requiring backlog drain;
-- reader paginates across segments;
-- physical cursors distinguish duplicate positions sharing one audit sequence;
-- logical reading deduplicates stable outbox IDs; and
-- forensic reading preserves physical duplicates and reports gaps.
+- status reports backlog bytes/count, high-water marks, backoff, blocked state, and path;
+- flush waits only for its captured high-water mark and respects timeout;
+- retry wakes the head item without producing an audit entry;
+- close attempts bounded delivery including its accepted close observation;
+- a shutdown timeout leaves unacknowledged rows pending and never releases ownership while
+  an old critical section remains active; and
+- audit-disabled reopen preserves pending rows without delivering or capturing.
 
-### 24.6 Performance
+### 22.6 Reader
 
-- audit-disabled observations perform no audit serialization, hashing, or writes;
-- one normalization feeds canonical, audit, and identity projections without deep clones;
-- identical destination fingerprints serialize one shared event payload;
-- enqueue uses one canonical transaction rather than one transaction per destination;
-- workers keep only bounded pages/batches in memory; and
-- acknowledgement batching does not starve canonical writers under concurrent load.
+- logical mode deduplicates stable outbox IDs;
+- physical mode retains duplicates;
+- cursor pagination crosses segment boundaries;
+- logical deduplication works when a bounded batch replay crosses page or segment
+  boundaries;
+- snapshot cursors ignore later appends;
+- payload digests and ordering are validated; and
+- the reader reports gaps, torn tails, and corrupt complete records without mutation.
 
-### 24.7 End-to-end smoke test
+### 22.7 End-to-end smoke test
 
-The SQLite end-to-end smoke scenario must enable a small size threshold, generate enough
-auditable operations to create at least two segments, close and reopen the agent, flush,
-and independently assert:
+The SQLite smoke scenario must:
 
-- the canonical SQLite conversation remains reconstructable;
-- pending outbox rows resume and become compact receipts;
-- every expected logical audit entry is present;
-- segment generations are increasing, physical audit sequences are non-decreasing, and
-  deduplicated logical sequences are strictly increasing;
-- the reader crosses the rotation boundary; and
-- normal chat and recovery behavior remain unchanged.
+1. enable audit with a small rotation threshold;
+2. run concurrent conversation operations;
+3. create at least two segments;
+4. close and reopen the agent;
+5. exercise a recoverable delivery failure;
+6. flush; and
+7. independently verify canonical reconstruction, pending-row recovery, logical audit
+   completeness, physical ordering, rotation, and reader pagination.
 
-## 25. Implementation order
+## 23. Implementation order
 
-1. Finalize/export observation, capture, configuration, status, notification, backend,
-   and reader contracts.
-2. Introduce the normalized observation boundary while proving canonical and identity
-   behavior remains unchanged with audit disabled.
-3. Migrate SQLite to schema version 8 with shared audit events, destination state, leases,
-   delivery rows, and compact receipts.
-4. Add transaction-aware audit projection and enqueue to canonical write paths.
-5. Implement the fenced coordinator and JSONL sink without rotation.
-6. Add sync-before-ack batching, retry, status, subscriptions, flush, and bounded shutdown.
-7. Add stream identity, manifests, locking, policy-boundary rotation, sealing metadata,
-   relocation checks, and crash recovery.
-8. Add the version-2 segmented physical/logical reader.
-9. Add contract, performance, concurrency, crash-boundary, and end-to-end tests.
+1. Implement and test SQLite exclusive runtime ownership.
+2. Finalize normalized observation and audit capture contracts.
+3. Migrate SQLite to schema version 8 with audit state and pending outbox tables.
+4. Integrate audit projection/enqueue into canonical SQLite transactions.
+5. Implement the single delivery worker without rotation.
+6. Add retry, status, subscriptions, flush, and bounded shutdown.
+7. Add numbered-segment rotation and crash recovery.
+8. Add the physical/logical version-2 reader.
+9. Add concurrency, crash-boundary, performance, and end-to-end tests.
 10. Update the consumer guide and release notes.
-11. Publish schema version 8 with the new minor library release.
 
-## 26. Deferred extensions
+## 24. Deferred extensions
 
-- gzip/zstd compression of sealed segments;
-- automatic file retention and consumer retention hooks;
-- signed manifests and hash chaining;
-- encrypted JSONL sinks;
-- object-storage, HTTP, queue, and compliance-vendor sinks;
-- synchronous required-delivery mode;
-- administrative abandonment with an explicit durable gap record; and
-- cross-database centralized audit aggregation.
+- multiple destinations and remote sinks;
+- multi-process ownership of one agent database;
+- live reconfiguration and configuration compare-and-swap;
+- compact SQLite delivery receipts and historical replay deduplication;
+- explicit lost-stream abandonment and new audit epochs;
+- manifests and sealed-segment checksums;
+- compression and automatic segment retention;
+- signing, hash chaining, and encryption; and
+- synchronous required-delivery modes.
