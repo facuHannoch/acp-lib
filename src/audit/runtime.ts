@@ -1,4 +1,4 @@
-import { open, mkdir, readdir, readFile, realpath, unlink } from "node:fs/promises";
+import { open, mkdir, readdir, realpath, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Buffer } from "node:buffer";
 import type { FileHandle } from "node:fs/promises";
@@ -44,6 +44,8 @@ export interface AgentAuditEntryV2 {
 }
 
 export const AGENT_AUDIT_BATCH_SIZE = 16;
+const AUDIT_RECOVERY_TAIL_ENTRIES = AGENT_AUDIT_BATCH_SIZE * 2 + 1;
+const MAX_AUDIT_LINE_BYTES = 1_048_576;
 
 export type AgentAuditRuntimeState = "idle" | "delivering" | "backoff" | "blocked" | "stopped";
 
@@ -517,6 +519,13 @@ interface ScannedAuditTuple {
   readonly payloadSha256: string;
 }
 
+interface InspectedSegment {
+  readonly header: AgentAuditSegmentHeaderV2;
+  readonly bytes: number;
+  readonly entryCount: number;
+  readonly entriesOffset: number;
+}
+
 async function recoverAuditStream(
   directory: string,
   prefix: string,
@@ -545,19 +554,20 @@ async function recoverAuditStream(
     return await createSegment(directory, prefix, 1, state.auditLogId, agentSessionId, 1);
   }
 
-  const tuples = new Map<number, ScannedAuditTuple>();
-  let maximumSequence = 0;
-  let replayLength = 0;
-  let previousReplaySequence = 0;
+  const inspectedSegments: Array<InspectedSegment & { readonly path: string }> = [];
   let active: Omit<RecoveredActiveSegment, "file"> | undefined;
   for (let index = 0; index < generations.length; index++) {
     const descriptor = generations[index]!;
     const path = join(directory, descriptor.name);
-    let bytes = await readFile(path);
     const highest = index === generations.length - 1;
-    const firstNewline = bytes.indexOf(0x0a);
-    if (firstNewline < 0) {
-      if (!highest) throw new AuditLogIdentityConflictError(path, "sealed segment header is incomplete");
+    const inspected = await inspectSegment(
+      path,
+      highest,
+      state.auditLogId,
+      agentSessionId,
+      descriptor.generation,
+    );
+    if (!inspected) {
       await unlink(path);
       await syncDirectory(directory);
       if (index === 0) {
@@ -566,59 +576,31 @@ async function recoverAuditStream(
       }
       break;
     }
-    if (highest && bytes.at(-1) !== 0x0a) {
-      const lastNewline = bytes.lastIndexOf(0x0a);
-      const handle = await open(path, "r+");
-      try {
-        await handle.truncate(lastNewline + 1);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      bytes = bytes.subarray(0, lastNewline + 1);
-    }
-    const text = bytes.toString("utf8");
-    const lines = text.slice(0, -1).split("\n");
-    const header = parseHeader(lines[0]!, path, state.auditLogId, agentSessionId, descriptor.generation);
-    const entries = lines.slice(1).map((line, lineIndex) => parseEntry(
-      line,
-      path,
-      lineIndex + 2,
-      state.auditLogId,
-      agentSessionId,
-    ));
-    if (entries[0] && header.firstAuditSequence !== entries[0].auditSequence) {
-      throw new AuditLogIdentityConflictError(path, "header firstAuditSequence does not match its first entry");
-    }
-    for (const entry of entries) {
-      const tuple = { outboxId: entry.outboxId, payloadSha256: entry.payloadSha256 };
-      if (entry.auditSequence === maximumSequence + 1) {
-        tuples.set(entry.auditSequence, tuple);
-        maximumSequence = entry.auditSequence;
-        replayLength = 0;
-        continue;
-      }
-      const original = tuples.get(entry.auditSequence);
-      if (
-        !original
-        || original.outboxId !== tuple.outboxId
-        || original.payloadSha256 !== tuple.payloadSha256
-        || (replayLength > 0 && entry.auditSequence !== previousReplaySequence + 1)
-      ) throw new AuditLogIdentityConflictError(path, `conflicting audit sequence ${entry.auditSequence}`);
-      replayLength++;
-      previousReplaySequence = entry.auditSequence;
-      if (replayLength > AGENT_AUDIT_BATCH_SIZE) {
-        throw new AuditLogIdentityConflictError(path, "physical replay exceeds the delivery batch bound");
-      }
-    }
+    inspectedSegments.push({ ...inspected, path });
     active = {
       generation: descriptor.generation,
       path,
-      createdAt: header.createdAt,
-      entryCount: entries.length,
-      bytes: bytes.byteLength,
+      createdAt: inspected.header.createdAt,
+      entryCount: inspected.entryCount,
+      bytes: inspected.bytes,
     };
   }
+
+  const physicalTail: AgentAuditEntryV2[] = [];
+  for (let index = inspectedSegments.length - 1; index >= 0 && physicalTail.length < AUDIT_RECOVERY_TAIL_ENTRIES; index--) {
+    const segment = inspectedSegments[index]!;
+    const remaining = AUDIT_RECOVERY_TAIL_ENTRIES - physicalTail.length;
+    const tail = await readSegmentTail(
+      segment.path,
+      segment.entriesOffset,
+      segment.bytes,
+      remaining,
+      state.auditLogId,
+      agentSessionId,
+    );
+    physicalTail.unshift(...tail);
+  }
+  const { maximumSequence, tuples } = validateRecoveryTail(physicalTail, active?.path);
 
   if (maximumSequence < state.lastDeliveredSequence) {
     throw new AuditLogHistoryMissingError(active?.path ?? join(directory, segmentName(prefix, 1)));
@@ -643,12 +625,217 @@ async function recoverAuditStream(
     const previous = generations.at(-2);
     if (!previous) return await createSegment(directory, prefix, 1, state.auditLogId, agentSessionId, 1);
     const path = join(directory, previous.name);
-    const bytes = await readFile(path);
-    const lines = bytes.toString("utf8").trimEnd().split("\n");
-    const header = parseHeader(lines[0]!, path, state.auditLogId, agentSessionId, previous.generation);
-    active = { generation: previous.generation, path, createdAt: header.createdAt, entryCount: lines.length - 1, bytes: bytes.byteLength };
+    const inspected = await inspectSegment(
+      path,
+      false,
+      state.auditLogId,
+      agentSessionId,
+      previous.generation,
+    );
+    if (!inspected) throw new AuditLogIdentityConflictError(path, "sealed segment header is incomplete");
+    active = {
+      generation: previous.generation,
+      path,
+      createdAt: inspected.header.createdAt,
+      entryCount: inspected.entryCount,
+      bytes: inspected.bytes,
+    };
   }
   return Object.freeze({ ...active, file: await open(active.path, "a+", 0o600) });
+}
+
+async function inspectSegment(
+  path: string,
+  highest: boolean,
+  auditLogId: string,
+  agentSessionId: AgentSessionId,
+  generation: number,
+): Promise<InspectedSegment | null> {
+  const handle = await open(path, highest ? "r+" : "r");
+  try {
+    let bytes = (await handle.stat()).size;
+    let headerLine: { line: string; nextOffset: number };
+    try {
+      headerLine = await readAuditLine(handle, 0, bytes, path);
+    } catch (error) {
+      if (highest && error instanceof IncompleteAuditLineError) return null;
+      throw new AuditLogIdentityConflictError(path, "sealed segment header is incomplete", { cause: error });
+    }
+    const header = parseHeader(headerLine.line, path, auditLogId, agentSessionId, generation);
+    if (bytes > headerLine.nextOffset && !await endsWithNewline(handle, bytes)) {
+      if (!highest) throw new AuditLogIdentityConflictError(path, "sealed segment tail is incomplete");
+      const completeBytes = await findLastNewlineEnd(handle, bytes, headerLine.nextOffset, path);
+      await handle.truncate(completeBytes);
+      await handle.sync();
+      bytes = completeBytes;
+    }
+
+    let firstEntry: AgentAuditEntryV2 | undefined;
+    if (bytes > headerLine.nextOffset) {
+      const first = await readAuditLine(handle, headerLine.nextOffset, bytes, path);
+      firstEntry = parseEntry(first.line, path, 2, auditLogId, agentSessionId);
+      if (header.firstAuditSequence !== firstEntry.auditSequence) {
+        throw new AuditLogIdentityConflictError(path, "header firstAuditSequence does not match its first entry");
+      }
+    }
+    return Object.freeze({
+      header,
+      bytes,
+      entryCount: firstEntry ? 1 : 0,
+      entriesOffset: headerLine.nextOffset,
+    });
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readSegmentTail(
+  path: string,
+  entriesOffset: number,
+  bytes: number,
+  limit: number,
+  auditLogId: string,
+  agentSessionId: AgentSessionId,
+): Promise<readonly AgentAuditEntryV2[]> {
+  const handle = await open(path, "r");
+  try {
+    const lines = await readAuditTailLines(handle, entriesOffset, bytes, limit, path);
+    return Object.freeze(lines.map((line, index) => parseEntry(
+      line,
+      path,
+      `tail-${index + 1}`,
+      auditLogId,
+      agentSessionId,
+    )));
+  } finally {
+    await handle.close();
+  }
+}
+
+function validateRecoveryTail(
+  entries: readonly AgentAuditEntryV2[],
+  path = "audit stream",
+): { maximumSequence: number; tuples: Map<number, ScannedAuditTuple> } {
+  if (entries.length === 0) return { maximumSequence: 0, tuples: new Map() };
+  const tuples = new Map<number, ScannedAuditTuple>();
+  let maximumSequence = entries[0]!.auditSequence - 1;
+  let replayLength = 0;
+  let previousReplaySequence = 0;
+  for (const entry of entries) {
+    const tuple = { outboxId: entry.outboxId, payloadSha256: entry.payloadSha256 };
+    if (entry.auditSequence === maximumSequence + 1) {
+      tuples.set(entry.auditSequence, tuple);
+      maximumSequence = entry.auditSequence;
+      replayLength = 0;
+      previousReplaySequence = 0;
+      continue;
+    }
+    const original = tuples.get(entry.auditSequence);
+    if (
+      !original
+      || original.outboxId !== tuple.outboxId
+      || original.payloadSha256 !== tuple.payloadSha256
+      || (replayLength > 0 && entry.auditSequence !== previousReplaySequence + 1)
+    ) throw new AuditLogIdentityConflictError(path, `conflicting audit sequence ${entry.auditSequence}`);
+    replayLength++;
+    previousReplaySequence = entry.auditSequence;
+    if (replayLength > AGENT_AUDIT_BATCH_SIZE) {
+      throw new AuditLogIdentityConflictError(path, "physical replay exceeds the delivery batch bound");
+    }
+  }
+  return { maximumSequence, tuples };
+}
+
+class IncompleteAuditLineError extends Error {}
+
+async function readAuditLine(
+  handle: FileHandle,
+  offset: number,
+  boundary: number,
+  path: string,
+): Promise<{ line: string; nextOffset: number }> {
+  const chunks: Buffer[] = [];
+  let cursor = offset;
+  let total = 0;
+  while (cursor < boundary) {
+    const size = Math.min(64 * 1024, boundary - cursor, MAX_AUDIT_LINE_BYTES + 1 - total);
+    if (size <= 0) throw new AuditLogIdentityConflictError(path, `audit line exceeds ${MAX_AUDIT_LINE_BYTES} bytes`);
+    const buffer = Buffer.allocUnsafe(size);
+    const { bytesRead } = await handle.read(buffer, 0, size, cursor);
+    if (bytesRead === 0) break;
+    const slice = buffer.subarray(0, bytesRead);
+    const newline = slice.indexOf(0x0a);
+    if (newline >= 0) {
+      chunks.push(slice.subarray(0, newline));
+      return { line: Buffer.concat(chunks).toString("utf8"), nextOffset: cursor + newline + 1 };
+    }
+    chunks.push(slice);
+    cursor += bytesRead;
+    total += bytesRead;
+  }
+  throw new IncompleteAuditLineError(`incomplete audit line at byte ${offset}: ${path}`);
+}
+
+async function endsWithNewline(handle: FileHandle, bytes: number): Promise<boolean> {
+  if (bytes === 0) return false;
+  const final = Buffer.allocUnsafe(1);
+  const { bytesRead } = await handle.read(final, 0, 1, bytes - 1);
+  return bytesRead === 1 && final[0] === 0x0a;
+}
+
+async function findLastNewlineEnd(
+  handle: FileHandle,
+  bytes: number,
+  minimum: number,
+  path: string,
+): Promise<number> {
+  let cursor = bytes;
+  let scanned = 0;
+  while (cursor > minimum && scanned <= MAX_AUDIT_LINE_BYTES) {
+    const size = Math.min(64 * 1024, cursor - minimum, MAX_AUDIT_LINE_BYTES + 1 - scanned);
+    if (size <= 0) break;
+    const start = cursor - size;
+    const buffer = Buffer.allocUnsafe(size);
+    const { bytesRead } = await handle.read(buffer, 0, size, start);
+    if (bytesRead !== size) throw new IncompleteAuditLineError(`could not inspect audit tail: ${path}`);
+    const newline = buffer.lastIndexOf(0x0a);
+    if (newline >= 0) return start + newline + 1;
+    cursor = start;
+    scanned += size;
+  }
+  if (cursor === minimum) return minimum;
+  throw new AuditLogIdentityConflictError(path, `audit line exceeds ${MAX_AUDIT_LINE_BYTES} bytes`);
+}
+
+async function readAuditTailLines(
+  handle: FileHandle,
+  entriesOffset: number,
+  bytes: number,
+  limit: number,
+  path: string,
+): Promise<readonly string[]> {
+  if (bytes <= entriesOffset) return Object.freeze([]);
+  const maximumWindow = limit * (MAX_AUDIT_LINE_BYTES + 1);
+  const start = Math.max(entriesOffset, bytes - maximumWindow);
+  const buffer = Buffer.allocUnsafe(bytes - start);
+  const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+  if (bytesRead !== buffer.length) throw new IncompleteAuditLineError(`could not inspect audit tail: ${path}`);
+  let complete = buffer;
+  if (start > entriesOffset) {
+    const firstNewline = complete.indexOf(0x0a);
+    if (firstNewline < 0) {
+      throw new AuditLogIdentityConflictError(path, `audit line exceeds ${MAX_AUDIT_LINE_BYTES} bytes`);
+    }
+    complete = complete.subarray(firstNewline + 1);
+  }
+  const text = complete.toString("utf8");
+  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : [];
+  for (const line of lines) {
+    if (Buffer.byteLength(line, "utf8") > MAX_AUDIT_LINE_BYTES) {
+      throw new AuditLogIdentityConflictError(path, `audit line exceeds ${MAX_AUDIT_LINE_BYTES} bytes`);
+    }
+  }
+  return Object.freeze(lines.slice(-limit));
 }
 
 async function createSegment(
@@ -720,7 +907,7 @@ function parseHeader(
 function parseEntry(
   line: string,
   path: string,
-  lineNumber: number,
+  lineNumber: number | string,
   auditLogId: string,
   agentSessionId: AgentSessionId,
 ): AgentAuditEntryV2 {

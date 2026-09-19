@@ -178,6 +178,36 @@ describe("agent audit delivery runtime", () => {
       .toEqual(["audit.000001.jsonl", "audit.000002.jsonl"]);
   });
 
+  test("reopens from a bounded tail after audit history spans more than the replay window", async () => {
+    const fixture = await createFixture({ rotation: { maxBytes: 300, maxAgeMs: false } });
+    for (let index = 0; index < 40; index++) {
+      await fixture.backend.auditOutbox.enqueue({
+        outboxId: `outbox-history-${index}`,
+        sourceObservationId: `source-history-${index}`,
+        occurredAt: "2026-09-19T00:00:00.000Z",
+        kind: "message",
+        captureLevel: "content",
+        captureFingerprint: fixture.config.captureFingerprint,
+        payload: { content: "x".repeat(400), index },
+        createdAt: "2026-09-19T00:00:00.000Z",
+      });
+    }
+    fixture.runtime.notifyPending();
+    expect(await fixture.runtime.flush({ timeoutMs: 5_000 })).toMatchObject({ status: "delivered" });
+    await fixture.runtime.close();
+
+    const reopened = await AgentAuditRuntime.open({
+      persistence: fixture.backend,
+      agentSessionId: fixture.agentSessionId,
+      config: fixture.config,
+      auditState: (await fixture.backend.auditOutbox.state())!,
+    });
+    runtimes.push(reopened);
+    expect((await reopened.status()).lastDeliveredSequence).toBe(40);
+    expect((await readdir(fixture.auditDirectory)).filter((name) => name.endsWith(".jsonl")))
+      .toHaveLength(40);
+  });
+
   test("reconciles a synced pending suffix on reopen without writing it again", async () => {
     const root = await makeRoot();
     const backend = await createBackend(root, "agent.sqlite");
