@@ -1,13 +1,13 @@
-// AgentSession — the durable conversation and the library's FRONT FACE. This is what a
-// consumer (the orchestration hub, the CLI) holds: a conversation with a stable identity
-// that persists across reconnects/mode-swaps, backed by a SessionManager catalog.
+// AgentConversation — one durable conversation and the library's compatibility front
+// face. Existing consumers still import this constructor as `AgentSession`; both names
+// refer to the same class while the new agent-level owner is introduced.
 //
 // It owns identity (our `agentSessionId`, adapter, mode, internalSessionId, title) and persistence, and
 // HOLDS an AgentController for the live connection (the control plane). It implements
 // AgentClient, so the REPL and any caller can prompt it directly.
 //
-// Adapter lives HERE, not on the controller: switching adapter = a new AgentSession (the
-// agent dies on switch). Mode-swap (degrade/upgrade) stays within one AgentSession.
+// Adapter ownership remains here during the compatibility tranche. The later Agent owner
+// supplies the adapter registry used by cross-adapter conversation transitions.
 
 import {
   AgentController,
@@ -17,15 +17,28 @@ import {
 } from "./controller.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
-import { ActivityAggregator, type ActivitySnapshot, type AggregatedRecord } from "./activity.ts";
+import type { ActivitySnapshot, AggregatedRecord } from "./activity.ts";
 import type { Adapter } from "./adapters.ts";
+import {
+  createAgentConversationId,
+  isAgentConversationId,
+  isAgentSessionId,
+  type AgentConversationId,
+  type AgentSessionId,
+} from "./agent-ids.ts";
+import type {
+  NewConversationRecord,
+  ParticipantRef,
+  PersistenceJsonValue,
+} from "./persistence/backend.ts";
+import type { AgentConversationOwnerLifecycle } from "./agent-conversation-owner.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import { formatResponseMessages, ResponseAccumulator } from "./response.ts";
-import { MeteringEngine, type OpenOperation } from "./metering/engine.ts";
+import { MeteringEngine, type OpenDetachedOperation, type OpenOperation } from "./metering/engine.ts";
 import {
   AgentSessionHandoffError,
   AgentSessionOperationError,
@@ -49,7 +62,6 @@ import {
 import type { SessionManager, MergedSession } from "./session-manager.ts";
 import {
   appendTranscriptLine,
-  type TranscriptActivityLine,
   type TranscriptLine,
 } from "./transcript.ts";
 import type {
@@ -58,6 +70,8 @@ import type {
   Attachment,
   PromptHandlers,
   PromptResult,
+  PermissionOutcome,
+  PermissionRequest,
   ResponseMessage,
   SessionListEntry,
   TokenUsage,
@@ -88,20 +102,14 @@ import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.t
 import {
   RegistryPersistenceRuntime,
   type PersistenceStateRuntime,
-  type PresentationPersistenceEvent,
 } from "./persistence/state-runtime.ts";
 import { AuditPersistenceRuntime, AuditedPersistenceRuntime, type AuditLogIdentity } from "./persistence/audit-runtime.ts";
 import { TranscriptReader } from "./persistence/transcript-reader.ts";
-import {
-  presentationItemFromRecord,
-  type TranscriptPresentationItem,
-} from "./persistence/presentation.ts";
 import {
   snapshotSessionConfiguration,
   snapshotSessionConfigurationAfterSelection,
   snapshotAcceptedEffectiveConfiguration,
 } from "./persistence/configuration-state.ts";
-import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
 import {
   canonicalizeJson,
   sha256CanonicalJson,
@@ -111,6 +119,89 @@ import type { PersistenceRepair, SessionRecoveryStatus } from "./persistence/red
 import type { StagedContinuationState } from "./persistence/registry.ts";
 import type { SessionLogWriterLock } from "./persistence/session-log-writer.ts";
 import type { ManagedOpenProgressReporter } from "./persistence/managed-open-progress.ts";
+import {
+  AdapterMismatchError,
+  AgentSessionPromptBlockedError,
+  ContinuationUnavailableError,
+  DirectAuditPersistenceUnsupportedError,
+} from "./agent-conversation-errors.ts";
+import type {
+  AgentSessionEvent,
+  AgentSessionListener,
+  AgentSessionNotification,
+  AgentSessionPhase,
+  AgentSessionPromptResult,
+  AgentSessionPromptability,
+  AgentSessionRecoveryResolution,
+  AgentSessionRecoveryResolutionResult,
+  AgentSessionState,
+  ConfigurationMismatchResolution,
+  ConfigurationMismatchResolutionResult,
+  ConfigurationRestoreStatus,
+  ContinuationAttempt,
+  ContinuationReport,
+  ContinuationStrategy,
+  HandoffOptions,
+  HandoffResult,
+  OpenContinuationOptions,
+  PromptBlocker,
+  ProviderSession,
+  TranscriptActivityConfig,
+  TranscriptContinuationBuilder,
+  TranscriptContinuationBuilderContext,
+} from "./agent-conversation-contracts.ts";
+import { AgentConversationQueue } from "./agent-conversation-queue.ts";
+import { AgentConversationPresentation } from "./agent-conversation-presentation.ts";
+import {
+  HANDOFF_SUMMARY_PROMPT,
+  buildContinuationPrompt,
+  createContinuationReport,
+  descriptorFromCheckpoint,
+  isReconstructionStrategy,
+  normalizeContinuationStrategies,
+  stageOpeningContinuation,
+} from "./agent-conversation-continuation.ts";
+
+export {
+  AdapterMismatchError,
+  AgentSessionPromptBlockedError,
+  ContinuationUnavailableError,
+  DirectAuditPersistenceUnsupportedError,
+} from "./agent-conversation-errors.ts";
+export type {
+  AgentConversationEvent,
+  AgentConversationListener,
+  AgentConversationNotification,
+  AgentConversationPhase,
+  AgentConversationPromptResult,
+  AgentConversationPromptability,
+  AgentConversationRecoveryResolution,
+  AgentConversationRecoveryResolutionResult,
+  AgentConversationState,
+  AgentSessionEvent,
+  AgentSessionListener,
+  AgentSessionNotification,
+  AgentSessionPhase,
+  AgentSessionPromptResult,
+  AgentSessionPromptability,
+  AgentSessionRecoveryResolution,
+  AgentSessionRecoveryResolutionResult,
+  AgentSessionState,
+  ConfigurationMismatchResolution,
+  ConfigurationMismatchResolutionResult,
+  ConfigurationRestoreStatus,
+  ContinuationAttempt,
+  ContinuationReport,
+  ContinuationStrategy,
+  HandoffOptions,
+  HandoffResult,
+  OpenContinuationOptions,
+  PromptBlocker,
+  ProviderSession,
+  TranscriptActivityConfig,
+  TranscriptContinuationBuilder,
+  TranscriptContinuationBuilderContext,
+} from "./agent-conversation-contracts.ts";
 
 interface PromptQueueItem {
   kind: "prompt";
@@ -118,6 +209,7 @@ interface PromptQueueItem {
   /** How this operation is classified in its metering record. */
   operationKind: MeteredOperationKind;
   text: string;
+  participantId?: string;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
   resolve: (r: AgentSessionPromptResult) => void;
@@ -165,335 +257,14 @@ interface RecoveryResolutionQueueItem {
 
 type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem | ConfigResolutionQueueItem | RecoveryResolutionQueueItem;
 
-/** What the stable logical session is doing right now. */
-export type AgentSessionPhase =
-  | "idle"
-  | "prompting"
-  | "handoff"
-  | "configuring"
-  | "recovering"
-  | "switching_mode"
-  | "stopped";
-
-/** Authoritative, immutable point-in-time state for orchestration consumers. */
-export interface AgentSessionState {
-  readonly phase: AgentSessionPhase;
-  /** True only while an operation is executing; queued work is reported separately. */
-  readonly isBusy: boolean;
-  /** Operations waiting behind the active one. Does not count the active operation. */
-  readonly queuedOperationCount: number;
-  readonly agentSessionId: string;
-  readonly internalSessionId: string | null;
-  readonly adapterId: string;
-  readonly mode: AgentMode;
-  readonly promptability: AgentSessionPromptability;
-}
-
-export type ConfigurationRestoreStatus =
-  | { readonly kind: "matched" }
-  | { readonly kind: "partial"; readonly omittedConfigIds: readonly string[] }
-  | {
-      readonly kind: "mismatch";
-      readonly configIds: readonly string[];
-      readonly reasons: readonly string[];
-    };
-
-export type PromptBlocker =
-  | "continuation_unavailable"
-  | "recovery_required"
-  | "configuration_mismatch"
-  | "persistence_unhealthy"
-  | "maintenance_pending"
-  | "session_stopped";
-
-export type AgentSessionPromptability =
-  | { readonly promptable: true; readonly blockers: readonly [] }
-  | { readonly promptable: false; readonly blockers: readonly PromptBlocker[] };
-
-export interface ContinuationAttempt {
-  readonly strategy: ContinuationStrategy["kind"];
-  readonly status: "succeeded" | "failed" | "skipped";
-  readonly errorCode?: PersistedMachineCode;
-  readonly reason?: string;
-}
-
-export interface ContinuationReport {
-  readonly recordedAdapterId: string;
-  readonly recordedInternalSessionId: string | null;
-  readonly requestedAdapterId: string;
-  readonly recordedConversationAvailability: "available" | "partial" | "not_captured";
-  readonly recordedThreadAvailability: "available" | "unavailable" | "not_checked";
-  readonly attempts: readonly ContinuationAttempt[];
-  readonly outcome:
-    | { readonly kind: "loaded"; readonly activeInternalSessionId: string }
-    | {
-        readonly kind: "reconstructed";
-        readonly source: "transcript" | "consumer";
-        readonly activeInternalSessionId: string;
-        readonly transitionId: string;
-      }
-    | { readonly kind: "unavailable" };
-}
-
-export interface TranscriptContinuationBuilderContext {
-  readonly agentSessionId: string;
-  readonly checkpoint: AgentSessionCheckpoint;
-  /** Snapshot-bound access to captured history; the builder decides how much to read. */
-  readonly transcript: TranscriptReader;
-  readonly targetAdapterId: string;
-}
-
-export type TranscriptContinuationBuilder = (
-  context: TranscriptContinuationBuilderContext,
-) => Promise<{ readonly continuation: string; readonly metadata?: Readonly<Record<string, JsonValue>> }>;
-
-export type ContinuationStrategy =
-  | { readonly kind: "load_internal_session" }
-  | {
-      readonly kind: "new_from_transcript";
-      readonly strategyId: string;
-      readonly buildContinuation: TranscriptContinuationBuilder;
-    }
-  | {
-      readonly kind: "new_from_consumer_continuation";
-      readonly continuationId: string;
-      readonly continuation: string;
-    };
-
-export interface OpenContinuationOptions {
-  /** Defaults to only `load_internal_session`; an empty array is invalid. */
-  readonly strategies?: readonly ContinuationStrategy[];
-}
-
 export interface AgentSessionOpenResult {
-  readonly session: AgentSession;
+  readonly session: AgentConversation;
   readonly continuation: ContinuationReport;
   readonly recovery: SessionRecoveryStatus;
   readonly configuration: ConfigurationRestoreStatus;
   readonly promptability: AgentSessionPromptability;
   readonly repairs: readonly PersistenceRepair[];
 }
-
-export type ConfigurationMismatchResolution =
-  | { readonly strategy: "accept_effective" }
-  | {
-      readonly strategy: "replace_restoration_targets";
-      readonly selections: readonly { readonly configId: string; readonly value: JsonValue }[];
-    };
-
-export interface ConfigurationMismatchResolutionResult {
-  readonly configuration: ConfigurationRestoreStatus;
-  readonly appliedConfigIds: readonly string[];
-}
-
-export type AgentSessionRecoveryResolution =
-  | { readonly strategy: "accept_harness_state" }
-  | {
-      readonly strategy: "start_new_internal_session";
-      /** When omitted, the currently loaded harness thread generates portable context. */
-      readonly continuation?: string;
-    };
-
-export interface AgentSessionRecoveryResolutionResult {
-  readonly previous: Extract<SessionRecoveryStatus, { readonly kind: "uncertain" }>;
-  readonly recovery: Extract<SessionRecoveryStatus, { readonly kind: "clean" }>;
-  /** Present when resolution deliberately replaced the provider thread. */
-  readonly handoff?: HandoffResult;
-}
-
-export class AgentSessionPromptBlockedError extends Error {
-  constructor(readonly blockers: readonly PromptBlocker[]) {
-    super(`AgentSession cannot mutate while blocked: ${blockers.join(", ")}`);
-    this.name = "AgentSessionPromptBlockedError";
-  }
-}
-
-export class ContinuationUnavailableError extends Error {
-  constructor(readonly continuation: ContinuationReport, options?: ErrorOptions) {
-    super("recorded internal session could not be loaded", options);
-    this.name = "ContinuationUnavailableError";
-  }
-}
-
-export class AdapterMismatchError extends Error {
-  constructor(readonly recordedAdapterId: string, readonly requestedAdapterId: string) {
-    super(`adapter mismatch: transcript requires ${recordedAdapterId}, received ${requestedAdapterId}`);
-    this.name = "AdapterMismatchError";
-  }
-}
-
-/** Direct V2 audit creation is deferred until it has the same crash transaction as managed creation. */
-export class DirectAuditPersistenceUnsupportedError extends Error {
-  constructor() {
-    super("direct V2 audit persistence is not supported; use SessionManager.createAgentSession()");
-    this.name = "DirectAuditPersistenceUnsupportedError";
-  }
-}
-
-export interface HandoffOptions {
-  /** Portable continuation context. When omitted, the current thread generates it. */
-  readonly summary?: string;
-}
-
-export interface HandoffResult {
-  readonly handoffId: string;
-  readonly agentSessionId: string;
-  readonly fromInternalSessionId: string | null;
-  readonly toInternalSessionId: string;
-  readonly summary: string;
-  /** One record per token-consuming operation the handoff performed, in order. */
-  readonly meteringRecords: readonly OperationMeteringRecord[];
-}
-
-/** Session-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
-export type AgentSessionEvent =
-  | { kind: "state_changed"; state: AgentSessionState }
-  | { kind: "turn_started"; turnId: string }
-  | { kind: "turn_completed"; turnId: string; result: PromptResult }
-  | { kind: "turn_failed"; turnId: string; error: string }
-  /** A display item revision was appended to the transcript and can be joined to reloads by id. */
-  | { kind: "presentation_recorded"; item: TranscriptPresentationItem }
-  /** The active ACP harness changed the slash commands it advertises. */
-  | { kind: "internal_session_commands_changed"; commands: readonly InternalSessionCommand[] }
-  | {
-      kind: "handoff_started";
-      handoffId: string;
-      fromInternalSessionId: string | null;
-    }
-  | { kind: "handoff_completed"; result: HandoffResult }
-  | {
-      kind: "handoff_failed";
-      handoffId: string;
-      fromInternalSessionId: string | null;
-      toInternalSessionId?: string;
-      error: string;
-      /** Records produced before and during the failure. */
-      meteringRecords: readonly OperationMeteringRecord[];
-    }
-  | { kind: "configuration_started"; operationId: string; configId: string }
-  | { kind: "configuration_completed"; operationId: string; configId: string }
-  | { kind: "configuration_failed"; operationId: string; configId: string; error: string }
-  | { kind: "mode_change_started"; transitionId: string; from: AgentMode; to: AgentMode }
-  | { kind: "mode_change_completed"; transitionId: string; from: AgentMode; to: AgentMode }
-  | { kind: "mode_change_failed"; transitionId: string; from: AgentMode; to: AgentMode; error: string }
-  | {
-      kind: "configuration_mismatch_resolved";
-      configuration: ConfigurationRestoreStatus;
-      appliedConfigIds: readonly string[];
-    }
-  | {
-      kind: "recovery_resolved";
-      strategy: AgentSessionRecoveryResolution["strategy"];
-      previous: Extract<SessionRecoveryStatus, { kind: "uncertain" }>;
-      recovery: Extract<SessionRecoveryStatus, { kind: "clean" }>;
-    }
-  /** Latest context-window observation for the ACTIVE provider thread, or null. */
-  | { kind: "context_window_changed"; contextWindow: ContextWindowStatus | null }
-  /** Latest cumulative provider-reported cost. Telemetry, never asserted to be an invoice. */
-  | { kind: "provider_cost_changed"; providerCost: ProviderCostSnapshot | null }
-  /** One immutable record per observed operation, emitted before its turn completes. */
-  | { kind: "metering_recorded"; record: OperationMeteringRecord }
-  /** A strict mode detected a metering failure; later token-consuming work will reject. */
-  | { kind: "metering_blocked"; reason: string }
-  | { kind: "metering_unblocked" }
-  | {
-      kind: "metering_reconciled";
-      before: AgentSessionMeteringState;
-      after: AgentSessionMeteringState;
-      reason: string;
-      reference?: string;
-      reconciledAt: number;
-    };
-
-/** A prompt result enriched with the operation's metering record. */
-export interface AgentSessionPromptResult extends PromptResult {
-  readonly operationId: string;
-  /**
-   * The operation's record, or null when the operation never reached the provider.
-   *
-   * Null happens only for a queued prompt cancelled before dispatch (§16). Such an
-   * operation consumed nothing, and minting a record for it would put a fabricated
-   * entry in the consumer's ledger — so the field is honestly empty instead.
-   */
-  readonly metering: OperationMeteringRecord | null;
-}
-
-/** Ordered envelope delivered to every AgentSession subscriber. */
-export interface AgentSessionNotification {
-  readonly seq: number;
-  readonly ts: number;
-  readonly agentSessionId: string;
-  readonly event: AgentSessionEvent;
-}
-
-export type AgentSessionListener = (notification: AgentSessionNotification) => void;
-
-/** What to record when `transcriptActivity` is on. */
-export interface TranscriptActivityConfig {
-  /**
-   * Which record kinds to persist. Default: `tool`, `thinking`, `plan`, `plan_update`,
-   * `plan_removed`, `usage`, `mode`, `unknown` — everything except client state
-   * (`commands`, `config`, `session_info`) and `user_message`, which duplicates `t:"msg"`.
-   */
-  kinds?: Array<ActivityEvent["kind"]>;
-  /**
-   * Write an extra line the first time a tool call learns its arguments. Default true —
-   * agents routinely announce a call long before they know what it will run, so without
-   * this a turn that dies mid-call leaves a record naming the tool but not the command.
-   *
-   * This is an aggregator-level knob, so it also shapes `onRecord`'s `emitted` when no
-   * transcript is configured.
-   */
-  checkpointOnInput?: boolean;
-  /**
-   * Persist `rawOutput`. Default false: in practice it is a byte-identical duplicate of
-   * `content` (measured on live Kimi), so it doubles the largest field on the line.
-   */
-  rawOutput?: boolean;
-  /**
-   * Cap each individual string field (terminal output, text content, a stringified
-   * `rawInput`) at this many bytes, appending `… [truncated N bytes]` and marking the
-   * line `truncated: true`. Default off. Per-field on purpose — capping the serialized
-   * line would emit unparseable JSON.
-   */
-  maxBytes?: number;
-}
-
-const DEFAULT_ACTIVITY_KINDS: Array<ActivityEvent["kind"]> = [
-  "tool",
-  "thinking",
-  "plan",
-  "plan_update",
-  "plan_removed",
-  "usage",
-  "mode",
-  "unknown",
-];
-
-const HANDOFF_SUMMARY_PROMPT = [
-  "Create portable continuation context for a new agent thread.",
-  "Summarize the objective, decisions, completed work, current state, important files or identifiers,",
-  "and concrete next steps. Preserve unresolved risks and constraints. Return only the continuation context.",
-].join(" ");
-
-function continuationPrompt(summary: string): string {
-  return [
-    "Continue this conversation using the following portable continuation context.",
-    "Treat it as prior context, not as a new user request. Confirm internally and continue from this state.",
-    "",
-    summary,
-  ].join("\n");
-}
-
-/** Explicit selection of the provider thread backing a newly opened AgentSession. */
-export type ProviderSession =
-  | { readonly kind: "new" }
-  | {
-      readonly kind: "load";
-      readonly internalSessionId: string;
-      /** Default "error": never silently replace a requested thread. */
-      readonly onFailure?: "error" | "new";
-    };
 
 export interface AgentSessionConfig {
   /** The resolved adapter this conversation talks to. */
@@ -563,6 +334,14 @@ export interface AgentSessionConfig {
    */
   internalSessionId?: string;
   title?: string;
+  /** Stable conversation identity when this runtime is owned by an Agent. */
+  agentConversationId?: AgentConversationId;
+  /** Stable owning agent identity. Omitted for detached compatibility conversations. */
+  ownerAgentSessionId?: AgentSessionId;
+  /** Other sides of this conversation. The owning agent is implied. */
+  participants?: readonly ParticipantRef[];
+  /** @internal Installed by AgentConversationManager. */
+  ownerLifecycle?: AgentConversationOwnerLifecycle;
 }
 
 /** Direct restoration input. Phase 5A intentionally supports the safe recorded-thread path. */
@@ -606,41 +385,38 @@ export interface ManagedAgentSessionPersistenceSnapshot {
   readonly auditLog: AuditLogIdentity | null;
 }
 
-export class AgentSession implements AgentClient, Bridgeable {
-  /** Our stable AgentSession id — decoupled from the ACP/harness session id. */
+export class AgentConversation implements AgentClient, Bridgeable {
+  /** Compatibility logical id — decoupled from the ACP/harness session id. */
   readonly agentSessionId: string;
-  readonly adapterId: string;
+  readonly agentConversationId: AgentConversationId;
+  readonly ownerAgentSessionId: AgentSessionId | null;
+  private _adapterId: string;
+  private activeAdapter: Adapter;
 
-  private readonly controller: AgentController;
+  private controller: AgentController;
+  private readonly controllerDefaults: Omit<
+    AgentControllerConfig,
+    "adapter" | "adapterId" | "mode" | "sessionId" | "sessionLoadFailure"
+  >;
+  private detachControllerCommands: (() => void) | null = null;
+  private detachControllerUsage: (() => void) | null = null;
   private readonly sessions?: SessionManager;
   private readonly _transcriptPath?: string;
   private readonly persistence: false | ResolvedAgentSessionPersistence;
   private readonly creationId: string;
   private v2Transcript: PersistenceStateRuntime | null = null;
   private v2TranscriptPath: string | null = null;
-  /** One display queue preserves the live message/activity interleaving seen by consumers. */
-  private v2PresentationWrite: Promise<void> = Promise.resolve();
-  private readonly transcriptActivity: boolean;
-  private readonly activityKinds: Set<string>;
-  private readonly activityRawOutput: boolean;
-  private readonly activityMaxBytes: number | null;
-  /**
-   * THE aggregator — one per session for its whole life, never one per turn: `seq` has to
-   * keep counting across turns or a subscriber's discard threshold goes stale (see
-   * `activitySnapshot`). Runs unconditionally, so a snapshot is truthful and `onRecord`
-   * works whether or not a transcript is configured.
-   */
-  private readonly aggregator: ActivityAggregator;
+  private readonly presentation: AgentConversationPresentation;
   private readonly log: Logger;
   private transcriptWrite: Promise<void> = Promise.resolve();
-  private queue: QueueItem[] = [];
-  private pumping = false;
+  private readonly operations = new AgentConversationQueue<QueueItem>();
   private phase: AgentSessionPhase = "idle";
   private notificationSeq = 0;
   private readonly listeners = new Set<AgentSessionListener>();
   private lastStateKey = "";
   private _internalSessionId: string | null;
-  private readonly metering: MeteringEngine;
+  private metering: MeteringEngine;
+  private readonly meteringConfig: MeteringConfig;
   private _contextWindow: ContextWindowStatus | null = null;
   private _providerCost: ProviderCostSnapshot | null = null;
   /**
@@ -663,6 +439,10 @@ export class AgentSession implements AgentClient, Bridgeable {
   private managedAuditLog: AuditLogIdentity | null = null;
   private readonly managedOpenProgress?: ManagedOpenProgressReporter;
   private managedInitializationReported = false;
+  private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
+  private _participants: ParticipantRef[];
+  private ownerRecordWrite: Promise<void> = Promise.resolve();
+  private readonly defaultPermission: "approve" | "cancel";
 
   private constructor(
     config: AgentSessionConfig,
@@ -699,7 +479,23 @@ export class AgentSession implements AgentClient, Bridgeable {
     // IDs are opaque provider/consumer values. Validate blankness above, but never
     // normalize a nonblank identifier and accidentally select a different session.
     this.agentSessionId = config.agentSessionId ?? crypto.randomUUID();
-    this.adapterId = config.adapterId;
+    if (config.agentConversationId !== undefined && !isAgentConversationId(config.agentConversationId)) {
+      throw new Error(`invalid agent conversation id: ${config.agentConversationId}`);
+    }
+    if (config.ownerAgentSessionId !== undefined && !isAgentSessionId(config.ownerAgentSessionId)) {
+      throw new Error(`invalid owner agent session id: ${config.ownerAgentSessionId}`);
+    }
+    if (config.ownerAgentSessionId !== undefined && config.agentSessionId !== config.ownerAgentSessionId) {
+      throw new Error("owned AgentConversation agentSessionId must equal ownerAgentSessionId");
+    }
+    this.agentConversationId = config.agentConversationId ?? createAgentConversationId();
+    this.ownerAgentSessionId = config.ownerAgentSessionId
+      ?? (isAgentSessionId(this.agentSessionId) ? this.agentSessionId : null);
+    this.ownerLifecycle = config.ownerLifecycle;
+    this.defaultPermission = config.defaultPermission ?? "cancel";
+    this._participants = (config.participants ?? []).map((participant) => Object.freeze({ ...participant }));
+    this._adapterId = config.adapterId;
+    this.activeAdapter = config.adapter;
     this.sessions = config.sessions;
     this.persistence = resolveDirectPersistence(config.persistence);
     if (this.persistence !== false && config.sessions) {
@@ -722,19 +518,21 @@ export class AgentSession implements AgentClient, Bridgeable {
       (config.transcriptDir
         ? join(config.transcriptDir, `${encodeURIComponent(this.agentSessionId)}.jsonl`)
         : undefined);
-    const activity: TranscriptActivityConfig | null =
-      config.transcriptActivity === true ? {} : config.transcriptActivity || null;
-    this.transcriptActivity = activity !== null;
-    this.activityKinds = new Set(activity?.kinds ?? DEFAULT_ACTIVITY_KINDS);
-    this.activityRawOutput = activity?.rawOutput === true;
-    this.activityMaxBytes =
-      activity?.maxBytes != null && activity.maxBytes > 0 ? activity.maxBytes : null;
-    this.aggregator = new ActivityAggregator({ checkpointOnInput: activity?.checkpointOnInput });
     this.log = config.logger ?? noopLogger;
+    this.presentation = new AgentConversationPresentation({
+      activity: config.transcriptActivity,
+      logger: this.log,
+      persistence: () => this.v2Transcript,
+      ...(this._transcriptPath
+        ? { appendLegacyActivity: (line) => this.appendTranscript(line) }
+        : {}),
+      onPresentation: (item) => this.emit({ kind: "presentation_recorded", item }),
+    });
     this._mode = config.mode ?? "normal";
     this._cwd = config.cwd;
     this._title = config.title;
     this._internalSessionId = requestedInternalSessionId ?? null;
+    this.meteringConfig = Object.freeze({ ...(config.metering ?? {}) });
     this.metering = new MeteringEngine({
       agentSessionId: this.agentSessionId,
       adapterId: config.adapterId,
@@ -752,31 +550,143 @@ export class AgentSession implements AgentClient, Bridgeable {
       // not, and needs restored state to be attributable.
       createdActiveThread: providerSession.kind === "new",
     });
-    this.controller = new AgentController({
-      adapter: config.adapter,
-      adapterId: config.adapterId,
-      mode: this._mode,
+    this.controllerDefaults = {
       launcher: config.launcher,
       execPrefix: config.execPrefix,
       env: config.env,
       cwd: config.cwd,
-      sessionId: requestedInternalSessionId,
-      sessionLoadFailure: providerSession.kind === "load"
-        ? providerSession.onFailure ?? "error"
-        : undefined,
       mcpServers: config.mcpServers,
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,
       clientCapabilities: config.clientCapabilities,
       clientHandlers: config.clientHandlers,
       logger: config.logger,
-      wire: config.wire,
+      ...(config.wire || this.ownerLifecycle
+        ? {
+            wire: (entry: WireEntry) => {
+              config.wire?.(entry);
+              this.queueProtocolRecord(entry);
+            },
+          }
+        : {}),
+    };
+    this.controller = this.createController(config.adapter, config.adapterId, this._mode, {
+      sessionId: requestedInternalSessionId,
+      sessionLoadFailure: providerSession.kind === "load"
+        ? providerSession.onFailure ?? "error"
+        : undefined,
     });
-    this.controller.subscribeAvailableCommands((commands) => {
-      this.emit({ kind: "internal_session_commands_changed", commands });
+    this.bindController(this.controller);
+  }
+
+  private createController(
+    adapter: Adapter,
+    adapterId: string,
+    mode: AgentMode,
+    startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure"> = {},
+  ): AgentController {
+    return new AgentController({
+      ...this.controllerDefaults,
+      adapter,
+      adapterId,
+      mode,
+      ...startup,
     });
-    this.controller.subscribeUsageUpdate((update, sessionId) => {
-      this.applyUsageUpdate(update, sessionId);
+  }
+
+  private bindController(controller: AgentController): void {
+    this.detachControllerCommands?.();
+    this.detachControllerUsage?.();
+    this.detachControllerCommands = controller.subscribeAvailableCommands((commands) => {
+      if (this.controller === controller) {
+        this.emit({ kind: "internal_session_commands_changed", commands });
+      }
+    });
+    this.detachControllerUsage = controller.subscribeUsageUpdate((update, sessionId) => {
+      if (this.controller === controller) this.applyUsageUpdate(update, sessionId);
+    });
+  }
+
+  private queueOwnedRecord(record: NewConversationRecord): void {
+    if (!this.ownerLifecycle?.record) return;
+    this.ownerRecordWrite = this.ownerRecordWrite
+      .then(() => this.ownerLifecycle!.record!(record))
+      .catch((error) => {
+        this.markManagedPersistenceUnhealthy();
+        throw error;
+      });
+  }
+
+  private async recordOwned(record: NewConversationRecord): Promise<void> {
+    if (!this.ownerLifecycle?.record) return;
+    const write = this.ownerRecordWrite
+      .then(() => this.ownerLifecycle!.record!(record))
+      .catch((error) => {
+        this.markManagedPersistenceUnhealthy();
+        throw error;
+      });
+    this.ownerRecordWrite = write;
+    await write;
+  }
+
+  private markManagedPersistenceUnhealthy(): void {
+    if (!this.managedPersistenceHealthy) return;
+    this.managedPersistenceHealthy = false;
+    this.emitStateIfChanged();
+  }
+
+  private queueProtocolRecord(entry: WireEntry): void {
+    if (!this.ownerAgentSessionId || !this.ownerLifecycle?.record) return;
+    let message: PersistenceJsonValue;
+    try {
+      message = JSON.parse(entry.line) as PersistenceJsonValue;
+    } catch {
+      message = entry.line;
+    }
+    this.queueOwnedRecord({
+      recordId: `protocol-${crypto.randomUUID()}`,
+      agentSessionId: this.ownerAgentSessionId,
+      agentConversationId: this.agentConversationId,
+      kind: "protocol",
+      timestamp: new Date(entry.ts).toISOString(),
+      direction: entry.dir === "err" ? "error" : entry.dir,
+      ...(protocolMethod(message) ? { method: protocolMethod(message)! } : {}),
+      message,
+    });
+  }
+
+  private queueActivityRecords(turnId: string, records: readonly AggregatedRecord[]): void {
+    if (!this.ownerAgentSessionId) return;
+    for (const record of records) {
+      const runtimeRecord = runtimeRecordFromActivity(
+        this.ownerAgentSessionId,
+        this.agentConversationId,
+        turnId,
+        record,
+      );
+      if (runtimeRecord) this.queueOwnedRecord(runtimeRecord);
+    }
+  }
+
+  private async recordNativeAction(
+    transitionId: string,
+    action: string,
+    state: "started" | "checkpoint" | "completed" | "failed",
+    details: { readonly input?: unknown; readonly output?: unknown; readonly error?: string } = {},
+  ): Promise<void> {
+    if (!this.ownerAgentSessionId) return;
+    await this.recordOwned({
+      recordId: `${transitionId}:native:${state}:${crypto.randomUUID()}`,
+      agentSessionId: this.ownerAgentSessionId,
+      agentConversationId: this.agentConversationId,
+      kind: "native_action",
+      timestamp: new Date().toISOString(),
+      action,
+      transitionId,
+      state,
+      ...(details.input === undefined ? {} : { input: toPersistenceJsonValue(details.input) }),
+      ...(details.output === undefined ? {} : { output: toPersistenceJsonValue(details.output) }),
+      ...(details.error === undefined ? {} : { error: details.error }),
     });
   }
 
@@ -798,12 +708,12 @@ export class AgentSession implements AgentClient, Bridgeable {
    * options independently select history storage. No catalog or transcript is read
    * implicitly. Consumers compose a catalog record back into this method when reopening.
    */
-  static async create(config: AgentSessionConfig): Promise<AgentSession> {
+  static async create(config: AgentSessionConfig): Promise<AgentConversation> {
     const directPersistence = resolveDirectPersistence(config.persistence);
     if (directPersistence !== false && directPersistence.auditLog !== false) {
       throw new DirectAuditPersistenceUnsupportedError();
     }
-    const session = new AgentSession(config);
+    const session = new AgentConversation(config);
     try {
       await session.start();
       return session;
@@ -817,10 +727,10 @@ export class AgentSession implements AgentClient, Bridgeable {
   static async createManaged(
     config: AgentSessionConfig,
     bootstrap: ManagedAgentSessionCreationBootstrap,
-  ): Promise<AgentSession> {
-    let session: AgentSession;
+  ): Promise<AgentConversation> {
+    let session: AgentConversation;
     try {
-      session = new AgentSession(config, null, bootstrap);
+      session = new AgentConversation(config, null, bootstrap);
     } catch (error) {
       await bootstrap.transcriptLock?.release().catch(() => undefined);
       await bootstrap.auditLogLock?.release().catch(() => undefined);
@@ -839,7 +749,7 @@ export class AgentSession implements AgentClient, Bridgeable {
 
   /** Restore one logical session by loading the exact provider thread in transcript authority. */
   static async open(config: AgentSessionOpenConfig): Promise<AgentSessionOpenResult> {
-    return await AgentSession.openWithLock(config);
+    return await AgentConversation.openWithLock(config);
   }
 
   /** @internal Managed open after maintenance acquired the artifact lock. */
@@ -850,7 +760,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     stageContinuation?: (state: StagedContinuationState) => Promise<StagedContinuationState>,
     onOpenProgress?: ManagedOpenProgressReporter,
   ): Promise<AgentSessionOpenResult> {
-    return await AgentSession.openWithLock(
+    return await AgentConversation.openWithLock(
       config,
       transcriptLock,
       audit,
@@ -879,7 +789,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       throw new Error("registry-managed open has no recorded internal session id");
     }
     const { checkpoint: _checkpoint, continuation: _continuation, ...runtime } = config;
-    const session = new AgentSession({
+    const session = new AgentConversation({
       ...runtime,
       agentSessionId: checkpoint.agentSessionId,
       creationId: checkpoint.incarnationId,
@@ -905,7 +815,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         strategy: "load_internal_session",
         status: "succeeded",
       });
-      const continuation = continuationReport(
+      const continuation = createContinuationReport(
         checkpoint, config.adapterId, session.v2Transcript, "available", [attempt],
         { kind: "loaded", activeInternalSessionId: result.sessionId },
       );
@@ -974,7 +884,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         throw new AdapterMismatchError(checkpoint.adapterId, config.adapterId);
       }
       const { checkpoint: _suppliedCheckpoint, continuation: _continuation, ...runtimeConfig } = config;
-      const session = new AgentSession({
+      const session = new AgentConversation({
         ...runtimeConfig,
         agentSessionId: checkpoint.agentSessionId,
         creationId: checkpoint.incarnationId,
@@ -1275,7 +1185,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           this.continuationAcquired = true;
           recordedThreadAvailability = "available";
           attempts.push(Object.freeze({ strategy: strategy.kind, status: "succeeded" }));
-          return continuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
+          return createContinuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
             kind: "loaded",
             activeInternalSessionId: loaded.sessionId,
           });
@@ -1414,7 +1324,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         const seeded = await this.meteredInternalPrompt(
           `${transitionId}:seed`,
           "switch_seed",
-          continuationPrompt(continuation.trim()),
+          buildContinuationPrompt(continuation.trim()),
           records,
         );
         if (seeded.status !== "completed") {
@@ -1432,7 +1342,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         });
         this.continuationAcquired = true;
         attempts.push(Object.freeze({ strategy: strategy.kind, status: "succeeded" }));
-        return continuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
+        return createContinuationReport(checkpoint, this.adapterId, this.v2Transcript, recordedThreadAvailability, attempts, {
           kind: "reconstructed",
           source,
           activeInternalSessionId: created.sessionId,
@@ -1464,7 +1374,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       }
     }
 
-    return continuationReport(
+    return createContinuationReport(
       checkpoint,
       this.adapterId,
       this.v2Transcript,
@@ -1535,6 +1445,25 @@ export class AgentSession implements AgentClient, Bridgeable {
     return this._internalSessionId;
   }
 
+  /** Active adapter route. It changes only after a durable switch activation. */
+  get adapterId(): string {
+    return this._adapterId;
+  }
+
+  /** Canonical `agc-` identity. */
+  get id(): AgentConversationId {
+    return this.agentConversationId;
+  }
+
+  /** Owning `ags-` identity, or null for a detached compatibility conversation. */
+  get ownerId(): AgentSessionId | null {
+    return this.ownerAgentSessionId;
+  }
+
+  get participants(): readonly ParticipantRef[] {
+    return Object.freeze(this._participants.map((participant) => Object.freeze({ ...participant })));
+  }
+
   /**
    * Latest context-window observation for the ACTIVE provider thread, or null.
    *
@@ -1584,6 +1513,37 @@ export class AgentSession implements AgentClient, Bridgeable {
       blockedReason: this.metering.blockedReason,
       outstandingReports: this.metering.outstandingReports(this._internalSessionId),
       lastOperation: this.metering.lastOperation,
+    });
+  }
+
+  /** @internal Meter disposable provider work without replacing this conversation's baseline. */
+  beginDetachedMetering(input: {
+    operationId: string;
+    operationKind: MeteredOperationKind;
+    internalSessionId: string;
+    model: string | null;
+  }): Promise<OpenDetachedOperation> {
+    return this.metering.openDetached({
+      ...input,
+      providerId: this.providerId,
+    });
+  }
+
+  /** @internal Completes a detached rating unit; the owner persists its returned record. */
+  async closeDetachedMetering(
+    operation: OpenDetachedOperation,
+    input: {
+      outcome: "completed" | "cancelled" | "error";
+      usage: TokenUsage | null;
+      usageFailureReason?: string;
+    },
+  ): Promise<OperationMeteringRecord> {
+    return await this.metering.closeDetached(operation, {
+      outcome: input.outcome,
+      reportedCumulative: input.usage,
+      ...(input.usageFailureReason ? { usageFailureReason: input.usageFailureReason } : {}),
+      contextAfter: this._contextWindow,
+      providerCostAfter: this._providerCost,
     });
   }
 
@@ -1686,7 +1646,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     return this.phase !== "idle" && this.phase !== "stopped";
   }
   get queuedOperationCount(): number {
-    return this.queue.length;
+    return this.operations.queuedCount;
   }
   /** Subscribe to future lifecycle changes. The current snapshot is available via state. */
   subscribe(listener: AgentSessionListener): () => void {
@@ -1707,11 +1667,23 @@ export class AgentSession implements AgentClient, Bridgeable {
     return this.enqueuePrompt(text, "prompt", handlers, attachments);
   }
 
+  /** Prompt while attributing the caller to a stable participant identity. */
+  promptFrom(
+    participantId: string,
+    text: string,
+    handlers?: PromptHandlers,
+    attachments?: Attachment[],
+  ): Promise<AgentSessionPromptResult> {
+    if (!participantId.trim()) return Promise.reject(new Error("participant id cannot be blank"));
+    return this.enqueuePrompt(text, "prompt", handlers, attachments, participantId.trim());
+  }
+
   private enqueuePrompt(
     text: string,
     operationKind: MeteredOperationKind,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
+    participantId?: string,
   ): Promise<AgentSessionPromptResult> {
     return new Promise<AgentSessionPromptResult>((resolve, reject) => {
       if (this.phase === "stopped") {
@@ -1724,11 +1696,12 @@ export class AgentSession implements AgentClient, Bridgeable {
         reject(error);
         return;
       }
-      this.queue.push({
+      this.operations.enqueue({
         kind: "prompt",
         turnId: this.mintTurnId(),
         operationKind,
         text,
+        ...(participantId ? { participantId } : {}),
         handlers,
         attachments,
         resolve,
@@ -1778,12 +1751,12 @@ export class AgentSession implements AgentClient, Bridgeable {
         reject(error);
         return;
       }
-      this.queue.push({
+      this.operations.enqueue({
         kind: "handoff",
         handoffId: this.mintOperationId(),
         // A queued operation owns its arguments. Do not let a caller mutate the object
         // while it waits behind an active prompt and silently change the handoff.
-        options: Object.freeze({ ...options }),
+        options: ownHandoffOptions(options),
         resolve,
         reject,
       });
@@ -1792,12 +1765,80 @@ export class AgentSession implements AgentClient, Bridgeable {
     });
   }
 
-  private async pump(): Promise<void> {
-    if (this.pumping) return;
-    this.pumping = true;
+  /** Cross-adapter handoff. The owning Agent resolves `targetAdapterId` in its registry. */
+  switch(
+    targetAdapterId: string,
+    options: Omit<HandoffOptions, "target" | "summary"> & {
+      readonly mode?: AgentMode;
+      readonly config?: Readonly<Record<string, unknown>>;
+    } = {},
+  ): Promise<HandoffResult> {
+    if (!targetAdapterId.trim()) return Promise.reject(new Error("target adapter id cannot be blank"));
+    return this.handoff({
+      continuation: options.continuation,
+      targetPrompt: options.targetPrompt,
+      target: {
+        adapterId: targetAdapterId.trim(),
+        ...(options.mode === undefined ? {} : { mode: options.mode }),
+        ...(options.config === undefined ? {} : { config: options.config }),
+      },
+    });
+  }
+
+  /** @internal Seed a newly created provider thread from a durable recovery checkpoint. */
+  async seedRecoveryContext(text: string): Promise<PromptResult> {
+    if (!text.trim()) throw new Error("recovery context cannot be blank");
+    const recoveryId = `recovery-${crypto.randomUUID()}`;
+    const records: OperationMeteringRecord[] = [];
+    await this.recordNativeAction(recoveryId, "conversation_recovery", "started");
     try {
-      while (this.queue.length > 0) {
-        const item = this.queue.shift()!;
+      const result = await this.meteredInternalPrompt(
+        recoveryId,
+        "conversation_recovery",
+        text,
+        records,
+      );
+      if (result.status !== "completed") {
+        throw new Error(`conversation recovery seed ${result.status}`);
+      }
+      await this.recordNativeAction(recoveryId, "conversation_recovery", "completed", {
+        output: { internalSessionId: this._internalSessionId },
+      });
+      return result;
+    } catch (error) {
+      await this.recordNativeAction(recoveryId, "conversation_recovery", "failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Start a blank provider thread without generating or installing continuation context. */
+  reset(options: {
+    readonly targetAdapterId?: string;
+    readonly mode?: AgentMode;
+    readonly config?: Readonly<Record<string, unknown>>;
+    readonly targetPrompt?: string;
+  } = {}): Promise<HandoffResult> {
+    return this.handoff({
+      continuation: { kind: "none" },
+      ...(options.targetPrompt === undefined ? {} : { targetPrompt: options.targetPrompt }),
+      ...((options.targetAdapterId ?? options.mode ?? options.config) === undefined
+        ? {}
+        : {
+            target: {
+              adapterId: options.targetAdapterId ?? this.adapterId,
+              ...(options.mode === undefined ? {} : { mode: options.mode }),
+              ...(options.config === undefined ? {} : { config: options.config }),
+            },
+          }),
+    });
+  }
+
+  private async pump(): Promise<void> {
+    if (this.operations.isDraining) return;
+    try {
+      await this.operations.drain(async (item) => {
         this.phase = item.kind === "prompt"
           ? "prompting"
           : item.kind === "handoff"
@@ -1831,10 +1872,52 @@ export class AgentSession implements AgentClient, Bridgeable {
         } else if (item.kind === "set_config") {
           this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
           try {
+            if (this.ownerAgentSessionId) {
+              await this.recordOwned({
+                recordId: `${item.operationId}:configuration:started`,
+                agentSessionId: this.ownerAgentSessionId,
+                agentConversationId: this.agentConversationId,
+                kind: "configuration",
+                timestamp: new Date().toISOString(),
+                operation: "set",
+                configId: item.configId,
+                value: toPersistenceJsonValue(item.value),
+                status: "started",
+              });
+            }
             await this.runSetConfig(item);
+            if (this.ownerAgentSessionId) {
+              await this.recordOwned({
+                recordId: `${item.operationId}:configuration:completed`,
+                agentSessionId: this.ownerAgentSessionId,
+                agentConversationId: this.agentConversationId,
+                kind: "configuration",
+                timestamp: new Date().toISOString(),
+                operation: "set",
+                configId: item.configId,
+                value: toPersistenceJsonValue(item.value),
+                status: "completed",
+              });
+            }
             this.emit({ kind: "configuration_completed", operationId: item.operationId, configId: item.configId });
             item.resolve();
           } catch (err) {
+            if (this.ownerAgentSessionId) {
+              await this.recordOwned({
+                recordId: `${item.operationId}:configuration:failed`,
+                agentSessionId: this.ownerAgentSessionId,
+                agentConversationId: this.agentConversationId,
+                kind: "configuration",
+                timestamp: new Date().toISOString(),
+                operation: "set",
+                configId: item.configId,
+                value: toPersistenceJsonValue(item.value),
+                status: "failed",
+                error: String(err),
+              }).catch((persistenceError) => this.log.warn("configuration_failure_persistence_failed", {
+                error: String(persistenceError),
+              }));
+            }
             this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
             item.reject(err);
           }
@@ -1860,28 +1943,60 @@ export class AgentSession implements AgentClient, Bridgeable {
           const from = this._mode;
           this.emit({ kind: "mode_change_started", transitionId: item.transitionId, from, to: item.mode });
           try {
+            await this.recordNativeAction(item.transitionId, "mode_change", "started", {
+              input: { from, to: item.mode },
+            });
             const result = await this.runSetMode(item);
+            await this.recordNativeAction(item.transitionId, "mode_change", "completed", {
+              output: { mode: item.mode, internalSessionId: result.sessionId || null },
+            });
             this.emit({ kind: "mode_change_completed", transitionId: item.transitionId, from, to: item.mode });
             item.resolve(result);
           } catch (err) {
+            await this.recordNativeAction(item.transitionId, "mode_change", "failed", {
+              error: String(err),
+            }).catch(() => undefined);
             this.emit({ kind: "mode_change_failed", transitionId: item.transitionId, from, to: item.mode, error: String(err) });
             item.reject(err);
           }
         }
-      }
+        // Promise consumers must observe the settled public state. The old in-class
+        // loop reached its `finally` synchronously after resolving the last item;
+        // crossing the extracted queue's async callback adds a microtask boundary.
+        // Settle here only when no next item exists, preserving both that ordering and
+        // the no-idle-gap guarantee between queued operations.
+        this.settleIdleIfDrained();
+      });
     } finally {
-      this.pumping = false;
       if (this.phase !== "stopped") this.phase = "idle";
       this.emitStateIfChanged();
     }
   }
 
+  private settleIdleIfDrained(): void {
+    if (this.operations.queuedCount !== 0 || this.phase === "stopped") return;
+    this.phase = "idle";
+    this.emitStateIfChanged();
+  }
+
   private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
     const fromInternalSessionId = this._internalSessionId;
+    const fromAdapterId = this.adapterId;
+    const targetAdapterId = item.options.target?.adapterId ?? fromAdapterId;
+    const targetMode = item.options.target?.mode ?? this._mode;
+    const continuation = normalizeHandoffContinuation(item.options);
+    const transitionKind = targetAdapterId === fromAdapterId ? "handoff" as const : "switch" as const;
+    const action = continuation.kind === "none" && transitionKind === "handoff"
+      ? "reset"
+      : transitionKind;
     const fromDescriptor = this.v2Transcript ? this.v2Descriptor() : null;
     let toInternalSessionId: string | undefined;
     let toDescriptor: InternalSessionDescriptor | undefined;
     let summary: string | undefined;
+    let targetResult: PromptResult | undefined;
+    let targetController: AgentController | null = null;
+    let resolvedTargetAdapter: Adapter | null = null;
+    let targetActivated = false;
     let failedAfter: "start" | "target_created" | "target_activated" = "start";
     // Records accumulate as they complete, so a handoff that fails partway still reports
     // the operations it already paid for.
@@ -1891,14 +2006,22 @@ export class AgentSession implements AgentClient, Bridgeable {
       handoffId: item.handoffId,
       fromInternalSessionId,
     });
+    await this.recordNativeAction(item.handoffId, action, "started", {
+      input: {
+        fromAdapterId,
+        targetAdapterId,
+        targetMode,
+        continuation: continuation.kind,
+      },
+    });
     if (this.v2Transcript) {
       await this.v2Transcript.appendTransitionEvent({
         kind: "transition",
         transitionId: item.handoffId,
-        transitionKind: "handoff",
+        transitionKind,
         event: "started",
         from: fromDescriptor,
-        ...(item.options.summary !== undefined ? { summary: item.options.summary } : {}),
+        ...(continuation.kind === "provided" ? { summary: continuation.content } : {}),
       });
     } else {
       await this.appendTranscript({
@@ -1908,25 +2031,24 @@ export class AgentSession implements AgentClient, Bridgeable {
         ts: Date.now(),
         handoffId: item.handoffId,
         fromInternalSessionId,
-        ...(item.options.summary !== undefined ? { summary: item.options.summary } : {}),
+        ...(continuation.kind === "provided" ? { summary: continuation.content } : {}),
       });
     }
 
     try {
-      if (this.controller.isDegraded) {
-        throw new Error("handoff requires ACP (normal) mode");
+      if (continuation.kind !== "none" && this.controller.isDegraded) {
+        throw new Error("handoff continuation requires ACP (normal) mode");
       }
 
-      if (item.options.summary !== undefined) {
-        if (!item.options.summary.trim()) throw new Error("handoff summary cannot be blank");
+      if (continuation.kind === "provided") {
         // A supplied summary removes the generation operation entirely, so no
         // `:summary` record is ever minted for it.
-        summary = item.options.summary;
-      } else {
+        summary = continuation.content;
+      } else if (continuation.kind === "generated") {
         const generated = await this.meteredInternalPrompt(
           `${item.handoffId}:summary`,
           "handoff_summary",
-          HANDOFF_SUMMARY_PROMPT,
+          continuation.summaryPrompt,
           records,
         );
         if (generated.status !== "completed" || !generated.text.trim()) {
@@ -1935,14 +2057,43 @@ export class AgentSession implements AgentClient, Bridgeable {
         // Handoff requires one seed string, so this internal boundary policy is explicit;
         // it is not treated as the canonical shape of the provider response.
         summary = formatResponseMessages(generated.messages, "\n\n").trim();
+      } else {
+        summary = "";
       }
 
-      const created = await this.controller.newSession();
+      const replacingController = targetAdapterId !== fromAdapterId || targetMode !== this._mode;
+      let created: ConnectResult;
+      if (replacingController) {
+        const adapter = item.options.target?.adapter ?? (targetAdapterId === fromAdapterId
+          ? this.activeAdapter
+          : this.ownerLifecycle?.resolveAdapter?.(targetAdapterId));
+        if (!adapter) {
+          throw new Error(
+            `cannot resolve adapter ${targetAdapterId}; cross-adapter switch requires an Agent-owned conversation`,
+          );
+        }
+        resolvedTargetAdapter = adapter;
+        targetController = this.createController(adapter, targetAdapterId, targetMode);
+        created = await targetController.startFresh();
+      } else {
+        if (this.controller.isDegraded) {
+          throw new Error("starting a fresh provider thread requires ACP (normal) mode");
+        }
+        targetController = this.controller;
+        created = await targetController.newSession();
+      }
       if (!created.sessionId) throw new Error("harness returned no session id for handoff");
       toInternalSessionId = created.sessionId;
-      if (toInternalSessionId === fromInternalSessionId) {
+      if (!replacingController && toInternalSessionId === fromInternalSessionId) {
         throw new Error("harness did not replace the internal session during handoff");
       }
+
+      for (const [configId, value] of Object.entries(item.options.target?.config ?? {})) {
+        await targetController.setConfig(configId, value);
+      }
+      await this.recordNativeAction(item.handoffId, action, "checkpoint", {
+        output: { stage: "target_created", internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+      });
 
       if (this.v2Transcript) {
         const transitionAt = new Date().toISOString();
@@ -1950,7 +2101,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         await this.v2Transcript.appendTransitionEvent({
           kind: "transition",
           transitionId: item.handoffId,
-          transitionKind: "handoff",
+          transitionKind,
           event: "target_created",
           from: fromDescriptor,
           to: toDescriptor,
@@ -1960,7 +2111,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         await this.v2Transcript.activateTransition({
           kind: "transition",
           transitionId: item.handoffId,
-          transitionKind: "handoff",
+          transitionKind,
           event: "target_activated",
           from: fromDescriptor,
           to: toDescriptor,
@@ -1974,7 +2125,7 @@ export class AgentSession implements AgentClient, Bridgeable {
                   protocol: fromDescriptor.protocol,
                   activatedAt: fromDescriptor.activatedAt!,
                   deactivatedAt: transitionAt,
-                  transition: { kind: "handoff", transitionId: item.handoffId },
+                  transition: { kind: transitionKind, transitionId: item.handoffId },
                 },
               }
             : {}),
@@ -1987,18 +2138,77 @@ export class AgentSession implements AgentClient, Bridgeable {
         });
         failedAfter = "target_activated";
       }
+      const activatedAt = new Date().toISOString();
+      try {
+        await this.ownerLifecycle?.transitionActivated?.({
+          transitionId: item.handoffId,
+          agentConversationId: this.agentConversationId,
+          internalSessionId: toInternalSessionId,
+          adapterId: targetAdapterId,
+          mode: targetMode,
+          ...(activeModel(targetController.configOptions)
+            ? { model: activeModel(targetController.configOptions)! }
+            : {}),
+          activatedAt,
+        });
+      } catch (error) {
+        this.markManagedPersistenceUnhealthy();
+        throw error;
+      }
+
+      const previousController = this.controller;
+      if (targetController !== previousController) {
+        this.controller = targetController;
+        this.activeAdapter = resolvedTargetAdapter!;
+        this._adapterId = targetAdapterId;
+        this._mode = targetMode;
+        this.metering = new MeteringEngine({
+          ...this.meteringConfig,
+          agentSessionId: this.agentSessionId,
+          adapterId: targetAdapterId,
+          initialState: this.metering.currentState,
+          createdActiveThread: true,
+          pricing: this.meteringConfig.pricing ?? createModelsDevResolver(),
+          enforcement: this.meteringConfig.enforcement ?? "best_effort",
+        });
+        this.bindController(targetController);
+      }
+      targetActivated = true;
       this.setInternalSessionId(toInternalSessionId);
+      await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       this.emitStateIfChanged();
       await this.persist();
+      await this.recordNativeAction(item.handoffId, action, "checkpoint", {
+        output: { stage: "target_activated", internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+      });
+      if (targetController !== previousController) {
+        await previousController.stop().catch((error) => {
+          this.log.warn("handoff_previous_controller_stop_failed", { error: String(error) });
+        });
+      }
 
-      const seeded = await this.meteredInternalPrompt(
-        `${item.handoffId}:seed`,
-        "handoff_seed",
-        continuationPrompt(summary),
-        records,
-      );
-      if (seeded.status !== "completed") {
-        throw new Error(`handoff continuation seeding ${seeded.status}`);
+      if (continuation.kind !== "none") {
+        const seeded = await this.meteredInternalPrompt(
+          `${item.handoffId}:seed`,
+          transitionKind === "switch" ? "switch_seed" : "handoff_seed",
+          buildContinuationPrompt(summary),
+          records,
+        );
+        if (seeded.status !== "completed") {
+          throw new Error(`handoff continuation seeding ${seeded.status}`);
+        }
+      }
+      if (item.options.targetPrompt !== undefined) {
+        const prompted = await this.meteredInternalPrompt(
+          `${item.handoffId}:target`,
+          "internal_command",
+          item.options.targetPrompt,
+          records,
+        );
+        if (prompted.status !== "completed") {
+          throw new Error(`handoff target prompt ${prompted.status}`);
+        }
+        targetResult = copyPromptResult(prompted);
       }
 
       const result: HandoffResult = Object.freeze({
@@ -2006,14 +2216,16 @@ export class AgentSession implements AgentClient, Bridgeable {
         agentSessionId: this.agentSessionId,
         fromInternalSessionId,
         toInternalSessionId,
+        ...(transitionKind === "switch" ? { fromAdapterId, toAdapterId: targetAdapterId } : {}),
         summary,
+        ...(targetResult ? { targetResult } : {}),
         meteringRecords: Object.freeze([...records]),
       });
       if (this.v2Transcript) {
         await this.v2Transcript.appendTransitionEvent({
           kind: "transition",
           transitionId: item.handoffId,
-          transitionKind: "handoff",
+          transitionKind,
           event: "completed",
           from: fromDescriptor,
           to: toDescriptor,
@@ -2031,6 +2243,9 @@ export class AgentSession implements AgentClient, Bridgeable {
           summary,
         });
       }
+      await this.recordNativeAction(item.handoffId, action, "completed", {
+        output: { internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+      });
       this.emit({ kind: "handoff_completed", result });
       return result;
     } catch (err) {
@@ -2042,6 +2257,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         toInternalSessionId = actualSessionId;
         this.emitStateIfChanged();
         try {
+          await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
           await this.persist();
         } catch (persistError) {
           this.log.warn("handoff_failure_persist_failed", { error: String(persistError) });
@@ -2052,7 +2268,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         await this.v2Transcript.appendTransitionEvent({
           kind: "transition",
           transitionId: item.handoffId,
-          transitionKind: "handoff",
+          transitionKind,
           event: "failed",
           from: fromDescriptor,
           ...(toDescriptor ? { to: toDescriptor } : {}),
@@ -2075,6 +2291,14 @@ export class AgentSession implements AgentClient, Bridgeable {
           error,
         });
       }
+      if (!targetActivated && targetController && targetController !== this.controller) {
+        await targetController.stop().catch(() => undefined);
+      }
+      await this.recordNativeAction(item.handoffId, action, "failed", { error }).catch(
+        (persistenceError) => this.log.warn("native_action_failure_persistence_failed", {
+          error: String(persistenceError),
+        }),
+      );
       this.emit({
         kind: "handoff_failed",
         handoffId: item.handoffId,
@@ -2449,6 +2673,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       const result = await this.controller.setMode(item.mode);
       this._mode = this.controller.currentMode;
       this.setInternalSessionId(result.sessionId || null);
+      await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       await this.persist();
       return result;
     }
@@ -2548,6 +2773,19 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
 
   private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
+    const owned = this.ownerLifecycle
+      ? await this.ownerLifecycle.beforePrompt({
+          operationId: item.turnId,
+          agentSessionId: this.ownerAgentSessionId!,
+          agentConversationId: this.agentConversationId,
+          ...(item.participantId ? { participantId: item.participantId } : {}),
+          text: item.text,
+        })
+      : undefined;
+    if (owned?.participant && !this._participants.some((participant) => participant.id === owned.participant!.id)) {
+      this._participants = [...this._participants, Object.freeze({ ...owned.participant })];
+    }
+    const providerText = owned?.providerText ?? item.text;
     this.beginTurn(item.turnId);
     let operation: OpenOperation;
     if (this.v2Transcript) {
@@ -2567,9 +2805,9 @@ export class AgentSession implements AgentClient, Bridgeable {
           presentation: { id: `message:${item.turnId}:user`, revision: 1 },
         });
         await this.v2Transcript.syncBeforeDispatch();
-        this.emitPresentationRecord(userRecord);
+        this.presentation.emitPersistedRecord(userRecord);
       } catch (error) {
-        this.endTurn(item.handlers);
+        this.endTurn(item.turnId, item.handlers);
         if (transcriptStarted) {
           await this.v2Transcript.abortOperation("pre_dispatch_persistence_failure").catch(
             (abortError) => this.log.warn("transcript_predispatch_abort_failed", { error: String(abortError) }),
@@ -2618,7 +2856,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       assistantMessage.revision++;
       assistantMessage.dirty = false;
       const message = assistantMessage;
-      this.queueV2Presentation({
+      this.presentation.queuePresentation({
         kind: "message",
         operationId: item.turnId,
         role: "assistant",
@@ -2645,9 +2883,9 @@ export class AgentSession implements AgentClient, Bridgeable {
         item.handlers?.onChunk?.(chunk);
       },
       onResponseChunk: (chunk) => {
-        const settledReasoning = this.aggregator.closeReasoningBoundary();
+        const settledReasoning = this.presentation.closeReasoningBoundary();
         if (settledReasoning) {
-          if (this.transcriptActivity || this.v2Transcript) this.writeActivity(settledReasoning);
+          this.queueActivityRecords(item.turnId, [settledReasoning]);
           item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
         }
         response.append(chunk);
@@ -2672,19 +2910,55 @@ export class AgentSession implements AgentClient, Bridgeable {
         // The message snapshot must enter the shared queue before an activity first seen
         // after it. Later activity revisions keep their original presentation position.
         flushAssistantMessage("in_progress");
-        const result = this.aggregator.apply(event);
-        if (this.transcriptActivity || this.v2Transcript) {
-          for (const record of result.emitted) this.writeActivity(record);
-        }
+        const result = this.presentation.applyActivity(event);
+        this.queueActivityRecords(item.turnId, result.emitted);
         item.handlers?.onRecord?.(result);
         item.handlers?.onActivity?.(event);
+      },
+      onPermissionRequest: async (request) => {
+        const permissionBase = `${item.turnId}:permission:${request.toolCallId}`;
+        if (this.ownerAgentSessionId) {
+          await this.recordOwned({
+            recordId: `${permissionBase}:requested`,
+            agentSessionId: this.ownerAgentSessionId,
+            agentConversationId: this.agentConversationId,
+            kind: "permission",
+            timestamp: new Date().toISOString(),
+            permissionId: request.toolCallId,
+            state: "requested",
+            request: toPersistenceJsonValue({
+              toolCallId: request.toolCallId,
+              ...(request.title ? { title: request.title } : {}),
+              options: request.options,
+              raw: request.raw,
+            }),
+          });
+        }
+        const outcome = item.handlers?.onPermissionRequest
+          ? await item.handlers.onPermissionRequest(request)
+          : defaultPermissionOutcome(request, this.defaultPermission);
+        if (this.ownerAgentSessionId) {
+          await this.recordOwned({
+            recordId: `${permissionBase}:resolved`,
+            agentSessionId: this.ownerAgentSessionId,
+            agentConversationId: this.agentConversationId,
+            kind: "permission",
+            timestamp: new Date().toISOString(),
+            permissionId: request.toolCallId,
+            state: "resolved",
+            outcome: permissionRecordOutcome(request, outcome),
+          });
+        }
+        return outcome;
       },
     };
 
     let closed: OperationMeteringRecord | null = null;
     let transcriptClosed = false;
+    let providerSettled = false;
     try {
-      const res = await this.controller.prompt(item.text, wrappedHandlers, item.attachments);
+      const res = await this.controller.prompt(providerText, wrappedHandlers, item.attachments);
+      providerSettled = true;
       if (this.v2Transcript) {
         if (assistantOrdinal === 0) {
           for (const message of res.messages) {
@@ -2699,7 +2973,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       }
       // Before the assistant msg: `msg` delimits a turn, so anything still open has to
       // land inside those fences.
-      this.endTurn(item.handlers);
+      this.endTurn(item.turnId, item.handlers);
       if (!this._title && item.text.trim()) {
         this._title = item.text.trim().replace(/\s+/g, " ").slice(0, 60);
       }
@@ -2715,9 +2989,10 @@ export class AgentSession implements AgentClient, Bridgeable {
       // a worse failure than the one closing early prevents.
       const record = await this.closeOperation(operation, res.status, res.usage);
       closed = record;
+      await this.ownerLifecycle?.meteringRecorded?.(record);
       await this.persist();
       if (this.v2Transcript) {
-        await this.drainV2Presentation();
+        await this.presentation.drain();
         await this.finishV2Prompt(res.status, record);
         transcriptClosed = true;
       } else {
@@ -2733,11 +3008,21 @@ export class AgentSession implements AgentClient, Bridgeable {
           status: res.status,
         });
       }
-      return Object.freeze({ ...res, operationId: item.turnId, metering: record });
+      const result = Object.freeze({ ...res, operationId: item.turnId, metering: record });
+      await this.ownerLifecycle?.afterPrompt({
+        operationId: item.turnId,
+        agentSessionId: this.ownerAgentSessionId!,
+        agentConversationId: this.agentConversationId,
+        ...(item.participantId ? { participantId: item.participantId } : {}),
+        text: item.text,
+        result,
+      });
+      await this.ownerRecordWrite;
+      return result;
     } catch (err) {
       // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
       // what it was doing, at its real status.
-      this.endTurn(item.handlers);
+      this.endTurn(item.turnId, item.handlers);
       const structured = response.snapshot();
       const text = structured.length > 0 ? response.text : chunks.join("");
       const messages: readonly ResponseMessage[] = structured.length > 0
@@ -2745,6 +3030,22 @@ export class AgentSession implements AgentClient, Bridgeable {
         : text
           ? Object.freeze([{ text }])
           : Object.freeze([]);
+      if (!providerSettled) {
+        await this.ownerLifecycle?.promptFailed({
+          operationId: item.turnId,
+          agentSessionId: this.ownerAgentSessionId!,
+          agentConversationId: this.agentConversationId,
+          ...(item.participantId ? { participantId: item.participantId } : {}),
+          text: item.text,
+          messages,
+          error: err,
+        }).catch((persistenceError) => {
+          this.log.warn("owned_prompt_failure_persistence_failed", { error: String(persistenceError) });
+        });
+      }
+      await this.ownerRecordWrite.catch((persistenceError) => {
+        this.log.warn("owned_runtime_persistence_failed", { error: String(persistenceError) });
+      });
       if (this.v2Transcript) {
         if (!transcriptClosed && assistantOrdinal === 0 && messages.length > 0) {
           for (const message of messages) {
@@ -2756,7 +3057,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         } else if (!transcriptClosed) {
           flushAssistantMessage("error", "error", true);
         }
-        await this.drainV2Presentation().catch(() => undefined);
+        await this.presentation.drain().catch(() => undefined);
       } else {
         await this.appendTranscript({
           v: 1,
@@ -2774,6 +3075,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       // Already metered: the failure happened after the operation closed (a transcript or
       // catalog write), so the record stands and must not be minted a second time.
       const record = closed ?? (await this.closeOperation(operation, "error", null, String(err)));
+      await this.ownerLifecycle?.meteringRecorded?.(record);
       if (this.v2Transcript && !transcriptClosed) {
         await this.finishV2Prompt("error", record, "unknown").catch(
           (persistenceError) => this.log.warn("transcript_terminal_write_failed", { error: String(persistenceError) }),
@@ -2836,7 +3138,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     before: AgentSessionMeteringState;
     after: AgentSessionMeteringState;
   }> {
-    if (this.isBusy || this.queue.length > 0) {
+    if (this.isBusy || this.operations.queuedCount > 0) {
       throw new Error("reconcileMetering requires an idle session with no queued operations");
     }
     if (!reconciliation.reason?.trim()) {
@@ -2859,6 +3161,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     // Validated first: state is replaced atomically or not at all.
     const { before } = this.metering.reconcile(restoration.state);
     const after = this.metering.currentState;
+    await this.ownerLifecycle?.meteringStateChanged?.(after);
     this.emit({
       kind: "metering_reconciled",
       before,
@@ -2923,6 +3226,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       const record = await this.closeOperation(operation, result.status, result.usage);
       records.push(record);
       closed = true;
+      await this.ownerLifecycle?.meteringRecorded?.(record);
       if (this.v2Transcript) {
         await this.v2Transcript.appendEvent({
           kind: "message",
@@ -2942,6 +3246,7 @@ export class AgentSession implements AgentClient, Bridgeable {
         const record = await this.closeOperation(operation, "error", null, String(err));
         records.push(record);
         closed = true;
+        await this.ownerLifecycle?.meteringRecorded?.(record);
       }
       if (this.v2Transcript && !transcriptClosed) {
         const record = records[records.length - 1]!;
@@ -3033,26 +3338,15 @@ export class AgentSession implements AgentClient, Bridgeable {
    * activity in its log before the messages around it had loaded.
    */
   activitySnapshot(): ActivitySnapshot {
-    return this.aggregator.snapshot();
+    return this.presentation.snapshot();
   }
 
   private beginTurn(turnId: string): void {
-    // A correct caller always gets an empty array back — both exit paths flush. If one
-    // ever doesn't, keeping the records (loudly) beats dropping them.
-    const leftover = this.aggregator.startTurn(turnId);
-    if (leftover.length > 0) {
-      this.log.warn("activity_turn_not_flushed", { records: leftover.length });
-      if (this.transcriptActivity || this.v2Transcript) for (const record of leftover) this.writeActivity(record);
-    }
+    this.presentation.beginTurn(turnId);
   }
 
-  private endTurn(handlers?: PromptHandlers): void {
-    const emitted = this.aggregator.flush();
-    if (emitted.length === 0) return;
-    if (this.transcriptActivity || this.v2Transcript) for (const record of emitted) this.writeActivity(record);
-    // Live subscribers need these too: without them, a tool call on a turn that was
-    // cancelled or crashed spins forever in the UI. `wireFrames()` handles this shape.
-    handlers?.onRecord?.({ current: null, delta: null, emitted });
+  private endTurn(turnId: string, handlers?: PromptHandlers): void {
+    this.queueActivityRecords(turnId, this.presentation.endTurn(handlers));
   }
 
   /**
@@ -3072,80 +3366,9 @@ export class AgentSession implements AgentClient, Bridgeable {
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   }
 
-  /**
-   * Persist one settled record. Filtering lives here, not in the aggregator: the
-   * aggregator owns semantics, the writer owns policy.
-   *
-   * Fire and forget — `appendTranscript` serializes writes in call order, so ordering
-   * holds without blocking the agent's update stream on disk.
-   */
-  private writeActivity(record: AggregatedRecord): void {
-    if (this.v2Transcript) {
-      const operationId = this.v2Transcript.checkpoint.boundary.status === "in_flight"
-        ? this.v2Transcript.checkpoint.boundary.interruptedOperationId
-        : record.recordId.split(":", 1)[0] ?? record.recordId;
-      const projected = persistenceEventFromActivity(record, operationId);
-      this.queueV2Presentation({
-        ...projected,
-        presentation: {
-          id: `${projected.kind}:${operationId}:${record.recordId}`,
-          revision: record.seq,
-        },
-      });
-      return;
-    }
-    if (!this._transcriptPath) return;
-    if (!this.activityKinds.has(record.event.kind)) return;
-    void this.appendTranscript(this.toActivityLine(record));
-  }
-
-  private queueV2Presentation(event: PresentationPersistenceEvent): void {
-    this.v2PresentationWrite = this.v2PresentationWrite.then(async () => {
-      if (!this.v2Transcript) return;
-      const record = await this.v2Transcript.appendPresentationEvent(event);
-      this.emitPresentationRecord(record);
-    });
-  }
-
-  private emitPresentationRecord(
-    record: Awaited<ReturnType<PersistenceStateRuntime["appendPresentationEvent"]>>,
-  ): void {
-    if (!record) return;
-    const item = presentationItemFromRecord(record);
-    if (item) this.emit({ kind: "presentation_recorded", item });
-  }
-
-  private async drainV2Presentation(): Promise<void> {
-    await this.v2PresentationWrite;
-  }
-
-  private toActivityLine(record: AggregatedRecord): TranscriptActivityLine {
-    let fields: Record<string, unknown> = { ...record.event };
-    if (!this.activityRawOutput) delete fields.rawOutput;
-
-    let truncated = false;
-    if (this.activityMaxBytes != null) {
-      const capped = capActivityStrings(fields, this.activityMaxBytes);
-      fields = capped.fields;
-      truncated = capped.truncated;
-    }
-
-    const line: TranscriptActivityLine = {
-      ...fields,
-      v: 1,
-      t: "activity",
-      ts: Date.now(),
-      recordId: record.recordId,
-      reason: record.reason,
-      kind: record.event.kind,
-    };
-    if (truncated) line.truncated = true;
-    return line;
-  }
-
   interrupt(options?: InterruptOptions): void {
     if (options?.clearQueue) {
-      const dropped = this.queue.splice(0);
+      const dropped = this.operations.clear();
       for (const item of dropped) {
         if (item.kind === "prompt") {
           // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
@@ -3184,7 +3407,10 @@ export class AgentSession implements AgentClient, Bridgeable {
     this.phase = "stopped";
     this.emitStateIfChanged();
     await this.controller.stop();
-    await this.drainV2Presentation().catch(() => undefined);
+    await this.ownerRecordWrite.catch((error) => {
+      this.log.warn("owned_runtime_persistence_failed", { error: String(error) });
+    });
+    await this.presentation.drain().catch(() => undefined);
     await this.v2Transcript?.close();
   }
 
@@ -3193,7 +3419,7 @@ export class AgentSession implements AgentClient, Bridgeable {
     if (this.phase === "stopped") throw new Error("AgentSession is stopped");
     this.assertPromptable();
     return await new Promise<ConnectResult>((resolve, reject) => {
-      this.queue.push({
+      this.operations.enqueue({
         kind: "set_mode",
         transitionId: this.mintOperationId(),
         mode,
@@ -3232,7 +3458,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       return Promise.reject(new Error(`configuration value cannot be cloned: ${String(error)}`));
     }
     return new Promise<void>((resolve, reject) => {
-      this.queue.push({
+      this.operations.enqueue({
         kind: "set_config",
         operationId: this.mintOperationId(),
         configId,
@@ -3263,7 +3489,7 @@ export class AgentSession implements AgentClient, Bridgeable {
       return Promise.reject(new Error(`configuration resolution cannot be cloned: ${String(error)}`));
     }
     return new Promise((resolve, reject) => {
-      this.queue.push({ kind: "resolve_config", resolution: owned, resolve, reject });
+      this.operations.enqueue({ kind: "resolve_config", resolution: owned, resolve, reject });
       this.emitStateIfChanged();
       void this.pump();
     });
@@ -3287,7 +3513,7 @@ export class AgentSession implements AgentClient, Bridgeable {
           ...(resolution.continuation === undefined ? {} : { continuation: resolution.continuation }),
         });
     return new Promise((resolve, reject) => {
-      this.queue.push({ kind: "resolve_recovery", resolution: owned, resolve, reject });
+      this.operations.enqueue({ kind: "resolve_recovery", resolution: owned, resolve, reject });
       this.emitStateIfChanged();
       void this.pump();
     });
@@ -3479,96 +3705,101 @@ export class AgentSession implements AgentClient, Bridgeable {
   }
 }
 
+/**
+ * @deprecated `AgentSession` is the compatibility name for one conversation. New code
+ * should use `AgentConversation`; the forthcoming `Agent` object owns conversations.
+ */
+export { AgentConversation as AgentSession };
+
+export type AgentConversationConfig = AgentSessionConfig;
+export type AgentConversationOpenConfig = AgentSessionOpenConfig;
+export type AgentConversationOpenResult = AgentSessionOpenResult;
+export type ManagedAgentConversationCreationBootstrap = ManagedAgentSessionCreationBootstrap;
+export type ManagedAgentConversationPersistenceSnapshot = ManagedAgentSessionPersistenceSnapshot;
+
 function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
-  return kind === "internal_command" ? "internal_session_command" : kind;
+  if (kind === "internal_command") return "internal_session_command";
+  if (
+    kind === "conversation_checkpoint"
+    || kind === "conversation_recovery"
+    || kind === "identity_update"
+  ) return "other";
+  return kind;
 }
 
-function continuationReport(
-  checkpoint: AgentSessionCheckpoint,
-  requestedAdapterId: string,
-  transcript: PersistenceStateRuntime,
-  recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"],
-  attempts: readonly ContinuationAttempt[],
-  outcome: ContinuationReport["outcome"],
-): ContinuationReport {
+function ownHandoffOptions(options: HandoffOptions): HandoffOptions {
   return Object.freeze({
-    recordedAdapterId: checkpoint.adapterId,
-    recordedInternalSessionId: checkpoint.internalSessionId,
-    requestedAdapterId,
-    recordedConversationAvailability: transcript.conversationAvailability,
-    recordedThreadAvailability,
-    attempts: Object.freeze(attempts.map((attempt) => Object.freeze({ ...attempt }))),
-    outcome: Object.freeze({ ...outcome }),
+    ...(options.summary === undefined ? {} : { summary: options.summary }),
+    ...(options.target === undefined
+      ? {}
+      : {
+          target: Object.freeze({
+            adapterId: options.target.adapterId,
+            ...(options.target.mode === undefined ? {} : { mode: options.target.mode }),
+            ...(options.target.adapter === undefined
+              ? {}
+              : {
+                  adapter: Object.freeze({
+                    ...options.target.adapter,
+                    command: Object.freeze([...options.target.adapter.command]) as unknown as string[],
+                    ...(options.target.adapter.ptyCommand
+                      ? {
+                          ptyCommand: Object.freeze([
+                            ...options.target.adapter.ptyCommand,
+                          ]) as unknown as string[],
+                        }
+                      : {}),
+                  }),
+                }),
+            ...(options.target.config === undefined
+              ? {}
+              : { config: Object.freeze({ ...options.target.config }) }),
+          }),
+        }),
+    ...(options.continuation === undefined
+      ? {}
+      : { continuation: Object.freeze({ ...options.continuation }) }),
+    ...(options.targetPrompt === undefined ? {} : { targetPrompt: options.targetPrompt }),
   });
 }
 
-function descriptorFromCheckpoint(checkpoint: AgentSessionCheckpoint): InternalSessionDescriptor {
-  return {
-    internalSessionId: checkpoint.internalSessionId,
-    adapterId: checkpoint.adapterId,
-    mode: checkpoint.mode,
-    model: checkpoint.model,
-    sessionConfiguration: checkpoint.sessionConfiguration,
-    activatedAt: checkpoint.internalSessionActivatedAt,
-    protocol: checkpoint.protocol,
-  };
-}
-
-function isReconstructionStrategy(strategy: ContinuationStrategy): boolean {
-  return strategy.kind === "new_from_transcript" || strategy.kind === "new_from_consumer_continuation";
-}
-
-function normalizeContinuationStrategies(
-  options: OpenContinuationOptions | undefined,
-): readonly ContinuationStrategy[] {
-  const strategies = options?.strategies ?? [{ kind: "load_internal_session" as const }];
-  if (strategies.length === 0) throw new Error("continuation.strategies cannot be empty");
-  return Object.freeze(strategies.map((strategy): ContinuationStrategy => {
-    if (strategy.kind === "load_internal_session") {
-      return Object.freeze({ kind: strategy.kind });
-    }
-    if (strategy.kind === "new_from_transcript") {
-      if (!strategy.strategyId.trim()) throw new Error("transcript continuation strategyId cannot be blank");
-      if (typeof strategy.buildContinuation !== "function") {
-        throw new Error("transcript continuation strategy requires buildContinuation");
-      }
-      return Object.freeze({
-        kind: strategy.kind,
-        strategyId: strategy.strategyId,
-        buildContinuation: strategy.buildContinuation,
-      });
-    }
-    if (!strategy.continuationId.trim()) throw new Error("consumer continuationId cannot be blank");
-    if (!strategy.continuation.trim()) throw new Error("consumer continuation cannot be blank");
-    return Object.freeze({
-      kind: strategy.kind,
-      continuationId: strategy.continuationId,
-      continuation: strategy.continuation,
-    });
-  }));
-}
-
-async function stageOpeningContinuation(
-  stage: ((state: StagedContinuationState) => Promise<StagedContinuationState>) | undefined,
-  checkpoint: AgentSessionCheckpoint,
-  internalSessionId: string,
-): Promise<void> {
-  if (!stage) return;
-  const observed: StagedContinuationState = {
-    adapterId: checkpoint.adapterId,
-    mode: checkpoint.mode,
-    internalSessionId,
-    internalSessionActivatedAt: checkpoint.internalSessionActivatedAt,
-    model: checkpoint.model,
-    sessionConfiguration: checkpoint.sessionConfiguration,
-    protocol: checkpoint.protocol,
-  };
-  const persisted = await stage(observed);
-  if (persisted.adapterId !== observed.adapterId
-    || persisted.mode !== observed.mode
-    || persisted.internalSessionId !== observed.internalSessionId) {
-    throw new Error("staged continuation disagrees with the loaded provider identity");
+function normalizeHandoffContinuation(options: HandoffOptions):
+  | { readonly kind: "generated"; readonly summaryPrompt: string }
+  | { readonly kind: "provided"; readonly content: string }
+  | { readonly kind: "none" } {
+  if (options.summary !== undefined && options.continuation !== undefined) {
+    throw new Error("handoff cannot combine deprecated summary with continuation");
   }
+  if (options.target && !options.target.adapterId.trim()) {
+    throw new Error("handoff target adapter id cannot be blank");
+  }
+  if (options.targetPrompt !== undefined && !options.targetPrompt.trim()) {
+    throw new Error("handoff target prompt cannot be blank");
+  }
+  if (options.summary !== undefined) {
+    if (!options.summary.trim()) throw new Error("handoff summary cannot be blank");
+    return Object.freeze({ kind: "provided", content: options.summary });
+  }
+  const continuation = options.continuation ?? { kind: "generated" as const };
+  if (continuation.kind === "provided") {
+    if (!continuation.content.trim()) throw new Error("handoff continuation cannot be blank");
+    return Object.freeze({ kind: "provided", content: continuation.content });
+  }
+  if (continuation.kind === "none") return Object.freeze({ kind: "none" });
+  if (continuation.summaryPrompt !== undefined && continuation.summaryInstructions !== undefined) {
+    throw new Error("handoff generated continuation cannot combine summaryPrompt and summaryInstructions");
+  }
+  if (continuation.summaryPrompt !== undefined && !continuation.summaryPrompt.trim()) {
+    throw new Error("handoff summary prompt cannot be blank");
+  }
+  if (continuation.summaryInstructions !== undefined && !continuation.summaryInstructions.trim()) {
+    throw new Error("handoff summary instructions cannot be blank");
+  }
+  const base = continuation.summaryPrompt ?? HANDOFF_SUMMARY_PROMPT;
+  const summaryPrompt = continuation.summaryInstructions === undefined
+    ? base
+    : `${base}\n\nAdditional summary instructions:\n${continuation.summaryInstructions}`;
+  return Object.freeze({ kind: "generated", summaryPrompt });
 }
 
 function configurationTargetIssue(
@@ -3619,6 +3850,130 @@ function sameJsonValue(left: unknown, right: JsonValue): boolean {
   }
 }
 
+function runtimeRecordFromActivity(
+  agentSessionId: AgentSessionId,
+  agentConversationId: AgentConversationId,
+  turnId: string,
+  record: AggregatedRecord,
+): NewConversationRecord | null {
+  const timestamp = new Date().toISOString();
+  const recordId = `${turnId}:runtime:${record.recordId}:${record.seq}`;
+  const event = record.event;
+  if (event.kind === "thinking") {
+    return {
+      recordId,
+      agentSessionId,
+      agentConversationId,
+      kind: "thinking",
+      timestamp,
+      thinkingId: record.recordId,
+      state: record.reason === "settled" || record.reason === "flushed" ? "completed" : "in_progress",
+      content: event.text,
+      ...(event.messageId ? { metadata: JSON.stringify({ providerMessageId: event.messageId }) } : {}),
+    };
+  }
+  if (event.kind === "tool") {
+    const terminal = event.status === "completed" || event.status === "failed";
+    const state = event.status === "failed"
+      ? "failed" as const
+      : terminal
+        ? "completed" as const
+        : record.reason === "input"
+          ? "input" as const
+          : record.reason === "flushed"
+            ? "failed" as const
+            : "announced" as const;
+    const output = event.rawOutput !== undefined || event.content !== undefined
+      ? [{
+          type: "json" as const,
+          value: toPersistenceJsonValue({
+            ...(event.rawOutput === undefined ? {} : { rawOutput: event.rawOutput }),
+            ...(event.content === undefined ? {} : { content: event.content }),
+            ...(event.locations === undefined ? {} : { locations: event.locations }),
+          }),
+        }]
+      : undefined;
+    return {
+      recordId,
+      agentSessionId,
+      agentConversationId,
+      kind: "tool_call",
+      timestamp,
+      toolCallId: event.toolCallId,
+      state,
+      ...(event.title || event.toolKind ? { name: event.title ?? event.toolKind } : {}),
+      ...(event.rawInput === undefined ? {} : { input: toPersistenceJsonValue(event.rawInput) }),
+      ...(output === undefined ? {} : { output }),
+      ...(state === "failed" ? { error: `tool call ended with status ${event.status}` } : {}),
+      metadata: JSON.stringify({ providerStatus: event.status, toolKind: event.toolKind }),
+    };
+  }
+  switch (event.kind) {
+    case "plan":
+    case "plan_update":
+    case "plan_removed":
+      return {
+        recordId,
+        agentSessionId,
+        agentConversationId,
+        kind: "activity",
+        timestamp,
+        activityId: record.recordId,
+        activityType: event.kind,
+        state: "completed",
+        data: toPersistenceJsonValue(event),
+      };
+    case "user_message":
+    case "commands":
+    case "mode":
+    case "usage":
+    case "session_info":
+    case "config":
+    case "unknown":
+      // These are conversation echo, session state, or diagnostic protocol updates.
+      // Their semantic state is persisted by messages/configuration/metering/checkpoints;
+      // exact frames are independently available through raw protocol capture.
+      return null;
+    case "tool_update":
+      // Folded updates return above as tool records. An unfurled tool_update is not a
+      // self-contained model activity, so it must not be persisted independently.
+      return null;
+  }
+}
+
+function protocolMethod(message: PersistenceJsonValue): string | undefined {
+  if (message === null || Array.isArray(message) || typeof message !== "object") return undefined;
+  const method = (message as { readonly method?: unknown }).method;
+  return typeof method === "string" ? method : undefined;
+}
+
+function toPersistenceJsonValue(value: unknown): PersistenceJsonValue {
+  if (value === undefined) return null;
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? String(value) : JSON.parse(serialized) as PersistenceJsonValue;
+}
+
+function defaultPermissionOutcome(
+  request: PermissionRequest,
+  policy: "approve" | "cancel",
+): PermissionOutcome {
+  if (policy === "cancel") return { outcome: "cancelled" };
+  const allow = request.options.find((option) => option.kind === "allow_once")
+    ?? request.options.find((option) => option.kind === "allow_always");
+  return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
+}
+
+function permissionRecordOutcome(
+  request: PermissionRequest,
+  outcome: PermissionOutcome,
+): "approved" | "denied" | "cancelled" {
+  if (outcome.outcome === "cancelled") return "cancelled";
+  const selected = request.options.find((option) => option.optionId === outcome.optionId);
+  return selected?.kind === "allow_once" || selected?.kind === "allow_always"
+    ? "approved"
+    : "denied";
+}
+
 /** Do not let one notification observer mutate the PromptResult another observer sees. */
 function copyPromptResult(result: PromptResult): PromptResult {
   const messages = result.messages ?? (result.text ? [{ text: result.text }] : []);
@@ -3629,59 +3984,4 @@ function copyPromptResult(result: PromptResult): PromptResult {
     ),
     usage: result.usage ? Object.freeze({ ...result.usage }) : null,
   });
-}
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-/**
- * Cap the fields that can realistically reach megabytes — terminal output, text content,
- * diffs, and a stringified `rawInput` — one field at a time so the JSON structure survives.
- * An oversized `rawInput` object becomes its truncated serialization, which is lossy by
- * design; `truncated: true` on the line says so.
- */
-function capActivityStrings(
-  fields: Record<string, unknown>,
-  maxBytes: number,
-): { fields: Record<string, unknown>; truncated: boolean } {
-  let truncated = false;
-  const cap = (text: string): string => {
-    const bytes = encoder.encode(text);
-    if (bytes.length <= maxBytes) return text;
-    // Back up off a continuation byte (0b10xxxxxx) so a multi-byte character is never
-    // split — decoding a partial sequence would yield U+FFFD.
-    let end = maxBytes;
-    while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
-    truncated = true;
-    return `${decoder.decode(bytes.subarray(0, end))}… [truncated ${bytes.length - end} bytes]`;
-  };
-  const capUnknown = (value: unknown): unknown => {
-    if (typeof value === "string") return cap(value);
-    const text = JSON.stringify(value) ?? "";
-    const capped = cap(text);
-    return capped === text ? value : capped;
-  };
-
-  const out = { ...fields };
-  if (out.rawInput !== undefined) out.rawInput = capUnknown(out.rawInput);
-  if (out.rawOutput !== undefined) out.rawOutput = capUnknown(out.rawOutput);
-  if (typeof out.text === "string") out.text = cap(out.text);
-  if (Array.isArray(out.content)) {
-    out.content = (out.content as unknown[]).map((entry) => {
-      if (entry === null || typeof entry !== "object") return entry;
-      const item = { ...(entry as Record<string, unknown>) };
-      if (typeof item.text === "string") item.text = cap(item.text);
-      if (typeof item.output === "string") item.output = cap(item.output);
-      if (typeof item.oldText === "string") item.oldText = cap(item.oldText);
-      if (typeof item.newText === "string") item.newText = cap(item.newText);
-      // `text` on a content entry is our convenience copy; the block itself still holds it.
-      if (item.content !== null && typeof item.content === "object") {
-        const block = { ...(item.content as Record<string, unknown>) };
-        if (typeof block.text === "string") block.text = cap(block.text);
-        item.content = block;
-      }
-      return item;
-    });
-  }
-  return { fields: out, truncated };
 }

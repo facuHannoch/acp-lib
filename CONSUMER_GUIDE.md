@@ -1,38 +1,38 @@
 # Consumer guide
 
 This guide is for applications embedding `@qlairoslabs/acp-client`, especially
-orchestrators that own several logical agent sessions. The library owns ACP communication,
-one live session's operation queue, metering, and optional persistence. The consumer owns
-its collection of live objects, adapter resolution, user interface, and application policy.
+orchestrators that own several agents and conversations. The recommended durable API is
+`Agent`, backed by a caller-located SQLite database. The library owns ACP communication,
+conversation queues, typed records, search, identity lifecycle hooks, and persistence.
+The consumer owns database placement, adapter definitions, user interface, and application
+policy.
+
+`AgentSession` remains the compatibility name for one live `AgentConversation`. The
+older `SessionManager`/JSONL workflow is still supported and documented later in this
+guide, but new durable applications should normally begin with `Agent`.
 
 The package requires Bun 1.3.5 or newer.
 
 ## Mental model
 
-There are three different operation layers:
+There are three primary runtime layers:
 
 | Layer | Main API | Examples |
 |---|---|---|
-| Logical-session management | `SessionManager` | Create, list, load, restore, reconfigure, and delete logical sessions |
-| One stable logical session | `AgentSession` | Prompt, interrupt, handoff, observe state, change configuration, and bridge |
+| Agent identity and persistence | `Agent` | Own SQLite persistence, adapter registry, identity runtime, and conversations |
+| One stable conversation | `AgentConversation` (`AgentSession` compatibility alias) | Prompt, interrupt, handoff, switch adapters, reset, observe state, and configure the harness |
 | Active harness thread | ACP and `internalSessionCommands` | Harness-specific commands such as `/usage` and `/model` |
 
-An `agentSessionId` is the stable identity exposed to the consumer. An
-`internalSessionId` identifies the current provider or harness thread. Handoff and other
-thread replacements may change the latter without changing the former.
+An `agentSessionId` (`ags-*`) identifies the agent. An `agentConversationId` (`agc-*`)
+identifies one of its conversations. An `internalSessionId` identifies the replaceable
+provider or harness thread behind that conversation.
 
 ```text
 consumer
-  └── SessionManager
-        └── AgentSession agent-7           stable logical identity
-              └── internal thread abc      replaceable harness identity
-```
-
-`SessionManager` persists and discovers logical sessions. It does not retain live
-`AgentSession` objects. An orchestrator normally keeps those separately:
-
-```ts
-const liveSessions = new Map<string, AgentSession>();
+  └── Agent ags-…                           stable agent identity + SQLite database
+        └── AgentConversation agc-…         stable conversation identity
+              └── AgentController
+                    └── internal thread abc replaceable harness identity
 ```
 
 ## Install and import
@@ -44,6 +44,8 @@ bun add @qlairoslabs/acp-client
 ```ts
 import {
   ADAPTERS,
+  Agent,
+  AgentAuditLogReader,
   AgentSession,
   AuditLogReader,
   SessionManager,
@@ -55,6 +57,437 @@ import {
   type PromptHandlers,
 } from "@qlairoslabs/acp-client";
 ```
+
+## Start with one SQLite-backed agent
+
+The database path is explicit and belongs to the consumer. One database contains one
+agent identity and any number of independently addressable conversations.
+
+```ts
+import { Agent, ADAPTERS } from "@qlairoslabs/acp-client";
+
+const agent = await Agent.open({
+  persistence: {
+    kind: "sqlite",
+    path: "/absolute/path/to/state/atlas.sqlite",
+  },
+  adapters: {
+    codex: ADAPTERS.codex,
+  },
+  defaultAdapterId: "codex",
+});
+
+try {
+  const conversation = await agent.conversations.create();
+  const result = await conversation.prompt("hi");
+
+  for (const message of result.messages) {
+    console.log(message.text);
+  }
+} finally {
+  await agent.close();
+}
+```
+
+The user message and each assistant-message boundary are stored as separate typed rows.
+Reopen the same database with `Agent.open()` and call
+`agent.conversations.open(agentConversationId)` to continue its active provider thread.
+
+SQLite keeps ordering and type-specific content separate. `conversation_records` is a
+narrow canonical envelope containing the conversation-local sequence, kind, timestamp,
+operation correlation, and optional metadata. Every envelope has exactly one typed detail
+row in tables such as `conversation_messages`, `conversation_tool_call_events`, or
+`conversation_activity_events`. A mixed timeline is read as one envelope page followed by
+bounded, batched subtype hydration; it never performs one query per record.
+
+Messages store ordinary text directly in `content_text`; structured or multimodal content
+uses `content_json`. Tool calls, permissions, configuration, actions, thinking, and
+activities retain meaningful lifecycle transitions as independently sequenced records.
+Raw ACP protocol bodies remain JSON because their external shape is intentionally open.
+Each completed metered operation adds an ordered `metering` reference whose complete
+financial record remains in `metering_records`; the timeline does not duplicate billing
+payloads.
+
+`activity` is reserved for model activity such as plans. Complete session observations
+such as usage, available commands, mode/config announcements, session metadata, echoed
+user messages, and unknown protocol updates are not reclassified as model activity.
+Their semantic state is retained by the relevant configuration, metering, or checkpoint
+storage, while consumers that need exact diagnostic traffic can enable protocol capture.
+
+SQLite protocol capture supports `"none"`, `"metadata"`, and `"raw"`; protocol
+`"content"` is rejected because coalesced content already belongs to the typed semantic
+records. Exact method filters provide a compact protocol skeleton without persisting the
+high-volume update stream:
+
+```ts
+capture: {
+  protocol: {
+    level: "metadata",
+    excludeMethods: ["session/update"],
+  },
+}
+```
+
+`includeMethods` is also available and cannot be combined with `excludeMethods`. Both use
+exact ACP method names. Methodless JSON-RPC responses remain captured because their method
+cannot be determined without correlating request IDs. Filtering happens before canonical
+sequence allocation, so omitted frames create neither rows nor sequence gaps.
+
+FTS5 indexes deliberately extracted searchable text rather than serialized record JSON.
+The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
+protocol bodies are not searched implicitly.
+
+Schema version 8 adds the durable Agent audit outbox to the typed layout. Pre-release
+version-7 SQLite files are not migrated because they were used only by development smoke
+tests. Opening one fails with a clear recreate instruction; remove the old smoke-test
+database and run the scenario again.
+
+### Agent audit log
+
+An SQLite-backed `Agent` can copy selected observations into an independently located,
+rotating JSONL audit stream. The stream belongs to the whole agent, so observations from
+all of its conversations share one ordered audit sequence. Audit capture is independent
+of canonical conversation capture: for example, an application may omit message content
+from SQLite while retaining it in the audit destination, or do the reverse.
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  auditLog: {
+    directory: "/audit/atlas",
+    filePrefix: "audit",
+    capture: {
+      message: "content",
+      protocol: {
+        level: "metadata",
+        excludeMethods: ["session/update"],
+      },
+    },
+    rotation: {
+      maxBytes: 64 * 1024 * 1024,
+      maxAgeMs: 24 * 60 * 60 * 1_000,
+    },
+  },
+});
+```
+
+The default prefix is `audit`. Segments are named `audit.000001.jsonl`,
+`audit.000002.jsonl`, and so on. A durable pending outbox in the agent database makes
+canonical persistence and audit intent one transaction. A background writer then appends
+and syncs those entries without delaying `prompt()`. Delivery is at least once: after a
+crash, a physically written entry may be encountered again during reconciliation, and
+its stable audit sequence and outbox ID identify the replay.
+
+Observe delivery or explicitly wait for it when an application boundary requires that:
+
+```ts
+const unsubscribe = agent.audit?.subscribe((event) => {
+  console.log(event.kind, event.snapshot.pendingCount);
+});
+
+const snapshot = await agent.audit?.status();
+const flushed = await agent.audit?.flush({ timeoutMs: 10_000 });
+if (flushed?.status === "blocked") {
+  // Repair or restore the destination before reopening the agent.
+}
+
+await agent.audit?.retry(); // manually end retry backoff after a transient failure
+unsubscribe?.();
+```
+
+`Agent.close()` makes a bounded flush attempt using `shutdownGraceMs` (two seconds by
+default), then releases the audit destination and agent database. Pending rows remain in
+SQLite if the destination was unavailable and resume on the next open.
+
+Read the stream without opening its agent database:
+
+```ts
+const reader = await AgentAuditLogReader.open({
+  directory: "/audit/atlas",
+  filePrefix: "audit",
+});
+
+const logical = await reader.readPage({ mode: "logical", limit: 100 });
+const next = logical.nextCursor
+  ? await reader.readPage({ mode: "logical", limit: 100, cursor: logical.nextCursor })
+  : null;
+
+// Diagnostic view: preserves physical replay entries instead of deduplicating them.
+const physical = await reader.readPage({ mode: "physical", limit: 100 });
+```
+
+Logical mode is the normal consumer view and deduplicates the bounded crash-replay
+window. Physical mode exposes what is actually present in the segment files. Reader
+cursors describe a stable snapshot and fail if required segments have disappeared or
+been truncated.
+
+There is one active owner per agent database and one active writer per audit destination.
+Opening either concurrently from another process fails with `AgentDatabaseInUseError` or
+`AuditLogDestinationInUseError`; this does not restrict concurrent conversations within
+the owning `Agent`. A stream whose identity, ordering, or synced history conflicts with
+SQLite fails closed with `AuditLogIdentityConflictError` or
+`AuditLogHistoryMissingError` instead of silently starting a new history.
+
+The initial Agent audit design deliberately accepts these constraints:
+
+- Configuration is fixed while the agent is open. Close and reopen to change it.
+- Every numbered segment remains part of the logical stream; automatic audit retention
+  and deletion are not provided.
+- Time-based rotation is checked when an entry is delivered, so an idle segment is not
+  rotated merely because time passed.
+- Disabling audit and later enabling it creates a new stream from that point; canonical
+  history is not backfilled.
+- JSONL is plaintext and not cryptographically signed. Protect, archive, and retain the
+  destination according to application policy.
+- Durability currently favors an entry-level sync boundary. Raw protocol capture can
+  therefore create backlog under sustained high-volume streaming; exclude
+  `session/update` or use metadata/semantic capture unless exact raw traffic is required.
+
+SQLite remains the source used for conversation recovery. Audit segments are an
+independent operational history and are not imported to reconstruct provider sessions.
+This API is distinct from the legacy `AuditLogReader` documented under
+“Configure transcripts” below, which reads per-`AgentSession` v1 audit files.
+
+The minimal end-to-end executable example is
+[`smoke-tests/end-to-end/index.ts`](./smoke-tests/end-to-end/index.ts). It sends `"hi"`
+through an ACP harness and independently queries SQLite to assert that the canonical
+user-message row contains `"hi"`:
+
+```bash
+bun smoke-tests/end-to-end/index.ts
+```
+
+By default it owns and removes a temporary directory. Set `ACP_TEST8_DATA_DIR` to retain
+the database at a caller-selected location for inspection:
+
+```bash
+ACP_TEST8_DATA_DIR=./smoke-tests/test8-test/data \
+  bun smoke-tests/end-to-end/index.ts
+```
+
+The smoke scenario uses a 64 MiB audit segment limit by default, so a short run may
+produce only one segment. To assert rotation with a deliberately small test threshold,
+set `ACP_TEST8_AUDIT_MAX_BYTES=1024`. This is a test override, not a suggested
+production setting.
+
+The current smoke scenario defaults to Codex because its second process opening verifies
+that the provider thread remembers prior conversation context. It may use credentials and
+consume model tokens.
+
+Provider-session identity and persisted history are always hard assertions. Exact semantic
+recall is also required by default for Codex, while other adapters report a warning because
+their selected model may ignore correctly loaded context. Set
+`ACP_TEST8_REQUIRE_SEMANTIC_RECALL=1` to require the exact recall assertion for any adapter,
+or `0` to make it observational.
+
+### SQLite metering persistence
+
+SQLite-backed agents always persist the bounded metering state needed to restore lifetime
+totals and the active provider-counter baseline. By default they also retain every complete
+`OperationMeteringRecord` locally:
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  defaultAdapterId: "codex",
+  meteringPersistence: {
+    meteringRecords: "all", // default
+  },
+});
+
+const page = await agent.persistence.metering.list(conversationId);
+const records = page.records;
+const state = await agent.persistence.metering.state(conversationId);
+
+// Internal work not caused by a conversation has a separate agent-level scope.
+const internalState = await agent.persistence.metering.agentState(agent.id);
+const internalRecords = await agent.persistence.metering.listAgent(agent.id);
+```
+
+Consumers with a separate authoritative billing store can omit the detailed local history:
+
+```ts
+meteringPersistence: {
+  meteringRecords: "none",
+}
+```
+
+`"none"` still writes a minimal operation marker for idempotency, adds the independently
+configured conversation-timeline reference, and always advances the bounded restoration
+state. It only omits the full serialized metering record. Continue to
+consume `result.metering` or `metering_recorded` notifications when delivering records to
+an external billing repository.
+
+### Run durable internal inference
+
+`internalInference` is agent-scoped background model work for checkpoint, recovery, and
+identity features. It is not a participant turn and does not write its prompt or output
+into the visible transcript. Attempts are queued in SQLite, leased to one worker, retried
+with a new `aii-…` attempt ID, observable, cancellable, and resumed when the database is
+reopened.
+
+Consumers register versioned strategies. A strategy derives a prompt from durable input,
+then validates and publishes the result inside the transaction that completes the attempt.
+The generic runtime deliberately does not define checkpoint or identity artifact schemas.
+
+```ts
+import {
+  ADAPTERS,
+  Agent,
+  HarnessInternalInferenceRuntime,
+  type InternalInferenceStrategy,
+} from "@qlairoslabs/acp-client";
+
+const strategy: InternalInferenceStrategy<{ throughSequence: number }> = {
+  strategyId: "checkpoint-v1",
+  purpose: "conversation_checkpoint",
+  version: 1,
+  validatePayload(value) {
+    const sequence = (value as { throughSequence?: unknown }).throughSequence;
+    if (!Number.isSafeInteger(sequence)) throw new Error("invalid sequence");
+    return { throughSequence: sequence as number };
+  },
+  async prepare(context, input) {
+    const page = await context.persistence.messages.list(context.attempt.agentConversationId!, {
+      throughSequence: input.throughSequence,
+    });
+    return {
+      prompt: `Summarize this conversation. Do not use tools.\n${JSON.stringify(page.messages)}`,
+    };
+  },
+  async complete(context, result) {
+    // Validate and write the artifact through context.persistence here.
+    return {
+      internalInferenceId: result.internalInferenceId,
+      rootInternalInferenceId: context.attempt.rootId,
+      internalSessionId: result.internalSessionId,
+      purpose: context.attempt.purpose,
+      completedAt: new Date().toISOString(),
+    };
+  },
+  classifyError() {
+    return { kind: "retryable", code: "provider_failure" };
+  },
+};
+
+const runtime = new HarnessInternalInferenceRuntime({
+  controllerConfig: (request) => ({
+    adapter: ADAPTERS.codex,
+    adapterId: request.adapterId,
+    cwd: process.cwd(),
+  }),
+});
+
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  defaultAdapterId: "codex",
+  internalInference: {
+    runtime, // optional; omit to use the agent's harness adapter and runtime defaults
+    strategies: [strategy],
+    adapter: "same",
+    maxConcurrency: 1,
+    retry: { maxAttempts: 3, backoffMs: [1_000, 10_000, 60_000] },
+    retention: { retain: 100 },
+  },
+});
+
+const run = await agent.internalInferences!.enqueue({
+  purpose: "conversation_checkpoint",
+  agentConversationId: conversation.agentConversationId,
+  input: {
+    strategyId: "checkpoint-v1",
+    version: 1,
+    payload: { throughSequence: 42 },
+  },
+  requestedThroughSequence: 42,
+});
+
+const unsubscribe = run.subscribe(({ snapshot }) => {
+  console.log(snapshot.stage, snapshot.status);
+});
+const completion = await run.result;
+unsubscribe();
+```
+
+The harness runtime starts a fresh disposable provider session and inherits the supplied
+launcher, environment, working directory, and container boundary. Empty MCP/client
+handlers and cancelled permission requests do not disable filesystem or terminal tools
+built into the harness; enforce that boundary with the launcher or container when needed.
+Custom runtimes should call `lifecycle.sessionStarted(...)` before prompting so strict
+metering preflight can run. Completed custom results are metered as a fallback.
+
+### Generate recovery checkpoints and recover missing provider sessions
+
+Enable `checkpointing` on an SQLite-backed `Agent` to generate rolling continuation
+summaries outside the visible provider thread:
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  defaultAdapterId: "codex",
+  checkpointing: {
+    schedule: {
+      milestones: [1, 5, 10, 15, 30, 50],
+      everyAfterMilestones: 50,
+    },
+    recovery: {
+      onLoadFailure: "recover", // default
+      maxTailMessages: 100,
+    },
+  },
+});
+```
+
+Checkpoint generation is durably enqueued after the configured successful response counts;
+the visible prompt does not wait for the summary model call. Each new checkpoint combines
+the previous summary with canonical records added since its covered message boundary.
+Checkpoint artifacts and their `conversation_checkpoint` timeline actions are committed in
+the same transaction as the generating internal inference.
+
+```ts
+const checkpoint = await agent.checkpointing!.latest(conversationId);
+
+// Explicitly request a checkpoint outside the configured milestones.
+await agent.checkpointing!.request(conversationId);
+```
+
+When `conversations.open()` cannot load the recorded provider session and the error is
+classified as a missing session, the agent creates a fresh provider thread and privately
+seeds it from the latest checkpoint plus canonical messages written after that checkpoint.
+The seed is metered as `conversation_recovery` and recorded as a native action; it is not a
+user or assistant transcript message.
+
+```ts
+const opened = await agent.conversations.open(conversationId, {
+  onRecoveryProgress(event) {
+    console.log(event.stage, event.checkpointId);
+  },
+});
+
+if (opened.providerSession === "recovered") {
+  console.log(opened.recovery);
+}
+```
+
+ACP does not standardize missing-session errors. The default classifier recognizes common
+“session not found,” “does not exist,” and missing Codex rollout-path failures. A harness
+with different errors can provide `recovery.isMissingProviderSession(error)`. Authentication,
+network, and arbitrary internal failures remain fatal by default. Set `onLoadFailure:
+"error"` to disable automatic recovery.
+
+Checkpointing requires message capture at `"content"` or `"raw"`. The checkpoint is a
+continuation aid, not the authoritative transcript: complete messages and other records
+remain independently queryable from SQLite.
+
+## Legacy direct and managed sessions
+
+The remaining sections describe the compatibility `AgentSession` and
+`SessionManager`/JSONL APIs. They remain useful when an application needs a transient
+connection or the existing file-oriented persistence model.
 
 Interactive helpers are a separate entry point:
 

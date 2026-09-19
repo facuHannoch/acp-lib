@@ -34,11 +34,16 @@
   "files": [
     "src",
     "CONSUMER_GUIDE.md",
+    "CHANGELOG-audit.md",
     "CHANGELOG-metering.md"
   ],
   "exports": {
     ".": "./src/index.ts",
     "./activity": "./src/activity.ts",
+    "./conversation": "./src/agent-conversation.ts",
+    "./agent": "./src/agent.ts",
+    "./internal-inference": "./src/internal-inference/index.ts",
+    "./persistence": "./src/persistence/index.ts",
     "./repl": "./src/repl/index.ts",
     "./degraded": "./src/degraded/index.ts",
     "./parser": "./src/parser/index.ts",

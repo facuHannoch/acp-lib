@@ -179,7 +179,7 @@ function handleMessage(message: any): void {
           id: message.id,
           result: {
             stopReason: "end_turn",
-            usage: { inputTokens: 3, outputTokens: 5 },
+            usage: { totalTokens: 8, inputTokens: 3, outputTokens: 5 },
           },
         });
         break;

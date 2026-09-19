@@ -18,6 +18,110 @@ export type {
 export type { AcpLauncher, PreparedLaunch, LaunchKind } from "./launcher.ts";
 
 export {
+  AGENT_CONVERSATION_ID_PREFIX,
+  AGENT_SESSION_ID_PREFIX,
+  createAgentConversationId,
+  createAgentSessionId,
+  isAgentConversationId,
+  isAgentSessionId,
+  parseAgentConversationId,
+  parseAgentSessionId,
+} from "./agent-ids.ts";
+export type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
+export * from "./observation/index.ts";
+export * from "./internal-inference/index.ts";
+export * from "./checkpointing/index.ts";
+export * from "./audit/index.ts";
+
+export { Agent } from "./agent.ts";
+export type {
+  AgentConfig,
+  AgentConversationManager,
+  AgentConversationRuntimeDefaults,
+  AgentPersistenceConfig,
+  CreateAgentConversationConfig,
+  OpenAgentConversationConfig,
+  OpenOwnedAgentConversationResult,
+} from "./agent.ts";
+export { AgentAdapterRegistry } from "./agent-adapter-registry.ts";
+export type { AgentAdapterRegistration } from "./agent-adapter-registry.ts";
+export { NoopAgentIdentityRuntime, composeIdentityPrompt } from "./identity.ts";
+export type {
+  AgentIdentityRuntime,
+  IdentityConsistency,
+  IdentityLoadInput,
+  IdentitySynchronizationInput,
+  IdentityUpdateInput,
+  IdentityWatermark,
+  LoadedIdentityContext,
+} from "./identity.ts";
+
+export {
+  CONVERSATION_RECORD_KINDS,
+  DEFAULT_CONVERSATION_RECORD_CAPTURE,
+  IMPLICIT_USER_PARTICIPANT_ID,
+  PARTICIPANT_KINDS,
+  PersistenceCapabilityError,
+  PersistenceConflictError,
+  isConversationRecordKind,
+  isParticipantKind,
+  normalizeParticipantRef,
+  resolveConversationRecordCapture,
+  shouldCaptureProtocolMethod,
+  searchableText,
+} from "./persistence/backend.ts";
+export {
+  AgentDatabaseInUseError,
+  SQLITE_AGENT_SCHEMA_VERSION,
+  SqliteAgentPersistence,
+  hasSafeConcurrentWal,
+  requireSqliteSearch,
+} from "./persistence/index.ts";
+export type { SqliteAgentPersistenceConfig } from "./persistence/index.ts";
+export type {
+  AgentConversationSummary,
+  AgentAuditState,
+  AuditOutboxBacklog,
+  AgentPersistenceIdentity,
+  ConversationRecord,
+  ConversationRecordCaptureConfig,
+  ConversationRecordCapturePolicy,
+  ConversationRecordEnvelope,
+  ConversationRecordKind,
+  IdentityMemoryObservation,
+  MessageRecord,
+  AgentMeteringCommitInput,
+  MeteringCommitInput,
+  MeteringPersistence,
+  MeteringRecordListOptions,
+  MeteringRecordPage,
+  MeteringRecordRetention,
+  MeteringReferenceRecord,
+  ProtocolRecordCapture,
+  ProtocolRecordCaptureLevel,
+  ProtocolRecordCaptureOptions,
+  RecordCaptureLevel,
+  ResolvedProtocolRecordCapturePolicy,
+  NewConversationRecord,
+  NewAuditOutboxItem,
+  ParticipantKind,
+  ParticipantRef,
+  PersistedContent,
+  PersistedContentBlock,
+  PersistedIdentitySnapshot,
+  PersistedAgentMeteringState,
+  PersistedConversationMeteringState,
+  PersistenceBackend,
+  PersistenceCapabilities,
+  PersistenceExtension,
+  PersistenceJsonValue,
+  PersistenceScope,
+  SearchMatch,
+  SearchQuery,
+  VectorIndex,
+} from "./persistence/backend.ts";
+
+export {
   AgentController,
   parseConfigValue,
   parseBoolean,
@@ -35,6 +139,7 @@ export type {
 } from "./controller.ts";
 
 export {
+  AgentConversation,
   AgentSession,
   AgentSessionPromptBlockedError,
   AdapterMismatchError,
@@ -42,6 +147,18 @@ export {
   DirectAuditPersistenceUnsupportedError,
 } from "./agent-session.ts";
 export type {
+  AgentConversationConfig,
+  AgentConversationOpenConfig,
+  AgentConversationOpenResult,
+  AgentConversationPromptability,
+  AgentConversationPhase,
+  AgentConversationState,
+  AgentConversationEvent,
+  AgentConversationNotification,
+  AgentConversationListener,
+  AgentConversationPromptResult,
+  AgentConversationRecoveryResolution,
+  AgentConversationRecoveryResolutionResult,
   AgentSessionConfig,
   AgentSessionOpenConfig,
   AgentSessionOpenResult,
