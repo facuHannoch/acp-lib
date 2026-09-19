@@ -29,6 +29,12 @@ export interface StoredProtocolCaptureSummary {
   readonly bodies: number;
 }
 
+export interface StoredAuditOutboxSummary {
+  readonly pending: number;
+  readonly lastAllocatedSequence: number;
+  readonly lastDeliveredSequence: number;
+}
+
 /** Query canonical persistence directly, independently of the library repositories. */
 export function findStoredUserMessage(
   database: Database,
@@ -128,4 +134,16 @@ export function findStoredMeteringState(
     FROM conversation_metering_state
     WHERE agent_conversation_id = ?
   `).get(agentConversationId);
+}
+
+/** Inspect durable audit delivery state independently of the Agent runtime. */
+export function inspectStoredAuditOutbox(database: Database): StoredAuditOutboxSummary {
+  return database.query<StoredAuditOutboxSummary, []>(`
+    SELECT
+      (SELECT COUNT(*) FROM audit_outbox) AS pending,
+      last_allocated_sequence AS lastAllocatedSequence,
+      last_delivered_sequence AS lastDeliveredSequence
+    FROM agent_audit_state
+    WHERE singleton = 1
+  `).get()!;
 }
