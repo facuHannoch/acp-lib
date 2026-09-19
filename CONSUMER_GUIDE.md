@@ -266,6 +266,11 @@ ACP_TEST8_DATA_DIR=./smoke-tests/test8-test/data \
   bun smoke-tests/end-to-end/index.ts
 ```
 
+The smoke scenario uses a 64 MiB audit segment limit by default, so a short run may
+produce only one segment. To assert rotation with a deliberately small test threshold,
+set `ACP_TEST8_AUDIT_MAX_BYTES=1024`. This is a test override, not a suggested
+production setting.
+
 The current smoke scenario defaults to Codex because its second process opening verifies
 that the provider thread remembers prior conversation context. It may use credentials and
 consume model tokens.
