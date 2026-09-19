@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, appendFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAgentConversationId, createAgentSessionId } from "../src/agent-ids.ts";
@@ -231,6 +231,49 @@ describe("agent audit delivery runtime", () => {
     expect(await readFile(join(auditDirectory, "audit.000001.jsonl"), "utf8")).toBe(before);
   });
 
+  test("recovers the append-before-ack boundary after owner process termination", async () => {
+    const root = await makeRoot();
+    const databasePath = join(root, "crash-agent.sqlite");
+    const auditDirectory = join(root, "crash-audit");
+    const readyPath = join(root, "crash-ready");
+    const child = Bun.spawn([
+      process.execPath,
+      join(import.meta.dir, "fixtures", "audit-crash-holder.ts"),
+      databasePath,
+      auditDirectory,
+      readyPath,
+    ], { stdout: "ignore", stderr: "pipe" });
+    try {
+      await waitForChildPath(readyPath, child);
+      child.kill("SIGKILL");
+      await child.exited;
+      const backend = await SqliteAgentPersistence.open({ path: databasePath });
+      backends.push(backend);
+      const config = resolveAgentAuditLogConfig({
+        directory: auditDirectory,
+        retry: { initialDelayMs: 60_000, maxDelayMs: 60_000 },
+        shutdownGraceMs: 0,
+      });
+      const state = (await backend.auditOutbox.state())!;
+      const runtime = await AgentAuditRuntime.open({
+        persistence: backend,
+        agentSessionId: backend.identityRecord.agentSessionId,
+        config,
+        auditState: state,
+      });
+      runtimes.push(runtime);
+      expect(await backend.auditOutbox.head()).toBeNull();
+      expect((await backend.auditOutbox.state())?.lastDeliveredSequence).toBe(1);
+      expect((await readFile(join(auditDirectory, "audit.000001.jsonl"), "utf8")).trimEnd().split("\n"))
+        .toHaveLength(2);
+    } finally {
+      if (child.exitCode === null) {
+        child.kill("SIGKILL");
+        await child.exited;
+      }
+    }
+  });
+
   test("truncates only an incomplete tail in the highest segment", async () => {
     const fixture = await createFixture();
     await fixture.backend.auditOutbox.enqueue({
@@ -284,6 +327,46 @@ describe("agent audit delivery runtime", () => {
       config: first.config,
       auditState: secondState,
     })).rejects.toBeInstanceOf(AuditLogDestinationInUseError);
+  });
+
+  test("delivers one contiguous audit order under concurrent conversation writers", async () => {
+    const fixture = await createFixture();
+    const conversations = await Promise.all(Array.from({ length: 20 }, async () => {
+      const id = createAgentConversationId();
+      await fixture.backend.conversations.create({
+        agentSessionId: fixture.agentSessionId,
+        agentConversationId: id,
+      });
+      return id;
+    }));
+    await Promise.all(conversations.flatMap((conversationId, conversationIndex) =>
+      Array.from({ length: 10 }, (_, itemIndex) => {
+        const index = conversationIndex * 10 + itemIndex;
+        return fixture.backend.auditOutbox.enqueue({
+          outboxId: `concurrent-outbox-${index}`,
+          sourceObservationId: `concurrent-source-${index}`,
+          agentConversationId: conversationId,
+          occurredAt: "2026-09-19T00:00:00.000Z",
+          kind: "activity",
+          captureLevel: "metadata",
+          captureFingerprint: fixture.config.captureFingerprint,
+          payload: { conversationIndex, itemIndex },
+          createdAt: "2026-09-19T00:00:00.000Z",
+        });
+      })));
+    fixture.runtime.notifyPending();
+    expect(await fixture.runtime.flush({ timeoutMs: 5_000 })).toMatchObject({
+      status: "delivered",
+      throughSequence: 200,
+    });
+    const reader = await (await import("../src/audit/reader.ts")).AgentAuditLogReader.open({
+      directory: fixture.auditDirectory,
+    });
+    const entries = (await reader.readPage({ mode: "logical", limit: 1_000 })).entries;
+    expect(entries).toHaveLength(200);
+    expect(entries.map((entry) => entry.auditSequence)).toEqual(
+      Array.from({ length: 200 }, (_, index) => index + 1),
+    );
   });
 
   test("refuses an empty replacement destination after delivery was acknowledged", async () => {
@@ -346,6 +429,23 @@ async function waitUntil(check: () => Promise<boolean>): Promise<void> {
     await Bun.sleep(10);
   }
   throw new Error("timed out waiting for audit delivery");
+}
+
+async function waitForChildPath(path: string, child: ReturnType<typeof Bun.spawn>): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      if (child.exitCode !== null) {
+        const stderr = await new Response(child.stderr).text();
+        throw new Error(`audit crash fixture exited before readiness: ${stderr}`);
+      }
+      await Bun.sleep(20);
+    }
+  }
+  throw new Error("timed out waiting for audit crash fixture");
 }
 
 function proxyOutbox(

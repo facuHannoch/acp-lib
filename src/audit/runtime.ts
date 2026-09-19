@@ -132,6 +132,7 @@ export class AgentAuditRuntime
   private running = true;
   private runtimeState: AgentAuditRuntimeState = "idle";
   private syncedBatch?: readonly string[];
+  private readonly writtenBatchPrefix: string[] = [];
   private wake?: () => void;
   private readonly loop: Promise<void>;
   private readonly subscriptions = new SubscriptionHub<AgentAuditNotification>();
@@ -388,6 +389,7 @@ export class AgentAuditRuntime
       ) throw new AuditLogDestinationBlockedError("synced audit batch no longer matches the pending head");
       await this.persistence.auditOutbox!.acknowledge(this.syncedBatch);
       this.syncedBatch = undefined;
+      this.writtenBatchPrefix.length = 0;
       return;
     }
     const lines = items.map((item) => canonicalizeJson(toAuditEntry(
@@ -395,19 +397,41 @@ export class AgentAuditRuntime
       this.agentSessionId,
       item,
     )) + "\n");
-    for (let index = 0; index < items.length; index++) {
+    if (this.writtenBatchPrefix.some((id, index) => id !== outboxIds[index])) {
+      throw new AuditLogDestinationBlockedError("written audit prefix no longer matches the pending head");
+    }
+    for (let index = this.writtenBatchPrefix.length; index < items.length; index++) {
       const item = items[index]!;
       const line = lines[index]!;
       if (this.shouldRotate(Buffer.byteLength(line, "utf8"))) await this.rotate(item.auditSequence);
-      await this.file.writeFile(line, "utf8");
-      this.segmentBytes += Buffer.byteLength(line, "utf8");
-      this.segmentEntryCount++;
+      const beforeBytes = this.segmentBytes;
+      const beforeEntries = this.segmentEntryCount;
+      try {
+        await this.file.writeFile(line, "utf8");
+        this.segmentBytes += Buffer.byteLength(line, "utf8");
+        this.segmentEntryCount++;
+        await this.file.sync();
+        await assertSameOpenFile(this.file, this.segmentPath);
+      } catch (error) {
+        if (error instanceof AuditLogDestinationBlockedError) throw error;
+        try {
+          await this.file.truncate(beforeBytes);
+          await this.file.sync();
+          this.segmentBytes = beforeBytes;
+          this.segmentEntryCount = beforeEntries;
+        } catch (rollbackError) {
+          throw new AuditLogDestinationBlockedError(
+            `audit entry write failed and its tail could not be restored: ${safeError(rollbackError)}`,
+          );
+        }
+        throw error;
+      }
+      this.writtenBatchPrefix.push(item.outboxId);
     }
-    await this.file.sync();
-    await assertSameOpenFile(this.file, this.segmentPath);
     this.syncedBatch = Object.freeze(outboxIds);
     await this.persistence.auditOutbox!.acknowledge(outboxIds);
     this.syncedBatch = undefined;
+    this.writtenBatchPrefix.length = 0;
   }
 
   private shouldRotate(nextLineBytes: number): boolean {

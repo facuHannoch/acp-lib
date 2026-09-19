@@ -13,6 +13,7 @@ import {
   resolveConversationCheckpointingConfig,
 } from "../../src/checkpointing/config.ts";
 import type { InternalInferenceRuntime } from "../../src/internal-inference/contracts.ts";
+import { AgentAuditLogReader } from "../../src/audit/reader.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -40,11 +41,13 @@ describe("conversation checkpoint strategy", () => {
         };
       },
     };
+    const auditDirectory = join(root, "audit");
     const agent = await Agent.open({
       persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
       adapters: { test: { command: ["unused"] } },
       defaultAdapterId: "test",
       internalInference: { runtime, strategies: [new ConversationCheckpointStrategy()] },
+      auditLog: { directory: auditDirectory },
     });
     const conversationId = createAgentConversationId();
     await agent.persistence.conversations.create({
@@ -100,6 +103,11 @@ describe("conversation checkpoint strategy", () => {
     expect(prompts[1]).not.toContain('"content":"hello"');
     expect(prompts[1]).not.toContain("must not reach checkpoint inference");
     await agent.close();
+    const audit = await AgentAuditLogReader.open({ directory: auditDirectory });
+    const internal = (await audit.readPage({ mode: "logical", limit: 1_000 })).entries
+      .filter((entry) => entry.kind === "internal_inference");
+    expect(internal.length).toBeGreaterThan(0);
+    expect(internal.some((entry) => (entry.payload as { state?: string }).state === "completed")).toBeTrue();
   });
 
   test("uses milestones and a stable interval after the final milestone", () => {

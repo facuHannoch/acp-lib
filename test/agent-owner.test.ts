@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   Agent,
+  AgentAuditLogReader,
   type AgentIdentityRuntime,
   type IdentityLoadInput,
   type IdentityUpdateInput,
@@ -107,6 +108,25 @@ describe("Agent owner", () => {
       expect.objectContaining({ role: "assistant" }),
     ]);
     expect(messages.every((item) => item.agentConversationId === conversation.id)).toBe(true);
+  });
+
+  test("audits identity updates as agent-level observations", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+      identity: new RecordingIdentity(),
+      auditLog: { directory: join(directory, "audit") },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("identity audit");
+    await agent.audit!.flush({ timeoutMs: 3_000 });
+    const reader = await AgentAuditLogReader.open({ directory: join(directory, "audit") });
+    const entries = (await reader.readPage({ mode: "logical", limit: 100 })).entries;
+    const identityEntries = entries.filter((entry) => entry.kind === "identity");
+    expect(identityEntries.length).toBeGreaterThanOrEqual(2);
+    expect(identityEntries.every((entry) => JSON.stringify(entry.payload) === '{"state":"updated"}')).toBe(true);
   });
 
   test("rejects version-2 audit configuration for a custom persistence backend", async () => {

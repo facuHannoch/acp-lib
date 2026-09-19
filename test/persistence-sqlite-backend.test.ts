@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { access, mkdtemp, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   createAgentConversationId,
   createAgentSessionId,
@@ -253,6 +253,15 @@ describe("SQLite agent persistence", () => {
     const reopened = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
     expect(reopened.identityRecord.agentSessionId).toBe(agentSessionId);
     expect((await stat(`${path}.agent-owner.sqlite`)).mode & 0o777).toBe(0o600);
+  });
+
+  test("canonicalizes a database symlink before enforcing ownership", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const alias = join(dirname(path), "agent-alias.sqlite");
+    await symlink(path, alias);
+    await expect(SqliteAgentPersistence.open({ path: alias, agentSessionId })).rejects.toBeInstanceOf(
+      AgentDatabaseInUseError,
+    );
   });
 
   test("releases cross-process ownership when the owner process terminates", async () => {

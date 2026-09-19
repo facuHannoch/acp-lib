@@ -184,6 +184,9 @@ export class Agent {
   readonly audit?: AgentAuditRuntime;
 
   private readonly manager: DefaultAgentConversationManager;
+  private auditObservationTail: Promise<void> = Promise.resolve();
+  private auditObservationError: unknown;
+  private detachInternalInferenceAudit?: () => void;
   private closed = false;
 
   private constructor(
@@ -212,6 +215,13 @@ export class Agent {
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
       checkpointing,
       auditLog,
+      auditIdentityUpdate: async (agentConversationId, records) => {
+        if (records.length === 0) return;
+        await this.recordAgentAuditObservation("identity", "updated", {
+          agentConversationId,
+          sourceRecordIds: records.map((record) => record.recordId),
+        }, `identity:${records.map((record) => record.recordId).join(":")}`);
+      },
     });
     this.conversations = this.manager;
     if (checkpointing?.enabled) {
@@ -293,6 +303,17 @@ export class Agent {
           return fallback;
         },
       });
+      if (auditLog) {
+        this.detachInternalInferenceAudit = this.internalInferences.subscribe((event) => {
+          this.queueAgentAuditObservation(
+            "internal_inference",
+            event.snapshot.stage,
+            event.snapshot as unknown as import("./persistence/backend.ts").PersistenceJsonValue,
+            `internal-inference:${event.inferenceId}:${event.sequence}`,
+            event.inferenceId,
+          );
+        });
+      }
       if (checkpointing?.enabled) {
         this.checkpointing = new ConversationCheckpointCoordinator(
           persistence,
@@ -385,8 +406,13 @@ export class Agent {
     try {
       this.checkpointing?.close();
       await (this.internalInferences as DefaultInternalInferenceManager | undefined)?.close();
+      this.detachInternalInferenceAudit?.();
+      this.detachInternalInferenceAudit = undefined;
+      await this.auditObservationTail;
+      const observationError = this.auditObservationError;
       await this.manager.stopAll();
       await this.recordAgentAuditObservation("agent_lifecycle", "closed");
+      if (observationError !== undefined) throw observationError;
     } catch (error) {
       shutdownError = error;
     }
@@ -409,18 +435,42 @@ export class Agent {
   private async recordAgentAuditObservation(
     kind: "agent_lifecycle" | "identity" | "internal_inference",
     state: string,
+    payload?: import("./persistence/backend.ts").PersistenceJsonValue,
+    sourceObservationId = `${kind}-${randomUUID()}`,
+    operationId?: string,
   ): Promise<void> {
     const auditLog = this.auditLog;
     if (!auditLog) return;
     await enqueueAuditObservation(this.persistence, {
       scope: "agent",
-      sourceObservationId: `${kind}-${randomUUID()}`,
+      sourceObservationId,
       agentSessionId: this.id,
       kind,
       occurredAt: new Date().toISOString(),
       state,
+      ...(operationId ? { operationId } : {}),
+      ...(payload !== undefined ? { payload } : {}),
     }, auditLog);
     this.audit?.notifyPending();
+  }
+
+  private queueAgentAuditObservation(
+    kind: "agent_lifecycle" | "identity" | "internal_inference",
+    state: string,
+    payload?: import("./persistence/backend.ts").PersistenceJsonValue,
+    sourceObservationId?: string,
+    operationId?: string,
+  ): void {
+    const write = this.auditObservationTail.then(() => this.recordAgentAuditObservation(
+      kind,
+      state,
+      payload,
+      sourceObservationId,
+      operationId,
+    ));
+    this.auditObservationTail = write.catch((error) => {
+      if (this.auditObservationError === undefined) this.auditObservationError = error;
+    });
   }
 }
 
@@ -433,6 +483,10 @@ interface ManagerSettings {
   readonly meteringRecords: MeteringRecordRetention;
   readonly checkpointing: ResolvedConversationCheckpointingConfig | null;
   readonly auditLog: ResolvedAgentAuditLogConfig | null;
+  readonly auditIdentityUpdate: (
+    agentConversationId: AgentConversationId,
+    records: readonly ConversationRecord[],
+  ) => Promise<void>;
 }
 
 class DefaultAgentConversationManager implements AgentConversationManager {
@@ -1011,6 +1065,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       agentConversationId: this.conversationId,
       records,
     });
+    await this.settings.auditIdentityUpdate(this.conversationId, records);
   }
 }
 

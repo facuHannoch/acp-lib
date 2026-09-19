@@ -100,6 +100,18 @@ describe("agent audit projection", () => {
     const metadata = projectAgentAuditObservation(observation, resolveAgentAuditCapture({ protocol: "metadata" }));
     expect(metadata?.payload).not.toHaveProperty("message");
   });
+
+  test("bounds an oversized captured payload before it reaches the outbox", () => {
+    const projected = projectAgentAuditObservation(
+      messageObservation("x".repeat(300_000)),
+      resolveAgentAuditCapture({ message: "content" }),
+    );
+    expect(projected?.payload).toEqual({
+      omitted: true,
+      reason: "field_limit",
+      originalBytes: expect.any(Number),
+    });
+  });
 });
 
 function messageObservation(content: string): NormalizedConversationObservation {
