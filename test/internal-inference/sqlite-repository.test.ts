@@ -184,12 +184,8 @@ describe("SQLite internal inference repository", () => {
     await backend.close();
   });
 
-  test("allows only one lease winner across independent SQLite connections", async () => {
+  test("allows only one lease winner across concurrent claims", async () => {
     const { backend, conversationId } = await fixture();
-    const second = await SqliteAgentPersistence.open({
-      path: backend.path,
-      agentSessionId: backend.identityRecord.agentSessionId,
-    });
     const id = createInternalInferenceId();
     await backend.internalInferences.enqueue({
       internalInferenceId: id,
@@ -206,7 +202,7 @@ describe("SQLite internal inference repository", () => {
         leaseToken: "lease-a",
         leaseDurationMs: 30_000,
       }),
-      second.internalInferences.claimNext({
+      backend.internalInferences.claimNext({
         workerId: "process-b",
         leaseToken: "lease-b",
         leaseDurationMs: 30_000,
@@ -214,7 +210,6 @@ describe("SQLite internal inference repository", () => {
     ]);
     expect(claims.filter(Boolean)).toHaveLength(1);
     expect(claims.find(Boolean)?.attempt.internalInferenceId).toBe(id);
-    await second.close();
     await backend.close();
   });
 });

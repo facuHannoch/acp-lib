@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { strict as assert } from "node:assert";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -10,7 +10,9 @@ import { Database } from "bun:sqlite";
 import {
   ADAPTERS,
   Agent,
+  AgentAuditLogReader,
   type Adapter,
+  type AgentAuditEntryV2,
   type AgentConversationId,
   type OperationMeteringRecord,
 } from "@qlairoslabs/acp-client";
@@ -19,6 +21,7 @@ import {
   findStoredMeteringReference,
   findStoredMeteringState,
   findStoredUserMessage,
+  inspectStoredAuditOutbox,
   inspectStoredProtocolCapture,
   listStoredMessages,
 } from "./queries.ts";
@@ -38,6 +41,14 @@ const directory = configuredDirectory
   : await mkdtemp(join(tmpdir(), "acp-agent-sqlite-smoke-"));
 if (configuredDirectory) await mkdir(directory, { recursive: true });
 const databasePath = join(directory, "agent.sqlite");
+const auditDirectory = join(directory, "audit");
+const displacedAuditDirectory = join(directory, "audit.delivery-failure");
+const configuredAuditMaxBytes = process.env.ACP_TEST8_AUDIT_MAX_BYTES?.trim();
+const auditMaxBytes = configuredAuditMaxBytes
+  ? Number(configuredAuditMaxBytes)
+  : 64 * 1_024 * 1_024;
+assert.ok(Number.isSafeInteger(auditMaxBytes) && auditMaxBytes > 0,
+  "ACP_TEST8_AUDIT_MAX_BYTES must be a positive safe integer");
 
 const adapters: Record<string, Adapter> = {
   codex: ADAPTERS.codex,
@@ -67,6 +78,7 @@ let firstAgent: Agent | undefined;
 let reopenedAgent: Agent | undefined;
 let thirdAgent: Agent | undefined;
 let meteringAgent: Agent | undefined;
+let auditDirectoryDisplaced = false;
 
 try {
   firstAgent = await openAgent();
@@ -86,6 +98,18 @@ try {
     );
   }
 
+  // Exercise one agent-wide order under writes from separate conversations.
+  const concurrentLeft = await firstAgent.conversations.create({ adapterId: "test", title: "audit-left" });
+  const concurrentRight = await firstAgent.conversations.create({ adapterId: "test", title: "audit-right" });
+  await Promise.all([
+    concurrentLeft.prompt("concurrent audit left"),
+    concurrentRight.prompt("concurrent audit right"),
+  ]);
+  assert.equal(
+    (await firstAgent.audit?.flush({ timeoutMs: 10_000 }))?.status,
+    "delivered",
+    "initial audit stream did not drain",
+  );
   assertSqliteHistory(conversationId, expectedMessages);
   assertSqliteProtocolPolicy(conversationId);
   const originalInternalSessionId = conversation.internalSessionId;
@@ -97,11 +121,38 @@ try {
 
   // AGENT CLOSED - OPENED AGAIN
 
+  // Move the complete destination while it is live. Canonical work must continue while
+  // delivery blocks, and restoring the directory before reopen must reconcile the
+  // physically written but unacknowledged suffix without losing or inventing an entry.
+  await rename(auditDirectory, displacedAuditDirectory);
+  auditDirectoryDisplaced = true;
+  const interruptedPrompt = "Audit delivery should recover after this message";
+  const interrupted = await conversation.prompt(interruptedPrompt);
+  assert.equal(interrupted.status, "completed", "canonical prompt was blocked by audit delivery failure");
+  expectedMessages.push(
+    { role: "user", content: interruptedPrompt },
+    ...interrupted.messages.map((message) => ({ role: "assistant" as const, content: message.text })),
+  );
+  await waitForAuditState(firstAgent, "blocked");
   await firstAgent.close();
   firstAgent = undefined;
+  assert.ok(readAuditOutbox().pending > 0, "audit failure left no durable pending work");
+  await rename(displacedAuditDirectory, auditDirectory);
+  auditDirectoryDisplaced = false;
 
   // Simulate a new process opening the same agent database and provider conversation.
   reopenedAgent = await openAgent();
+  assert.equal(
+    (await reopenedAgent.audit?.flush({ timeoutMs: 10_000 }))?.status,
+    "delivered",
+    "restored audit destination did not drain its durable outbox",
+  );
+  const recoveredAudit = readAuditOutbox();
+  assert.deepEqual(recoveredAudit, {
+    pending: 0,
+    lastAllocatedSequence: recoveredAudit.lastDeliveredSequence,
+    lastDeliveredSequence: recoveredAudit.lastDeliveredSequence,
+  });
   const reopened = await reopenedAgent.conversations.open(conversationId);
   assert.equal(reopened.providerSession, "loaded");
   assert.equal(reopened.conversation.id, conversationId);
@@ -155,6 +206,8 @@ try {
 
   const latestMessageSequence = persistedAfterRecall.messages.at(-1)?.sequence;
   assert.ok(latestMessageSequence, "reopened conversation has no persisted message boundary");
+  assert.ok(reopenedAgent.checkpointing, "checkpointing is disabled for the recovery smoke phase");
+  await reopenedAgent.checkpointing.request(conversationId);
   const checkpoint = await waitForCheckpoint(
     reopenedAgent,
     conversationId,
@@ -237,7 +290,7 @@ try {
   // 4th AGENT OPEN - METERING
   // The deterministic adapter reports usage. Verify both the complete operation record
   // and the bounded state needed to restore counters in a later process.
-  meteringAgent = await openAgent("test");
+  meteringAgent = await openAgent("test", false);
   const meteringConversation = await meteringAgent.conversations.create({ adapterId: "test" });
   const metered = await meteringConversation.prompt("Return deterministic metering usage");
   assert.equal(metered.status, "completed", "metering prompt failed");
@@ -275,6 +328,15 @@ try {
     `PASS metering agent=${meteringAgent.id} conversation=${meteringConversation.id} operation=${metered.operationId}`,
   );
 
+  assert.equal(
+    (await meteringAgent.audit?.flush({ timeoutMs: 10_000 }))?.status,
+    "delivered",
+    "final audit stream did not drain",
+  );
+  await meteringAgent.close();
+  meteringAgent = undefined;
+  await assertAgentAuditLog();
+
   // 5th AGENT OPEN - conversation driving (ACP) - Needs human
   // Do multiple operations:
   /**
@@ -290,6 +352,9 @@ try {
     thirdAgent?.close(),
     meteringAgent?.close(),
   ]);
+  if (auditDirectoryDisplaced) {
+    await rename(displacedAuditDirectory, auditDirectory).catch(() => undefined);
+  }
   if (ownsTemporaryDirectory) {
     await rm(directory, { recursive: true, force: true });
   } else {
@@ -309,7 +374,7 @@ async function askToRunRecoveryCheck(internalSessionId: string): Promise<string>
   }
 }
 
-async function openAgent(defaultAdapterId = adapterId): Promise<Agent> {
+async function openAgent(defaultAdapterId = adapterId, enableCheckpointing = true): Promise<Agent> {
   return await Agent.open({
     persistence: {
       kind: "sqlite",
@@ -333,10 +398,106 @@ async function openAgent(defaultAdapterId = adapterId): Promise<Agent> {
     meteringPersistence: {
       meteringRecords: "all",
     },
+    auditLog: {
+      directory: auditDirectory,
+      capture: {
+        message: "content",
+        tool_call: "content",
+        permission: "content",
+        configuration: "content",
+        protocol: {
+          level: "metadata",
+          excludeMethods: ["session/update"],
+        },
+        native_action: "content",
+        agent_action: "content",
+        thinking: "content",
+        activity: "content",
+        metering: "raw",
+        agent_lifecycle: "content",
+        identity: "content",
+        internal_inference: "content",
+      },
+      rotation: { maxBytes: auditMaxBytes, maxAgeMs: false },
+      shutdownGraceMs: 10_000,
+    },
     adapters,
     defaultAdapterId,
-    ...(defaultAdapterId !== "test" ? { checkpointing: {} } : {}),
+    ...(enableCheckpointing ? { checkpointing: {} } : {}),
   });
+}
+
+async function waitForAuditState(agent: Agent, state: "blocked"): Promise<void> {
+  assert.ok(agent.audit, "audit runtime is disabled");
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if ((await agent.audit.status()).state === state) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for audit state ${state}`);
+}
+
+function readAuditOutbox() {
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    return inspectStoredAuditOutbox(database);
+  } finally {
+    database.close();
+  }
+}
+
+async function assertAgentAuditLog(): Promise<void> {
+  const names = (await readdir(auditDirectory)).filter((name) => name.endsWith(".jsonl")).sort();
+  if (configuredAuditMaxBytes) {
+    assert.ok(names.length >= 2, "test rotation threshold did not create multiple audit segments");
+  }
+  const reader = await AgentAuditLogReader.open({ directory: auditDirectory });
+  const logical = await readAllAuditPages(reader, "logical", 3);
+  const physical = await readAllAuditPages(reader, "physical", 5);
+  assert.deepEqual(
+    logical.map((entry) => entry.auditSequence),
+    logical.map((_, index) => index + 1),
+    "logical audit sequence is not contiguous",
+  );
+  const known = new Map<number, { outboxId: string; payloadSha256: string }>();
+  let maximumSequence = 0;
+  for (const entry of physical) {
+    if (entry.auditSequence === maximumSequence + 1) {
+      maximumSequence = entry.auditSequence;
+      known.set(entry.auditSequence, entry);
+      continue;
+    }
+    const original = known.get(entry.auditSequence);
+    assert.ok(original, `physical audit sequence ${entry.auditSequence} has no original`);
+    assert.equal(entry.outboxId, original.outboxId);
+    assert.equal(entry.payloadSha256, original.payloadSha256);
+  }
+  assert.equal(maximumSequence, logical.length);
+  assert.ok(logical.some((entry) => entry.kind === "message"
+    && (entry.payload as Record<string, unknown>).content === "concurrent audit left"));
+  assert.ok(logical.some((entry) => entry.kind === "message"
+    && (entry.payload as Record<string, unknown>).content === "concurrent audit right"));
+  const outbox = readAuditOutbox();
+  assert.equal(outbox.pending, 0);
+  assert.equal(outbox.lastAllocatedSequence, outbox.lastDeliveredSequence);
+  console.log(
+    `PASS audit segments=${names.length} logical=${logical.length} physical=${physical.length}`,
+  );
+}
+
+async function readAllAuditPages(
+  reader: AgentAuditLogReader,
+  mode: "logical" | "physical",
+  limit: number,
+): Promise<readonly AgentAuditEntryV2[]> {
+  const entries: AgentAuditEntryV2[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await reader.readPage({ mode, limit, ...(cursor ? { cursor } : {}) });
+    entries.push(...page.entries);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return entries;
 }
 
 async function waitForCheckpoint(
@@ -351,8 +512,20 @@ async function waitForCheckpoint(
     if (checkpoint && checkpoint.coveredSequence >= throughSequence) return checkpoint;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  const latest = await agent.checkpointing.latest(conversationId);
+  const attempts = await agent.internalInferences?.list({
+    agentConversationId: conversationId,
+    purpose: "conversation_checkpoint",
+    limit: 10,
+  });
   throw new Error(
-    `timed out waiting for recovery checkpoint through sequence ${throughSequence}`,
+    `timed out waiting for recovery checkpoint through sequence ${throughSequence}; `
+      + `latest=${latest?.coveredSequence ?? "none"}; `
+      + `inferences=${JSON.stringify(attempts?.attempts.map((attempt) => ({
+        status: attempt.status,
+        sourceThroughSequence: attempt.sourceThroughSequence,
+        error: attempt.error,
+      })) ?? [])}`,
   );
 }
 

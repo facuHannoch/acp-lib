@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   createAgentConversationId,
   createAgentSessionId,
@@ -11,6 +11,7 @@ import {
 } from "../src/agent-ids.ts";
 import {
   IMPLICIT_USER_PARTICIPANT_ID,
+  AgentDatabaseInUseError,
   PersistenceConflictError,
   SqliteAgentPersistence,
   SQLITE_AGENT_SCHEMA_VERSION,
@@ -216,17 +217,15 @@ describe("SQLite agent persistence", () => {
     }
   });
 
-  test("serializes concurrent writers into one monotonic conversation sequence", async () => {
+  test("serializes concurrent writes through one owner into a monotonic conversation sequence", async () => {
     const directory = await makeDirectory();
     const path = join(directory, "agent.sqlite");
     const agentSessionId = createAgentSessionId();
-    const first = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
-    const second = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    const backend = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
     const conversationId = createAgentConversationId();
-    await first.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
 
     await Promise.all(Array.from({ length: 40 }, (_, index) => {
-      const backend = index % 2 === 0 ? first : second;
       return backend.records.append(message(
         agentSessionId,
         conversationId,
@@ -236,11 +235,59 @@ describe("SQLite agent persistence", () => {
       ));
     }));
 
-    const page = await first.records.list(conversationId, { limit: 100 });
+    const page = await backend.records.list(conversationId, { limit: 100 });
     expect(page.records).toHaveLength(40);
     expect(page.records.map((record) => record.sequence)).toEqual(
       Array.from({ length: 40 }, (_, index) => index + 1),
     );
+  });
+
+  test("rejects a second runtime owner and releases ownership on close", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    await expect(SqliteAgentPersistence.open({ path, agentSessionId })).rejects.toBeInstanceOf(
+      AgentDatabaseInUseError,
+    );
+
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+    const reopened = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    expect(reopened.identityRecord.agentSessionId).toBe(agentSessionId);
+    expect((await stat(`${path}.agent-owner.sqlite`)).mode & 0o777).toBe(0o600);
+  });
+
+  test("canonicalizes a database symlink before enforcing ownership", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const alias = join(dirname(path), "agent-alias.sqlite");
+    await symlink(path, alias);
+    await expect(SqliteAgentPersistence.open({ path: alias, agentSessionId })).rejects.toBeInstanceOf(
+      AgentDatabaseInUseError,
+    );
+  });
+
+  test("releases cross-process ownership when the owner process terminates", async () => {
+    const directory = await makeDirectory();
+    const path = join(directory, "agent.sqlite");
+    const readyPath = join(directory, "ready");
+    const holder = Bun.spawn([
+      process.execPath,
+      join(import.meta.dir, "fixtures", "sqlite-owner-holder.ts"),
+      path,
+      readyPath,
+    ], { stdout: "ignore", stderr: "pipe" });
+
+    try {
+      await waitForPath(readyPath, holder);
+      await expect(SqliteAgentPersistence.open({ path })).rejects.toBeInstanceOf(AgentDatabaseInUseError);
+      holder.kill("SIGKILL");
+      await holder.exited;
+      const reopened = await track(SqliteAgentPersistence.open({ path }));
+      expect(reopened.path).toBe(path);
+    } finally {
+      if (holder.exitCode === null) {
+        holder.kill("SIGKILL");
+        await holder.exited;
+      }
+    }
   });
 
   test("rolls back a multi-repository transaction", async () => {
@@ -383,19 +430,117 @@ describe("SQLite agent persistence", () => {
       activeSnapshotId: "snapshot-1",
     });
 
-    await backend.auditOutbox.enqueue({
+    const auditState = await backend.auditOutbox.initialize(
+      "audit-log-1",
+      "a".repeat(64),
+      "2026-09-17T00:00:00.000Z",
+    );
+    expect(auditState.lastAllocatedSequence).toBe(0);
+    const auditItem = await backend.auditOutbox.enqueue({
       outboxId: "audit-1",
-      recordId: "record-1",
-      destinationId: "compliance",
+      sourceObservationId: "record-1",
+      sourceRecordId: "record-1",
+      agentConversationId: conversationId,
+      occurredAt: now(),
+      kind: "message",
+      captureLevel: "metadata",
+      captureFingerprint: "a".repeat(64),
       payload: { event: "prompt" },
       createdAt: now(),
-      attemptCount: 0,
     });
+    expect(auditItem.auditSequence).toBe(1);
     expect(await backend.auditOutbox.pending()).toHaveLength(1);
     await backend.auditOutbox.markFailed("audit-1", "offline", "2099-01-01T00:00:00.000Z");
     expect(await backend.auditOutbox.pending()).toHaveLength(0);
-    await backend.auditOutbox.markDelivered("audit-1");
+    await backend.auditOutbox.retryHead();
+    expect(await backend.auditOutbox.pending()).toHaveLength(1);
+    const delivered = await backend.auditOutbox.acknowledge(["audit-1"]);
+    expect(delivered.lastDeliveredSequence).toBe(1);
     expect(await backend.auditOutbox.pending()).toHaveLength(0);
+  });
+
+  test("allocates one audit sequence across conversations and deduplicates pending sources", async () => {
+    const { backend, agentSessionId } = await openBackend();
+    const firstConversationId = createAgentConversationId();
+    const secondConversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: firstConversationId });
+    await backend.conversations.create({ agentSessionId, agentConversationId: secondConversationId });
+    await backend.auditOutbox.initialize("audit-log-1", "a".repeat(64));
+
+    const items = await Promise.all(Array.from({ length: 20 }, (_, index) => backend.auditOutbox.enqueue({
+      outboxId: `outbox-${index}`,
+      sourceObservationId: `source-${index}`,
+      sourceRecordId: `source-${index}`,
+      agentConversationId: index % 2 ? firstConversationId : secondConversationId,
+      occurredAt: now(),
+      kind: "message",
+      captureLevel: "content",
+      captureFingerprint: "a".repeat(64),
+      payload: { index },
+      createdAt: now(),
+    })));
+    expect(items.map((item) => item.auditSequence)).toEqual(
+      Array.from({ length: 20 }, (_, index) => index + 1),
+    );
+
+    const duplicate = await backend.auditOutbox.enqueue({
+      outboxId: "a-new-ambiguous-attempt-id",
+      sourceObservationId: "source-0",
+      sourceRecordId: "source-0",
+      agentConversationId: secondConversationId,
+      occurredAt: items[0]!.occurredAt,
+      kind: "message",
+      captureLevel: "content",
+      captureFingerprint: "a".repeat(64),
+      payload: { index: 0 },
+      createdAt: now(),
+    });
+    expect(duplicate.outboxId).toBe("outbox-0");
+    expect((await backend.auditOutbox.state())?.lastAllocatedSequence).toBe(20);
+    await expect(backend.auditOutbox.enqueue({
+      outboxId: "conflicting-attempt",
+      sourceObservationId: "source-0",
+      sourceRecordId: "source-0",
+      agentConversationId: secondConversationId,
+      occurredAt: now(),
+      kind: "message",
+      captureLevel: "content",
+      captureFingerprint: "a".repeat(64),
+      payload: { index: 999 },
+      createdAt: now(),
+    })).rejects.toBeInstanceOf(PersistenceConflictError);
+  });
+
+  test("rolls back canonical records and audit enqueue together", async () => {
+    const { backend, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    await backend.auditOutbox.initialize("audit-log-1", "a".repeat(64));
+    await expect(backend.transaction(async (persistence) => {
+      await persistence.records.append(message(
+        agentSessionId,
+        conversationId,
+        "atomic-record",
+        "user",
+        "atomic",
+      ));
+      await persistence.auditOutbox!.enqueue({
+        outboxId: "atomic-audit",
+        sourceObservationId: "atomic-record",
+        sourceRecordId: "atomic-record",
+        agentConversationId: conversationId,
+        occurredAt: now(),
+        kind: "message",
+        captureLevel: "content",
+        captureFingerprint: "a".repeat(64),
+        payload: { content: "atomic" },
+        createdAt: now(),
+      });
+      throw new Error("rollback both");
+    })).rejects.toThrow("rollback both");
+    expect(await backend.records.get("atomic-record")).toBeNull();
+    expect(await backend.auditOutbox.head()).toBeNull();
+    expect((await backend.auditOutbox.state())?.lastAllocatedSequence).toBe(0);
   });
 
   test("commits metering state idempotently with optional detailed record retention", async () => {
@@ -502,12 +647,12 @@ describe("SQLite agent persistence", () => {
     const old = new Database(path, { create: true, readwrite: true });
     old.exec(`
       CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-      INSERT INTO schema_migrations(version, applied_at) VALUES (6, '2026-09-17T00:00:00.000Z');
+      INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(7);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(8);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 6 is incompatible with 7; recreate the database",
+      "SQLite agent schema 7 is incompatible with 8; recreate the database",
     );
   });
 });
@@ -534,6 +679,23 @@ async function track(promise: Promise<SqliteAgentPersistence>): Promise<SqliteAg
   const backend = await promise;
   opened.push(backend);
   return backend;
+}
+
+async function waitForPath(path: string, process_: ReturnType<typeof Bun.spawn>): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      if (process_.exitCode !== null) {
+        const stderr = await new Response(process_.stderr).text();
+        throw new Error(`SQLite owner fixture exited before acquiring ownership: ${stderr}`);
+      }
+      await Bun.sleep(20);
+    }
+  }
+  throw new Error("timed out waiting for SQLite owner fixture");
 }
 
 function message(

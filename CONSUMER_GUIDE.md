@@ -45,6 +45,7 @@ bun add @qlairoslabs/acp-client
 import {
   ADAPTERS,
   Agent,
+  AgentAuditLogReader,
   AgentSession,
   AuditLogReader,
   SessionManager,
@@ -136,10 +137,117 @@ FTS5 indexes deliberately extracted searchable text rather than serialized recor
 The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
 protocol bodies are not searched implicitly.
 
-Schema version 7 adds ordered metering references to the typed layout. Pre-release
-version-6 SQLite files are not migrated because they were used only by development smoke
+Schema version 8 adds the durable Agent audit outbox to the typed layout. Pre-release
+version-7 SQLite files are not migrated because they were used only by development smoke
 tests. Opening one fails with a clear recreate instruction; remove the old smoke-test
 database and run the scenario again.
+
+### Agent audit log
+
+An SQLite-backed `Agent` can copy selected observations into an independently located,
+rotating JSONL audit stream. The stream belongs to the whole agent, so observations from
+all of its conversations share one ordered audit sequence. Audit capture is independent
+of canonical conversation capture: for example, an application may omit message content
+from SQLite while retaining it in the audit destination, or do the reverse.
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  auditLog: {
+    directory: "/audit/atlas",
+    filePrefix: "audit",
+    capture: {
+      message: "content",
+      protocol: {
+        level: "metadata",
+        excludeMethods: ["session/update"],
+      },
+    },
+    rotation: {
+      maxBytes: 64 * 1024 * 1024,
+      maxAgeMs: 24 * 60 * 60 * 1_000,
+    },
+  },
+});
+```
+
+The default prefix is `audit`. Segments are named `audit.000001.jsonl`,
+`audit.000002.jsonl`, and so on. A durable pending outbox in the agent database makes
+canonical persistence and audit intent one transaction. A background writer then appends
+and syncs those entries without delaying `prompt()`. Delivery is at least once: after a
+crash, a physically written entry may be encountered again during reconciliation, and
+its stable audit sequence and outbox ID identify the replay.
+
+Observe delivery or explicitly wait for it when an application boundary requires that:
+
+```ts
+const unsubscribe = agent.audit?.subscribe((event) => {
+  console.log(event.kind, event.snapshot.pendingCount);
+});
+
+const snapshot = await agent.audit?.status();
+const flushed = await agent.audit?.flush({ timeoutMs: 10_000 });
+if (flushed?.status === "blocked") {
+  // Repair or restore the destination before reopening the agent.
+}
+
+await agent.audit?.retry(); // manually end retry backoff after a transient failure
+unsubscribe?.();
+```
+
+`Agent.close()` makes a bounded flush attempt using `shutdownGraceMs` (two seconds by
+default), then releases the audit destination and agent database. Pending rows remain in
+SQLite if the destination was unavailable and resume on the next open.
+
+Read the stream without opening its agent database:
+
+```ts
+const reader = await AgentAuditLogReader.open({
+  directory: "/audit/atlas",
+  filePrefix: "audit",
+});
+
+const logical = await reader.readPage({ mode: "logical", limit: 100 });
+const next = logical.nextCursor
+  ? await reader.readPage({ mode: "logical", limit: 100, cursor: logical.nextCursor })
+  : null;
+
+// Diagnostic view: preserves physical replay entries instead of deduplicating them.
+const physical = await reader.readPage({ mode: "physical", limit: 100 });
+```
+
+Logical mode is the normal consumer view and deduplicates the bounded crash-replay
+window. Physical mode exposes what is actually present in the segment files. Reader
+cursors describe a stable snapshot and fail if required segments have disappeared or
+been truncated.
+
+There is one active owner per agent database and one active writer per audit destination.
+Opening either concurrently from another process fails with `AgentDatabaseInUseError` or
+`AuditLogDestinationInUseError`; this does not restrict concurrent conversations within
+the owning `Agent`. A stream whose identity, ordering, or synced history conflicts with
+SQLite fails closed with `AuditLogIdentityConflictError` or
+`AuditLogHistoryMissingError` instead of silently starting a new history.
+
+The initial Agent audit design deliberately accepts these constraints:
+
+- Configuration is fixed while the agent is open. Close and reopen to change it.
+- Every numbered segment remains part of the logical stream; automatic audit retention
+  and deletion are not provided.
+- Time-based rotation is checked when an entry is delivered, so an idle segment is not
+  rotated merely because time passed.
+- Disabling audit and later enabling it creates a new stream from that point; canonical
+  history is not backfilled.
+- JSONL is plaintext and not cryptographically signed. Protect, archive, and retain the
+  destination according to application policy.
+- Durability currently favors an entry-level sync boundary. Raw protocol capture can
+  therefore create backlog under sustained high-volume streaming; exclude
+  `session/update` or use metadata/semantic capture unless exact raw traffic is required.
+
+SQLite remains the source used for conversation recovery. Audit segments are an
+independent operational history and are not imported to reconstruct provider sessions.
+This API is distinct from the legacy `AuditLogReader` documented under
+“Configure transcripts” below, which reads per-`AgentSession` v1 audit files.
 
 The minimal end-to-end executable example is
 [`smoke-tests/end-to-end/index.ts`](./smoke-tests/end-to-end/index.ts). It sends `"hi"`
@@ -157,6 +265,11 @@ the database at a caller-selected location for inspection:
 ACP_TEST8_DATA_DIR=./smoke-tests/test8-test/data \
   bun smoke-tests/end-to-end/index.ts
 ```
+
+The smoke scenario uses a 64 MiB audit segment limit by default, so a short run may
+produce only one segment. To assert rotation with a deliberately small test threshold,
+set `ACP_TEST8_AUDIT_MAX_BYTES=1024`. This is a test override, not a suggested
+production setting.
 
 The current smoke scenario defaults to Codex because its second process opening verifies
 that the provider thread remembers prior conversation context. It may use credentials and

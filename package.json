@@ -34,6 +34,7 @@
   "files": [
     "src",
     "CONSUMER_GUIDE.md",
+    "CHANGELOG-audit.md",
     "CHANGELOG-metering.md"
   ],
   "exports": {

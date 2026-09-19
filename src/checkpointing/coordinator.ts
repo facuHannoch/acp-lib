@@ -21,7 +21,10 @@ export class ConversationCheckpointCoordinator {
         event.snapshot.purpose === "conversation_checkpoint"
         && event.snapshot.status === "completed"
         && event.snapshot.agentConversationId
-      ) void this.scheduleIfDue(event.snapshot.agentConversationId).catch(() => undefined);
+      ) void this.afterCheckpointCompleted(
+        event.rootId,
+        event.snapshot.agentConversationId,
+      ).catch(() => undefined);
     });
   }
 
@@ -41,6 +44,21 @@ export class ConversationCheckpointCoordinator {
     if (this.closed) return;
     this.closed = true;
     this.unsubscribe();
+  }
+
+  private async afterCheckpointCompleted(
+    rootId: Parameters<InternalInferenceManager["getRun"]>[0],
+    conversationId: AgentConversationId,
+  ): Promise<void> {
+    if (this.closed) return;
+    const run = await this.inferences.getRun(rootId);
+    const requestedThrough = run?.snapshot.requestedThroughSequence ?? 0;
+    const coveredThrough = (await this.requireRepository().latest(conversationId))?.coveredSequence ?? 0;
+    if (requestedThrough > coveredThrough) {
+      await this.enqueueLatest(conversationId);
+      return;
+    }
+    await this.scheduleIfDue(conversationId);
   }
 
   private async scheduleIfDue(conversationId: AgentConversationId): Promise<void> {

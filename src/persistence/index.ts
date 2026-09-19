@@ -16,8 +16,10 @@ export type {
   ActivityRecord,
   AgentActionRecord,
   AgentConversationSummary,
+  AgentAuditState,
   AgentPersistenceIdentity,
   AuditOutboxItem,
+  AuditOutboxBacklog,
   AuditOutboxPersistence,
   ConfigurationRecord,
   ConversationCheckpointPersistence,
@@ -52,6 +54,7 @@ export type {
   ProtocolRecordCaptureOptions,
   ResolvedProtocolRecordCapturePolicy,
   NativeActionRecord,
+  NewAuditOutboxItem,
   NewConversationRecord,
   NewIdentityMemoryObservation,
   ParticipantKind,
@@ -87,6 +90,7 @@ export type {
 } from "./backend.ts";
 
 export {
+  AgentDatabaseInUseError,
   SqliteAgentPersistence,
   hasSafeConcurrentWal,
   requireSqliteSearch,

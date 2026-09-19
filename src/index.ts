@@ -31,6 +31,7 @@ export type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 export * from "./observation/index.ts";
 export * from "./internal-inference/index.ts";
 export * from "./checkpointing/index.ts";
+export * from "./audit/index.ts";
 
 export { Agent } from "./agent.ts";
 export type {
@@ -70,6 +71,7 @@ export {
   searchableText,
 } from "./persistence/backend.ts";
 export {
+  AgentDatabaseInUseError,
   SQLITE_AGENT_SCHEMA_VERSION,
   SqliteAgentPersistence,
   hasSafeConcurrentWal,
@@ -78,6 +80,8 @@ export {
 export type { SqliteAgentPersistenceConfig } from "./persistence/index.ts";
 export type {
   AgentConversationSummary,
+  AgentAuditState,
+  AuditOutboxBacklog,
   AgentPersistenceIdentity,
   ConversationRecord,
   ConversationRecordCaptureConfig,
@@ -99,6 +103,7 @@ export type {
   RecordCaptureLevel,
   ResolvedProtocolRecordCapturePolicy,
   NewConversationRecord,
+  NewAuditOutboxItem,
   ParticipantKind,
   ParticipantRef,
   PersistedContent,

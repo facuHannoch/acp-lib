@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   Agent,
+  AgentAuditLogReader,
   type AgentIdentityRuntime,
   type IdentityLoadInput,
   type IdentityUpdateInput,
@@ -72,6 +73,69 @@ describe("Agent owner", () => {
     expect(messages[0]).toMatchObject({ role: "user", content: "hello atlas" });
     expect(String(messages[0]?.content)).not.toContain("private durable identity");
     expect(messages[1]).toMatchObject({ role: "assistant" });
+  });
+
+  test("captures audit observations independently from canonical conversation policy", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+      capture: { message: "none", activity: "none", tool_call: "none", metering: "none" },
+      auditLog: {
+        directory: join(directory, "audit"),
+        capture: {
+          message: "content",
+          activity: "none",
+          tool_call: "none",
+          metering: "none",
+        },
+      },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("audit-only message");
+
+    expect((await agent.persistence.messages.list(conversation.id)).messages).toHaveLength(0);
+    await waitUntil(async () => {
+      const state = await agent.persistence.auditOutbox.state();
+      return !!state && state.lastDeliveredSequence === state.lastAllocatedSequence;
+    });
+    const lines = (await readFile(join(directory, "audit", "audit.000001.jsonl"), "utf8"))
+      .trimEnd().split("\n").slice(1).map((line) => JSON.parse(line));
+    const messages = lines.filter((item) => item.kind === "message");
+    expect(messages.map((item) => item.payload)).toEqual([
+      expect.objectContaining({ role: "user", content: "audit-only message" }),
+      expect.objectContaining({ role: "assistant" }),
+    ]);
+    expect(messages.every((item) => item.agentConversationId === conversation.id)).toBe(true);
+  });
+
+  test("audits identity updates as agent-level observations", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+      identity: new RecordingIdentity(),
+      auditLog: { directory: join(directory, "audit") },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("identity audit");
+    await agent.audit!.flush({ timeoutMs: 3_000 });
+    const reader = await AgentAuditLogReader.open({ directory: join(directory, "audit") });
+    const entries = (await reader.readPage({ mode: "logical", limit: 100 })).entries;
+    const identityEntries = entries.filter((entry) => entry.kind === "identity");
+    expect(identityEntries.length).toBeGreaterThanOrEqual(2);
+    expect(identityEntries.every((entry) => JSON.stringify(entry.payload) === '{"state":"updated"}')).toBe(true);
+  });
+
+  test("rejects version-2 audit configuration for a custom persistence backend", async () => {
+    const { agent } = await openAgent();
+    await expect(Agent.open({
+      persistence: { kind: "custom", backend: agent.persistence },
+      adapters: operationsAdapters(),
+      auditLog: { directory: "/tmp/audit-not-opened" },
+    })).rejects.toThrow("persistence capability is unavailable: auditOutbox");
   });
 
   test("preserves every assistant message boundary in canonical persistence", async () => {
@@ -429,4 +493,13 @@ async function track(agentPromise: Promise<Agent>): Promise<Agent> {
   const agent = await agentPromise;
   agents.push(agent);
   return agent;
+}
+
+async function waitUntil(check: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("timed out waiting for condition");
 }

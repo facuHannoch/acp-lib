@@ -1,6 +1,7 @@
 import { Database, type Changes } from "bun:sqlite";
-import { mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, realpath } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   createAgentSessionId,
   isAgentConversationId,
@@ -15,9 +16,11 @@ import {
   isConversationRecordKind,
   normalizeParticipantRef,
   type AgentConversationSummary,
+  type AgentAuditState,
   type AgentMeteringCommitInput,
   type AgentPersistenceIdentity,
   type AuditOutboxItem,
+  type AuditOutboxBacklog,
   type AuditOutboxPersistence,
   type ConversationCheckpointPersistence,
   type ConversationListOptions,
@@ -40,6 +43,7 @@ import {
   type MeteringRecordListOptions,
   type MeteringRecordPage,
   type NewConversationRecord,
+  type NewAuditOutboxItem,
   type NewIdentityMemoryObservation,
   type ParticipantRef,
   type PersistedIdentitySnapshot,
@@ -74,6 +78,8 @@ import {
   sameConversationRecord,
   type ConversationRecordRow,
 } from "./sqlite-conversation-records.ts";
+import { SqliteOwnerLock, SqliteOwnerLockConflictError } from "./sqlite-owner-lock.ts";
+import { canonicalizeJson } from "./integrity.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 type WriteRunner = <T>(work: () => T) => Promise<T>;
@@ -107,6 +113,16 @@ export interface SqliteAgentPersistenceConfig {
   readonly allowUnsafeWalVersion?: boolean;
 }
 
+export class AgentDatabaseInUseError extends Error {
+  readonly path: string;
+
+  constructor(path: string, options?: ErrorOptions) {
+    super(`agent database already has an active runtime owner: ${path}`, options);
+    this.name = "AgentDatabaseInUseError";
+    this.path = path;
+  }
+}
+
 /** One caller-located SQLite database containing exactly one agent and its conversations. */
 export class SqliteAgentPersistence implements PersistenceBackend {
   readonly path: string;
@@ -136,6 +152,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     database: Database,
     identityRecord: AgentPersistenceIdentity,
     fullTextSearch: boolean,
+    private readonly ownerLock?: SqliteOwnerLock,
   ) {
     this.path = path;
     this.database = database;
@@ -169,10 +186,26 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       throw new Error(`invalid agent session id for SQLite persistence: ${config.agentSessionId}`);
     }
     if (!config.path.trim()) throw new Error("SQLite persistence path cannot be blank");
-    const path = config.path === ":memory:" ? config.path : resolve(config.path);
-    if (path !== ":memory:") await mkdir(dirname(path), { recursive: true });
+    const path = config.path === ":memory:" ? config.path : await canonicalSqlitePath(config.path);
+    let ownerLock: SqliteOwnerLock | undefined;
+    if (path !== ":memory:") {
+      try {
+        ownerLock = await SqliteOwnerLock.acquire(path, `${path}.agent-owner.sqlite`);
+      } catch (error) {
+        if (error instanceof SqliteOwnerLockConflictError) {
+          throw new AgentDatabaseInUseError(path, { cause: error });
+        }
+        throw error;
+      }
+    }
 
-    const database = new Database(path, { create: true, readwrite: true, strict: true });
+    let database: Database;
+    try {
+      database = new Database(path, { create: true, readwrite: true, strict: true });
+    } catch (error) {
+      ownerLock?.close();
+      throw error;
+    }
     try {
       const busyTimeoutMs = boundedInteger(config.busyTimeoutMs ?? 5_000, 1, 60_000, "busyTimeoutMs");
       database.exec("PRAGMA foreign_keys = ON");
@@ -201,11 +234,15 @@ export class SqliteAgentPersistence implements PersistenceBackend {
         ?? (existingIdentity?.agent_session_id as AgentSessionId | undefined)
         ?? createAgentSessionId();
       const identityRecord = initializeAgentIdentity(database, agentSessionId, config.metadata);
-      const backend = new SqliteAgentPersistence(path, database, identityRecord, fullTextSearch);
+      const backend = new SqliteAgentPersistence(path, database, identityRecord, fullTextSearch, ownerLock);
       for (const extension of config.extensions ?? []) await backend.installExtension(extension);
       return backend;
     } catch (error) {
-      database.close();
+      try {
+        database.close();
+      } finally {
+        ownerLock?.close();
+      }
       throw error;
     }
   }
@@ -234,8 +271,12 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     if (this.closed) return;
     await this.writeTail;
     this.closed = true;
-    // sqlite3_close_v2 safely finalizes Bun's cached prepared statements.
-    this.database.close();
+    try {
+      // sqlite3_close_v2 safely finalizes Bun's cached prepared statements.
+      this.database.close();
+    } finally {
+      this.ownerLock?.close();
+    }
   }
 
   private createScope(
@@ -1326,55 +1367,161 @@ function searchRecordKind(
 class SqliteAuditOutboxPersistence implements AuditOutboxPersistence {
   constructor(private readonly database: Database, private readonly runWrite: WriteRunner) {}
 
-  async enqueue(item: AuditOutboxItem): Promise<void> {
-    await this.runWrite(() => {
-      const existing = this.database.query<{ payload_json: string }, [string]>(
-        "SELECT payload_json FROM audit_outbox WHERE outbox_id = ?",
-      ).get(item.outboxId);
-      const payload = JSON.stringify(item.payload);
+  async initialize(
+    auditLogId: string,
+    captureFingerprint: string,
+    now = new Date().toISOString(),
+  ): Promise<AgentAuditState> {
+    return await this.runWrite(() => {
+      const existing = readAuditState(this.database);
       if (existing) {
-        if (existing.payload_json !== payload) {
-          throw new PersistenceConflictError(`audit outbox id already exists: ${item.outboxId}`);
+        if (existing.auditLogId !== auditLogId) {
+          throw new PersistenceConflictError(
+            `agent audit state belongs to ${existing.auditLogId}, not ${auditLogId}`,
+          );
         }
-        return;
+        if (existing.captureFingerprint !== captureFingerprint) {
+          runSql(this.database,
+            "UPDATE agent_audit_state SET capture_fingerprint = ?, updated_at = ? WHERE singleton = 1",
+            captureFingerprint,
+            now,
+          );
+        }
+        return readAuditState(this.database)!;
       }
       runSql(this.database,
-        `INSERT INTO audit_outbox(
-          outbox_id, record_id, destination_id, payload_json, created_at,
-          attempt_count, next_attempt_at, delivered_at, last_error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        item.outboxId,
-        item.recordId,
-        item.destinationId,
-        payload,
-        item.createdAt,
-        item.attemptCount,
-        item.nextAttemptAt ?? null,
-        item.deliveredAt ?? null,
-        item.lastError ?? null,
+        `INSERT INTO agent_audit_state(
+          singleton, audit_log_id, last_allocated_sequence, last_delivered_sequence,
+          capture_fingerprint, created_at, updated_at
+        ) VALUES (1, ?, 0, 0, ?, ?, ?)`,
+        auditLogId,
+        captureFingerprint,
+        now,
+        now,
       );
+      return readAuditState(this.database)!;
     });
   }
 
+  async state(): Promise<AgentAuditState | null> {
+    return readAuditState(this.database);
+  }
+
+  async backlog(): Promise<AuditOutboxBacklog> {
+    const row = this.database.query<{
+      pending_count: number;
+      pending_payload_bytes: number;
+      oldest_pending_at: string | null;
+    }, []>(
+      `SELECT COUNT(*) AS pending_count,
+              COALESCE(SUM(payload_bytes), 0) AS pending_payload_bytes,
+              MIN(created_at) AS oldest_pending_at
+       FROM audit_outbox`,
+    ).get()!;
+    return Object.freeze({
+      pendingCount: Number(row.pending_count),
+      pendingPayloadBytes: Number(row.pending_payload_bytes),
+      ...(row.oldest_pending_at !== null ? { oldestPendingAt: row.oldest_pending_at } : {}),
+    });
+  }
+
+  async enqueue(item: NewAuditOutboxItem): Promise<AuditOutboxItem> {
+    return await this.runWrite(() => {
+      const payload = canonicalizeJson(item.payload);
+      const payloadSha256 = createHash("sha256").update(payload, "utf8").digest("hex");
+      const payloadBytes = Buffer.byteLength(payload, "utf8");
+      const existing = this.database.query<Record<string, unknown>, [string]>(
+        "SELECT * FROM audit_outbox WHERE source_observation_id = ?",
+      ).get(item.sourceObservationId);
+      if (existing) {
+        const hydrated = auditOutboxFromRow(existing);
+        if (!samePendingAuditItem(hydrated, item, payloadSha256)) {
+          throw new PersistenceConflictError(
+            `audit source observation already has different pending content: ${item.sourceObservationId}`,
+          );
+        }
+        return hydrated;
+      }
+      const state = readAuditState(this.database);
+      if (!state) throw new Error("agent audit state is not initialized");
+      const auditSequence = state.lastAllocatedSequence + 1;
+      runSql(this.database,
+        `INSERT INTO audit_outbox(
+          outbox_id, audit_sequence, source_observation_id, source_record_id,
+          operation_id, agent_conversation_id, occurred_at, kind, capture_level,
+          capture_fingerprint, payload_json, payload_sha256, payload_bytes, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        item.outboxId,
+        auditSequence,
+        item.sourceObservationId,
+        item.sourceRecordId ?? null,
+        item.operationId ?? null,
+        item.agentConversationId ?? null,
+        item.occurredAt,
+        item.kind,
+        item.captureLevel,
+        item.captureFingerprint,
+        payload,
+        payloadSha256,
+        payloadBytes,
+        item.createdAt,
+      );
+      runSql(this.database,
+        `UPDATE agent_audit_state
+         SET last_allocated_sequence = ?, capture_fingerprint = ?, updated_at = ?
+         WHERE singleton = 1`,
+        auditSequence,
+        item.captureFingerprint,
+        item.createdAt,
+      );
+      return auditOutboxFromRow(this.database.query<Record<string, unknown>, [string]>(
+        "SELECT * FROM audit_outbox WHERE outbox_id = ?",
+      ).get(item.outboxId)!);
+    });
+  }
+
+  async head(): Promise<AuditOutboxItem | null> {
+    const row = this.database.query<Record<string, unknown>, []>(
+      "SELECT * FROM audit_outbox ORDER BY audit_sequence LIMIT 1",
+    ).get();
+    return row ? auditOutboxFromRow(row) : null;
+  }
+
   async pending(limit = 100, now = new Date().toISOString()): Promise<readonly AuditOutboxItem[]> {
-    const rows = this.database.query<Record<string, unknown>, [string, number]>(
+    const rows = this.database.query<Record<string, unknown>, [number]>(
       `SELECT * FROM audit_outbox
-       WHERE delivered_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-       ORDER BY created_at, outbox_id LIMIT ?`,
-    ).all(now, boundedInteger(limit, 1, 1_000, "audit outbox limit"));
+       ORDER BY audit_sequence LIMIT ?`,
+    ).all(boundedInteger(limit, 1, 1_000, "audit outbox limit"));
+    const head = rows[0];
+    if (head && head.next_attempt_at !== null && String(head.next_attempt_at) > now) {
+      return Object.freeze([]);
+    }
     return Object.freeze(rows.map(auditOutboxFromRow));
   }
 
-  async markDelivered(outboxId: string, deliveredAt = new Date().toISOString()): Promise<void> {
-    await this.runWrite(() => {
-      const changed = runSql(this.database,
-        `UPDATE audit_outbox
-         SET delivered_at = ?, last_error = NULL
-         WHERE outbox_id = ?`,
+  async acknowledge(
+    outboxIds: readonly string[],
+    deliveredAt = new Date().toISOString(),
+  ): Promise<AgentAuditState> {
+    if (outboxIds.length === 0) throw new Error("audit acknowledgement cannot be empty");
+    return await this.runWrite(() => {
+      const rows = this.database.query<{ outbox_id: string; audit_sequence: number }, [number]>(
+        "SELECT outbox_id, audit_sequence FROM audit_outbox ORDER BY audit_sequence LIMIT ?",
+      ).all(outboxIds.length);
+      if (rows.length !== outboxIds.length || rows.some((row, index) => row.outbox_id !== outboxIds[index])) {
+        throw new PersistenceConflictError("audit acknowledgement is not the contiguous pending head");
+      }
+      const throughSequence = Number(rows.at(-1)!.audit_sequence);
+      const placeholders = outboxIds.map(() => "?").join(", ");
+      runSql(this.database, `DELETE FROM audit_outbox WHERE outbox_id IN (${placeholders})`, ...outboxIds);
+      runSql(this.database,
+        `UPDATE agent_audit_state
+         SET last_delivered_sequence = ?, updated_at = ?
+         WHERE singleton = 1`,
+        throughSequence,
         deliveredAt,
-        outboxId,
       );
-      if (changed.changes === 0) throw new Error(`unknown audit outbox id: ${outboxId}`);
+      return readAuditState(this.database)!;
     });
   }
 
@@ -1383,12 +1530,22 @@ class SqliteAuditOutboxPersistence implements AuditOutboxPersistence {
       const changed = runSql(this.database,
         `UPDATE audit_outbox
          SET attempt_count = attempt_count + 1, last_error = ?, next_attempt_at = ?
-         WHERE outbox_id = ?`,
-        error,
+         WHERE outbox_id = ?
+           AND audit_sequence = (SELECT MIN(audit_sequence) FROM audit_outbox)`,
+        truncateUtf8(error, 4_096),
         nextAttemptAt ?? null,
         outboxId,
       );
-      if (changed.changes === 0) throw new Error(`unknown audit outbox id: ${outboxId}`);
+      if (changed.changes === 0) throw new PersistenceConflictError(`audit outbox item is not pending head: ${outboxId}`);
+    });
+  }
+
+  async retryHead(): Promise<void> {
+    await this.runWrite(() => {
+      runSql(this.database,
+        `UPDATE audit_outbox SET next_attempt_at = NULL
+         WHERE audit_sequence = (SELECT MIN(audit_sequence) FROM audit_outbox)`,
+      );
     });
   }
 }
@@ -1606,15 +1763,56 @@ function identityProjectionState(database: Database, agentSessionId: AgentSessio
 function auditOutboxFromRow(row: Record<string, unknown>): AuditOutboxItem {
   return Object.freeze({
     outboxId: String(row.outbox_id),
-    recordId: String(row.record_id),
-    destinationId: String(row.destination_id),
+    auditSequence: Number(row.audit_sequence),
+    sourceObservationId: String(row.source_observation_id),
+    ...(row.source_record_id !== null ? { sourceRecordId: String(row.source_record_id) } : {}),
+    ...(row.operation_id !== null ? { operationId: String(row.operation_id) } : {}),
+    ...(row.agent_conversation_id !== null
+      ? { agentConversationId: String(row.agent_conversation_id) as AgentConversationId }
+      : {}),
+    occurredAt: String(row.occurred_at),
+    kind: String(row.kind),
+    captureLevel: String(row.capture_level),
+    captureFingerprint: String(row.capture_fingerprint),
     payload: parseJson(String(row.payload_json)),
+    payloadSha256: String(row.payload_sha256),
+    payloadBytes: Number(row.payload_bytes),
     createdAt: String(row.created_at),
     attemptCount: Number(row.attempt_count),
     ...(row.next_attempt_at !== null ? { nextAttemptAt: String(row.next_attempt_at) } : {}),
-    ...(row.delivered_at !== null ? { deliveredAt: String(row.delivered_at) } : {}),
     ...(row.last_error !== null ? { lastError: String(row.last_error) } : {}),
   });
+}
+
+function readAuditState(database: Database): AgentAuditState | null {
+  const row = database.query<Record<string, unknown>, []>(
+    "SELECT * FROM agent_audit_state WHERE singleton = 1",
+  ).get();
+  if (!row) return null;
+  return Object.freeze({
+    auditLogId: String(row.audit_log_id),
+    lastAllocatedSequence: Number(row.last_allocated_sequence),
+    lastDeliveredSequence: Number(row.last_delivered_sequence),
+    captureFingerprint: String(row.capture_fingerprint),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  });
+}
+
+function samePendingAuditItem(
+  existing: AuditOutboxItem,
+  candidate: NewAuditOutboxItem,
+  payloadSha256: string,
+): boolean {
+  return existing.sourceObservationId === candidate.sourceObservationId
+    && existing.sourceRecordId === candidate.sourceRecordId
+    && existing.operationId === candidate.operationId
+    && existing.agentConversationId === candidate.agentConversationId
+    && existing.occurredAt === candidate.occurredAt
+    && existing.kind === candidate.kind
+    && existing.captureLevel === candidate.captureLevel
+    && existing.captureFingerprint === candidate.captureFingerprint
+    && existing.payloadSha256 === payloadSha256;
 }
 
 function extensionRegistrationFromRow(row: {
@@ -1658,6 +1856,28 @@ function decodeOffset(cursor: string | undefined): number {
   const match = /^offset:(\d+)$/.exec(decoded);
   if (!match) throw new Error("invalid persistence cursor");
   return nonNegativeInteger(Number(match[1]), "persistence cursor");
+}
+
+async function canonicalSqlitePath(input: string): Promise<string> {
+  const resolved = resolve(input);
+  const parent = dirname(resolved);
+  await mkdir(parent, { recursive: true });
+  try {
+    return await realpath(resolved);
+  } catch (error) {
+    if (!isNodeErrorCode(error, "ENOENT")) throw error;
+    return join(await realpath(parent), basename(resolved));
+  }
+}
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return !!error && typeof error === "object" && "code" in error && error.code === code;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.byteLength <= maxBytes) return value;
+  return bytes.subarray(0, maxBytes).toString("utf8").replace(/\uFFFD$/u, "");
 }
 
 function boundedInteger(value: number, minimum: number, maximum: number, label: string): number {
