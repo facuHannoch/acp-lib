@@ -75,6 +75,12 @@ describe("Agent owner", () => {
     expect(messages[1]).toMatchObject({ role: "assistant" });
   });
 
+  test("preserves a custom identity runtime that has its own kind field", async () => {
+    const identity = Object.assign(new RecordingIdentity(), { kind: "consumer-memory" });
+    const { agent } = await openAgent({ identity });
+    expect(agent.identity).toBe(identity);
+  });
+
   test("captures audit observations independently from canonical conversation policy", async () => {
     const directory = await makeDirectory();
     const agent = await track(Agent.open({

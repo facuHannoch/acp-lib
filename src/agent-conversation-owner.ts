@@ -6,11 +6,13 @@ import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts
 import type { ResponseMessage } from "./types.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
+import type { IdentityDeliveryReceipt } from "./identity.ts";
 
 export interface OwnedPromptInput {
   readonly operationId: string;
   readonly agentSessionId: AgentSessionId;
   readonly agentConversationId: AgentConversationId;
+  readonly targetProviderContextId?: string;
   readonly participantId?: string;
   readonly text: string;
 }
@@ -18,10 +20,12 @@ export interface OwnedPromptInput {
 export interface OwnedPromptPreparation {
   readonly providerText?: string;
   readonly participant?: ParticipantRef;
+  readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
 }
 
 export interface OwnedPromptCompleted extends OwnedPromptInput {
   readonly result: AgentSessionPromptResult;
+  readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
 }
 
 export interface OwnedPromptFailed extends OwnedPromptInput {

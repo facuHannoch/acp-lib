@@ -26,6 +26,10 @@ import {
   type IdentityConsistency,
 } from "./identity.ts";
 import {
+  CheckpointBackedIdentityRuntime,
+  type CheckpointBackedIdentityConfig,
+} from "./identity/checkpoint-backed.ts";
+import {
   IMPLICIT_USER_PARTICIPANT_ID,
   PersistenceCapabilityError,
   normalizeParticipantRef,
@@ -120,7 +124,7 @@ export interface AgentConfig {
   readonly adapters: Readonly<Record<string, import("./adapters.ts").Adapter>>
     | readonly AgentAdapterRegistration[];
   readonly defaultAdapterId?: string;
-  readonly identity?: AgentIdentityRuntime;
+  readonly identity?: AgentIdentityRuntime | CheckpointBackedIdentityConfig;
   readonly identityConsistency?: IdentityConsistency;
   readonly identityTimeoutMs?: number;
   readonly capture?: ConversationRecordCaptureConfig;
@@ -192,7 +196,7 @@ export class Agent {
   private constructor(
     id: AgentSessionId,
     persistence: PersistenceBackend,
-    identity: AgentIdentityRuntime,
+    identity: AgentIdentityRuntime | CheckpointBackedIdentityConfig | undefined,
     adapters: AgentAdapterRegistry,
     config: AgentConfig,
     private readonly auditLog: ResolvedAgentAuditLogConfig | null,
@@ -200,12 +204,34 @@ export class Agent {
   ) {
     this.id = id;
     this.persistence = persistence;
-    this.identity = identity;
     this.adapters = adapters;
     this.audit = audit;
     const checkpointing = config.checkpointing
       ? resolveConversationCheckpointingConfig(config.checkpointing)
       : null;
+    const checkpointBackedIdentity = identity && !("load" in identity) && identity.kind === "checkpoint-backed"
+      ? identity
+      : null;
+    if (identity && !("load" in identity) && !checkpointBackedIdentity) {
+      throw new Error("unknown built-in identity configuration");
+    }
+    if (checkpointBackedIdentity) {
+      if (!checkpointing?.enabled) {
+        throw new Error("checkpoint-backed identity requires enabled conversation checkpointing");
+      }
+      if (!persistence.identityDelivery || !persistence.recoveryCheckpoints) {
+        throw new Error("checkpoint-backed identity requires delivery cursor persistence");
+      }
+    }
+    this.identity = checkpointBackedIdentity
+      ? new CheckpointBackedIdentityRuntime(
+        persistence,
+        checkpointBackedIdentity,
+        async (source) => { await this.checkpointing?.request(source); },
+      )
+      : identity && "load" in identity
+        ? identity
+        : new NoopAgentIdentityRuntime();
     this.manager = new DefaultAgentConversationManager(this, {
       defaultAdapterId: config.defaultAdapterId,
       identityConsistency: config.identityConsistency ?? "eventual",
@@ -380,7 +406,7 @@ export class Agent {
       const agent = new Agent(
         id,
         persistence,
-        config.identity ?? new NoopAgentIdentityRuntime(),
+        config.identity,
         adapters,
         config,
         auditLog || null,
@@ -598,7 +624,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
             previousInternalSessionId: active.internalSessionId,
             recoveredThroughSequence: seed.recoveredThroughSequence,
           }),
-        });
+        }, true);
       } catch (recoveryError) {
         this.live.delete(id);
         await conversation.stop().catch(() => undefined);
@@ -796,7 +822,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
         }
       });
       if (conversation.internalSessionId && !config.deferProviderSessionPersistence) {
-        await this.persistProviderSession(conversation, id, adapterId);
+        await this.persistProviderSession(conversation, id, adapterId, {}, config.providerSession === "new");
       }
       return conversation;
     } catch (error) {
@@ -837,17 +863,21 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     id: AgentConversationId,
     adapterId: string,
     extra: { readonly transitionId?: string; readonly metadata?: string } = {},
+    newContext = false,
   ): Promise<void> {
     if (!conversation.internalSessionId) throw new Error("provider session has no internal session id");
-    await this.agent.persistence.providerSessions.append({
-      providerSessionRecordId: `provider-${randomUUID()}`,
-      agentConversationId: id,
-      internalSessionId: conversation.internalSessionId,
-      adapterId,
-      mode: conversation.mode,
-      ...(conversation.model ? { model: conversation.model } : {}),
-      activatedAt: new Date().toISOString(),
-      ...extra,
+    await this.agent.persistence.transaction(async (persistence) => {
+      if (newContext) await persistence.identityDelivery?.reset(id, conversation.internalSessionId!);
+      await persistence.providerSessions.append({
+        providerSessionRecordId: `provider-${randomUUID()}`,
+        agentConversationId: id,
+        internalSessionId: conversation.internalSessionId!,
+        adapterId,
+        mode: conversation.mode,
+        ...(conversation.model ? { model: conversation.model } : {}),
+        activatedAt: new Date().toISOString(),
+        ...extra,
+      });
     });
   }
 }
@@ -865,6 +895,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     const identity = await this.agent.identity.load({
       agentSessionId: this.agent.id,
       agentConversationId: this.conversationId,
+      targetProviderContextId: input.targetProviderContextId,
       participant,
       prompt: input.text,
       consistency: this.settings.identityConsistency,
@@ -888,6 +919,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     return Object.freeze({
       providerText: composeIdentityPrompt(input.text, identity),
       participant,
+      ...(identity.deliveryReceipt ? { identityDeliveryReceipt: identity.deliveryReceipt } : {}),
     });
   }
 
@@ -909,6 +941,9 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       }),
     }));
     await this.updateIdentity(await this.appendMessages(records));
+    if (status === "completed" && input.identityDeliveryReceipt) {
+      await this.agent.identity.delivered?.(input.identityDeliveryReceipt);
+    }
     if (status === "completed") {
       await this.agent.checkpointing?.afterSuccessfulResponse(this.conversationId);
     }
@@ -946,15 +981,18 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     readonly model?: string;
     readonly activatedAt: string;
   }): Promise<void> {
-    await this.agent.persistence.providerSessions.append({
-      providerSessionRecordId: `provider-${randomUUID()}`,
-      agentConversationId: input.agentConversationId,
-      internalSessionId: input.internalSessionId,
-      adapterId: input.adapterId,
-      mode: input.mode,
-      ...(input.model ? { model: input.model } : {}),
-      activatedAt: input.activatedAt,
-      transitionId: input.transitionId,
+    await this.agent.persistence.transaction(async (persistence) => {
+      await persistence.identityDelivery?.reset(input.agentConversationId, input.internalSessionId);
+      await persistence.providerSessions.append({
+        providerSessionRecordId: `provider-${randomUUID()}`,
+        agentConversationId: input.agentConversationId,
+        internalSessionId: input.internalSessionId,
+        adapterId: input.adapterId,
+        mode: input.mode,
+        ...(input.model ? { model: input.model } : {}),
+        activatedAt: input.activatedAt,
+        transitionId: input.transitionId,
+      });
     });
   }
 

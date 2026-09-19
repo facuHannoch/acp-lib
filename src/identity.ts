@@ -6,10 +6,21 @@ export type IdentityConsistency = "eventual" | "through-current";
 export interface IdentityLoadInput {
   readonly agentSessionId: AgentSessionId;
   readonly agentConversationId: AgentConversationId;
+  /** The exact provider context receiving this prompt; changes on replacement. */
+  readonly targetProviderContextId?: string;
   readonly participant?: ParticipantRef;
   readonly prompt: string;
   readonly consistency: IdentityConsistency;
   readonly timeoutMs?: number;
+}
+
+export interface IdentityDeliveryReceipt {
+  readonly targetConversationId: AgentConversationId;
+  readonly targetProviderContextId: string;
+  readonly sources: readonly {
+    readonly sourceConversationId: AgentConversationId;
+    readonly deliveredThroughSequence: number;
+  }[];
 }
 
 export interface LoadedIdentityContext {
@@ -19,6 +30,8 @@ export interface LoadedIdentityContext {
   readonly observedThroughSequence?: number;
   readonly processedThroughSequence?: number;
   readonly metadata?: PersistenceJsonValue;
+  /** Opaque to the conversation; acknowledged only after a successful provider turn. */
+  readonly deliveryReceipt?: IdentityDeliveryReceipt;
 }
 
 export interface IdentityUpdateInput {
@@ -42,6 +55,7 @@ export interface AgentIdentityRuntime {
   load(input: IdentityLoadInput): Promise<LoadedIdentityContext>;
   update(input: IdentityUpdateInput): Promise<void>;
   synchronize?(input: IdentitySynchronizationInput): Promise<IdentityWatermark>;
+  delivered?(receipt: IdentityDeliveryReceipt): Promise<void>;
 }
 
 /** Default identity policy: deliberately remembers and injects nothing, but is still called. */
