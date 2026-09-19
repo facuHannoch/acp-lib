@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 7;
+export const SQLITE_AGENT_SCHEMA_VERSION = 8;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -399,20 +399,40 @@ CREATE TABLE IF NOT EXISTS identity_snapshots (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_audit_state (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  audit_log_id TEXT NOT NULL UNIQUE,
+  last_allocated_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_allocated_sequence >= 0),
+  last_delivered_sequence INTEGER NOT NULL DEFAULT 0 CHECK (
+    last_delivered_sequence >= 0 AND last_delivered_sequence <= last_allocated_sequence
+  ),
+  capture_fingerprint TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_outbox (
   outbox_id TEXT PRIMARY KEY,
-  record_id TEXT NOT NULL,
-  destination_id TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
+  audit_sequence INTEGER NOT NULL UNIQUE CHECK (audit_sequence > 0),
+  source_observation_id TEXT NOT NULL UNIQUE,
+  source_record_id TEXT,
+  operation_id TEXT,
+  agent_conversation_id TEXT REFERENCES conversations(agent_conversation_id),
+  occurred_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  capture_level TEXT NOT NULL,
+  capture_fingerprint TEXT NOT NULL,
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+  payload_sha256 TEXT NOT NULL,
+  payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
   created_at TEXT NOT NULL,
   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   next_attempt_at TEXT,
-  delivered_at TEXT,
   last_error TEXT
 );
 
 CREATE INDEX IF NOT EXISTS audit_outbox_pending_idx
-  ON audit_outbox(delivered_at, next_attempt_at, created_at);
+  ON audit_outbox(audit_sequence);
 
 CREATE TABLE IF NOT EXISTS persistence_extensions (
   extension_id TEXT PRIMARY KEY,

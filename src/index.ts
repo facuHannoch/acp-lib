@@ -80,6 +80,7 @@ export {
 export type { SqliteAgentPersistenceConfig } from "./persistence/index.ts";
 export type {
   AgentConversationSummary,
+  AgentAuditState,
   AgentPersistenceIdentity,
   ConversationRecord,
   ConversationRecordCaptureConfig,
@@ -101,6 +102,7 @@ export type {
   RecordCaptureLevel,
   ResolvedProtocolRecordCapturePolicy,
   NewConversationRecord,
+  NewAuditOutboxItem,
   ParticipantKind,
   ParticipantRef,
   PersistedContent,

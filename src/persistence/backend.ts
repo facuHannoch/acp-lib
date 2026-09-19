@@ -347,14 +347,41 @@ export interface IdentityProjectionState {
 
 export interface AuditOutboxItem {
   readonly outboxId: string;
-  readonly recordId: string;
-  readonly destinationId: string;
+  readonly auditSequence: number;
+  readonly sourceObservationId: string;
+  readonly sourceRecordId?: string;
+  readonly operationId?: string;
+  readonly agentConversationId?: AgentConversationId;
+  readonly occurredAt: string;
+  readonly kind: string;
+  readonly captureLevel: string;
+  readonly captureFingerprint: string;
   readonly payload: PersistenceJsonValue;
+  readonly payloadSha256: string;
+  readonly payloadBytes: number;
   readonly createdAt: string;
   readonly attemptCount: number;
   readonly nextAttemptAt?: string;
-  readonly deliveredAt?: string;
   readonly lastError?: string;
+}
+
+export type NewAuditOutboxItem = Omit<
+  AuditOutboxItem,
+  | "auditSequence"
+  | "payloadSha256"
+  | "payloadBytes"
+  | "attemptCount"
+  | "nextAttemptAt"
+  | "lastError"
+>;
+
+export interface AgentAuditState {
+  readonly auditLogId: string;
+  readonly lastAllocatedSequence: number;
+  readonly lastDeliveredSequence: number;
+  readonly captureFingerprint: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export interface PersistenceExtensionRegistration {
@@ -498,10 +525,14 @@ export interface IdentityPersistence {
 }
 
 export interface AuditOutboxPersistence {
-  enqueue(item: AuditOutboxItem): Promise<void>;
+  initialize(auditLogId: string, captureFingerprint: string, now?: string): Promise<AgentAuditState>;
+  state(): Promise<AgentAuditState | null>;
+  enqueue(item: NewAuditOutboxItem): Promise<AuditOutboxItem>;
+  head(): Promise<AuditOutboxItem | null>;
   pending(limit?: number, now?: string): Promise<readonly AuditOutboxItem[]>;
-  markDelivered(outboxId: string, deliveredAt?: string): Promise<void>;
+  acknowledge(outboxIds: readonly string[], deliveredAt?: string): Promise<AgentAuditState>;
   markFailed(outboxId: string, error: string, nextAttemptAt?: string): Promise<void>;
+  retryHead(): Promise<void>;
 }
 
 export interface PersistenceExtensionCatalog {
