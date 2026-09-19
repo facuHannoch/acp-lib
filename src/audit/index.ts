@@ -17,11 +17,19 @@ export type {
 export { projectAgentAuditObservation } from "./projection.ts";
 export {
   AgentAuditRuntime,
+  AGENT_AUDIT_BATCH_SIZE,
   AuditLogDestinationInUseError,
   AuditLogDestinationBlockedError,
   AuditLogHistoryMissingError,
   AuditLogIdentityConflictError,
 } from "./runtime.ts";
+export { AgentAuditLogReader, AgentAuditLogReaderError } from "./reader.ts";
+export type {
+  AgentAuditLogReaderConfig,
+  AgentAuditReadMode,
+  AgentAuditReadPage,
+  AgentAuditReadPageOptions,
+} from "./reader.ts";
 export type {
   AgentAuditEntryV2,
   AgentAuditFlushOptions,

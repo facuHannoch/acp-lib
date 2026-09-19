@@ -1,4 +1,6 @@
 import { shouldCaptureProtocolMethod, type PersistenceJsonValue } from "../persistence/backend.ts";
+import { DEFAULT_PERSISTENCE_LIMITS } from "../persistence/config.ts";
+import { canonicalizeJson } from "../persistence/integrity.ts";
 import type { AgentAuditCaptureLevel, NormalizedAgentObservation, ProjectedAgentAuditObservation } from "./contracts.ts";
 import type { ResolvedAgentAuditCapturePolicy } from "./config.ts";
 
@@ -16,9 +18,9 @@ export function projectAgentAuditObservation(
       occurredAt: observation.occurredAt,
       kind: observation.kind,
       captureLevel: level,
-      payload: level === "metadata"
+      payload: boundAuditPayload(level === "metadata"
         ? { state: observation.state }
-        : { state: observation.state, ...(observation.payload !== undefined ? { payload: observation.payload } : {}) },
+        : { state: observation.state, ...(observation.payload !== undefined ? { payload: observation.payload } : {}) }),
     });
   }
 
@@ -40,7 +42,7 @@ export function projectAgentAuditObservation(
     occurredAt: record.timestamp,
     kind: record.kind,
     captureLevel,
-    payload: projectRecordPayload(observation, captureLevel),
+    payload: boundAuditPayload(projectRecordPayload(observation, captureLevel)),
   });
 }
 
@@ -105,4 +107,19 @@ function projectRecordPayload(
 
 function json(value: unknown): PersistenceJsonValue {
   return JSON.parse(JSON.stringify(value)) as PersistenceJsonValue;
+}
+
+function boundAuditPayload(value: PersistenceJsonValue): PersistenceJsonValue {
+  let serialized: string;
+  try {
+    serialized = canonicalizeJson(value, DEFAULT_PERSISTENCE_LIMITS.maxJsonDepth);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("JSON value exceeds maximum depth")) {
+      return { omitted: true, reason: "max_depth" };
+    }
+    throw error;
+  }
+  const bytes = Buffer.byteLength(serialized, "utf8");
+  if (bytes <= DEFAULT_PERSISTENCE_LIMITS.maxCapturedFieldBytes) return value;
+  return { omitted: true, reason: "field_limit", originalBytes: bytes };
 }

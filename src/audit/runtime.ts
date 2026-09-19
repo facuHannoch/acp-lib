@@ -43,6 +43,8 @@ export interface AgentAuditEntryV2 {
   readonly payload: AuditOutboxItem["payload"];
 }
 
+export const AGENT_AUDIT_BATCH_SIZE = 16;
+
 export type AgentAuditRuntimeState = "idle" | "delivering" | "backoff" | "blocked" | "stopped";
 
 export interface AgentAuditSnapshot {
@@ -333,7 +335,7 @@ export class AgentAuditRuntime
       }
       let pending: readonly AuditOutboxItem[];
       try {
-        pending = await this.persistence.auditOutbox!.pending(100);
+        pending = await this.persistence.auditOutbox!.pending(AGENT_AUDIT_BATCH_SIZE);
       } catch (error) {
         this.runtimeState = "blocked";
         await this.publish("blocked");
@@ -581,7 +583,7 @@ async function recoverAuditStream(
       ) throw new AuditLogIdentityConflictError(path, `conflicting audit sequence ${entry.auditSequence}`);
       replayLength++;
       previousReplaySequence = entry.auditSequence;
-      if (replayLength > 100) {
+      if (replayLength > AGENT_AUDIT_BATCH_SIZE) {
         throw new AuditLogIdentityConflictError(path, "physical replay exceeds the delivery batch bound");
       }
     }
@@ -601,7 +603,7 @@ async function recoverAuditStream(
     throw new AuditLogIdentityConflictError(active!.path, "physical stream extends beyond SQLite allocation state");
   }
   const unacknowledged = maximumSequence - state.lastDeliveredSequence;
-  if (unacknowledged > 100) {
+  if (unacknowledged > AGENT_AUDIT_BATCH_SIZE) {
     throw new AuditLogIdentityConflictError(active!.path, "unacknowledged physical suffix exceeds batch bound");
   }
   if (unacknowledged > 0) {
