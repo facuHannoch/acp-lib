@@ -33,6 +33,9 @@ import {
   type ConversationRuntimeCheckpoint,
   type CreateAgentConversationInput,
   type IdentityMemoryObservation,
+  type IdentityDeliveryAdvance,
+  type IdentityDeliveryCursor,
+  type IdentityDeliveryPersistence,
   type IdentityPersistence,
   type IdentityProjectionState,
   type MessageListOptions,
@@ -138,6 +141,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly internalInferences: InternalInferenceRepository;
   readonly recoveryCheckpoints: ConversationRecoveryCheckpointRepository;
   readonly identity: IdentityPersistence;
+  readonly identityDelivery: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox: AuditOutboxPersistence;
   readonly extensions: PersistenceExtensionCatalog;
@@ -176,6 +180,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.internalInferences = scope.internalInferences!;
     this.recoveryCheckpoints = scope.recoveryCheckpoints!;
     this.identity = scope.identity!;
+    this.identityDelivery = scope.identityDelivery!;
     this.search = fullTextSearch ? new SqliteSearchPersistence(database) : undefined;
     this.auditOutbox = scope.auditOutbox!;
     this.extensions = scope.extensions!;
@@ -302,6 +307,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
         this.identityRecord.agentSessionId,
         runWrite,
       ),
+      identityDelivery: new SqliteIdentityDeliveryPersistence(this.database, runWrite),
       ...(this.capabilities.fullTextSearch
         ? { search: new SqliteSearchPersistence(this.database) }
         : {}),
@@ -1261,6 +1267,85 @@ class SqliteIdentityPersistence implements IdentityPersistence {
 
   async projectionState(): Promise<IdentityProjectionState> {
     return identityProjectionState(this.database, this.agentSessionId);
+  }
+}
+
+class SqliteIdentityDeliveryPersistence implements IdentityDeliveryPersistence {
+  constructor(private readonly database: Database, private readonly runWrite: WriteRunner) {}
+
+  async get(
+    targetConversationId: AgentConversationId,
+    targetProviderContextId: string,
+    sourceConversationId: AgentConversationId,
+  ): Promise<IdentityDeliveryCursor | null> {
+    const row = this.database.query<{
+      delivered_through_sequence: number;
+      updated_at: string;
+    }, [string, string, string]>(
+      `SELECT delivered_through_sequence, updated_at FROM identity_delivery_cursors
+       WHERE target_conversation_id = ? AND target_provider_context_id = ?
+         AND source_conversation_id = ?`,
+    ).get(targetConversationId, targetProviderContextId, sourceConversationId);
+    return row ? Object.freeze({
+      targetConversationId,
+      targetProviderContextId,
+      sourceConversationId,
+      deliveredThroughSequence: Number(row.delivered_through_sequence),
+      updatedAt: row.updated_at,
+    }) : null;
+  }
+
+  async advance(updates: readonly IdentityDeliveryAdvance[]): Promise<void> {
+    if (updates.length === 0) return;
+    await this.runWrite(() => {
+      const now = new Date().toISOString();
+      const statement = this.database.query<unknown, [string, string, string, number, string]>(
+        `INSERT INTO identity_delivery_cursors(
+           target_conversation_id, target_provider_context_id,
+           source_conversation_id, delivered_through_sequence, updated_at
+         ) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(target_conversation_id, target_provider_context_id, source_conversation_id)
+         DO UPDATE SET
+           delivered_through_sequence = MAX(
+             identity_delivery_cursors.delivered_through_sequence,
+             excluded.delivered_through_sequence
+           ),
+           updated_at = excluded.updated_at`,
+      );
+      for (const update of updates) {
+        if (update.targetConversationId === update.sourceConversationId) {
+          throw new Error("identity cannot deliver a conversation to itself");
+        }
+        if (!update.targetProviderContextId.trim()) {
+          throw new Error("identity target provider context id cannot be blank");
+        }
+        const through = nonNegativeInteger(update.deliveredThroughSequence, "identity delivered sequence");
+        if (through === 0) continue;
+        requireConversation(this.database, update.targetConversationId);
+        const source = requireConversation(this.database, update.sourceConversationId);
+        if (through > source.latest_sequence) {
+          throw new Error("identity cursor cannot exceed source conversation sequence");
+        }
+        statement.run(
+          update.targetConversationId,
+          update.targetProviderContextId,
+          update.sourceConversationId,
+          through,
+          now,
+        );
+      }
+    });
+  }
+
+  async reset(targetConversationId: AgentConversationId, targetProviderContextId: string): Promise<void> {
+    if (!targetProviderContextId.trim()) throw new Error("identity target provider context id cannot be blank");
+    await this.runWrite(() => {
+      requireConversation(this.database, targetConversationId);
+      this.database.query<unknown, [string, string]>(
+        `DELETE FROM identity_delivery_cursors
+         WHERE target_conversation_id = ? AND target_provider_context_id = ?`,
+      ).run(targetConversationId, targetProviderContextId);
+    });
   }
 }
 

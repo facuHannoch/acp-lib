@@ -46,8 +46,11 @@ export type {
 export { AgentAdapterRegistry } from "./agent-adapter-registry.ts";
 export type { AgentAdapterRegistration } from "./agent-adapter-registry.ts";
 export { NoopAgentIdentityRuntime, composeIdentityPrompt } from "./identity.ts";
+export { CheckpointBackedIdentityRuntime } from "./identity/checkpoint-backed.ts";
+export type { CheckpointBackedIdentityConfig } from "./identity/checkpoint-backed.ts";
 export type {
   AgentIdentityRuntime,
+  IdentityDeliveryReceipt,
   IdentityConsistency,
   IdentityLoadInput,
   IdentitySynchronizationInput,
@@ -89,6 +92,9 @@ export type {
   ConversationRecordEnvelope,
   ConversationRecordKind,
   IdentityMemoryObservation,
+  IdentityDeliveryAdvance,
+  IdentityDeliveryCursor,
+  IdentityDeliveryPersistence,
   MessageRecord,
   AgentMeteringCommitInput,
   MeteringCommitInput,

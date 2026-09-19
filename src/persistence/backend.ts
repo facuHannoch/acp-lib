@@ -345,6 +345,17 @@ export interface IdentityProjectionState {
   readonly activeSnapshotId?: string;
 }
 
+/** What one provider context has already received from another conversation. */
+export interface IdentityDeliveryCursor {
+  readonly targetConversationId: AgentConversationId;
+  readonly targetProviderContextId: string;
+  readonly sourceConversationId: AgentConversationId;
+  readonly deliveredThroughSequence: number;
+  readonly updatedAt: string;
+}
+
+export type IdentityDeliveryAdvance = Omit<IdentityDeliveryCursor, "updatedAt">;
+
 export interface AuditOutboxItem {
   readonly outboxId: string;
   readonly auditSequence: number;
@@ -530,6 +541,17 @@ export interface IdentityPersistence {
   projectionState(): Promise<IdentityProjectionState>;
 }
 
+export interface IdentityDeliveryPersistence {
+  get(
+    targetConversationId: AgentConversationId,
+    targetProviderContextId: string,
+    sourceConversationId: AgentConversationId,
+  ): Promise<IdentityDeliveryCursor | null>;
+  advance(updates: readonly IdentityDeliveryAdvance[]): Promise<void>;
+  /** A newly created provider context may reuse an opaque provider session ID. */
+  reset(targetConversationId: AgentConversationId, targetProviderContextId: string): Promise<void>;
+}
+
 export interface AuditOutboxPersistence {
   initialize(auditLogId: string, captureFingerprint: string, now?: string): Promise<AgentAuditState>;
   state(): Promise<AgentAuditState | null>;
@@ -567,6 +589,7 @@ export interface PersistenceScope {
   readonly internalInferences?: InternalInferenceRepository;
   readonly recoveryCheckpoints?: ConversationRecoveryCheckpointRepository;
   readonly identity?: IdentityPersistence;
+  readonly identityDelivery?: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox?: AuditOutboxPersistence;
   readonly extensions?: PersistenceExtensionCatalog;

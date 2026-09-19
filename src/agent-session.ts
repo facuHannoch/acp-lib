@@ -415,6 +415,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly listeners = new Set<AgentSessionListener>();
   private lastStateKey = "";
   private _internalSessionId: string | null;
+  private ownerContextNonce: string | null = null;
   private metering: MeteringEngine;
   private readonly meteringConfig: MeteringConfig;
   private _contextWindow: ContextWindowStatus | null = null;
@@ -2773,11 +2774,15 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
+    const targetProviderContextId = this.ownerLifecycle
+      ? this._internalSessionId ?? `runtime:${this.ownerContextNonce ??= crypto.randomUUID()}`
+      : undefined;
     const owned = this.ownerLifecycle
       ? await this.ownerLifecycle.beforePrompt({
           operationId: item.turnId,
           agentSessionId: this.ownerAgentSessionId!,
           agentConversationId: this.agentConversationId,
+          targetProviderContextId,
           ...(item.participantId ? { participantId: item.participantId } : {}),
           text: item.text,
         })
@@ -3013,6 +3018,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
         operationId: item.turnId,
         agentSessionId: this.ownerAgentSessionId!,
         agentConversationId: this.agentConversationId,
+        targetProviderContextId,
+        ...(owned?.identityDeliveryReceipt
+          ? { identityDeliveryReceipt: owned.identityDeliveryReceipt }
+          : {}),
         ...(item.participantId ? { participantId: item.participantId } : {}),
         text: item.text,
         result,
@@ -3602,6 +3611,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private setInternalSessionId(next: string | null, created = true): void {
     if (next === this._internalSessionId) return;
     this._internalSessionId = next;
+    if (this.ownerLifecycle) this.ownerContextNonce = null;
     // The new thread's counters restart, so the old baseline no longer describes them.
     this.metering.onThreadReplaced(next, created);
     if (this._contextWindow !== null) {

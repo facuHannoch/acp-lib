@@ -137,10 +137,9 @@ FTS5 indexes deliberately extracted searchable text rather than serialized recor
 The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
 protocol bodies are not searched implicitly.
 
-Schema version 8 adds the durable Agent audit outbox to the typed layout. Pre-release
-version-7 SQLite files are not migrated because they were used only by development smoke
-tests. Opening one fails with a clear recreate instruction; remove the old smoke-test
-database and run the scenario again.
+Schema version 9 adds identity delivery cursors and migrates version-8 agent databases
+in place. Pre-release version-7 SQLite files are not migrated because they were used
+only by development smoke tests; opening one still gives a recreate instruction.
 
 ### Agent audit log
 
@@ -482,6 +481,42 @@ network, and arbitrary internal failures remain fatal by default. Set `onLoadFai
 Checkpointing requires message capture at `"content"` or `"raw"`. The checkpoint is a
 continuation aid, not the authoritative transcript: complete messages and other records
 remain independently queryable from SQLite.
+
+### Share a basic identity across conversations
+
+Checkpoint-backed identity is opt-in. It privately delivers knowledge from an agent's
+other conversations to each provider thread, using the existing per-conversation
+checkpoint summaries and messages after those checkpoints:
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "/state/atlas.sqlite" },
+  adapters: { codex: ADAPTERS.codex },
+  defaultAdapterId: "codex",
+  checkpointing: {},
+  identity: {
+    kind: "checkpoint-backed",
+    maxContextChars: 32_000,
+    maxSourceChars: 8_000,
+  },
+});
+```
+
+The first prompt to a provider thread receives each other conversation's latest
+checkpoint summary plus its uncovered messages. Later prompts receive only messages
+not yet delivered to that thread. Successful prompts advance sparse, durable cursors;
+failed prompts do not. A new provider thread gets a fresh identity view, while loading
+the same provider thread reuses its cursors. The current conversation never receives
+its own history through identity; normal provider continuity and recovery handle that.
+
+The character budgets are hard limits, not claims that all agent knowledge fits. When
+the backlog is too large, the runtime delivers an ordered prefix and leaves the rest
+pending. It may request a checkpoint in the background to compress an oversized gap.
+`identityConsistency: "through-current"` rejects a prompt whose available cross-
+conversation messages cannot all fit; the default `"eventual"` permits partial delivery.
+All non-deleted conversations are shared in v1, including conversations with different
+users, so consumers should enable this only where such cross-conversation visibility is
+appropriate. A custom `AgentIdentityRuntime` remains available for other policies.
 
 ## Legacy direct and managed sessions
 

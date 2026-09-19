@@ -650,10 +650,85 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(8);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(9);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 8; recreate the database",
+      "SQLite agent schema 7 is incompatible with 9; recreate the database",
     );
+  });
+
+  test("migrates a version-8 agent database without losing conversations", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    await backend.records.append(message(agentSessionId, conversationId, "before-migration", "user", "retained"));
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+
+    const old = new Database(path, { readwrite: true });
+    old.exec(`
+      DROP TABLE identity_delivery_cursors;
+      DELETE FROM schema_migrations WHERE version = 9;
+      INSERT INTO schema_migrations(version, applied_at) VALUES (8, '2026-09-18T00:00:00.000Z');
+    `);
+    old.close();
+
+    const migrated = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    expect((await migrated.messages.list(conversationId)).messages.map((record) => record.content)).toEqual(["retained"]);
+    const targetConversationId = createAgentConversationId();
+    await migrated.conversations.create({ agentSessionId, agentConversationId: targetConversationId });
+    await migrated.identityDelivery.advance([{
+      targetConversationId,
+      targetProviderContextId: "provider-1",
+      sourceConversationId: conversationId,
+      deliveredThroughSequence: 1,
+    }]);
+    expect((await migrated.identityDelivery.get(targetConversationId, "provider-1", conversationId))?.deliveredThroughSequence).toBe(1);
+    const inspection = new Database(path, { readonly: true });
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(9);
+    expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM identity_delivery_cursors").get()?.count).toBe(1);
+    inspection.close();
+  });
+
+  test("keeps sparse identity delivery cursors monotonic and provider-scoped", async () => {
+    const { backend, agentSessionId } = await openBackend();
+    const sourceConversationId = createAgentConversationId();
+    const targetConversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: sourceConversationId });
+    await backend.conversations.create({ agentSessionId, agentConversationId: targetConversationId });
+    await backend.records.appendMany([
+      message(agentSessionId, sourceConversationId, "identity-1", "user", "one"),
+      message(agentSessionId, sourceConversationId, "identity-2", "assistant", "two"),
+    ]);
+
+    expect(await backend.identityDelivery.get(targetConversationId, "provider-1", sourceConversationId)).toBeNull();
+    await backend.identityDelivery.advance([{
+      targetConversationId,
+      targetProviderContextId: "provider-1",
+      sourceConversationId,
+      deliveredThroughSequence: 2,
+    }]);
+    await backend.identityDelivery.advance([{
+      targetConversationId,
+      targetProviderContextId: "provider-1",
+      sourceConversationId,
+      deliveredThroughSequence: 1,
+    }]);
+    expect((await backend.identityDelivery.get(targetConversationId, "provider-1", sourceConversationId))?.deliveredThroughSequence).toBe(2);
+    expect(await backend.identityDelivery.get(targetConversationId, "provider-2", sourceConversationId)).toBeNull();
+    await backend.identityDelivery.reset(targetConversationId, "provider-1");
+    expect(await backend.identityDelivery.get(targetConversationId, "provider-1", sourceConversationId)).toBeNull();
+    await expect(backend.identityDelivery.advance([{
+      targetConversationId: sourceConversationId,
+      targetProviderContextId: "provider-1",
+      sourceConversationId,
+      deliveredThroughSequence: 1,
+    }])).rejects.toThrow("itself");
+    await expect(backend.identityDelivery.advance([{
+      targetConversationId,
+      targetProviderContextId: "provider-1",
+      sourceConversationId,
+      deliveredThroughSequence: 3,
+    }])).rejects.toThrow("exceed source");
   });
 });
 

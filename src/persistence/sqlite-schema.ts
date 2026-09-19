@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 8;
+export const SQLITE_AGENT_SCHEMA_VERSION = 9;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -399,6 +399,19 @@ CREATE TABLE IF NOT EXISTS identity_snapshots (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS identity_delivery_cursors (
+  target_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  target_provider_context_id TEXT NOT NULL CHECK (length(target_provider_context_id) > 0),
+  source_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  delivered_through_sequence INTEGER NOT NULL CHECK (delivered_through_sequence > 0),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (target_conversation_id, target_provider_context_id, source_conversation_id),
+  CHECK (target_conversation_id <> source_conversation_id)
+);
+
+CREATE INDEX IF NOT EXISTS identity_delivery_cursors_source_idx
+  ON identity_delivery_cursors(source_conversation_id);
+
 CREATE TABLE IF NOT EXISTS agent_audit_state (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   audit_log_id TEXT NOT NULL UNIQUE,
@@ -511,7 +524,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
       const existing = Number(database.query<{ version: number }, []>(
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0);
-      if (existing !== 0 && existing !== SQLITE_AGENT_SCHEMA_VERSION) {
+      if (existing !== 0 && existing !== 8 && existing !== SQLITE_AGENT_SCHEMA_VERSION) {
         throw new Error(
           `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
         );
