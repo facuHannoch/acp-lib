@@ -18,6 +18,15 @@ afterEach(async () => {
 });
 
 describe("checkpoint-backed identity", () => {
+  test("renders source messages compactly without losing speaker or multiline boundaries", async () => {
+    const fixture = await makeFixture();
+    await fixture.add(fixture.source, "Hello.\nReply with only READY.", "user:default");
+    const loaded = await fixture.runtime.load(fixture.input());
+    expect(loaded.promptPreamble).toContain('[1] user (user:default): "Hello.\\nReply with only READY."');
+    expect(loaded.promptPreamble).not.toContain('"participantId":');
+    expect(loaded.promptPreamble).not.toContain('"content":');
+  });
+
   test("bootstraps from a checkpoint plus uncovered tail, then delivers only new messages", async () => {
     const fixture = await makeFixture();
     await fixture.add(fixture.source, "first");
@@ -27,8 +36,8 @@ describe("checkpoint-backed identity", () => {
 
     const first = await fixture.runtime.load(fixture.input());
     expect(first.promptPreamble).toContain("summary of first and second");
-    expect(first.promptPreamble).toContain("third");
-    expect(first.promptPreamble).not.toContain('"content":"first"');
+    expect(first.promptPreamble).toContain('[3] user (user:default): "third"');
+    expect(first.promptPreamble).not.toContain('[1] user (user:default): "first"');
     expect(first.deliveryReceipt?.sources).toEqual([{
       sourceConversationId: fixture.source,
       deliveredThroughSequence: 3,
@@ -49,7 +58,7 @@ describe("checkpoint-backed identity", () => {
   });
 
   test("creates source cursors lazily and never advances past the bounded delivered prefix", async () => {
-    const fixture = await makeFixture({ maxContextChars: 1000, maxSourceChars: 230 });
+    const fixture = await makeFixture({ maxContextChars: 1000, maxSourceChars: 150 });
     await fixture.add(fixture.source, "first bounded message");
     await fixture.add(fixture.source, "second bounded message");
     await fixture.add(fixture.source, "third bounded message");
@@ -137,12 +146,13 @@ async function makeFixture(config: { maxContextChars?: number; maxSourceChars?: 
       prompt: "current question",
       consistency: "eventual",
     }),
-    add: async (conversationId: typeof source, content: string) => await backend.records.append({
+    add: async (conversationId: typeof source, content: string, participantId?: string) => await backend.records.append({
       recordId: `identity-message-${++nextRecord}`,
       agentSessionId: agentId,
       agentConversationId: conversationId,
       kind: "message",
       role: "user",
+      ...(participantId ? { participantId } : {}),
       content,
       timestamp: new Date().toISOString(),
       status: "completed",

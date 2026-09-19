@@ -230,12 +230,12 @@ export class CheckpointBackedIdentityRuntime implements AgentIdentityRuntime {
 }
 
 function messageText(message: MessageRecord): string {
-  return `${JSON.stringify({
-    sequence: message.sequence,
-    role: message.role,
-    ...(message.participantId ? { participantId: message.participantId } : {}),
-    content: message.content,
-  })}\n`;
+  const participantId = message.participantId;
+  const renderedParticipantId = participantId && (/^[\w:.-]+$/.test(participantId)
+    ? participantId
+    : JSON.stringify(participantId));
+  const participant = renderedParticipantId ? ` (${renderedParticipantId})` : "";
+  return `[${message.sequence}] ${message.role}${participant}: ${JSON.stringify(message.content)}\n`;
 }
 
 function summaryText(checkpoint: ConversationRecoveryCheckpoint, name: string): string {
