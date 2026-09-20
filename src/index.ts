@@ -31,6 +31,8 @@ export type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 export * from "./observation/index.ts";
 export * from "./internal-inference/index.ts";
 export * from "./checkpointing/index.ts";
+export { conversationTimelineItemId, reconcileConversationTimeline } from "./persistence/timeline-reconcile.ts";
+export type { ConversationTimelineItem } from "./persistence/timeline-reconcile.ts";
 export * from "./audit/index.ts";
 
 export { Agent } from "./agent.ts";
@@ -83,6 +85,9 @@ export {
 export type { SqliteAgentPersistenceConfig } from "./persistence/index.ts";
 export type {
   AgentConversationSummary,
+  AgentConversationPreview,
+  ConversationPreviewPage,
+  ConversationMessagePreview,
   AgentAuditState,
   AuditOutboxBacklog,
   AgentPersistenceIdentity,
@@ -91,6 +96,8 @@ export type {
   ConversationRecordCapturePolicy,
   ConversationRecordEnvelope,
   ConversationRecordKind,
+  RecentRecordPage,
+  RecentRecordPageOptions,
   IdentityMemoryObservation,
   IdentityDeliveryAdvance,
   IdentityDeliveryCursor,
@@ -163,6 +170,8 @@ export type {
   AgentConversationNotification,
   AgentConversationListener,
   AgentConversationPromptResult,
+  AgentConversationPromptInput,
+  AgentConversationAttributedPromptInput,
   AgentConversationRecoveryResolution,
   AgentConversationRecoveryResolutionResult,
   AgentSessionConfig,

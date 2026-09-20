@@ -28,6 +28,23 @@ afterEach(async () => {
 });
 
 describe("Agent owner", () => {
+  test("persists opaque consumer metadata only on the submitted user message", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const consumerMetadata = { deliveryId: "delivery-42", submittedBy: "relay" };
+    await conversation.prompt({ text: "hello", consumerMetadata });
+    await conversation.promptFrom({ participantId: "agent-bob", text: "second", consumerMetadata: { task: 7 } });
+    const messages = (await agent.persistence.messages.list(conversation.id)).messages;
+    expect(messages[0]).toMatchObject({ role: "user", consumerMetadata });
+    expect(messages[1]?.consumerMetadata).toBeUndefined();
+    expect(messages[2]).toMatchObject({ role: "user", participantId: "agent-bob", consumerMetadata: { task: 7 } });
+    expect(messages[3]?.consumerMetadata).toBeUndefined();
+    expect(messages[0]?.metadata).toContain("operationId");
+    await expect(conversation.prompt({ text: "invalid metadata", consumerMetadata: (() => 1) as never }))
+      .rejects.toThrow("consumerMetadata must be a JSON value");
+    expect((await agent.persistence.messages.list(conversation.id)).messages).toHaveLength(4);
+  });
+
   test("owns multiple independent conversations in one caller-located database", async () => {
     const { agent, path } = await openAgent();
     const first = await agent.conversations.create({ title: "First" });

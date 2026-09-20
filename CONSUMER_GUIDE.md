@@ -93,6 +93,34 @@ The user message and each assistant-message boundary are stored as separate type
 Reopen the same database with `Agent.open()` and call
 `agent.conversations.open(agentConversationId)` to continue its active provider thread.
 
+### Attach consumer data to a prompt message
+
+The object-form prompt APIs attach opaque JSON to the submitted **user message**:
+
+```ts
+await conversation.prompt({
+  text: "hello",
+  consumerMetadata: { deliveryId: "delivery-42", submittedBy: "relay" },
+});
+await conversation.promptFrom({
+  participantId: "agent-bob",
+  text: "Can you review this?",
+  consumerMetadata: { deliveryId: "delivery-43" },
+});
+
+const messages = await agent.persistence.messages.list(conversation.id);
+console.log(messages.messages[0]?.consumerMetadata);
+```
+
+The older positional `prompt(text, handlers?, attachments?)` and
+`promptFrom(participantId, text, handlers?, attachments?)` calls remain valid.
+`consumerMetadata` is stored in `conversation_messages.consumer_metadata_json` and
+returned as `MessageRecord.consumerMetadata`; it is not copied onto assistant messages,
+sent to the provider, added to identity context, or indexed for search. The library does
+not interpret its fields. The separate envelope `metadata` field still carries older
+library-owned operation correlation. A raw audit capture includes consumer metadata;
+content/metadata audit capture omits it.
+
 SQLite keeps ordering and type-specific content separate. `conversation_records` is a
 narrow canonical envelope containing the conversation-local sequence, kind, timestamp,
 operation correlation, and optional metadata. Every envelope has exactly one typed detail
@@ -137,9 +165,65 @@ FTS5 indexes deliberately extracted searchable text rather than serialized recor
 The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
 protocol bodies are not searched implicitly.
 
-Schema version 9 adds identity delivery cursors and migrates version-8 agent databases
-in place. Pre-release version-7 SQLite files are not migrated because they were used
-only by development smoke tests; opening one still gives a recreate instruction.
+Schema version 10 adds message consumer metadata and migrates version-8 and version-9
+agent databases in place. Pre-release version-7 SQLite files are not migrated because
+they were used only by development smoke tests; opening one gives a recreate instruction.
+
+### Read SQLite conversation history and previews
+
+`records.listRecent()` returns the newest matching records at a fixed conversation
+sequence snapshot. Each page is oldest-first for rendering; its `olderCursor` stays
+bound to that snapshot and kind filter even if new records arrive:
+
+```ts
+import { reconcileConversationTimeline } from "@qlairoslabs/acp-client";
+
+const first = await agent.persistence.records.listRecent!(conversation.id, { limit: 50 });
+let items = reconcileConversationTimeline([], first.records);
+const older = first.olderCursor
+  ? await agent.persistence.records.listRecent!(conversation.id, {
+      limit: 50,
+      olderCursor: first.olderCursor,
+    })
+  : null;
+if (older) items = reconcileConversationTimeline(items, older.records);
+```
+
+Every physical record has a stable `recordId` and a conversation-local `sequence`.
+The reconciliation helper keeps distinct messages separate and groups revisions of a
+tool call, permission, thinking block, activity, or transition by its logical ID. Its
+items retain every revision, carry the latest merged fields in `current`, and sort by
+the earliest loaded sequence. Loading an older page may move an item to its true
+earlier position when its first revision arrives. Configuration, protocol, agent
+actions, and metering references remain individual records unless they have an
+explicit logical identity; metering details are read from `persistence.metering`.
+
+For live reconciliation, subscribe before the initial read if immediate UI feedback
+matters, but treat subscription notifications as hints. The authoritative catch-up is
+`records.list(conversation.id, { afterSequence: lastSeenSequence, limit: 100 })`.
+Advance `lastSeenSequence` to the last returned record and repeat until the page is
+short. Upsert by `recordId` through `reconcileConversationTimeline`; after a process
+restart, catch up from the last sequence the consumer retained. Subscription sequence
+numbers are **not** SQLite conversation sequences.
+
+Use one batched preview read for a conversation list:
+
+```ts
+const page = await agent.conversations.listPreviews({ limit: 50 });
+for (const { conversation, latestMessage, lastHumanMessageAt } of page.previews) {
+  renderConversationRow(conversation.id, latestMessage?.text, lastHumanMessageAt);
+}
+```
+
+`latestMessage` has its stable record ID, role, participant ID, timestamp, sequence,
+and up to 240 characters of preview text. `lastHumanMessageAt` includes only messages
+whose participant kind is `user`, not agent-to-agent prompts whose message role is
+also `user`. SQLite maintains that timestamp on conversation writes and backfills it
+once for pre-version-10 databases; preview reads do not rescan long message histories.
+Preview paging follows conversation `updatedAt` order; that list may
+reorder as conversations advance, so consumers should refresh it rather than treat
+offset cursors as a frozen snapshot. `listRecent` and `listPreviews` are SQLite
+capabilities; custom persistence backends may not implement them.
 
 ### Agent audit log
 

@@ -122,6 +122,70 @@ describe("SQLite agent persistence", () => {
     expect(second.messages.map((record) => record.content)).toEqual(["a2"]);
   });
 
+  test("pages recent mixed records by sequence at a stable snapshot", async () => {
+    const { backend, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    for (let index = 1; index <= 6; index++) {
+      await backend.records.append(message(agentSessionId, conversationId, `page-${index}`, "user", String(index)));
+    }
+    const first = await backend.records.listRecent!(conversationId, { limit: 2 });
+    expect(first.records.map((record) => record.sequence)).toEqual([5, 6]);
+    expect(first.snapshotSequence).toBe(6);
+    await backend.records.append(message(agentSessionId, conversationId, "page-7", "user", "7"));
+    const second = await backend.records.listRecent!(conversationId, { limit: 2, olderCursor: first.olderCursor });
+    expect(second.records.map((record) => record.sequence)).toEqual([3, 4]);
+    const third = await backend.records.listRecent!(conversationId, { limit: 2, olderCursor: second.olderCursor });
+    expect(third.records.map((record) => record.sequence)).toEqual([1, 2]);
+    expect(third.olderCursor).toBeUndefined();
+    expect((await backend.records.list(conversationId, { afterSequence: first.snapshotSequence })).records
+      .map((record) => record.sequence)).toEqual([7]);
+    await expect(backend.records.listRecent!(conversationId, {
+      kinds: ["message"], olderCursor: first.olderCursor,
+    })).rejects.toThrow("invalid or mismatched recent-record cursor");
+  });
+
+  test("reads batched previews without treating an agent prompt as a human message", async () => {
+    const { backend, agentSessionId } = await openBackend();
+    const humanConversation = createAgentConversationId();
+    const agentConversation = createAgentConversationId();
+    const emptyConversation = createAgentConversationId();
+    await backend.conversations.create({
+      agentSessionId, agentConversationId: humanConversation,
+      participants: [{ id: "human-1", kind: "user" }, { id: "bob-1", kind: "agent" }],
+    });
+    await backend.conversations.create({
+      agentSessionId, agentConversationId: agentConversation,
+      participants: [{ id: "bob-1", kind: "agent" }],
+    });
+    await backend.conversations.create({ agentSessionId, agentConversationId: emptyConversation });
+    const humanAt = "2026-09-19T01:00:00.000Z";
+    await backend.records.append({
+      ...message(agentSessionId, humanConversation, "human-msg", "user", "Hello human", "human-1"),
+      timestamp: humanAt,
+    });
+    await backend.records.append(message(agentSessionId, humanConversation, "agent-msg", "user", "Hello from Bob", "bob-1"));
+    await backend.records.append(message(agentSessionId, humanConversation, "assistant-msg", "assistant", "The answer"));
+    await backend.records.append(message(agentSessionId, agentConversation, "agent-only", "user", "Agent-only request", "bob-1"));
+
+    const page = await backend.conversations.listPreviews!({ limit: 10 });
+    const previews = new Map(page.previews.map((preview) => [preview.conversation.agentConversationId, preview]));
+    expect(previews.get(humanConversation)?.latestMessage).toMatchObject({
+      recordId: "assistant-msg", role: "assistant", text: "The answer",
+    });
+    expect(previews.get(humanConversation)?.lastHumanMessageAt).toBe(humanAt);
+    expect(previews.get(agentConversation)?.latestMessage?.participantId).toBe("bob-1");
+    expect(previews.get(agentConversation)?.lastHumanMessageAt).toBeUndefined();
+    expect(previews.get(emptyConversation)?.latestMessage).toBeUndefined();
+    const firstPage = await backend.conversations.listPreviews!({ limit: 2 });
+    expect(firstPage.previews).toHaveLength(2);
+    expect(firstPage.nextCursor).toBeDefined();
+    const secondPage = await backend.conversations.listPreviews!({ limit: 2, cursor: firstPage.nextCursor });
+    expect(secondPage.previews).toHaveLength(1);
+    expect(new Set([...firstPage.previews, ...secondPage.previews]
+      .map((preview) => preview.conversation.agentConversationId)).size).toBe(3);
+  });
+
   test("round-trips every record kind through typed subtype tables", async () => {
     const { backend, path, agentSessionId } = await openBackend();
     const conversationId = createAgentConversationId();
@@ -138,6 +202,7 @@ describe("SQLite agent persistence", () => {
         ),
         status: "completed",
         metadata: JSON.stringify({ submittedBy: "bob" }),
+        consumerMetadata: { deliveryId: "delivery-1" },
       },
       {
         recordId: "typed-tool", agentSessionId, agentConversationId: conversationId,
@@ -650,9 +715,9 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(9);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(10);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 9; recreate the database",
+      "SQLite agent schema 7 is incompatible with 10; recreate the database",
     );
   });
 
@@ -667,6 +732,9 @@ describe("SQLite agent persistence", () => {
     const old = new Database(path, { readwrite: true });
     old.exec(`
       DROP TABLE identity_delivery_cursors;
+      ALTER TABLE conversation_messages DROP COLUMN consumer_metadata_json;
+      ALTER TABLE conversations DROP COLUMN last_human_message_at;
+      DELETE FROM schema_migrations WHERE version = 10;
       DELETE FROM schema_migrations WHERE version = 9;
       INSERT INTO schema_migrations(version, applied_at) VALUES (8, '2026-09-18T00:00:00.000Z');
     `);
@@ -684,9 +752,37 @@ describe("SQLite agent persistence", () => {
     }]);
     expect((await migrated.identityDelivery.get(targetConversationId, "provider-1", conversationId))?.deliveredThroughSequence).toBe(1);
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(9);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(10);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM identity_delivery_cursors").get()?.count).toBe(1);
     inspection.close();
+  });
+
+  test("migrates version 9 to message consumer metadata without changing existing records", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    await backend.records.append(message(agentSessionId, conversationId, "old-message", "user", "retained"));
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+
+    const old = new Database(path, { readwrite: true });
+    old.exec(`
+      ALTER TABLE conversation_messages DROP COLUMN consumer_metadata_json;
+      ALTER TABLE conversations DROP COLUMN last_human_message_at;
+      DELETE FROM schema_migrations WHERE version = 10;
+      INSERT INTO schema_migrations(version, applied_at) VALUES (9, '2026-09-19T00:00:00.000Z');
+    `);
+    old.close();
+
+    const migrated = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    expect((await migrated.messages.list(conversationId)).messages[0]).toMatchObject({ content: "retained" });
+    expect((await migrated.messages.list(conversationId)).messages[0]?.consumerMetadata).toBeUndefined();
+    expect((await migrated.conversations.listPreviews!()).previews[0]?.lastHumanMessageAt).toBeDefined();
+    await migrated.records.append({
+      ...message(agentSessionId, conversationId, "new-message", "user", "with metadata"),
+      consumerMetadata: { deliveryId: "d-1" },
+    });
+    expect((await migrated.messages.list(conversationId)).messages[1]?.consumerMetadata).toEqual({ deliveryId: "d-1" });
   });
 
   test("keeps sparse identity delivery cursors monotonic and provider-scoped", async () => {

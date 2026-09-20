@@ -1,4 +1,10 @@
 export {
+  conversationTimelineItemId,
+  reconcileConversationTimeline,
+} from "./timeline-reconcile.ts";
+export type { ConversationTimelineItem } from "./timeline-reconcile.ts";
+
+export {
   CONVERSATION_RECORD_KINDS,
   DEFAULT_CONVERSATION_RECORD_CAPTURE,
   IMPLICIT_USER_PARTICIPANT_ID,
@@ -16,6 +22,7 @@ export type {
   ActivityRecord,
   AgentActionRecord,
   AgentConversationSummary,
+  AgentConversationPreview,
   AgentAuditState,
   AgentPersistenceIdentity,
   AuditOutboxItem,
@@ -26,6 +33,8 @@ export type {
   ConversationListOptions,
   ConversationMessagePersistence,
   ConversationPage,
+  ConversationPreviewPage,
+  ConversationMessagePreview,
   ConversationPersistence,
   ConversationRecord,
   ConversationRecordCaptureConfig,
@@ -82,6 +91,8 @@ export type {
   ProviderSessionRecord,
   RecordCaptureLevel,
   RecordListOptions,
+  RecentRecordPage,
+  RecentRecordPageOptions,
   SearchMatch,
   SearchPersistence,
   SearchQuery,

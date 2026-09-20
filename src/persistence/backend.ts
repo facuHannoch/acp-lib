@@ -46,7 +46,7 @@ export interface ConversationRecordEnvelope<K extends ConversationRecordKind = C
   readonly kind: K;
   /** ISO-8601 instant supplied by the producer and preserved verbatim. */
   readonly timestamp: string;
-  /** Opaque consumer data. The library does not parse or merge this string. */
+  /** Legacy envelope metadata; Agent-created records use it for internal operation correlation. */
   readonly metadata?: string;
 }
 
@@ -74,6 +74,8 @@ export interface MessageRecord extends ConversationRecordEnvelope<"message"> {
   readonly role: "assistant" | "user";
   /** The local agent is implied when omitted on an assistant message. */
   readonly participantId?: string;
+  /** Opaque JSON supplied by the consumer for this message only. */
+  readonly consumerMetadata?: PersistenceJsonValue;
   readonly content: PersistedContent;
   readonly status?: "in_progress" | "completed" | "cancelled" | "failed";
 }
@@ -247,6 +249,26 @@ export interface ConversationPage {
   readonly nextCursor?: string;
 }
 
+export interface ConversationMessagePreview {
+  readonly recordId: string;
+  readonly sequence: number;
+  readonly timestamp: string;
+  readonly role: "assistant" | "user";
+  readonly participantId?: string;
+  readonly text: string;
+}
+
+export interface AgentConversationPreview {
+  readonly conversation: AgentConversationSummary;
+  readonly latestMessage?: ConversationMessagePreview;
+  readonly lastHumanMessageAt?: string;
+}
+
+export interface ConversationPreviewPage {
+  readonly previews: readonly AgentConversationPreview[];
+  readonly nextCursor?: string;
+}
+
 export interface RecordListOptions {
   readonly kinds?: readonly ConversationRecordKind[];
   readonly afterSequence?: number;
@@ -258,6 +280,19 @@ export interface RecordListOptions {
 export interface ConversationRecordPage {
   readonly records: readonly ConversationRecord[];
   readonly nextCursor?: string;
+}
+
+/** Newest matching records at a fixed conversation-sequence snapshot, oldest-first within each page. */
+export interface RecentRecordPageOptions {
+  readonly kinds?: readonly ConversationRecordKind[];
+  readonly limit?: number;
+  readonly olderCursor?: string;
+}
+
+export interface RecentRecordPage {
+  readonly records: readonly ConversationRecord[];
+  readonly snapshotSequence: number;
+  readonly olderCursor?: string;
 }
 
 export interface MessageListOptions {
@@ -412,6 +447,8 @@ export interface ConversationPersistence {
   create(input: CreateAgentConversationInput): Promise<AgentConversationSummary>;
   get(agentConversationId: AgentConversationId): Promise<AgentConversationSummary | null>;
   list(options?: ConversationListOptions): Promise<ConversationPage>;
+  /** Optional batched conversation-list projection for SQLite-backed agents. */
+  listPreviews?(options?: ConversationListOptions): Promise<ConversationPreviewPage>;
   renameParticipant(
     agentConversationId: AgentConversationId,
     participantId: string,
@@ -432,6 +469,11 @@ export interface ConversationRecordPersistence {
     agentConversationId: AgentConversationId,
     options?: RecordListOptions,
   ): Promise<ConversationRecordPage>;
+  /** Optional efficient newest-first history API. Use list(afterSequence) for live catch-up. */
+  listRecent?(
+    agentConversationId: AgentConversationId,
+    options?: RecentRecordPageOptions,
+  ): Promise<RecentRecordPage>;
 }
 
 export interface ConversationMessagePersistence {

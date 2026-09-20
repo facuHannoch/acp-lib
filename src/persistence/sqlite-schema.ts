@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 9;
+export const SQLITE_AGENT_SCHEMA_VERSION = 10;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   latest_sequence INTEGER NOT NULL DEFAULT 0 CHECK (latest_sequence >= 0),
+  last_human_message_at TEXT,
   deleted_at TEXT,
   metadata TEXT
 );
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
   content_json TEXT,
   status TEXT CHECK (status IS NULL OR status IN ('in_progress', 'completed', 'cancelled', 'failed')),
   search_text TEXT NOT NULL,
+  consumer_metadata_json TEXT CHECK (consumer_metadata_json IS NULL OR json_valid(consumer_metadata_json)),
   CHECK ((content_text IS NULL) <> (content_json IS NULL)),
   CHECK (content_json IS NULL OR json_valid(content_json))
 );
@@ -524,7 +526,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
       const existing = Number(database.query<{ version: number }, []>(
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0);
-      if (existing !== 0 && existing !== 8 && existing !== SQLITE_AGENT_SCHEMA_VERSION) {
+      if (existing !== 0 && existing !== 8 && existing !== 9 && existing !== SQLITE_AGENT_SCHEMA_VERSION) {
         throw new Error(
           `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
         );
@@ -535,6 +537,19 @@ export function migrateSqliteAgentSchema(database: Database): void {
       "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
     ).get();
     const version = Number(row?.version ?? 0);
+    if (version > 0 && version < 10) {
+      database.exec(`ALTER TABLE conversation_messages ADD COLUMN consumer_metadata_json TEXT
+        CHECK (consumer_metadata_json IS NULL OR json_valid(consumer_metadata_json))`);
+      database.exec("ALTER TABLE conversations ADD COLUMN last_human_message_at TEXT");
+      database.exec(`UPDATE conversations SET last_human_message_at = (
+        SELECT r.timestamp FROM conversation_records r
+        JOIN conversation_messages m ON m.record_row_id = r.row_id
+        JOIN participants p ON p.participant_id = m.participant_id
+        WHERE r.agent_conversation_id = conversations.agent_conversation_id
+          AND r.kind = 'message' AND m.role = 'user' AND p.kind = 'user'
+        ORDER BY r.sequence DESC LIMIT 1
+      )`);
+    }
     if (version < SQLITE_AGENT_SCHEMA_VERSION) {
       database.query<unknown, [number, string]>(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

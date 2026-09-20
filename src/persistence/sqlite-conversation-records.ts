@@ -45,8 +45,9 @@ export function insertConversationRecordDetail(
       const content = encodeContent(record.content);
       run(database,
         `INSERT INTO conversation_messages(
-          record_row_id, role, participant_id, content_text, content_json, status, search_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          record_row_id, role, participant_id, content_text, content_json, status, search_text,
+          consumer_metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         rowId,
         record.role,
         record.participantId ?? null,
@@ -54,6 +55,7 @@ export function insertConversationRecordDetail(
         content.json,
         record.status ?? null,
         searchableContent(record.content),
+        encodeJson(record.consumerMetadata),
       );
       return;
     }
@@ -259,6 +261,9 @@ function recordFromRows(
         kind: "message",
         role: string(detail.role) as "assistant" | "user",
         ...(detail.participant_id !== null ? { participantId: string(detail.participant_id) } : {}),
+        ...(detail.consumer_metadata_json !== null
+          ? { consumerMetadata: decodeJson(detail.consumer_metadata_json) }
+          : {}),
         content: decodeContent(detail.content_text, detail.content_json),
         ...(detail.status !== null ? { status: string(detail.status) as "in_progress" | "completed" | "cancelled" | "failed" } : {}),
       });

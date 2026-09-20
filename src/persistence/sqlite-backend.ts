@@ -16,6 +16,7 @@ import {
   isConversationRecordKind,
   normalizeParticipantRef,
   type AgentConversationSummary,
+  type AgentConversationPreview,
   type AgentAuditState,
   type AgentMeteringCommitInput,
   type AgentPersistenceIdentity,
@@ -26,6 +27,7 @@ import {
   type ConversationListOptions,
   type ConversationMessagePersistence,
   type ConversationPage,
+  type ConversationPreviewPage,
   type ConversationPersistence,
   type ConversationRecord,
   type ConversationRecordPage,
@@ -63,6 +65,8 @@ import {
   type ProviderSessionPersistence,
   type ProviderSessionRecord,
   type RecordListOptions,
+  type RecentRecordPage,
+  type RecentRecordPageOptions,
   type SearchMatch,
   type SearchPersistence,
   type SearchQuery,
@@ -94,6 +98,7 @@ interface ConversationRow {
   created_at: string;
   updated_at: string;
   latest_sequence: number;
+  last_human_message_at: string | null;
   deleted_at: string | null;
   metadata: string | null;
 }
@@ -440,6 +445,88 @@ class SqliteConversationPersistence implements ConversationPersistence {
   }
 
   async list(options: ConversationListOptions = {}): Promise<ConversationPage> {
+    const page = this.listRows(options);
+    return Object.freeze({
+      conversations: Object.freeze(page.rows.map((row) => summaryFromRow(this.database, row))),
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    });
+  }
+
+  async listPreviews(options: ConversationListOptions = {}): Promise<ConversationPreviewPage> {
+    const page = this.listRows(options);
+    if (page.rows.length === 0) return Object.freeze({ previews: Object.freeze([]) });
+    const ids = page.rows.map((row) => row.agent_conversation_id);
+    const placeholders = ids.map(() => "?").join(", ");
+    const participantRows = this.database.query<{
+      agent_conversation_id: string;
+      participant_id: string;
+      kind: string;
+      name: string | null;
+    }, string[]>(
+      `SELECT cp.agent_conversation_id, p.participant_id, p.kind, p.name
+       FROM conversation_participants cp
+       JOIN participants p ON p.participant_id = cp.participant_id
+       WHERE cp.agent_conversation_id IN (${placeholders})
+       ORDER BY cp.agent_conversation_id, cp.joined_at, p.participant_id`,
+    ).all(...ids);
+    const participants = new Map<string, ParticipantRef[]>();
+    for (const row of participantRows) {
+      const group = participants.get(row.agent_conversation_id) ?? [];
+      group.push(Object.freeze({
+        id: row.participant_id,
+        kind: row.kind as ParticipantRef["kind"],
+        ...(row.name !== null ? { name: row.name } : {}),
+      }));
+      participants.set(row.agent_conversation_id, group);
+    }
+    const previewRows = this.database.query<{
+      agent_conversation_id: string;
+      record_id: string | null;
+      sequence: number | null;
+      timestamp: string | null;
+      role: string | null;
+      participant_id: string | null;
+      preview_text: string | null;
+      last_human_message_at: string | null;
+    }, string[]>(
+      `SELECT c.agent_conversation_id, r.record_id, r.sequence, r.timestamp,
+              m.role, m.participant_id,
+              substr(COALESCE(m.content_text, m.search_text), 1, 240) AS preview_text,
+              c.last_human_message_at
+       FROM conversations c
+       LEFT JOIN conversation_records r ON r.row_id = (
+         SELECT latest_r.row_id FROM conversation_records latest_r
+         WHERE latest_r.agent_conversation_id = c.agent_conversation_id AND latest_r.kind = 'message'
+         ORDER BY latest_r.sequence DESC LIMIT 1
+       )
+       LEFT JOIN conversation_messages m ON m.record_row_id = r.row_id
+       WHERE c.agent_conversation_id IN (${placeholders})`,
+    ).all(...ids);
+    const previewsById = new Map(previewRows.map((row) => [row.agent_conversation_id, row]));
+    const previews: AgentConversationPreview[] = page.rows.map((row) => {
+      const preview = previewsById.get(row.agent_conversation_id)!;
+      return Object.freeze({
+        conversation: summaryFromRowWithParticipants(row, participants.get(row.agent_conversation_id) ?? []),
+        ...(preview.record_id !== null ? { latestMessage: Object.freeze({
+          recordId: preview.record_id,
+          sequence: Number(preview.sequence),
+          timestamp: preview.timestamp!,
+          role: preview.role as "assistant" | "user",
+          ...(preview.participant_id !== null ? { participantId: preview.participant_id } : {}),
+          text: preview.preview_text ?? "",
+        }) } : {}),
+        ...(preview.last_human_message_at !== null
+          ? { lastHumanMessageAt: preview.last_human_message_at }
+          : {}),
+      });
+    });
+    return Object.freeze({
+      previews: Object.freeze(previews),
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    });
+  }
+
+  private listRows(options: ConversationListOptions): { readonly rows: readonly ConversationRow[]; readonly nextCursor?: string } {
     const limit = boundedInteger(options.limit ?? 50, 1, 500, "conversation limit");
     const offset = decodeOffset(options.cursor);
     const where: string[] = ["c.agent_session_id = ?"];
@@ -461,9 +548,9 @@ class SqliteConversationPersistence implements ConversationPersistence {
        LIMIT ? OFFSET ?`,
     ).all(...parameters);
     const hasMore = rows.length > limit;
-    const selected = rows.slice(0, limit).map((row) => summaryFromRow(this.database, row));
+    const selected = rows.slice(0, limit);
     return Object.freeze({
-      conversations: Object.freeze(selected),
+      rows: Object.freeze(selected),
       ...(hasMore ? { nextCursor: encodeOffset(offset + limit) } : {}),
     });
   }
@@ -581,6 +668,48 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
     });
   }
 
+  async listRecent(
+    agentConversationId: AgentConversationId,
+    options: RecentRecordPageOptions = {},
+  ): Promise<RecentRecordPage> {
+    const conversation = requireConversation(this.database, agentConversationId);
+    const limit = boundedInteger(options.limit ?? 50, 1, 500, "recent record limit");
+    const kinds = [...new Set(options.kinds ?? [])].sort();
+    for (const kind of kinds) {
+      if (!isConversationRecordKind(kind)) throw new Error(`unknown record kind: ${kind}`);
+    }
+    const cursor = options.olderCursor
+      ? decodeRecentCursor(options.olderCursor, agentConversationId, kinds)
+      : null;
+    const snapshotSequence = cursor?.snapshotSequence ?? Number(conversation.latest_sequence);
+    const beforeSequence = cursor?.beforeSequence ?? snapshotSequence + 1;
+    const where = ["agent_conversation_id = ?", "sequence <= ?", "sequence < ?"];
+    const parameters: SqlValue[] = [agentConversationId, snapshotSequence, beforeSequence];
+    if (kinds.length) {
+      where.push(`kind IN (${kinds.map(() => "?").join(", ")})`);
+      parameters.push(...kinds);
+    }
+    parameters.push(limit + 1);
+    const rows = this.database.query<ConversationRecordRow, SqlValue[]>(
+      `SELECT * FROM conversation_records WHERE ${where.join(" AND ")}
+       ORDER BY sequence DESC LIMIT ?`,
+    ).all(...parameters);
+    const selected = rows.slice(0, limit);
+    const oldest = selected.at(-1);
+    return Object.freeze({
+      records: hydrateConversationRecords(this.database, selected.reverse()),
+      snapshotSequence,
+      ...(rows.length > limit && oldest
+        ? { olderCursor: encodeRecentCursor({
+            conversationId: agentConversationId,
+            snapshotSequence,
+            beforeSequence: Number(oldest.sequence),
+            kinds,
+          }) }
+        : {}),
+    });
+  }
+
   private appendDirect(input: NewConversationRecord): ConversationRecord {
     if (input.agentSessionId !== this.agentSessionId) {
       throw new Error("record agentSessionId does not match the SQLite agent database");
@@ -593,6 +722,7 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
     const normalized = input.kind === "message" && input.role === "user" && !input.participantId
       ? { ...input, participantId: IMPLICIT_USER_PARTICIPANT_ID }
       : input;
+    let humanMessageAt: string | null = null;
     if (normalized.kind === "message" && normalized.participantId) {
       const known = this.database.query<{ kind: ParticipantRef["kind"]; name: string | null }, [string]>(
         "SELECT kind, name FROM participants WHERE participant_id = ?",
@@ -602,6 +732,9 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
         kind: known?.kind ?? (normalized.role === "user" ? "user" : "agent"),
         ...(known?.name ? { name: known.name } : {}),
       }, normalized.timestamp);
+      if (normalized.role === "user" && (known?.kind ?? "user") === "user") {
+        humanMessageAt = normalized.timestamp;
+      }
     }
     const existing = this.database.query<ConversationRecordRow, [string]>(
       "SELECT * FROM conversation_records WHERE record_id = ?",
@@ -639,6 +772,11 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
     );
     if (!inserted) throw new Error(`could not persist conversation record: ${normalized.recordId}`);
     insertConversationRecordDetail(this.database, Number(inserted.row_id), normalized);
+    if (humanMessageAt) {
+      runSql(this.database,
+        "UPDATE conversations SET last_human_message_at = ? WHERE agent_conversation_id = ?",
+        humanMessageAt, normalized.agentConversationId);
+    }
     return Object.freeze({ ...normalized, sequence: next.sequence }) as ConversationRecord;
   }
 }
@@ -1731,6 +1869,13 @@ function summaryFromRow(database: Database, row: ConversationRow): AgentConversa
     kind: participant.kind as ParticipantRef["kind"],
     ...(participant.name !== null ? { name: participant.name } : {}),
   }));
+  return summaryFromRowWithParticipants(row, participants);
+}
+
+function summaryFromRowWithParticipants(
+  row: ConversationRow,
+  participants: readonly ParticipantRef[],
+): AgentConversationSummary {
   return Object.freeze({
     agentConversationId: row.agent_conversation_id as AgentConversationId,
     agentSessionId: row.agent_session_id as AgentSessionId,
@@ -1941,6 +2086,41 @@ function decodeOffset(cursor: string | undefined): number {
   const match = /^offset:(\d+)$/.exec(decoded);
   if (!match) throw new Error("invalid persistence cursor");
   return nonNegativeInteger(Number(match[1]), "persistence cursor");
+}
+
+interface RecentCursor {
+  readonly conversationId: AgentConversationId;
+  readonly snapshotSequence: number;
+  readonly beforeSequence: number;
+  readonly kinds: readonly string[];
+}
+
+function encodeRecentCursor(cursor: RecentCursor): string {
+  return Buffer.from(JSON.stringify({ v: 1, ...cursor }), "utf8").toString("base64url");
+}
+
+function decodeRecentCursor(
+  encoded: string,
+  conversationId: AgentConversationId,
+  kinds: readonly string[],
+): RecentCursor {
+  try {
+    if (encoded.length > 4_096) throw new Error();
+    const value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as Record<string, unknown>;
+    if (value.v !== 1 || value.conversationId !== conversationId
+      || !Number.isSafeInteger(value.snapshotSequence) || Number(value.snapshotSequence) < 0
+      || !Number.isSafeInteger(value.beforeSequence) || Number(value.beforeSequence) < 1
+      || Number(value.beforeSequence) > Number(value.snapshotSequence) + 1
+      || JSON.stringify(value.kinds) !== JSON.stringify(kinds)) throw new Error();
+    return {
+      conversationId,
+      snapshotSequence: Number(value.snapshotSequence),
+      beforeSequence: Number(value.beforeSequence),
+      kinds,
+    };
+  } catch {
+    throw new Error("invalid or mismatched recent-record cursor");
+  }
 }
 
 async function canonicalSqlitePath(input: string): Promise<string> {

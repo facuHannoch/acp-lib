@@ -58,7 +58,9 @@ function projectRecordPayload(
   switch (record.kind) {
     case "message":
       return { ...base, role: record.role, ...(record.participantId ? { participantId: record.participantId } : {}),
-        ...(record.status ? { status: record.status } : {}), ...(level !== "metadata" ? { content: json(record.content) } : {}) };
+        ...(record.status ? { status: record.status } : {}), ...(level !== "metadata" ? { content: json(record.content) } : {}),
+        ...(level === "raw" && record.consumerMetadata !== undefined
+          ? { consumerMetadata: record.consumerMetadata } : {}) };
     case "tool_call":
       return { ...base, toolCallId: record.toolCallId, state: record.state, ...(record.name ? { name: record.name } : {}),
         ...(["input", "content", "raw"].includes(level) && record.input !== undefined ? { input: record.input } : {}),

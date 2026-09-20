@@ -54,6 +54,18 @@ describe("agent audit projection", () => {
     expect(full.record).toMatchObject({ content: "private body" });
   });
 
+  test("includes consumer message metadata only at raw audit capture", () => {
+    const observation = messageObservation("hello");
+    const withMetadata: NormalizedConversationObservation = {
+      ...observation,
+      record: { ...observation.record, consumerMetadata: { deliveryId: "delivery-1" } },
+    };
+    expect(projectAgentAuditObservation(withMetadata, resolveAgentAuditCapture({ message: "content" }))?.payload)
+      .not.toHaveProperty("consumerMetadata");
+    expect(projectAgentAuditObservation(withMetadata, resolveAgentAuditCapture({ message: "raw" }))?.payload)
+      .toMatchObject({ consumerMetadata: { deliveryId: "delivery-1" } });
+  });
+
   test("tool input and content levels expose distinct fields", () => {
     const observation: NormalizedConversationObservation = {
       scope: "conversation",

@@ -210,10 +210,23 @@ interface PromptQueueItem {
   operationKind: MeteredOperationKind;
   text: string;
   participantId?: string;
+  consumerMetadata?: PersistenceJsonValue;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
   resolve: (r: AgentSessionPromptResult) => void;
   reject: (e: unknown) => void;
+}
+
+/** Object-form prompt input for per-message consumer metadata on Agent-owned conversations. */
+export interface AgentConversationPromptInput {
+  readonly text: string;
+  readonly consumerMetadata?: PersistenceJsonValue;
+  readonly handlers?: PromptHandlers;
+  readonly attachments?: Attachment[];
+}
+
+export interface AgentConversationAttributedPromptInput extends AgentConversationPromptInput {
+  readonly participantId: string;
 }
 
 interface HandoffQueueItem {
@@ -1660,23 +1673,46 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   // --- AgentClient -------------------------------------------------------------
-  async prompt(
+  prompt(input: AgentConversationPromptInput): Promise<AgentSessionPromptResult>;
+  prompt(
     text: string,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
+  ): Promise<AgentSessionPromptResult>;
+  async prompt(
+    input: string | AgentConversationPromptInput,
+    handlers?: PromptHandlers,
+    attachments?: Attachment[],
   ): Promise<AgentSessionPromptResult> {
-    return this.enqueuePrompt(text, "prompt", handlers, attachments);
+    return typeof input === "string"
+      ? this.enqueuePrompt(input, "prompt", handlers, attachments)
+      : this.enqueuePrompt(input.text, "prompt", input.handlers, input.attachments, undefined, input.consumerMetadata);
   }
 
   /** Prompt while attributing the caller to a stable participant identity. */
+  promptFrom(input: AgentConversationAttributedPromptInput): Promise<AgentSessionPromptResult>;
   promptFrom(
     participantId: string,
     text: string,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
+  ): Promise<AgentSessionPromptResult>;
+  promptFrom(
+    input: string | AgentConversationAttributedPromptInput,
+    text?: string,
+    handlers?: PromptHandlers,
+    attachments?: Attachment[],
   ): Promise<AgentSessionPromptResult> {
+    if (typeof input !== "string") {
+      if (!input.participantId.trim()) return Promise.reject(new Error("participant id cannot be blank"));
+      return this.enqueuePrompt(
+        input.text, "prompt", input.handlers, input.attachments,
+        input.participantId.trim(), input.consumerMetadata,
+      );
+    }
+    const participantId = input;
     if (!participantId.trim()) return Promise.reject(new Error("participant id cannot be blank"));
-    return this.enqueuePrompt(text, "prompt", handlers, attachments, participantId.trim());
+    return this.enqueuePrompt(text!, "prompt", handlers, attachments, participantId.trim());
   }
 
   private enqueuePrompt(
@@ -1685,14 +1721,24 @@ export class AgentConversation implements AgentClient, Bridgeable {
     handlers?: PromptHandlers,
     attachments?: Attachment[],
     participantId?: string,
+    consumerMetadata?: PersistenceJsonValue,
   ): Promise<AgentSessionPromptResult> {
     return new Promise<AgentSessionPromptResult>((resolve, reject) => {
       if (this.phase === "stopped") {
         reject(new Error("AgentSession is stopped"));
         return;
       }
+      let stableConsumerMetadata: PersistenceJsonValue | undefined;
       try {
         this.assertPromptable();
+        if (consumerMetadata !== undefined && !this.ownerLifecycle) {
+          throw new Error("consumerMetadata requires an Agent-owned conversation");
+        }
+        if (consumerMetadata !== undefined) {
+          const serialized = JSON.stringify(consumerMetadata);
+          if (serialized === undefined) throw new Error("consumerMetadata must be a JSON value");
+          stableConsumerMetadata = JSON.parse(serialized) as PersistenceJsonValue;
+        }
       } catch (error) {
         reject(error);
         return;
@@ -1703,6 +1749,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         operationKind,
         text,
         ...(participantId ? { participantId } : {}),
+        ...(stableConsumerMetadata !== undefined ? { consumerMetadata: stableConsumerMetadata } : {}),
         handlers,
         attachments,
         resolve,
@@ -2784,6 +2831,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           agentConversationId: this.agentConversationId,
           targetProviderContextId,
           ...(item.participantId ? { participantId: item.participantId } : {}),
+          ...(item.consumerMetadata !== undefined ? { consumerMetadata: item.consumerMetadata } : {}),
           text: item.text,
         })
       : undefined;

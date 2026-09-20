@@ -1,7 +1,7 @@
 import type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 import type { Adapter } from "./adapters.ts";
 import type { AgentMode } from "./controller.ts";
-import type { NewConversationRecord, ParticipantRef } from "./persistence/backend.ts";
+import type { NewConversationRecord, ParticipantRef, PersistenceJsonValue } from "./persistence/backend.ts";
 import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts";
 import type { ResponseMessage } from "./types.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
@@ -14,6 +14,7 @@ export interface OwnedPromptInput {
   readonly agentConversationId: AgentConversationId;
   readonly targetProviderContextId?: string;
   readonly participantId?: string;
+  readonly consumerMetadata?: PersistenceJsonValue;
   readonly text: string;
 }
 

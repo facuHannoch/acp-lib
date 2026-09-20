@@ -7,3 +7,8 @@ node_modules/
 
 # Raw protocol dumps: full file contents and command output, hundreds of KB per run.
 *.wire.jsonl
+.agents/.state/
+.agents/.stores/
+.agents/.artifacts/agent
+.agents/.secrets/agent
+.agents/.secrets/common

@@ -38,6 +38,7 @@ import {
   type AgentConversationSummary,
   type ConversationListOptions,
   type ConversationPage,
+  type ConversationPreviewPage,
   type ConversationRecord,
   type ConversationRecordCaptureConfig,
   type ConversationRecordCapturePolicy,
@@ -173,6 +174,7 @@ export interface AgentConversationManager {
   ): Promise<OpenOwnedAgentConversationResult>;
   get(id: AgentConversationId): Promise<AgentConversationSummary | null>;
   list(options?: ConversationListOptions): Promise<ConversationPage>;
+  listPreviews(options?: ConversationListOptions): Promise<ConversationPreviewPage>;
   delete(id: AgentConversationId, deletedAt?: string): Promise<void>;
 }
 
@@ -650,6 +652,13 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     return await this.agent.persistence.conversations.list(options);
   }
 
+  async listPreviews(options?: ConversationListOptions): Promise<ConversationPreviewPage> {
+    if (!this.agent.persistence.conversations.listPreviews) {
+      throw new Error("conversation previews are unavailable on this persistence backend");
+    }
+    return await this.agent.persistence.conversations.listPreviews(options);
+  }
+
   async delete(id: AgentConversationId, deletedAt?: string): Promise<void> {
     const live = this.live.get(id);
     if (live) await live.stop();
@@ -911,6 +920,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       timestamp: new Date().toISOString(),
       role: "user",
       participantId: participant.id,
+      ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
       content: input.text,
       status: "completed",
       metadata: JSON.stringify({ operationId: input.operationId }),
