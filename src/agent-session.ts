@@ -2905,11 +2905,27 @@ export class AgentConversation implements AgentClient, Bridgeable {
       stopReason?: string,
       force = false,
     ) => {
-      if (!this.v2Transcript || !assistantMessage || (!assistantMessage.dirty && !force)) return;
+      if ((!this.v2Transcript && !this.ownerLifecycle) || !assistantMessage
+        || (!assistantMessage.dirty && !force)) return;
       assistantMessage.revision++;
       assistantMessage.dirty = false;
       const message = assistantMessage;
-      this.presentation.queuePresentation({
+      if (this.ownerAgentSessionId && status === "in_progress") {
+        this.queueOwnedRecord({
+          recordId: `${message.id}:snapshot:${message.revision}`,
+          agentSessionId: this.ownerAgentSessionId,
+          agentConversationId: this.agentConversationId,
+          kind: "message",
+          timestamp: new Date().toISOString(),
+          role: "assistant",
+          logicalMessageId: message.id,
+          content: message.text,
+          status,
+          metadata: JSON.stringify({ operationId: item.turnId,
+            ...(message.providerMessageId ? { providerMessageId: message.providerMessageId } : {}) }),
+        });
+      }
+      if (this.v2Transcript) this.presentation.queuePresentation({
         kind: "message",
         operationId: item.turnId,
         role: "assistant",
@@ -2942,7 +2958,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
         }
         response.append(chunk);
-        if (this.v2Transcript) {
+        if (this.v2Transcript || this.ownerLifecycle) {
           if (chunk.startsMessage) {
             flushAssistantMessage("completed", undefined, assistantMessage !== null);
             beginAssistantMessage(chunk.messageId);
@@ -3062,6 +3078,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         });
       }
       const result = Object.freeze({ ...res, operationId: item.turnId, metering: record });
+      await this.ownerRecordWrite;
       await this.ownerLifecycle?.afterPrompt({
         operationId: item.turnId,
         agentSessionId: this.ownerAgentSessionId!,
@@ -3088,6 +3105,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
           ? Object.freeze([{ text }])
           : Object.freeze([]);
       if (!providerSettled) {
+        await this.ownerRecordWrite.catch((persistenceError) => {
+          this.log.warn("owned_runtime_persistence_failed", { error: String(persistenceError) });
+        });
         await this.ownerLifecycle?.promptFailed({
           operationId: item.turnId,
           agentSessionId: this.ownerAgentSessionId!,

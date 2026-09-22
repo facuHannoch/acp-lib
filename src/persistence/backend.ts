@@ -72,6 +72,8 @@ export type PersistedContent = string | readonly PersistedContentBlock[];
 
 export interface MessageRecord extends ConversationRecordEnvelope<"message"> {
   readonly role: "assistant" | "user";
+  /** Stable identity shared by the snapshots and final revision of one assistant message. */
+  readonly logicalMessageId?: string;
   /** The local agent is implied when omitted on an assistant message. */
   readonly participantId?: string;
   /** Opaque JSON supplied by the consumer for this message only. */

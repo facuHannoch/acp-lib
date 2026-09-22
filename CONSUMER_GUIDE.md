@@ -165,8 +165,9 @@ FTS5 indexes deliberately extracted searchable text rather than serialized recor
 The initial indexes cover messages, tool calls, and activities. Consumer metadata and raw
 protocol bodies are not searched implicitly.
 
-Schema version 10 adds message consumer metadata and migrates version-8 and version-9
-agent databases in place. Pre-release version-7 SQLite files are not migrated because
+Schema version 11 adds stable assistant-message identities and migrates version-8,
+version-9, and version-10 agent databases in place. Version 10 added message consumer
+metadata. Pre-release version-7 SQLite files are not migrated because
 they were used only by development smoke tests; opening one gives a recreate instruction.
 
 ### Read SQLite conversation history and previews
@@ -190,8 +191,12 @@ if (older) items = reconcileConversationTimeline(items, older.records);
 ```
 
 Every physical record has a stable `recordId` and a conversation-local `sequence`.
-The reconciliation helper keeps distinct messages separate and groups revisions of a
-tool call, permission, thinking block, activity, or transition by its logical ID. Its
+The reconciliation helper keeps distinct messages separate and groups revisions of an
+assistant message, tool call, permission, thinking block, activity, or transition by its
+logical ID. Assistant snapshots take their position from the first streamed text; the
+completed revision supplies their final content and status. Providers that expose a
+message only in the final prompt result cannot supply an earlier position. Records
+written before schema version 11 have no such boundaries to reconstruct. The helper's
 items retain every revision, carry the latest merged fields in `current`, and sort by
 the earliest loaded sequence. Loading an older page may move an item to its true
 earlier position when its first revision arrives. Configuration, protocol, agent
@@ -222,7 +227,9 @@ also `user`. SQLite maintains that timestamp on conversation writes and backfill
 once for pre-version-10 databases; preview reads do not rescan long message histories.
 Preview paging follows conversation `updatedAt` order; that list may
 reorder as conversations advance, so consumers should refresh it rather than treat
-offset cursors as a frozen snapshot. `listRecent` and `listPreviews` are SQLite
+offset cursors as a frozen snapshot. `messages.list()` returns the latest visible
+revision per logical message; `records.list()` and `records.listRecent()` retain all
+physical revisions for timeline reconstruction and audit. `listRecent` and `listPreviews` are SQLite
 capabilities; custom persistence backends may not implement them.
 
 ### Agent audit log

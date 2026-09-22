@@ -943,6 +943,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       kind: "message",
       timestamp,
       role: "assistant",
+      logicalMessageId: `message:${input.operationId}:assistant:${index + 1}`,
       content: message.text,
       status,
       metadata: JSON.stringify({
@@ -968,6 +969,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       kind: "message",
       timestamp,
       role: "assistant",
+      logicalMessageId: `message:${input.operationId}:assistant:${index + 1}`,
       content: message.text,
       status: "failed",
       metadata: JSON.stringify({
@@ -1007,7 +1009,12 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
   }
 
   async record(record: NewConversationRecord): Promise<void> {
-    await this.updateIdentity(await this.persistObservations([record]));
+    const streamingSnapshot = record.kind === "message" && record.status === "in_progress";
+    const persisted = await this.persistObservations([record], !streamingSnapshot);
+    // A streaming snapshot is a display revision, not a second completed response.
+    if (!streamingSnapshot) {
+      await this.updateIdentity(persisted);
+    }
   }
 
   async meteringRecorded(record: OperationMeteringRecord): Promise<void> {
@@ -1073,9 +1080,10 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
 
   private async persistObservations(
     records: readonly NewConversationRecord[],
+    audit = true,
   ): Promise<readonly ConversationRecord[]> {
     if (records.length === 0) return Object.freeze([]);
-    if (!this.settings.auditLog && records.every((record) => {
+    if ((!audit || !this.settings.auditLog) && records.every((record) => {
       if (record.kind !== "protocol") return this.settings.capture[record.kind] === "none";
       return this.settings.capture.protocol.level === "none"
         || !shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method);
@@ -1093,7 +1101,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         if (canonicalAccepted) {
           persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
         }
-        if (this.settings.auditLog) {
+        if (audit && this.settings.auditLog) {
           await enqueueAuditObservation(persistence, {
             scope: "conversation",
             sourceObservationId: record.recordId,
@@ -1103,7 +1111,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         }
       }
     });
-    if (this.settings.auditLog) this.agent.audit?.notifyPending();
+    if (audit && this.settings.auditLog) this.agent.audit?.notifyPending();
     return Object.freeze(persisted);
   }
 

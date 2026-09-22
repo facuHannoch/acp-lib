@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 10;
+export const SQLITE_AGENT_SCHEMA_VERSION = 11;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
   status TEXT CHECK (status IS NULL OR status IN ('in_progress', 'completed', 'cancelled', 'failed')),
   search_text TEXT NOT NULL,
   consumer_metadata_json TEXT CHECK (consumer_metadata_json IS NULL OR json_valid(consumer_metadata_json)),
+  logical_message_id TEXT,
   CHECK ((content_text IS NULL) <> (content_json IS NULL)),
   CHECK (content_json IS NULL OR json_valid(content_json))
 );
@@ -526,7 +527,8 @@ export function migrateSqliteAgentSchema(database: Database): void {
       const existing = Number(database.query<{ version: number }, []>(
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0);
-      if (existing !== 0 && existing !== 8 && existing !== 9 && existing !== SQLITE_AGENT_SCHEMA_VERSION) {
+      if (existing !== 0 && existing !== 8 && existing !== 9 && existing !== 10
+        && existing !== SQLITE_AGENT_SCHEMA_VERSION) {
         throw new Error(
           `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
         );
@@ -550,6 +552,12 @@ export function migrateSqliteAgentSchema(database: Database): void {
         ORDER BY r.sequence DESC LIMIT 1
       )`);
     }
+    if (version > 0 && version < 11) {
+      database.exec("ALTER TABLE conversation_messages ADD COLUMN logical_message_id TEXT");
+    }
+    database.exec(`CREATE INDEX IF NOT EXISTS conversation_messages_logical_idx
+      ON conversation_messages(logical_message_id, record_row_id)
+      WHERE logical_message_id IS NOT NULL`);
     if (version < SQLITE_AGENT_SCHEMA_VERSION) {
       database.query<unknown, [number, string]>(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

@@ -52,6 +52,7 @@ export function conversationTimelineItemId(record: ConversationRecord): string {
   const prefix = `${record.agentConversationId}:${record.kind}:`;
   const scope = operationScope(record);
   switch (record.kind) {
+    case "message": return `${prefix}${JSON.stringify([record.logicalMessageId ?? record.recordId])}`;
     case "tool_call": return `${prefix}${JSON.stringify([scope, record.toolCallId])}`;
     case "permission": return `${prefix}${JSON.stringify([scope, record.permissionId])}`;
     case "thinking": return `${prefix}${JSON.stringify([scope, record.thinkingId])}`;

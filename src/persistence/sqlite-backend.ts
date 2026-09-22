@@ -805,6 +805,19 @@ class SqliteConversationMessagePersistence implements ConversationMessagePersist
       where.push(`m.participant_id IN (${options.participantIds.map(() => "?").join(", ")})`);
       parameters.push(...options.participantIds);
     }
+    // Message snapshots remain in the ordered record stream, but the message API
+    // returns only the latest revision visible at the requested sequence boundary.
+    where.push(`(m.logical_message_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM conversation_messages newer_m
+      JOIN conversation_records newer_r ON newer_r.row_id = newer_m.record_row_id
+      WHERE newer_r.agent_conversation_id = r.agent_conversation_id
+        AND newer_m.logical_message_id = m.logical_message_id
+        AND newer_r.sequence > r.sequence
+        ${options.throughSequence === undefined ? "" : "AND newer_r.sequence <= ?"}
+    ))`);
+    if (options.throughSequence !== undefined) {
+      parameters.push(nonNegativeInteger(options.throughSequence, "throughSequence"));
+    }
     parameters.push(limit + 1, offset);
     const rows = this.database.query<ConversationRecordRow, SqlValue[]>(
       `SELECT r.* FROM conversation_records r

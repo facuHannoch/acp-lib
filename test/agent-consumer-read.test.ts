@@ -11,6 +11,7 @@ import {
 } from "../src/index.ts";
 
 const FIXTURE = resolve(import.meta.dir, "../smoke-tests/test5-operations/operations-agent.ts");
+const PRESENTATION_FIXTURE = resolve(import.meta.dir, "fixtures/presentation-agent.ts");
 const agents: Agent[] = [];
 const directories: string[] = [];
 
@@ -20,6 +21,50 @@ afterEach(async () => {
 });
 
 describe("Agent consumer transcript workflow", () => {
+  test("reloads assistant messages at their first streamed position around tool activity", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-interleaving-"));
+    directories.push(directory);
+    const path = join(directory, "agent.sqlite");
+    const configuration = {
+      persistence: { kind: "sqlite" as const, path },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE] } },
+      defaultAdapterId: "fixture",
+    };
+    const agent = await Agent.open(configuration);
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    const result = await conversation.prompt("show the order");
+    expect(result.messages.map((message) => message.text)).toEqual(["A before tool", "B after tool"]);
+
+    await agent.close();
+    agents.splice(agents.indexOf(agent), 1);
+    const reopened = await Agent.open(configuration);
+    agents.push(reopened);
+    const records = (await reopened.persistence.records.list(conversation.id, { limit: 100 })).records;
+    const items = reconcileConversationTimeline([], records)
+      .filter((item) => item.kind === "message" || item.kind === "tool_call");
+    expect(items.map((item) => item.kind === "message"
+      ? [item.kind, item.current.content]
+      : [item.kind, item.current.toolCallId])).toEqual([
+      ["message", "show the order"],
+      ["message", "A before tool"],
+      ["tool_call", "tool-1"],
+      ["message", "B after tool"],
+    ]);
+    expect(items[1]?.revisions.length).toBeGreaterThan(1);
+    expect(items[1]?.firstSequence).toBeLessThan(items[2]!.firstSequence);
+    expect(items[1]?.current).toMatchObject({ status: "completed" });
+    const firstAssistantSequence = items[1]!.firstSequence;
+    expect((await reopened.persistence.messages.list(conversation.id, {
+      throughSequence: firstAssistantSequence,
+    })).messages.at(-1)).toMatchObject({ content: "A", status: "in_progress" });
+    expect((await reopened.persistence.messages.list(conversation.id, {
+      afterSequence: firstAssistantSequence,
+    })).messages.map((message) => message.content)).toEqual(["A before tool", "B after tool"]);
+    expect((await reopened.persistence.messages.list(conversation.id)).messages.map((message) => message.content))
+      .toEqual(["show the order", "A before tool", "B after tool"]);
+  }, 20_000);
+
   test("round-trips sender metadata, recent history, live catch-up, and previews", async () => {
     const directory = await mkdtemp(join(tmpdir(), "acp-consumer-read-"));
     directories.push(directory);

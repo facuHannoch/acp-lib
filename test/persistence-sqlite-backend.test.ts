@@ -715,9 +715,9 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(10);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(11);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 10; recreate the database",
+      "SQLite agent schema 7 is incompatible with 11; recreate the database",
     );
   });
 
@@ -732,8 +732,11 @@ describe("SQLite agent persistence", () => {
     const old = new Database(path, { readwrite: true });
     old.exec(`
       DROP TABLE identity_delivery_cursors;
+      DROP INDEX conversation_messages_logical_idx;
+      ALTER TABLE conversation_messages DROP COLUMN logical_message_id;
       ALTER TABLE conversation_messages DROP COLUMN consumer_metadata_json;
       ALTER TABLE conversations DROP COLUMN last_human_message_at;
+      DELETE FROM schema_migrations WHERE version = 11;
       DELETE FROM schema_migrations WHERE version = 10;
       DELETE FROM schema_migrations WHERE version = 9;
       INSERT INTO schema_migrations(version, applied_at) VALUES (8, '2026-09-18T00:00:00.000Z');
@@ -752,7 +755,7 @@ describe("SQLite agent persistence", () => {
     }]);
     expect((await migrated.identityDelivery.get(targetConversationId, "provider-1", conversationId))?.deliveredThroughSequence).toBe(1);
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(10);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(11);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM identity_delivery_cursors").get()?.count).toBe(1);
     inspection.close();
   });
@@ -767,8 +770,11 @@ describe("SQLite agent persistence", () => {
 
     const old = new Database(path, { readwrite: true });
     old.exec(`
+      DROP INDEX conversation_messages_logical_idx;
+      ALTER TABLE conversation_messages DROP COLUMN logical_message_id;
       ALTER TABLE conversation_messages DROP COLUMN consumer_metadata_json;
       ALTER TABLE conversations DROP COLUMN last_human_message_at;
+      DELETE FROM schema_migrations WHERE version = 11;
       DELETE FROM schema_migrations WHERE version = 10;
       INSERT INTO schema_migrations(version, applied_at) VALUES (9, '2026-09-19T00:00:00.000Z');
     `);
@@ -783,6 +789,40 @@ describe("SQLite agent persistence", () => {
       consumerMetadata: { deliveryId: "d-1" },
     });
     expect((await migrated.messages.list(conversationId)).messages[1]?.consumerMetadata).toEqual({ deliveryId: "d-1" });
+  });
+
+  test("migrates version 10 to assistant-message revision identity", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    await backend.records.append(message(agentSessionId, conversationId, "legacy", "assistant", "retained"));
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+
+    const old = new Database(path, { readwrite: true });
+    old.exec(`
+      DROP INDEX conversation_messages_logical_idx;
+      ALTER TABLE conversation_messages DROP COLUMN logical_message_id;
+      DELETE FROM schema_migrations WHERE version = 11;
+      INSERT INTO schema_migrations(version, applied_at) VALUES (10, '2026-09-19T00:00:00.000Z');
+    `);
+    old.close();
+
+    const migrated = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    expect((await migrated.messages.list(conversationId)).messages[0]).toMatchObject({ content: "retained" });
+    expect((await migrated.messages.list(conversationId)).messages[0]?.logicalMessageId).toBeUndefined();
+    await migrated.records.append({
+      ...message(agentSessionId, conversationId, "new-snapshot", "assistant", "new"),
+      logicalMessageId: "logical-new",
+      status: "in_progress",
+    });
+    await migrated.records.append({
+      ...message(agentSessionId, conversationId, "new-final", "assistant", "new final"),
+      logicalMessageId: "logical-new",
+      status: "completed",
+    });
+    expect((await migrated.messages.list(conversationId)).messages.map((record) => record.content))
+      .toEqual(["retained", "new final"]);
   });
 
   test("keeps sparse identity delivery cursors monotonic and provider-scoped", async () => {
