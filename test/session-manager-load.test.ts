@@ -20,6 +20,7 @@ describe("SessionManager.loadAgentSession", () => {
   test("reports managed loading progress through reconciled readiness", async () => {
     const { manager, store } = await setup();
     const created = await manager.createAgentSession(createConfig());
+    await created.prompt("establish the recorded thread");
     await created.stop();
     const events: AgentSessionOpenStage[] = [];
 
@@ -53,6 +54,7 @@ describe("SessionManager.loadAgentSession", () => {
     const { manager } = await setup();
     const created = await manager.createAgentSession(createConfig());
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     const before = await manager.getAgentSessionInfo("managed-agent");
     await created.stop();
 
@@ -77,6 +79,7 @@ describe("SessionManager.loadAgentSession", () => {
     const created = await manager.createAgentSession(createConfig());
     const stale = await store.getAgentSessionRecord("managed-agent");
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     await created.stop();
     const current = await store.getAgentSessionRecord("managed-agent");
     await store.saveAgentSessionRecord({

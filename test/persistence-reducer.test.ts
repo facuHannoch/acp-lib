@@ -46,6 +46,47 @@ describe("canonical transcript reducer", () => {
     expect(covered.checkpoint).toEqual(result.checkpoint);
   });
 
+  test("a terminal checkpoint may fill an empty thread slot but never replace one", () => {
+    const base = unattachedCheckpoint();
+    const baseRecord = checkpointRecord(base, 2);
+    const history = reduceTranscriptHistory([]);
+    const started = operation(3, "started", base.stateRevision + 1);
+    const settled = operation(4, "settled");
+
+    // The turn that justifies the thread is the turn that records it, so a crash cannot
+    // leave a completed response disagreeing with the thread it came from.
+    const attached = reduceTranscriptState(baseRecord, history, [
+      started,
+      settled,
+      checkpointRecord(attachedTerminalCheckpoint(
+        reduceTranscriptState(baseRecord, history, [started]).checkpoint,
+        4,
+      ), 5),
+    ]);
+    expect(attached.checkpoint.internalSessionId).toBe("provider-1");
+    expect(attached.checkpoint.internalSessionActivatedAt).toBe(iso(4_000));
+    expect(attached.internalSessionHistory).toEqual([]);
+    expect(attached.recovery).toEqual({ kind: "clean" });
+
+    // Replacing a thread that is already selected stays a transition.
+    const selected = checkpointRecord(baseCheckpoint(), 2);
+    const selectedStarted = operation(3, "started", 2);
+    expect(() => reduceTranscriptState(selected, history, [
+      selectedStarted,
+      settled,
+      checkpointRecord(attachedTerminalCheckpoint(
+        reduceTranscriptState(selected, history, [selectedStarted]).checkpoint,
+        4,
+        "provider-9",
+      ), 5),
+    ])).toThrow(TranscriptReductionError);
+
+    // A non-terminal checkpoint cannot attach either.
+    expect(() => reduceTranscriptState(baseRecord, history, [
+      checkpointRecord(attachedTerminalCheckpoint(base, 2), 3),
+    ])).toThrow(TranscriptReductionError);
+  });
+
   test("classifies started and terminal operation boundaries without guessing provider state", () => {
     const baseRecord = checkpointRecord(baseCheckpoint(), 2);
     const started = operation(3, "started", 2);
@@ -114,6 +155,33 @@ describe("canonical transcript reducer", () => {
       .toThrow(TranscriptReductionError);
   });
 });
+
+function unattachedCheckpoint(): AgentSessionCheckpoint {
+  const { version: _version, digest: _digest, ...body } = baseCheckpoint();
+  return createAgentSessionCheckpoint({
+    ...body,
+    internalSessionId: null,
+    internalSessionActivatedAt: null,
+  });
+}
+
+function attachedTerminalCheckpoint(
+  previous: AgentSessionCheckpoint,
+  coveredSequence: number,
+  internalSessionId = "provider-1",
+  activatedAt = iso(4_000),
+): AgentSessionCheckpoint {
+  const { version: _version, digest: _digest, ...body } = previous;
+  return createAgentSessionCheckpoint({
+    ...body,
+    stateRevision: previous.stateRevision + 1,
+    internalSessionId,
+    internalSessionActivatedAt: activatedAt,
+    transcript: { ...previous.transcript!, coveredSequence },
+    boundary: { status: "settled", lastSettledOperationId: "op-1" },
+    updatedAt: iso(4_000),
+  });
+}
 
 function baseCheckpoint(): AgentSessionCheckpoint {
   return createCheckpoint({ stateRevision: 1, coveredSequence: 1, updatedAt: iso(0), lastSettledOperationId: null });

@@ -81,6 +81,13 @@ export interface ContinuationReport {
         readonly activeInternalSessionId: string;
         readonly transitionId: string;
       }
+    /**
+     * The conversation had never selected a provider thread, so a fresh one was started.
+     *
+     * Distinct from `reconstructed`: nothing was continued because no provider turn had
+     * ever completed on a thread this conversation recorded.
+     */
+    | { readonly kind: "fresh"; readonly activeInternalSessionId: string }
     | { readonly kind: "unavailable" };
 }
 

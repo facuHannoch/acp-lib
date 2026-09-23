@@ -17,6 +17,7 @@ describe("SessionManager.restoreAgentSession", () => {
     const { manager } = await setup();
     const created = await manager.createAgentSession(createConfig());
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     await created.stop();
     const active = (await manager.getAgentSessionInfo("managed-agent"))!;
     await manager.deleteAgentSession("managed-agent", {
@@ -151,6 +152,7 @@ describe("SessionManager.restoreAgentSession", () => {
   test("resumes a staged restoration after registry finalization fails", async () => {
     const { manager, store } = await setup();
     const created = await manager.createAgentSession(createConfig());
+    await created.prompt("establish the recorded thread");
     await created.stop();
     const active = (await manager.getAgentSessionInfo("managed-agent"))!;
     await manager.deleteAgentSession("managed-agent", {
@@ -190,6 +192,7 @@ describe("SessionManager.restoreAgentSession", () => {
   test("stages provider identity before publishing the restored record", async () => {
     const { root, manager, store } = await setup();
     const created = await manager.createAgentSession(createConfig());
+    await created.prompt("establish the recorded thread");
     await created.stop();
     const active = (await manager.getAgentSessionInfo("managed-agent"))!;
     await manager.deleteAgentSession("managed-agent", {
@@ -281,6 +284,7 @@ describe("SessionManager.restoreAgentSession", () => {
       creationId: "logs-deleted-creation",
       persistence: { auditLog: {} },
     });
+    await created.prompt("establish the recorded thread");
     await created.stop();
     const active = (await manager.getAgentSessionInfo("logs-deleted"))!;
     await manager.deleteAgentSession("logs-deleted", {
@@ -317,6 +321,7 @@ describe("SessionManager.restoreAgentSession", () => {
       persistence: { auditLog: {} },
     });
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     await created.stop();
     const active = (await manager.getAgentSessionInfo("replace-deleted"))!;
     await manager.deleteAgentSession("replace-deleted", {

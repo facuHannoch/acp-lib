@@ -135,6 +135,9 @@ export class RegistryPersistenceRuntime implements PersistenceStateRuntime {
     ts = Date.now(),
   ): Promise<AgentSessionCheckpoint> {
     const active = this.requireActive();
+    if (changes.providerAttachment && this.current.internalSessionId !== null) {
+      throw new Error("replacing a selected provider thread is a transition, not a terminal checkpoint change");
+    }
     this.current = nextCheckpoint(this.current, {
       ...changes,
       boundary: changes.boundary ?? { status: "settled", lastSettledOperationId: active.operationId },
@@ -180,6 +183,10 @@ function nextCheckpoint(
     ...(changes.model === undefined ? {} : { model: changes.model }),
     ...(changes.sessionConfiguration === undefined ? {} : { sessionConfiguration: changes.sessionConfiguration }),
     ...(changes.metering === undefined ? {} : { metering: changes.metering }),
+    ...(changes.providerAttachment === undefined ? {} : {
+      internalSessionId: changes.providerAttachment.internalSessionId,
+      internalSessionActivatedAt: changes.providerAttachment.activatedAt,
+    }),
     stateRevision: source.stateRevision + 1,
     boundary: changes.boundary ?? source.boundary,
     updatedAt: new Date(ts).toISOString(),

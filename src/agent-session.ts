@@ -1123,6 +1123,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
       initializeCheckpoint: async () => {
         const result = await this.controller.start((event) => this.reportManagedControllerProgress(event));
         this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
+        if (this._internalSessionId) {
+          this.installProviderAttachment(
+            this._internalSessionId,
+            result.resumed ? "recorded" : "runtime_only",
+            !result.resumed,
+          );
+        }
         const now = new Date().toISOString();
         const sessionConfiguration = snapshotSessionConfiguration({
           adapterId: this.adapterId,
@@ -1148,8 +1155,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
           stateRevision: 1,
           adapterId: this.adapterId,
           mode: stagedContinuation.mode,
-          internalSessionId: stagedContinuation.internalSessionId,
-          internalSessionActivatedAt: stagedContinuation.internalSessionActivatedAt,
+          // A thread the library just created has completed no turn, so nothing yet
+          // justifies selecting it for a later resume. It stays in memory until the
+          // first completed prompt's own terminal checkpoint records it. A thread the
+          // adapter resumed was already established, so it is selected immediately.
+          internalSessionId: result.resumed ? stagedContinuation.internalSessionId : null,
+          internalSessionActivatedAt: result.resumed
+            ? stagedContinuation.internalSessionActivatedAt
+            : null,
           internalSessionHistoryRevision: 0,
           internalSessionHistoryDigest: EMPTY_HISTORY_DIGEST,
           model: stagedContinuation.model,
@@ -1421,6 +1434,30 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // from a checkpoint the caller never selected. Reopen the newly active target.
         if (failedAfter === "target_activated") break;
       }
+    }
+
+    if (checkpoint.internalSessionId === null) {
+      // Nothing was ever selected to continue, so there is nothing a reconstruction could
+      // rebuild from. Starting fresh is the whole continuation, and the new thread stays
+      // runtime-only until a completed turn earns it a place in the checkpoint.
+      const created = await this.controller.startFresh(
+        (event) => this.reportManagedControllerProgress(event),
+      );
+      if (!created.sessionId) {
+        throw new Error("harness returned no session id for an unattached conversation");
+      }
+      this._mode = this.controller.currentMode;
+      this.installProviderAttachment(created.sessionId, "runtime_only", true);
+      this._configurationRestore = this.snapshotReconstructedConfiguration([]).status;
+      this.continuationAcquired = true;
+      return createContinuationReport(
+        checkpoint,
+        this.adapterId,
+        this.v2Transcript,
+        recordedThreadAvailability,
+        attempts,
+        { kind: "fresh", activeInternalSessionId: created.sessionId },
+      );
     }
 
     return createContinuationReport(
@@ -2082,7 +2119,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const action = continuation.kind === "none" && transitionKind === "handoff"
       ? "reset"
       : transitionKind;
-    const fromDescriptor = this.v2Transcript ? this.v2Descriptor() : null;
+    // A transition is *from* the authoritative continuation state, which is not always
+    // the live runtime: a thread that has completed no turn is live but unrecorded.
+    const fromDescriptor = this.v2Transcript
+      ? descriptorFromCheckpoint(this.v2Transcript.checkpoint)
+      : null;
     let toInternalSessionId: string | undefined;
     let toDescriptor: InternalSessionDescriptor | undefined;
     let summary: string | undefined;
@@ -2262,7 +2303,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // when the transition started no longer matches the reduced state activation is
         // asserted against. It still names the same source thread; only its checkpoint
         // projection moved, so it is recomputed rather than carried.
-        const activationFrom = this.v2Descriptor();
+        const activationFrom = descriptorFromCheckpoint(checkpoint);
         await this.v2Transcript.activateTransition({
           kind: "transition",
           transitionId: item.handoffId,
@@ -2854,7 +2895,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       return result;
     }
 
-    const from = this.v2Descriptor();
+    const from = descriptorFromCheckpoint(this.v2Transcript.checkpoint);
     let to: InternalSessionDescriptor | undefined;
     let failedAfter: "start" | "target_created" | "target_activated" = "start";
     await this.v2Transcript.appendTransitionEvent({
@@ -3339,13 +3380,27 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
+  /**
+   * @param liveThread Whether the settled turn ran on this conversation's own controller.
+   *   A transition seeds its target through a separate controller, and that turn is
+   *   evidence for the target, never for the thread it is trying to replace.
+   */
   private async finishV2Prompt(
     status: PromptResult["status"],
     record: OperationMeteringRecord,
     errorCode?: "unknown",
+    liveThread = true,
   ): Promise<void> {
     if (!this.v2Transcript || this.persistence === false) return;
     const observedAt = new Date().toISOString();
+    // A completed turn is what entitles a newly created thread to be selected on a later
+    // open, and the turn's own terminal checkpoint is what records it — so the response
+    // and the thread it came from cannot disagree after a crash.
+    const attachment = this.providerAttachment;
+    const attaching = liveThread
+      && status === "completed"
+      && attachment.kind === "runtime_only"
+      && this.v2Transcript.checkpoint.internalSessionId === null;
     await this.v2Transcript.appendEvent({
       kind: "metering_reference",
       operationId: record.operationId,
@@ -3364,9 +3419,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
           observedAt,
         }),
         metering: this.metering.currentState,
+        ...(attaching && attachment.kind === "runtime_only" ? {
+          providerAttachment: {
+            internalSessionId: attachment.descriptor.internalSessionId,
+            activatedAt: attachment.descriptor.acquiredAt,
+          },
+        } : {}),
       },
       errorCode,
     );
+    if (attaching && this.providerAttachment === attachment) {
+      this.providerAttachment = recordedProviderAttachment(attachment.descriptor);
+    }
   }
 
   /**
@@ -3491,7 +3555,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           stopReason: result.stopReason,
           status: result.status,
         });
-        await this.finishV2Prompt(result.status, record);
+        await this.finishV2Prompt(result.status, record, undefined, target === undefined);
         transcriptClosed = true;
       }
       return result;

@@ -52,6 +52,9 @@ describe("AgentSession handoff", () => {
     });
     live.add(session);
     const originalInternalSessionId = session.internalSessionId;
+    // Only a completed turn selects the source thread, and only a selected thread can
+    // become internal-session history when the target supersedes it.
+    await session.prompt("establish the recorded thread");
 
     const result = await session.handoff({ summary: "portable v2 continuation" });
     expect(result.fromInternalSessionId).toBe(originalInternalSessionId);
@@ -72,7 +75,7 @@ describe("AgentSession handoff", () => {
     expect(records.filter((record) => record.t === "transition").map((record) => record.event))
       .toEqual(["started", "target_created", "target_activated", "completed"]);
     expect(records.filter((record) => record.t === "operation").map((record) => record.operationKind))
-      .toEqual(["handoff_seed", "handoff_seed"]);
+      .toEqual(["prompt", "prompt", "handoff_seed", "handoff_seed"]);
   }, 20_000);
 
   test("v2 persistence retains the source when continuation seeding fails", async () => {
@@ -86,6 +89,7 @@ describe("AgentSession handoff", () => {
     });
     live.add(session);
     const originalInternalSessionId = session.internalSessionId;
+    await session.prompt("establish the recorded thread");
 
     const caught = await session.handoff({ summary: "portable v2 continuation" })
       .then(() => null, (error: unknown) => error);
@@ -111,7 +115,7 @@ describe("AgentSession handoff", () => {
     expect(records.filter((record) => record.t === "transition").map((record) => record.event))
       .toEqual(["started", "target_created", "failed"]);
     expect(records.filter((record) => record.t === "operation").map((record) => record.event))
-      .toEqual(["started", "failed"]);
+      .toEqual(["started", "settled", "started", "failed"]);
   }, 20_000);
 
   test("replaces only the internal thread and records one logical transcript boundary", async () => {

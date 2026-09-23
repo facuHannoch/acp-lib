@@ -16,6 +16,7 @@ describe("SessionManager persistence maintenance", () => {
     const { root, manager } = await setup();
     const session = await manager.createAgentSession(createConfig());
     await session.setConfig("model", "beta");
+    await session.prompt("establish the recorded thread");
     await session.stop();
     const info = (await manager.getAgentSessionInfo("managed-agent"))!;
     const authority = (await manager.getAgentSessionCheckpoint("managed-agent"))!;

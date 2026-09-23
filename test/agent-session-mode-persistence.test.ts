@@ -32,6 +32,9 @@ describe("AgentSession mode and reconciliation persistence", () => {
   test("mode replacement is a durable transition retaining the prior ACP thread", async () => {
     const session = await createPersistentSession("mode-session");
     const previousInternalSessionId = session.internalSessionId;
+    // Only a completed turn selects the ACP thread, and only a selected thread can be
+    // retained as history when the mode transition replaces it.
+    await session.prompt("establish the recorded thread");
     const result = await session.setMode("degraded");
     expect(result.sessionId).toBe("");
     expect(session.mode).toBe("degraded");

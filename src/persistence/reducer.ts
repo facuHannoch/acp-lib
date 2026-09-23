@@ -221,7 +221,12 @@ export function reduceTranscriptState(
       }
       pendingRepair = null;
     }
-    if (!expectedRepair) assertRoutingStable(candidate, checkpoint);
+    // A terminal checkpoint may fill in a thread slot the conversation never had. That is
+    // the first attachment, not a routing change: nothing is superseded, so there is no
+    // `from` descriptor to validate and no history entry to write.
+    if (!expectedRepair) {
+      assertRoutingStable(candidate, checkpoint, active?.terminal != null);
+    }
     if (active) {
       if (active.terminal) {
         if (candidate.stateRevision <= checkpoint.stateRevision) {
@@ -422,12 +427,20 @@ function assertCheckpointIdentityStable(
 function assertRoutingStable(
   candidate: AgentSessionCheckpoint,
   previous: AgentSessionCheckpoint,
+  allowInitialAttachment = false,
 ): void {
+  // A thread slot that was never filled can be filled by the checkpoint that settles the
+  // turn justifying it. Replacing an already selected thread stays a transition.
+  // The checkpoint constructor already refuses an id without its activation time, so
+  // exempting both fields together cannot smuggle a half-formed attachment through.
+  const attaching = allowInitialAttachment
+    && previous.internalSessionId === null
+    && candidate.internalSessionId !== null;
   const candidateRouting = {
     adapterId: candidate.adapterId,
     mode: candidate.mode,
-    internalSessionId: candidate.internalSessionId,
-    internalSessionActivatedAt: candidate.internalSessionActivatedAt,
+    internalSessionId: attaching ? null : candidate.internalSessionId,
+    internalSessionActivatedAt: attaching ? null : candidate.internalSessionActivatedAt,
     protocol: candidate.protocol,
     lastTransition: candidate.lastTransition ?? null,
   };
