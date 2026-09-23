@@ -6,3 +6,11 @@ export type {
 } from "./contracts.ts";
 export { SubscriptionHub } from "./subscription-hub.ts";
 export type { SubscriptionListenerError } from "./subscription-hub.ts";
+export type {
+  AgentEvent,
+  AgentEventBus,
+  AgentEventListener,
+  AgentEventNotification,
+  AgentEventSubscriptionOptions,
+  ConversationRecordCommittedEvent,
+} from "./agent-event-bus.ts";

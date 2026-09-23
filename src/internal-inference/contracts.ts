@@ -2,7 +2,11 @@ import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { OperationMeteringRecord, OperationOutcome } from "../metering/record.ts";
 import type { StatefulSubscribable, Subscribable } from "../observation/contracts.ts";
-import type { PersistenceJsonValue, PersistenceScope } from "../persistence/backend.ts";
+import type {
+  ConversationRecord,
+  PersistenceJsonValue,
+  PersistenceScope,
+} from "../persistence/backend.ts";
 import type { ResponseMessage, TokenUsage } from "../types.ts";
 
 export type InternalInferenceId = `aii-${string}`;
@@ -202,6 +206,13 @@ export interface InternalInferenceCompletionContext {
   /** Transaction-scoped persistence used to publish the purpose artifact atomically. */
   readonly persistence: PersistenceScope;
   readonly meteringState?: AgentSessionMeteringState;
+  /**
+   * Register a canonical record appended in this completion transaction for post-commit
+   * publication. The manager publishes it only after the transaction commits, so a
+   * rolled-back completion is never observed. Strategies that append no canonical record
+   * simply do not call it.
+   */
+  readonly onRecordAppended?: (record: ConversationRecord) => void;
 }
 
 export interface InternalInferenceStrategy<TPayload = PersistenceJsonValue> {

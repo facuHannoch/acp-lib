@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionId } from "../../agent-ids.ts";
-import type { PersistenceBackend } from "../../persistence/backend.ts";
+import type { ConversationRecord, PersistenceBackend } from "../../persistence/backend.ts";
 import type { OperationMeteringRecord } from "../../metering/record.ts";
 import { SubscriptionHub } from "../../observation/subscription-hub.ts";
 import { createInternalInferenceId } from "../ids.ts";
@@ -43,6 +43,13 @@ export interface DefaultInternalInferenceManagerConfig {
   ) => Promise<InternalInferenceMeteringOperation | null>;
   readonly meteringRecords?: import("../../persistence/backend.ts").MeteringRecordRetention;
   readonly pollIntervalMs?: number;
+  /**
+   * Observe canonical records appended by a strategy's completion, after the transaction
+   * that wrote them commits. The Agent uses this to publish internal-inference artifacts
+   * (such as conversation-checkpoint `native_action` records) through the same committed
+   * record stream as every other Agent-owned record.
+   */
+  readonly onCommittedRecords?: (records: readonly ConversationRecord[]) => void;
 }
 
 /** Agent-scoped durable scheduler. Purpose-specific artifact transactions remain strategies' responsibility. */
@@ -274,10 +281,14 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         ? await openedMetering.close({ outcome: "completed", result })
         : null;
       if (this.fenced.has(attempt.internalInferenceId)) return;
+      // Canonical records a strategy appends here are buffered and published only after
+      // the transaction commits; a rollback must leave them unobserved.
+      const appended: ConversationRecord[] = [];
       const completed = await this.config.persistence.transaction(async (persistence) => {
         const completion = await strategy.complete({
           attempt: snapshotOf(attempt),
           persistence,
+          onRecordAppended: (record) => appended.push(record),
         }, result);
         if (this.fenced.has(attempt.internalInferenceId)) {
           throw new Error("internal inference was fenced during completion");
@@ -309,6 +320,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
               : {}),
         });
       });
+      if (appended.length > 0) this.config.onCommittedRecords?.(appended);
       this.publishAttempt(completed);
       await this.refreshRun(attempt.rootInternalInferenceId);
       await this.pruneTerminal();

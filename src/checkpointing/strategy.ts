@@ -79,7 +79,7 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
       generatorInternalInferenceId: result.internalInferenceId,
       summary,
     });
-    await context.persistence.records.append({
+    const appended = await context.persistence.records.append({
       recordId: `${result.internalInferenceId}:checkpoint`,
       agentSessionId: context.attempt.agentSessionId,
       agentConversationId: conversationId,
@@ -93,6 +93,9 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
         coveredSequence: checkpoint.coveredSequence,
       },
     });
+    // Hand the committed record to the manager so it reaches the Agent's live bus after
+    // the completion transaction commits, exactly like every other Agent-owned record.
+    context.onRecordAppended?.(appended);
     return Object.freeze({
       internalInferenceId: result.internalInferenceId,
       rootInternalInferenceId: context.attempt.rootId,
