@@ -623,7 +623,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       try {
         config.onRecoveryProgress?.({ stage: "seeding", checkpointId: checkpoint.checkpointId });
         await conversation.seedRecoveryContext(seed.prompt);
-        const acknowledgement = await this.persistProviderSession(conversation, id, conversation.adapterId, {
+        const acknowledgement = await this.persistProviderSession(conversation, id, {
           transitionId: `recovery-${randomUUID()}`,
           metadata: JSON.stringify({
             recoveryCheckpointId: checkpoint.checkpointId,
@@ -879,7 +879,6 @@ class DefaultAgentConversationManager implements AgentConversationManager {
   private async persistProviderSession(
     conversation: AgentConversation,
     id: AgentConversationId,
-    adapterId: string,
     extra: { readonly transitionId?: string; readonly metadata?: string } = {},
     newContext = false,
   ): Promise<ProviderAttachmentCommitAcknowledgement> {
@@ -887,22 +886,23 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     if (attachment.kind !== "runtime_only") {
       throw new Error("provider attachment is not awaiting persistence");
     }
+    const descriptor = attachment.descriptor;
     const providerSessionRecordId = `provider-${randomUUID()}`;
     await this.agent.persistence.transaction(async (persistence) => {
-      if (newContext) await persistence.identityDelivery?.reset(id, attachment.descriptor.internalSessionId);
+      if (newContext) await persistence.identityDelivery?.reset(id, descriptor.internalSessionId);
       await persistence.providerSessions.append({
         providerSessionRecordId,
         agentConversationId: id,
-        internalSessionId: attachment.descriptor.internalSessionId,
-        adapterId,
-        mode: conversation.mode,
-        ...(conversation.model ? { model: conversation.model } : {}),
-        activatedAt: new Date().toISOString(),
+        internalSessionId: descriptor.internalSessionId,
+        adapterId: descriptor.adapterId,
+        mode: descriptor.mode,
+        ...(descriptor.model ? { model: descriptor.model } : {}),
+        activatedAt: descriptor.acquiredAt,
         ...extra,
       });
     });
     return Object.freeze({
-      attachmentAttemptId: attachment.descriptor.attachmentAttemptId,
+      attachmentAttemptId: descriptor.attachmentAttemptId,
       providerSessionRecordId,
     });
   }

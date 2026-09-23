@@ -38,6 +38,7 @@ describe("Agent owner", () => {
     expect(await agent.persistence.providerSessions.active(conversationId)).toBeNull();
 
     await conversation.stop();
+    expect(conversation.providerAttachmentState.kind).toBe("absent");
     expect(await agent.persistence.providerSessions.active(conversationId)).toBeNull();
     const reopened = await agent.conversations.open(conversationId);
     expect(reopened.providerSession).toBe("new");
@@ -549,10 +550,15 @@ describe("Agent owner", () => {
       toInternalSessionId: conversation.internalSessionId,
     });
     expect(switched.targetResult?.text).toContain("continue now");
-    expect((await agent.persistence.metering.list(conversationId)).records.map((record) => record.operationKind)).toEqual([
+    const meteringRecords = (await agent.persistence.metering.list(conversationId)).records;
+    expect(meteringRecords.map((record) => record.operationKind)).toEqual([
       "switch_seed",
       "internal_command",
     ]);
+    // The target is a freshly created thread, so its counters start at zero: the first
+    // target operation must be attributable rather than "baseline_required".
+    expect(meteringRecords[0]?.usage.status).toBe("metered");
+    expect(meteringRecords[1]?.usage.status).toBe("metered");
     const history = await agent.persistence.providerSessions.list(conversationId);
     // The source never completed a provider turn, so it was runtime-only and never
     // became provider-session history. The activated target is the first recorded row.

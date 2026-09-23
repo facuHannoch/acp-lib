@@ -40,6 +40,7 @@ import {
   recordedProviderAttachment,
   runtimeOnlyProviderAttachment,
   type ProviderAttachmentCommitAcknowledgement,
+  type ProviderAttachmentDescriptor,
   type ProviderAttachmentState,
 } from "./persistence/provider-attachment.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
@@ -972,7 +973,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // be attributable.
     const internalSessionId = result.sessionId || this._internalSessionId;
     if (this.ownerLifecycle && internalSessionId) {
-      this.installProviderAttachment(internalSessionId, result.resumed ? "recorded" : "runtime_only");
+      this.installProviderAttachment(
+        internalSessionId,
+        result.resumed ? "recorded" : "runtime_only",
+        !result.resumed,
+      );
     } else {
       this.setInternalSessionId(internalSessionId, !result.resumed);
     }
@@ -2250,8 +2255,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this.bindController(targetController);
       }
       targetActivated = true;
-      if (recordedByOwner) this.installProviderAttachment(toInternalSessionId, "recorded");
-      else this.setInternalSessionId(toInternalSessionId);
+      if (recordedByOwner) {
+        // A handoff target is a freshly created thread, so its counters start at zero even
+        // though the provider row is already recorded by `transitionActivated`.
+        this.installProviderAttachment(toInternalSessionId, "recorded", true, {
+          acquiredAt: activatedAt,
+          transitionId: item.handoffId,
+        });
+      } else {
+        this.setInternalSessionId(toInternalSessionId);
+      }
       await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       this.emitStateIfChanged();
       await this.persist();
@@ -2749,7 +2762,24 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (!this.v2Transcript) {
       const result = await this.controller.setMode(item.mode);
       this._mode = this.controller.currentMode;
-      this.setInternalSessionId(result.sessionId || null);
+      const nextInternalSessionId = result.sessionId || null;
+      if (this.ownerLifecycle) {
+        if (nextInternalSessionId) {
+          if (
+            this.providerAttachment.kind === "absent"
+            || this.providerAttachment.descriptor.internalSessionId !== nextInternalSessionId
+          ) {
+            this.installProviderAttachment(nextInternalSessionId, "runtime_only", true);
+          }
+        } else {
+          // A mode change with no provider thread (for example ACP to degraded) leaves no
+          // live attachment; the previous recorded mapping remains the restart fallback.
+          this.clearProviderAttachment();
+          this.setInternalSessionId(null);
+        }
+      } else {
+        this.setInternalSessionId(nextInternalSessionId);
+      }
       await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       await this.persist();
       return result;
@@ -3054,6 +3084,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let closed: OperationMeteringRecord | null = null;
     let transcriptClosed = false;
     let providerSettled = false;
+    // A lazily created thread acquires its provider session during dispatch, so this is the
+    // closest observable acquisition time when `session/new` happens inside `prompt()`.
+    const dispatchedAt = new Date().toISOString();
     try {
       const res = await this.controller.prompt(providerText, wrappedHandlers, item.attachments);
       providerSettled = true;
@@ -3082,7 +3115,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
           this.providerAttachment.kind === "absent"
           || this.providerAttachment.descriptor.internalSessionId !== observedInternalSessionId
         ) {
-          this.installProviderAttachment(observedInternalSessionId, "runtime_only");
+          this.installProviderAttachment(observedInternalSessionId, "runtime_only", true, {
+            acquiredAt: dispatchedAt,
+          });
         }
       } else {
         this.setInternalSessionId(observedInternalSessionId);
@@ -3560,6 +3595,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
       await this.ownerRecordWrite.catch((error) => {
         this.log.warn("owned_runtime_persistence_failed", { error: String(error) });
       });
+      // No live thread remains. A runtime-only attachment was never a continuation
+      // candidate, and a recorded one is preserved by its provider row, so neither should
+      // survive on the stopped object.
+      this.clearProviderAttachment();
       await this.presentation.drain().catch(() => undefined);
       try {
         await this.transcriptWrite;
@@ -3792,24 +3831,44 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
   }
 
+  /**
+   * Install the live provider attachment.
+   *
+   * `kind` is persistence state (may it be selected on a later open?). `created` is thread
+   * provenance for metering (did its counters start at zero?). They are orthogonal: a
+   * handoff target is both `recorded` and `created`, while a loaded thread is `recorded`
+   * and not created.
+   */
   private installProviderAttachment(
     internalSessionId: string,
     kind: "runtime_only" | "recorded",
+    created: boolean,
+    options: {
+      readonly acquiredAt?: string;
+      readonly transitionId?: string;
+    } = {},
   ): void {
     const current = this.providerAttachment;
     if (current.kind === kind && current.descriptor.internalSessionId === internalSessionId) return;
-    this.setInternalSessionId(internalSessionId, kind === "runtime_only");
-    const descriptor = {
+    this.setInternalSessionId(internalSessionId, created);
+    const descriptor: ProviderAttachmentDescriptor = {
       attachmentAttemptId: crypto.randomUUID(),
       internalSessionId,
       adapterId: this.adapterId,
       mode: this.mode,
       ...(this.model ? { model: this.model } : {}),
-      acquiredAt: new Date().toISOString(),
+      acquiredAt: options.acquiredAt ?? new Date().toISOString(),
+      ...(options.transitionId ? { transitionId: options.transitionId } : {}),
     };
     this.providerAttachment = kind === "runtime_only"
       ? runtimeOnlyProviderAttachment(descriptor)
       : recordedProviderAttachment(descriptor);
+  }
+
+  /** Drop the live attachment without touching persistence or the last known session id. */
+  private clearProviderAttachment(): void {
+    if (this.providerAttachment.kind === "absent") return;
+    this.providerAttachment = Object.freeze({ kind: "absent" });
   }
 
   /**
