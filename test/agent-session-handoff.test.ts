@@ -3,6 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AgentSession, type AgentSessionNotification } from "../src/agent-session.ts";
+import { AgentSessionHandoffError } from "../src/metering/record.ts";
 import { FileSessionStore } from "../src/session-store.ts";
 import { SessionManager } from "../src/session-manager.ts";
 import { readTranscriptLines } from "../src/transcript.ts";
@@ -74,7 +75,7 @@ describe("AgentSession handoff", () => {
       .toEqual(["handoff_seed", "handoff_seed"]);
   }, 20_000);
 
-  test("v2 persistence keeps an activated target when continuation seeding fails", async () => {
+  test("v2 persistence retains the source when continuation seeding fails", async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-handoff-v2-failure-"));
     const session = await AgentSession.create({
       adapter: { command: ["bun", AGENT, "fail-seed"] },
@@ -86,23 +87,29 @@ describe("AgentSession handoff", () => {
     live.add(session);
     const originalInternalSessionId = session.internalSessionId;
 
-    await expect(session.handoff({ summary: "portable v2 continuation" })).rejects.toThrow(
-      "deterministic continuation seed failure",
-    );
-    expect(session.internalSessionId).not.toBe(originalInternalSessionId);
-    const activatedInternalSessionId = session.internalSessionId;
+    const caught = await session.handoff({ summary: "portable v2 continuation" })
+      .then(() => null, (error: unknown) => error);
+    expect(caught).toBeInstanceOf(AgentSessionHandoffError);
+    expect(String(caught)).toContain("deterministic continuation seed failure");
+    // The target never completed a provider turn, so it never earned the right to
+    // supersede a source that is still perfectly usable.
+    expect(session.internalSessionId).toBe(originalInternalSessionId);
+    if (caught instanceof AgentSessionHandoffError) {
+      expect(caught.activationCompleted).toBe(false);
+      expect(caught.providerAttachment).toBe("runtime_only");
+      expect(caught.toInternalSessionId).not.toBe(originalInternalSessionId);
+    }
     await session.stop();
     live.delete(session);
 
     const scan = await scanTranscriptContinuation(session.transcriptPath!);
     expect(scan.reduction.recovery).toEqual({ kind: "clean" });
-    expect(scan.reduction.checkpoint.internalSessionId).toBe(activatedInternalSessionId);
-    expect(scan.reduction.internalSessionHistory.map((entry) => entry.internalSessionId))
-      .toEqual([originalInternalSessionId]);
+    expect(scan.reduction.checkpoint.internalSessionId).toBe(originalInternalSessionId);
+    expect(scan.reduction.internalSessionHistory).toEqual([]);
     const records = (await readFile(session.transcriptPath!, "utf8")).trim().split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(records.filter((record) => record.t === "transition").map((record) => record.event))
-      .toEqual(["started", "target_created", "target_activated", "failed"]);
+      .toEqual(["started", "target_created", "failed"]);
     expect(records.filter((record) => record.t === "operation").map((record) => record.event))
       .toEqual(["started", "failed"]);
   }, 20_000);
@@ -130,6 +137,7 @@ describe("AgentSession handoff", () => {
       fromInternalSessionId,
       toInternalSessionId: session.internalSessionId,
       summary: "portable continuation context",
+      providerAttachment: "recorded",
       // A supplied summary removes the generation operation, so only seeding is metered.
       meteringRecords: result.meteringRecords,
     });
@@ -190,34 +198,35 @@ describe("AgentSession handoff", () => {
     expect(session.state.phase).toBe("idle");
   });
 
-  test("reports a post-switch seed failure without lying about the active internal id", async () => {
+  test("a failed seed leaves the source thread live and the catalog unchanged", async () => {
     const { session, sessions, transcriptPath } = await createSession("fail-seed");
     const oldInternalSessionId = session.internalSessionId;
     const notifications: AgentSessionNotification[] = [];
     session.subscribe((notification) => notifications.push(notification));
 
-    await expect(session.handoff({ summary: "portable continuation context" })).rejects.toThrow(
-      "deterministic continuation seed failure",
-    );
+    const caught = await session.handoff({ summary: "portable continuation context" })
+      .then(() => null, (error: unknown) => error);
+    expect(String(caught)).toContain("deterministic continuation seed failure");
 
     expect(session.agentSessionId).toBe("stable-logical-id");
-    expect(session.internalSessionId).not.toBe(oldInternalSessionId);
+    expect(session.internalSessionId).toBe(oldInternalSessionId);
     expect(session.internalSessionId).toBe(session.connection.currentSessionId);
-    expect((await sessions.get("stable-logical-id"))?.internalSessionId).toBe(
-      session.internalSessionId,
-    );
-    expect(notifications.some((notification) =>
-      notification.event.kind === "handoff_failed" &&
-      notification.event.toInternalSessionId === session.internalSessionId)).toBe(true);
+    expect((await sessions.get("stable-logical-id"))?.internalSessionId).toBe(oldInternalSessionId);
+    // The failure still names the target it created, so a consumer can tell an unseeded
+    // target apart from a handoff that never reached one.
+    const failed = notifications.find((notification) =>
+      notification.event.kind === "handoff_failed");
+    expect(failed?.event.kind === "handoff_failed"
+      && failed.event.toInternalSessionId !== oldInternalSessionId).toBe(true);
 
     const boundaries = (await readTranscriptLines(transcriptPath))
       .filter((line) => line.t === "handoff");
     expect(boundaries.map((line) => line.event)).toEqual(["start", "failed"]);
     expect(boundaries[1]).toMatchObject({
       fromInternalSessionId: oldInternalSessionId,
-      toInternalSessionId: session.internalSessionId,
       error: expect.stringContaining("deterministic continuation seed failure"),
     });
+    expect(boundaries[1]!.toInternalSessionId).not.toBe(oldInternalSessionId);
     expect(session.state.phase).toBe("idle");
   });
 

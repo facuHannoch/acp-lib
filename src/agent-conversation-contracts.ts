@@ -179,6 +179,14 @@ export interface HandoffResult {
   readonly summary: string;
   /** Result of `targetPrompt`, when one was supplied. */
   readonly targetResult?: PromptResult;
+  /**
+   * Whether the target was selected locally as the next open's continuation candidate.
+   *
+   * `runtime_only` means the running process is on the target but no provider turn has yet
+   * justified recording it, so a restart returns to the previous attachment. This reports
+   * local lifecycle state; it never claims the provider will still accept the session.
+   */
+  readonly providerAttachment: "runtime_only" | "recorded";
   /** One record per token-consuming operation the handoff performed, in order. */
   readonly meteringRecords: readonly OperationMeteringRecord[];
 }

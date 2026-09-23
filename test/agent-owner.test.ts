@@ -10,6 +10,7 @@ import {
   type IdentityUpdateInput,
   type LoadedIdentityContext,
 } from "../src/index.ts";
+import { AgentSessionHandoffError } from "../src/metering/record.ts";
 
 const OPERATIONS_AGENT = resolve(import.meta.dir, "../smoke-tests/test5-operations/operations-agent.ts");
 const PRESENTATION_AGENT = resolve(import.meta.dir, "fixtures/presentation-agent.ts");
@@ -589,6 +590,94 @@ describe("Agent owner", () => {
     expect(recovered.providerSession).toBe("loaded");
     expect(recovered.conversation.adapterId).toBe("atlas");
     expect(recovered.conversation.internalSessionId).toBe(switched.toInternalSessionId);
+  });
+
+  test("a failed seed retains the source mapping and records no target row", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { operations: { command: ["bun", OPERATIONS_AGENT, "fail-seed"] } },
+      defaultAdapterId: "operations",
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversation.id);
+    expect(source).toMatchObject({ internalSessionId: conversation.internalSessionId! });
+
+    const caught = await conversation.handoff({
+      continuation: { kind: "provided", content: "portable continuation context" },
+    }).then(() => null, (error: unknown) => error);
+    expect(caught).toBeInstanceOf(AgentSessionHandoffError);
+    if (!(caught instanceof AgentSessionHandoffError)) return;
+    expect(caught.activationCompleted).toBe(false);
+    expect(caught.providerAttachment).toBe("runtime_only");
+    expect(caught.toInternalSessionId).not.toBe(source!.internalSessionId);
+
+    // An unseeded target cannot supersede a source that still works.
+    expect(conversation.internalSessionId).toBe(source!.internalSessionId);
+    expect(await agent.persistence.providerSessions.list(conversation.id)).toEqual([source!]);
+    const stages = (await agent.persistence.records.list(conversation.id, {
+      kinds: ["native_action"],
+    })).records
+      .filter((record) => record.kind === "native_action" && record.action === "handoff")
+      .map((record) => record.kind === "native_action" ? record.state : null);
+    // started, target_created checkpoint, failed — and no target_activated checkpoint.
+    expect(stages).toEqual(["started", "checkpoint", "failed"]);
+
+    // The source still answers, which is the point of not tearing it down.
+    const after = await conversation.prompt("the source is still usable");
+    expect(after.status).toBe("completed");
+    expect(await agent.persistence.providerSessions.list(conversation.id)).toEqual([source!]);
+  });
+
+  test("a target prompt failure leaves the confirmed target recorded", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversation.id);
+
+    const caught = await conversation.handoff({
+      continuation: { kind: "provided", content: "portable continuation context" },
+      targetPrompt: "FAIL_TARGET_PROMPT",
+    }).then(() => null, (error: unknown) => error);
+    expect(caught).toBeInstanceOf(AgentSessionHandoffError);
+    if (!(caught instanceof AgentSessionHandoffError)) return;
+
+    // Seeding already confirmed the target, so this is an operation failure after a
+    // successful activation — not a reason to resurrect the source.
+    expect(caught.activationCompleted).toBe(true);
+    expect(caught.providerAttachment).toBe("recorded");
+    expect(String(caught)).toContain("deterministic target prompt failure");
+    expect(conversation.internalSessionId).toBe(caught.toInternalSessionId!);
+    expect(conversation.internalSessionId).not.toBe(source!.internalSessionId);
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toMatchObject({
+      internalSessionId: caught.toInternalSessionId!,
+      transitionId: caught.handoffId,
+    });
+  });
+
+  test("a same-adapter handoff records the target only after its seed completes", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversation.id);
+
+    const result = await conversation.handoff({
+      continuation: { kind: "provided", content: "portable continuation context" },
+    });
+    expect(result.providerAttachment).toBe("recorded");
+    expect(result.fromInternalSessionId).toBe(source!.internalSessionId);
+    expect(result.toInternalSessionId).not.toBe(source!.internalSessionId);
+    const history = await agent.persistence.providerSessions.list(conversation.id);
+    expect(history).toHaveLength(2);
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toMatchObject({
+      internalSessionId: result.toInternalSessionId,
+      transitionId: result.handoffId,
+    });
+    // The seed is metered against the target's own zero baseline, not the source's.
+    const metering = (await agent.persistence.metering.list(conversation.id)).records;
+    expect(metering.at(-1)?.operationKind).toBe("handoff_seed");
+    expect(metering.at(-1)?.usage.status).toBe("metered");
   });
 
   test("reset starts a blank thread without summary or seed operations", async () => {

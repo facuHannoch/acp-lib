@@ -530,6 +530,7 @@ export {
   UNAVAILABLE_PROVENANCE,
 } from "./metering/record.ts";
 export type {
+  AgentSessionHandoffErrorDetails,
   AgentSessionMeteringSnapshot,
   MeteredOperationKind,
   MeteringConfig,

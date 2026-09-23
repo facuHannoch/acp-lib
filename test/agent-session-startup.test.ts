@@ -46,12 +46,12 @@ describe("AgentSession startup identity", () => {
 
     expect(session.agentSessionId).toBe("logical-id");
     expect(session.transcriptPath).toBe(transcriptPath);
-    expect(session.internalSessionId).toBe("explicit-new-thread-1");
+    expect(session.internalSessionId).toMatch(/^explicit-new-thread-1-/);
     expect(session.internalSessionId).not.toBe("historical-thread");
     const opens = (await readTranscriptLines(transcriptPath)).filter((line) => line.t === "meta");
     expect(opens.map((line) => line.internalSessionId)).toEqual([
       "historical-thread",
-      "explicit-new-thread-1",
+      session.internalSessionId,
     ]);
   });
 
@@ -92,7 +92,7 @@ describe("AgentSession startup identity", () => {
     });
 
     expect(session.agentSessionId).toBe("logical-fallback");
-    expect(session.internalSessionId).toBe("fail-load-thread-1");
+    expect(session.internalSessionId).toMatch(/^fail-load-thread-1-/);
   });
 
   test("legacy internalSessionId keeps its historical fallback policy", async () => {
@@ -101,7 +101,7 @@ describe("AgentSession startup identity", () => {
       adapterId: "fake",
       internalSessionId: "missing-provider-thread",
     });
-    expect(session.internalSessionId).toBe("fail-load-thread-1");
+    expect(session.internalSessionId).toMatch(/^fail-load-thread-1-/);
   });
 
   test("configuration rejects competing provider selectors and impossible degraded loads", async () => {
@@ -131,12 +131,12 @@ describe("AgentSession startup identity", () => {
       providerSession: { kind: "new" },
       transcriptPath,
     });
-    expect(session.internalSessionId).toBe("damaged-history-thread-1");
+    expect(session.internalSessionId).toMatch(/^damaged-history-thread-1-/);
     expect(await readTranscriptLines(transcriptPath)).toEqual([
       expect.objectContaining({
         t: "meta",
         event: "open",
-        internalSessionId: "damaged-history-thread-1",
+        internalSessionId: session.internalSessionId,
       }),
     ]);
   });
