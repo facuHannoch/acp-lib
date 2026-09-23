@@ -213,13 +213,13 @@ earlier position when its first revision arrives. Configuration, protocol, agent
 actions, and metering references remain individual records unless they have an
 explicit logical identity; metering details are read from `persistence.metering`.
 
-For live reconciliation, subscribe before the initial read if immediate UI feedback
-matters, but treat subscription notifications as hints. The authoritative catch-up is
-`records.list(conversation.id, { afterSequence: lastSeenSequence, limit: 100 })`.
+For live reconciliation, subscribe to `agent.events` (see below) before the initial read if
+immediate UI feedback matters, but treat live notifications as hints. The authoritative
+catch-up is `records.list(conversation.id, { afterSequence: lastSeenSequence, limit: 100 })`.
 Advance `lastSeenSequence` to the last returned record and repeat until the page is
 short. Upsert by `recordId` through `reconcileConversationTimeline`; after a process
-restart, catch up from the last sequence the consumer retained. Subscription sequence
-numbers are **not** SQLite conversation sequences.
+restart, catch up from the last sequence the consumer retained. Process-local notification
+counters are **not** SQLite conversation sequences.
 
 Use one batched preview read for a conversation list:
 
@@ -241,6 +241,57 @@ offset cursors as a frozen snapshot. `messages.list()` returns the latest visibl
 revision per logical message; `records.list()` and `records.listRecent()` retain all
 physical revisions for timeline reconstruction and audit. `listRecent` and `listPreviews` are SQLite
 capabilities; custom persistence backends may not implement them.
+
+### Live committed-record events
+
+`agent.events` is a process-local stream of canonical conversation records, published only
+after the transaction that wrote them commits. It is not durable and has no replay: it is
+the live half of the same stream `records.list()` returns, so a UI can render immediately
+and still reconcile against SQLite.
+
+```ts
+const unsubscribe = agent.events.subscribe((notification) => {
+  const record = notification.event.record; // the exact persisted record
+  applyToTimeline(record);                  // upsert by recordId, as a reload would
+}, {
+  conversationIds: [conversation.id],
+  recordKinds: ["message", "tool_call", "permission", "activity"],
+});
+// later:
+unsubscribe();
+```
+
+Each event carries the record's stable `recordId` and conversation `sequence`. Evolving
+records (streaming messages, tool calls, activities, thinking) emit one event per physical
+revision, so reconcile by the same logical identity a reload uses.
+`notification.deliverySequence` orders live events for one process but is not a durable
+cursor.
+
+Bootstrap without losing events: subscribe first, buffer, read history, then deduplicate by
+`recordId`:
+
+```ts
+const pending: ConversationRecord[] = [];
+const unsubscribe = agent.events.subscribe(({ event }) => pending.push(event.record), {
+  conversationIds: [conversation.id],
+});
+const page = await agent.persistence.records.listRecent!(conversation.id, { limit: 50 });
+let items = reconcileConversationTimeline([], [...page.records, ...pending]);
+```
+
+After a restart or a missed window, catch up from SQLite with
+`records.list(conversation.id, { afterSequence: lastSeenSequence })`. Filters are fixed for
+the life of a subscription: omitting a list selects everything, an empty list selects
+nothing, and an unknown `recordKinds` value throws at subscribe time. Filtering never
+changes capture, audit, persistence, or another subscriber. A subscriber that throws is
+logged and ignored; it cannot fail the operation that produced the record.
+
+`agent.events` reports committed records only. Provisional live data — response chunks,
+turn and state changes, handoff progress — still arrives through the prompt handlers and
+`conversation.subscribe()`. A record may appear in both at different stages: a tool update
+first streams provisionally, then arrives as a committed `tool_call`. Detached
+`AgentConversation` instances without an owning `Agent` are outside this bus, and a
+consumer-direct `persistence.records.append()` is not observed.
 
 ### Agent audit log
 

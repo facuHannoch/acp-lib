@@ -59,6 +59,11 @@ import {
   type NormalizedAgentObservation,
   type ResolvedAgentAuditLogConfig,
 } from "./audit/index.ts";
+import { noopLogger } from "./logger.ts";
+import {
+  CommittedRecordEventBus,
+  type AgentEventBus,
+} from "./observation/agent-event-bus.ts";
 import type {
   AgentConversationOwnerLifecycle,
   OwnedPromptCommitResult,
@@ -193,7 +198,10 @@ export class Agent {
   readonly internalInferences?: InternalInferenceManager;
   readonly checkpointing?: ConversationCheckpointCoordinator;
   readonly audit?: AgentAuditRuntime;
+  /** Process-local stream of committed canonical conversation records. */
+  readonly events: AgentEventBus;
 
+  private readonly eventBus: CommittedRecordEventBus;
   private readonly manager: DefaultAgentConversationManager;
   private auditObservationTail: Promise<void> = Promise.resolve();
   private auditObservationError: unknown;
@@ -213,6 +221,19 @@ export class Agent {
     this.persistence = persistence;
     this.adapters = adapters;
     this.audit = audit;
+    const logger = config.conversationDefaults?.logger ?? noopLogger;
+    this.eventBus = new CommittedRecordEventBus({
+      agentSessionId: id,
+      onListenerError: ({ error, event }) => {
+        // A subscriber is observation, never operation authority: log and move on. It must
+        // not become an error record, which would recursively emit another event.
+        logger.warn("agent_event_listener_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          deliverySequence: event.deliverySequence,
+        });
+      },
+    });
+    this.events = this.eventBus;
     const checkpointing = config.checkpointing
       ? resolveConversationCheckpointingConfig(config.checkpointing)
       : null;
@@ -314,6 +335,7 @@ export class Agent {
         beginMetering: async (attempt, session) => {
           return await this.manager.beginInternalInferenceMetering(attempt, session);
         },
+        onCommittedRecords: (records) => this.publishCommittedRecords(records),
         resolveAdapterId: async (requestedAdapterId, agentConversationId) => {
           if (requestedAdapterId) {
             adapters.require(requestedAdapterId);
@@ -432,6 +454,19 @@ export class Agent {
     return await Agent.open(config);
   }
 
+  /**
+   * Publish records whose persistence transaction has already committed.
+   *
+   * Internal to the Agent-owned persistence boundary; it is not a public write API. Keeping
+   * publication here is what makes "an event requires an assigned canonical sequence"
+   * mechanically true rather than a convention each producer must remember.
+   *
+   * @internal
+   */
+  publishCommittedRecords(records: readonly ConversationRecord[]): void {
+    this.eventBus.publish(records);
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -444,6 +479,8 @@ export class Agent {
       await this.auditObservationTail;
       const observationError = this.auditObservationError;
       await this.manager.stopAll();
+      // Every authorized shutdown write has finished; nothing may be observed after this.
+      this.eventBus.close();
       await this.recordAgentAuditObservation("agent_lifecycle", "closed");
       if (observationError !== undefined) throw observationError;
     } catch (error) {
@@ -995,6 +1032,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         });
       }
     });
+    this.agent.publishCommittedRecords(persisted);
     if (this.settings.auditLog) this.agent.audit?.notifyPending();
     const commit: OwnedPromptCommitResult = Object.freeze({
       ...(providerAttachment ? { providerAttachment } : {}),
@@ -1103,6 +1141,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         }, this.settings.auditLog);
       }
     });
+    if (reference) this.agent.publishCommittedRecords([reference]);
     if (this.settings.auditLog) this.agent.audit?.notifyPending();
     if (reference) await this.updateIdentity([reference]);
   }
@@ -1145,6 +1184,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     await this.agent.persistence.transaction(async (persistence) => {
       await this.persistObservationsInTransaction(persistence, records, audit, persisted);
     });
+    this.agent.publishCommittedRecords(persisted);
     if (audit && this.settings.auditLog) this.agent.audit?.notifyPending();
     return Object.freeze(persisted);
   }
