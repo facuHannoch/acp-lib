@@ -1,6 +1,38 @@
 # Provider attachment lifecycle
 
-Status: Stage 1 implemented; Stage 2 proposed.
+Status: Stage 1 implemented; Stage 2 implemented except promptless transitions on the
+direct/v2 transcript.
+
+Implemented in Stage 2:
+
+- Handoff, switch and reset confirm their target with a completed provider turn on it,
+  on every persistence path. Both same-adapter and cross-adapter transitions use their own
+  target controller, and a failed seed stops the target while the source stays live and
+  selected. This closes the continuation-state corruption described under "Current failure
+  modes".
+- `HandoffResult.providerAttachment` and the `AgentSessionHandoffError` fields report local
+  attachment state, distinguishing a target prompt that failed after activation from a
+  transition that never reached one.
+- Agent-owned SQLite and the legacy catalog defer promptless transition targets: the live
+  conversation moves, the previous mapping stays the restart fallback, and the first
+  completed prompt commits the replacement.
+- Mode changes follow the same rule, including the ACP-to-degraded fallback.
+- The direct/v2 transcript leaves its thread slot empty at creation and fills it in from
+  the first completed turn's own terminal checkpoint. This needed no new record type:
+  `null -> first thread` supersedes nothing, so the reducer permits it on a terminal
+  checkpoint of a settled operation, and `finishOperation` already writes the terminal
+  record and its checkpoint as one pair. Replacing an already selected thread stays a
+  transition and is refused.
+- Opening a conversation that never recorded a thread starts a fresh one and reports
+  `outcome.kind: "fresh"` rather than `unavailable`.
+
+Not implemented: a promptless reset on the direct/v2 transcript still activates its target
+immediately. Deferring it is a genuine `idA -> idB` routing change, so it needs the combined
+terminal-plus-activation write described under "Promptless reset" — reducer support for
+activation at an uncheckpointed terminal boundary, and an `activationState` extension
+carrying the terminal checkpoint's metering so the reducer's derived checkpoint still
+matches the written one. That is an on-disk transcript format change; every other case was
+closed without one.
 
 An ACP logical conversation and the provider thread currently serving it are different
 things. The logical `agc-*` conversation is owned by this library and can be persisted
