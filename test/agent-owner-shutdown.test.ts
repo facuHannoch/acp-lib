@@ -52,6 +52,10 @@ describe("Agent owner shutdown", () => {
     }).then(() => "completed", () => "failed");
     await sawChunk;
 
+    const concurrentOpen = await agent.conversations.open(conversation.id);
+    expect(concurrentOpen.providerSession).toBe("already_open");
+    expect(concurrentOpen.conversation).toBe(conversation);
+
     const firstStop = conversation.stop();
     const secondStop = conversation.stop();
     expect(secondStop).toBe(firstStop);

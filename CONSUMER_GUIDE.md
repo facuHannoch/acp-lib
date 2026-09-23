@@ -95,6 +95,14 @@ Reopen the same database with `Agent.open()` and call
 `Agent.close()` interrupts live prompts and waits for their finalization and queued
 conversation writes before closing the SQLite backend; an interrupted prompt may reject.
 
+A newly created conversation may expose `conversation.internalSessionId` immediately, but
+the provider attachment is retained only in memory until its first completed provider turn.
+If the conversation stops before then, reopening the durable `agc-*` conversation creates a
+fresh provider thread. After a completed turn, the provider mapping becomes the continuation
+candidate used by `open()`; successfully loading it does not create another history row.
+This is a local evidence threshold, not a guarantee that the harness will keep the provider
+session loadable forever.
+
 ### Attach consumer data to a prompt message
 
 The object-form prompt APIs attach opaque JSON to the submitted **user message**:

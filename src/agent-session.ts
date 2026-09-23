@@ -31,7 +31,17 @@ import type {
   ParticipantRef,
   PersistenceJsonValue,
 } from "./persistence/backend.ts";
-import type { AgentConversationOwnerLifecycle } from "./agent-conversation-owner.ts";
+import {
+  OwnedPromptPostCommitError,
+  type AgentConversationOwnerLifecycle,
+} from "./agent-conversation-owner.ts";
+import {
+  acknowledgeProviderAttachment,
+  recordedProviderAttachment,
+  runtimeOnlyProviderAttachment,
+  type ProviderAttachmentCommitAcknowledgement,
+  type ProviderAttachmentState,
+} from "./persistence/provider-attachment.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
@@ -429,6 +439,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly listeners = new Set<AgentSessionListener>();
   private lastStateKey = "";
   private _internalSessionId: string | null;
+  private providerAttachment: ProviderAttachmentState = Object.freeze({ kind: "absent" });
   private ownerContextNonce: string | null = null;
   private metering: MeteringEngine;
   private readonly meteringConfig: MeteringConfig;
@@ -959,7 +970,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const result = await this.controller.start();
     // A resumed thread's counters did not start at zero, so it needs restored state to
     // be attributable.
-    this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
+    const internalSessionId = result.sessionId || this._internalSessionId;
+    if (this.ownerLifecycle && internalSessionId) {
+      this.installProviderAttachment(internalSessionId, result.resumed ? "recorded" : "runtime_only");
+    } else {
+      this.setInternalSessionId(internalSessionId, !result.resumed);
+    }
     await this.persist();
     await this.appendTranscript({
       v: 1,
@@ -1458,6 +1474,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
   // --- identity ----------------------------------------------------------------
   get internalSessionId(): string | null {
     return this._internalSessionId;
+  }
+
+  /** @internal Snapshot used by the Agent-owned persistence lifecycle. */
+  get providerAttachmentState(): ProviderAttachmentState {
+    return this.providerAttachment;
+  }
+
+  /** @internal Apply an acknowledgement from the Agent-owned persistence lifecycle. */
+  acknowledgeProviderAttachment(acknowledgement: ProviderAttachmentCommitAcknowledgement): void {
+    this.providerAttachment = acknowledgeProviderAttachment(this.providerAttachment, acknowledgement);
   }
 
   /** Active adapter route. It changes only after a durable switch activation. */
@@ -2188,6 +2214,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         failedAfter = "target_activated";
       }
       const activatedAt = new Date().toISOString();
+      const recordedByOwner = this.ownerLifecycle?.transitionActivated !== undefined;
       try {
         await this.ownerLifecycle?.transitionActivated?.({
           transitionId: item.handoffId,
@@ -2223,7 +2250,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this.bindController(targetController);
       }
       targetActivated = true;
-      this.setInternalSessionId(toInternalSessionId);
+      if (recordedByOwner) this.installProviderAttachment(toInternalSessionId, "recorded");
+      else this.setInternalSessionId(toInternalSessionId);
       await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       this.emitStateIfChanged();
       await this.persist();
@@ -3048,7 +3076,17 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this._title = item.text.trim().replace(/\s+/g, " ").slice(0, 60);
       }
       // A session may have been created lazily on first prompt (degraded has none).
-      this.setInternalSessionId(this.controller.currentSessionId ?? this._internalSessionId);
+      const observedInternalSessionId = this.controller.currentSessionId ?? this._internalSessionId;
+      if (this.ownerLifecycle && observedInternalSessionId) {
+        if (
+          this.providerAttachment.kind === "absent"
+          || this.providerAttachment.descriptor.internalSessionId !== observedInternalSessionId
+        ) {
+          this.installProviderAttachment(observedInternalSessionId, "runtime_only");
+        }
+      } else {
+        this.setInternalSessionId(observedInternalSessionId);
+      }
       // Metering closes BEFORE local persistence. The provider has already been paid and
       // has already told us what it charged; letting a transcript or catalog write failure
       // send us down the catch path would discard usage we are holding and, in a strict
@@ -3080,18 +3118,41 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       const result = Object.freeze({ ...res, operationId: item.turnId, metering: record });
       await this.ownerRecordWrite;
-      await this.ownerLifecycle?.afterPrompt({
-        operationId: item.turnId,
-        agentSessionId: this.ownerAgentSessionId!,
-        agentConversationId: this.agentConversationId,
-        targetProviderContextId,
-        ...(owned?.identityDeliveryReceipt
-          ? { identityDeliveryReceipt: owned.identityDeliveryReceipt }
-          : {}),
-        ...(item.participantId ? { participantId: item.participantId } : {}),
-        text: item.text,
-        result,
-      });
+      if (this.ownerLifecycle) {
+        const completed = {
+          operationId: item.turnId,
+          agentSessionId: this.ownerAgentSessionId!,
+          agentConversationId: this.agentConversationId,
+          targetProviderContextId,
+          ...(owned?.identityDeliveryReceipt
+            ? { identityDeliveryReceipt: owned.identityDeliveryReceipt }
+            : {}),
+          ...(item.participantId ? { participantId: item.participantId } : {}),
+          text: item.text,
+          result,
+          providerAttachment: this.providerAttachment,
+        };
+        try {
+          const committed = await this.ownerLifecycle.afterPrompt(completed);
+          if (committed?.providerAttachment) {
+            this.providerAttachment = acknowledgeProviderAttachment(
+              this.providerAttachment,
+              committed.providerAttachment,
+            );
+          }
+        } catch (error) {
+          if (error instanceof OwnedPromptPostCommitError) {
+            if (error.commit.providerAttachment) {
+              this.providerAttachment = acknowledgeProviderAttachment(
+                this.providerAttachment,
+                error.commit.providerAttachment,
+              );
+            }
+            throw error.cause ?? error;
+          }
+          throw error;
+        }
+      }
       await this.ownerRecordWrite;
       return result;
     } catch (err) {
@@ -3729,6 +3790,26 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (pending && next && (!pending.sessionId || pending.sessionId === next)) {
       this.applyUsageUpdate(pending.update, pending.sessionId);
     }
+  }
+
+  private installProviderAttachment(
+    internalSessionId: string,
+    kind: "runtime_only" | "recorded",
+  ): void {
+    const current = this.providerAttachment;
+    if (current.kind === kind && current.descriptor.internalSessionId === internalSessionId) return;
+    this.setInternalSessionId(internalSessionId, kind === "runtime_only");
+    const descriptor = {
+      attachmentAttemptId: crypto.randomUUID(),
+      internalSessionId,
+      adapterId: this.adapterId,
+      mode: this.mode,
+      ...(this.model ? { model: this.model } : {}),
+      acquiredAt: new Date().toISOString(),
+    };
+    this.providerAttachment = kind === "runtime_only"
+      ? runtimeOnlyProviderAttachment(descriptor)
+      : recordedProviderAttachment(descriptor);
   }
 
   /**
