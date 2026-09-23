@@ -1252,6 +1252,15 @@ function captureRuntimeRecord(
   record: NewConversationRecord,
   level: RecordCaptureLevel,
 ): NewConversationRecord {
+  if (record.kind === "error") {
+    // `metadata` omits the display message and details; `content` keeps the message but
+    // still omits details; `raw` retains the allow-listed details.
+    if (level === "raw") return record;
+    const { details: _details, message, ...rest } = record;
+    return level === "content"
+      ? { ...rest, ...(message === undefined ? {} : { message }) }
+      : rest;
+  }
   if (level !== "metadata") return record;
   switch (record.kind) {
     case "message":

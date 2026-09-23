@@ -33,6 +33,7 @@ export const CONVERSATION_RECORD_KINDS = [
   "thinking",
   "activity",
   "metering",
+  "error",
 ] as const;
 
 export type ConversationRecordKind = (typeof CONVERSATION_RECORD_KINDS)[number];
@@ -150,6 +151,44 @@ export interface MeteringReferenceRecord extends ConversationRecordEnvelope<"met
   readonly status: "available" | "partial" | "unavailable";
 }
 
+/** Operational boundary a conversation error was observed at. Closed taxonomy. */
+export type ConversationErrorSource =
+  | "provider_session"
+  | "transport"
+  | "operation"
+  | "recovery";
+
+/** What a consumer may reasonably do about a failed operation. */
+export type ConversationErrorRecoverability =
+  | "retryable"
+  | "recoverable"
+  | "terminal"
+  | "unknown";
+
+/** Allow-listed provider detail, retained only at raw capture. */
+export interface ConversationErrorDetails {
+  readonly providerCode?: string | number;
+  readonly rpcCode?: number;
+  readonly service?: string;
+  readonly exitCode?: number;
+  readonly signal?: string;
+  readonly transportState?: string;
+}
+
+/** Immutable, sanitized diagnosis at a meaningful conversation boundary. */
+export interface ErrorRecord extends ConversationRecordEnvelope<"error"> {
+  readonly source: ConversationErrorSource;
+  /** Stable machine-readable value. The type stays open for future codes. */
+  readonly code: string;
+  readonly recoverability: ConversationErrorRecoverability;
+  /** Sanitized fallback text intended for display, not a raw exception dump. */
+  readonly message?: string;
+  readonly operationId?: string;
+  readonly transitionId?: string;
+  readonly internalSessionId?: string;
+  readonly details?: ConversationErrorDetails;
+}
+
 export type ConversationRecord =
   | MessageRecord
   | ToolCallRecord
@@ -160,7 +199,8 @@ export type ConversationRecord =
   | AgentActionRecord
   | ThinkingRecord
   | ActivityRecord
-  | MeteringReferenceRecord;
+  | MeteringReferenceRecord
+  | ErrorRecord;
 
 type WithoutSequence<T> = T extends ConversationRecord ? Omit<T, "sequence"> : never;
 export type NewConversationRecord = WithoutSequence<ConversationRecord>;
@@ -209,6 +249,7 @@ export const DEFAULT_CONVERSATION_RECORD_CAPTURE: ConversationRecordCapturePolic
   thinking: "none",
   activity: "metadata",
   metering: "metadata",
+  error: "content",
 });
 
 export interface AgentPersistenceIdentity {
@@ -822,6 +863,10 @@ export function searchableText(record: ConversationRecord): string {
       return [record.activityType, contentText(record.content), jsonText(record.data)].filter(Boolean).join("\n");
     case "metering":
       return [record.operationId, record.meteringRecordId, record.status].join("\n");
+    case "error":
+      // Errors are operational history, not searchable conversation content; v1 keeps them
+      // out of full-text search.
+      return "";
   }
 }
 

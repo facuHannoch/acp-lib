@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 11;
+export const SQLITE_AGENT_SCHEMA_VERSION = 12;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS conversation_records (
     'agent_action',
     'thinking',
     'activity',
-    'metering'
+    'metering',
+    'error'
   )),
   timestamp TEXT NOT NULL,
   operation_id TEXT,
@@ -209,6 +210,24 @@ CREATE TABLE IF NOT EXISTS conversation_metering_references (
 
 CREATE INDEX IF NOT EXISTS conversation_metering_operation_idx
   ON conversation_metering_references(operation_id, record_row_id);
+
+CREATE TABLE IF NOT EXISTS conversation_error_records (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK (source IN (
+    'provider_session', 'transport', 'operation', 'recovery'
+  )),
+  code TEXT NOT NULL CHECK (length(trim(code)) > 0),
+  recoverability TEXT NOT NULL CHECK (recoverability IN (
+    'retryable', 'recoverable', 'terminal', 'unknown'
+  )),
+  message TEXT,
+  transition_id TEXT,
+  internal_session_id TEXT,
+  details_json TEXT CHECK (details_json IS NULL OR json_valid(details_json))
+);
+
+CREATE INDEX IF NOT EXISTS conversation_error_source_code_idx
+  ON conversation_error_records(source, code, record_row_id);
 
 CREATE TABLE IF NOT EXISTS conversation_checkpoints (
   agent_conversation_id TEXT PRIMARY KEY REFERENCES conversations(agent_conversation_id),
@@ -518,56 +537,118 @@ END;
 `;
 
 export function migrateSqliteAgentSchema(database: Database): void {
-  database.exec("BEGIN IMMEDIATE");
-  try {
-    const hasMigrations = database.query<{ present: number }, []>(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
-    ).get() !== null;
-    if (hasMigrations) {
-      const existing = Number(database.query<{ version: number }, []>(
+  const hasMigrations = database.query<{ present: number }, []>(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+  ).get() !== null;
+  const existing = hasMigrations
+    ? Number(database.query<{ version: number }, []>(
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
-      ).get()?.version ?? 0);
-      if (existing !== 0 && existing !== 8 && existing !== 9 && existing !== 10
-        && existing !== SQLITE_AGENT_SCHEMA_VERSION) {
-        throw new Error(
-          `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
-        );
-      }
-    }
-    database.exec(BASE_SCHEMA);
-    const row = database.query<{ version: number }, []>(
-      "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
-    ).get();
-    const version = Number(row?.version ?? 0);
-    if (version > 0 && version < 10) {
-      database.exec(`ALTER TABLE conversation_messages ADD COLUMN consumer_metadata_json TEXT
-        CHECK (consumer_metadata_json IS NULL OR json_valid(consumer_metadata_json))`);
-      database.exec("ALTER TABLE conversations ADD COLUMN last_human_message_at TEXT");
-      database.exec(`UPDATE conversations SET last_human_message_at = (
-        SELECT r.timestamp FROM conversation_records r
-        JOIN conversation_messages m ON m.record_row_id = r.row_id
-        JOIN participants p ON p.participant_id = m.participant_id
-        WHERE r.agent_conversation_id = conversations.agent_conversation_id
-          AND r.kind = 'message' AND m.role = 'user' AND p.kind = 'user'
-        ORDER BY r.sequence DESC LIMIT 1
-      )`);
-    }
-    if (version > 0 && version < 11) {
-      database.exec("ALTER TABLE conversation_messages ADD COLUMN logical_message_id TEXT");
-    }
-    database.exec(`CREATE INDEX IF NOT EXISTS conversation_messages_logical_idx
-      ON conversation_messages(logical_message_id, record_row_id)
-      WHERE logical_message_id IS NOT NULL`);
-    if (version < SQLITE_AGENT_SCHEMA_VERSION) {
-      database.query<unknown, [number, string]>(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-      ).run(SQLITE_AGENT_SCHEMA_VERSION, new Date().toISOString());
-    }
-    database.exec("COMMIT");
-  } catch (error) {
-    if (database.inTransaction) database.exec("ROLLBACK");
-    throw error;
+      ).get()?.version ?? 0)
+    : 0;
+  if (existing !== 0 && ![8, 9, 10, 11, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+    throw new Error(
+      `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
+    );
   }
+  // Admitting the `error` kind means rebuilding conversation_records: its kind CHECK is a
+  // closed list SQLite cannot alter in place. Foreign keys must be off for that drop, or
+  // the implicit delete would cascade into every detail table.
+  const rebuildRecords = existing > 0 && existing < 12;
+  if (rebuildRecords) database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database.exec(BASE_SCHEMA);
+      const row = database.query<{ version: number }, []>(
+        "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
+      ).get();
+      const version = Number(row?.version ?? 0);
+      if (version > 0 && version < 10) {
+        database.exec(`ALTER TABLE conversation_messages ADD COLUMN consumer_metadata_json TEXT
+          CHECK (consumer_metadata_json IS NULL OR json_valid(consumer_metadata_json))`);
+        database.exec("ALTER TABLE conversations ADD COLUMN last_human_message_at TEXT");
+        database.exec(`UPDATE conversations SET last_human_message_at = (
+          SELECT r.timestamp FROM conversation_records r
+          JOIN conversation_messages m ON m.record_row_id = r.row_id
+          JOIN participants p ON p.participant_id = m.participant_id
+          WHERE r.agent_conversation_id = conversations.agent_conversation_id
+            AND r.kind = 'message' AND m.role = 'user' AND p.kind = 'user'
+          ORDER BY r.sequence DESC LIMIT 1
+        )`);
+      }
+      if (version > 0 && version < 11) {
+        database.exec("ALTER TABLE conversation_messages ADD COLUMN logical_message_id TEXT");
+      }
+      database.exec(`CREATE INDEX IF NOT EXISTS conversation_messages_logical_idx
+        ON conversation_messages(logical_message_id, record_row_id)
+        WHERE logical_message_id IS NOT NULL`);
+      if (version > 0 && version < 12) {
+        rebuildConversationRecordsForErrorKind(database);
+        const violations = database.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all();
+        if (violations.length > 0) {
+          throw new Error("SQLite schema migration to version 12 left foreign key violations");
+        }
+      }
+      if (version < SQLITE_AGENT_SCHEMA_VERSION) {
+        database.query<unknown, [number, string]>(
+          "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+        ).run(SQLITE_AGENT_SCHEMA_VERSION, new Date().toISOString());
+      }
+      database.exec("COMMIT");
+    } catch (error) {
+      if (database.inTransaction) database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    if (rebuildRecords) database.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+/**
+ * Rebuild `conversation_records` so its `kind` CHECK admits `error`.
+ *
+ * Row ids are copied verbatim, so every detail table's `record_row_id` reference survives
+ * the swap. The caller runs this with foreign keys disabled and verifies with
+ * `PRAGMA foreign_key_check` afterward.
+ */
+function rebuildConversationRecordsForErrorKind(database: Database): void {
+  database.exec(`CREATE TABLE conversation_records_v12 (
+    row_id INTEGER PRIMARY KEY,
+    record_id TEXT NOT NULL UNIQUE,
+    agent_session_id TEXT NOT NULL,
+    agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    kind TEXT NOT NULL CHECK (kind IN (
+      'message',
+      'tool_call',
+      'permission',
+      'configuration',
+      'protocol',
+      'native_action',
+      'agent_action',
+      'thinking',
+      'activity',
+      'metering',
+      'error'
+    )),
+    timestamp TEXT NOT NULL,
+    operation_id TEXT,
+    metadata TEXT,
+    UNIQUE (agent_conversation_id, sequence)
+  )`);
+  database.exec(`INSERT INTO conversation_records_v12(
+    row_id, record_id, agent_session_id, agent_conversation_id, sequence, kind, timestamp, operation_id, metadata
+  ) SELECT row_id, record_id, agent_session_id, agent_conversation_id, sequence, kind, timestamp, operation_id, metadata
+    FROM conversation_records`);
+  database.exec("DROP TABLE conversation_records");
+  database.exec("ALTER TABLE conversation_records_v12 RENAME TO conversation_records");
+  database.exec(`CREATE INDEX IF NOT EXISTS conversation_records_kind_idx
+    ON conversation_records(agent_conversation_id, kind, sequence)`);
+  database.exec(`CREATE INDEX IF NOT EXISTS conversation_records_time_idx
+    ON conversation_records(timestamp, agent_conversation_id)`);
+  database.exec(`CREATE INDEX IF NOT EXISTS conversation_records_operation_idx
+    ON conversation_records(agent_conversation_id, operation_id, sequence)
+    WHERE operation_id IS NOT NULL`);
 }
 
 export function installSqliteFts(database: Database): boolean {

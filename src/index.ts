@@ -76,6 +76,17 @@ export {
   searchableText,
 } from "./persistence/backend.ts";
 export {
+  CONVERSATION_ERROR_CODES,
+  CONVERSATION_ERROR_RECOVERABILITIES,
+  CONVERSATION_ERROR_SOURCES,
+  buildConversationErrorDetails,
+  sanitizeConversationErrorMessage,
+} from "./persistence/error-records.ts";
+export type {
+  ConversationErrorCode,
+  ConversationErrorDetailInput,
+} from "./persistence/error-records.ts";
+export {
   AgentDatabaseInUseError,
   SQLITE_AGENT_SCHEMA_VERSION,
   SqliteAgentPersistence,
@@ -96,6 +107,10 @@ export type {
   ConversationRecordCapturePolicy,
   ConversationRecordEnvelope,
   ConversationRecordKind,
+  ConversationErrorDetails,
+  ConversationErrorRecoverability,
+  ConversationErrorSource,
+  ErrorRecord,
   RecentRecordPage,
   RecentRecordPageOptions,
   IdentityMemoryObservation,

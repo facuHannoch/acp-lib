@@ -90,6 +90,17 @@ function projectRecordPayload(
       return { ...base, activityId: record.activityId, activityType: record.activityType, state: record.state,
         ...(level !== "metadata" && record.content !== undefined ? { content: json(record.content) } : {}),
         ...(level === "raw" && record.data !== undefined ? { data: record.data } : {}) };
+    case "error":
+      return {
+        ...base,
+        source: record.source,
+        code: record.code,
+        recoverability: record.recoverability,
+        ...(record.transitionId ? { transitionId: record.transitionId } : {}),
+        ...(record.internalSessionId ? { internalSessionId: record.internalSessionId } : {}),
+        ...(level !== "metadata" && record.message ? { message: record.message } : {}),
+        ...(level === "raw" && record.details ? { details: json(record.details) } : {}),
+      };
     case "metering": {
       const metering = observation.meteringRecord;
       if (level === "raw" && metering) return json(metering);

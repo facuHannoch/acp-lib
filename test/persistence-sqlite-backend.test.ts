@@ -715,9 +715,9 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(11);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(12);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 11; recreate the database",
+      "SQLite agent schema 7 is incompatible with 12; recreate the database",
     );
   });
 
@@ -736,9 +736,7 @@ describe("SQLite agent persistence", () => {
       ALTER TABLE conversation_messages DROP COLUMN logical_message_id;
       ALTER TABLE conversation_messages DROP COLUMN consumer_metadata_json;
       ALTER TABLE conversations DROP COLUMN last_human_message_at;
-      DELETE FROM schema_migrations WHERE version = 11;
-      DELETE FROM schema_migrations WHERE version = 10;
-      DELETE FROM schema_migrations WHERE version = 9;
+      DELETE FROM schema_migrations WHERE version >= 9;
       INSERT INTO schema_migrations(version, applied_at) VALUES (8, '2026-09-18T00:00:00.000Z');
     `);
     old.close();
@@ -755,7 +753,7 @@ describe("SQLite agent persistence", () => {
     }]);
     expect((await migrated.identityDelivery.get(targetConversationId, "provider-1", conversationId))?.deliveredThroughSequence).toBe(1);
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(11);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(12);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM identity_delivery_cursors").get()?.count).toBe(1);
     inspection.close();
   });
@@ -774,8 +772,7 @@ describe("SQLite agent persistence", () => {
       ALTER TABLE conversation_messages DROP COLUMN logical_message_id;
       ALTER TABLE conversation_messages DROP COLUMN consumer_metadata_json;
       ALTER TABLE conversations DROP COLUMN last_human_message_at;
-      DELETE FROM schema_migrations WHERE version = 11;
-      DELETE FROM schema_migrations WHERE version = 10;
+      DELETE FROM schema_migrations WHERE version >= 10;
       INSERT INTO schema_migrations(version, applied_at) VALUES (9, '2026-09-19T00:00:00.000Z');
     `);
     old.close();
@@ -803,7 +800,7 @@ describe("SQLite agent persistence", () => {
     old.exec(`
       DROP INDEX conversation_messages_logical_idx;
       ALTER TABLE conversation_messages DROP COLUMN logical_message_id;
-      DELETE FROM schema_migrations WHERE version = 11;
+      DELETE FROM schema_migrations WHERE version >= 11;
       INSERT INTO schema_migrations(version, applied_at) VALUES (10, '2026-09-19T00:00:00.000Z');
     `);
     old.close();
@@ -823,6 +820,78 @@ describe("SQLite agent persistence", () => {
     });
     expect((await migrated.messages.list(conversationId)).messages.map((record) => record.content))
       .toEqual(["retained", "new final"]);
+  });
+
+  test("migrates version 11 to the error record kind without losing records", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    await backend.records.append(message(agentSessionId, conversationId, "before-v12", "user", "retained"));
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+
+    const old = new Database(path, { readwrite: true });
+    old.exec(`
+      DROP TABLE conversation_error_records;
+      CREATE TABLE conversation_records_v11 (
+        row_id INTEGER PRIMARY KEY,
+        record_id TEXT NOT NULL UNIQUE,
+        agent_session_id TEXT NOT NULL,
+        agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+        sequence INTEGER NOT NULL CHECK (sequence > 0),
+        kind TEXT NOT NULL CHECK (kind IN (
+          'message','tool_call','permission','configuration','protocol',
+          'native_action','agent_action','thinking','activity','metering'
+        )),
+        timestamp TEXT NOT NULL,
+        operation_id TEXT,
+        metadata TEXT,
+        UNIQUE (agent_conversation_id, sequence)
+      );
+      INSERT INTO conversation_records_v11
+        SELECT row_id, record_id, agent_session_id, agent_conversation_id, sequence, kind, timestamp, operation_id, metadata
+        FROM conversation_records;
+      DROP TABLE conversation_records;
+      ALTER TABLE conversation_records_v11 RENAME TO conversation_records;
+      CREATE INDEX conversation_records_kind_idx ON conversation_records(agent_conversation_id, kind, sequence);
+      CREATE INDEX conversation_records_time_idx ON conversation_records(timestamp, agent_conversation_id);
+      CREATE INDEX conversation_records_operation_idx
+        ON conversation_records(agent_conversation_id, operation_id, sequence) WHERE operation_id IS NOT NULL;
+      DELETE FROM schema_migrations WHERE version >= 12;
+      INSERT INTO schema_migrations(version, applied_at) VALUES (11, '2026-09-20T00:00:00.000Z');
+    `);
+    old.close();
+
+    const migrated = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    expect((await migrated.messages.list(conversationId)).messages[0]).toMatchObject({ content: "retained" });
+    await migrated.records.append({
+      recordId: "error-1",
+      agentSessionId,
+      agentConversationId: conversationId,
+      kind: "error",
+      timestamp: new Date().toISOString(),
+      source: "provider_session",
+      code: "provider_session_missing",
+      recoverability: "recoverable",
+      message: "The provider session could not be loaded.",
+      internalSessionId: "missing-thread",
+      operationId: "op-load-1",
+    });
+    const stored = (await migrated.records.list(conversationId, { kinds: ["error"] })).records;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      kind: "error",
+      source: "provider_session",
+      code: "provider_session_missing",
+      recoverability: "recoverable",
+      message: "The provider session could not be loaded.",
+      internalSessionId: "missing-thread",
+      operationId: "op-load-1",
+    });
+    const inspection = new Database(path, { readonly: true });
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(12);
+    expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM conversation_records").get()?.count).toBe(2);
+    inspection.close();
   });
 
   test("keeps sparse identity delivery cursors monotonic and provider-scoped", async () => {
