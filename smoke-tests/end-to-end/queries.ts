@@ -56,7 +56,14 @@ export function findStoredUserMessage(
   `).get(agentConversationId, "user", content);
 }
 
-/** Return every canonical message boundary in conversation order. */
+/**
+ * Return the canonical message history in conversation order.
+ *
+ * Streaming revisions stay in the physical record stream, so a raw read sees every
+ * `in_progress` snapshot as well as the final message. Fold them the same way the message
+ * API does — latest revision per `logical_message_id` — or a streaming adapter like
+ * opencode yields extra rows that never appear in `PromptResult.messages`.
+ */
 export function listStoredMessages(
   database: Database,
   agentConversationId: string,
@@ -70,6 +77,13 @@ export function listStoredMessages(
     JOIN conversation_messages m ON m.record_row_id = r.row_id
     WHERE r.agent_conversation_id = ?
       AND r.kind = 'message'
+      AND (m.logical_message_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM conversation_messages newer_m
+        JOIN conversation_records newer_r ON newer_r.row_id = newer_m.record_row_id
+        WHERE newer_r.agent_conversation_id = r.agent_conversation_id
+          AND newer_m.logical_message_id = m.logical_message_id
+          AND newer_r.sequence > r.sequence
+      ))
     ORDER BY r.sequence
   `).all(agentConversationId);
 }

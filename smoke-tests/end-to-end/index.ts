@@ -142,11 +142,7 @@ try {
 
   // Simulate a new process opening the same agent database and provider conversation.
   reopenedAgent = await openAgent();
-  assert.equal(
-    (await reopenedAgent.audit?.flush({ timeoutMs: 10_000 }))?.status,
-    "delivered",
-    "restored audit destination did not drain its durable outbox",
-  );
+  await drainAuditOutbox(reopenedAgent);
   const recoveredAudit = readAuditOutbox();
   assert.deepEqual(recoveredAudit, {
     pending: 0,
@@ -444,6 +440,33 @@ function readAuditOutbox() {
   } finally {
     database.close();
   }
+}
+
+/**
+ * Drain the durable outbox to idle.
+ *
+ * A single `flush()` only guarantees delivery through the sequence allocated when it was
+ * called. Opening an agent recovers in-flight internal-inference chains asynchronously, and
+ * those enqueue audit observations after that snapshot, so "flush once, then assert empty"
+ * races startup work. Loop until the outbox has stayed empty for a settle window.
+ */
+async function drainAuditOutbox(agent: Agent): Promise<void> {
+  assert.ok(agent.audit, "audit runtime is disabled");
+  const deadline = Date.now() + 30_000;
+  const settleMs = 200;
+  let emptySince: number | null = null;
+  while (Date.now() < deadline) {
+    const result = await agent.audit.flush({ timeoutMs: 10_000 });
+    assert.notEqual(result.status, "blocked", "restored audit destination is blocked");
+    if (readAuditOutbox().pending === 0) {
+      emptySince ??= Date.now();
+      if (Date.now() - emptySince >= settleMs) return;
+    } else {
+      emptySince = null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("restored audit destination did not drain its durable outbox");
 }
 
 async function assertAgentAuditLog(): Promise<void> {

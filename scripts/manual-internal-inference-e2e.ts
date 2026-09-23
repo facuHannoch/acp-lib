@@ -44,7 +44,7 @@ const agent = await Agent.open({
   persistence: { kind: "sqlite", path: databasePath },
   adapters: { codex: ADAPTERS.codex },
   defaultAdapterId: "codex",
-  conversationDefaults: { cwd: process.cwd(), metering: { pricing: false } },
+  conversationDefaults: { cwd: process.cwd(), metering: { pricing: false as const } },
   internalInference: {
     strategies: [strategy],
     retry: { maxAttempts: 1, backoffMs: [] },

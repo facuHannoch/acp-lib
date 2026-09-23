@@ -17,7 +17,7 @@ const agentConfig = {
   persistence: { kind: "sqlite" as const, path: databasePath },
   adapters: { codex: ADAPTERS.codex },
   defaultAdapterId: "codex",
-  conversationDefaults: { cwd: process.cwd(), metering: { pricing: false } },
+  conversationDefaults: { cwd: process.cwd(), metering: { pricing: false as const } },
   checkpointing: {
     schedule: { milestones: [1], everyAfterMilestones: 50 },
   },
