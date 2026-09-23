@@ -454,6 +454,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private lastStateKey = "";
   private _internalSessionId: string | null;
   private providerAttachment: ProviderAttachmentState = Object.freeze({ kind: "absent" });
+  /**
+   * The thread the local catalog currently selects for a later open.
+   *
+   * Distinct from the live id: a thread that has completed no turn is usable by this
+   * process but is not what a restart should return to. It survives `clearProviderAttachment`
+   * so a stop or a degraded stretch leaves the last confirmed thread in place.
+   */
+  private lastRecordedInternalSessionId: string | null = null;
   private ownerContextNonce: string | null = null;
   private metering: MeteringEngine;
   private readonly meteringConfig: MeteringConfig;
@@ -985,7 +993,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // A resumed thread's counters did not start at zero, so it needs restored state to
     // be attributable.
     const internalSessionId = result.sessionId || this._internalSessionId;
-    if (this.ownerLifecycle && internalSessionId) {
+    if (internalSessionId) {
+      // A thread the adapter resumed was already established elsewhere; one it just
+      // created has completed no turn and is not yet what a restart should return to.
       this.installProviderAttachment(
         internalSessionId,
         result.resumed ? "recorded" : "runtime_only",
@@ -1539,6 +1549,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
   /** @internal Apply an acknowledgement from the Agent-owned persistence lifecycle. */
   acknowledgeProviderAttachment(acknowledgement: ProviderAttachmentCommitAcknowledgement): void {
     this.providerAttachment = acknowledgeProviderAttachment(this.providerAttachment, acknowledgement);
+    if (this.providerAttachment.kind === "recorded") {
+      this.lastRecordedInternalSessionId = this.providerAttachment.descriptor.internalSessionId;
+    }
   }
 
   /** Active adapter route. It changes only after a durable switch activation. */
@@ -2296,7 +2309,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // moves to it; the previous recorded mapping stays the restart fallback until a
       // completed prompt commits this one.
       const canRecord = this.ownerLifecycle?.transitionActivated !== undefined;
-      const deferAttachment = !confirmedByTurn && canRecord && !this.v2Transcript;
+      const deferAttachment = !confirmedByTurn && !this.v2Transcript;
       if (!deferAttachment && this.v2Transcript) {
         const checkpoint = this.v2Transcript.checkpoint;
         // Seeding the target settles an operation on the source, so the descriptor taken
@@ -2361,16 +2374,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.bindController(targetController);
       targetActivated = true;
       targetAttachment = deferAttachment ? "runtime_only" : "recorded";
-      if (canRecord) {
-        // A handoff target is a freshly created thread, so its counters start at zero
-        // whether or not the provider row is already recorded.
-        this.installProviderAttachment(toInternalSessionId, targetAttachment, true, {
-          acquiredAt: activatedAt,
-          transitionId: item.handoffId,
-        });
-      } else {
-        this.setInternalSessionId(toInternalSessionId);
-      }
+      // A handoff target is a freshly created thread, so its counters start at zero
+      // whether or not it is already the selected continuation.
+      this.installProviderAttachment(toInternalSessionId, targetAttachment, true, {
+        acquiredAt: activatedAt,
+        transitionId: item.handoffId,
+      });
       await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       this.emitStateIfChanged();
       await this.persist();
@@ -2873,22 +2882,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const result = await this.controller.setMode(item.mode);
       this._mode = this.controller.currentMode;
       const nextInternalSessionId = result.sessionId || null;
-      if (this.ownerLifecycle) {
-        if (nextInternalSessionId) {
-          if (
-            this.providerAttachment.kind === "absent"
-            || this.providerAttachment.descriptor.internalSessionId !== nextInternalSessionId
-          ) {
-            this.installProviderAttachment(nextInternalSessionId, "runtime_only", true);
-          }
-        } else {
-          // A mode change with no provider thread (for example ACP to degraded) leaves no
-          // live attachment; the previous recorded mapping remains the restart fallback.
-          this.clearProviderAttachment();
-          this.setInternalSessionId(null);
+      if (nextInternalSessionId) {
+        if (
+          this.providerAttachment.kind === "absent"
+          || this.providerAttachment.descriptor.internalSessionId !== nextInternalSessionId
+        ) {
+          this.installProviderAttachment(nextInternalSessionId, "runtime_only", true);
         }
       } else {
-        this.setInternalSessionId(nextInternalSessionId);
+        // A mode change with no provider thread (for example ACP to degraded) leaves no
+        // live attachment; the previous recorded mapping remains the restart fallback.
+        this.clearProviderAttachment();
+        this.setInternalSessionId(null);
       }
       await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       await this.persist();
@@ -3220,7 +3225,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       // A session may have been created lazily on first prompt (degraded has none).
       const observedInternalSessionId = this.controller.currentSessionId ?? this._internalSessionId;
-      if (this.ownerLifecycle && observedInternalSessionId) {
+      if (observedInternalSessionId) {
         if (
           this.providerAttachment.kind === "absent"
           || this.providerAttachment.descriptor.internalSessionId !== observedInternalSessionId
@@ -3243,6 +3248,17 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const record = await this.closeOperation(operation, res.status, res.usage);
       closed = record;
       await this.ownerLifecycle?.meteringRecorded?.(record);
+      // The Agent-owned and transcript paths record the attachment inside their own
+      // commit. A catalog-backed conversation has one mutable row, so the completed turn
+      // is simply what makes the live thread the selected one.
+      const pending = this.providerAttachment;
+      if (res.status === "completed"
+        && !this.ownerLifecycle
+        && !this.v2Transcript
+        && pending.kind === "runtime_only") {
+        this.providerAttachment = recordedProviderAttachment(pending.descriptor);
+        this.lastRecordedInternalSessionId = pending.descriptor.internalSessionId;
+      }
       await this.persist();
       if (this.v2Transcript) {
         await this.presentation.drain();
@@ -3430,6 +3446,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     );
     if (attaching && this.providerAttachment === attachment) {
       this.providerAttachment = recordedProviderAttachment(attachment.descriptor);
+      this.lastRecordedInternalSessionId = attachment.descriptor.internalSessionId;
     }
   }
 
@@ -3922,7 +3939,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (!this.sessions) return;
     await this.sessions.record({
       agentSessionId: this.agentSessionId,
-      internalSessionId: this._internalSessionId,
+      internalSessionId: this.lastRecordedInternalSessionId,
       adapter: this.adapterId,
       mode: this._mode,
       cwd: this._cwd,
@@ -4011,6 +4028,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.providerAttachment = kind === "runtime_only"
       ? runtimeOnlyProviderAttachment(descriptor)
       : recordedProviderAttachment(descriptor);
+    if (kind === "recorded") this.lastRecordedInternalSessionId = internalSessionId;
   }
 
   /** Drop the live attachment without touching persistence or the last known session id. */

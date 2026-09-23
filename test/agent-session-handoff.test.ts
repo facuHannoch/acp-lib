@@ -202,9 +202,33 @@ describe("AgentSession handoff", () => {
     expect(session.state.phase).toBe("idle");
   });
 
+  test("the catalog selects a thread only once a turn has completed on it", async () => {
+    const { session, sessions } = await createSession("catalog");
+    const created = session.internalSessionId;
+    expect(created).not.toBeNull();
+    // The live process is on the thread; nothing has yet made it what a restart returns to.
+    expect((await sessions.get("stable-logical-id"))?.internalSessionId ?? null).toBeNull();
+
+    await session.prompt("the turn that earns the thread its place");
+    expect((await sessions.get("stable-logical-id"))?.internalSessionId).toBe(created!);
+
+    // A promptless reset moves the live conversation without moving the fallback.
+    const reset = await session.reset();
+    expect(reset.providerAttachment).toBe("runtime_only");
+    expect(session.internalSessionId).toBe(reset.toInternalSessionId);
+    expect((await sessions.get("stable-logical-id"))?.internalSessionId).toBe(created!);
+
+    await session.prompt("the turn that earns the reset target its place");
+    expect((await sessions.get("stable-logical-id"))?.internalSessionId)
+      .toBe(reset.toInternalSessionId);
+  }, 20_000);
+
   test("a failed seed leaves the source thread live and the catalog unchanged", async () => {
     const { session, sessions, transcriptPath } = await createSession("fail-seed");
     const oldInternalSessionId = session.internalSessionId;
+    // Only a completed turn puts the source in the catalog, which is what the failed
+    // handoff must leave untouched.
+    await session.prompt("establish the recorded thread");
     const notifications: AgentSessionNotification[] = [];
     session.subscribe((notification) => notifications.push(notification));
 
