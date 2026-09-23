@@ -1038,6 +1038,33 @@ V0 handoff uses the current adapter. The default summary-generation and new-thre
 introduction prompts are library-defined, and introduction is an ordinary user prompt
 because ACP has no portable system-prompt field.
 
+### Provider attachment
+
+A newly created provider thread is not selected for a later open until a provider turn has
+completed on it. Until then the running process uses it, but a restart returns to the
+previous thread — or, for a conversation that never had one, starts fresh.
+
+`HandoffResult.providerAttachment` reports which of those a transition produced:
+
+```ts
+handoff.providerAttachment === "recorded";     // a turn completed on the target
+reset.providerAttachment === "runtime_only";   // live on the target, not yet selected
+```
+
+A promptless `reset()` has no turn to confirm its target, so it reports `runtime_only` and
+the previous thread stays the restart fallback until the next completed prompt. This
+describes local state only; it never claims the provider will still accept the session.
+
+`providerAttachment` is a required field, so code that constructs a `HandoffResult` value
+itself — rather than consuming one — needs updating. `AgentSessionHandoffError` gained
+`fromInternalSessionId`, `toInternalSessionId`, `providerAttachment`, `activationCompleted`,
+`summary` and `targetResult`; `activationCompleted` distinguishes a target prompt that
+failed after the target was already selected from a transition that never reached one.
+
+Because a transition keeps its source alive until the target is confirmed, both
+same-adapter and cross-adapter transitions now run a second provider process for the
+duration of the transition.
+
 ## Harness configuration and commands
 
 ACP configuration is available through the stable session:

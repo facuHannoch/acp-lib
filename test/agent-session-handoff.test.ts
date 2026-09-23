@@ -76,6 +76,11 @@ describe("AgentSession handoff", () => {
       .toEqual(["started", "target_created", "target_activated", "completed"]);
     expect(records.filter((record) => record.t === "operation").map((record) => record.operationKind))
       .toEqual(["prompt", "prompt", "handoff_seed", "handoff_seed"]);
+    // The seed was metered on the target's own engine, so the checkpoint written before
+    // activation still held the source's pre-seed totals. Activation publishes the engine
+    // that is now live, or a crash here would lose work already paid for.
+    const settledOperations = scan.reduction.checkpoint.metering.operationCount;
+    expect(settledOperations).toBe(2);
   }, 20_000);
 
   test("v2 persistence retains the source when continuation seeding fails", async () => {

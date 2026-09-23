@@ -90,6 +90,7 @@ describe("direct transcript provider attachment", () => {
     expect(reopened.promptability).toEqual({ promptable: true, blockers: [] });
 
     // The fresh thread is itself unrecorded until it completes a turn.
+    expect(reopened.session.providerAttachmentState.kind).toBe("runtime_only");
     const scan = await scanTranscriptContinuation(reopened.session.transcriptPath!);
     expect(scan.reduction.checkpoint.internalSessionId).toBeNull();
   }, 20_000);
@@ -109,6 +110,12 @@ describe("direct transcript provider attachment", () => {
       activeInternalSessionId: recorded!,
     });
     expect(reopened.session.internalSessionId).toBe(recorded!);
+    // A loaded thread was established before this process ran, so it is already the
+    // selected continuation rather than something a turn still has to earn.
+    expect(reopened.session.providerAttachmentState).toMatchObject({
+      kind: "recorded",
+      descriptor: { internalSessionId: recorded! },
+    });
   }, 20_000);
 
   test("a failed first prompt leaves the thread slot empty", async () => {

@@ -225,7 +225,7 @@ export function reduceTranscriptState(
     // the first attachment, not a routing change: nothing is superseded, so there is no
     // `from` descriptor to validate and no history entry to write.
     if (!expectedRepair) {
-      assertRoutingStable(candidate, checkpoint, active?.terminal != null);
+      assertRoutingStable(candidate, checkpoint, active?.terminal === "settled");
     }
     if (active) {
       if (active.terminal) {

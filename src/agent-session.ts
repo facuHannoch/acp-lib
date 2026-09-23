@@ -857,7 +857,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (!result.resumed || !result.sessionId) {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
-      session.setInternalSessionId(result.sessionId, false);
+      session.installProviderAttachment(result.sessionId, "recorded", false);
       await stageOpeningContinuation(stageContinuation, checkpoint, result.sessionId);
       const attempt: ContinuationAttempt = Object.freeze({
         strategy: "load_internal_session",
@@ -1026,7 +1026,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (!result.resumed || !result.sessionId) {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
-      this.setInternalSessionId(result.sessionId, false);
+      this.installProviderAttachment(result.sessionId, "recorded", false);
       return;
     }
     const paths = await resolveSessionLogPaths(persistence, this.agentSessionId);
@@ -1248,7 +1248,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             throw new Error("adapter loaded a different internal session than requested");
           }
           this._mode = this.controller.currentMode;
-          this.setInternalSessionId(loaded.sessionId, false);
+          this.installProviderAttachment(loaded.sessionId, "recorded", false);
           await stageOpeningContinuation(
             this.openBootstrap.stageContinuation,
             checkpoint,
@@ -2383,6 +2383,15 @@ export class AgentConversation implements AgentClient, Bridgeable {
       await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       this.emitStateIfChanged();
       await this.persist();
+      if (this.v2Transcript) {
+        // The seed was metered on the target's engine, so the checkpoint written before
+        // activation still holds the source's pre-seed totals. Publish the engine that is
+        // now live, or a crash here would lose work the provider was already paid for.
+        await this.v2Transcript.publishCheckpoint({ metering: this.metering.currentState })
+          .catch((error) => {
+            this.log.warn("handoff_metering_checkpoint_failed", { error: String(error) });
+          });
+      }
       await this.recordNativeAction(item.handoffId, action, "checkpoint", {
         output: {
           stage: deferAttachment ? "target_live" : "target_activated",
@@ -2450,14 +2459,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
     } catch (err) {
       if (!targetActivated && targetMetering) {
         // The target's operations were minted and reported as they settled; only the
-        // running aggregate lives in the engine now being discarded. Adopt its totals
-        // while restoring the source's own baseline, which that engine never described.
-        const sourceBaseline = this.metering.currentState.activeBaseline;
+        // running aggregate lives in the engine now being discarded. Adopting its totals
+        // must not double as a correction: `reconcile` would clear a block the source is
+        // legitimately under, which no accounting fold has any business doing.
         if (targetMetering.currentState.operationCount > this.metering.currentState.operationCount) {
-          this.metering.reconcile({
-            ...targetMetering.currentState,
-            activeBaseline: sourceBaseline,
-          });
+          this.metering.adoptAccounting(targetMetering.currentState);
           try {
             await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
           } catch (persistError) {

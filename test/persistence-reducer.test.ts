@@ -85,6 +85,19 @@ describe("canonical transcript reducer", () => {
     expect(() => reduceTranscriptState(baseRecord, history, [
       checkpointRecord(attachedTerminalCheckpoint(base, 2), 3),
     ])).toThrow(TranscriptReductionError);
+
+    // Only a settled turn is evidence. A turn that failed, was cancelled or was
+    // interrupted proves nothing about the thread it was dispatched to.
+    for (const outcome of ["failed", "cancelled", "interrupted"] as const) {
+      expect(() => reduceTranscriptState(baseRecord, history, [
+        started,
+        operation(4, outcome),
+        checkpointRecord(attachedTerminalCheckpoint(
+          reduceTranscriptState(baseRecord, history, [started]).checkpoint,
+          4,
+        ), 5),
+      ])).toThrow(TranscriptReductionError);
+    }
   });
 
   test("classifies started and terminal operation boundaries without guessing provider state", () => {
