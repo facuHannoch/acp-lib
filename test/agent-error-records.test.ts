@@ -37,7 +37,11 @@ function track(agentPromise: Promise<Agent>): Promise<Agent> {
 
 function openOperations(path: string, label: string, extra: {
   capture?: ConversationRecordCaptureConfig;
-  recovery?: { onLoadFailure?: "error" | "recover"; isMissingProviderSession?: (error: unknown) => boolean };
+  recovery?: {
+    onLoadFailure?: "error" | "recover";
+    isMissingProviderSession?: (error: unknown) => boolean;
+    seedInstruction?: string;
+  };
   checkpointing?: boolean;
 } = {}): Promise<Agent> {
   return Agent.open({
@@ -189,6 +193,72 @@ describe("provider-session load error records", () => {
     expect(recoveryStarted).toBeDefined();
     expect(errorRecord!.sequence).toBeLessThan(recoveryStarted!.sequence);
     expect(events.some((record) => record.kind === "error")).toBe(true);
+  });
+
+  test("a failed creation records an error with its conversation id", async () => {
+    const directory = await makeDirectory();
+    const path = join(directory, "agent.sqlite");
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters: { broken: { command: ["bun", "-e", "process.exit(1)"] } },
+      defaultAdapterId: "broken",
+      conversationDefaults: { metering: { pricing: false } },
+    }));
+    const caught = await agent.conversations.create().then(() => null, (error: unknown) => error);
+    expect(caught).toBeInstanceOf(ProviderSessionError);
+    if (!(caught instanceof ProviderSessionError)) return;
+    expect(caught.code).toBe("provider_session_create_failed");
+    expect(caught.source).toBe("provider_session");
+    expect(caught.recoverability).toBe("retryable");
+    expect(caught.attemptId).toMatch(/^provider-create-/);
+    expect(caught.recordId).toBe(`${caught.attemptId}:error`);
+
+    const records = (await agent.persistence.records.list(caught.agentConversationId, {
+      kinds: ["error"],
+    })).records;
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      recordId: `${caught.attemptId}:error`,
+      code: "provider_session_create_failed",
+      recoverability: "retryable",
+    });
+  });
+
+  test("a recovery failure records recovery_failed after the load error", async () => {
+    const directory = await makeDirectory();
+    const path = join(directory, "agent.sqlite");
+    const first = await track(openOperations(path, "owned", { checkpointing: true }));
+    const conversation = await first.conversations.create();
+    const conversationId = conversation.id;
+    await conversation.prompt("hello");
+    await waitFor(async () => (await first.checkpointing!.latest(conversationId)) !== null);
+    await conversation.stop();
+    await first.close();
+    agents.splice(agents.indexOf(first), 1);
+
+    const agent = await track(openOperations(path, "fail-load-seed", {
+      checkpointing: true,
+      recovery: {
+        onLoadFailure: "recover",
+        isMissingProviderSession: () => true,
+        seedInstruction: "Continue this conversation",
+      },
+    }));
+    const caught = await agent.conversations.open(conversationId).then(() => null, (error: unknown) => error);
+    expect(caught).toBeInstanceOf(ProviderSessionError);
+    if (!(caught instanceof ProviderSessionError)) return;
+    expect(caught.code).toBe("recovery_failed");
+    expect(caught.source).toBe("recovery");
+    expect(caught.recoverability).toBe("recoverable");
+
+    const records = (await agent.persistence.records.list(conversationId, {
+      kinds: ["error"],
+      limit: 100,
+    })).records;
+    expect(records.map((record) => record.kind === "error" ? record.code : "")).toEqual([
+      "provider_session_missing",
+      "recovery_failed",
+    ]);
   });
 
   test("a missing session with no checkpoint still records the error and throws", async () => {

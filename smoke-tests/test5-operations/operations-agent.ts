@@ -75,7 +75,7 @@ function handleMessage(message: any): void {
 
       case "session/load": {
         const requested = String(message.params?.sessionId ?? "");
-        if (label === "fail-load") {
+        if (label === "fail-load" || label === "fail-load-seed") {
           send({
             jsonrpc: "2.0",
             id: message.id,
@@ -106,7 +106,10 @@ function handleMessage(message: any): void {
       case "session/prompt": {
         const sessionId = String(message.params?.sessionId ?? currentSessionId ?? "unknown");
         const text = promptText(message.params?.prompt);
-        if (label === "fail-seed" && text.startsWith("Continue this conversation")) {
+        if (
+          (label === "fail-seed" || label === "fail-load-seed")
+          && text.startsWith("Continue this conversation")
+        ) {
           send({
             jsonrpc: "2.0",
             id: message.id,
