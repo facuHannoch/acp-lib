@@ -178,7 +178,9 @@ export {
   AgentSessionPromptBlockedError,
   ContinuationUnavailableError,
   DirectAuditPersistenceUnsupportedError,
+  ProviderSessionError,
 } from "./agent-conversation-errors.ts";
+export type { ProviderSessionErrorDetails } from "./agent-conversation-errors.ts";
 export type {
   AgentConversationEvent,
   AgentConversationListener,

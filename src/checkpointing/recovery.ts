@@ -1,5 +1,8 @@
 import type { AgentConversationId } from "../agent-ids.ts";
-import type { ConversationMessagePersistence } from "../persistence/backend.ts";
+import type {
+  ConversationErrorRecoverability,
+  ConversationMessagePersistence,
+} from "../persistence/backend.ts";
 import type { ConversationRecoveryCheckpoint } from "./contracts.ts";
 import type { ResolvedConversationRecoveryConfig } from "./config.ts";
 
@@ -49,6 +52,25 @@ export function isMissingProviderSessionError(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export interface ProviderSessionLoadClassification {
+  readonly missing: boolean;
+  readonly code: "provider_session_missing" | "provider_session_load_failed";
+  readonly recoverability: ConversationErrorRecoverability;
+}
+
+/**
+ * Classify a failed `session/load` conservatively. A recognized missing-session signal is
+ * recoverable from a checkpoint; anything else stays `unknown` rather than guessing.
+ */
+export function classifyProviderSessionLoadError(
+  error: unknown,
+  override?: (error: unknown) => boolean,
+): ProviderSessionLoadClassification {
+  return isMissingProviderSessionError(error, override)
+    ? { missing: true, code: "provider_session_missing", recoverability: "recoverable" }
+    : { missing: false, code: "provider_session_load_failed", recoverability: "unknown" };
 }
 
 export async function buildRecoverySeed(

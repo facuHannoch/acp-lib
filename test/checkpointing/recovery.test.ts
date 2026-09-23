@@ -5,7 +5,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "../../src/agent.ts";
 import type { ConversationRecoveryProgress } from "../../src/checkpointing/recovery.ts";
-import { isMissingProviderSessionError } from "../../src/checkpointing/recovery.ts";
+import {
+  classifyProviderSessionLoadError,
+  isMissingProviderSessionError,
+} from "../../src/checkpointing/recovery.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -29,6 +32,19 @@ describe("checkpoint recovery", () => {
       data: { service: "provider" },
     })).toBeFalse();
     expect(isMissingProviderSessionError(new Error("authentication failed"))).toBeFalse();
+  });
+
+  test("classifies a load failure conservatively", () => {
+    expect(classifyProviderSessionLoadError({ message: "session not found" })).toEqual({
+      missing: true,
+      code: "provider_session_missing",
+      recoverability: "recoverable",
+    });
+    expect(classifyProviderSessionLoadError(new Error("authentication failed"))).toEqual({
+      missing: false,
+      code: "provider_session_load_failed",
+      recoverability: "unknown",
+    });
   });
 
   test("creates and seeds a new provider session when the recorded one is missing", async () => {

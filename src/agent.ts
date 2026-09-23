@@ -39,6 +39,9 @@ import {
   type ConversationListOptions,
   type ConversationPage,
   type ConversationPreviewPage,
+  type ConversationErrorDetails,
+  type ConversationErrorRecoverability,
+  type ConversationErrorSource,
   type ConversationRecord,
   type ConversationRecordCaptureConfig,
   type ConversationRecordCapturePolicy,
@@ -72,6 +75,8 @@ import type {
   OwnedPromptInput,
 } from "./agent-conversation-owner.ts";
 import { OwnedPromptPostCommitError } from "./agent-conversation-owner.ts";
+import { ProviderSessionError } from "./agent-conversation-errors.ts";
+import { buildConversationErrorDetails } from "./persistence/error-records.ts";
 import type {
   ProviderAttachmentCommitAcknowledgement,
 } from "./persistence/provider-attachment.ts";
@@ -91,7 +96,7 @@ import {
   ConversationCheckpointStrategy,
   CONVERSATION_CHECKPOINT_STRATEGY_ID,
   buildRecoverySeed,
-  isMissingProviderSessionError,
+  classifyProviderSessionLoadError,
   resolveConversationCheckpointingConfig,
   type ConversationCheckpointingConfig,
   type ConversationRecoveryProgress,
@@ -623,6 +628,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       },
       adapterId: config.adapterId ?? active?.adapterId,
     };
+    const loadAttemptId = `provider-load-${randomUUID()}`;
     try {
       const conversation = await this.start(id, summary.participants, {
         ...startConfig,
@@ -634,16 +640,39 @@ class DefaultAgentConversationManager implements AgentConversationManager {
         providerSession: active ? "loaded" : "new",
       });
     } catch (error) {
+      // Only a failed load of a recorded mapping is a provider-session error here; a
+      // failure while creating a brand-new thread is a create failure handled elsewhere.
+      if (!active) throw error;
       const recovery = this.settings.checkpointing?.recovery;
-      if (
-        !active
-        || recovery?.onLoadFailure !== "recover"
-        || !isMissingProviderSessionError(error, recovery.isMissingProviderSession)
-      ) throw error;
+      const classification = classifyProviderSessionLoadError(error, recovery?.isMissingProviderSession);
+      const recorded = await this.recordConversationError({
+        agentConversationId: id,
+        attemptId: loadAttemptId,
+        source: "provider_session",
+        code: classification.code,
+        recoverability: classification.recoverability,
+        message: "The provider session could not be loaded.",
+        transitionId: loadAttemptId,
+        internalSessionId: active.internalSessionId,
+        details: providerSessionErrorDetails(error),
+      });
+      const structuredError = (): ProviderSessionError => new ProviderSessionError({
+        agentSessionId: this.agent.id,
+        agentConversationId: id,
+        attemptId: loadAttemptId,
+        internalSessionId: active.internalSessionId,
+        code: classification.code,
+        source: "provider_session",
+        recoverability: classification.recoverability,
+        ...(recorded.record ? { recordId: recorded.record.recordId } : {}),
+        ...(recorded.recordingError ? { recordingError: recorded.recordingError } : {}),
+        cause: error,
+      });
+      if (recovery?.onLoadFailure !== "recover" || !classification.missing) throw structuredError();
       config.onRecoveryProgress?.({ stage: "load_failed" });
       config.onRecoveryProgress?.({ stage: "loading_checkpoint" });
       const checkpoint = await this.agent.persistence.recoveryCheckpoints?.latest(id);
-      if (!checkpoint) throw error;
+      if (!checkpoint) throw structuredError();
       config.onRecoveryProgress?.({ stage: "loading_checkpoint", checkpointId: checkpoint.checkpointId });
       const seed = await buildRecoverySeed(
         this.agent.persistence.messages,
@@ -911,6 +940,65 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     const registrations = this.agent.adapters.list();
     if (registrations.length === 1) return registrations[0]!.id;
     throw new Error("adapterId is required when an Agent has no unique default adapter");
+  }
+
+  /**
+   * Persist one conversation error record and its audit intent in a single transaction,
+   * then publish it through the committed-record bus.
+   *
+   * A recording failure never replaces the primary provider diagnosis: it is returned so
+   * the caller can attach it to the structured exception instead.
+   */
+  private async recordConversationError(input: {
+    readonly agentConversationId: AgentConversationId;
+    readonly attemptId: string;
+    readonly source: ConversationErrorSource;
+    readonly code: string;
+    readonly recoverability: ConversationErrorRecoverability;
+    readonly message?: string;
+    readonly operationId?: string;
+    readonly transitionId?: string;
+    readonly internalSessionId?: string;
+    readonly details?: ConversationErrorDetails;
+  }): Promise<{ readonly record?: ConversationRecord; readonly recordingError?: Error }> {
+    const record: NewConversationRecord = {
+      recordId: `${input.attemptId}:error`,
+      agentSessionId: this.agent.id,
+      agentConversationId: input.agentConversationId,
+      kind: "error",
+      timestamp: new Date().toISOString(),
+      source: input.source,
+      code: input.code,
+      recoverability: input.recoverability,
+      ...(input.message === undefined ? {} : { message: input.message }),
+      ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+      ...(input.transitionId === undefined ? {} : { transitionId: input.transitionId }),
+      ...(input.internalSessionId === undefined ? {} : { internalSessionId: input.internalSessionId }),
+      ...(input.details === undefined ? {} : { details: input.details }),
+    };
+    const level = this.settings.capture.error;
+    const audit = this.settings.auditLog;
+    let persisted: ConversationRecord | undefined;
+    try {
+      await this.agent.persistence.transaction(async (persistence) => {
+        if (level !== "none") {
+          persisted = await persistence.records.append(captureRuntimeRecord(record, level));
+        }
+        if (audit) {
+          await enqueueAuditObservation(persistence, {
+            scope: "conversation",
+            sourceObservationId: record.recordId,
+            ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+            record,
+          }, audit);
+        }
+      });
+    } catch (error) {
+      return { recordingError: error instanceof Error ? error : new Error(String(error)) };
+    }
+    if (persisted) this.agent.publishCommittedRecords([persisted]);
+    if (audit) this.agent.audit?.notifyPending();
+    return persisted ? { record: persisted } : {};
   }
 
   private async persistProviderSession(
@@ -1325,6 +1413,21 @@ async function enqueueAuditObservation(
     captureFingerprint: config.captureFingerprint,
     payload: projected.payload,
     createdAt: new Date().toISOString(),
+  });
+}
+
+/** Allow-listed machine-readable detail from a raw ACP error, when it exposes any. */
+function providerSessionErrorDetails(error: unknown): ConversationErrorDetails | undefined {
+  const value = typeof error === "object" && error !== null
+    ? error as { code?: unknown; data?: unknown }
+    : null;
+  const data = typeof value?.data === "object" && value.data !== null
+    ? value.data as Record<string, unknown>
+    : undefined;
+  return buildConversationErrorDetails({
+    rpcCode: typeof value?.code === "number" ? value.code : undefined,
+    service: data?.service,
+    providerCode: data?.providerCode,
   });
 }
 

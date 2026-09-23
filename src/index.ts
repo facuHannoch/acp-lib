@@ -173,7 +173,9 @@ export {
   AdapterMismatchError,
   ContinuationUnavailableError,
   DirectAuditPersistenceUnsupportedError,
+  ProviderSessionError,
 } from "./agent-session.ts";
+export type { ProviderSessionErrorDetails } from "./agent-session.ts";
 export type {
   AgentConversationConfig,
   AgentConversationOpenConfig,
