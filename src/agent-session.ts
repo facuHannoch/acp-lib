@@ -423,6 +423,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly log: Logger;
   private transcriptWrite: Promise<void> = Promise.resolve();
   private readonly operations = new AgentConversationQueue<QueueItem>();
+  private stopPromise: Promise<void> | null = null;
   private phase: AgentSessionPhase = "idle";
   private notificationSeq = 0;
   private readonly listeners = new Set<AgentSessionListener>();
@@ -3475,20 +3476,51 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.controller.interrupt(options);
   }
 
-  async stop(): Promise<void> {
-    if (this.phase === "stopped") return;
-    // Stop is terminal for this stable object. Drop work that never started, interrupt the
-    // active turn, and publish stopped before awaiting process teardown so a concurrent
-    // prompt cannot slip into a controller that is going away.
-    this.interrupt({ clearQueue: true });
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    // Publish the terminal state synchronously. All callers then share the same
+    // completion promise, including callers arriving while teardown is in progress.
     this.phase = "stopped";
-    this.emitStateIfChanged();
-    await this.controller.stop();
-    await this.ownerRecordWrite.catch((error) => {
-      this.log.warn("owned_runtime_persistence_failed", { error: String(error) });
+    const failures: unknown[] = [];
+    const completion = Promise.resolve().then(async () => {
+      try {
+        await this.controller.stop();
+      } catch (error) {
+        failures.push(error);
+      }
+      // Closing the provider can reject an active prompt. Its catch/finally path may
+      // enqueue final message and metering writes, so the pre-stop write tail is not
+      // sufficient evidence that persistence is quiescent.
+      try {
+        await this.operations.waitForIdle();
+      } catch (error) {
+        failures.push(error);
+      }
+      await this.ownerRecordWrite.catch((error) => {
+        this.log.warn("owned_runtime_persistence_failed", { error: String(error) });
+      });
+      await this.presentation.drain().catch(() => undefined);
+      try {
+        await this.transcriptWrite;
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await this.v2Transcript?.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "AgentSession shutdown failed");
     });
-    await this.presentation.drain().catch(() => undefined);
-    await this.v2Transcript?.close();
+    this.stopPromise = completion;
+    try {
+      this.interrupt({ clearQueue: true });
+    } catch (error) {
+      failures.push(error);
+    }
+    this.emitStateIfChanged();
+    return completion;
   }
 
   // --- mode swap (catalog-affecting) -------------------------------------------

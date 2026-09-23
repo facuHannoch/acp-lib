@@ -6,6 +6,7 @@
 export class AgentConversationQueue<T> {
   readonly #items: T[] = [];
   #draining = false;
+  #activeDrain: Promise<void> | null = null;
 
   get queuedCount(): number {
     return this.#items.length;
@@ -25,20 +26,37 @@ export class AgentConversationQueue<T> {
   }
 
   /**
-   * Drain every item serially. Concurrent calls share the active drain by becoming
-   * no-ops; an item enqueued by an active operation is observed by the same loop.
+   * Drain every item serially. Concurrent calls share the active drain; an item
+   * enqueued by an active operation is observed by the same loop.
    */
-  async drain(execute: (item: T) => Promise<void>): Promise<void> {
-    if (this.#draining) return;
+  drain(execute: (item: T) => Promise<void>): Promise<void> {
+    if (this.#activeDrain) return this.#activeDrain;
     this.#draining = true;
-    try {
-      while (this.#items.length > 0) {
-        const item = this.#items.shift()!;
-        await execute(item);
+    let resolveDrain!: () => void;
+    let rejectDrain!: (error: unknown) => void;
+    const active = new Promise<void>((resolve, reject) => {
+      resolveDrain = resolve;
+      rejectDrain = reject;
+    });
+    // Install the waitable promise before invoking execute: callbacks may call
+    // stop() synchronously while the first item is being started.
+    this.#activeDrain = active;
+    void (async () => {
+      try {
+        while (this.#items.length > 0) {
+          const item = this.#items.shift()!;
+          await execute(item);
+        }
+      } finally {
+        this.#draining = false;
+        this.#activeDrain = null;
       }
-    } finally {
-      this.#draining = false;
-    }
+    })().then(resolveDrain, rejectDrain);
+    return active;
+  }
+
+  /** Wait for the active executor, including its current item's finalization. */
+  waitForIdle(): Promise<void> {
+    return this.#activeDrain ?? Promise.resolve();
   }
 }
-

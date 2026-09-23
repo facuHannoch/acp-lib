@@ -54,11 +54,14 @@ describe("AgentConversationQueue", () => {
       throw new Error("a second executor must not run");
     });
 
+    expect(second).toBe(first);
+    expect(queue.waitForIdle()).toBe(first);
     expect(queue.isDraining).toBe(true);
     expect(queue.queuedCount).toBe(1);
     release();
     await Promise.all([first, second]);
     expect(seen).toEqual([1, 2]);
+    await queue.waitForIdle();
   });
 
   test("clear removes only work which has not started", async () => {
@@ -78,4 +81,3 @@ describe("AgentConversationQueue", () => {
     await draining;
   });
 });
-

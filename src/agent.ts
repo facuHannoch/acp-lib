@@ -824,10 +824,18 @@ class DefaultAgentConversationManager implements AgentConversationManager {
           : { kind: "new" },
         persistence: false,
       });
-      this.live.set(id, conversation);
-      conversation.subscribe((notification) => {
+      const openedConversation = conversation;
+      this.live.set(id, openedConversation);
+      openedConversation.subscribe((notification) => {
         if (notification.event.kind === "state_changed" && notification.event.state.phase === "stopped") {
-          if (this.live.get(id) === conversation) this.live.delete(id);
+          // The stopped state is published before the active turn finishes its
+          // error/finalization path. Keep it discoverable to stopAll() until stop()
+          // has drained those writes, or Agent.close() may close SQLite too early.
+          void openedConversation.stop().then(() => {
+            if (this.live.get(id) === openedConversation) this.live.delete(id);
+          }, () => {
+            if (this.live.get(id) === openedConversation) this.live.delete(id);
+          });
         }
       });
       if (conversation.internalSessionId && !config.deferProviderSessionPersistence) {

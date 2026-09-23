@@ -92,6 +92,8 @@ try {
 The user message and each assistant-message boundary are stored as separate typed rows.
 Reopen the same database with `Agent.open()` and call
 `agent.conversations.open(agentConversationId)` to continue its active provider thread.
+`Agent.close()` interrupts live prompts and waits for their finalization and queued
+conversation writes before closing the SQLite backend; an interrupted prompt may reject.
 
 ### Attach consumer data to a prompt message
 
