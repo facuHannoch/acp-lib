@@ -61,10 +61,15 @@ import {
 } from "./audit/index.ts";
 import type {
   AgentConversationOwnerLifecycle,
+  OwnedPromptCommitResult,
   OwnedPromptCompleted,
   OwnedPromptFailed,
   OwnedPromptInput,
 } from "./agent-conversation-owner.ts";
+import { OwnedPromptPostCommitError } from "./agent-conversation-owner.ts";
+import type {
+  ProviderAttachmentCommitAcknowledgement,
+} from "./persistence/provider-attachment.ts";
 import {
   resolveInternalInferenceConfig,
   type InternalInferenceConfig,
@@ -614,12 +619,11 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       const conversation = await this.start(id, summary.participants, {
         ...startConfig,
         providerSession: "new",
-        deferProviderSessionPersistence: true,
       });
       try {
         config.onRecoveryProgress?.({ stage: "seeding", checkpointId: checkpoint.checkpointId });
         await conversation.seedRecoveryContext(seed.prompt);
-        await this.persistProviderSession(conversation, id, conversation.adapterId, {
+        const acknowledgement = await this.persistProviderSession(conversation, id, {
           transitionId: `recovery-${randomUUID()}`,
           metadata: JSON.stringify({
             recoveryCheckpointId: checkpoint.checkpointId,
@@ -627,6 +631,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
             recoveredThroughSequence: seed.recoveredThroughSequence,
           }),
         }, true);
+        conversation.acknowledgeProviderAttachment(acknowledgement);
       } catch (recoveryError) {
         this.live.delete(id);
         await conversation.stop().catch(() => undefined);
@@ -787,7 +792,6 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     config: (CreateAgentConversationConfig | OpenAgentConversationConfig) & {
       readonly providerSession: "new" | "load";
       readonly internalSessionId?: string;
-      readonly deferProviderSessionPersistence?: boolean;
     },
   ): Promise<AgentConversation> {
     const releaseSetup = await this.acquireMeteringSetupLock(id);
@@ -838,9 +842,6 @@ class DefaultAgentConversationManager implements AgentConversationManager {
           });
         }
       });
-      if (conversation.internalSessionId && !config.deferProviderSessionPersistence) {
-        await this.persistProviderSession(conversation, id, adapterId, {}, config.providerSession === "new");
-      }
       return conversation;
     } catch (error) {
       this.live.delete(id);
@@ -878,23 +879,31 @@ class DefaultAgentConversationManager implements AgentConversationManager {
   private async persistProviderSession(
     conversation: AgentConversation,
     id: AgentConversationId,
-    adapterId: string,
     extra: { readonly transitionId?: string; readonly metadata?: string } = {},
     newContext = false,
-  ): Promise<void> {
-    if (!conversation.internalSessionId) throw new Error("provider session has no internal session id");
+  ): Promise<ProviderAttachmentCommitAcknowledgement> {
+    const attachment = conversation.providerAttachmentState;
+    if (attachment.kind !== "runtime_only") {
+      throw new Error("provider attachment is not awaiting persistence");
+    }
+    const descriptor = attachment.descriptor;
+    const providerSessionRecordId = `provider-${randomUUID()}`;
     await this.agent.persistence.transaction(async (persistence) => {
-      if (newContext) await persistence.identityDelivery?.reset(id, conversation.internalSessionId!);
+      if (newContext) await persistence.identityDelivery?.reset(id, descriptor.internalSessionId);
       await persistence.providerSessions.append({
-        providerSessionRecordId: `provider-${randomUUID()}`,
+        providerSessionRecordId,
         agentConversationId: id,
-        internalSessionId: conversation.internalSessionId!,
-        adapterId,
-        mode: conversation.mode,
-        ...(conversation.model ? { model: conversation.model } : {}),
-        activatedAt: new Date().toISOString(),
+        internalSessionId: descriptor.internalSessionId,
+        adapterId: descriptor.adapterId,
+        mode: descriptor.mode,
+        ...(descriptor.model ? { model: descriptor.model } : {}),
+        activatedAt: descriptor.acquiredAt,
         ...extra,
       });
+    });
+    return Object.freeze({
+      attachmentAttemptId: descriptor.attachmentAttemptId,
+      providerSessionRecordId,
     });
   }
 }
@@ -941,7 +950,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     });
   }
 
-  async afterPrompt(input: OwnedPromptCompleted): Promise<void> {
+  async afterPrompt(input: OwnedPromptCompleted): Promise<OwnedPromptCommitResult> {
     const timestamp = new Date().toISOString();
     const status = input.result.status === "error" ? "failed" : input.result.status;
     const records = input.result.messages.map((message, index): NewConversationRecord => ({
@@ -959,13 +968,49 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         ...(message.messageId ? { providerMessageId: message.messageId } : {}),
       }),
     }));
-    await this.updateIdentity(await this.appendMessages(records));
-    if (status === "completed" && input.identityDeliveryReceipt) {
-      await this.agent.identity.delivered?.(input.identityDeliveryReceipt);
+    const persisted: ConversationRecord[] = [];
+    let providerAttachment: ProviderAttachmentCommitAcknowledgement | undefined;
+    await this.agent.persistence.transaction(async (persistence) => {
+      await this.persistObservationsInTransaction(persistence, records, true, persisted);
+      if (status === "completed" && input.providerAttachment.kind === "runtime_only") {
+        const descriptor = input.providerAttachment.descriptor;
+        const providerSessionRecordId = `provider-${randomUUID()}`;
+        await persistence.identityDelivery?.reset(
+          this.conversationId,
+          descriptor.internalSessionId,
+        );
+        await persistence.providerSessions.append({
+          providerSessionRecordId,
+          agentConversationId: this.conversationId,
+          internalSessionId: descriptor.internalSessionId,
+          adapterId: descriptor.adapterId,
+          mode: descriptor.mode,
+          ...(descriptor.model ? { model: descriptor.model } : {}),
+          activatedAt: descriptor.acquiredAt,
+          ...(descriptor.transitionId ? { transitionId: descriptor.transitionId } : {}),
+        });
+        providerAttachment = Object.freeze({
+          attachmentAttemptId: descriptor.attachmentAttemptId,
+          providerSessionRecordId,
+        });
+      }
+    });
+    if (this.settings.auditLog) this.agent.audit?.notifyPending();
+    const commit: OwnedPromptCommitResult = Object.freeze({
+      ...(providerAttachment ? { providerAttachment } : {}),
+    });
+    try {
+      await this.updateIdentity(Object.freeze(persisted));
+      if (status === "completed" && input.identityDeliveryReceipt) {
+        await this.agent.identity.delivered?.(input.identityDeliveryReceipt);
+      }
+      if (status === "completed") {
+        await this.agent.checkpointing?.afterSuccessfulResponse(this.conversationId);
+      }
+    } catch (error) {
+      throw new OwnedPromptPostCommitError(commit, error);
     }
-    if (status === "completed") {
-      await this.agent.checkpointing?.afterSuccessfulResponse(this.conversationId);
-    }
+    return commit;
   }
 
   async promptFailed(input: OwnedPromptFailed): Promise<void> {
@@ -1098,29 +1143,38 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     })) return Object.freeze([]);
     const persisted: ConversationRecord[] = [];
     await this.agent.persistence.transaction(async (persistence) => {
-      for (const record of records) {
-        const level = record.kind === "protocol"
-          ? this.settings.capture.protocol.level
-          : this.settings.capture[record.kind];
-        const canonicalAccepted = level !== "none" && (
-          record.kind !== "protocol"
-          || shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method)
-        );
-        if (canonicalAccepted) {
-          persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
-        }
-        if (audit && this.settings.auditLog) {
-          await enqueueAuditObservation(persistence, {
-            scope: "conversation",
-            sourceObservationId: record.recordId,
-            operationId: operationIdFromMetadata(record.metadata),
-            record,
-          }, this.settings.auditLog);
-        }
-      }
+      await this.persistObservationsInTransaction(persistence, records, audit, persisted);
     });
     if (audit && this.settings.auditLog) this.agent.audit?.notifyPending();
     return Object.freeze(persisted);
+  }
+
+  private async persistObservationsInTransaction(
+    persistence: PersistenceScope,
+    records: readonly NewConversationRecord[],
+    audit: boolean,
+    persisted: ConversationRecord[],
+  ): Promise<void> {
+    for (const record of records) {
+      const level = record.kind === "protocol"
+        ? this.settings.capture.protocol.level
+        : this.settings.capture[record.kind];
+      const canonicalAccepted = level !== "none" && (
+        record.kind !== "protocol"
+        || shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method)
+      );
+      if (canonicalAccepted) {
+        persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
+      }
+      if (audit && this.settings.auditLog) {
+        await enqueueAuditObservation(persistence, {
+          scope: "conversation",
+          sourceObservationId: record.recordId,
+          operationId: operationIdFromMetadata(record.metadata),
+          record,
+        }, this.settings.auditLog);
+      }
+    }
   }
 
   private async updateIdentity(records: readonly ConversationRecord[]): Promise<void> {

@@ -9,7 +9,7 @@
 // to assert it cost zero, which is the difference between "we don't know" and a false
 // accounting entry.
 
-import type { TokenUsage } from "../types.ts";
+import type { PromptResult, TokenUsage } from "../types.ts";
 import type { ContextWindowStatus, ProviderCostSnapshot } from "./context.ts";
 import type { Money } from "./money.ts";
 import type { AttributableUsage } from "./rating.ts";
@@ -261,18 +261,50 @@ export class AgentSessionOperationError extends Error {
  * A rejected handoff cannot return a HandoffResult, but the summary and seed prompts it
  * already ran consumed real tokens, so their records must still reach the caller.
  */
+export interface AgentSessionHandoffErrorDetails {
+  readonly fromInternalSessionId?: string | null;
+  /** Present once the provider returned an id for the target. */
+  readonly toInternalSessionId?: string;
+  /** Local attachment state of the target, when one was created. */
+  readonly providerAttachment?: "runtime_only" | "recorded";
+  /** Whether the target became the recorded continuation before the failure. */
+  readonly activationCompleted?: boolean;
+  readonly summary?: string;
+  /** Result of `targetPrompt`, including a non-completed one that caused this failure. */
+  readonly targetResult?: PromptResult;
+}
+
 export class AgentSessionHandoffError extends Error {
   readonly handoffId: string;
   readonly meteringRecords: readonly OperationMeteringRecord[];
+  readonly fromInternalSessionId: string | null;
+  readonly toInternalSessionId?: string;
+  readonly providerAttachment?: "runtime_only" | "recorded";
+  /**
+   * Distinguishes a target that never superseded the source from one that already did.
+   *
+   * A target prompt can fail after the target is the recorded continuation; that is an
+   * operation failure, not an activation rollback, and the two need different handling.
+   */
+  readonly activationCompleted: boolean;
+  readonly summary?: string;
+  readonly targetResult?: PromptResult;
 
   constructor(
     handoffId: string,
     meteringRecords: readonly OperationMeteringRecord[],
     cause: unknown,
+    details: AgentSessionHandoffErrorDetails = {},
   ) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = "AgentSessionHandoffError";
     this.handoffId = handoffId;
     this.meteringRecords = Object.freeze([...meteringRecords]);
+    this.fromInternalSessionId = details.fromInternalSessionId ?? null;
+    if (details.toInternalSessionId !== undefined) this.toInternalSessionId = details.toInternalSessionId;
+    if (details.providerAttachment !== undefined) this.providerAttachment = details.providerAttachment;
+    this.activationCompleted = details.activationCompleted ?? false;
+    if (details.summary !== undefined) this.summary = details.summary;
+    if (details.targetResult !== undefined) this.targetResult = details.targetResult;
   }
 }

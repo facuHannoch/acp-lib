@@ -905,6 +905,19 @@ export class MeteringEngine {
    * provider usage, and pretending otherwise would put a fabricated operation in the
    * consumer's ledger.
    */
+  /**
+   * Adopt totals accumulated by a parallel engine that is being discarded.
+   *
+   * A transition meters its target on its own engine, because the target's counters start
+   * at zero. When the transition fails, those operations were still minted, reported and
+   * paid for, so their totals belong to the session that remains. Unlike `reconcile` this
+   * is not a correction: nothing this engine measured was wrong, so its own baseline and
+   * any block it is under both stand.
+   */
+  adoptAccounting(state: AgentSessionMeteringState): void {
+    this.state = Object.freeze({ ...state, activeBaseline: this.state.activeBaseline });
+  }
+
   reconcile(state: AgentSessionMeteringState): { before: AgentSessionMeteringState } {
     const before = this.state;
     this.state = state;

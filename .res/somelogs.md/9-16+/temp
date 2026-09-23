@@ -1,0 +1,120 @@
+recover from [harness] [session id] <-- allows to define a harness and a session id, and it sets that as the internalSessionId. We won't have any recollection of data
+
+
+
+2. **Record who submitted each prompt.** `promptFrom(participantId, …)` covers a stable participant, but we need a way to attach the extra sender facts—kind, principal or agent ID, task/job ID, delivery ID—to the persisted user message. Confirm whether that is prompt metadata or an expanded participant contract.
+
+
+Yes. For the library itself, I’d ask for four things:
+
+1. **Load an existing harness thread into the new model.** A `recoverFrom(harness, internalSessionId)`: tries to load that specific session, and if it succeds then it adopts it and sets the harness and internalSessionId to that value
+2. Prompt attribution end to end. 0.8 has promptFrom(participantId, …) and SQLite MessageRecord has participantId and optional opaque metadata. But the prompt API I inspected does not accept per-message metadata, and the old transcript presentation type does not return it. If participantId is the intended sender mechanism, we should settle how it represents human versus agent versus task, and how a delivery ID travels with it. Otherwise, add prompt metadata and return it from the SQLite read API.
+3. **Read chat-ready transcript pages.** SQLite already provides indexed, ordered records. We need a documented read contract for paging and reconciling messages, tools, permissions, thinking, actions, and metering with live updates. This may be an existing API we adopt rather than new library code; the key is to verify it carries sender data and stable IDs.
+4. **Read efficient previews.** A batch summary API should return each conversation’s latest message and last human message time, so the agents list does not page through every conversation.
+
+Then **core** owns creating/opening one library Agent per profile, retaining its active `agc-*`, passing sender information on prompts, and projecting SQLite records through the hub API. The **webapp** owns the three IDs in session settings and the richer transcript presentation.
+
+The most useful library decision to make first is the prompt attribution contract. It determines both how messages render and whether “last human message” can be calculated correctly.
+
+
+
+
+
+
+
+
+---
+
+
+
+
+• Ah, you mean the work in agents-core and agents-webapp-alpha. Yes—roughly three connected pieces, plus settings and previews:
+
+  1. Session loading in core: Open one SQLite library Agent for each profile (ags-*), create or reopen its active conversation (agc-*), and use that conversation wherever core currently uses AgentSession. Store
+     the agc-* association and adapt lifecycle, restart, close, and recovery handling.
+
+  2. Transcript reads in core: Replace the JSONL checkpoint → TranscriptReader path with paged SQLite conversation records. Define the hub’s history response around their stable IDs, order, timestamps, and record
+     types. Join attachments and metering there.
+
+  3. Prompt and live-event path in core: Pass sender identity for human, agent, task, and job prompts; adapt live notifications and permission handling to the new conversation API; make live events reconcile with
+     the persisted records.
+
+  4. Webapp chat: Update the store and renderer for the richer history—messages, tools, permissions, thinking, actions, configuration, and metering—while keeping live and reloaded chat consistent.
+  5. Settings and agent list: Show ags-*, agc-*, and internalSessionId in the ACP settings section. Change previews and ordering to use SQLite summaries once the library provides them.
+
+  So your shorthand is right: loading, transcript, and core message handling are the main integration work. The webapp transcript and settings changes are the other half of making that integration visible. Given
+  your replace approach, a general JSONL migration is outside this work.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Yes—these are four distinct gaps, and I’d keep them separate. No code changes made.
+
+1. **Adopt an existing harness thread.** I’d call this `agent.conversations.adoptProviderSession({ adapterId, internalSessionId, ... })`, not `recoverFrom`: “recovery” already means replacing a missing thread from a checkpoint. The operation should load the *exact* provider session, fail without creating a replacement if loading fails, then persist it as a new `agc`. One important boundary: loading the provider’s context does **not** automatically give SQLite the earlier transcript. Unless we add a separate history-import path, the chat shown by our library begins at adoption.
+
+2. **Prompt attribution.** `promptFrom(id, text)` exists, but an unknown ID is currently created as kind `"user"`. So passing an agent ID alone does not establish that it is an agent. I’d make participant registration explicit for `agent | user | external` and add an object-form prompt request carrying opaque `metadata`, while retaining the existing positional calls. A task or delivery ID belongs in message metadata unless we need the library to deduplicate retries by it—in that case it needs a typed, indexed ID. We should also move the library’s `operationId` out of consumer metadata; today it occupies that field.
+
+3. **Chat-ready pages.** `persistence.records.list()` already returns typed records with stable `recordId` and conversation `sequence`, including message sender and metadata. But it pages oldest-first with an offset; it is not yet a good “latest 50, then older pages” UI contract. I’d define a snapshot-bound, sequence-based page API and a documented fold rule for revisions of tools, permissions, thinking, and activities. Live subscription can update the screen quickly, but SQLite sequence should remain the authority for reconnect/reconciliation.
+
+4. **Batch previews.** `conversations.list()` gives `updatedAt` and `latestSequence`, but neither the latest message nor last *human* message time. This deserves one batched query, not one transcript query per conversation. “Human” should mean a message whose participant is kind `"user"`, not merely role `"user"`—an agent prompting another agent also has that role from the receiver’s perspective.
+
+I’d settle (2) first because its sender and metadata contract feeds both read APIs. (1) is largely independent and can proceed alongside it.
+
+
+
+You’re right. I answered a different problem.
+
+The immediate gap is that `prompt()` and `promptFrom()` provide no way to attach consumer metadata to the user message they create. I also checked the implementation: despite the earlier design notes calling it `consumer_metadata_json`, the current SQLite schema has a generic `conversation_records.metadata` column, and the prompt path fills it with library-owned `{ operationId }`. There is no dedicated `consumer_metadata_json` column today.
+
+So the fix to define is: let the caller supply opaque metadata with a prompt, persist it on that prompt’s **user message**, and return it through `persistence.messages.list()`. Keep the library’s `operationId` separate rather than mixing it into the caller’s data. Participant kinds and delivery-ID semantics can be decided later; they shouldn’t hold up this basic capability.
+
+
+
+I’d implement them as two separate steps and commits, starting with adoption.
+
+1. **Adopt an existing provider thread.** Add `agent.conversations.adoptProviderSession({ adapterId, internalSessionId, ... })`. It creates a new `agc`, asks that adapter to load the exact thread, verifies the returned session ID, and only then records it as the active provider session. Load failure is an error—never a silent new thread. If setup fails after creating the conversation row, mark that row failed/deleted rather than leaving an apparently usable conversation. Tests should cover success, unsupported/missing sessions, reopening, and metering baselines so pre-adoption usage is not billed again. The SQLite transcript would start at adoption; this does not import earlier harness messages.
+
+2. **Pass consumer metadata through prompts.** Add a backward-compatible object form, for example `conversation.prompt({ text, consumerMetadata })` and `conversation.promptFrom({ participantId, text, consumerMetadata })`; keep the current positional calls. Persist that value on the resulting **user message** in `conversation_messages.consumer_metadata_json`, and return it as `MessageRecord.consumerMetadata` from SQLite reads. Validate that it is JSON, but do not interpret its fields or copy it onto assistant replies. Library-owned `operationId` remains separate. Since existing SQLite databases matter now, this needs a versioned schema migration, not a recreate instruction.
+
+I’d document the exact contracts first, implement and test each step independently, then run the adoption and metadata flows together in a smoke test. No changes yet.
+
+
+
+Yes—I misunderstood the shape of (1). This should keep the **same `agc`**, so a chat command can repair or redirect that conversation:
+
+```ts
+await conversation.adoptProviderSession({ adapterId, internalSessionId });
+```
+
+`/adopt <adapter> <session-id>` could call it. Unlike `switch()` or `handoff()`, adoption loads an *existing* provider thread; it does not create one or generate a summary. On success, the conversation keeps its ID and transcript sequence, records the provider change, and uses the loaded thread. On failure, it keeps the previous working thread—or remains unavailable—without silently creating a replacement.
+
+I agree we need to open an `agc` even when its recorded provider thread cannot load. I would model that as **provider availability**, not a third mode alongside ACP and degraded. Those modes describe *how* a harness runs; “unavailable” describes whether this conversation currently has a usable thread. The object could expose `providerStatus: "available" | "unavailable"` and a `provider_unavailable` prompt blocker. Local slash commands, history reads, and adoption remain usable while ordinary prompts are blocked.
+
+That does require changing today’s `open()` path, which throws before returning a conversation when loading fails. I’d make an explicit “return unavailable conversation” opening policy, preserving the current throwing default. I’m interpreting “continue talking” here as *still using local chat commands*, not silently queuing normal prompts for later delivery. The consumer-metadata change remains a separate second step.
+
+
+
+
+# 3 fixes
+
+I’d do the remaining three in this order. No code yet.
+
+1. **Prompt metadata.** Add a backward-compatible object form for `prompt()` and `promptFrom()` with `consumerMetadata?: PersistenceJsonValue`. Carry it through the prompt queue to the persisted user message, add `conversation_messages.consumer_metadata_json` with a versioned SQLite migration, and return it from `messages.list()`. It stays opaque: the library does not interpret it, send it to the harness, or copy it to assistant messages. The existing library-owned `operationId` stays separate.
+
+2. **Chat-ready pages.** The current `records.list()` supplies typed records and stable IDs, but its oldest-first `OFFSET` pagination is not enough for “show the latest 50” in a large chat. I’d add snapshot-bound, sequence-based paging that can fetch the newest page and then older pages. Define how records with the same tool/activity/permission ID reconcile across page and live-update boundaries. SQLite remains authoritative; subscriptions are fast update hints, and the consumer catches up from its last seen sequence after reconnect. I’d try this without a new projection table first and test large, revision-heavy histories.
+
+3. **Conversation previews.** Extend the conversation-list read with one batched query for the listed conversations: latest message (with sender and stable record ID) and last message time from a participant of kind `"user"`. That avoids opening or paging each conversation. Test it with many conversations and long transcripts.
+
+Each step gets API tests and SQLite tests; then one consumer-style test should send attributed metadata, render historical/live pages, and build the conversation list from previews.
+
+

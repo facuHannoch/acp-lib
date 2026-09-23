@@ -599,7 +599,18 @@ function validateCreationOrRestorationStages(
     const matchingFields = maintenance.kind === "creation"
       ? ["adapterId", "mode", "internalSessionId", "internalSessionActivatedAt", "model", "sessionConfiguration", "protocol"] as const
       : ["adapterId", "mode", "internalSessionId", "internalSessionActivatedAt", "protocol"] as const;
+    // The continuation records the thread this attempt acquired, so a resumed creation
+    // can reuse it instead of orphaning it. The record says which thread is selected for
+    // a later open, and a thread that has completed no turn is not selected yet. So the
+    // record may leave the slot empty while the continuation names one — never the
+    // reverse, and never a different id.
+    const deferredAttachment = stagedRecord.internalSessionId === null
+      && (stagedContinuation as Record<string, unknown>).internalSessionId !== null;
     for (const field of matchingFields) {
+      if (deferredAttachment
+        && (field === "internalSessionId" || field === "internalSessionActivatedAt")) {
+        continue;
+      }
       if (canonicalizeJson(stagedRecord[field]) !== canonicalizeJson((stagedContinuation as Record<string, unknown>)[field])) {
         throw new AgentSessionRegistryError(`stagedRecord ${field} disagrees with stagedContinuation`);
       }

@@ -149,6 +149,8 @@ describe("AgentSession persisted configuration", () => {
       persistence: { root, transcript: { preset: "activity" } },
     });
     await created.setConfig("model", "beta");
+    // A thread is selected for a later open only once a turn has completed on it.
+    await created.prompt("establish the recorded thread");
     const transcriptPath = created.transcriptPath!;
     await created.stop();
 
@@ -192,6 +194,7 @@ describe("AgentSession persisted configuration", () => {
       creationId: "config-missing-incarnation",
       persistence: { root },
     });
+    await created.prompt("establish the recorded thread");
     await created.stop();
 
     let failure: unknown;
@@ -234,6 +237,7 @@ describe("AgentSession persisted configuration", () => {
       persistence: { root },
     });
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     const transcriptPath = created.transcriptPath!;
     await created.stop();
 
@@ -313,6 +317,7 @@ describe("AgentSession persisted configuration", () => {
       persistence: { root },
     });
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     const transcriptPath = created.transcriptPath!;
     await created.stop();
 
@@ -446,6 +451,7 @@ describe("AgentSession persisted configuration", () => {
       creationId: "config-recovery-replace-incarnation",
       persistence: { root },
     });
+    await created.prompt("establish the recorded thread");
     const transcriptPath = created.transcriptPath!;
     await created.stop();
     const scan = await scanTranscriptContinuation(transcriptPath);
@@ -506,6 +512,7 @@ describe("AgentSession persisted configuration", () => {
       persistence: { root },
     });
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     await created.stop();
 
     const opened = await AgentSession.open({
@@ -541,6 +548,7 @@ describe("AgentSession persisted configuration", () => {
       persistence: { root },
     });
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     const transcriptPath = created.transcriptPath!;
     await created.stop();
     const opened = await AgentSession.open({
@@ -574,6 +582,7 @@ describe("AgentSession persisted configuration", () => {
       persistence: { root },
     });
     await created.setConfig("model", "beta");
+    await created.prompt("establish the recorded thread");
     const transcriptPath = created.transcriptPath!;
     await created.stop();
     const opened = await AgentSession.open({
@@ -604,7 +613,8 @@ describe("AgentSession persisted configuration", () => {
     const records = (await readFile(transcriptPath, "utf8")).trim().split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(records.filter((record) => record.t === "operation").map((record) => record.event))
-      .toEqual(["started", "settled", "started", "failed", "started", "settled"]);
+      // setConfig, the turn that records the thread, the rejected reload, and the replacement.
+      .toEqual(["started", "settled", "started", "settled", "started", "failed", "started", "settled"]);
     expect(records.filter((record) => record.t === "configuration").map((record) => record.event))
       .toEqual(["selected", "selected", "resolved"]);
   }, 20_000);

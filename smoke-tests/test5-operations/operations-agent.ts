@@ -3,6 +3,10 @@
 // so the consumer and its harness have one job each, matching the unit-test fixtures.
 
 const label = process.argv[2] ?? "fake";
+// A handoff target runs in its own process against the same command, so a counter alone
+// would hand both threads the same id. The instance token keeps ids unique per process
+// while the counter keeps them ordered and readable within one.
+const instance = process.pid.toString(36);
 let buffer = "";
 let nextThread = 1;
 let currentSessionId: string | null = null;
@@ -42,7 +46,7 @@ function handleMessage(message: any): void {
         break;
 
       case "session/new": {
-        currentSessionId = `${label}-thread-${nextThread++}`;
+        currentSessionId = `${label}-thread-${nextThread++}-${instance}`;
         sessions.set(currentSessionId, { seeded: false });
         send({
           jsonrpc: "2.0",
@@ -107,6 +111,16 @@ function handleMessage(message: any): void {
             jsonrpc: "2.0",
             id: message.id,
             error: { code: -32000, message: "deterministic continuation seed failure" },
+          });
+          break;
+        }
+        // Lets a test fail the optional first instruction while the seed before it
+        // succeeds, which is the only way to reach an already activated target.
+        if (text.includes("FAIL_TARGET_PROMPT")) {
+          send({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32000, message: "deterministic target prompt failure" },
           });
           break;
         }

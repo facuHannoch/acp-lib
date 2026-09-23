@@ -31,7 +31,18 @@ import type {
   ParticipantRef,
   PersistenceJsonValue,
 } from "./persistence/backend.ts";
-import type { AgentConversationOwnerLifecycle } from "./agent-conversation-owner.ts";
+import {
+  OwnedPromptPostCommitError,
+  type AgentConversationOwnerLifecycle,
+} from "./agent-conversation-owner.ts";
+import {
+  acknowledgeProviderAttachment,
+  recordedProviderAttachment,
+  runtimeOnlyProviderAttachment,
+  type ProviderAttachmentCommitAcknowledgement,
+  type ProviderAttachmentDescriptor,
+  type ProviderAttachmentState,
+} from "./persistence/provider-attachment.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
@@ -237,6 +248,19 @@ interface HandoffQueueItem {
   reject: (error: unknown) => void;
 }
 
+/**
+ * Provider thread an internal prompt runs against.
+ *
+ * A transition seeds its target before that target has earned the right to supersede the
+ * source, so the seed cannot use the live controller: the live conversation is still the
+ * source until the seed confirms the target.
+ */
+interface InternalPromptTarget {
+  readonly controller: AgentController;
+  readonly metering: MeteringEngine;
+  readonly adapterId: string;
+}
+
 interface ConfigQueueItem {
   kind: "set_config";
   operationId: string;
@@ -429,6 +453,15 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly listeners = new Set<AgentSessionListener>();
   private lastStateKey = "";
   private _internalSessionId: string | null;
+  private providerAttachment: ProviderAttachmentState = Object.freeze({ kind: "absent" });
+  /**
+   * The thread the local catalog currently selects for a later open.
+   *
+   * Distinct from the live id: a thread that has completed no turn is usable by this
+   * process but is not what a restart should return to. It survives `clearProviderAttachment`
+   * so a stop or a degraded stretch leaves the last confirmed thread in place.
+   */
+  private lastRecordedInternalSessionId: string | null = null;
   private ownerContextNonce: string | null = null;
   private metering: MeteringEngine;
   private readonly meteringConfig: MeteringConfig;
@@ -824,7 +857,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (!result.resumed || !result.sessionId) {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
-      session.setInternalSessionId(result.sessionId, false);
+      session.installProviderAttachment(result.sessionId, "recorded", false);
       await stageOpeningContinuation(stageContinuation, checkpoint, result.sessionId);
       const attempt: ContinuationAttempt = Object.freeze({
         strategy: "load_internal_session",
@@ -959,7 +992,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const result = await this.controller.start();
     // A resumed thread's counters did not start at zero, so it needs restored state to
     // be attributable.
-    this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
+    const internalSessionId = result.sessionId || this._internalSessionId;
+    if (internalSessionId) {
+      // A thread the adapter resumed was already established elsewhere; one it just
+      // created has completed no turn and is not yet what a restart should return to.
+      this.installProviderAttachment(
+        internalSessionId,
+        result.resumed ? "recorded" : "runtime_only",
+        !result.resumed,
+      );
+    } else {
+      this.setInternalSessionId(internalSessionId, !result.resumed);
+    }
     await this.persist();
     await this.appendTranscript({
       v: 1,
@@ -982,7 +1026,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (!result.resumed || !result.sessionId) {
         throw new Error("adapter did not confirm loading the recorded internal session");
       }
-      this.setInternalSessionId(result.sessionId, false);
+      this.installProviderAttachment(result.sessionId, "recorded", false);
       return;
     }
     const paths = await resolveSessionLogPaths(persistence, this.agentSessionId);
@@ -1089,6 +1133,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
       initializeCheckpoint: async () => {
         const result = await this.controller.start((event) => this.reportManagedControllerProgress(event));
         this.setInternalSessionId(result.sessionId || this._internalSessionId, !result.resumed);
+        if (this._internalSessionId) {
+          this.installProviderAttachment(
+            this._internalSessionId,
+            result.resumed ? "recorded" : "runtime_only",
+            !result.resumed,
+          );
+        }
         const now = new Date().toISOString();
         const sessionConfiguration = snapshotSessionConfiguration({
           adapterId: this.adapterId,
@@ -1114,8 +1165,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
           stateRevision: 1,
           adapterId: this.adapterId,
           mode: stagedContinuation.mode,
-          internalSessionId: stagedContinuation.internalSessionId,
-          internalSessionActivatedAt: stagedContinuation.internalSessionActivatedAt,
+          // A thread the library just created has completed no turn, so nothing yet
+          // justifies selecting it for a later resume. It stays in memory until the
+          // first completed prompt's own terminal checkpoint records it. A thread the
+          // adapter resumed was already established, so it is selected immediately.
+          internalSessionId: result.resumed ? stagedContinuation.internalSessionId : null,
+          internalSessionActivatedAt: result.resumed
+            ? stagedContinuation.internalSessionActivatedAt
+            : null,
           internalSessionHistoryRevision: 0,
           internalSessionHistoryDigest: EMPTY_HISTORY_DIGEST,
           model: stagedContinuation.model,
@@ -1191,7 +1248,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             throw new Error("adapter loaded a different internal session than requested");
           }
           this._mode = this.controller.currentMode;
-          this.setInternalSessionId(loaded.sessionId, false);
+          this.installProviderAttachment(loaded.sessionId, "recorded", false);
           await stageOpeningContinuation(
             this.openBootstrap.stageContinuation,
             checkpoint,
@@ -1389,6 +1446,30 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
     }
 
+    if (checkpoint.internalSessionId === null) {
+      // Nothing was ever selected to continue, so there is nothing a reconstruction could
+      // rebuild from. Starting fresh is the whole continuation, and the new thread stays
+      // runtime-only until a completed turn earns it a place in the checkpoint.
+      const created = await this.controller.startFresh(
+        (event) => this.reportManagedControllerProgress(event),
+      );
+      if (!created.sessionId) {
+        throw new Error("harness returned no session id for an unattached conversation");
+      }
+      this._mode = this.controller.currentMode;
+      this.installProviderAttachment(created.sessionId, "runtime_only", true);
+      this._configurationRestore = this.snapshotReconstructedConfiguration([]).status;
+      this.continuationAcquired = true;
+      return createContinuationReport(
+        checkpoint,
+        this.adapterId,
+        this.v2Transcript,
+        recordedThreadAvailability,
+        attempts,
+        { kind: "fresh", activeInternalSessionId: created.sessionId },
+      );
+    }
+
     return createContinuationReport(
       checkpoint,
       this.adapterId,
@@ -1458,6 +1539,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
   // --- identity ----------------------------------------------------------------
   get internalSessionId(): string | null {
     return this._internalSessionId;
+  }
+
+  /** @internal Snapshot used by the Agent-owned persistence lifecycle. */
+  get providerAttachmentState(): ProviderAttachmentState {
+    return this.providerAttachment;
+  }
+
+  /** @internal Apply an acknowledgement from the Agent-owned persistence lifecycle. */
+  acknowledgeProviderAttachment(acknowledgement: ProviderAttachmentCommitAcknowledgement): void {
+    this.providerAttachment = acknowledgeProviderAttachment(this.providerAttachment, acknowledgement);
+    if (this.providerAttachment.kind === "recorded") {
+      this.lastRecordedInternalSessionId = this.providerAttachment.descriptor.internalSessionId;
+    }
   }
 
   /** Active adapter route. It changes only after a durable switch activation. */
@@ -2038,14 +2132,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const action = continuation.kind === "none" && transitionKind === "handoff"
       ? "reset"
       : transitionKind;
-    const fromDescriptor = this.v2Transcript ? this.v2Descriptor() : null;
+    // A transition is *from* the authoritative continuation state, which is not always
+    // the live runtime: a thread that has completed no turn is live but unrecorded.
+    const fromDescriptor = this.v2Transcript
+      ? descriptorFromCheckpoint(this.v2Transcript.checkpoint)
+      : null;
     let toInternalSessionId: string | undefined;
     let toDescriptor: InternalSessionDescriptor | undefined;
     let summary: string | undefined;
     let targetResult: PromptResult | undefined;
     let targetController: AgentController | null = null;
     let resolvedTargetAdapter: Adapter | null = null;
+    let targetMetering: MeteringEngine | null = null;
     let targetActivated = false;
+    let targetAttachment: "runtime_only" | "recorded" = "runtime_only";
     let failedAfter: "start" | "target_created" | "target_activated" = "start";
     // Records accumulate as they complete, so a handoff that fails partway still reports
     // the operations it already paid for.
@@ -2110,30 +2210,29 @@ export class AgentConversation implements AgentClient, Bridgeable {
         summary = "";
       }
 
-      const replacingController = targetAdapterId !== fromAdapterId || targetMode !== this._mode;
-      let created: ConnectResult;
-      if (replacingController) {
-        const adapter = item.options.target?.adapter ?? (targetAdapterId === fromAdapterId
-          ? this.activeAdapter
-          : this.ownerLifecycle?.resolveAdapter?.(targetAdapterId));
-        if (!adapter) {
-          throw new Error(
-            `cannot resolve adapter ${targetAdapterId}; cross-adapter switch requires an Agent-owned conversation`,
-          );
-        }
-        resolvedTargetAdapter = adapter;
-        targetController = this.createController(adapter, targetAdapterId, targetMode);
-        created = await targetController.startFresh();
-      } else {
-        if (this.controller.isDegraded) {
-          throw new Error("starting a fresh provider thread requires ACP (normal) mode");
-        }
-        targetController = this.controller;
-        created = await targetController.newSession();
+      // Both same-adapter and cross-adapter transitions get their own controller. Calling
+      // newSession() on the live controller replaces its thread before the target has
+      // earned the right to supersede the source, so a failed seed would leave nothing to
+      // roll back to.
+      if (targetMode === "degraded") {
+        throw new Error("starting a fresh provider thread requires ACP (normal) mode");
       }
+      const adapter = item.options.target?.adapter ?? (targetAdapterId === fromAdapterId
+        ? this.activeAdapter
+        : this.ownerLifecycle?.resolveAdapter?.(targetAdapterId));
+      if (!adapter) {
+        throw new Error(
+          `cannot resolve adapter ${targetAdapterId}; cross-adapter switch requires an Agent-owned conversation`,
+        );
+      }
+      resolvedTargetAdapter = adapter;
+      targetController = this.createController(adapter, targetAdapterId, targetMode);
+      const created = await targetController.startFresh();
       if (!created.sessionId) throw new Error("harness returned no session id for handoff");
       toInternalSessionId = created.sessionId;
-      if (!replacingController && toInternalSessionId === fromInternalSessionId) {
+      // A target naming the source's thread cannot supersede it: the provider mapping and
+      // the transcript history entry would both describe one id on either side.
+      if (toInternalSessionId === fromInternalSessionId) {
         throw new Error("harness did not replace the internal session during handoff");
       }
 
@@ -2145,8 +2244,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       });
 
       if (this.v2Transcript) {
-        const transitionAt = new Date().toISOString();
-        toDescriptor = this.v2Descriptor(toInternalSessionId, transitionAt);
+        toDescriptor = this.v2Descriptor(toInternalSessionId, new Date().toISOString());
         await this.v2Transcript.appendTransitionEvent({
           kind: "transition",
           transitionId: item.handoffId,
@@ -2156,40 +2254,102 @@ export class AgentConversation implements AgentClient, Bridgeable {
           to: toDescriptor,
         });
         failedAfter = "target_created";
+      }
+
+      // The target's counters start at zero, so it needs its own engine from its first
+      // prompt — which happens before it is live and before it may supersede the source.
+      targetMetering = new MeteringEngine({
+        ...this.meteringConfig,
+        agentSessionId: this.agentSessionId,
+        adapterId: targetAdapterId,
+        initialState: this.metering.currentState,
+        createdActiveThread: true,
+        pricing: this.meteringConfig.pricing ?? createModelsDevResolver(),
+        enforcement: this.meteringConfig.enforcement ?? "best_effort",
+      });
+      const promptTarget: InternalPromptTarget = {
+        controller: targetController,
+        metering: targetMetering,
+        adapterId: targetAdapterId,
+      };
+
+      // A completed provider turn on the target is what entitles it to replace the source.
+      // Seeding is that turn when there is continuation context; otherwise the caller's
+      // first instruction is the only turn available to supply the evidence.
+      const confirmedByTurn = continuation.kind !== "none"
+        || item.options.targetPrompt !== undefined;
+      if (continuation.kind !== "none") {
+        const seeded = await this.meteredInternalPrompt(
+          `${item.handoffId}:seed`,
+          transitionKind === "switch" ? "switch_seed" : "handoff_seed",
+          buildContinuationPrompt(summary),
+          records,
+          promptTarget,
+        );
+        if (seeded.status !== "completed") {
+          throw new Error(`handoff continuation seeding ${seeded.status}`);
+        }
+      } else if (item.options.targetPrompt !== undefined) {
+        const prompted = await this.meteredInternalPrompt(
+          `${item.handoffId}:target`,
+          "internal_command",
+          item.options.targetPrompt,
+          records,
+          promptTarget,
+        );
+        targetResult = copyPromptResult(prompted);
+        if (prompted.status !== "completed") {
+          throw new Error(`handoff target prompt ${prompted.status}`);
+        }
+      }
+
+      const activatedAt = new Date().toISOString();
+      // With no continuation to seed and no first instruction, nothing has run on the
+      // target, so it cannot be selected for a later open. The live conversation still
+      // moves to it; the previous recorded mapping stays the restart fallback until a
+      // completed prompt commits this one.
+      const canRecord = this.ownerLifecycle?.transitionActivated !== undefined;
+      const deferAttachment = !confirmedByTurn && !this.v2Transcript;
+      if (!deferAttachment && this.v2Transcript) {
         const checkpoint = this.v2Transcript.checkpoint;
+        // Seeding the target settles an operation on the source, so the descriptor taken
+        // when the transition started no longer matches the reduced state activation is
+        // asserted against. It still names the same source thread; only its checkpoint
+        // projection moved, so it is recomputed rather than carried.
+        const activationFrom = descriptorFromCheckpoint(checkpoint);
         await this.v2Transcript.activateTransition({
           kind: "transition",
           transitionId: item.handoffId,
           transitionKind,
           event: "target_activated",
-          from: fromDescriptor,
+          from: activationFrom,
           to: toDescriptor,
-          ...(fromDescriptor?.internalSessionId
+          ...(activationFrom?.internalSessionId
             ? {
                 historyEntry: {
-                  internalSessionId: fromDescriptor.internalSessionId,
-                  adapterId: fromDescriptor.adapterId,
-                  model: fromDescriptor.model,
-                  sessionConfiguration: fromDescriptor.sessionConfiguration,
-                  protocol: fromDescriptor.protocol,
-                  activatedAt: fromDescriptor.activatedAt!,
-                  deactivatedAt: transitionAt,
+                  internalSessionId: activationFrom.internalSessionId,
+                  adapterId: activationFrom.adapterId,
+                  model: activationFrom.model,
+                  sessionConfiguration: activationFrom.sessionConfiguration,
+                  protocol: activationFrom.protocol,
+                  activatedAt: activationFrom.activatedAt!,
+                  deactivatedAt: activatedAt,
                   transition: { kind: transitionKind, transitionId: item.handoffId },
                 },
               }
             : {}),
           activationState: {
             resultingStateRevision: checkpoint.stateRevision + 1,
-            updatedAt: transitionAt,
-            transitionAt,
+            updatedAt: activatedAt,
+            transitionAt: activatedAt,
             boundary: checkpoint.boundary,
           },
         });
         failedAfter = "target_activated";
       }
-      const activatedAt = new Date().toISOString();
+      const recordedByOwner = canRecord && !deferAttachment;
       try {
-        await this.ownerLifecycle?.transitionActivated?.({
+        if (recordedByOwner) await this.ownerLifecycle!.transitionActivated!({
           transitionId: item.handoffId,
           agentConversationId: this.agentConversationId,
           internalSessionId: toInternalSessionId,
@@ -2206,58 +2366,56 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
 
       const previousController = this.controller;
-      if (targetController !== previousController) {
-        this.controller = targetController;
-        this.activeAdapter = resolvedTargetAdapter!;
-        this._adapterId = targetAdapterId;
-        this._mode = targetMode;
-        this.metering = new MeteringEngine({
-          ...this.meteringConfig,
-          agentSessionId: this.agentSessionId,
-          adapterId: targetAdapterId,
-          initialState: this.metering.currentState,
-          createdActiveThread: true,
-          pricing: this.meteringConfig.pricing ?? createModelsDevResolver(),
-          enforcement: this.meteringConfig.enforcement ?? "best_effort",
-        });
-        this.bindController(targetController);
-      }
+      this.controller = targetController;
+      this.activeAdapter = resolvedTargetAdapter;
+      this._adapterId = targetAdapterId;
+      this._mode = targetMode;
+      this.metering = targetMetering;
+      this.bindController(targetController);
       targetActivated = true;
-      this.setInternalSessionId(toInternalSessionId);
+      targetAttachment = deferAttachment ? "runtime_only" : "recorded";
+      // A handoff target is a freshly created thread, so its counters start at zero
+      // whether or not it is already the selected continuation.
+      this.installProviderAttachment(toInternalSessionId, targetAttachment, true, {
+        acquiredAt: activatedAt,
+        transitionId: item.handoffId,
+      });
       await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       this.emitStateIfChanged();
       await this.persist();
+      if (this.v2Transcript) {
+        // The seed was metered on the target's engine, so the checkpoint written before
+        // activation still holds the source's pre-seed totals. Publish the engine that is
+        // now live, or a crash here would lose work the provider was already paid for.
+        await this.v2Transcript.publishCheckpoint({ metering: this.metering.currentState })
+          .catch((error) => {
+            this.log.warn("handoff_metering_checkpoint_failed", { error: String(error) });
+          });
+      }
       await this.recordNativeAction(item.handoffId, action, "checkpoint", {
-        output: { stage: "target_activated", internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+        output: {
+          stage: deferAttachment ? "target_live" : "target_activated",
+          internalSessionId: toInternalSessionId,
+          adapterId: targetAdapterId,
+        },
       });
-      if (targetController !== previousController) {
-        await previousController.stop().catch((error) => {
-          this.log.warn("handoff_previous_controller_stop_failed", { error: String(error) });
-        });
-      }
+      await previousController.stop().catch((error) => {
+        this.log.warn("handoff_previous_controller_stop_failed", { error: String(error) });
+      });
 
-      if (continuation.kind !== "none") {
-        const seeded = await this.meteredInternalPrompt(
-          `${item.handoffId}:seed`,
-          transitionKind === "switch" ? "switch_seed" : "handoff_seed",
-          buildContinuationPrompt(summary),
-          records,
-        );
-        if (seeded.status !== "completed") {
-          throw new Error(`handoff continuation seeding ${seeded.status}`);
-        }
-      }
-      if (item.options.targetPrompt !== undefined) {
+      // The optional first instruction runs after the target is already the recorded
+      // continuation. Its failure is an operation failure, not an activation rollback.
+      if (continuation.kind !== "none" && item.options.targetPrompt !== undefined) {
         const prompted = await this.meteredInternalPrompt(
           `${item.handoffId}:target`,
           "internal_command",
           item.options.targetPrompt,
           records,
         );
+        targetResult = copyPromptResult(prompted);
         if (prompted.status !== "completed") {
           throw new Error(`handoff target prompt ${prompted.status}`);
         }
-        targetResult = copyPromptResult(prompted);
       }
 
       const result: HandoffResult = Object.freeze({
@@ -2268,6 +2426,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ...(transitionKind === "switch" ? { fromAdapterId, toAdapterId: targetAdapterId } : {}),
         summary,
         ...(targetResult ? { targetResult } : {}),
+        providerAttachment: targetAttachment,
         meteringRecords: Object.freeze([...records]),
       });
       if (this.v2Transcript) {
@@ -2298,18 +2457,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.emit({ kind: "handoff_completed", result });
       return result;
     } catch (err) {
-      // Once session/new succeeds the controller really is on the new thread. Keep the
-      // public id and catalog truthful even when continuation seeding subsequently fails.
-      const actualSessionId = this.controller.currentSessionId;
-      if (!this.v2Transcript && actualSessionId && actualSessionId !== this._internalSessionId) {
-        this.setInternalSessionId(actualSessionId);
-        toInternalSessionId = actualSessionId;
-        this.emitStateIfChanged();
-        try {
-          await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
-          await this.persist();
-        } catch (persistError) {
-          this.log.warn("handoff_failure_persist_failed", { error: String(persistError) });
+      if (!targetActivated && targetMetering) {
+        // The target's operations were minted and reported as they settled; only the
+        // running aggregate lives in the engine now being discarded. Adopting its totals
+        // must not double as a correction: `reconcile` would clear a block the source is
+        // legitimately under, which no accounting fold has any business doing.
+        if (targetMetering.currentState.operationCount > this.metering.currentState.operationCount) {
+          this.metering.adoptAccounting(targetMetering.currentState);
+          try {
+            await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
+          } catch (persistError) {
+            this.log.warn("handoff_failure_persist_failed", { error: String(persistError) });
+          }
         }
       }
       const error = String(err);
@@ -2340,7 +2499,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           error,
         });
       }
-      if (!targetActivated && targetController && targetController !== this.controller) {
+      if (!targetActivated && targetController) {
         await targetController.stop().catch(() => undefined);
       }
       await this.recordNativeAction(item.handoffId, action, "failed", { error }).catch(
@@ -2358,7 +2517,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
       });
       // A rejected handoff cannot return a HandoffResult, but the summary/seed prompts it
       // already ran consumed real tokens; their records travel on the error.
-      throw new AgentSessionHandoffError(item.handoffId, records, err);
+      throw new AgentSessionHandoffError(item.handoffId, records, err, {
+        fromInternalSessionId,
+        ...(toInternalSessionId ? { toInternalSessionId } : {}),
+        ...(toInternalSessionId ? { providerAttachment: targetAttachment } : {}),
+        activationCompleted: targetActivated,
+        ...(summary !== undefined ? { summary } : {}),
+        ...(targetResult ? { targetResult } : {}),
+      });
     }
   }
 
@@ -2721,13 +2887,26 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (!this.v2Transcript) {
       const result = await this.controller.setMode(item.mode);
       this._mode = this.controller.currentMode;
-      this.setInternalSessionId(result.sessionId || null);
+      const nextInternalSessionId = result.sessionId || null;
+      if (nextInternalSessionId) {
+        if (
+          this.providerAttachment.kind === "absent"
+          || this.providerAttachment.descriptor.internalSessionId !== nextInternalSessionId
+        ) {
+          this.installProviderAttachment(nextInternalSessionId, "runtime_only", true);
+        }
+      } else {
+        // A mode change with no provider thread (for example ACP to degraded) leaves no
+        // live attachment; the previous recorded mapping remains the restart fallback.
+        this.clearProviderAttachment();
+        this.setInternalSessionId(null);
+      }
       await this.ownerLifecycle?.meteringStateChanged?.(this.metering.currentState);
       await this.persist();
       return result;
     }
 
-    const from = this.v2Descriptor();
+    const from = descriptorFromCheckpoint(this.v2Transcript.checkpoint);
     let to: InternalSessionDescriptor | undefined;
     let failedAfter: "start" | "target_created" | "target_activated" = "start";
     await this.v2Transcript.appendTransitionEvent({
@@ -3026,6 +3205,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let closed: OperationMeteringRecord | null = null;
     let transcriptClosed = false;
     let providerSettled = false;
+    // A lazily created thread acquires its provider session during dispatch, so this is the
+    // closest observable acquisition time when `session/new` happens inside `prompt()`.
+    const dispatchedAt = new Date().toISOString();
     try {
       const res = await this.controller.prompt(providerText, wrappedHandlers, item.attachments);
       providerSettled = true;
@@ -3048,7 +3230,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this._title = item.text.trim().replace(/\s+/g, " ").slice(0, 60);
       }
       // A session may have been created lazily on first prompt (degraded has none).
-      this.setInternalSessionId(this.controller.currentSessionId ?? this._internalSessionId);
+      const observedInternalSessionId = this.controller.currentSessionId ?? this._internalSessionId;
+      if (observedInternalSessionId) {
+        if (
+          this.providerAttachment.kind === "absent"
+          || this.providerAttachment.descriptor.internalSessionId !== observedInternalSessionId
+        ) {
+          this.installProviderAttachment(observedInternalSessionId, "runtime_only", true, {
+            acquiredAt: dispatchedAt,
+          });
+        }
+      } else {
+        this.setInternalSessionId(observedInternalSessionId);
+      }
       // Metering closes BEFORE local persistence. The provider has already been paid and
       // has already told us what it charged; letting a transcript or catalog write failure
       // send us down the catch path would discard usage we are holding and, in a strict
@@ -3060,6 +3254,17 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const record = await this.closeOperation(operation, res.status, res.usage);
       closed = record;
       await this.ownerLifecycle?.meteringRecorded?.(record);
+      // The Agent-owned and transcript paths record the attachment inside their own
+      // commit. A catalog-backed conversation has one mutable row, so the completed turn
+      // is simply what makes the live thread the selected one.
+      const pending = this.providerAttachment;
+      if (res.status === "completed"
+        && !this.ownerLifecycle
+        && !this.v2Transcript
+        && pending.kind === "runtime_only") {
+        this.providerAttachment = recordedProviderAttachment(pending.descriptor);
+        this.lastRecordedInternalSessionId = pending.descriptor.internalSessionId;
+      }
       await this.persist();
       if (this.v2Transcript) {
         await this.presentation.drain();
@@ -3080,18 +3285,41 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       const result = Object.freeze({ ...res, operationId: item.turnId, metering: record });
       await this.ownerRecordWrite;
-      await this.ownerLifecycle?.afterPrompt({
-        operationId: item.turnId,
-        agentSessionId: this.ownerAgentSessionId!,
-        agentConversationId: this.agentConversationId,
-        targetProviderContextId,
-        ...(owned?.identityDeliveryReceipt
-          ? { identityDeliveryReceipt: owned.identityDeliveryReceipt }
-          : {}),
-        ...(item.participantId ? { participantId: item.participantId } : {}),
-        text: item.text,
-        result,
-      });
+      if (this.ownerLifecycle) {
+        const completed = {
+          operationId: item.turnId,
+          agentSessionId: this.ownerAgentSessionId!,
+          agentConversationId: this.agentConversationId,
+          targetProviderContextId,
+          ...(owned?.identityDeliveryReceipt
+            ? { identityDeliveryReceipt: owned.identityDeliveryReceipt }
+            : {}),
+          ...(item.participantId ? { participantId: item.participantId } : {}),
+          text: item.text,
+          result,
+          providerAttachment: this.providerAttachment,
+        };
+        try {
+          const committed = await this.ownerLifecycle.afterPrompt(completed);
+          if (committed?.providerAttachment) {
+            this.providerAttachment = acknowledgeProviderAttachment(
+              this.providerAttachment,
+              committed.providerAttachment,
+            );
+          }
+        } catch (error) {
+          if (error instanceof OwnedPromptPostCommitError) {
+            if (error.commit.providerAttachment) {
+              this.providerAttachment = acknowledgeProviderAttachment(
+                this.providerAttachment,
+                error.commit.providerAttachment,
+              );
+            }
+            throw error.cause ?? error;
+          }
+          throw error;
+        }
+      }
       await this.ownerRecordWrite;
       return result;
     } catch (err) {
@@ -3174,13 +3402,27 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
+  /**
+   * @param liveThread Whether the settled turn ran on this conversation's own controller.
+   *   A transition seeds its target through a separate controller, and that turn is
+   *   evidence for the target, never for the thread it is trying to replace.
+   */
   private async finishV2Prompt(
     status: PromptResult["status"],
     record: OperationMeteringRecord,
     errorCode?: "unknown",
+    liveThread = true,
   ): Promise<void> {
     if (!this.v2Transcript || this.persistence === false) return;
     const observedAt = new Date().toISOString();
+    // A completed turn is what entitles a newly created thread to be selected on a later
+    // open, and the turn's own terminal checkpoint is what records it — so the response
+    // and the thread it came from cannot disagree after a crash.
+    const attachment = this.providerAttachment;
+    const attaching = liveThread
+      && status === "completed"
+      && attachment.kind === "runtime_only"
+      && this.v2Transcript.checkpoint.internalSessionId === null;
     await this.v2Transcript.appendEvent({
       kind: "metering_reference",
       operationId: record.operationId,
@@ -3199,9 +3441,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
           observedAt,
         }),
         metering: this.metering.currentState,
+        ...(attaching && attachment.kind === "runtime_only" ? {
+          providerAttachment: {
+            internalSessionId: attachment.descriptor.internalSessionId,
+            activatedAt: attachment.descriptor.acquiredAt,
+          },
+        } : {}),
       },
       errorCode,
     );
+    if (attaching && this.providerAttachment === attachment) {
+      this.providerAttachment = recordedProviderAttachment(attachment.descriptor);
+      this.lastRecordedInternalSessionId = attachment.descriptor.internalSessionId;
+    }
   }
 
   /**
@@ -3267,14 +3519,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
     operationKind: MeteredOperationKind,
     text: string,
     records: OperationMeteringRecord[],
+    target?: InternalPromptTarget,
   ): Promise<PromptResult> {
-    const operation = await this.metering.open({
+    const controller = target?.controller ?? this.controller;
+    const metering = target?.metering ?? this.metering;
+    const advertised = target ? activeModel(target.controller.configOptions) : this.advertisedModel;
+    const reference = target ? resolveModelReference(target.adapterId, advertised) : null;
+    const operation = await metering.open({
       operationId,
       operationKind,
-      internalSessionId: this._internalSessionId,
-      providerId: this.providerId,
-      model: this.model,
-      degraded: this.controller.isDegraded,
+      internalSessionId: target ? controller.currentSessionId : this._internalSessionId,
+      providerId: target ? reference?.providerId ?? null : this.providerId,
+      model: target ? reference?.modelId ?? advertised : this.model,
+      degraded: controller.isDegraded,
     });
     let transcriptStarted = false;
     if (this.v2Transcript) {
@@ -3300,8 +3557,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let closed = false;
     let transcriptClosed = false;
     try {
-      const result = await this.controller.prompt(text);
-      const record = await this.closeOperation(operation, result.status, result.usage);
+      const result = await controller.prompt(text);
+      const record = await this.closeOperation(
+        operation,
+        result.status,
+        result.usage,
+        undefined,
+        metering,
+      );
       records.push(record);
       closed = true;
       await this.ownerLifecycle?.meteringRecorded?.(record);
@@ -3315,13 +3578,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
           stopReason: result.stopReason,
           status: result.status,
         });
-        await this.finishV2Prompt(result.status, record);
+        await this.finishV2Prompt(result.status, record, undefined, target === undefined);
         transcriptClosed = true;
       }
       return result;
     } catch (err) {
       if (!closed) {
-        const record = await this.closeOperation(operation, "error", null, String(err));
+        const record = await this.closeOperation(operation, "error", null, String(err), metering);
         records.push(record);
         closed = true;
         await this.ownerLifecycle?.meteringRecorded?.(record);
@@ -3388,18 +3651,22 @@ export class AgentConversation implements AgentClient, Bridgeable {
     outcome: "completed" | "cancelled" | "error",
     reportedCumulative: TokenUsage | null,
     usageFailureReason?: string,
+    engine: MeteringEngine = this.metering,
   ): Promise<OperationMeteringRecord> {
-    const wasBlocked = this.metering.blocked;
-    const record = await this.metering.close(operation, {
+    const wasBlocked = engine.blocked;
+    const live = engine === this.metering;
+    const record = await engine.close(operation, {
       outcome,
       reportedCumulative,
       ...(usageFailureReason ? { usageFailureReason } : {}),
-      contextAfter: this._contextWindow,
-      providerCostAfter: this._providerCost,
+      // Context and provider cost describe the live thread. An unconfirmed transition
+      // target has neither yet, and borrowing the source's would misreport it.
+      contextAfter: live ? this._contextWindow : null,
+      providerCostAfter: live ? this._providerCost : null,
     });
     this.emit({ kind: "metering_recorded", record });
-    if (!wasBlocked && this.metering.blocked) {
-      this.emit({ kind: "metering_blocked", reason: this.metering.blockedReason ?? "unknown" });
+    if (!wasBlocked && engine.blocked) {
+      this.emit({ kind: "metering_blocked", reason: engine.blockedReason ?? "unknown" });
     }
     return record;
   }
@@ -3499,6 +3766,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
       await this.ownerRecordWrite.catch((error) => {
         this.log.warn("owned_runtime_persistence_failed", { error: String(error) });
       });
+      // No live thread remains. A runtime-only attachment was never a continuation
+      // candidate, and a recorded one is preserved by its provider row, so neither should
+      // survive on the stopped object.
+      this.clearProviderAttachment();
       await this.presentation.drain().catch(() => undefined);
       try {
         await this.transcriptWrite;
@@ -3674,7 +3945,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (!this.sessions) return;
     await this.sessions.record({
       agentSessionId: this.agentSessionId,
-      internalSessionId: this._internalSessionId,
+      internalSessionId: this.lastRecordedInternalSessionId,
       adapter: this.adapterId,
       mode: this._mode,
       cwd: this._cwd,
@@ -3729,6 +4000,47 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (pending && next && (!pending.sessionId || pending.sessionId === next)) {
       this.applyUsageUpdate(pending.update, pending.sessionId);
     }
+  }
+
+  /**
+   * Install the live provider attachment.
+   *
+   * `kind` is persistence state (may it be selected on a later open?). `created` is thread
+   * provenance for metering (did its counters start at zero?). They are orthogonal: a
+   * handoff target is both `recorded` and `created`, while a loaded thread is `recorded`
+   * and not created.
+   */
+  private installProviderAttachment(
+    internalSessionId: string,
+    kind: "runtime_only" | "recorded",
+    created: boolean,
+    options: {
+      readonly acquiredAt?: string;
+      readonly transitionId?: string;
+    } = {},
+  ): void {
+    const current = this.providerAttachment;
+    if (current.kind === kind && current.descriptor.internalSessionId === internalSessionId) return;
+    this.setInternalSessionId(internalSessionId, created);
+    const descriptor: ProviderAttachmentDescriptor = {
+      attachmentAttemptId: crypto.randomUUID(),
+      internalSessionId,
+      adapterId: this.adapterId,
+      mode: this.mode,
+      ...(this.model ? { model: this.model } : {}),
+      acquiredAt: options.acquiredAt ?? new Date().toISOString(),
+      ...(options.transitionId ? { transitionId: options.transitionId } : {}),
+    };
+    this.providerAttachment = kind === "runtime_only"
+      ? runtimeOnlyProviderAttachment(descriptor)
+      : recordedProviderAttachment(descriptor);
+    if (kind === "recorded") this.lastRecordedInternalSessionId = internalSessionId;
+  }
+
+  /** Drop the live attachment without touching persistence or the last known session id. */
+  private clearProviderAttachment(): void {
+    if (this.providerAttachment.kind === "absent") return;
+    this.providerAttachment = Object.freeze({ kind: "absent" });
   }
 
   /**

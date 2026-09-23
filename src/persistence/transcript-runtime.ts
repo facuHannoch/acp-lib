@@ -43,6 +43,18 @@ export interface TranscriptTerminalCheckpointChanges {
   readonly sessionConfiguration?: SessionConfigurationCheckpoint;
   readonly metering?: AgentSessionCheckpoint["metering"];
   readonly boundary?: AgentSessionBoundary;
+  /**
+   * Fill in a thread slot the conversation never had.
+   *
+   * A newly created provider thread is kept in memory until a completed turn justifies
+   * selecting it for a later resume; the turn's own terminal checkpoint is what records
+   * it, so the response and the thread it came from commit together. Replacing an already
+   * selected thread is a transition and is rejected here.
+   */
+  readonly providerAttachment?: {
+    readonly internalSessionId: string;
+    readonly activatedAt: string;
+  };
 }
 
 type NormalizedTransitionEvent = Extract<NormalizedPersistenceEvent, { kind: "transition" }>;
@@ -452,6 +464,11 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
   ): Promise<AgentSessionCheckpoint> {
     this.assertUsable();
     const active = this.requireActive();
+    if (changes.providerAttachment && this._checkpoint.internalSessionId !== null) {
+      throw new TranscriptRuntimeStateError(
+        "replacing a selected provider thread is a transition, not a terminal checkpoint change",
+      );
+    }
     const terminal: TranscriptOperationRecord = {
       ...this.envelope(this.writer.nextSequence, ts),
       t: "operation",
@@ -469,6 +486,10 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
           ? {}
           : { sessionConfiguration: structuredClone(changes.sessionConfiguration) }),
         ...(changes.metering === undefined ? {} : { metering: structuredClone(changes.metering) }),
+        ...(changes.providerAttachment === undefined ? {} : {
+          internalSessionId: changes.providerAttachment.internalSessionId,
+          internalSessionActivatedAt: changes.providerAttachment.activatedAt,
+        }),
         stateRevision: this._checkpoint.stateRevision + 1,
         transcript: { ...this._checkpoint.transcript!, coveredSequence: terminal.seq },
         boundary: changes.boundary ?? { status: "settled", lastSettledOperationId: active.operationId },

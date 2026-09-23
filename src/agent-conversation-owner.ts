@@ -7,6 +7,10 @@ import type { ResponseMessage } from "./types.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
 import type { IdentityDeliveryReceipt } from "./identity.ts";
+import type {
+  ProviderAttachmentCommitAcknowledgement,
+  ProviderAttachmentState,
+} from "./persistence/provider-attachment.ts";
 
 export interface OwnedPromptInput {
   readonly operationId: string;
@@ -27,6 +31,22 @@ export interface OwnedPromptPreparation {
 export interface OwnedPromptCompleted extends OwnedPromptInput {
   readonly result: AgentSessionPromptResult;
   readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
+  readonly providerAttachment: ProviderAttachmentState;
+}
+
+export interface OwnedPromptCommitResult {
+  readonly providerAttachment?: ProviderAttachmentCommitAcknowledgement;
+}
+
+/** @internal Indicates that the local prompt commit succeeded but a follow-up hook failed. */
+export class OwnedPromptPostCommitError extends Error {
+  constructor(
+    readonly commit: OwnedPromptCommitResult,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "OwnedPromptPostCommitError";
+  }
 }
 
 export interface OwnedPromptFailed extends OwnedPromptInput {
@@ -37,7 +57,7 @@ export interface OwnedPromptFailed extends OwnedPromptInput {
 /** @internal Agent-owned persistence and identity boundary for a conversation turn. */
 export interface AgentConversationOwnerLifecycle {
   beforePrompt(input: OwnedPromptInput): Promise<OwnedPromptPreparation>;
-  afterPrompt(input: OwnedPromptCompleted): Promise<void>;
+  afterPrompt(input: OwnedPromptCompleted): Promise<OwnedPromptCommitResult | void>;
   promptFailed(input: OwnedPromptFailed): Promise<void>;
   /** Durably commit one normalized operation record and its bounded next state. */
   meteringRecorded?(record: OperationMeteringRecord): Promise<void>;

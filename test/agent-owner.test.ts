@@ -10,12 +10,15 @@ import {
   type IdentityUpdateInput,
   type LoadedIdentityContext,
 } from "../src/index.ts";
+import { AgentSessionHandoffError } from "../src/metering/record.ts";
 
 const OPERATIONS_AGENT = resolve(import.meta.dir, "../smoke-tests/test5-operations/operations-agent.ts");
 const PRESENTATION_AGENT = resolve(import.meta.dir, "fixtures/presentation-agent.ts");
 const PERMISSION_ORDER_AGENT = resolve(import.meta.dir, "fixtures/permission-order-agent.ts");
 const CONFIG_AGENT = resolve(import.meta.dir, "fixtures/config-agent.ts");
 const TERMINAL_AGENT = resolve(import.meta.dir, "fixtures/terminal-agent.ts");
+const IDENTITY_AGENT = resolve(import.meta.dir, "fixtures/identity-agent.ts");
+const PTY_AGENT = resolve(import.meta.dir, "fixtures/idle-pty-agent.ts");
 const agents: Agent[] = [];
 const directories: string[] = [];
 
@@ -28,6 +31,127 @@ afterEach(async () => {
 });
 
 describe("Agent owner", () => {
+  test("keeps a newly created provider attachment runtime-only until a completed prompt", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+
+    expect(conversation.internalSessionId).not.toBeNull();
+    expect(await agent.persistence.providerSessions.active(conversationId)).toBeNull();
+
+    await conversation.stop();
+    expect(conversation.providerAttachmentState.kind).toBe("absent");
+    expect(await agent.persistence.providerSessions.active(conversationId)).toBeNull();
+    const reopened = await agent.conversations.open(conversationId);
+    expect(reopened.providerSession).toBe("new");
+    expect(await agent.persistence.providerSessions.active(conversationId)).toBeNull();
+  });
+
+  test("records the provider attachment once and does not rotate it on load", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    await conversation.prompt("confirm this provider attachment");
+
+    const recorded = await agent.persistence.providerSessions.active(conversationId);
+    expect(recorded).toMatchObject({ internalSessionId: conversation.internalSessionId });
+    if (!recorded) throw new Error("provider attachment was not recorded");
+    await conversation.prompt("reuse the recorded attachment");
+    expect(await agent.persistence.providerSessions.list(conversationId)).toHaveLength(1);
+
+    await conversation.stop();
+    const reopened = await agent.conversations.open(conversationId);
+    expect(reopened.providerSession).toBe("loaded");
+    expect(await agent.persistence.providerSessions.list(conversationId)).toEqual([recorded]);
+  });
+
+  test("does not record a failed first prompt and can confirm a later successful turn", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { identity: { command: ["bun", IDENTITY_AGENT] } },
+      defaultAdapterId: "identity",
+    }));
+    const conversation = await agent.conversations.create();
+
+    await expect(conversation.prompt("FAIL_IDENTITY_TURN")).rejects.toThrow(
+      "intentional identity fixture failure",
+    );
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toBeNull();
+
+    await conversation.prompt("a later successful turn");
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toMatchObject({
+      internalSessionId: conversation.internalSessionId,
+    });
+    expect((await agent.persistence.metering.list(conversation.id)).records).toHaveLength(2);
+  });
+
+  test("acknowledges a committed attachment before surfacing a post-commit hook failure", async () => {
+    let failAssistantUpdate = true;
+    const identity: AgentIdentityRuntime = {
+      async load() { return {}; },
+      async update(input) {
+        if (
+          failAssistantUpdate
+          && input.records.some((record) => record.kind === "message" && record.role === "assistant")
+        ) {
+          throw new Error("intentional post-commit identity failure");
+        }
+      },
+    };
+    const { agent } = await openAgent({ identity });
+    const conversation = await agent.conversations.create();
+
+    await expect(conversation.prompt("commit before identity fails")).rejects.toThrow(
+      "intentional post-commit identity failure",
+    );
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toMatchObject({
+      internalSessionId: conversation.internalSessionId,
+    });
+    expect(await agent.persistence.providerSessions.list(conversation.id)).toHaveLength(1);
+
+    failAssistantUpdate = false;
+    await conversation.prompt("do not append the provider attachment twice");
+    expect(await agent.persistence.providerSessions.list(conversation.id)).toHaveLength(1);
+  });
+
+  test("rolls back final assistant persistence when first attachment confirmation fails", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const backend = agent.persistence;
+    const originalTransaction = backend.transaction.bind(backend);
+    let failProviderAppend = true;
+    backend.transaction = async (work) => await originalTransaction(async (scope) => {
+      const providerSessions = new Proxy(scope.providerSessions, {
+        get(target, property, receiver) {
+          if (property !== "append") return Reflect.get(target, property, receiver);
+          return async (...args: Parameters<typeof target.append>) => {
+            if (failProviderAppend) {
+              failProviderAppend = false;
+              throw new Error("intentional provider attachment persistence failure");
+            }
+            return await target.append(...args);
+          };
+        },
+      });
+      return await work(Object.freeze({ ...scope, providerSessions }));
+    });
+
+    await expect(conversation.prompt("fail the local attachment commit")).rejects.toThrow(
+      "intentional provider attachment persistence failure",
+    );
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toBeNull();
+    expect((await agent.persistence.messages.list(conversation.id)).messages.some(
+      (message) => message.role === "assistant" && message.status === "completed",
+    )).toBe(false);
+
+    backend.transaction = originalTransaction;
+    await conversation.prompt("confirm after the local failure");
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toMatchObject({
+      internalSessionId: conversation.internalSessionId,
+    });
+  });
+
   test("persists opaque consumer metadata only on the submitted user message", async () => {
     const { agent } = await openAgent();
     const conversation = await agent.conversations.create();
@@ -119,8 +243,13 @@ describe("Agent owner", () => {
     await conversation.prompt("audit-only message");
 
     expect((await agent.persistence.messages.list(conversation.id)).messages).toHaveLength(0);
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toMatchObject({
+      internalSessionId: conversation.internalSessionId,
+    });
+    const auditOutbox = agent.persistence.auditOutbox;
+    if (!auditOutbox) throw new Error("audit outbox persistence is unavailable");
     await waitUntil(async () => {
-      const state = await agent.persistence.auditOutbox.state();
+      const state = await auditOutbox.state();
       return !!state && state.lastDeliveredSequence === state.lastAllocatedSequence;
     });
     const lines = (await readFile(join(directory, "audit", "audit.000001.jsonl"), "utf8"))
@@ -423,13 +552,19 @@ describe("Agent owner", () => {
       toInternalSessionId: conversation.internalSessionId,
     });
     expect(switched.targetResult?.text).toContain("continue now");
-    expect((await agent.persistence.metering.list(conversationId)).records.map((record) => record.operationKind)).toEqual([
+    const meteringRecords = (await agent.persistence.metering.list(conversationId)).records;
+    expect(meteringRecords.map((record) => record.operationKind)).toEqual([
       "switch_seed",
       "internal_command",
     ]);
+    // The target is a freshly created thread, so its counters start at zero: the first
+    // target operation must be attributable rather than "baseline_required".
+    expect(meteringRecords[0]?.usage.status).toBe("metered");
+    expect(meteringRecords[1]?.usage.status).toBe("metered");
     const history = await agent.persistence.providerSessions.list(conversationId);
-    expect(history).toHaveLength(2);
-    expect(history[0]?.deactivatedAt).toBeDefined();
+    // The source never completed a provider turn, so it was runtime-only and never
+    // became provider-session history. The activated target is the first recorded row.
+    expect(history).toHaveLength(1);
     expect(await agent.persistence.providerSessions.active(conversationId)).toMatchObject({
       adapterId: "atlas",
       internalSessionId: conversation.internalSessionId,
@@ -458,6 +593,130 @@ describe("Agent owner", () => {
     expect(recovered.conversation.internalSessionId).toBe(switched.toInternalSessionId);
   });
 
+  test("a failed seed retains the source mapping and records no target row", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { operations: { command: ["bun", OPERATIONS_AGENT, "fail-seed"] } },
+      defaultAdapterId: "operations",
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversation.id);
+    expect(source).toMatchObject({ internalSessionId: conversation.internalSessionId! });
+
+    const caught = await conversation.handoff({
+      continuation: { kind: "provided", content: "portable continuation context" },
+    }).then(() => null, (error: unknown) => error);
+    expect(caught).toBeInstanceOf(AgentSessionHandoffError);
+    if (!(caught instanceof AgentSessionHandoffError)) return;
+    expect(caught.activationCompleted).toBe(false);
+    expect(caught.providerAttachment).toBe("runtime_only");
+    expect(caught.toInternalSessionId).not.toBe(source!.internalSessionId);
+
+    // An unseeded target cannot supersede a source that still works.
+    expect(conversation.internalSessionId).toBe(source!.internalSessionId);
+    expect(await agent.persistence.providerSessions.list(conversation.id)).toEqual([source!]);
+    const stages = (await agent.persistence.records.list(conversation.id, {
+      kinds: ["native_action"],
+    })).records
+      .filter((record) => record.kind === "native_action" && record.action === "handoff")
+      .map((record) => record.kind === "native_action" ? record.state : null);
+    // started, target_created checkpoint, failed — and no target_activated checkpoint.
+    expect(stages).toEqual(["started", "checkpoint", "failed"]);
+
+    // The source still answers, which is the point of not tearing it down.
+    const after = await conversation.prompt("the source is still usable");
+    expect(after.status).toBe("completed");
+    expect(await agent.persistence.providerSessions.list(conversation.id)).toEqual([source!]);
+  });
+
+  test("a target prompt failure leaves the confirmed target recorded", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversation.id);
+
+    const caught = await conversation.handoff({
+      continuation: { kind: "provided", content: "portable continuation context" },
+      targetPrompt: "FAIL_TARGET_PROMPT",
+    }).then(() => null, (error: unknown) => error);
+    expect(caught).toBeInstanceOf(AgentSessionHandoffError);
+    if (!(caught instanceof AgentSessionHandoffError)) return;
+
+    // Seeding already confirmed the target, so this is an operation failure after a
+    // successful activation — not a reason to resurrect the source.
+    expect(caught.activationCompleted).toBe(true);
+    expect(caught.providerAttachment).toBe("recorded");
+    expect(String(caught)).toContain("deterministic target prompt failure");
+    expect(conversation.internalSessionId).toBe(caught.toInternalSessionId!);
+    expect(conversation.internalSessionId).not.toBe(source!.internalSessionId);
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toMatchObject({
+      internalSessionId: caught.toInternalSessionId!,
+      transitionId: caught.handoffId,
+    });
+  });
+
+  test("a same-adapter handoff records the target only after its seed completes", async () => {
+    const { agent } = await openAgent();
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversation.id);
+
+    const result = await conversation.handoff({
+      continuation: { kind: "provided", content: "portable continuation context" },
+    });
+    expect(result.providerAttachment).toBe("recorded");
+    expect(result.fromInternalSessionId).toBe(source!.internalSessionId);
+    expect(result.toInternalSessionId).not.toBe(source!.internalSessionId);
+    const history = await agent.persistence.providerSessions.list(conversation.id);
+    expect(history).toHaveLength(2);
+    expect(await agent.persistence.providerSessions.active(conversation.id)).toMatchObject({
+      internalSessionId: result.toInternalSessionId,
+      transitionId: result.handoffId,
+    });
+    // The seed is metered against the target's own zero baseline, not the source's.
+    const metering = (await agent.persistence.metering.list(conversation.id)).records;
+    expect(metering.at(-1)?.operationKind).toBe("handoff_seed");
+    expect(metering.at(-1)?.usage.status).toBe("metered");
+  });
+
+  test("mode changes defer and retain provider mappings around a degraded stretch", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: {
+        operations: {
+          command: ["bun", OPERATIONS_AGENT, "owned"],
+          ptyCommand: ["bun", PTY_AGENT],
+        },
+      },
+      defaultAdapterId: "operations",
+    }));
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversationId);
+
+    await conversation.setMode("degraded");
+    expect(conversation.mode).toBe("degraded");
+    expect(conversation.internalSessionId).toBeNull();
+    // Degraded mode has no provider session id to record, so the ACP thread stays the
+    // only thing a later open can return to.
+    expect(await agent.persistence.providerSessions.active(conversationId)).toEqual(source!);
+
+    await conversation.setMode("normal");
+    expect(conversation.mode).toBe("normal");
+    expect(conversation.internalSessionId).not.toBe(source!.internalSessionId);
+    // The replacement ACP thread is fresh, so it follows the ordinary first-turn rule.
+    expect(await agent.persistence.providerSessions.active(conversationId)).toEqual(source!);
+
+    await conversation.prompt("confirm the replacement thread");
+    expect(await agent.persistence.providerSessions.active(conversationId)).toMatchObject({
+      internalSessionId: conversation.internalSessionId!,
+    });
+  }, 25_000);
+
   test("reset starts a blank thread without summary or seed operations", async () => {
     const { agent } = await openAgent();
     const conversation = await agent.conversations.create();
@@ -468,6 +727,66 @@ describe("Agent owner", () => {
     expect(reset.meteringRecords).toEqual([]);
     expect(reset.toInternalSessionId).not.toBe(oldProviderSessionId);
     expect(conversation.adapterId).toBe("operations");
+    // Nothing ran on the target, so nothing entitles it to be loaded on a later open.
+    expect(reset.providerAttachment).toBe("runtime_only");
+  });
+
+  test("a promptless reset keeps the previous mapping until the target is prompted", async () => {
+    const { agent, path } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversationId);
+
+    const reset = await conversation.reset();
+    expect(reset.providerAttachment).toBe("runtime_only");
+    expect(conversation.internalSessionId).toBe(reset.toInternalSessionId);
+    // The live conversation is on the target, but a restart still has only the source
+    // to go back to.
+    expect(await agent.persistence.providerSessions.active(conversationId)).toEqual(source!);
+
+    await conversation.prompt("the first turn on the reset target");
+    const active = await agent.persistence.providerSessions.active(conversationId);
+    expect(active).toMatchObject({
+      internalSessionId: reset.toInternalSessionId,
+      transitionId: reset.handoffId,
+    });
+    expect(await agent.persistence.providerSessions.list(conversationId)).toHaveLength(2);
+
+    await agent.close();
+    agents.splice(agents.indexOf(agent), 1);
+    const reopened = await track(Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+    }));
+    const recovered = await reopened.conversations.open(conversationId);
+    expect(recovered.providerSession).toBe("loaded");
+    expect(recovered.conversation.internalSessionId).toBe(reset.toInternalSessionId);
+  });
+
+  test("a promptless reset abandoned before any prompt reopens on the previous mapping", async () => {
+    const { agent, path } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversationId);
+
+    const reset = await conversation.reset();
+    expect(reset.toInternalSessionId).not.toBe(source!.internalSessionId);
+    await conversation.stop();
+    expect(await agent.persistence.providerSessions.list(conversationId)).toEqual([source!]);
+
+    await agent.close();
+    agents.splice(agents.indexOf(agent), 1);
+    const reopened = await track(Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+    }));
+    const recovered = await reopened.conversations.open(conversationId);
+    expect(recovered.providerSession).toBe("loaded");
+    expect(recovered.conversation.internalSessionId).toBe(source!.internalSessionId);
   });
 });
 
