@@ -293,6 +293,51 @@ first streams provisionally, then arrives as a committed `tool_call`. Detached
 `AgentConversation` instances without an owning `Agent` are outside this bus, and a
 consumer-direct `persistence.records.append()` is not observed.
 
+### Conversation error records
+
+Important runtime failures are stored as an immutable `error` record in the same ordered
+timeline as messages, activities, and metering references — and delivered live through
+`agent.events`. An error is a system timeline item, not a message:
+
+```ts
+const errors = (await agent.persistence.records.list(conversation.id, {
+  kinds: ["error"],
+})).records;
+
+for (const record of errors) {
+  if (record.kind !== "error") continue;
+  // record.source, record.code, record.recoverability, record.message
+  // record.operationId / transitionId / internalSessionId correlate it with the failure
+}
+```
+
+`source` is one of `provider_session`, `transport`, `operation`, `recovery`. `code` is an
+open string; the library exports `CONVERSATION_ERROR_CODES` for the codes it owns and
+readers must tolerate unknown future values. `recoverability` describes the failed
+operation, not a promise:
+
+- `retryable` — repeating the same action may succeed.
+- `recoverable` — another action (checkpoint recovery, a fresh provider session) may
+  continue the logical conversation.
+- `terminal` — the library knows of no supported continuation.
+- `unknown` — evidence is insufficient to choose.
+
+`message` is a sanitized display fallback; it never carries a stack trace, credentials, a
+prompt, environment values, or a raw provider payload. At raw capture, allow-listed
+provider detail is available in `details`. Canonical capture defaults to
+`capture.error = "content"` (metadata drops the message; `none` stores nothing); the audit
+destination has its own independent `auditLog.capture.error`.
+
+A failed `conversations.open()` throws `ProviderSessionError` instead of returning a
+conversation. It carries the same `code`, `attemptId`, `recoverability`, and — when
+canonical capture accepted it — `recordId` as the durable row, plus
+`agentConversationId` (always, even for a generated id) so the caller can find the
+conversation. If writing the record also fails, that failure is attached as
+`recordingError` and the provider diagnosis stays primary. The failed provider mapping is
+kept as evidence and is not deleted; recovery or a future fresh-session operation
+supersedes it. A `session/load` failure that is recoverable and has a usable checkpoint
+still recovers, with the error recorded before the recovery action.
+
 ### Agent audit log
 
 An SQLite-backed `Agent` can copy selected observations into an independently located,

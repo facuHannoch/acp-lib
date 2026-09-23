@@ -1,6 +1,22 @@
 # Conversation error records
 
-Status: proposed.
+Status: implemented except idle process/transport loss and prompt interruption.
+
+Implemented: the `error` record kind and capture policy (canonical `content` default plus an
+independent audit level); SQLite schema v12 with `conversation_error_records`, migrating
+versions 8 through 11 in place (the `conversation_records` kind CHECK is rebuilt with row
+ids preserved and `PRAGMA foreign_key_check` verified before commit); sanitized display
+messages and allow-listed raw `details`; attempt identity (`{attemptId}:error`, idempotent
+re-append); provider-session load, creation, and recovery failures recorded and published
+through `agent.events`; and `ProviderSessionError` for creation/opening failures. Errors
+stay out of full-text search.
+
+Not implemented: idle provider-process/transport loss and prompt interruption. The transport
+currently swallows an unexpected process exit — it logs `process_exit` and resets the client
+(`src/client.ts`) — so the owning conversation receives no signal to record
+`provider_process_exited`, `connection_lost`, or `prompt_interrupted`. Closing that gap needs
+a crash-observation path from the transport up to the conversation plus root-cause ownership
+so an active operation's failure is recorded once rather than twice.
 
 Conversation failures are currently observable through rejected API calls, logger
 entries, and, when enabled, raw protocol capture. They are not consistently represented
