@@ -576,6 +576,9 @@ class DefaultAgentConversationManager implements AgentConversationManager {
   async create(config: CreateAgentConversationConfig = {}): Promise<AgentConversation> {
     const id = config.id ?? createAgentConversationId();
     const participants = normalizeParticipants(config.participants);
+    // Validate caller input before the durable row: a mistake must not orphan a
+    // conversation, and must not be recorded as a provider-session failure.
+    this.prepareStart({ ...config, providerSession: "new" });
     await this.agent.persistence.conversations.create({
       agentSessionId: this.agent.id,
       agentConversationId: id,
@@ -633,6 +636,9 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       },
       adapterId: config.adapterId ?? active?.adapterId,
     };
+    // Validate caller input before the recorded region so a configuration mistake is not
+    // persisted as a provider-session failure.
+    this.prepareStart({ ...startConfig, providerSession: active ? "load" : "new" });
     const attemptId = active ? `provider-load-${randomUUID()}` : `provider-create-${randomUUID()}`;
     try {
       const conversation = await this.start(id, summary.participants, {
@@ -739,6 +745,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
           code: "recovery_failed",
           source: "recovery",
           recoverability: "recoverable",
+          message: "The conversation could not be recovered from its checkpoint.",
           ...(recoveryRecorded.record ? { recordId: recoveryRecorded.record.recordId } : {}),
           ...(recoveryRecorded.recordingError ? { recordingError: recoveryRecorded.recordingError } : {}),
           cause: recoveryError,
@@ -1034,6 +1041,28 @@ class DefaultAgentConversationManager implements AgentConversationManager {
   }
 
   /**
+   * Validate caller-supplied start configuration before any durable write or recorded
+   * region.
+   *
+   * Adapter resolution and mode/provider-thread compatibility are caller mistakes, not
+   * conversation failures. Persisting them as provider-session errors would violate the
+   * spec and mislead a UI (for example, `retryable` for an adapter that can never resolve).
+   */
+  private prepareStart(config: {
+    readonly adapterId?: string;
+    readonly mode?: AgentMode;
+    readonly runtime?: AgentConversationRuntimeDefaults;
+    readonly providerSession: "new" | "load";
+  }): void {
+    const adapterId = this.resolveAdapterId(config.adapterId);
+    this.agent.adapters.require(adapterId);
+    const mode = config.mode ?? config.runtime?.mode ?? this.settings.defaults.mode;
+    if (mode === "degraded" && config.providerSession === "load") {
+      throw new Error("providerSession.kind=load requires ACP (normal) mode");
+    }
+  }
+
+  /**
    * Record a failed provider-session creation and throw the structured error. Used where
    * the durable conversation row already exists, so the caller always learns which logical
    * conversation holds the error.
@@ -1059,6 +1088,7 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       code: "provider_session_create_failed",
       source: "provider_session",
       recoverability: "retryable",
+      message: "The provider session could not be created.",
       ...(recorded.record ? { recordId: recorded.record.recordId } : {}),
       ...(recorded.recordingError ? { recordingError: recorded.recordingError } : {}),
       cause: error,

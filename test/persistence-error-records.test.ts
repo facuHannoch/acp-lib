@@ -123,4 +123,38 @@ describe("conversation error record model", () => {
       await backend.close();
     }
   });
+
+  test("re-appending the same error record is idempotent", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-error-idempotent-"));
+    directories.push(directory);
+    const backend = await SqliteAgentPersistence.open({
+      path: join(directory, "agent.sqlite"),
+      agentSessionId: createAgentSessionId(),
+    });
+    try {
+      const conversationId = createAgentConversationId();
+      await backend.conversations.create({
+        agentSessionId: backend.identityRecord.agentSessionId,
+        agentConversationId: conversationId,
+      });
+      const record = {
+        recordId: "provider-load-idem:error",
+        agentSessionId: backend.identityRecord.agentSessionId,
+        agentConversationId: conversationId,
+        kind: "error" as const,
+        timestamp: "2026-09-23T00:00:00.000Z",
+        source: "provider_session" as const,
+        code: "provider_session_missing",
+        recoverability: "recoverable" as const,
+        message: "The provider session could not be loaded.",
+      };
+      const first = await backend.records.append(record);
+      const second = await backend.records.append(record);
+      expect(second.recordId).toBe(first.recordId);
+      expect(second.sequence).toBe(first.sequence);
+      expect((await backend.records.list(conversationId, { kinds: ["error"] })).records).toHaveLength(1);
+    } finally {
+      await backend.close();
+    }
+  });
 });
