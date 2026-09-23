@@ -2222,6 +2222,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // A completed provider turn on the target is what entitles it to replace the source.
       // Seeding is that turn when there is continuation context; otherwise the caller's
       // first instruction is the only turn available to supply the evidence.
+      const confirmedByTurn = continuation.kind !== "none"
+        || item.options.targetPrompt !== undefined;
       if (continuation.kind !== "none") {
         const seeded = await this.meteredInternalPrompt(
           `${item.handoffId}:seed`,
@@ -2248,7 +2250,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
 
       const activatedAt = new Date().toISOString();
-      if (this.v2Transcript) {
+      // With no continuation to seed and no first instruction, nothing has run on the
+      // target, so it cannot be selected for a later open. The live conversation still
+      // moves to it; the previous recorded mapping stays the restart fallback until a
+      // completed prompt commits this one.
+      const canRecord = this.ownerLifecycle?.transitionActivated !== undefined;
+      const deferAttachment = !confirmedByTurn && canRecord && !this.v2Transcript;
+      if (!deferAttachment && this.v2Transcript) {
         const checkpoint = this.v2Transcript.checkpoint;
         // Seeding the target settles an operation on the source, so the descriptor taken
         // when the transition started no longer matches the reduced state activation is
@@ -2285,9 +2293,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
         });
         failedAfter = "target_activated";
       }
-      const recordedByOwner = this.ownerLifecycle?.transitionActivated !== undefined;
+      const recordedByOwner = canRecord && !deferAttachment;
       try {
-        await this.ownerLifecycle?.transitionActivated?.({
+        if (recordedByOwner) await this.ownerLifecycle!.transitionActivated!({
           transitionId: item.handoffId,
           agentConversationId: this.agentConversationId,
           internalSessionId: toInternalSessionId,
@@ -2311,11 +2319,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.metering = targetMetering;
       this.bindController(targetController);
       targetActivated = true;
-      targetAttachment = "recorded";
-      if (recordedByOwner) {
-        // A handoff target is a freshly created thread, so its counters start at zero even
-        // though the provider row is already recorded by `transitionActivated`.
-        this.installProviderAttachment(toInternalSessionId, "recorded", true, {
+      targetAttachment = deferAttachment ? "runtime_only" : "recorded";
+      if (canRecord) {
+        // A handoff target is a freshly created thread, so its counters start at zero
+        // whether or not the provider row is already recorded.
+        this.installProviderAttachment(toInternalSessionId, targetAttachment, true, {
           acquiredAt: activatedAt,
           transitionId: item.handoffId,
         });
@@ -2326,7 +2334,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.emitStateIfChanged();
       await this.persist();
       await this.recordNativeAction(item.handoffId, action, "checkpoint", {
-        output: { stage: "target_activated", internalSessionId: toInternalSessionId, adapterId: targetAdapterId },
+        output: {
+          stage: deferAttachment ? "target_live" : "target_activated",
+          internalSessionId: toInternalSessionId,
+          adapterId: targetAdapterId,
+        },
       });
       await previousController.stop().catch((error) => {
         this.log.warn("handoff_previous_controller_stop_failed", { error: String(error) });

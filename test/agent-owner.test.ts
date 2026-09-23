@@ -18,6 +18,7 @@ const PERMISSION_ORDER_AGENT = resolve(import.meta.dir, "fixtures/permission-ord
 const CONFIG_AGENT = resolve(import.meta.dir, "fixtures/config-agent.ts");
 const TERMINAL_AGENT = resolve(import.meta.dir, "fixtures/terminal-agent.ts");
 const IDENTITY_AGENT = resolve(import.meta.dir, "fixtures/identity-agent.ts");
+const PTY_AGENT = resolve(import.meta.dir, "fixtures/idle-pty-agent.ts");
 const agents: Agent[] = [];
 const directories: string[] = [];
 
@@ -680,6 +681,42 @@ describe("Agent owner", () => {
     expect(metering.at(-1)?.usage.status).toBe("metered");
   });
 
+  test("mode changes defer and retain provider mappings around a degraded stretch", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: {
+        operations: {
+          command: ["bun", OPERATIONS_AGENT, "owned"],
+          ptyCommand: ["bun", PTY_AGENT],
+        },
+      },
+      defaultAdapterId: "operations",
+    }));
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversationId);
+
+    await conversation.setMode("degraded");
+    expect(conversation.mode).toBe("degraded");
+    expect(conversation.internalSessionId).toBeNull();
+    // Degraded mode has no provider session id to record, so the ACP thread stays the
+    // only thing a later open can return to.
+    expect(await agent.persistence.providerSessions.active(conversationId)).toEqual(source!);
+
+    await conversation.setMode("normal");
+    expect(conversation.mode).toBe("normal");
+    expect(conversation.internalSessionId).not.toBe(source!.internalSessionId);
+    // The replacement ACP thread is fresh, so it follows the ordinary first-turn rule.
+    expect(await agent.persistence.providerSessions.active(conversationId)).toEqual(source!);
+
+    await conversation.prompt("confirm the replacement thread");
+    expect(await agent.persistence.providerSessions.active(conversationId)).toMatchObject({
+      internalSessionId: conversation.internalSessionId!,
+    });
+  }, 25_000);
+
   test("reset starts a blank thread without summary or seed operations", async () => {
     const { agent } = await openAgent();
     const conversation = await agent.conversations.create();
@@ -690,6 +727,66 @@ describe("Agent owner", () => {
     expect(reset.meteringRecords).toEqual([]);
     expect(reset.toInternalSessionId).not.toBe(oldProviderSessionId);
     expect(conversation.adapterId).toBe("operations");
+    // Nothing ran on the target, so nothing entitles it to be loaded on a later open.
+    expect(reset.providerAttachment).toBe("runtime_only");
+  });
+
+  test("a promptless reset keeps the previous mapping until the target is prompted", async () => {
+    const { agent, path } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversationId);
+
+    const reset = await conversation.reset();
+    expect(reset.providerAttachment).toBe("runtime_only");
+    expect(conversation.internalSessionId).toBe(reset.toInternalSessionId);
+    // The live conversation is on the target, but a restart still has only the source
+    // to go back to.
+    expect(await agent.persistence.providerSessions.active(conversationId)).toEqual(source!);
+
+    await conversation.prompt("the first turn on the reset target");
+    const active = await agent.persistence.providerSessions.active(conversationId);
+    expect(active).toMatchObject({
+      internalSessionId: reset.toInternalSessionId,
+      transitionId: reset.handoffId,
+    });
+    expect(await agent.persistence.providerSessions.list(conversationId)).toHaveLength(2);
+
+    await agent.close();
+    agents.splice(agents.indexOf(agent), 1);
+    const reopened = await track(Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+    }));
+    const recovered = await reopened.conversations.open(conversationId);
+    expect(recovered.providerSession).toBe("loaded");
+    expect(recovered.conversation.internalSessionId).toBe(reset.toInternalSessionId);
+  });
+
+  test("a promptless reset abandoned before any prompt reopens on the previous mapping", async () => {
+    const { agent, path } = await openAgent();
+    const conversation = await agent.conversations.create();
+    const conversationId = conversation.id;
+    await conversation.prompt("record the source attachment");
+    const source = await agent.persistence.providerSessions.active(conversationId);
+
+    const reset = await conversation.reset();
+    expect(reset.toInternalSessionId).not.toBe(source!.internalSessionId);
+    await conversation.stop();
+    expect(await agent.persistence.providerSessions.list(conversationId)).toEqual([source!]);
+
+    await agent.close();
+    agents.splice(agents.indexOf(agent), 1);
+    const reopened = await track(Agent.open({
+      persistence: { kind: "sqlite", path },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+    }));
+    const recovered = await reopened.conversations.open(conversationId);
+    expect(recovered.providerSession).toBe("loaded");
+    expect(recovered.conversation.internalSessionId).toBe(source!.internalSessionId);
   });
 });
 
