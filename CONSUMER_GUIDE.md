@@ -338,6 +338,46 @@ kept as evidence and is not deleted; recovery or a future fresh-session operatio
 supersedes it. A `session/load` failure that is recoverable and has a usable checkpoint
 still recovers, with the error recorded before the recovery action.
 
+### Append an assistant message without a turn
+
+`conversations.appendAssistantMessage()` adds a completed assistant message the provider
+did not produce — for example, a notification the agent sends from another channel. It
+runs no turn and needs no live provider session:
+
+```ts
+const record = await agent.conversations.appendAssistantMessage(conversation.id, {
+  text: "Your build finished; 3 tests failed.",
+  consumerMetadata: { kind: "send_message_to_user" },
+});
+```
+
+The record is an ordinary `message` with `role: "assistant"` and `status: "completed"`,
+published on `agent.events` and returned by history reads like any other message. Its
+envelope `metadata` carries `origin: "out_of_band"` (exported as
+`OUT_OF_BAND_MESSAGE_ORIGIN`; `isOutOfBandMessage(record)` tests it), so readers and
+audits can tell it apart from provider output.
+
+The provider learns about it on the conversation's next turn. That turn's provider text
+carries every out-of-band message appended since the user message of the last completed
+turn, in a `<messages-you-sent>` block between any identity preamble and
+`<current-message>`. Only the user's own text is persisted as the user message. Rules:
+
+- A failed turn does not count as delivery; the next turn carries the messages again.
+- A message appended while a turn is running reaches the provider on the following turn.
+- A recovery seed covers messages through `recoveredThroughSequence`, so they are not
+  repeated after recovery. A loaded provider session is treated like one that never
+  closed.
+- A turn that completes without an assistant message does not advance delivery, so its
+  pending messages are repeated once more.
+- The block is capped at `OUT_OF_BAND_PROMPT_MAX_CHARS`; the oldest messages are dropped
+  first with an omission note. The transcript always keeps all of them.
+
+Other conversations of the same agent see the message through identity like any other
+canonical message. Appending requires `capture.message` of `"content"` or `"raw"`, since
+the provider could not be told otherwise; it rejects blank text and unknown or deleted
+conversations. Backends without `records.listRecent` scan the conversation's messages
+forward to find the last completed turn.
+
 ### Agent audit log
 
 An SQLite-backed `Agent` can copy selected observations into an independently located,

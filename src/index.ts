@@ -45,6 +45,12 @@ export type {
   OpenAgentConversationConfig,
   OpenOwnedAgentConversationResult,
 } from "./agent.ts";
+export {
+  OUT_OF_BAND_MESSAGE_ORIGIN,
+  OUT_OF_BAND_PROMPT_MAX_CHARS,
+  isOutOfBandMessage,
+} from "./out-of-band-messages.ts";
+export type { AppendAssistantMessageInput } from "./out-of-band-messages.ts";
 export { AgentAdapterRegistry } from "./agent-adapter-registry.ts";
 export type { AgentAdapterRegistration } from "./agent-adapter-registry.ts";
 export { NoopAgentIdentityRuntime, composeIdentityPrompt } from "./identity.ts";

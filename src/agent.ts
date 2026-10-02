@@ -45,6 +45,7 @@ import {
   type ConversationRecord,
   type ConversationRecordCaptureConfig,
   type ConversationRecordCapturePolicy,
+  type MessageRecord,
   type MeteringRecordRetention,
   type NewConversationRecord,
   type ParticipantRef,
@@ -76,6 +77,12 @@ import type {
 } from "./agent-conversation-owner.ts";
 import { OwnedPromptPostCommitError } from "./agent-conversation-owner.ts";
 import { ProviderSessionError } from "./agent-conversation-errors.ts";
+import {
+  OUT_OF_BAND_MESSAGE_ORIGIN,
+  composeProviderPrompt,
+  pendingOutOfBandMessages,
+  type AppendAssistantMessageInput,
+} from "./out-of-band-messages.ts";
 import { buildConversationErrorDetails } from "./persistence/error-records.ts";
 import type {
   ProviderAttachmentCommitAcknowledgement,
@@ -191,6 +198,15 @@ export interface AgentConversationManager {
   list(options?: ConversationListOptions): Promise<ConversationPage>;
   listPreviews(options?: ConversationListOptions): Promise<ConversationPreviewPage>;
   delete(id: AgentConversationId, deletedAt?: string): Promise<void>;
+  /**
+   * Append a completed assistant message the provider did not produce, without a turn or a
+   * live provider session. It is published on `agent.events`, and the conversation's next
+   * turn shows it to the provider ahead of the user's text.
+   */
+  appendAssistantMessage(
+    id: AgentConversationId,
+    input: AppendAssistantMessageInput,
+  ): Promise<MessageRecord>;
 }
 
 /** Durable owner of one agent identity, its adapters, identity runtime, and conversations. */
@@ -776,6 +792,40 @@ class DefaultAgentConversationManager implements AgentConversationManager {
     await this.agent.persistence.conversations.delete(id, deletedAt);
   }
 
+  async appendAssistantMessage(
+    id: AgentConversationId,
+    input: AppendAssistantMessageInput,
+  ): Promise<MessageRecord> {
+    if (typeof input.text !== "string" || !input.text.trim()) {
+      throw new Error("assistant message text cannot be blank");
+    }
+    const level = this.settings.capture.message;
+    if (level !== "content" && level !== "raw") {
+      throw new Error(
+        `appending an assistant message requires message capture "content" or "raw", not "${level}"`,
+      );
+    }
+    const summary = await this.agent.persistence.conversations.get(id);
+    if (!summary || summary.deletedAt) throw new Error(`unknown active conversation: ${id}`);
+    const appendId = `append-${randomUUID()}`;
+    const [record] = await persistConversationObservations(this.agent, this.settings, [{
+      recordId: `${appendId}:assistant`,
+      agentSessionId: this.agent.id,
+      agentConversationId: id,
+      kind: "message",
+      timestamp: new Date().toISOString(),
+      role: "assistant",
+      logicalMessageId: `message:${appendId}:assistant`,
+      ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
+      content: input.text,
+      status: "completed",
+      metadata: JSON.stringify({ origin: OUT_OF_BAND_MESSAGE_ORIGIN, appendId }),
+    }]);
+    if (record?.kind !== "message") throw new Error("assistant message was not persisted");
+    await updateConversationIdentity(this.agent, this.settings, id, [record]);
+    return record;
+  }
+
   async stopAll(): Promise<void> {
     await Promise.allSettled([...this.openings.values()]);
     const conversations = [...this.live.values()];
@@ -1162,8 +1212,17 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
       metadata: JSON.stringify({ operationId: input.operationId }),
     }]);
     await this.updateIdentity(records);
+    // Read after the user record commits so a concurrent append falls in this turn or the next.
+    const outOfBand = records[0]
+      ? await pendingOutOfBandMessages(
+          this.agent.persistence,
+          this.conversationId,
+          input.targetProviderContextId,
+          records[0].sequence,
+        )
+      : [];
     return Object.freeze({
-      providerText: composeIdentityPrompt(input.text, identity),
+      providerText: composeProviderPrompt(input.text, identity.promptPreamble, outOfBand),
       participant,
       ...(identity.deliveryReceipt ? { identityDeliveryReceipt: identity.deliveryReceipt } : {}),
     });
@@ -1356,19 +1415,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     records: readonly NewConversationRecord[],
     audit = true,
   ): Promise<readonly ConversationRecord[]> {
-    if (records.length === 0) return Object.freeze([]);
-    if ((!audit || !this.settings.auditLog) && records.every((record) => {
-      if (record.kind !== "protocol") return this.settings.capture[record.kind] === "none";
-      return this.settings.capture.protocol.level === "none"
-        || !shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method);
-    })) return Object.freeze([]);
-    const persisted: ConversationRecord[] = [];
-    await this.agent.persistence.transaction(async (persistence) => {
-      await this.persistObservationsInTransaction(persistence, records, audit, persisted);
-    });
-    this.agent.publishCommittedRecords(persisted);
-    if (audit && this.settings.auditLog) this.agent.audit?.notifyPending();
-    return Object.freeze(persisted);
+    return await persistConversationObservations(this.agent, this.settings, records, audit);
   }
 
   private async persistObservationsInTransaction(
@@ -1377,35 +1424,76 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     audit: boolean,
     persisted: ConversationRecord[],
   ): Promise<void> {
-    for (const record of records) {
-      const level = record.kind === "protocol"
-        ? this.settings.capture.protocol.level
-        : this.settings.capture[record.kind];
-      const canonicalAccepted = level !== "none" && (
-        record.kind !== "protocol"
-        || shouldCaptureProtocolMethod(this.settings.capture.protocol, record.method)
-      );
-      if (canonicalAccepted) {
-        persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
-      }
-      if (audit && this.settings.auditLog) {
-        await enqueueAuditObservation(persistence, {
-          scope: "conversation",
-          sourceObservationId: record.recordId,
-          operationId: operationIdFromMetadata(record.metadata),
-          record,
-        }, this.settings.auditLog);
-      }
-    }
+    await persistObservationsInTransaction(this.settings, persistence, records, audit, persisted);
   }
 
   private async updateIdentity(records: readonly ConversationRecord[]): Promise<void> {
-    await this.agent.identity.update({
-      agentSessionId: this.agent.id,
-      agentConversationId: this.conversationId,
-      records,
-    });
-    await this.settings.auditIdentityUpdate(this.conversationId, records);
+    await updateConversationIdentity(this.agent, this.settings, this.conversationId, records);
+  }
+}
+
+async function updateConversationIdentity(
+  agent: Agent,
+  settings: ManagerSettings,
+  conversationId: AgentConversationId,
+  records: readonly ConversationRecord[],
+): Promise<void> {
+  await agent.identity.update({
+    agentSessionId: agent.id,
+    agentConversationId: conversationId,
+    records,
+  });
+  await settings.auditIdentityUpdate(conversationId, records);
+}
+
+/** Persist canonical records and their audit intents in one transaction, then publish them. */
+async function persistConversationObservations(
+  agent: Agent,
+  settings: ManagerSettings,
+  records: readonly NewConversationRecord[],
+  audit = true,
+): Promise<readonly ConversationRecord[]> {
+  if (records.length === 0) return Object.freeze([]);
+  if ((!audit || !settings.auditLog) && records.every((record) => {
+    if (record.kind !== "protocol") return settings.capture[record.kind] === "none";
+    return settings.capture.protocol.level === "none"
+      || !shouldCaptureProtocolMethod(settings.capture.protocol, record.method);
+  })) return Object.freeze([]);
+  const persisted: ConversationRecord[] = [];
+  await agent.persistence.transaction(async (persistence) => {
+    await persistObservationsInTransaction(settings, persistence, records, audit, persisted);
+  });
+  agent.publishCommittedRecords(persisted);
+  if (audit && settings.auditLog) agent.audit?.notifyPending();
+  return Object.freeze(persisted);
+}
+
+async function persistObservationsInTransaction(
+  settings: ManagerSettings,
+  persistence: PersistenceScope,
+  records: readonly NewConversationRecord[],
+  audit: boolean,
+  persisted: ConversationRecord[],
+): Promise<void> {
+  for (const record of records) {
+    const level = record.kind === "protocol"
+      ? settings.capture.protocol.level
+      : settings.capture[record.kind];
+    const canonicalAccepted = level !== "none" && (
+      record.kind !== "protocol"
+      || shouldCaptureProtocolMethod(settings.capture.protocol, record.method)
+    );
+    if (canonicalAccepted) {
+      persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
+    }
+    if (audit && settings.auditLog) {
+      await enqueueAuditObservation(persistence, {
+        scope: "conversation",
+        sourceObservationId: record.recordId,
+        operationId: operationIdFromMetadata(record.metadata),
+        record,
+      }, settings.auditLog);
+    }
   }
 }
 
