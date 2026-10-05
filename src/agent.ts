@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type * as schema from "@agentclientprotocol/sdk";
 import {
   createAgentConversationId,
   type AgentConversationId,
@@ -11,17 +10,14 @@ import {
 } from "./agent-adapter-registry.ts";
 import {
   AgentConversation,
-  type AgentConversationConfig,
 } from "./agent-session.ts";
 import type { AgentMode } from "./controller.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
-import type { MeteredOperationKind } from "./metering/record.ts";
 import { MeteringEngine } from "./metering/engine.ts";
 import { createModelsDevResolver } from "./metering/catalog/index.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
 import {
   NoopAgentIdentityRuntime,
-  composeIdentityPrompt,
   type AgentIdentityRuntime,
   type IdentityConsistency,
 } from "./identity.ts";
@@ -32,9 +28,7 @@ import {
 import {
   IMPLICIT_USER_PARTICIPANT_ID,
   PersistenceCapabilityError,
-  normalizeParticipantRef,
   resolveConversationRecordCapture,
-  shouldCaptureProtocolMethod,
   type AgentConversationSummary,
   type ConversationListOptions,
   type ConversationPage,
@@ -43,24 +37,16 @@ import {
   type ConversationErrorRecoverability,
   type ConversationErrorSource,
   type ConversationRecord,
-  type ConversationRecordCaptureConfig,
-  type ConversationRecordCapturePolicy,
   type MessageRecord,
-  type MeteringRecordRetention,
   type NewConversationRecord,
   type ParticipantRef,
   type PersistenceBackend,
-  type PersistenceExtension,
   type PersistenceScope,
-  type RecordCaptureLevel,
 } from "./persistence/backend.ts";
 import { SqliteAgentPersistence } from "./persistence/sqlite-backend.ts";
 import {
-  projectAgentAuditObservation,
   resolveAgentAuditLogConfig,
   AgentAuditRuntime,
-  type AgentAuditLogConfig,
-  type NormalizedAgentObservation,
   type ResolvedAgentAuditLogConfig,
 } from "./audit/index.ts";
 import { noopLogger } from "./logger.ts";
@@ -83,17 +69,14 @@ import {
   pendingOutOfBandMessages,
   type AppendAssistantMessageInput,
 } from "./out-of-band-messages.ts";
-import { buildConversationErrorDetails } from "./persistence/error-records.ts";
 import type {
   ProviderAttachmentCommitAcknowledgement,
 } from "./persistence/provider-attachment.ts";
 import {
   resolveInternalInferenceConfig,
-  type InternalInferenceConfig,
 } from "./internal-inference/config.ts";
 import type {
   InternalInferenceManager,
-  InternalInferenceStrategy,
 } from "./internal-inference/contracts.ts";
 import { DefaultInternalInferenceManager } from "./internal-inference/coordination/manager.ts";
 import type { InternalInferenceSnapshot } from "./internal-inference/contracts.ts";
@@ -105,109 +88,38 @@ import {
   buildRecoverySeed,
   classifyProviderSessionLoadError,
   resolveConversationCheckpointingConfig,
-  type ConversationCheckpointingConfig,
-  type ConversationRecoveryProgress,
   type ConversationRecoveryResult,
-  type ResolvedConversationCheckpointingConfig,
 } from "./checkpointing/index.ts";
 
-export type AgentPersistenceConfig =
-  | {
-      readonly kind: "sqlite";
-      readonly path: string;
-      readonly metadata?: string;
-      readonly busyTimeoutMs?: number;
-      readonly extensions?: readonly PersistenceExtension[];
-      readonly allowUnsafeWalVersion?: boolean;
-    }
-  | { readonly kind: "custom"; readonly backend: PersistenceBackend };
+import type { ManagerSettings } from "./agent/manager-settings.ts";
+import {
+  updateConversationIdentity,
+  persistConversationObservations,
+  persistObservationsInTransaction,
+  normalizeParticipants,
+  internalInferenceMeteringKind,
+  captureRuntimeRecord,
+  enqueueAuditObservation,
+  providerSessionErrorDetails,
+} from "./agent/record-capture.ts";
+import type {
+  AgentConfig,
+  AgentConversationManager,
+  AgentConversationRuntimeDefaults,
+  CreateAgentConversationConfig,
+  OpenAgentConversationConfig,
+  OpenOwnedAgentConversationResult,
+} from "./agent/config.ts";
 
-type OwnerControlledConversationKey =
-  | "adapter"
-  | "adapterId"
-  | "agentSessionId"
-  | "agentConversationId"
-  | "ownerAgentSessionId"
-  | "participants"
-  | "ownerLifecycle"
-  | "providerSession"
-  | "persistence"
-  | "transcriptPath"
-  | "transcriptDir"
-  | "sessions";
-
-export type AgentConversationRuntimeDefaults = Omit<
-  AgentConversationConfig,
-  OwnerControlledConversationKey
->;
-
-export interface AgentConfig {
-  readonly id?: AgentSessionId;
-  readonly persistence: AgentPersistenceConfig;
-  readonly adapters: Readonly<Record<string, import("./adapters.ts").Adapter>>
-    | readonly AgentAdapterRegistration[];
-  readonly defaultAdapterId?: string;
-  readonly identity?: AgentIdentityRuntime | CheckpointBackedIdentityConfig;
-  readonly identityConsistency?: IdentityConsistency;
-  readonly identityTimeoutMs?: number;
-  readonly capture?: ConversationRecordCaptureConfig;
-  readonly conversationDefaults?: AgentConversationRuntimeDefaults;
-  /** Bounded metering state is always persisted; this controls detailed local history. */
-  readonly meteringPersistence?: {
-    readonly meteringRecords?: MeteringRecordRetention;
-  };
-  readonly internalInference?: InternalInferenceConfig & {
-    readonly strategies?: readonly InternalInferenceStrategy[];
-  };
-  readonly checkpointing?: ConversationCheckpointingConfig;
-  readonly auditLog?: false | AgentAuditLogConfig;
-}
-
-export interface CreateAgentConversationConfig {
-  readonly id?: AgentConversationId;
-  readonly adapterId?: string;
-  readonly mode?: AgentMode;
-  readonly participants?: readonly ParticipantRef[];
-  readonly title?: string;
-  readonly metadata?: string;
-  readonly mcpServers?: schema.McpServer[];
-  readonly runtime?: AgentConversationRuntimeDefaults;
-}
-
-export interface OpenAgentConversationConfig {
-  readonly adapterId?: string;
-  readonly mode?: AgentMode;
-  readonly mcpServers?: schema.McpServer[];
-  readonly runtime?: AgentConversationRuntimeDefaults;
-  readonly onRecoveryProgress?: (event: ConversationRecoveryProgress) => void;
-}
-
-export interface OpenOwnedAgentConversationResult {
-  readonly conversation: AgentConversation;
-  readonly providerSession: "already_open" | "loaded" | "new" | "recovered";
-  readonly recovery?: ConversationRecoveryResult;
-}
-
-export interface AgentConversationManager {
-  create(config?: CreateAgentConversationConfig): Promise<AgentConversation>;
-  open(
-    id: AgentConversationId,
-    config?: OpenAgentConversationConfig,
-  ): Promise<OpenOwnedAgentConversationResult>;
-  get(id: AgentConversationId): Promise<AgentConversationSummary | null>;
-  list(options?: ConversationListOptions): Promise<ConversationPage>;
-  listPreviews(options?: ConversationListOptions): Promise<ConversationPreviewPage>;
-  delete(id: AgentConversationId, deletedAt?: string): Promise<void>;
-  /**
-   * Append a completed assistant message the provider did not produce, without a turn or a
-   * live provider session. It is published on `agent.events`, and the conversation's next
-   * turn shows it to the provider ahead of the user's text.
-   */
-  appendAssistantMessage(
-    id: AgentConversationId,
-    input: AppendAssistantMessageInput,
-  ): Promise<MessageRecord>;
-}
+export type {
+  AgentConfig,
+  AgentConversationManager,
+  AgentConversationRuntimeDefaults,
+  AgentPersistenceConfig,
+  CreateAgentConversationConfig,
+  OpenAgentConversationConfig,
+  OpenOwnedAgentConversationResult,
+} from "./agent/config.ts";
 
 /** Durable owner of one agent identity, its adapters, identity runtime, and conversations. */
 export class Agent {
@@ -563,21 +475,6 @@ export class Agent {
       if (this.auditObservationError === undefined) this.auditObservationError = error;
     });
   }
-}
-
-interface ManagerSettings {
-  readonly defaultAdapterId?: string;
-  readonly identityConsistency: IdentityConsistency;
-  readonly identityTimeoutMs?: number;
-  readonly capture: ConversationRecordCapturePolicy;
-  readonly defaults: AgentConversationRuntimeDefaults;
-  readonly meteringRecords: MeteringRecordRetention;
-  readonly checkpointing: ResolvedConversationCheckpointingConfig | null;
-  readonly auditLog: ResolvedAgentAuditLogConfig | null;
-  readonly auditIdentityUpdate: (
-    agentConversationId: AgentConversationId,
-    records: readonly ConversationRecord[],
-  ) => Promise<void>;
 }
 
 class DefaultAgentConversationManager implements AgentConversationManager {
@@ -1442,196 +1339,4 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
   }
 }
 
-async function updateConversationIdentity(
-  agent: Agent,
-  settings: ManagerSettings,
-  conversationId: AgentConversationId,
-  records: readonly ConversationRecord[],
-): Promise<void> {
-  await agent.identity.update({
-    agentSessionId: agent.id,
-    agentConversationId: conversationId,
-    records,
-  });
-  await settings.auditIdentityUpdate(conversationId, records);
-}
-
-/** Persist canonical records and their audit intents in one transaction, then publish them. */
-async function persistConversationObservations(
-  agent: Agent,
-  settings: ManagerSettings,
-  records: readonly NewConversationRecord[],
-  audit = true,
-): Promise<readonly ConversationRecord[]> {
-  if (records.length === 0) return Object.freeze([]);
-  if ((!audit || !settings.auditLog) && records.every((record) => {
-    if (record.kind !== "protocol") return settings.capture[record.kind] === "none";
-    return settings.capture.protocol.level === "none"
-      || !shouldCaptureProtocolMethod(settings.capture.protocol, record.method);
-  })) return Object.freeze([]);
-  const persisted: ConversationRecord[] = [];
-  await agent.persistence.transaction(async (persistence) => {
-    await persistObservationsInTransaction(settings, persistence, records, audit, persisted);
-  });
-  agent.publishCommittedRecords(persisted);
-  if (audit && settings.auditLog) agent.audit?.notifyPending();
-  return Object.freeze(persisted);
-}
-
-async function persistObservationsInTransaction(
-  settings: ManagerSettings,
-  persistence: PersistenceScope,
-  records: readonly NewConversationRecord[],
-  audit: boolean,
-  persisted: ConversationRecord[],
-): Promise<void> {
-  for (const record of records) {
-    const level = record.kind === "protocol"
-      ? settings.capture.protocol.level
-      : settings.capture[record.kind];
-    const canonicalAccepted = level !== "none" && (
-      record.kind !== "protocol"
-      || shouldCaptureProtocolMethod(settings.capture.protocol, record.method)
-    );
-    if (canonicalAccepted) {
-      persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
-    }
-    if (audit && settings.auditLog) {
-      await enqueueAuditObservation(persistence, {
-        scope: "conversation",
-        sourceObservationId: record.recordId,
-        operationId: operationIdFromMetadata(record.metadata),
-        record,
-      }, settings.auditLog);
-    }
-  }
-}
-
-function normalizeParticipants(participants?: readonly ParticipantRef[]): readonly ParticipantRef[] {
-  const values = participants?.length
-    ? participants.map(normalizeParticipantRef)
-    : [{ id: IMPLICIT_USER_PARTICIPANT_ID, kind: "user" as const }];
-  const seen = new Set<string>();
-  for (const participant of values) {
-    if (seen.has(participant.id)) throw new Error(`duplicate participant id: ${participant.id}`);
-    seen.add(participant.id);
-  }
-  return Object.freeze(values);
-}
-
-function internalInferenceMeteringKind(purpose: string): MeteredOperationKind {
-  if (
-    purpose === "conversation_checkpoint"
-    || purpose === "conversation_recovery"
-    || purpose === "identity_update"
-  ) return purpose;
-  return "internal_command";
-}
-
-function captureRuntimeRecord(
-  record: NewConversationRecord,
-  level: RecordCaptureLevel,
-): NewConversationRecord {
-  if (record.kind === "error") {
-    // `metadata` omits the display message and details; `content` keeps the message but
-    // still omits details; `raw` retains the allow-listed details.
-    if (level === "raw") return record;
-    const { details: _details, message, ...rest } = record;
-    return level === "content"
-      ? { ...rest, ...(message === undefined ? {} : { message }) }
-      : rest;
-  }
-  if (level !== "metadata") return record;
-  switch (record.kind) {
-    case "message":
-      return { ...record, content: "" };
-    case "tool_call":
-      return {
-        recordId: record.recordId,
-        agentSessionId: record.agentSessionId,
-        agentConversationId: record.agentConversationId,
-        kind: record.kind,
-        timestamp: record.timestamp,
-        ...(record.metadata ? { metadata: record.metadata } : {}),
-        toolCallId: record.toolCallId,
-        state: record.state,
-        ...(record.name ? { name: record.name } : {}),
-      };
-    case "permission":
-      return {
-        recordId: record.recordId,
-        agentSessionId: record.agentSessionId,
-        agentConversationId: record.agentConversationId,
-        kind: record.kind,
-        timestamp: record.timestamp,
-        ...(record.metadata ? { metadata: record.metadata } : {}),
-        permissionId: record.permissionId,
-        state: record.state,
-        ...(record.outcome ? { outcome: record.outcome } : {}),
-      };
-    case "configuration":
-      return { ...record, value: undefined };
-    case "protocol":
-      return { ...record, message: undefined };
-    case "native_action":
-    case "agent_action":
-      return { ...record, input: undefined, output: undefined };
-    case "thinking":
-      return { ...record, content: "" };
-    case "activity":
-      return { ...record, content: undefined, data: undefined };
-    case "metering":
-      return record;
-  }
-}
-
-async function enqueueAuditObservation(
-  persistence: PersistenceBackend | PersistenceScope,
-  observation: NormalizedAgentObservation,
-  config: ResolvedAgentAuditLogConfig,
-): Promise<void> {
-  const projected = projectAgentAuditObservation(observation, config.capture);
-  if (!projected) return;
-  if (!persistence.auditOutbox) throw new PersistenceCapabilityError("auditOutbox");
-  await persistence.auditOutbox.enqueue({
-    outboxId: `aud-${randomUUID()}`,
-    sourceObservationId: projected.sourceObservationId,
-    ...(projected.sourceRecordId ? { sourceRecordId: projected.sourceRecordId } : {}),
-    ...(projected.operationId ? { operationId: projected.operationId } : {}),
-    ...(projected.agentConversationId ? { agentConversationId: projected.agentConversationId } : {}),
-    occurredAt: projected.occurredAt,
-    kind: projected.kind,
-    captureLevel: projected.captureLevel,
-    captureFingerprint: config.captureFingerprint,
-    payload: projected.payload,
-    createdAt: new Date().toISOString(),
-  });
-}
-
-/** Allow-listed machine-readable detail from a raw ACP error, when it exposes any. */
-function providerSessionErrorDetails(error: unknown): ConversationErrorDetails | undefined {
-  const value = typeof error === "object" && error !== null
-    ? error as { code?: unknown; data?: unknown }
-    : null;
-  const data = typeof value?.data === "object" && value.data !== null
-    ? value.data as Record<string, unknown>
-    : undefined;
-  return buildConversationErrorDetails({
-    rpcCode: typeof value?.code === "number" ? value.code : undefined,
-    service: data?.service,
-    providerCode: data?.providerCode,
-  });
-}
-
-function operationIdFromMetadata(metadata: string | undefined): string | undefined {
-  if (!metadata) return undefined;
-  try {
-    const value = JSON.parse(metadata) as { operationId?: unknown };
-    return typeof value.operationId === "string" && value.operationId ? value.operationId : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export { AgentAdapterRegistry, NoopAgentIdentityRuntime, composeIdentityPrompt };
 export type { AgentAdapterRegistration, AgentIdentityRuntime, IdentityConsistency };
