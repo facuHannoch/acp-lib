@@ -12,10 +12,8 @@ import {
   AgentConversation,
 } from "./agent-session.ts";
 import type { AgentMode } from "./controller.ts";
-import type { OperationMeteringRecord } from "./metering/record.ts";
 import { MeteringEngine } from "./metering/engine.ts";
 import { createModelsDevResolver } from "./metering/catalog/index.ts";
-import type { AgentSessionMeteringState } from "./metering/state.ts";
 import {
   NoopAgentIdentityRuntime,
   type AgentIdentityRuntime,
@@ -26,7 +24,6 @@ import {
   type CheckpointBackedIdentityConfig,
 } from "./identity/checkpoint-backed.ts";
 import {
-  IMPLICIT_USER_PARTICIPANT_ID,
   PersistenceCapabilityError,
   resolveConversationRecordCapture,
   type AgentConversationSummary,
@@ -41,7 +38,6 @@ import {
   type NewConversationRecord,
   type ParticipantRef,
   type PersistenceBackend,
-  type PersistenceScope,
 } from "./persistence/backend.ts";
 import { SqliteAgentPersistence } from "./persistence/sqlite-backend.ts";
 import {
@@ -54,19 +50,9 @@ import {
   CommittedRecordEventBus,
   type AgentEventBus,
 } from "./observation/agent-event-bus.ts";
-import type {
-  AgentConversationOwnerLifecycle,
-  OwnedPromptCommitResult,
-  OwnedPromptCompleted,
-  OwnedPromptFailed,
-  OwnedPromptInput,
-} from "./agent-conversation-owner.ts";
-import { OwnedPromptPostCommitError } from "./agent-conversation-owner.ts";
 import { ProviderSessionError } from "./agent-conversation-errors.ts";
 import {
   OUT_OF_BAND_MESSAGE_ORIGIN,
-  composeProviderPrompt,
-  pendingOutOfBandMessages,
   type AppendAssistantMessageInput,
 } from "./out-of-band-messages.ts";
 import type {
@@ -95,13 +81,15 @@ import type { ManagerSettings } from "./agent/manager-settings.ts";
 import {
   updateConversationIdentity,
   persistConversationObservations,
-  persistObservationsInTransaction,
   normalizeParticipants,
   internalInferenceMeteringKind,
   captureRuntimeRecord,
   enqueueAuditObservation,
   providerSessionErrorDetails,
 } from "./agent/record-capture.ts";
+import {
+  PersistedConversationLifecycle,
+} from "./agent/persisted-lifecycle.ts";
 import type {
   AgentConfig,
   AgentConversationManager,
@@ -1071,271 +1059,6 @@ class DefaultAgentConversationManager implements AgentConversationManager {
       attachmentAttemptId: descriptor.attachmentAttemptId,
       providerSessionRecordId,
     });
-  }
-}
-
-class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle {
-  constructor(
-    private readonly agent: Agent,
-    private readonly conversationId: AgentConversationId,
-    private readonly initialParticipants: readonly ParticipantRef[],
-    private readonly settings: ManagerSettings,
-  ) {}
-
-  async beforePrompt(input: OwnedPromptInput) {
-    // A combined prompt records each original message as it was sent, under the same operation.
-    const parts = input.parts ?? [{
-      id: input.operationId,
-      text: input.text,
-      ...(input.participantId ? { participantId: input.participantId } : {}),
-      ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
-    }];
-    const participants: ParticipantRef[] = [];
-    for (const part of parts) participants.push(await this.resolveParticipant(part.participantId));
-    const participant = participants[0]!;
-    const identity = await this.agent.identity.load({
-      agentSessionId: this.agent.id,
-      agentConversationId: this.conversationId,
-      targetProviderContextId: input.targetProviderContextId,
-      participant,
-      prompt: input.text,
-      consistency: this.settings.identityConsistency,
-      ...(this.settings.identityTimeoutMs !== undefined
-        ? { timeoutMs: this.settings.identityTimeoutMs }
-        : {}),
-    });
-    const records = await this.appendMessages(parts.map((part, index): NewConversationRecord => ({
-      recordId: index === 0 ? `${input.operationId}:user` : `${input.operationId}:user:${index + 1}`,
-      agentSessionId: this.agent.id,
-      agentConversationId: this.conversationId,
-      kind: "message",
-      timestamp: new Date().toISOString(),
-      role: "user",
-      participantId: participants[index]!.id,
-      ...(part.consumerMetadata !== undefined ? { consumerMetadata: part.consumerMetadata } : {}),
-      content: part.text,
-      status: "completed",
-      metadata: JSON.stringify({ operationId: input.operationId }),
-    })));
-    await this.updateIdentity(records);
-    // Read after the user record commits so a concurrent append falls in this turn or the next.
-    const outOfBand = records[0]
-      ? await pendingOutOfBandMessages(
-          this.agent.persistence,
-          this.conversationId,
-          input.targetProviderContextId,
-          records[0].sequence,
-        )
-      : [];
-    return Object.freeze({
-      providerText: composeProviderPrompt(input.text, identity.promptPreamble, outOfBand),
-      participant,
-      participants: Object.freeze(participants),
-      ...(identity.deliveryReceipt ? { identityDeliveryReceipt: identity.deliveryReceipt } : {}),
-    });
-  }
-
-  async afterPrompt(input: OwnedPromptCompleted): Promise<OwnedPromptCommitResult> {
-    const timestamp = new Date().toISOString();
-    const status = input.result.status === "error" ? "failed" : input.result.status;
-    const records = input.result.messages.map((message, index): NewConversationRecord => ({
-      recordId: `${input.operationId}:assistant:${index + 1}`,
-      agentSessionId: this.agent.id,
-      agentConversationId: this.conversationId,
-      kind: "message",
-      timestamp,
-      role: "assistant",
-      logicalMessageId: `message:${input.operationId}:assistant:${index + 1}`,
-      content: message.text,
-      status,
-      metadata: JSON.stringify({
-        operationId: input.operationId,
-        ...(message.messageId ? { providerMessageId: message.messageId } : {}),
-      }),
-    }));
-    const persisted: ConversationRecord[] = [];
-    let providerAttachment: ProviderAttachmentCommitAcknowledgement | undefined;
-    await this.agent.persistence.transaction(async (persistence) => {
-      await this.persistObservationsInTransaction(persistence, records, true, persisted);
-      if (status === "completed" && input.providerAttachment.kind === "runtime_only") {
-        const descriptor = input.providerAttachment.descriptor;
-        const providerSessionRecordId = `provider-${randomUUID()}`;
-        await persistence.identityDelivery?.reset(
-          this.conversationId,
-          descriptor.internalSessionId,
-        );
-        await persistence.providerSessions.append({
-          providerSessionRecordId,
-          agentConversationId: this.conversationId,
-          internalSessionId: descriptor.internalSessionId,
-          adapterId: descriptor.adapterId,
-          mode: descriptor.mode,
-          ...(descriptor.model ? { model: descriptor.model } : {}),
-          activatedAt: descriptor.acquiredAt,
-          ...(descriptor.transitionId ? { transitionId: descriptor.transitionId } : {}),
-        });
-        providerAttachment = Object.freeze({
-          attachmentAttemptId: descriptor.attachmentAttemptId,
-          providerSessionRecordId,
-        });
-      }
-    });
-    this.agent.publishCommittedRecords(persisted);
-    if (this.settings.auditLog) this.agent.audit?.notifyPending();
-    const commit: OwnedPromptCommitResult = Object.freeze({
-      ...(providerAttachment ? { providerAttachment } : {}),
-    });
-    try {
-      await this.updateIdentity(Object.freeze(persisted));
-      if (status === "completed" && input.identityDeliveryReceipt) {
-        await this.agent.identity.delivered?.(input.identityDeliveryReceipt);
-      }
-      if (status === "completed") {
-        await this.agent.checkpointing?.afterSuccessfulResponse(this.conversationId);
-      }
-    } catch (error) {
-      throw new OwnedPromptPostCommitError(commit, error);
-    }
-    return commit;
-  }
-
-  async promptFailed(input: OwnedPromptFailed): Promise<void> {
-    const timestamp = new Date().toISOString();
-    const records = input.messages.map((message, index): NewConversationRecord => ({
-      recordId: `${input.operationId}:assistant:${index + 1}`,
-      agentSessionId: this.agent.id,
-      agentConversationId: this.conversationId,
-      kind: "message",
-      timestamp,
-      role: "assistant",
-      logicalMessageId: `message:${input.operationId}:assistant:${index + 1}`,
-      content: message.text,
-      status: "failed",
-      metadata: JSON.stringify({
-        operationId: input.operationId,
-        ...(message.messageId ? { providerMessageId: message.messageId } : {}),
-      }),
-    }));
-    await this.updateIdentity(await this.appendMessages(records));
-  }
-
-  resolveAdapter(adapterId: string) {
-    return this.agent.adapters.require(adapterId);
-  }
-
-  async transitionActivated(input: {
-    readonly transitionId: string;
-    readonly agentConversationId: AgentConversationId;
-    readonly internalSessionId: string;
-    readonly adapterId: string;
-    readonly mode: AgentMode;
-    readonly model?: string;
-    readonly activatedAt: string;
-  }): Promise<void> {
-    await this.agent.persistence.transaction(async (persistence) => {
-      await persistence.identityDelivery?.reset(input.agentConversationId, input.internalSessionId);
-      await persistence.providerSessions.append({
-        providerSessionRecordId: `provider-${randomUUID()}`,
-        agentConversationId: input.agentConversationId,
-        internalSessionId: input.internalSessionId,
-        adapterId: input.adapterId,
-        mode: input.mode,
-        ...(input.model ? { model: input.model } : {}),
-        activatedAt: input.activatedAt,
-        transitionId: input.transitionId,
-      });
-    });
-  }
-
-  async record(record: NewConversationRecord): Promise<void> {
-    const streamingSnapshot = record.kind === "message" && record.status === "in_progress";
-    const persisted = await this.persistObservations([record], !streamingSnapshot);
-    // A streaming snapshot is a display revision, not a second completed response.
-    if (!streamingSnapshot) {
-      await this.updateIdentity(persisted);
-    }
-  }
-
-  async meteringRecorded(record: OperationMeteringRecord): Promise<void> {
-    const level = this.settings.capture.metering;
-    let reference: ConversationRecord | undefined;
-    await this.agent.persistence.transaction(async (persistence) => {
-      await persistence.metering.commit({
-        agentConversationId: this.conversationId,
-        record,
-        meteringRecords: this.settings.meteringRecords,
-      });
-      const timelineRecord: NewConversationRecord = {
-        recordId: `${record.operationId}:metering`,
-        agentSessionId: this.agent.id,
-        agentConversationId: this.conversationId,
-        kind: "metering",
-        timestamp: new Date(record.completedAt).toISOString(),
-        operationId: record.operationId,
-        meteringRecordId: record.operationId,
-        status: record.usage.status === "metered" ? "available" : "unavailable",
-        metadata: JSON.stringify({ operationId: record.operationId }),
-      };
-      if (level !== "none") {
-        reference = await persistence.records.append(captureRuntimeRecord(timelineRecord, level));
-      }
-      if (this.settings.auditLog) {
-        await enqueueAuditObservation(persistence, {
-          scope: "conversation",
-          sourceObservationId: timelineRecord.recordId,
-          operationId: record.operationId,
-          record: timelineRecord,
-          meteringRecord: record,
-        }, this.settings.auditLog);
-      }
-    });
-    if (reference) this.agent.publishCommittedRecords([reference]);
-    if (this.settings.auditLog) this.agent.audit?.notifyPending();
-    if (reference) await this.updateIdentity([reference]);
-  }
-
-  async meteringStateChanged(state: AgentSessionMeteringState): Promise<void> {
-    await this.agent.persistence.metering.saveState(this.conversationId, state);
-  }
-
-  private async resolveParticipant(participantId?: string): Promise<ParticipantRef> {
-    const id = participantId
-      ?? (this.initialParticipants.length === 1
-        ? this.initialParticipants[0]!.id
-        : IMPLICIT_USER_PARTICIPANT_ID);
-    const existing = (await this.agent.persistence.conversations.get(this.conversationId))
-      ?.participants.find((participant) => participant.id === id);
-    if (existing) return existing;
-    return await this.agent.persistence.conversations.ensureParticipant(this.conversationId, {
-      id,
-      kind: "user",
-    });
-  }
-
-  private async appendMessages(
-    records: readonly NewConversationRecord[],
-  ): Promise<readonly ConversationRecord[]> {
-    return await this.persistObservations(records);
-  }
-
-  private async persistObservations(
-    records: readonly NewConversationRecord[],
-    audit = true,
-  ): Promise<readonly ConversationRecord[]> {
-    return await persistConversationObservations(this.agent, this.settings, records, audit);
-  }
-
-  private async persistObservationsInTransaction(
-    persistence: PersistenceScope,
-    records: readonly NewConversationRecord[],
-    audit: boolean,
-    persisted: ConversationRecord[],
-  ): Promise<void> {
-    await persistObservationsInTransaction(this.settings, persistence, records, audit, persisted);
-  }
-
-  private async updateIdentity(records: readonly ConversationRecord[]): Promise<void> {
-    await updateConversationIdentity(this.agent, this.settings, this.conversationId, records);
   }
 }
 

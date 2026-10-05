@@ -89,3 +89,19 @@ so it spent no tokens.
 **Process note.** The steering feature was committed by the user as `9dd5005` between steps, so these steps start from
 a tree where `HEAD` already contains steering. The user's own TODO files moved to `.res/somelogs.md/9-22+/todos/`;
 the specs still name the old paths (`10-2-TODO-*.md`), to be updated when the specs are next edited.
+
+---
+
+## Phase 0, step 3: move `PersistedConversationLifecycle` out of `agent.ts`
+
+**Done.** The `PersistedConversationLifecycle` class (the write path for every conversation record, about 255 lines)
+moved to `src/agent/persisted-lifecycle.ts` (305 lines with imports), unchanged apart from `export`. `agent.ts` imports
+it for the manager. `agent.ts`: 1342 to 1065 lines. Unused imports pruned. No behaviour change.
+
+**Tested.** `tsc --noEmit` and `--noUnusedLocals` clean for `src/agent.ts` and `src/agent/`; `bun test` 897 pass / 0 fail.
+
+**Gaps.** Same as step 2: a mechanical move covered by the typecheck and the existing suite. The lifecycle imports the
+`Agent` class as a type (it reads `agent.persistence`, `agent.identity`, ...), a coupling that the later steps (policy
+carried per conversation) will narrow.
+
+**Regressions.** None.
