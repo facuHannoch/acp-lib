@@ -212,6 +212,10 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     });
   }
 
+  async importParticipant(): Promise<ParticipantRef> {
+    return await this.resolveParticipant();
+  }
+
   async record(record: NewConversationRecord): Promise<void> {
     const streamingSnapshot = record.kind === "message" && record.status === "in_progress";
     const persisted = await this.persistObservations([record], !streamingSnapshot);

@@ -58,6 +58,8 @@ import type {
   AgentConversationManager,
 } from "./agent/config.ts";
 
+export type { AdoptProviderSessionConfig } from "./agent/adoption/index.ts";
+
 export type {
   AgentConversationAuditCaptureConfig,
   AgentConversationPersistenceOverride,

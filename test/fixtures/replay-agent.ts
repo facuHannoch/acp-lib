@@ -1,0 +1,87 @@
+#!/usr/bin/env bun
+// Scripted ACP agent that already holds sessions and replays them on session/load, like a harness does.
+//
+//   REPLAY_AGENT_FILE=/path/sessions.json   { "<sessionId>": [ <raw session/update objects, replayed in order> ] }
+//   REPLAY_AGENT_NO_LOAD=1                  do not advertise loadSession
+//
+// A session/load of an id that is not in the file fails (-32001, "session not found"), like a harness whose
+// session was deleted. Prompts after a load or a new session answer with a fixed reply.
+
+import { readFileSync } from "node:fs";
+
+const sessions: Record<string, unknown[]> = process.env.REPLAY_AGENT_FILE
+  ? JSON.parse(readFileSync(process.env.REPLAY_AGENT_FILE, "utf8"))
+  : {};
+const noLoad = process.env.REPLAY_AGENT_NO_LOAD === "1";
+let counter = 1;
+let buffer = "";
+
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk: string) => {
+  buffer += chunk;
+  let newline: number;
+  while ((newline = buffer.indexOf("\n")) >= 0) {
+    const raw = buffer.slice(0, newline).trim();
+    buffer = buffer.slice(newline + 1);
+    if (raw) handle(JSON.parse(raw));
+  }
+});
+process.stdin.resume();
+
+const send = (message: unknown): void => void process.stdout.write(`${JSON.stringify(message)}\n`);
+
+function handle(message: any): void {
+  switch (message.method) {
+    case "initialize":
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          protocolVersion: message.params?.protocolVersion ?? 1,
+          agentCapabilities: {
+            loadSession: !noLoad,
+            promptCapabilities: {},
+            mcpCapabilities: {},
+            sessionCapabilities: { list: {} },
+          },
+          agentInfo: { name: "replay-agent", title: "Replay Agent" },
+        },
+      });
+      return;
+    case "session/new":
+      send({ jsonrpc: "2.0", id: message.id, result: { sessionId: `new-${counter++}-${process.pid.toString(36)}`, configOptions: [] } });
+      return;
+    case "session/load": {
+      const sessionId = String(message.params?.sessionId);
+      const history = sessions[sessionId];
+      if (!history) {
+        send({ jsonrpc: "2.0", id: message.id, error: { code: -32001, message: `session not found: ${sessionId}` } });
+        return;
+      }
+      for (const update of history) {
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
+      }
+      send({ jsonrpc: "2.0", id: message.id, result: { configOptions: [] } });
+      return;
+    }
+    case "session/list":
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: { sessions: Object.keys(sessions).map((sessionId) => ({ sessionId, cwd: process.cwd(), title: `Session ${sessionId}` })) },
+      });
+      return;
+    case "session/prompt": {
+      const sessionId = String(message.params?.sessionId);
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId, update: { sessionUpdate: "agent_message_chunk", messageId: `live-${counter++}`, content: { type: "text", text: "LIVE_REPLY" } } },
+      });
+      send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn", usage: { totalTokens: 8, inputTokens: 3, outputTokens: 5 } } });
+      return;
+    }
+    default:
+      if (message.id !== undefined) send({ jsonrpc: "2.0", id: message.id, result: {} });
+  }
+}

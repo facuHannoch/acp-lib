@@ -84,3 +84,18 @@ export class ProviderSessionError extends Error {
   }
 }
 
+
+/**
+ * A provider session cannot be adopted because a conversation already owns it (or has asked to adopt it).
+ * `ownedBy` names the conversation(s), so a consumer can open the existing one instead.
+ */
+export class ProviderSessionInUseError extends Error {
+  readonly code = "provider_session_in_use";
+  constructor(
+    readonly providerSessionId: string,
+    readonly ownedBy: readonly AgentConversationId[],
+  ) {
+    super(`provider session ${providerSessionId} is already used by conversation ${ownedBy.join(", ")}`);
+    this.name = "ProviderSessionInUseError";
+  }
+}

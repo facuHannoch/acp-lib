@@ -134,6 +134,11 @@ export interface StartSessionOptions {
   loadFailure?: SessionLoadFailure;
   /** MCP servers bound at session creation. */
   mcpServers?: schema.McpServer[];
+  /**
+   * Raw `session/update` notifications of the history a loaded session replays. Without it the replay is
+   * dropped: it arrives before the load returns and belongs to no turn.
+   */
+  onReplayUpdate?: (notification: unknown) => void;
 }
 
 export type SessionLoadFailure = "error" | "new";
@@ -401,7 +406,10 @@ export class AcpClient implements AgentClient {
 
     if (resumeId && this.capabilities.agent.loadSession) {
       try {
-        const result = await this.loadSessionInternal(transport, resumeId, { mcpServers });
+        const result = await this.loadSessionInternal(transport, resumeId, {
+          mcpServers,
+          ...(options.onReplayUpdate ? { onUpdate: options.onReplayUpdate } : {}),
+        });
         sessionId = result.sessionId;
         resumed = result.resumed;
       } catch (err) {

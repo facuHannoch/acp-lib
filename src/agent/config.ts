@@ -27,6 +27,7 @@ import type {
 } from "../checkpointing/index.ts";
 import type { AppendAssistantMessageInput } from "../out-of-band-messages.ts";
 import type { ConversationPersistenceResolver } from "./persistence-policy/index.ts";
+import type { AdoptProviderSessionConfig } from "./adoption/index.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -94,6 +95,11 @@ export interface CreateAgentConversationConfig {
   readonly metadata?: string;
   readonly mcpServers?: schema.McpServer[];
   readonly runtime?: AgentConversationRuntimeDefaults;
+  /**
+   * Create the conversation around an existing provider session and load it, instead of starting a new
+   * one. Requires message capture `content` or `raw` for this conversation.
+   */
+  readonly adopt?: AdoptProviderSessionConfig;
 }
 
 export interface OpenAgentConversationConfig {

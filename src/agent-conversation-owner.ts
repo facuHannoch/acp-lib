@@ -62,6 +62,8 @@ export interface OwnedPromptFailed extends OwnedPromptInput {
 /** @internal Agent-owned persistence and identity boundary for a conversation turn. */
 export interface AgentConversationOwnerLifecycle {
   beforePrompt(input: OwnedPromptInput): Promise<OwnedPromptPreparation>;
+  /** The participant that history imported from an adopted provider session is attributed to. */
+  importParticipant?(): Promise<ParticipantRef>;
   afterPrompt(input: OwnedPromptCompleted): Promise<OwnedPromptCommitResult | void>;
   promptFailed(input: OwnedPromptFailed): Promise<void>;
   /** Durably commit one normalized operation record and its bounded next state. */

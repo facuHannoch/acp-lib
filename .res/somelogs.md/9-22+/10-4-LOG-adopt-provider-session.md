@@ -214,7 +214,7 @@ append. No test relied on the old order.
   session is owned; a replaced claim and a deactivated session are free; deleted conversations own nothing; owners come
   back oldest first; a simulated version 12 database (columns and index dropped, version row reset) migrates to 13, keeps
   its conversation, and gains the columns, the index and the version row.
-- Full suite: `bun test` 924 pass / 0 fail (919 before this phase's tests were added to the earlier 916); `tsc` clean.
+- Full suite: `bun test` 924 pass / 0 fail (916 before, plus the 8 new tests); `tsc` clean.
 
 **Gaps.**
 - The version 12 database is simulated from a fresh one (drop the new columns, reset the version), not a database
@@ -235,3 +235,62 @@ append. No test relied on the old order.
   appeared once in a full run and did not reproduce: four isolated runs and the next full run all passed. It is in the
   legacy session-manager layer and nothing in this phase touches it; treated as an intermittent test under load, not
   investigated further. Noted here in case it shows up again.
+
+---
+
+## Phase 3: adoption core (`create({ adopt })`, failure and retry, replay import)
+
+**Done.**
+- `CreateAgentConversationConfig.adopt: { providerSessionId, importHistory?: boolean | { last: number } }`
+  (`src/agent/adoption/config.ts`, validated by `normalizeAdoption`). Default `importHistory` is `false`.
+- Replay seam: `StartSessionOptions.onReplayUpdate` (client), `AgentControllerConfig.onSessionReplay`,
+  `ProviderSession.load.onReplay` and the constructor of `AgentSession`, so the replay of a `session/load` reaches the
+  library instead of being dropped on the connect path.
+- Flow (`DefaultAgentConversationManager.createAdopting`): the resolver is asked with `adopted: true`; before any write
+  the checks run (blank id, bad tail, the conversation's message capture must be `content` or `raw`, degraded mode is
+  refused by the existing `prepareStart`); the ownership check and the row are one transaction (no concurrent double
+  adoption); then the provider starts with `session/load`; on success the `provider_sessions` row is written (identity
+  delivery cursors reset) and, if asked, the replay is imported.
+- Failure follows `create()`: the error is recorded (classified like a load failure, under the conversation's policy), a
+  `ProviderSessionError` is thrown and **the row stays**. `open()` of an adopted conversation with no recorded provider
+  session retries the load of the session it asked for, records it on success, and never starts a new session.
+- New `ProviderSessionInUseError` (`code: "provider_session_in_use"`, `ownedBy`), exported.
+- Replay to records (`src/agent/adoption/replay.ts`, `AgentSession.importHistory`): replayed updates become turns (a turn
+  starts at each user message; assistant messages are bounded by `messageId`); messages are written as the live path
+  writes them (one record per user and assistant message, `imported: true` and `providerMessageId` in the metadata, the
+  time of the import), and tool calls and thoughts go through the same activity aggregator and capture levels as a live
+  turn. Command lists, mode, config, usage and session-info updates are skipped.
+
+**Tested.**
+- `test/agent-adoption.test.ts`, 20 tests, against a new scripted agent `test/fixtures/replay-agent.ts` that replays a
+  known history on `session/load`: attach and prompt after adopting; reopen after a restart (loaded, recorded once); the
+  resolver sees `adopted: true`; `importHistory: true` stores messages (in order, marked imported), tool calls and no
+  thoughts by default; thoughts stored in replay order when captured; `{ last: 1 }`; kinds follow the conversation's
+  capture and a resolver can single out adopted ones; validation failures leave no row; degraded mode refused before the
+  row; a session already adopted is refused naming its owner and is free again after that conversation is deleted;
+  two simultaneous adoptions (one wins); a session the provider does not have (row stays, error recorded, `open()`
+  retries and never starts a new session, the claim still holds); retry succeeds once the session exists; an agent without
+  `loadSession`; replay-to-turns unit tests (merging chunks, `messageId` boundaries, the Codex tool-call-after-next-user
+  quirk, an assistant-first history, `selectTail`, `normalizeAdoption`).
+- Whole suite: `bun test` 944 pass / 0 fail (924 before; 20 new); `tsc` clean, also with `--noUnusedLocals`.
+
+**Gaps.**
+- Only a scripted agent was used. Adoption against real Codex and OpenCode sessions was not run (the replay probe shows
+  what they send; `test/fixtures/replay-agent.ts` copies those shapes). A smoke test against real sessions is planned
+  after the listing API (Phase 5).
+- A custom backend without `conversationsUsing` is refused with an error, but there is no test for it: the test could not
+  reach the instance used inside a transaction without a backend double, which was not written.
+- Retrying a failed adoption with `open()` loads and records the session but does not import history: the `importHistory`
+  option is not stored with the row.
+- If recording the session or importing the history fails after a successful load, the conversation is stopped and the
+  error propagates; the row exists, so what remains is a conversation whose `open()` retries the load. A partly imported
+  history is not rolled back (records are appended as they go).
+- Importing with `importHistory: true` makes every imported message an identity source for the Agent's other
+  conversations. A large history therefore floods them. The default is `false`, and Phase 4 (recap with a small tail)
+  is the intended way to bring a conversation into memory.
+- The first prompt after an adoption runs on a loaded thread whose usage counters did not start at zero; the metering
+  engine treats it as needing a baseline. What that does to the first adopted turn's metering was not examined.
+- Imported turns have no metering records and no `afterPrompt` commit; `latestSequence` and previews reflect them as
+  ordinary records.
+
+**Regressions.** None in the suite.

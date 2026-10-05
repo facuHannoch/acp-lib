@@ -22,7 +22,7 @@ import {
   type NewConversationRecord,
   type ParticipantRef,
 } from "../persistence/backend.ts";
-import { ProviderSessionError } from "../agent-conversation-errors.ts";
+import { ProviderSessionError, ProviderSessionInUseError } from "../agent-conversation-errors.ts";
 import {
   OUT_OF_BAND_MESSAGE_ORIGIN,
   type AppendAssistantMessageInput,
@@ -60,6 +60,7 @@ import type {
 
 import type { Agent } from "../agent.ts";
 import { ConversationSettingsResolver } from "./persistence-policy/index.ts";
+import { normalizeAdoption, selectTail, turnsFromReplay, type NormalizedAdoption } from "./adoption/index.ts";
 import type { ConversationPersistenceContext } from "./persistence-policy/index.ts";
 
 export class DefaultAgentConversationManager implements AgentConversationManager {
@@ -98,16 +99,26 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     const participants = normalizeParticipants(config.participants);
     // What this conversation persists is decided before any write, so a resolver that throws or
     // returns something invalid leaves no row, no error record and no provider session behind.
+    const adoption = config.adopt ? normalizeAdoption(config.adopt) : undefined;
     const settings = this.policies.settingsFor({
       agentConversationId: id,
       participants,
       ...(config.title !== undefined ? { title: config.title } : {}),
       ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
-      adopted: false,
+      adopted: adoption !== undefined,
     });
+    if (adoption) {
+      // An adopted conversation joins the Agent's memory, which is built from stored messages; one that
+      // stores none would join it empty. Driving a session without storing anything is `acp-client`'s job.
+      const level = settings.capture.message;
+      if (level !== "content" && level !== "raw") {
+        throw new Error(`adopting a provider session requires message capture "content" or "raw", not "${level}"`);
+      }
+    }
     // Validate caller input before the durable row: a mistake must not orphan a
     // conversation, and must not be recorded as a provider-session failure.
-    this.prepareStart({ ...config, providerSession: "new" });
+    this.prepareStart({ ...config, providerSession: adoption ? "load" : "new" });
+    if (adoption) return await this.createAdopting(id, participants, config, adoption, settings);
     await this.agent.persistence.conversations.create({
       agentSessionId: this.agent.id,
       agentConversationId: id,
@@ -125,6 +136,128 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     } catch (error) {
       return await this.throwCreateFailure(id, attemptId, error, settings);
     }
+  }
+
+  /**
+   * Create a conversation around an existing provider session and load it. The ownership check and the row
+   * are one transaction, so two adoptions of the same session cannot both pass. From the row on, a provider
+   * failure is recorded and the row stays (like `create()`); `open()` of such a conversation retries the load.
+   */
+  private async createAdopting(
+    id: AgentConversationId,
+    participants: readonly ParticipantRef[],
+    config: CreateAgentConversationConfig,
+    adoption: NormalizedAdoption,
+    settings: ManagerSettings,
+  ): Promise<AgentConversation> {
+    await this.agent.persistence.transaction(async (persistence) => {
+      const owners = persistence.providerSessions.conversationsUsing;
+      if (!owners) {
+        throw new Error(
+          "this persistence backend cannot tell which conversation owns a provider session, so one cannot be adopted",
+        );
+      }
+      const owned = await owners.call(persistence.providerSessions, adoption.providerSessionId);
+      if (owned.length > 0) throw new ProviderSessionInUseError(adoption.providerSessionId, owned);
+      await persistence.conversations.create({
+        agentSessionId: this.agent.id,
+        agentConversationId: id,
+        participants,
+        ...(config.title !== undefined ? { title: config.title } : {}),
+        ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
+        adoptProviderSessionId: adoption.providerSessionId,
+      });
+    });
+    const attemptId = `provider-load-${randomUUID()}`;
+    const replay: unknown[] = [];
+    let conversation: AgentConversation;
+    try {
+      conversation = await this.start(id, participants, {
+        ...config,
+        providerSession: "load",
+        internalSessionId: adoption.providerSessionId,
+        settings,
+        ...(adoption.importHistory ? { onReplay: (notification: unknown) => replay.push(notification) } : {}),
+      });
+    } catch (error) {
+      throw await this.loadFailure(id, attemptId, adoption.providerSessionId, error, settings);
+    }
+    try {
+      await this.recordAdoptedProviderSession(conversation, id, attemptId);
+      if (adoption.importHistory) {
+        const turns = selectTail(turnsFromReplay(replay), adoption.importHistory.last);
+        await conversation.importHistory(turns, `${attemptId}-import`);
+      }
+    } catch (error) {
+      this.live.delete(id);
+      await conversation.stop().catch(() => undefined);
+      throw error;
+    }
+    return conversation;
+  }
+
+  /** Record a failed provider-session load and build the structured error for it. */
+  private async loadFailure(
+    id: AgentConversationId,
+    attemptId: string,
+    internalSessionId: string,
+    error: unknown,
+    settings: ManagerSettings,
+  ): Promise<ProviderSessionError> {
+    const classification = classifyProviderSessionLoadError(error, settings.checkpointing?.recovery?.isMissingProviderSession);
+    const recorded = await this.recordConversationError({
+      settings,
+      agentConversationId: id,
+      attemptId,
+      source: "provider_session",
+      code: classification.code,
+      recoverability: classification.recoverability,
+      message: "The provider session could not be loaded.",
+      transitionId: attemptId,
+      internalSessionId,
+      details: providerSessionErrorDetails(error),
+    });
+    return new ProviderSessionError({
+      agentSessionId: this.agent.id,
+      agentConversationId: id,
+      attemptId,
+      internalSessionId,
+      code: classification.code,
+      source: "provider_session",
+      recoverability: classification.recoverability,
+      ...(recorded.record ? { recordId: recorded.record.recordId } : {}),
+      ...(recorded.recordingError ? { recordingError: recorded.recordingError } : {}),
+      cause: error,
+    });
+  }
+
+  /**
+   * Write the provider-session row of a loaded session that no conversation had recorded yet (an adoption). A
+   * loaded thread is "recorded" in memory already, so this is the one write that makes it durable; the
+   * identity delivery cursors restart, as for any new provider context.
+   */
+  private async recordAdoptedProviderSession(
+    conversation: AgentConversation,
+    id: AgentConversationId,
+    transitionId: string,
+  ): Promise<void> {
+    const attachment = conversation.providerAttachmentState;
+    if (attachment.kind === "absent") throw new Error("the adopted provider session is not attached");
+    const descriptor = attachment.descriptor;
+    await this.agent.persistence.transaction(async (persistence) => {
+      await persistence.identityDelivery?.reset(id, descriptor.internalSessionId);
+      await persistence.providerSessions.append({
+        providerSessionRecordId: `provider-${randomUUID()}`,
+        agentConversationId: id,
+        internalSessionId: descriptor.internalSessionId,
+        adapterId: descriptor.adapterId,
+        mode: descriptor.mode,
+        ...(descriptor.model ? { model: descriptor.model } : {}),
+        activatedAt: descriptor.acquiredAt,
+        transitionId,
+        metadata: JSON.stringify({ adopted: true }),
+      });
+    });
   }
 
   async open(
@@ -152,7 +285,16 @@ export class DefaultAgentConversationManager implements AgentConversationManager
   ): Promise<OpenOwnedAgentConversationResult> {
     const summary = await this.agent.persistence.conversations.get(id);
     if (!summary || summary.deletedAt) throw new Error(`unknown active conversation: ${id}`);
-    const active = await this.agent.persistence.providerSessions.active(id);
+    const recorded = await this.agent.persistence.providerSessions.active(id);
+    // An adoption that failed before its session was recorded keeps asking for that session: opening it
+    // retries the load. Starting a new session instead would silently not be the one that was adopted.
+    const pendingAdoption = !recorded && summary.adopted === true;
+    if (pendingAdoption && !summary.adoptProviderSessionId) {
+      throw new Error(`adopted conversation ${id} has no provider session to load`);
+    }
+    const active = recorded ?? (pendingAdoption
+      ? { internalSessionId: summary.adoptProviderSessionId!, adapterId: this.resolveAdapterId(config.adapterId) }
+      : null);
     if (active && config.adapterId && config.adapterId !== active.adapterId) {
       throw new Error(
         `conversation ${id} is active on ${active.adapterId}; use a conversation switch instead of loading it with ${config.adapterId}`,
@@ -180,6 +322,15 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         internalSessionId: active?.internalSessionId,
         settings,
       });
+      if (pendingAdoption) {
+        try {
+          await this.recordAdoptedProviderSession(conversation, id, attemptId);
+        } catch (recordError) {
+          this.live.delete(id);
+          await conversation.stop().catch(() => undefined);
+          throw recordError;
+        }
+      }
       return Object.freeze({
         conversation,
         providerSession: active ? "loaded" : "new",
@@ -471,6 +622,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       readonly internalSessionId?: string;
       /** What this conversation persists, resolved before it started. */
       readonly settings: ManagerSettings;
+      /** Receives the history a loaded provider session replays (raw `session/update` notifications). */
+      readonly onReplay?: (notification: unknown) => void;
     },
   ): Promise<AgentConversation> {
     const releaseSetup = await this.acquireMeteringSetupLock(id);
@@ -504,7 +657,12 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         mode: config.mode ?? runtime.mode,
         ...(config.mcpServers ? { mcpServers: [...config.mcpServers] } : {}),
         providerSession: config.providerSession === "load"
-          ? { kind: "load", internalSessionId: config.internalSessionId!, onFailure: "error" }
+          ? {
+              kind: "load",
+              internalSessionId: config.internalSessionId!,
+              onFailure: "error",
+              ...(config.onReplay ? { onReplay: config.onReplay } : {}),
+            }
           : { kind: "new" },
         persistence: false,
       });

@@ -51,6 +51,8 @@ export interface AgentControllerConfig {
   sessionId?: string;
   /** Policy when sessionId cannot be loaded. Default "new" for compatibility. */
   sessionLoadFailure?: SessionLoadFailure;
+  /** Receives the history a loaded `sessionId` replays (raw `session/update` notifications). */
+  onSessionReplay?: (notification: unknown) => void;
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
   mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
@@ -508,6 +510,7 @@ export class AgentController implements AgentClient {
       result = await client.startSession({
         mcpServers: this.config.mcpServers,
         loadFailure: this.config.sessionLoadFailure,
+        ...(this.config.onSessionReplay ? { onReplayUpdate: this.config.onSessionReplay } : {}),
       });
     } catch (err) {
       if (sessionId && this.config.sessionLoadFailure === "error") {

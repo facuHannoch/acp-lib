@@ -300,4 +300,6 @@ export type ProviderSession =
       readonly internalSessionId: string;
       /** Default "error": never silently replace a requested thread. */
       readonly onFailure?: "error" | "new";
+      /** Receives the history the loaded thread replays (raw `session/update` notifications). */
+      readonly onReplay?: (notification: unknown) => void;
     };

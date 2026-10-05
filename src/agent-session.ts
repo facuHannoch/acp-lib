@@ -162,6 +162,7 @@ import type {
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
 import { AgentConversationQueue } from "./agent-conversation-queue.ts";
+import type { ImportedTurn } from "./agent/adoption/replay.ts";
 import {
   SteeringController,
   type PendingMessage,
@@ -187,6 +188,7 @@ export {
   ContinuationUnavailableError,
   DirectAuditPersistenceUnsupportedError,
   ProviderSessionError,
+  ProviderSessionInUseError,
 } from "./agent-conversation-errors.ts";
 export type { ProviderSessionErrorDetails } from "./agent-conversation-errors.ts";
 export type {
@@ -641,6 +643,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
       sessionLoadFailure: providerSession.kind === "load"
         ? providerSession.onFailure ?? "error"
         : undefined,
+      ...(providerSession.kind === "load" && providerSession.onReplay
+        ? { onSessionReplay: providerSession.onReplay }
+        : {}),
     });
     this.bindController(this.controller);
   }
@@ -649,7 +654,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     adapter: Adapter,
     adapterId: string,
     mode: AgentMode,
-    startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure"> = {},
+    startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure" | "onSessionReplay"> = {},
   ): AgentController {
     return new AgentController({
       ...this.controllerDefaults,
@@ -1972,6 +1977,69 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ...(options.config === undefined ? {} : { config: options.config }),
       },
     });
+  }
+
+  /**
+   * @internal Store the history of an adopted provider session as records, as if its turns had run here.
+   * Messages and activity (tool calls, thoughts) go through the same folding and the same capture policy as a
+   * live turn; nothing is sent to the provider. Imported records carry `imported: true` in their metadata and
+   * the time of the import, since a replay has no timestamps.
+   */
+  async importHistory(turns: readonly ImportedTurn[], importId: string): Promise<void> {
+    const lifecycle = this.ownerLifecycle;
+    if (!this.ownerAgentSessionId || !lifecycle?.record) return;
+    const user = await lifecycle.importParticipant?.();
+    for (const [index, turn] of turns.entries()) {
+      const turnId = `${importId}-${index + 1}`;
+      this.beginTurn(turnId);
+      let users = 0;
+      let assistants = 0;
+      for (const item of turn.items) {
+        if (item.kind === "activity") {
+          this.queueActivityRecords(turnId, this.presentation.applyActivity(item.event).emitted);
+          continue;
+        }
+        // A message settles any reasoning before it, as in a live turn.
+        const settled = this.presentation.closeReasoningBoundary();
+        if (settled) this.queueActivityRecords(turnId, [settled]);
+        const metadata = JSON.stringify({
+          operationId: turnId,
+          imported: true,
+          ...(item.messageId ? { providerMessageId: item.messageId } : {}),
+        });
+        if (item.kind === "user") {
+          users += 1;
+          await this.recordOwned({
+            recordId: users === 1 ? `${turnId}:user` : `${turnId}:user:${users}`,
+            agentSessionId: this.ownerAgentSessionId,
+            agentConversationId: this.agentConversationId,
+            kind: "message",
+            timestamp: new Date().toISOString(),
+            role: "user",
+            ...(user ? { participantId: user.id } : {}),
+            content: item.text,
+            status: "completed",
+            metadata,
+          });
+        } else {
+          assistants += 1;
+          await this.recordOwned({
+            recordId: `${turnId}:assistant:${assistants}`,
+            agentSessionId: this.ownerAgentSessionId,
+            agentConversationId: this.agentConversationId,
+            kind: "message",
+            timestamp: new Date().toISOString(),
+            role: "assistant",
+            logicalMessageId: `message:${turnId}:assistant:${assistants}`,
+            content: item.text,
+            status: "completed",
+            metadata,
+          });
+        }
+      }
+      this.endTurn(turnId);
+    }
+    await this.ownerRecordWrite;
   }
 
   /** @internal Seed a newly created provider thread from a durable recovery checkpoint. */
