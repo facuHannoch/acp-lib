@@ -258,6 +258,16 @@ describe("ConversationSettingsResolver", () => {
     expect(new ConversationSettingsResolver(agentSettings, () => ({ capture: {} })).settingsFor(context)).toBe(agentSettings);
   });
 
+  test("metadata message capture is refused only while checkpointing is enabled, not merely configured", () => {
+    const withCheckpointing = (enabled: boolean): ManagerSettings =>
+      ({ ...base(undefined), checkpointing: { enabled } as never }) as ManagerSettings;
+    const metadata = () => ({ capture: { message: "metadata" as const } });
+    expect(new ConversationSettingsResolver(withCheckpointing(false), metadata).settingsFor(context).capture.message)
+      .toBe("metadata");
+    expect(() => new ConversationSettingsResolver(withCheckpointing(true), metadata).settingsFor(context))
+      .toThrow(/checkpointing is enabled: message capture "metadata"/);
+  });
+
   test("identical overrides are resolved once", () => {
     const resolver = new ConversationSettingsResolver(base(undefined), () => ({ capture: { message: "none", error: "none" } }));
     const first = resolver.settingsFor(context);

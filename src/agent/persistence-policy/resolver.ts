@@ -89,7 +89,7 @@ export class ConversationSettingsResolver {
     const resolved = resolveConversationRecordCapture({ ...this.base.captureConfig, ...override });
     // Checkpoints over messages stored as metadata would summarize empty text, and identity would deliver
     // empty lines. `none` is fine: such a conversation simply has nothing to checkpoint.
-    if (this.base.checkpointing && resolved.message === "metadata") {
+    if (this.base.checkpointing?.enabled && resolved.message === "metadata") {
       throw new Error(
         'conversation checkpointing is enabled: message capture "metadata" would checkpoint empty messages',
       );
