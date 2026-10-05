@@ -27,7 +27,7 @@ import type {
 } from "../checkpointing/index.ts";
 import type { AppendAssistantMessageInput } from "../out-of-band-messages.ts";
 import type { ConversationPersistenceResolver } from "./persistence-policy/index.ts";
-import type { AdoptProviderSessionConfig } from "./adoption/index.ts";
+import type { AdoptProviderSessionConfig, ListProviderSessionsOptions, ProviderSessionSummary } from "./adoption/index.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -124,6 +124,11 @@ export interface AgentConversationManager {
   ): Promise<OpenOwnedAgentConversationResult>;
   get(id: AgentConversationId): Promise<AgentConversationSummary | null>;
   list(options?: ConversationListOptions): Promise<ConversationPage>;
+  /**
+   * The sessions the provider holds (`session/list`), for choosing one to adopt with `create({ adopt })`.
+   * Starts the harness for the call. Each session says which conversation already owns it, if any.
+   */
+  listProviderSessions(options?: ListProviderSessionsOptions): Promise<readonly ProviderSessionSummary[]>;
   listPreviews(options?: ConversationListOptions): Promise<ConversationPreviewPage>;
   delete(id: AgentConversationId, deletedAt?: string): Promise<void>;
   /**

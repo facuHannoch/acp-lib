@@ -3,6 +3,8 @@
 //
 //   REPLAY_AGENT_FILE=/path/sessions.json   { "<sessionId>": [ <raw session/update objects, replayed in order> ] }
 //   REPLAY_AGENT_NO_LOAD=1                  do not advertise loadSession
+//   REPLAY_AGENT_NO_LIST=1                  do not advertise session/list
+//   REPLAY_AGENT_PAGE_SIZE=N                list sessions N at a time, with a cursor
 //   REPLAY_AGENT_FAIL_RECAP=1               fail the prompt that asks the session to summarize itself
 //
 // A session/load of an id that is not in the file fails (-32001, "session not found"), like a harness whose
@@ -15,6 +17,8 @@ const sessions: Record<string, unknown[]> = process.env.REPLAY_AGENT_FILE
   : {};
 const noLoad = process.env.REPLAY_AGENT_NO_LOAD === "1";
 const failRecap = process.env.REPLAY_AGENT_FAIL_RECAP === "1";
+const noList = process.env.REPLAY_AGENT_NO_LIST === "1";
+const pageSize = Number(process.env.REPLAY_AGENT_PAGE_SIZE ?? 0);
 let counter = 1;
 let buffer = "";
 
@@ -44,7 +48,7 @@ function handle(message: any): void {
             loadSession: !noLoad,
             promptCapabilities: {},
             mcpCapabilities: {},
-            sessionCapabilities: { list: {} },
+            sessionCapabilities: noList ? {} : { list: {} },
           },
           agentInfo: { name: "replay-agent", title: "Replay Agent" },
         },
@@ -66,13 +70,26 @@ function handle(message: any): void {
       send({ jsonrpc: "2.0", id: message.id, result: { configOptions: [] } });
       return;
     }
-    case "session/list":
+    case "session/list": {
+      const all = Object.keys(sessions);
+      const start = message.params?.cursor ? Number(message.params.cursor) : 0;
+      const slice = pageSize > 0 ? all.slice(start, start + pageSize) : all;
+      const next = pageSize > 0 && start + pageSize < all.length ? String(start + pageSize) : undefined;
       send({
         jsonrpc: "2.0",
         id: message.id,
-        result: { sessions: Object.keys(sessions).map((sessionId) => ({ sessionId, cwd: process.cwd(), title: `Session ${sessionId}` })) },
+        result: {
+          sessions: slice.map((sessionId) => ({
+            sessionId,
+            cwd: message.params?.cwd ?? process.cwd(),
+            title: `Session ${sessionId}`,
+            updatedAt: "2026-10-05T00:00:00.000Z",
+          })),
+          ...(next ? { nextCursor: next } : {}),
+        },
       });
       return;
+    }
     case "session/prompt": {
       const sessionId = String(message.params?.sessionId);
       const asked = (message.params?.prompt ?? []).map((block: any) => block?.text ?? "").join("\n");

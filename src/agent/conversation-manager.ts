@@ -63,10 +63,13 @@ import { ConversationSettingsResolver } from "./persistence-policy/index.ts";
 import {
   RECAP_INSTRUCTION,
   RECAP_ORIGIN,
+  listProviderSessions,
   normalizeAdoption,
   selectTail,
   turnsFromReplay,
+  type ListProviderSessionsOptions,
   type NormalizedAdoption,
+  type ProviderSessionSummary,
 } from "./adoption/index.ts";
 import { NoopAgentIdentityRuntime } from "../identity.ts";
 import type { ConversationPersistenceContext } from "./persistence-policy/index.ts";
@@ -488,6 +491,26 @@ export class DefaultAgentConversationManager implements AgentConversationManager
 
   async list(options?: ConversationListOptions): Promise<ConversationPage> {
     return await this.agent.persistence.conversations.list(options);
+  }
+
+  async listProviderSessions(options: ListProviderSessionsOptions = {}): Promise<readonly ProviderSessionSummary[]> {
+    const adapterId = this.resolveAdapterId(options.adapterId);
+    const defaults = this.settings.defaults;
+    const owners = this.agent.persistence.providerSessions.conversationsUsing;
+    return await listProviderSessions({
+      adapterId,
+      adapter: this.agent.adapters.require(adapterId),
+      client: {
+        ...(defaults.launcher ? { launcher: defaults.launcher } : {}),
+        ...(defaults.execPrefix ? { execPrefix: defaults.execPrefix } : {}),
+        ...(defaults.env ? { env: defaults.env } : {}),
+        ...(defaults.cwd ? { cwd: defaults.cwd } : {}),
+        ...(defaults.clientInfo ? { clientInfo: defaults.clientInfo } : {}),
+        ...(defaults.logger ? { logger: defaults.logger } : {}),
+      },
+      owners: async (providerSessionId) =>
+        owners ? await owners.call(this.agent.persistence.providerSessions, providerSessionId) : [],
+    }, options);
   }
 
   async listPreviews(options?: ConversationListOptions): Promise<ConversationPreviewPage> {

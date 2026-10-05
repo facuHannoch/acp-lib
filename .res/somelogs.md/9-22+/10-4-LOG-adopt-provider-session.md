@@ -349,3 +349,48 @@ the summary; the defaults follow the Agent's identity; the Agent's other convers
 - `create()` can take as long as the model takes to summarize a long session; there is no timeout of its own.
 
 **Regressions.** None.
+
+---
+
+## Phase 5: listing the provider's sessions, a smoke test on real sessions, and the guide
+
+**Done.**
+- `agent.conversations.listProviderSessions({ adapterId?, cwd?, limit? })` (`src/agent/adoption/provider-sessions.ts`):
+  starts the harness for the call (an `AcpClient` built from the Agent's adapter and the conversations' launcher / env /
+  cwd defaults), follows the provider's pages up to `limit` (default 100), stops the harness, and returns
+  `{ providerSessionId, cwd, title?, updatedAt?, adoptedBy? }`. `adoptedBy` comes from `conversationsUsing`, so a session
+  with a failed adoption's claim shows as owned. New `ProviderSessionListUnsupportedError` when the agent does not
+  advertise `session/list`. Added to the `AgentConversationManager` interface; types and error exported.
+- `smoke-tests/test12-adoption/`: lists, adopts, imports, and checks against a real harness (agent.sqlite appears in the
+  directory, like `end-to-end`). By default it makes no model call.
+- `CONSUMER_GUIDE.md`: a section "Adopt a session the provider already holds".
+- `smoke-tests/.gitignore`: fixed a line of mine from an earlier step that had been merged into the previous pattern
+  (`**/*.sqlite*test11-steerTurn/results.json`), which stopped `results.json` and `*.sqlite*` from being ignored separately.
+
+**Tested.**
+- 5 new tests in `test/agent-adoption.test.ts` (31 in the file), with the replay agent extended with `session/list`
+  pagination and an option to not advertise listing: the listing and `adoptedBy` before and after an adoption (and that
+  listing creates nothing); a failed adoption's claim keeps the session owned; pagination and `limit` (including a bad
+  limit); the structured error for an agent that does not list; an unknown adapter.
+- Real harnesses, no model call (`smoke-tests/test12-adoption`):
+  - Codex (`codex-acp` 2.1.1): listed 10 sessions, adopted a 3-turn session with `importHistory: all`: 6 messages and 3 tool
+    calls stored, marked imported; adopting again refused naming the owner; the listing showed the owner; the conversation
+    reopened by loading the same session. All checks passed.
+  - OpenCode (1.18.32): the same with `{ last: 2 }`: 4 messages, 1 thought and 4 tool calls stored; all checks passed except
+    the listing check, which the script now skips when the adopted session is not among those listed (OpenCode returned only
+    20 sessions even for a limit of 500, and the test session was older).
+- Whole suite: `bun test` 955 pass / 0 fail (950 before); `tsc` clean.
+
+**Gaps.**
+- The recap (`ACP_TEST12_RECAP=1`) was not run against a real harness: it spends tokens and was not authorized. The recap
+  and its interaction with real agents' tool use and permission policies are unverified.
+- The listing starts a harness process per call; there is no reuse of a connection and no cache. A UI that lists often will
+  start and stop the harness each time.
+- The provider decides what `session/list` returns: Codex listed sessions of every working directory, including sessions the
+  library's own internal inference created (checkpoint summaries); OpenCode returned only 20. `adopt` accepts any id, so a
+  session that is not listed can still be adopted if the id is known.
+- `cwd` filtering is passed to the provider as is; whether a provider honours it was not checked beyond Codex ignoring it
+  in this run (it listed sessions of other directories).
+- The guide section is new text with no automated check.
+
+**Regressions.** None.

@@ -189,6 +189,7 @@ export {
   DirectAuditPersistenceUnsupportedError,
   ProviderSessionError,
   ProviderSessionInUseError,
+  ProviderSessionListUnsupportedError,
 } from "./agent-conversation-errors.ts";
 export type { ProviderSessionErrorDetails } from "./agent-conversation-errors.ts";
 export type {

@@ -1019,6 +1019,69 @@ is its own. Measured with the `test11-steerTurn` smoke test:
   normally despite a late cancel is `completed`, and `endedBy` is absent.
 - Pending messages live in memory only. They are lost if the process stops, like queued prompts.
 
+## Adopt a session the provider already holds
+
+A harness may hold sessions this library did not create (made in its own UI, by another client, before the
+conversation existed here). `agent.conversations.create({ adopt })` brings one in as a conversation of the Agent: it
+is created around the session and loaded with `session/load` instead of starting a new provider thread.
+
+```ts
+// Which sessions does the provider hold, and which are already owned by a conversation?
+const sessions = await agent.conversations.listProviderSessions({ limit: 20 });
+for (const session of sessions) console.log(session.providerSessionId, session.title, session.adoptedBy);
+
+const conversation = await agent.conversations.create({
+  adopt: { providerSessionId: sessions[0].providerSessionId },
+});
+await conversation.prompt("Where were we?"); // continues the provider's own session
+```
+
+`listProviderSessions({ adapterId?, cwd?, limit? })` starts the harness for the call and asks it (`session/list`, so
+the provider decides the order and which sessions it reports). It throws `ProviderSessionListUnsupportedError` if the
+agent does not advertise `session/list`.
+
+### What adopting stores
+
+The provider keeps the history; adoption does not copy it unless asked.
+
+| option | effect |
+|---|---|
+| `importHistory: true` / `{ last: n }` | Also store the history the load replays: messages, tool calls and thoughts, through the same capture policy as a live turn (a kind the conversation does not capture is not stored). A turn starts at each user message. Stored records are marked `imported: true` and carry the time of the import, since a replay has no timestamps. |
+| `recap: true` | Ask the model to summarize its own history, as a hidden turn on the adopted session, and store the answer as an assistant message (`origin: "adoption_recap"` in its metadata) ahead of the imported turns. It is not shown as a user message, and `create()` returns once it is answered. The model decides how to compress a long history. |
+
+Defaults: when the Agent has an identity runtime that shares conversations, `recap` is on and the last two turns are
+imported; otherwise nothing beyond what happens from now on is stored. A recap lets the Agent's *other* conversations learn
+about this one: identity delivers stored messages to them. A recap that fails is recorded as an error
+(`adoption_recap_failed`, retryable) and the conversation still works, but is not in the Agent's memory.
+
+Adopting needs the conversation to capture messages at `content` or `raw` (otherwise it would join the Agent's memory
+empty); a conversation that must store nothing is driven with `acp-client` instead. A conversation persistence resolver can
+tell an adopted conversation by `adopted: true` in its context and choose what it stores.
+
+### Failures and ownership
+
+- **One owner.** A provider session can belong to one conversation. Adopting one that another conversation owns (or has
+  asked to adopt) throws `ProviderSessionInUseError`, whose `ownedBy` names it, so a UI can open that one instead. The check
+  and the new row are one transaction. Deleting the conversation frees the session. A persistence backend that cannot tell
+  who owns a session cannot adopt one.
+- **The session cannot be loaded** (it no longer exists, the agent does not support `session/load`, degraded mode): a
+  `ProviderSessionError` is thrown and the failure is recorded, and the conversation row **stays**. Opening that conversation
+  later retries the load of the session it asked for; it never starts a new session in its place. Retrying records the
+  session on success but does not repeat the history import or the recap.
+- **After a restart** an adopted conversation opens like any other: by loading its recorded provider session.
+
+### Limits to know about
+
+- Replays differ by harness (measured on Codex and OpenCode with `smoke-tests/session-replay-probe`): both send message
+  boundaries, tool calls and, for OpenCode, thoughts; neither sends timestamps or usage. Codex replays the tool call of a turn
+  that was cancelled mid-tool after the next turn's user message, and it is imported where it arrives.
+- The recap is a hidden turn on the adopted session itself, so the provider's own history then contains the question and the
+  answer. The model is asked not to use tools; ACP gives no way to forbid them for one turn.
+- With `importHistory: true`, every imported message is also delivered to the Agent's other conversations (within identity's
+  budget): prefer the default tail with a recap for long sessions.
+- The first prompt after an adoption runs on a thread whose usage counters did not start at zero, so its metering is
+  attributable only after a baseline.
+
 ## Observe state, context, and usage
 
 Read a snapshot first, then subscribe to changes:

@@ -99,3 +99,12 @@ export class ProviderSessionInUseError extends Error {
     this.name = "ProviderSessionInUseError";
   }
 }
+
+/** The agent does not advertise `session/list`, so its sessions cannot be listed. */
+export class ProviderSessionListUnsupportedError extends Error {
+  readonly code = "provider_session_list_unsupported";
+  constructor(readonly adapterId: string) {
+    super(`adapter ${adapterId} does not advertise session/list, so its sessions cannot be listed`);
+    this.name = "ProviderSessionListUnsupportedError";
+  }
+}

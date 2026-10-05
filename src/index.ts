@@ -45,6 +45,8 @@ export type {
   OpenAgentConversationConfig,
   OpenOwnedAgentConversationResult,
   AdoptProviderSessionConfig,
+  ListProviderSessionsOptions,
+  ProviderSessionSummary,
   AgentConversationAuditCaptureConfig,
   AgentConversationPersistenceOverride,
   AgentScopeAuditObservationKind,
@@ -187,6 +189,7 @@ export {
   DirectAuditPersistenceUnsupportedError,
   ProviderSessionError,
   ProviderSessionInUseError,
+  ProviderSessionListUnsupportedError,
 } from "./agent-session.ts";
 export type { ProviderSessionErrorDetails } from "./agent-session.ts";
 export type {

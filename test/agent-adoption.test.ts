@@ -6,6 +6,7 @@ import {
   Agent,
   ProviderSessionError,
   ProviderSessionInUseError,
+  ProviderSessionListUnsupportedError,
   type AgentConversationId,
   type ConversationPersistenceContext,
   type ConversationPersistenceResolver,
@@ -51,6 +52,8 @@ async function setup(options: {
   sessions?: Record<string, unknown[]>;
   noLoad?: boolean;
   failRecap?: boolean;
+  noList?: boolean;
+  pageSize?: number;
   identity?: boolean;
   conversationPersistence?: ConversationPersistenceResolver;
   path?: string;
@@ -65,6 +68,10 @@ async function setup(options: {
   else delete process.env.REPLAY_AGENT_NO_LOAD;
   if (options.failRecap) process.env.REPLAY_AGENT_FAIL_RECAP = "1";
   else delete process.env.REPLAY_AGENT_FAIL_RECAP;
+  if (options.noList) process.env.REPLAY_AGENT_NO_LIST = "1";
+  else delete process.env.REPLAY_AGENT_NO_LIST;
+  if (options.pageSize) process.env.REPLAY_AGENT_PAGE_SIZE = String(options.pageSize);
+  else delete process.env.REPLAY_AGENT_PAGE_SIZE;
   const agent = await Agent.open({
     persistence: { kind: "sqlite", path: options.path ?? join(directory, "agent.sqlite") },
     adapters: { replay: { command: ["bun", REPLAY_AGENT] } },
@@ -333,6 +340,52 @@ describe("adoption validation and failure", () => {
     const [stored] = (await agent.conversations.list()).conversations;
     expect(stored?.adopted).toBe(true);
     expect((await records(agent, stored!.agentConversationId)).some((record) => record.kind === "error")).toBe(true);
+  });
+});
+
+describe("listing the provider's sessions", () => {
+  const SESSIONS = { "ses-a": HISTORY, "ses-b": HISTORY, "ses-c": HISTORY };
+
+  test("lists what the provider holds, and says which conversation already owns each", async () => {
+    const { agent } = await setup({ sessions: SESSIONS });
+    const before = await agent.conversations.listProviderSessions();
+    expect(before.map((session) => session.providerSessionId)).toEqual(["ses-a", "ses-b", "ses-c"]);
+    expect(before[0]).toMatchObject({ title: "Session ses-a", updatedAt: "2026-10-05T00:00:00.000Z" });
+    expect(before.every((session) => session.adoptedBy === undefined)).toBe(true);
+
+    const adopted = await agent.conversations.create({ adopt: { providerSessionId: "ses-b" } });
+    const after = await agent.conversations.listProviderSessions();
+    expect(after.find((session) => session.providerSessionId === "ses-b")?.adoptedBy).toBe(adopted.id);
+    expect(after.filter((session) => session.adoptedBy).length).toBe(1);
+    // Listing created nothing.
+    expect((await agent.conversations.list()).conversations).toHaveLength(1);
+  });
+
+  test("a claim from an adoption that failed still shows as owned", async () => {
+    const { agent } = await setup({ sessions: SESSIONS, failRecap: false });
+    await agent.conversations.create({ adopt: { providerSessionId: "ses-gone" } }).catch(() => undefined);
+    const [stored] = (await agent.conversations.list()).conversations;
+    // The provider does not list "ses-gone", but the claim keeps it from being adopted elsewhere.
+    expect(await agent.persistence.providerSessions.conversationsUsing!("ses-gone")).toEqual([stored!.agentConversationId]);
+  });
+
+  test("follows the provider's pages and stops at the limit", async () => {
+    const { agent } = await setup({ sessions: SESSIONS, pageSize: 1 });
+    expect((await agent.conversations.listProviderSessions()).map((session) => session.providerSessionId)).toEqual(["ses-a", "ses-b", "ses-c"]);
+    expect((await agent.conversations.listProviderSessions({ limit: 2 })).map((session) => session.providerSessionId)).toEqual(["ses-a", "ses-b"]);
+    await expect(agent.conversations.listProviderSessions({ limit: 0 })).rejects.toThrow(/limit must be a positive integer/);
+  });
+
+  test("an agent that does not list sessions says so with a structured error", async () => {
+    const { agent } = await setup({ sessions: SESSIONS, noList: true });
+    const error = await agent.conversations.listProviderSessions().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProviderSessionListUnsupportedError);
+    expect((error as ProviderSessionListUnsupportedError).adapterId).toBe("replay");
+  });
+
+  test("an unknown adapter is refused", async () => {
+    const { agent } = await setup({ sessions: SESSIONS });
+    await expect(agent.conversations.listProviderSessions({ adapterId: "nope" })).rejects.toThrow();
   });
 });
 
