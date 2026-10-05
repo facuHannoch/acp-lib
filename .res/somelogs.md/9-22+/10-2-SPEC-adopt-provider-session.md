@@ -159,6 +159,40 @@ adoption, and `open()` on it must retry the load of the original `providerSessio
 with a structured error. It must never create a new session. The `providerSessionId` therefore
 has to be kept somewhere (see "Storage changes").
 
+## Replay: what arrives
+
+Measured with `smoke-tests/session-replay-probe` on Codex (`codex-acp` 2.1.1) and OpenCode (1.18.32),
+loading sessions that contained plain turns, tool use, a steer (cancelled turn plus follow-up) and a cancelled
+text-only turn. Loading replays history and does not call the model.
+
+- **Both replay as raw `session/update` notifications**, delivered to `onUpdate` of `loadSession` and not
+  to anything on the connect path today (see "Flow", step 3).
+- **Kinds seen:** `user_message_chunk`, `agent_message_chunk`, `tool_call`, `tool_call_update`, and on OpenCode
+  `agent_thought_chunk`. Codex also sends `available_commands_update` and `session_info_update` during load;
+  they are not history.
+- **Message boundaries are explicit.** Both put a `messageId` on every user and assistant message chunk. A user
+  message arrives as one chunk; an assistant message can be several, and a turn can contain several assistant
+  messages with tool calls between them, which matches the records the library stores.
+- **A turn starts at each user message.** Role alternation recovers turns correctly for plain, steered and
+  cancelled turns, and a cancelled turn's partial assistant text is replayed.
+- **Tool calls are replayed in full.** Each call arrives as an announce plus updates, with its input, its
+  output and its final status (OpenCode: `pending` then `completed`; Codex: `completed`). The announce alone
+  shows `pending`, so a call has to be folded by `toolCallId`, as the live path already does.
+- **Thoughts are replayed** with their text (OpenCode).
+- **One ordering quirk:** on Codex the tool call of a turn cancelled mid-tool was replayed after the next
+  turn's user message, and as `completed` where live it was `failed`. Replay position decides where it lands.
+- **No timestamps and no usage** are replayed, so imported messages have no original time and no metering.
+- **Cost of loading:** 30 ms to 1.2 s for sessions of a few turns.
+
+Consequence: `importHistory` imports what the live path records for a turn: **messages, tool calls and
+thoughts**. Replayed updates go through the same activity folding as a live turn (the aggregator in
+`activity.ts`), so a tool call becomes one record with its input, output and final status, and each kind is
+stored at its capture level (a conversation that does not capture `tool_call` stores none). Only metadata
+updates (`available_commands_update`, `session_info_update`, mode and config updates) are skipped. Turn
+boundaries, and so `{ last: n }`, are the user messages. Imported records get the time of the import, not the
+original time, and are marked as imported. A tool call keeps the position it has in the replay, so the Codex
+quirk above is carried over as it arrives.
+
 ## Recap
 
 The recap is a request made to the model on the adopted session, using the existing internal
@@ -236,8 +270,8 @@ delivered into sibling conversations survive, and the provider agent's own memor
   `src/out-of-band-messages.ts` and the internal-inference path run turns. Not yet checked.
 - Whether `create({ adopt })` waits for the recap or returns immediately with a "recap pending"
   state, since the first user message queues behind it.
-- Whether replay notifications carry enough information to find turn boundaries for
-  `importHistory: { last: n }` on every provider.
+- Whether other harnesses (Claude Code, Pi, Kimi) replay the same message boundaries; the probe takes any
+  adapter and session id.
 - Where the `providerSessionId` of a failed adoption is kept (see "Failure").
 - What `clearTranscript()` does to derived checkpoints.
 - Requirement from the steering spec: the recap must run as an operation of its own kind in the conversation's operations queue, so a steered user message never cancels it (see `10-2-SPEC-steer-pending-messages.md`).

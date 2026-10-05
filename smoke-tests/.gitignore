@@ -3,3 +3,4 @@ data/
 audit/
 data-before/
 **/*.sqlite*test11-steerTurn/results.json
+session-replay-probe/*.json
