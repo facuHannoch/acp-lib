@@ -59,6 +59,14 @@ import type {
 } from "./agent/config.ts";
 
 export type {
+  AgentConversationAuditCaptureConfig,
+  AgentConversationPersistenceOverride,
+  AgentScopeAuditObservationKind,
+  ConversationPersistenceContext,
+  ConversationPersistenceResolver,
+} from "./agent/persistence-policy/index.ts";
+
+export type {
   AgentConfig,
   AgentConversationManager,
   AgentConversationRuntimeDefaults,
@@ -140,11 +148,16 @@ export class Agent {
       : identity && "load" in identity
         ? identity
         : new NoopAgentIdentityRuntime();
+    if (config.conversationPersistence !== undefined && typeof config.conversationPersistence !== "function") {
+      throw new Error("conversationPersistence must be a function");
+    }
     this.manager = new DefaultAgentConversationManager(this, {
       defaultAdapterId: config.defaultAdapterId,
       identityConsistency: config.identityConsistency ?? "eventual",
       identityTimeoutMs: config.identityTimeoutMs,
       capture: resolveConversationRecordCapture(config.capture),
+      ...(config.capture ? { captureConfig: config.capture } : {}),
+      ...(config.conversationPersistence ? { conversationPersistence: config.conversationPersistence } : {}),
       defaults: config.conversationDefaults ?? {},
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
       checkpointing,

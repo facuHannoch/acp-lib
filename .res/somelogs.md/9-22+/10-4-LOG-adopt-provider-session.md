@@ -127,3 +127,64 @@ re-exports only: 1637 lines at the start of Phase 0, 427 now. No behaviour chang
 - As with the previous moves, only the typecheck and the existing suite cover it.
 
 **Regressions.** None.
+
+---
+
+## Phase 0, step 5 and Phase 1: per-conversation settings and the capture-only resolver
+
+The plan's "carry a resolved persistence policy per conversation" (9-24 step 1) and the minimal resolver (Phase 1) were
+done together, because the first has no other purpose than the second.
+
+**Done.**
+- New module `src/agent/persistence-policy/`: `types.ts` (`AgentConversationPersistenceOverride`,
+  `ConversationPersistenceContext` with `adopted`, `ConversationPersistenceResolver`), `resolver.ts`
+  (`ConversationSettingsResolver`), `index.ts`. Types are exported from `src/agent.ts` and `src/index.ts`.
+- `AgentConfig.conversationPersistence` (synchronous resolver); `ManagerSettings` gained `captureConfig` (the Agent's
+  capture as configured, for layering) and `conversationPersistence`.
+- The manager resolves a conversation's settings once, before any durable write: in `create()` (context from the create
+  input) and in `openOnce()` (context from the stored summary). The result is passed to `start()` (the
+  `PersistedConversationLifecycle` is built with it and it is remembered for the life of the live conversation), to
+  `recordConversationError` / `throwCreateFailure` (so create, load and recovery error records follow it) and reused for
+  recovery without calling the resolver again. `appendAssistantMessage` uses the live conversation's settings, or asks
+  the resolver for one that is not live.
+- Rules implemented: the override replaces the Agent's value per key and `protocol` counts as one key;
+  `undefined`, `{}` and `{ capture: {} }` mean the Agent's settings; identical overrides are validated and resolved once
+  (cache by canonical JSON); a resolver that throws, returns a non-object, an unknown key, an unknown record kind or an
+  invalid level rejects the start with that error, before any row, error record or provider session; `metadata`
+  message capture is rejected while checkpointing is enabled; a non-function resolver is refused at `Agent.open`.
+- `auditLog` and `meteringRecords` are part of the override type but rejected at run time with
+  `... is not supported yet`, so nothing silently does nothing until Phase 7.
+
+**Tested.** `test/agent-conversation-persistence.test.ts`, 19 tests:
+- two conversations in one Agent with different capture (no stored messages for one; the event bus published only the
+  other's);
+- the context holds the create input, and after a restart `open()` passes the stored summary, with the policy applied;
+- the resolver is called once for a live conversation (per-record writes never call it);
+- a live conversation keeps its start-time policy after the resolver's answer changes, and the next `open()` uses the
+  new answer;
+- an Agent without a resolver is unchanged;
+- `appendAssistantMessage` follows the conversation's capture;
+- eight invalid answers (throws, non-object, unknown key, unknown kind, invalid level, audit key, metering key,
+  `metadata` with checkpointing) each reject the start and leave no conversation row; a non-function resolver is
+  refused at `Agent.open`;
+- a load failure writes an error record under the Agent's policy (control) and none under `capture.error: "none"`,
+  while still throwing `ProviderSessionError`;
+- unit tests of `ConversationSettingsResolver` (per-key replacement, `protocol` replaced whole, no-op answers, caching).
+Whole suite: `bun test` 916 pass / 0 fail (897 before); `tsc --noEmit` clean.
+
+**Gaps.**
+- Not covered by a test: the recovery path (a `recovery_failed` record and the recovered thread following the
+  conversation's policy and not calling the resolver a second time); handoff, switch and reset keeping the policy (true
+  by construction, since the same lifecycle object is kept, but not asserted); a resolver that throws when `open()` is
+  called on a conversation that already exists (the code path is the same as `create()`).
+- Scope of "applies to every write" is smaller than 9-24 promises, on purpose (Phase 7): checkpoint `native_action`
+  records, detailed metering retention, audit capture and audit exclusion still follow the Agent's settings.
+- The Agent-level guard `conversation checkpointing requires message capture at content or raw level` is unchanged, so
+  the pattern "Agent default `none`, selected conversations `content`" is not possible yet (Phase 7 relaxes it).
+- `adopted` is always `false` until Phase 2 stores it on the row.
+- The cache is per resolver instance and unbounded; a consumer that returns many distinct overrides grows it.
+
+**Regressions.** None in the suite. One deliberate change of error precedence: `appendAssistantMessage` now reads the
+conversation before checking the capture level (it needs the conversation's own settings), so for a conversation that
+does not exist the error is `unknown active conversation` even when the Agent's capture would also have rejected the
+append. No test relied on the old order.

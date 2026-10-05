@@ -44,6 +44,11 @@ export type {
   CreateAgentConversationConfig,
   OpenAgentConversationConfig,
   OpenOwnedAgentConversationResult,
+  AgentConversationAuditCaptureConfig,
+  AgentConversationPersistenceOverride,
+  AgentScopeAuditObservationKind,
+  ConversationPersistenceContext,
+  ConversationPersistenceResolver,
 } from "./agent.ts";
 export {
   OUT_OF_BAND_MESSAGE_ORIGIN,

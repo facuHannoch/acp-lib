@@ -26,6 +26,7 @@ import type {
   ConversationRecoveryResult,
 } from "../checkpointing/index.ts";
 import type { AppendAssistantMessageInput } from "../out-of-band-messages.ts";
+import type { ConversationPersistenceResolver } from "./persistence-policy/index.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -77,6 +78,11 @@ export interface AgentConfig {
   };
   readonly checkpointing?: ConversationCheckpointingConfig;
   readonly auditLog?: false | AgentAuditLogConfig;
+  /**
+   * Chooses, per conversation, what it persists differently from the Agent defaults. Synchronous,
+   * side-effect free and stable for a given conversation; see `ConversationPersistenceResolver`.
+   */
+  readonly conversationPersistence?: ConversationPersistenceResolver;
 }
 
 export interface CreateAgentConversationConfig {

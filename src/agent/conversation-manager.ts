@@ -59,6 +59,8 @@ import type {
 } from "./config.ts";
 
 import type { Agent } from "../agent.ts";
+import { ConversationSettingsResolver } from "./persistence-policy/index.ts";
+import type { ConversationPersistenceContext } from "./persistence-policy/index.ts";
 
 export class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
@@ -66,12 +68,43 @@ export class DefaultAgentConversationManager implements AgentConversationManager
   private readonly meteringSetupLocks = new Map<AgentConversationId, Promise<void>>();
   private readonly detachedMeteringBarriers = new Map<AgentConversationId, Promise<void>>();
   private agentMeteringBarrier: Promise<void> | undefined;
+  /** Resolves what each conversation persists: the Agent's settings with the consumer's per-conversation overrides. */
+  private readonly policies: ConversationSettingsResolver;
+  /** The settings a live conversation started with. A live conversation keeps them until it is opened again. */
+  private readonly liveSettings = new Map<AgentConversationId, ManagerSettings>();
 
-  constructor(private readonly agent: Agent, private readonly settings: ManagerSettings) {}
+  constructor(private readonly agent: Agent, private readonly settings: ManagerSettings) {
+    this.policies = new ConversationSettingsResolver(settings, settings.conversationPersistence);
+  }
+
+  private contextOf(summary: AgentConversationSummary): ConversationPersistenceContext {
+    return {
+      agentConversationId: summary.agentConversationId,
+      participants: summary.participants,
+      ...(summary.title !== undefined && summary.title !== null ? { title: summary.title } : {}),
+      ...(summary.metadata !== undefined && summary.metadata !== null ? { metadata: summary.metadata } : {}),
+      adopted: false,
+    };
+  }
+
+  /** Settings for a write about a conversation: the live conversation's own, or what the resolver says now. */
+  private writeSettings(summary: AgentConversationSummary): ManagerSettings {
+    return (this.live.has(summary.agentConversationId) && this.liveSettings.get(summary.agentConversationId))
+      || this.policies.settingsFor(this.contextOf(summary));
+  }
 
   async create(config: CreateAgentConversationConfig = {}): Promise<AgentConversation> {
     const id = config.id ?? createAgentConversationId();
     const participants = normalizeParticipants(config.participants);
+    // What this conversation persists is decided before any write, so a resolver that throws or
+    // returns something invalid leaves no row, no error record and no provider session behind.
+    const settings = this.policies.settingsFor({
+      agentConversationId: id,
+      participants,
+      ...(config.title !== undefined ? { title: config.title } : {}),
+      ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
+      adopted: false,
+    });
     // Validate caller input before the durable row: a mistake must not orphan a
     // conversation, and must not be recorded as a provider-session failure.
     this.prepareStart({ ...config, providerSession: "new" });
@@ -87,9 +120,10 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       return await this.start(id, participants, {
         ...config,
         providerSession: "new",
+        settings,
       });
     } catch (error) {
-      return await this.throwCreateFailure(id, attemptId, error);
+      return await this.throwCreateFailure(id, attemptId, error, settings);
     }
   }
 
@@ -124,6 +158,9 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         `conversation ${id} is active on ${active.adapterId}; use a conversation switch instead of loading it with ${config.adapterId}`,
       );
     }
+    // Resolved once for this open, before any write: the load-failure and recovery records below and the
+    // recovered provider thread all follow this conversation's policy, and the resolver is not called again.
+    const settings = this.policies.settingsFor(this.contextOf(summary));
     const startConfig = {
       ...config,
       runtime: {
@@ -141,6 +178,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         ...startConfig,
         providerSession: active ? "load" : "new",
         internalSessionId: active?.internalSessionId,
+        settings,
       });
       return Object.freeze({
         conversation,
@@ -148,10 +186,11 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       });
     } catch (error) {
       // No recorded mapping means this open was creating a thread, not loading one.
-      if (!active) return await this.throwCreateFailure(id, attemptId, error);
-      const recovery = this.settings.checkpointing?.recovery;
+      if (!active) return await this.throwCreateFailure(id, attemptId, error, settings);
+      const recovery = settings.checkpointing?.recovery;
       const classification = classifyProviderSessionLoadError(error, recovery?.isMissingProviderSession);
       const recorded = await this.recordConversationError({
+        settings,
         agentConversationId: id,
         attemptId,
         source: "provider_session",
@@ -193,6 +232,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         const conversation = await this.start(id, summary.participants, {
           ...startConfig,
           providerSession: "new",
+          settings,
         });
         try {
           config.onRecoveryProgress?.({ stage: "seeding", checkpointId: checkpoint.checkpointId });
@@ -224,6 +264,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         // A recovery failure is a distinct root cause from the load failure already
         // recorded above; it prevents the logical conversation from reopening.
         const recoveryRecorded = await this.recordConversationError({
+          settings,
           agentConversationId: id,
           attemptId: recoveryAttemptId,
           source: "recovery",
@@ -279,16 +320,17 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     if (typeof input.text !== "string" || !input.text.trim()) {
       throw new Error("assistant message text cannot be blank");
     }
-    const level = this.settings.capture.message;
+    const summary = await this.agent.persistence.conversations.get(id);
+    if (!summary || summary.deletedAt) throw new Error(`unknown active conversation: ${id}`);
+    const settings = this.writeSettings(summary);
+    const level = settings.capture.message;
     if (level !== "content" && level !== "raw") {
       throw new Error(
         `appending an assistant message requires message capture "content" or "raw", not "${level}"`,
       );
     }
-    const summary = await this.agent.persistence.conversations.get(id);
-    if (!summary || summary.deletedAt) throw new Error(`unknown active conversation: ${id}`);
     const appendId = `append-${randomUUID()}`;
-    const [record] = await persistConversationObservations(this.agent, this.settings, [{
+    const [record] = await persistConversationObservations(this.agent, settings, [{
       recordId: `${appendId}:assistant`,
       agentSessionId: this.agent.id,
       agentConversationId: id,
@@ -302,7 +344,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       metadata: JSON.stringify({ origin: OUT_OF_BAND_MESSAGE_ORIGIN, appendId }),
     }]);
     if (record?.kind !== "message") throw new Error("assistant message was not persisted");
-    await updateConversationIdentity(this.agent, this.settings, id, [record]);
+    await updateConversationIdentity(this.agent, settings, id, [record]);
     return record;
   }
 
@@ -427,6 +469,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     config: (CreateAgentConversationConfig | OpenAgentConversationConfig) & {
       readonly providerSession: "new" | "load";
       readonly internalSessionId?: string;
+      /** What this conversation persists, resolved before it started. */
+      readonly settings: ManagerSettings;
     },
   ): Promise<AgentConversation> {
     const releaseSetup = await this.acquireMeteringSetupLock(id);
@@ -441,8 +485,9 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         this.agent,
         id,
         participants,
-        this.settings,
+        config.settings,
       );
+      this.liveSettings.set(id, config.settings);
       conversation = await AgentConversation.create({
         ...runtime,
         ...(persistedMetering
@@ -519,6 +564,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
    * the caller can attach it to the structured exception instead.
    */
   private async recordConversationError(input: {
+    /** The conversation's own settings; the Agent's when the record is not about one conversation's start. */
+    readonly settings?: ManagerSettings;
     readonly agentConversationId: AgentConversationId;
     readonly attemptId: string;
     readonly source: ConversationErrorSource;
@@ -545,8 +592,9 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       ...(input.internalSessionId === undefined ? {} : { internalSessionId: input.internalSessionId }),
       ...(input.details === undefined ? {} : { details: input.details }),
     };
-    const level = this.settings.capture.error;
-    const audit = this.settings.auditLog;
+    const settings = input.settings ?? this.settings;
+    const level = settings.capture.error;
+    const audit = settings.auditLog;
     let persisted: ConversationRecord | undefined;
     try {
       await this.agent.persistence.transaction(async (persistence) => {
@@ -601,8 +649,10 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     id: AgentConversationId,
     attemptId: string,
     error: unknown,
+    settings?: ManagerSettings,
   ): Promise<never> {
     const recorded = await this.recordConversationError({
+      ...(settings ? { settings } : {}),
       agentConversationId: id,
       attemptId,
       source: "provider_session",
