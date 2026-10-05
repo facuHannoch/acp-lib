@@ -1,6 +1,26 @@
 # Adopting an existing provider session
 
-Status: proposed. Builds on `9-24-SPEC-conversation-persistence-policy.md`.
+Status: implemented (see `10-4-LOG-adopt-provider-session.md` for how, how it was tested, and the gaps). Builds on
+`9-24-SPEC-conversation-persistence-policy.md`.
+
+Where the implementation differs from the text below:
+
+- **The recap is a marked assistant message, not a checkpoint.** A recovery checkpoint needs an internal-inference row and
+  the repository has no way to insert a completed one without claiming another job. The recap is stored as an assistant
+  message with `origin: "adoption_recap"` ahead of the imported tail; identity delivers it and later checkpoints summarize it.
+- **`create()` waits for the recap**, which runs before the conversation is returned, so no queue operation kind was added and
+  steering cannot cancel it. A failed recap is recorded as `adoption_recap_failed` and the adoption still succeeds; there is
+  no retry beyond that.
+- **Defaults:** `recap` is on when the Agent's identity runtime shares conversations (otherwise off), and `importHistory`
+  defaults to the last two turns when a recap is made (otherwise `false`).
+- **`importHistory` imports messages, tool calls and thoughts** (through the activity aggregator and the conversation's capture
+  levels), not only messages; the replay probe showed both harnesses replay them.
+- **The hidden turn runs on the adopted session itself** (no `session/fork`).
+- **Listing:** `listProviderSessions({ adapterId?, cwd?, limit? })` on `agent.conversations`, with `adoptedBy`; it starts the
+  harness per call.
+- **Removal methods live on `agent.conversations`** (`clearTranscript(id, { checkpoints? })`, `delete(id, options)`), not on the
+  conversation object; derived checkpoints are kept unless `checkpoints: true`.
+- A failed adoption is retried by `open()`, which loads and records the session but does not import history or recap.
 
 A provider (ACP agent) may already hold sessions the library did not create: sessions made by
 another client, by an earlier deployment, or before the library owned the conversation. The

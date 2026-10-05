@@ -1,6 +1,10 @@
 # Per-conversation persistence policy
 
-Status: proposed. Supersedes `9-24-SPEC-per-conversation-persistence.md`.
+Status: implemented, in two parts (see `10-4-LOG-adopt-provider-session.md`): capture, with the resolver itself (Phase 1),
+then audit overrides and exclusion, metering retention, fingerprints, checkpoint-record policy and the relaxed checkpoint
+guard (Phase 7). Not done: the Hub follow-up (outside this repository), tests for recovery under a resolver, and the
+per-conversation identity switch (`identity: false`, parked).
+Supersedes `9-24-SPEC-per-conversation-persistence.md`.
 
 An `Agent` resolves one canonical capture policy (`AgentConfig.capture`), one audit capture
 policy (`AgentConfig.auditLog.capture`), and one detailed metering retention

@@ -1,6 +1,9 @@
 # Plan: session adoption first, then the rest of the persistence policy
 
-Status: proposed.
+Status: executed (phases 0 to 7); see `10-4-LOG-adopt-provider-session.md` for the outcome of each step. Differences from the
+plan: Phase 0 stopped at moving the config types, helpers, lifecycle and manager out of `agent.ts` (the manager file is
+658 lines and was not split further); the resolver was built with its per-conversation settings in one step; the recap is a
+message and not a checkpoint.
 
 Specs:
 
