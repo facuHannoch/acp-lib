@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 12;
+export const SQLITE_AGENT_SCHEMA_VERSION = 13;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   latest_sequence INTEGER NOT NULL DEFAULT 0 CHECK (latest_sequence >= 0),
   last_human_message_at TEXT,
   deleted_at TEXT,
-  metadata TEXT
+  metadata TEXT,
+  adopted INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1)),
+  adopt_provider_session_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS conversations_updated_idx
@@ -252,6 +254,8 @@ CREATE TABLE IF NOT EXISTS provider_sessions (
 
 CREATE INDEX IF NOT EXISTS provider_sessions_conversation_idx
   ON provider_sessions(agent_conversation_id, activated_at, provider_session_record_id);
+CREATE INDEX IF NOT EXISTS provider_sessions_internal_idx
+  ON provider_sessions(internal_session_id);
 CREATE UNIQUE INDEX IF NOT EXISTS provider_sessions_one_active_idx
   ON provider_sessions(agent_conversation_id) WHERE deactivated_at IS NULL;
 
@@ -545,7 +549,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -588,6 +592,12 @@ export function migrateSqliteAgentSchema(database: Database): void {
         if (violations.length > 0) {
           throw new Error("SQLite schema migration to version 12 left foreign key violations");
         }
+      }
+      if (version > 0 && version < 13) {
+        // Adoption: whether the conversation was created from an existing provider session, and which
+        // one it asked for (kept so a failed adoption can be retried).
+        database.exec("ALTER TABLE conversations ADD COLUMN adopted INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1))");
+        database.exec("ALTER TABLE conversations ADD COLUMN adopt_provider_session_id TEXT");
       }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(

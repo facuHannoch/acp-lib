@@ -83,7 +83,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       participants: summary.participants,
       ...(summary.title !== undefined && summary.title !== null ? { title: summary.title } : {}),
       ...(summary.metadata !== undefined && summary.metadata !== null ? { metadata: summary.metadata } : {}),
-      adopted: false,
+      adopted: summary.adopted === true,
     };
   }
 

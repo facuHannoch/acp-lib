@@ -269,6 +269,10 @@ export interface AgentConversationSummary {
   readonly latestSequence: number;
   readonly deletedAt?: string;
   readonly metadata?: string;
+  /** True when the conversation was created by adopting an existing provider session. Absent otherwise. */
+  readonly adopted?: boolean;
+  /** The provider session an adoption asked for, kept so a failed adoption can be retried. */
+  readonly adoptProviderSessionId?: string;
 }
 
 export interface CreateAgentConversationInput {
@@ -278,6 +282,8 @@ export interface CreateAgentConversationInput {
   readonly title?: string;
   readonly createdAt?: string;
   readonly metadata?: string;
+  /** Mark the conversation as created by adopting this provider session. */
+  readonly adoptProviderSessionId?: string;
 }
 
 export interface ConversationListOptions {
@@ -538,6 +544,12 @@ export interface ProviderSessionPersistence {
   append(record: ProviderSessionRecord): Promise<void>;
   list(agentConversationId: AgentConversationId): Promise<readonly ProviderSessionRecord[]>;
   active(agentConversationId: AgentConversationId): Promise<ProviderSessionRecord | null>;
+  /**
+   * Conversations that own this provider session: those where it is the active session, and those
+   * that asked to adopt it and have not attached it yet. Deleted conversations do not count.
+   * Optional: a backend without it cannot refuse a second adoption of the same session.
+   */
+  conversationsUsing?(internalSessionId: string): Promise<readonly AgentConversationId[]>;
 }
 
 export type MeteringRecordRetention = "all" | "none" | { readonly retain: number };

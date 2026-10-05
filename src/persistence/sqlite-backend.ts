@@ -74,6 +74,7 @@ import {
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import { installSqliteFts, migrateSqliteAgentSchema } from "./sqlite-schema.ts";
+import { conversationsUsingProviderSession } from "./sqlite-provider-sessions.ts";
 import { SqliteInternalInferenceRepository } from "../internal-inference/persistence/sqlite-repository.ts";
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 import type { ConversationRecoveryCheckpointRepository } from "../checkpointing/contracts.ts";
@@ -101,6 +102,8 @@ interface ConversationRow {
   last_human_message_at: string | null;
   deleted_at: string | null;
   metadata: string | null;
+  adopted: number;
+  adopt_provider_session_id: string | null;
 }
 
 interface IdentityRow {
@@ -420,14 +423,17 @@ class SqliteConversationPersistence implements ConversationPersistence {
       assertInstant(now, "conversation createdAt");
       runSql(this.database,
         `INSERT INTO conversations(
-          agent_conversation_id, agent_session_id, title, created_at, updated_at, metadata
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
+          agent_conversation_id, agent_session_id, title, created_at, updated_at, metadata,
+          adopted, adopt_provider_session_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         input.agentConversationId,
         input.agentSessionId,
         input.title ?? null,
         now,
         now,
         input.metadata ?? null,
+        input.adoptProviderSessionId === undefined ? 0 : 1,
+        input.adoptProviderSessionId ?? null,
       );
       const participants = input.participants?.length
         ? input.participants
@@ -945,6 +951,10 @@ class SqliteProviderSessionPersistence implements ProviderSessionPersistence {
        WHERE agent_conversation_id = ? AND deactivated_at IS NULL`,
     ).get(agentConversationId);
     return row ? providerSessionFromRow(row) : null;
+  }
+
+  async conversationsUsing(internalSessionId: string): Promise<readonly AgentConversationId[]> {
+    return conversationsUsingProviderSession(this.database, internalSessionId);
   }
 }
 
@@ -1898,6 +1908,8 @@ function summaryFromRowWithParticipants(
     updatedAt: row.updated_at,
     latestSequence: Number(row.latest_sequence),
     ...(row.deleted_at !== null ? { deletedAt: row.deleted_at } : {}),
+    ...(row.adopted ? { adopted: true } : {}),
+    ...(row.adopt_provider_session_id !== null ? { adoptProviderSessionId: row.adopt_provider_session_id } : {}),
     ...(row.metadata !== null ? { metadata: row.metadata } : {}),
   });
 }

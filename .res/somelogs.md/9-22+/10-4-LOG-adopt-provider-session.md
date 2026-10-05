@@ -188,3 +188,50 @@ Whole suite: `bun test` 916 pass / 0 fail (897 before); `tsc --noEmit` clean.
 conversation before checking the capture level (it needs the conversation's own settings), so for a conversation that
 does not exist the error is `unknown active conversation` even when the Agent's capture would also have rejected the
 append. No test relied on the old order.
+
+---
+
+## Phase 2: adoption storage (schema version 13, the `adopted` flag, lookup by provider session)
+
+**Done.**
+- Schema version 13 (`src/persistence/sqlite-schema.ts`): `conversations.adopted INTEGER NOT NULL DEFAULT 0` and
+  `conversations.adopt_provider_session_id TEXT` (in the base schema for new databases, and as guarded `ALTER TABLE`s for
+  versions 8 to 12); `provider_sessions_internal_idx` on `provider_sessions(internal_session_id)` (not unique: two
+  conversations may already share a session in existing data). Version 12 is now in the accepted list.
+- Types (`src/persistence/backend.ts`): `AgentConversationSummary.adopted?` and `.adoptProviderSessionId?` (present only
+  when true, so existing summaries are unchanged), `CreateAgentConversationInput.adoptProviderSessionId?`, and an
+  optional `ProviderSessionPersistence.conversationsUsing?(internalSessionId)` so custom backends are not forced to
+  implement it.
+- `src/persistence/sqlite-provider-sessions.ts` (new): `conversationsUsingProviderSession`: conversations whose active
+  provider session is that id, plus conversations that asked to adopt it and have not attached a session yet (a failed
+  adoption keeps its claim); deleted conversations hold nothing. `sqlite-backend.ts` only gained the INSERT columns,
+  the summary mapping and a three-line method that calls it.
+- The manager's `ConversationPersistenceContext.adopted` now comes from the stored flag.
+
+**Tested.**
+- `test/persistence-adoption-storage.test.ts`, 8 tests: the flag and the requested session id round-trip through
+  create/get/list; an ordinary conversation carries no adoption fields; a claim without a session holds; the active
+  session is owned; a replaced claim and a deactivated session are free; deleted conversations own nothing; owners come
+  back oldest first; a simulated version 12 database (columns and index dropped, version row reset) migrates to 13, keeps
+  its conversation, and gains the columns, the index and the version row.
+- Full suite: `bun test` 924 pass / 0 fail (919 before this phase's tests were added to the earlier 916); `tsc` clean.
+
+**Gaps.**
+- The version 12 database is simulated from a fresh one (drop the new columns, reset the version), not a database
+  written by the previous release. Real databases written by an old build were not available to test against.
+- `conversationsUsing` is a read; the check "refuse a second adoption" is Phase 3. Nothing prevents two concurrent
+  adoptions of the same session between the check and the insert (no unique constraint on purpose; see above); that
+  race is for Phase 3 to close, probably by doing check and insert in one transaction.
+- Custom backends without `conversationsUsing` will not be able to refuse a second adoption; Phase 3 must decide
+  whether `adopt` then fails or proceeds without the check (leaning: fail, with a clear message).
+
+**Regressions (all fixed, in test code).**
+- Five tests in `test/persistence-sqlite-backend.test.ts` failed after the schema bump: four old-version migration tests
+  simulate an old database by dropping columns from a fresh one and did not know the two new columns
+  (`duplicate column name: adopted`), and the pre-release-schema test hard-codes the current version (12 to 13). The
+  four downgrade scripts now also drop the new index and columns, and the version assertions are 13. The migration code
+  is unchanged; real old databases do not have the new columns.
+- One failure in `test/session-manager-restoration.test.ts` ("reactivates a tombstone with its retained transcript")
+  appeared once in a full run and did not reproduce: four isolated runs and the next full run all passed. It is in the
+  legacy session-manager layer and nothing in this phase touches it; treated as an intermittent test under load, not
+  investigated further. Noted here in case it shows up again.
