@@ -74,6 +74,10 @@ import {
   normalizeAdoption,
   selectTail,
   turnsFromReplay,
+  withoutRecapTurns,
+  publishAdoptionFloor,
+  DEFAULT_ADOPTION_TAIL_MESSAGES,
+  type AdoptionRecapPlacement,
   type ListProviderSessionsOptions,
   type NormalizedAdoption,
   type ProviderSessionSummary,
@@ -226,11 +230,12 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     }
     try {
       await this.recordAdoptedProviderSession(conversation, id, attemptId);
-      if (adoption.recap) await this.recap(conversation, id, attemptId, settings);
+      const recap = adoption.recap ? await this.recap(conversation, id, attemptId, settings) : undefined;
       if (adoption.importHistory) {
-        const turns = selectTail(turnsFromReplay(replay), adoption.importHistory.last);
+        const turns = selectTail(withoutRecapTurns(turnsFromReplay(replay)), adoption.importHistory.last);
         await conversation.importHistory(turns, `${attemptId}-import`);
       }
+      await this.placeCheckpointFloor(id, recap, settings);
     } catch (error) {
       this.live.delete(id);
       await conversation.stop().catch(() => undefined);
@@ -249,11 +254,16 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     id: AgentConversationId,
     attemptId: string,
     settings: ManagerSettings,
-  ): Promise<void> {
+  ): Promise<AdoptionRecapPlacement | undefined> {
     const recapId = `${attemptId}-recap`;
     try {
       const summary = await conversation.requestRecap(RECAP_INSTRUCTION, recapId);
       await conversation.recordRecap(summary, recapId, RECAP_ORIGIN);
+      // Stored before anything is imported, so its sequence is the last one so far. A conversation that
+      // stores no messages has no sequence to cover (adoption requires `content` capture, so this is a
+      // backend without checkpoints).
+      const sequence = await this.agent.persistence.recoveryCheckpoints?.latestMessageSequence(id);
+      return sequence ? { summary: summary.trim(), sequence } : undefined;
     } catch (error) {
       await this.recordConversationError({
         settings,
@@ -263,6 +273,38 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         code: "adoption_recap_failed",
         recoverability: "retryable",
         message: "The adopted session could not be summarized.",
+        details: providerSessionErrorDetails(error),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Put the conversation's checkpoint floor after the adopted history (see `publishAdoptionFloor`), when the
+   * conversation checkpoints at all. A failure here is recorded and does not fail the adoption: the
+   * conversation is usable, and its first scheduled checkpoint then starts from whatever is stored.
+   */
+  private async placeCheckpointFloor(
+    id: AgentConversationId,
+    recap: AdoptionRecapPlacement | undefined,
+    settings: ManagerSettings,
+  ): Promise<void> {
+    const repository = this.agent.persistence.recoveryCheckpoints;
+    if (!repository || !settings.checkpointing?.enabled) return;
+    try {
+      await publishAdoptionFloor(repository, id, {
+        ...(recap ? { recap } : {}),
+        tailMessages: Math.min(DEFAULT_ADOPTION_TAIL_MESSAGES, settings.checkpointing.recovery.maxTailMessages),
+      });
+    } catch (error) {
+      await this.recordConversationError({
+        settings,
+        agentConversationId: id,
+        attemptId: `${id}-checkpoint-floor`,
+        source: "operation",
+        code: "adoption_checkpoint_floor_failed",
+        recoverability: "retryable",
+        message: "The checkpoint floor of the adopted conversation could not be placed.",
         details: providerSessionErrorDetails(error),
       });
     }

@@ -12,7 +12,15 @@ import {
   type ConversationPersistenceResolver,
   type ConversationRecord,
 } from "../src/index.ts";
-import { normalizeAdoption, selectTail, turnsFromReplay } from "../src/agent/adoption/index.ts";
+import {
+  RECAP_INSTRUCTION,
+  normalizeAdoption,
+  selectTail,
+  turnsFromReplay,
+  withoutRecapTurns,
+} from "../src/agent/adoption/index.ts";
+import { buildRecoverySeed } from "../src/checkpointing/recovery.ts";
+import { resolveConversationCheckpointingConfig } from "../src/checkpointing/config.ts";
 
 const REPLAY_AGENT = resolve(import.meta.dir, "fixtures/replay-agent.ts");
 const agents: Agent[] = [];
@@ -55,6 +63,8 @@ async function setup(options: {
   noList?: boolean;
   pageSize?: number;
   identity?: boolean;
+  /** Checkpointing without a running schedule (the milestone is far away). */
+  checkpointing?: boolean;
   conversationPersistence?: ConversationPersistenceResolver;
   path?: string;
   directory?: string;
@@ -81,7 +91,9 @@ async function setup(options: {
     // Checkpoint-backed identity needs checkpointing enabled; the milestone is far away so none runs here.
     ...(options.identity
       ? { identity: { kind: "checkpoint-backed" as const }, checkpointing: { schedule: { milestones: [1000], everyAfterMilestones: 1000 } } }
-      : {}),
+      : options.checkpointing
+        ? { checkpointing: { schedule: { milestones: [1000], everyAfterMilestones: 1000 } } }
+        : {}),
   });
   agents.push(agent);
   return { agent, directory, path: options.path ?? join(directory, "agent.sqlite") };
@@ -437,5 +449,148 @@ describe("turning a replay into turns", () => {
     expect(normalizeAdoption({ providerSessionId: "x", importHistory: true })).toEqual({ providerSessionId: "x", recap: false, importHistory: {} });
     expect(normalizeAdoption({ providerSessionId: "x", importHistory: { last: 3 } }).importHistory).toEqual({ last: 3 });
     expect(() => normalizeAdoption({ providerSessionId: "x", importHistory: { last: 1.5 } })).toThrow(/positive integer/);
+  });
+});
+
+/** A provider history of `turns` plain turns, two messages each. */
+function longHistory(turns: number): unknown[] {
+  return Array.from({ length: turns }, (_, index) => [
+    text("user", `u${index}`, `question ${index}`),
+    text("agent", `a${index}`, `answer ${index}`),
+  ]).flat();
+}
+
+describe("where checkpointing starts for an adopted conversation", () => {
+  const latestCheckpoint = (agent: Agent, id: AgentConversationId) => agent.persistence.recoveryCheckpoints!.latest(id);
+
+  test("with a recap and the default tail, the recap is the first checkpoint and the imported turns come after it", async () => {
+    const { agent } = await setup({ checkpointing: true });
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true } });
+    const stored = messages(await records(agent, conversation.id));
+    const floor = await latestCheckpoint(agent, conversation.id);
+    expect(floor).toMatchObject({ source: "adoption_recap", revision: 1, coveredSequence: stored[0]!.sequence });
+    expect(floor!.summary).toContain("RECAP: the user greeted");
+    expect(floor!.generatorInternalInferenceId).toBeUndefined();
+    // Counting responses starts after everything the adoption stored.
+    expect(floor!.responsesCountedAfterSequence).toBe(stored.at(-1)!.sequence);
+    expect(await agent.persistence.recoveryCheckpoints!.successfulResponseCount(conversation.id)).toBe(0);
+    await conversation.prompt("and now?");
+    expect(await agent.persistence.recoveryCheckpoints!.successfulResponseCount(conversation.id)).toBe(1);
+  });
+
+  test("a recovery from it seeds the recap and the imported turns after it, once each", async () => {
+    const { agent } = await setup({ checkpointing: true });
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true } });
+    const floor = (await latestCheckpoint(agent, conversation.id))!;
+    const latest = await agent.persistence.recoveryCheckpoints!.latestMessageSequence(conversation.id);
+    const seed = await buildRecoverySeed(
+      agent.persistence.messages,
+      conversation.id,
+      floor,
+      latest,
+      resolveConversationCheckpointingConfig().recovery,
+    );
+    expect(seed.prompt.match(/RECAP: the user greeted/g)?.length).toBe(1);
+    expect(seed.prompt).toContain("Read a.txt");
+    expect(seed.prompt).toContain("It says kiwi.");
+  });
+
+  test("a long history imported whole: the floor is the last 50 messages back, and the recap stands for everything before it", async () => {
+    const { agent } = await setup({ checkpointing: true, sessions: { "ses-1": longHistory(60) } });
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true, importHistory: true } });
+    const stored = messages(await records(agent, conversation.id));
+    // The recap, then 120 imported messages.
+    expect(stored.length).toBe(121);
+    const floor = (await latestCheckpoint(agent, conversation.id))!;
+    expect(floor.source).toBe("adoption_recap");
+    expect(floor.coveredSequence).toBe(stored.at(-1)!.sequence - 50);
+    expect(floor.coveredSequence).toBeGreaterThan(stored[0]!.sequence);
+    // The whole history is still stored and readable; only summarizing starts after the floor.
+    expect(stored.some((record) => record.content === "question 0")).toBe(true);
+  });
+
+  test("without a recap, a long import gets a baseline: no summary, the same floor", async () => {
+    const { agent } = await setup({ checkpointing: true, sessions: { "ses-1": longHistory(60) } });
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: false, importHistory: true } });
+    const stored = messages(await records(agent, conversation.id));
+    expect(stored.length).toBe(120);
+    const floor = (await latestCheckpoint(agent, conversation.id))!;
+    expect(floor).toMatchObject({ source: "adoption_baseline", summary: "", coveredSequence: stored.at(-1)!.sequence - 50 });
+    const seed = await buildRecoverySeed(
+      agent.persistence.messages,
+      conversation.id,
+      floor,
+      stored.at(-1)!.sequence,
+      resolveConversationCheckpointingConfig().recovery,
+    );
+    // Only the messages after the floor are known, and nothing pretends to be a summary.
+    expect(seed.prompt).not.toContain("Continuation checkpoint");
+    expect(seed.prompt).toContain("answer 59");
+    expect(seed.prompt).not.toContain("question 0");
+  });
+
+  test("without a recap and with little stored there is nothing to put a floor under", async () => {
+    const { agent } = await setup({ checkpointing: true });
+    const bare = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: false } });
+    expect(await latestCheckpoint(agent, bare.id)).toBeNull();
+  });
+
+  test("a conversation that does not checkpoint gets no floor", async () => {
+    const { agent } = await setup();
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true } });
+    expect(await latestCheckpoint(agent, conversation.id)).toBeNull();
+  });
+
+  test("a failed recap leaves a baseline when there is history stored beyond the tail", async () => {
+    const { agent } = await setup({ checkpointing: true, failRecap: true, sessions: { "ses-1": longHistory(60) } });
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true, importHistory: true } });
+    expect(await latestCheckpoint(agent, conversation.id)).toMatchObject({ source: "adoption_baseline", summary: "" });
+  });
+
+  test("identity does not deliver a baseline as an empty summary", async () => {
+    const { agent } = await setup({ identity: true, sessions: { "ses-1": longHistory(60) } });
+    const adopted = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: false, importHistory: true } });
+    expect(await latestCheckpoint(agent, adopted.id)).toMatchObject({ source: "adoption_baseline" });
+    const other = await agent.conversations.create();
+    const identity = await agent.identity.load({
+      agentSessionId: agent.id,
+      agentConversationId: other.id,
+      targetProviderContextId: "context-1",
+      participant: { id: "user", kind: "user" },
+      prompt: "hello",
+      consistency: "eventual",
+    });
+    expect(identity.promptPreamble ?? "").toContain("question 0");
+    expect(identity.promptPreamble ?? "").not.toContain("Summary through source sequence");
+  });
+
+  test("deleting the conversation with its checkpoints removes the floor too", async () => {
+    const { agent } = await setup({ checkpointing: true });
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true } });
+    await agent.conversations.delete(conversation.id, { checkpoints: true });
+    expect(await latestCheckpoint(agent, conversation.id)).toBeNull();
+  });
+});
+
+describe("adopting a session that was adopted before", () => {
+  test("the recap question and its answer are not imported as turns of the history", async () => {
+    const question = text("user", "uq", RECAP_INSTRUCTION);
+    const answer = text("agent", "aq", "an earlier recap");
+    const turns = turnsFromReplay([...HISTORY, question, answer].map((update) => ({ update })));
+    expect(turns.length).toBe(3);
+    const kept = withoutRecapTurns(turns);
+    expect(kept.length).toBe(2);
+    expect(JSON.stringify(kept)).not.toContain("an earlier recap");
+    expect(JSON.stringify(kept)).not.toContain("automated request");
+    expect(selectTail(kept, 1)[0]!.items.some((item) => item.kind === "assistant" && item.text.includes("kiwi"))).toBe(true);
+  });
+
+  test("a replay containing the recap turn imports the real turns", async () => {
+    const { agent } = await setup({
+      sessions: { "ses-1": [...HISTORY, text("user", "uq", RECAP_INSTRUCTION), text("agent", "aq", "an earlier recap")] },
+    });
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: false, importHistory: { last: 1 } } });
+    const stored = messages(await records(agent, conversation.id));
+    expect(stored.map((record) => String(record.content))).toEqual(["Read a.txt", "Reading it.", "It says kiwi."]);
   });
 });

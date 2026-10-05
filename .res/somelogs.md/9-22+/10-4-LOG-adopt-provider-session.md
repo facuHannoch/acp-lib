@@ -517,7 +517,7 @@ behaviour.
 ## Final state
 
 **Done.** Phases 0 to 7 of `10-2-PLAN-adopt-session-and-persistence-resolver.md` are committed on `session-loading` (commits
-`680f7a8` to `b97cebd`, after the steering commit `9dd5005`). `agent.ts` went from 1637 to 427 lines.
+`680f7a8` to `b97cebd`, after the steering commit `9dd5005`). `agent.ts` went from 1637 to 427 lines after Phase 0 and is 467 at the end (the later phases added re-exports and wiring).
 
 **Verified at the end.** `bun test` 977 pass; `tsc --noEmit` clean; the mock steering smoke test passes every check; adoption
 was run against real Codex and OpenCode sessions (no model call) and passed (Phase 5).
@@ -536,4 +536,100 @@ path they use.
 - adoption retry through `open()` does not import history or recap, and a failed recap has no retry;
 - `attach` and per-conversation `identity: false` (parked TODOs); the Hub follow-up (outside this repository);
 - the 9-24 tests for recovery under a resolver, and a custom-backend test for adoption/clearing;
-- `conversation-manager.ts` is 658 lines (above the budget in the plan) and was not split further.
+- `conversation-manager.ts` was 658 lines after Phase 0 and is 1006 at the end (adoption, listing, removal and the write
+  policy were added to it), against a 400-line budget in the plan; it was not split further. `agent-session.ts` grew from
+  4467 to 4581 lines (`importHistory`, `requestRecap`, `recordRecap`), although the plan said it should only gain wiring.
+
+---
+
+## Review (2026-10-05)
+
+A review of phases 0 to 7 against the specs and the plan. `bun test` 977 pass / 0 fail and `tsc --noEmit` clean before the
+fix below; neither intermittent failure appeared.
+
+**Fixed.**
+- `ConversationSettingsResolver` refused a conversation's `message: "metadata"` whenever checkpointing was *configured*
+  (`this.base.checkpointing` truthy), including `checkpointing: { enabled: false }`. It now checks `.enabled`, as the Agent-level
+  guard does (`src/agent/persistence-policy/resolver.ts`). Test added in `test/agent-conversation-persistence.test.ts` (it fails
+  without the fix).
+
+**Verified (closes a Phase 2 gap).** The v13 migration was run on copies of real databases written by earlier builds:
+`smoke-tests/test11-steerTurn/data/agent.sqlite` (v12: 13 conversations, 946 records) and
+`smoke-tests/end-to-end/data/agent.sqlite` (v8: 4 conversations, 129 records). Both reached version 13 with the two columns and
+`provider_sessions_internal_idx`, the same row counts, no foreign-key violations and `integrity_check` ok. The migration is one
+way: an older build refuses a v13 database.
+
+**Open findings (not fixed).**
+1. Checkpoint `native_action` records at the default `native_action: "metadata"` capture lose their `output`
+   (`checkpointId`, `coveredSequence`, `internalInferenceId`): `captureRuntimeRecord` strips `input`/`output` at `metadata`.
+   Nothing in the library reads them, but a consumer might. Keep the output, or say so in the release note.
+2. The recap is on by default when identity is shared, so `adopt` spends tokens by default, yet it never ran against a real
+   harness. `create()` waits for it with no timeout, and tools the model runs during it are neither recorded nor audited
+   (`meteredInternalPrompt` passes no handlers). Run `ACP_TEST12_RECAP=1` on Codex and OpenCode, or default `recap` to `false`.
+3. A failed recap, or an adoption retried through `open()`, leaves the conversation out of the Agent's memory for good. The spec
+   rejects "leave it out of memory" as a solve-later choice.
+4. "`create()` waits, so nothing can interleave" is not strict: the conversation is in `live` during the recap, so `open(id)` with
+   a caller-supplied id returns it as `already_open` and can prompt mid-recap; and an `open(id)` during the load sees an adopted
+   row without a session and starts a second load.
+5. `listProviderSessions` and `delete({ providerSession: "best-effort" })` start the harness with the Agent's
+   `conversationDefaults` (launcher, env, cwd), not the conversation's runtime; a conversation opened with another env (for
+   example another `CODEX_HOME`) is deleted against the wrong store and reports `false`.
+6. `turnsFromReplay` merges consecutive user messages that have no `messageId` into one (Codex and OpenCode send ids; Claude Code,
+   Pi and Kimi were not probed).
+7. A resolver that throws inside the background audit check (`auditExcluded`) becomes the pending audit error, so
+   `Agent.close()` throws it.
+8. Step 6 of the spec's flow (place the checkpoint cursor after the adopted history) was not done; the imported turns and the
+   recap count toward the checkpoint schedule.
+
+**Release note items.** The one-way v13 migration; `delete()` returns an object instead of `void`; checkpoint records follow
+`native_action` capture and audit (item 1); `agent_audit_state.capture_fingerprint` holds the base policy; checkpointing accepts
+an Agent default of `message: "none"`.
+
+---
+
+## Phase 8: the checkpoint floor of an adopted conversation (2026-10-05)
+
+**Why.** The review's open finding 8 (step 6 of the flow, not done), made concrete by a measurement: Codex refuses a message
+past 1,048,576 characters, so summarizing stored records cannot be the way an adopted history is summarized.
+`ConversationCheckpointStrategy.prepare()` serialized every message since the previous checkpoint (from sequence 0 if none)
+into one prompt, so `importHistory: true` on a long session made the first scheduled checkpoint an impossible prompt, and
+`classifyError` treated it as retryable. The recap is the only summary of a long provider history, because the model holds the
+history itself.
+
+**Design (discussed with the user before coding).** The whole transcript stays stored and readable; only the checkpoint
+machinery has a floor. An adopted conversation gets a checkpoint at adoption: `coveredSequence` = the later of the recap
+message and (last stored message − 50). With a recap its summary is the recap (`source: adoption_recap`); without one it is a
+baseline with an empty summary (`adoption_baseline`). The recap stays a message too. Chaining then makes the strategy read only
+what follows the floor.
+
+**Done.**
+- Schema v14: `conversation_recovery_checkpoints` rebuilt (SQLite cannot relax NOT NULL / CHECK): `generator_internal_inference_id`
+  nullable, `source`, `responses_counted_after_sequence`, a CHECK tying each source to generator/summary. One-way, like v13.
+- `ConversationRecoveryCheckpoint.source` and optional `generatorInternalInferenceId`; `publish` validates per source, includes
+  `source` in the idempotency comparison; `successfulResponseCount` counts after the adoption checkpoint's base, so imported
+  turns do not use up the milestones.
+- `src/agent/adoption/checkpoint-floor.ts` (`publishAdoptionFloor`); `conversation-manager.ts` calls it after recap and import
+  when the conversation checkpoints. A failure to place it is recorded (`adoption_checkpoint_floor_failed`) and does not fail the
+  adoption.
+- Strategy: tolerates a previous checkpoint with no summary; `MAX_CHECKPOINT_SOURCE_CHARS` (700,000) with a terminal
+  `checkpoint_source_too_large`; recovery seed and identity treat an empty summary as absent.
+- `withoutRecapTurns`: an earlier adoption's recap question (and its answer) is not imported as a turn.
+
+**Tested.** `bun test` 995 pass, `tsc --noEmit` clean. New: v13→v14 migration on a v13-shaped table (row kept, foreign keys,
+integrity); repository (sources and their rules, response count base, later checkpoints do not move it); strategy (reads only
+after a baseline floor, no summary to fold; oversized source is terminal, one attempt, the model is never called); adoption
+(recap as first checkpoint and response count; recovery seed has the recap once and the tail; 60-turn history imported whole with
+and without recap; no floor when little is stored or checkpointing is off; failed recap leaves a baseline; identity does not
+deliver an empty summary; delete with checkpoints removes it; replay containing the recap turn).
+
+**Not tested / gaps.**
+- Not run against a real harness: the floor does not touch the provider, but a recovery from one has only been exercised with
+  the mock agent.
+- The floor is 50 *messages*, not tokens: one turn with enormous tool output can still make the post-floor range too large;
+  that now fails clearly instead of retrying, and checkpointing stays failed for that conversation until it is fixed by hand.
+- `open()` retrying a failed adoption does not place a floor (it does not import or recap either).
+- The tail size (50) is not configurable per adoption.
+
+**Verified afterwards.** The v14 migration was run on copies of the real smoke-test databases: `end-to-end` (v8, 5 checkpoints,
+129 records) and `test11-steerTurn` (v12, 946 records) both reached 14 with the same row counts, no foreign-key violations and
+`integrity_check` ok.

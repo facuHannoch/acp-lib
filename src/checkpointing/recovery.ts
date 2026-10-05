@@ -90,8 +90,10 @@ export async function buildRecoverySeed(
   return Object.freeze({
     prompt: [
       config.seedInstruction,
-      `Continuation checkpoint through canonical sequence ${checkpoint.coveredSequence}:`,
-      checkpoint.summary,
+      // An adoption baseline has no summary: only the messages after it are known.
+      ...(checkpoint.summary
+        ? [`Continuation checkpoint through canonical sequence ${checkpoint.coveredSequence}:`, checkpoint.summary]
+        : []),
       tail.length
         ? `Canonical messages after the checkpoint:\n${JSON.stringify(tail)}`
         : "There are no canonical messages after the checkpoint.",

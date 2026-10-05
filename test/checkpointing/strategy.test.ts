@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "../../src/agent.ts";
 import { createAgentConversationId } from "../../src/agent-ids.ts";
+import { createConversationRecoveryCheckpointId } from "../../src/checkpointing/ids.ts";
 import {
   CONVERSATION_CHECKPOINT_STRATEGY_ID,
   ConversationCheckpointStrategy,
+  MAX_CHECKPOINT_SOURCE_CHARS,
 } from "../../src/checkpointing/strategy.ts";
 import {
   isConversationCheckpointDue,
@@ -174,6 +176,105 @@ describe("conversation checkpoint strategy", () => {
       expect(calls).toBe(2);
     } finally {
       releaseFirst();
+      await agent.close();
+    }
+  });
+
+  test("after an adoption baseline it reads only what comes after the floor, with no summary to fold", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-checkpoint-baseline-"));
+    roots.push(root);
+    const prompts: string[] = [];
+    const runtime: InternalInferenceRuntime = {
+      async run(request, _signal, lifecycle) {
+        prompts.push(request.prompt);
+        await lifecycle?.sessionStarted({ internalSessionId: "summary-1", model: "test" });
+        return {
+          internalInferenceId: request.internalInferenceId,
+          internalSessionId: "summary-1",
+          adapterId: request.adapterId,
+          model: "test",
+          messages: [{ type: "text", text: "Summary after the floor" }],
+          usage: null,
+        };
+      },
+    };
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      internalInference: { runtime, strategies: [new ConversationCheckpointStrategy()] },
+    });
+    try {
+      const conversationId = createAgentConversationId();
+      await agent.persistence.conversations.create({ agentSessionId: agent.id, agentConversationId: conversationId });
+      await appendMessagePair(agent, conversationId, "imported long ago", "imported answer", 1);
+      await appendMessagePair(agent, conversationId, "imported last", "imported last answer", 2);
+      const floor = await agent.persistence.recoveryCheckpoints!.publish({
+        checkpointId: createConversationRecoveryCheckpointId(),
+        agentConversationId: conversationId,
+        coveredSequence: 2,
+        source: "adoption_baseline",
+        summary: "",
+        responsesCountedAfterSequence: 4,
+      });
+      await appendMessagePair(agent, conversationId, "after adoption", "live answer", 3);
+      const run = await agent.internalInferences!.enqueue({
+        purpose: "conversation_checkpoint",
+        agentConversationId: conversationId,
+        input: checkpointInput(),
+        sourceCheckpointId: floor.checkpointId,
+        sourceFromSequence: floor.coveredSequence,
+        sourceThroughSequence: 6,
+        requestedThroughSequence: 6,
+      });
+      await run.result;
+      const latest = await agent.persistence.recoveryCheckpoints!.latest(conversationId);
+      expect(latest).toMatchObject({ source: "internal_inference", summary: "Summary after the floor", previousCheckpointId: floor.checkpointId });
+      expect(prompts[0]).toContain("There is no previous continuation summary.");
+      expect(prompts[0]).toContain("after adoption");
+      expect(prompts[0]).toContain("imported last answer");
+      expect(prompts[0]).not.toContain("imported long ago");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a source too large for one prompt fails terminally and never reaches the model", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-checkpoint-too-large-"));
+    roots.push(root);
+    let calls = 0;
+    const runtime: InternalInferenceRuntime = {
+      async run() {
+        calls += 1;
+        throw new Error("the model must not be asked");
+      },
+    };
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      internalInference: { runtime, strategies: [new ConversationCheckpointStrategy()] },
+    });
+    try {
+      const conversationId = createAgentConversationId();
+      await agent.persistence.conversations.create({ agentSessionId: agent.id, agentConversationId: conversationId });
+      await appendMessagePair(agent, conversationId, "x".repeat(MAX_CHECKPOINT_SOURCE_CHARS), "ok", 1);
+      const run = await agent.internalInferences!.enqueue({
+        purpose: "conversation_checkpoint",
+        agentConversationId: conversationId,
+        input: checkpointInput(),
+        sourceFromSequence: 0,
+        sourceThroughSequence: 2,
+        requestedThroughSequence: 2,
+      });
+      await expect(run.result).rejects.toThrow(/too large|checkpoint_source_too_large/);
+      expect(calls).toBe(0);
+      expect(await agent.persistence.recoveryCheckpoints!.latest(conversationId)).toBeNull();
+      const chain = await agent.persistence.internalInferences!.getChain(run.rootId);
+      // Terminal: one attempt, no retry of a prompt that cannot be sent.
+      expect(chain).toMatchObject({ status: "failed", activeInternalInferenceId: run.rootId });
+      expect(chain?.error).toContain("too large");
+    } finally {
       await agent.close();
     }
   });

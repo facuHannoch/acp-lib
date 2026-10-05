@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 13;
+export const SQLITE_AGENT_SCHEMA_VERSION = 14;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -376,12 +376,20 @@ CREATE TABLE IF NOT EXISTS conversation_recovery_checkpoints (
   revision INTEGER NOT NULL CHECK (revision >= 1),
   covered_sequence INTEGER NOT NULL CHECK (covered_sequence >= 1),
   previous_checkpoint_id TEXT REFERENCES conversation_recovery_checkpoints(checkpoint_id),
-  generator_internal_inference_id TEXT NOT NULL UNIQUE REFERENCES internal_inferences(internal_inference_id),
-  summary TEXT NOT NULL CHECK (length(summary) > 0),
+  generator_internal_inference_id TEXT UNIQUE REFERENCES internal_inferences(internal_inference_id),
+  source TEXT NOT NULL DEFAULT 'internal_inference'
+    CHECK (source IN ('internal_inference', 'adoption_recap', 'adoption_baseline')),
+  summary TEXT NOT NULL,
+  responses_counted_after_sequence INTEGER CHECK (responses_counted_after_sequence IS NULL OR responses_counted_after_sequence >= 0),
   created_at TEXT NOT NULL,
   metadata TEXT,
   UNIQUE (agent_conversation_id, revision),
-  UNIQUE (agent_conversation_id, covered_sequence)
+  UNIQUE (agent_conversation_id, covered_sequence),
+  CHECK (
+    (source = 'internal_inference' AND generator_internal_inference_id IS NOT NULL AND length(summary) > 0)
+    OR (source = 'adoption_recap' AND generator_internal_inference_id IS NULL AND length(summary) > 0)
+    OR (source = 'adoption_baseline' AND generator_internal_inference_id IS NULL AND summary = '')
+  )
 );
 
 CREATE INDEX IF NOT EXISTS recovery_checkpoints_latest_idx
@@ -549,7 +557,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -557,7 +565,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
   // Admitting the `error` kind means rebuilding conversation_records: its kind CHECK is a
   // closed list SQLite cannot alter in place. Foreign keys must be off for that drop, or
   // the implicit delete would cascade into every detail table.
-  const rebuildRecords = existing > 0 && existing < 12;
+  const rebuildRecords = existing > 0 && existing < 14;
   if (rebuildRecords) database.exec("PRAGMA foreign_keys = OFF");
   try {
     database.exec("BEGIN IMMEDIATE");
@@ -599,6 +607,13 @@ export function migrateSqliteAgentSchema(database: Database): void {
         database.exec("ALTER TABLE conversations ADD COLUMN adopted INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1))");
         database.exec("ALTER TABLE conversations ADD COLUMN adopt_provider_session_id TEXT");
       }
+      if (version > 0 && version < 14) {
+        rebuildRecoveryCheckpointsForAdoption(database);
+        const violations = database.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all();
+        if (violations.length > 0) {
+          throw new Error("SQLite schema migration to version 14 left foreign key violations");
+        }
+      }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
@@ -612,6 +627,48 @@ export function migrateSqliteAgentSchema(database: Database): void {
   } finally {
     if (rebuildRecords) database.exec("PRAGMA foreign_keys = ON");
   }
+}
+
+/**
+ * Rebuild `conversation_recovery_checkpoints` so a checkpoint may have no generator and an empty summary
+ * (adoption checkpoints), with a `source` and the adoption response-count base. SQLite cannot relax a
+ * NOT NULL or a CHECK in place. Foreign keys are off (see the caller). The old table's index goes with it and
+ * is recreated on the new one.
+ */
+function rebuildRecoveryCheckpointsForAdoption(database: Database): void {
+  database.exec("ALTER TABLE conversation_recovery_checkpoints RENAME TO conversation_recovery_checkpoints_v13");
+  database.exec("DROP INDEX IF EXISTS recovery_checkpoints_latest_idx");
+  database.exec(`
+CREATE TABLE conversation_recovery_checkpoints (
+  checkpoint_id TEXT PRIMARY KEY,
+  agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  covered_sequence INTEGER NOT NULL CHECK (covered_sequence >= 1),
+  previous_checkpoint_id TEXT REFERENCES conversation_recovery_checkpoints(checkpoint_id),
+  generator_internal_inference_id TEXT UNIQUE REFERENCES internal_inferences(internal_inference_id),
+  source TEXT NOT NULL DEFAULT 'internal_inference'
+    CHECK (source IN ('internal_inference', 'adoption_recap', 'adoption_baseline')),
+  summary TEXT NOT NULL,
+  responses_counted_after_sequence INTEGER CHECK (responses_counted_after_sequence IS NULL OR responses_counted_after_sequence >= 0),
+  created_at TEXT NOT NULL,
+  metadata TEXT,
+  UNIQUE (agent_conversation_id, revision),
+  UNIQUE (agent_conversation_id, covered_sequence),
+  CHECK (
+    (source = 'internal_inference' AND generator_internal_inference_id IS NOT NULL AND length(summary) > 0)
+    OR (source = 'adoption_recap' AND generator_internal_inference_id IS NULL AND length(summary) > 0)
+    OR (source = 'adoption_baseline' AND generator_internal_inference_id IS NULL AND summary = '')
+  )
+)`);
+  database.exec(`INSERT INTO conversation_recovery_checkpoints(
+      checkpoint_id, agent_conversation_id, revision, covered_sequence, previous_checkpoint_id,
+      generator_internal_inference_id, source, summary, created_at, metadata
+    ) SELECT checkpoint_id, agent_conversation_id, revision, covered_sequence, previous_checkpoint_id,
+      generator_internal_inference_id, 'internal_inference', summary, created_at, metadata
+    FROM conversation_recovery_checkpoints_v13`);
+  database.exec("DROP TABLE conversation_recovery_checkpoints_v13");
+  database.exec(`CREATE INDEX IF NOT EXISTS recovery_checkpoints_latest_idx
+    ON conversation_recovery_checkpoints(agent_conversation_id, revision DESC)`);
 }
 
 /**

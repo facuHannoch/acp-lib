@@ -1,4 +1,5 @@
 import type { ActivityEvent } from "../../types.ts";
+import { RECAP_INSTRUCTION } from "./recap.ts";
 import { extractResponseChunk, toActivityEvent } from "../../updates.ts";
 
 /** One piece of an imported turn, in the order the provider replayed it. */
@@ -81,4 +82,17 @@ export function turnsFromReplay(notifications: readonly unknown[]): ImportedTurn
 /** The last `n` turns, or all of them. */
 export function selectTail(turns: readonly ImportedTurn[], last: number | undefined): ImportedTurn[] {
   return last === undefined ? [...turns] : turns.slice(-last);
+}
+
+/**
+ * Drop the turns that are an earlier adoption's recap: the question is a turn of the provider's own history
+ * once it has been asked, so a later adoption of the same session replays it. It is not something the
+ * participants said, and the answer is the recap, which this adoption makes (or does not) for itself.
+ */
+export function withoutRecapTurns(turns: readonly ImportedTurn[]): ImportedTurn[] {
+  const question = RECAP_INSTRUCTION.trim();
+  return turns.filter((turn) => {
+    const first = turn.items.find((item) => item.kind === "user");
+    return !(first && first.text.trim() === question);
+  });
 }

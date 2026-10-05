@@ -13,6 +13,20 @@ const CHECKPOINT_READ_ONLY_INSTRUCTION = [
   "Only summarize the records supplied in this prompt.",
 ].join(" ");
 
+/**
+ * The most characters of stored records one checkpoint prompt may carry. Harnesses refuse a message past
+ * about a million characters (Codex: "Message exceeds the maximum length of 1048576 characters"), and a
+ * prompt that cannot be sent cannot succeed however often it is retried.
+ */
+export const MAX_CHECKPOINT_SOURCE_CHARS = 700_000;
+
+export class CheckpointSourceTooLargeError extends Error {
+  constructor(readonly chars: number, readonly limit: number) {
+    super(`conversation checkpoint source is too large: ${chars} characters, the limit is ${limit}`);
+    this.name = "CheckpointSourceTooLargeError";
+  }
+}
+
 export type ConversationCheckpointPayload = {
   readonly instruction: string;
 };
@@ -47,15 +61,20 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
     if (through <= from) throw new Error("conversation checkpoint source range is empty");
     const records = await readRecords(context.persistence.records, conversationId, from, through);
     if (!records.length) throw new Error("conversation checkpoint source contains no records");
+    const serialized = JSON.stringify(records);
+    if (serialized.length + (previous?.summary.length ?? 0) > MAX_CHECKPOINT_SOURCE_CHARS) {
+      throw new CheckpointSourceTooLargeError(serialized.length + (previous?.summary.length ?? 0), MAX_CHECKPOINT_SOURCE_CHARS);
+    }
     return Object.freeze({
       prompt: [
         payload.instruction,
         CHECKPOINT_READ_ONLY_INSTRUCTION,
-        previous
+        // An adoption baseline is a floor without a summary: nothing to build on, and nothing before it is read.
+        previous?.summary
           ? `Previous continuation summary:\n${previous.summary}`
           : "There is no previous continuation summary.",
         `New canonical records after sequence ${from} through ${through}:`,
-        JSON.stringify(records),
+        serialized,
       ].join("\n\n"),
       metadata: JSON.stringify({ previousCheckpointId: previous?.checkpointId ?? null, through }),
     });
@@ -77,6 +96,7 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
         ? { previousCheckpointId: context.attempt.sourceCheckpointId as `chk-${string}` }
         : {}),
       generatorInternalInferenceId: result.internalInferenceId,
+      source: "internal_inference",
       summary,
     });
     const record = {
@@ -114,6 +134,9 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
   }
 
   classifyError(error: unknown) {
+    if (error instanceof CheckpointSourceTooLargeError) {
+      return { kind: "terminal" as const, code: "checkpoint_source_too_large" };
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("source changed") || message.includes("coverage") || message.includes("source range")) {
       return { kind: "terminal" as const, code: "checkpoint_source_conflict" };

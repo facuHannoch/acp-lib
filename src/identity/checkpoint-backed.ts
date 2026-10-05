@@ -160,7 +160,7 @@ export class CheckpointBackedIdentityRuntime implements AgentIdentityRuntime {
     const header = `Source conversation ${conversation.agentConversationId}${label}; participants=${JSON.stringify(participants)}\n`;
     if (header.length >= maxChars) return null;
     const start = cursor?.deliveredThroughSequence ?? 0;
-    const initialSummary = !cursor && checkpoint
+    const initialSummary = !cursor && checkpoint?.summary
       ? summaryText(checkpoint, "Summary")
       : "";
     const summaryFits = initialSummary.length > 0 && header.length + initialSummary.length <= maxChars;
@@ -173,7 +173,7 @@ export class CheckpointBackedIdentityRuntime implements AgentIdentityRuntime {
     );
     let text = header + (summaryFits ? initialSummary : "") + raw.text;
     let throughSequence = Math.max(from, raw.throughSequence);
-    if (cursor && !raw.complete && checkpoint && checkpoint.coveredSequence > throughSequence) {
+    if (cursor && !raw.complete && checkpoint?.summary && checkpoint.coveredSequence > throughSequence) {
       const replacement = summaryText(checkpoint, "Updated summary, superseding earlier source context");
       if (header.length + replacement.length <= maxChars) {
         const tail = await this.readMessages(

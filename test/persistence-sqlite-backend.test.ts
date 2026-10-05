@@ -20,6 +20,8 @@ import {
   type NewConversationRecord,
   type PersistenceExtension,
 } from "../src/persistence/index.ts";
+import { createConversationRecoveryCheckpointId } from "../src/checkpointing/ids.ts";
+import { createInternalInferenceId } from "../src/internal-inference/ids.ts";
 import { emptyMeteringState } from "../src/metering/state.ts";
 import type { OperationMeteringRecord } from "../src/metering/record.ts";
 
@@ -715,9 +717,9 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(13);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(14);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 13; recreate the database",
+      "SQLite agent schema 7 is incompatible with 14; recreate the database",
     );
   });
 
@@ -756,8 +758,80 @@ describe("SQLite agent persistence", () => {
     }]);
     expect((await migrated.identityDelivery.get(targetConversationId, "provider-1", conversationId))?.deliveredThroughSequence).toBe(1);
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(13);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM identity_delivery_cursors").get()?.count).toBe(1);
+    inspection.close();
+  });
+
+  test("migrates version 13 to checkpoints that may come from an adoption, keeping the ones it has", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    const inferenceId = createInternalInferenceId();
+    await backend.internalInferences.enqueue({
+      internalInferenceId: inferenceId,
+      agentSessionId,
+      agentConversationId: conversationId,
+      purpose: "checkpoint_fixture",
+      adapterId: "test",
+      input: { strategyId: "test", version: 1, payload: {} },
+    });
+    const kept = await backend.recoveryCheckpoints.publish({
+      checkpointId: createConversationRecoveryCheckpointId(),
+      agentConversationId: conversationId,
+      coveredSequence: 4,
+      generatorInternalInferenceId: inferenceId,
+      summary: "kept across the migration",
+    });
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+
+    // The version-13 table: a generator and a summary are required, and there is no source.
+    const old = new Database(path, { readwrite: true });
+    old.exec(`
+      ALTER TABLE conversation_recovery_checkpoints RENAME TO checkpoints_v14;
+      DROP INDEX recovery_checkpoints_latest_idx;
+      CREATE TABLE conversation_recovery_checkpoints (
+        checkpoint_id TEXT PRIMARY KEY,
+        agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        covered_sequence INTEGER NOT NULL CHECK (covered_sequence >= 1),
+        previous_checkpoint_id TEXT REFERENCES conversation_recovery_checkpoints(checkpoint_id),
+        generator_internal_inference_id TEXT NOT NULL UNIQUE REFERENCES internal_inferences(internal_inference_id),
+        summary TEXT NOT NULL CHECK (length(summary) > 0),
+        created_at TEXT NOT NULL,
+        metadata TEXT,
+        UNIQUE (agent_conversation_id, revision),
+        UNIQUE (agent_conversation_id, covered_sequence)
+      );
+      INSERT INTO conversation_recovery_checkpoints
+        SELECT checkpoint_id, agent_conversation_id, revision, covered_sequence, previous_checkpoint_id,
+               generator_internal_inference_id, summary, created_at, metadata
+        FROM checkpoints_v14;
+      DROP TABLE checkpoints_v14;
+      CREATE INDEX recovery_checkpoints_latest_idx
+        ON conversation_recovery_checkpoints(agent_conversation_id, revision DESC);
+      DELETE FROM schema_migrations WHERE version >= 14;
+      INSERT INTO schema_migrations(version, applied_at) VALUES (13, '2026-10-04T00:00:00.000Z');
+    `);
+    old.close();
+
+    const migrated = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    expect(await migrated.recoveryCheckpoints.get(kept.checkpointId)).toEqual({ ...kept, source: "internal_inference" });
+    const baseline = await migrated.recoveryCheckpoints.publish({
+      checkpointId: createConversationRecoveryCheckpointId(),
+      agentConversationId: conversationId,
+      coveredSequence: 9,
+      previousCheckpointId: kept.checkpointId,
+      source: "adoption_baseline",
+      summary: "",
+    });
+    expect(baseline).toMatchObject({ source: "adoption_baseline", summary: "" });
+    expect(baseline.generatorInternalInferenceId).toBeUndefined();
+    const inspection = new Database(path, { readonly: true });
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
+    expect(inspection.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(inspection.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()?.integrity_check).toBe("ok");
     inspection.close();
   });
 
@@ -901,7 +975,7 @@ describe("SQLite agent persistence", () => {
       operationId: "op-load-1",
     });
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(13);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM conversation_records").get()?.count).toBe(2);
     inspection.close();
   });

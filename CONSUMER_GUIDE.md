@@ -1133,13 +1133,32 @@ tell an adopted conversation by `adopted: true` in its context and choose what i
   session on success but does not repeat the history import or the recap.
 - **After a restart** an adopted conversation opens like any other: by loading its recorded provider session.
 
+### Where checkpointing starts
+
+Summarizing stored messages is a prompt, and a long history does not fit one (Codex refuses a message past 1,048,576
+characters), so an adopted conversation's checkpoints never look at the history that came before its adoption. When the
+conversation checkpoints, adoption places a **floor**: a checkpoint covering everything up to 50 messages before the end of
+what is stored (or the recap, when the history is shorter than that).
+
+- With a recap, the floor's summary *is* the recap. It stands for the whole provider history, imported or not, and a
+  recovery seeds the recap plus the messages after the floor.
+- Without a recap, the floor is a baseline with no summary: a recovery seeds only the messages after it, and identity
+  delivers the stored messages as it would without a checkpoint.
+- A conversation with no recap and 50 messages or fewer stored gets no floor; its first scheduled checkpoint summarizes them.
+- Every stored message stays readable (listing, pagination, search); only summarizing starts after the floor. Checkpoints that
+  follow chain from it.
+- The checkpoint schedule (responses 1, 5, 10, ...) counts responses after what the adoption stored, as for a new conversation.
+- A checkpoint whose records do not fit one prompt (700,000 characters) fails with `checkpoint_source_too_large` and is not
+  retried. Only a conversation that stores a very long run of messages between two checkpoints can reach it.
+
 ### Limits to know about
 
 - Replays differ by harness (measured on Codex and OpenCode with `smoke-tests/session-replay-probe`): both send message
   boundaries, tool calls and, for OpenCode, thoughts; neither sends timestamps or usage. Codex replays the tool call of a turn
   that was cancelled mid-tool after the next turn's user message, and it is imported where it arrives.
 - The recap is a hidden turn on the adopted session itself, so the provider's own history then contains the question and the
-  answer. The model is asked not to use tools; ACP gives no way to forbid them for one turn.
+  answer. The model is asked not to use tools; ACP gives no way to forbid them for one turn. A later adoption of the same
+  session does not import that question or its answer as turns.
 - With `importHistory: true`, every imported message is also delivered to the Agent's other conversations (within identity's
   budget): prefer the default tail with a recap for long sessions.
 - The first prompt after an adoption runs on a thread whose usage counters did not start at zero, so its metering is
