@@ -633,3 +633,26 @@ deliver an empty summary; delete with checkpoints removes it; replay containing 
 **Verified afterwards.** The v14 migration was run on copies of the real smoke-test databases: `end-to-end` (v8, 5 checkpoints,
 129 records) and `test11-steerTurn` (v12, 946 records) both reached 14 with the same row counts, no foreign-key violations and
 `integrity_check` ok.
+
+---
+
+## Default busy delivery is now `steer` (2026-10-05)
+
+**Done (at the user's request).** A prompt sent while a turn runs now defaults to `delivery: "steer"` instead of `"queue"`
+(`src/agent-session.ts`, `config.busyDelivery ?? "steer"`; the doc comment and `CONSUMER_GUIDE.md` say so, and how to keep
+the old behaviour with `busyDelivery: "queue"`). This is a behaviour change for every consumer that sends while a turn is
+running: the message is delivered at the next tool boundary (the running turn ends `cancelled`, `endedBy: "steer"`) instead of
+waiting. It belongs in the release note next to the v13 and v14 one-way migrations.
+
+**Tested.** `test/steering.test.ts`: "the default is steer" (replaces "the default is queue") and "busyDelivery: queue waits for
+the turn to end". Full `bun test` run after the change: see below.
+
+**Intermittent failures.** Seen once during this run, not reproduced on re-run: `session-manager-load` "loads the recorded
+provider thread and continues publishing checkpoints" failed with `CheckpointValidationError: internalSessionActivatedAt must
+not be after updatedAt` (a timestamp-ordering check in `persistence/checkpoint.ts`, reached from `runSetConfig`). That makes
+three intermittent failures logged (with the two in the final state above); none has a known cause.
+
+A second full run failed once in `session-manager-restoration` ("installs explicit replacement generations for deleted
+artifacts"); that file and `session-manager-load` then passed three times in a row. Both sit in the same family as the earlier
+`session-manager-restoration` failure, and none of these tests sends a prompt while a turn runs, so the new default does not
+reach them. Not investigated further.

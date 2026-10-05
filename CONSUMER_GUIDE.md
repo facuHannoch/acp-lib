@@ -987,8 +987,8 @@ SQLite file and one audit destination; different storage locations need a second
 
 A prompt sent while a turn runs waits. How it waits is its **delivery**:
 
-- `"queue"` (the default): it runs after the running turn ends, as its own turn.
-- `"steer"`: it is delivered at the next tool boundary. The library cancels the running turn once a
+- `"queue"`: it runs after the running turn ends, as its own turn.
+- `"steer"` (the default): it is delivered at the next tool boundary. The library cancels the running turn once a
   tool call has settled and nothing else is running, then sends the message, so the agent gets the
   information without losing the work it has done. If the turn ends first, the message is sent as the
   next prompt, so a message is never delivered later than the end of the turn. A text-only turn is not
@@ -1007,13 +1007,13 @@ const answer = await note;  // the turn that carried the message
 `prompt()` and `promptFrom()` return a handle: the promise of that prompt's result, plus `id` and
 `withdraw()`. A prompt that does not have to wait runs immediately and `delivery` has no effect.
 
-Set the default for prompts that do not say, per Agent or per conversation. It is `"queue"` unless you
-change it:
+Set the default for prompts that do not say, per Agent or per conversation. It is `"steer"` unless you
+change it (before this was `"queue"`; set `busyDelivery: "queue"` to keep the old behaviour):
 
 ```ts
 const agent = await Agent.open({
   // ...
-  conversationDefaults: { busyDelivery: "steer" },
+  conversationDefaults: { busyDelivery: "queue" },
 });
 ```
 

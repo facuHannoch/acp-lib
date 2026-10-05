@@ -91,8 +91,8 @@ describe("steering: delivery at a tool boundary", () => {
     expect(ofKind(events, "message_delivered")[0]).toMatchObject({ ids: [queued.id], via: "turn_end" });
   });
 
-  test("busyDelivery sets the default for prompts that do not say", async () => {
-    const { session } = await open({ busyDelivery: "steer" });
+  test("the default is steer: a prompt sent while a turn runs is delivered at the next tool boundary", async () => {
+    const { session } = await open();
     let steered!: ReturnType<AgentSession["prompt"]>;
     const first = promptWithToolHook(session, SEQUENTIAL, () => {
       steered = session.prompt(LENGTHS);
@@ -101,8 +101,8 @@ describe("steering: delivery at a tool boundary", () => {
     await steered;
   });
 
-  test("the default is queue", async () => {
-    const { session } = await open();
+  test("busyDelivery: queue waits for the turn to end", async () => {
+    const { session } = await open({ busyDelivery: "queue" });
     let waiting!: ReturnType<AgentSession["prompt"]>;
     const first = promptWithToolHook(session, SEQUENTIAL, () => {
       waiting = session.prompt(LENGTHS);

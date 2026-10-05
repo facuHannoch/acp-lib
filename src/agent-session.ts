@@ -328,7 +328,7 @@ export interface AgentSessionConfig {
   defaultPermission?: "approve" | "cancel";
   /**
    * How a prompt sent while a turn is running waits when the prompt does not say. `queue` runs it after
-   * the turn ends; `steer` delivers it at the next tool boundary. Default `queue`.
+   * the turn ends; `steer` delivers it at the next tool boundary. Default `steer`.
    */
   busyDelivery?: PromptDelivery;
   clientInfo?: { name: string; title?: string; version?: string };
@@ -560,7 +560,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         cancelProviderTurn: () => this.controller.interrupt(),
         emitState: () => this.emitStateIfChanged(),
       },
-      config.busyDelivery ?? "queue",
+      config.busyDelivery ?? "steer",
     );
     this._participants = (config.participants ?? []).map((participant) => Object.freeze({ ...participant }));
     this._adapterId = config.adapterId;
