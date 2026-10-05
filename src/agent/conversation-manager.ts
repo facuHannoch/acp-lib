@@ -53,7 +53,11 @@ import {
 import type {
   AgentConversationManager,
   AgentConversationRuntimeDefaults,
+  ClearTranscriptOptions,
+  ClearTranscriptResult,
   CreateAgentConversationConfig,
+  DeleteConversationOptions,
+  DeleteConversationResult,
   OpenAgentConversationConfig,
   OpenOwnedAgentConversationResult,
 } from "./config.ts";
@@ -63,6 +67,7 @@ import { ConversationSettingsResolver } from "./persistence-policy/index.ts";
 import {
   RECAP_INSTRUCTION,
   RECAP_ORIGIN,
+  deleteProviderSession,
   listProviderSessions,
   normalizeAdoption,
   selectTail,
@@ -493,21 +498,26 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     return await this.agent.persistence.conversations.list(options);
   }
 
+  /** How to start a harness for a call that has no conversation: the conversations' launcher, env and cwd defaults. */
+  private providerClient() {
+    const defaults = this.settings.defaults;
+    return {
+      ...(defaults.launcher ? { launcher: defaults.launcher } : {}),
+      ...(defaults.execPrefix ? { execPrefix: defaults.execPrefix } : {}),
+      ...(defaults.env ? { env: defaults.env } : {}),
+      ...(defaults.cwd ? { cwd: defaults.cwd } : {}),
+      ...(defaults.clientInfo ? { clientInfo: defaults.clientInfo } : {}),
+      ...(defaults.logger ? { logger: defaults.logger } : {}),
+    };
+  }
+
   async listProviderSessions(options: ListProviderSessionsOptions = {}): Promise<readonly ProviderSessionSummary[]> {
     const adapterId = this.resolveAdapterId(options.adapterId);
-    const defaults = this.settings.defaults;
     const owners = this.agent.persistence.providerSessions.conversationsUsing;
     return await listProviderSessions({
       adapterId,
       adapter: this.agent.adapters.require(adapterId),
-      client: {
-        ...(defaults.launcher ? { launcher: defaults.launcher } : {}),
-        ...(defaults.execPrefix ? { execPrefix: defaults.execPrefix } : {}),
-        ...(defaults.env ? { env: defaults.env } : {}),
-        ...(defaults.cwd ? { cwd: defaults.cwd } : {}),
-        ...(defaults.clientInfo ? { clientInfo: defaults.clientInfo } : {}),
-        ...(defaults.logger ? { logger: defaults.logger } : {}),
-      },
+      client: this.providerClient(),
       owners: async (providerSessionId) =>
         owners ? await owners.call(this.agent.persistence.providerSessions, providerSessionId) : [],
     }, options);
@@ -520,11 +530,54 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     return await this.agent.persistence.conversations.listPreviews(options);
   }
 
-  async delete(id: AgentConversationId, deletedAt?: string): Promise<void> {
+  async delete(
+    id: AgentConversationId,
+    options: string | DeleteConversationOptions = {},
+  ): Promise<DeleteConversationResult> {
+    const { deletedAt, providerSession = "no", checkpoints = false }: DeleteConversationOptions =
+      typeof options === "string" ? { deletedAt: options } : options;
+    // Read what the provider side needs before the conversation is gone from view.
+    const active = providerSession === "best-effort"
+      ? await this.agent.persistence.providerSessions.active(id)
+      : null;
     const live = this.live.get(id);
     if (live) await live.stop();
     this.live.delete(id);
+    const checkpointsDeleted = checkpoints
+      ? (await this.agent.persistence.recoveryCheckpoints?.deleteForConversation?.(id)) ?? 0
+      : 0;
     await this.agent.persistence.conversations.delete(id, deletedAt);
+    let providerDeleted: boolean | "unsupported" = false;
+    if (active) {
+      providerDeleted = await deleteProviderSession({
+        adapterId: active.adapterId,
+        adapter: this.agent.adapters.require(active.adapterId),
+        client: this.providerClient(),
+      }, active.internalSessionId);
+    }
+    return Object.freeze({ providerDeleted, checkpointsDeleted });
+  }
+
+  async clearTranscript(
+    id: AgentConversationId,
+    options: ClearTranscriptOptions = {},
+  ): Promise<ClearTranscriptResult> {
+    const summary = await this.agent.persistence.conversations.get(id);
+    if (!summary || summary.deletedAt) throw new Error(`unknown active conversation: ${id}`);
+    const live = this.live.get(id);
+    if (live?.isBusy) {
+      throw new Error(`conversation ${id} is busy; wait for its running operation before clearing its transcript`);
+    }
+    if (!this.agent.persistence.records.deleteForConversation) {
+      throw new Error("this persistence backend cannot clear a transcript");
+    }
+    return await this.agent.persistence.transaction(async (persistence) => {
+      const recordsDeleted = await persistence.records.deleteForConversation!(id);
+      const checkpointsDeleted = options.checkpoints
+        ? (await persistence.recoveryCheckpoints?.deleteForConversation?.(id)) ?? 0
+        : 0;
+      return Object.freeze({ recordsDeleted, checkpointsDeleted });
+    });
   }
 
   async appendAssistantMessage(

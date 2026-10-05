@@ -42,4 +42,6 @@ export interface ConversationRecoveryCheckpointRepository {
     options?: ConversationRecoveryCheckpointListOptions,
   ): Promise<readonly ConversationRecoveryCheckpoint[]>;
   publish(input: PublishConversationRecoveryCheckpointInput): Promise<ConversationRecoveryCheckpoint>;
+  /** Delete every checkpoint of a conversation. Returns how many. Optional. */
+  deleteForConversation?(agentConversationId: AgentConversationId): Promise<number>;
 }

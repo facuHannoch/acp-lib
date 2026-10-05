@@ -1082,6 +1082,33 @@ tell an adopted conversation by `adopted: true` in its context and choose what i
 - The first prompt after an adoption runs on a thread whose usage counters did not start at zero, so its metering is
   attributable only after a baseline.
 
+## Clear a transcript, delete a conversation
+
+```ts
+// Remove what is stored, keep the conversation (its title, participants and provider session).
+await agent.conversations.clearTranscript(id);                    // { recordsDeleted, checkpointsDeleted: 0 }
+await agent.conversations.clearTranscript(id, { checkpoints: true }); // also its recovery checkpoints
+
+// Delete the conversation; optionally ask the provider to delete its session too.
+const { providerDeleted } = await agent.conversations.delete(id, { providerSession: "best-effort", checkpoints: true });
+// providerDeleted: true | "unsupported" | false
+```
+
+`clearTranscript` physically deletes every stored record of the conversation (messages, tool calls, and the rest). It
+refuses a conversation that is running an operation. Sequence numbers are not reused, so new records continue after the
+deleted ones. `delete` is a soft delete as before (the records stay, the conversation stops being listed, and a provider
+session it owned can be adopted again); a string second argument is still read as the deletion time.
+
+Both are **local** deletions, not forgetting:
+
+- The provider's own session is untouched unless you ask `delete` for `providerSession: "best-effort"`. That sends
+  `session/delete`, which not every agent offers: Codex advertises it, OpenCode does not (`"unsupported"`). A failure is
+  reported as `false` and does not undo the local deletion.
+- Recovery checkpoints summarize the records being deleted. They are kept unless `checkpoints: true`, so by default the Agent's
+  other conversations can still receive a summary of cleared content.
+- Audit entries already written, content already delivered into other conversations, and identity state derived from the
+  records are not removed. No event is published when records are deleted, so a UI has to refresh.
+
 ## Observe state, context, and usage
 
 Read a snapshot first, then subscribe to changes:

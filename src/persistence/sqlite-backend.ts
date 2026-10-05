@@ -629,6 +629,19 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
     return Object.freeze(appended);
   }
 
+  async deleteForConversation(agentConversationId: AgentConversationId): Promise<number> {
+    return await this.runWrite(() => {
+      requireConversation(this.database, agentConversationId);
+      // Counted first: the changes count of a DELETE also includes the detail rows and full-text entries
+      // that go with each record (ON DELETE CASCADE and triggers), which are not records.
+      const count = this.database.query<{ n: number }, [string]>(
+        "SELECT COUNT(*) AS n FROM conversation_records WHERE agent_conversation_id = ?",
+      ).get(agentConversationId)?.n ?? 0;
+      this.database.query("DELETE FROM conversation_records WHERE agent_conversation_id = ?").run(agentConversationId);
+      return Number(count);
+    });
+  }
+
   async get(recordId: string): Promise<ConversationRecord | null> {
     const row = this.database.query<ConversationRecordRow, [string]>(
       "SELECT * FROM conversation_records WHERE record_id = ?",

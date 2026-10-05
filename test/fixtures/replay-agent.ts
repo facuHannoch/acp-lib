@@ -3,6 +3,8 @@
 //
 //   REPLAY_AGENT_FILE=/path/sessions.json   { "<sessionId>": [ <raw session/update objects, replayed in order> ] }
 //   REPLAY_AGENT_NO_LOAD=1                  do not advertise loadSession
+//   REPLAY_AGENT_NO_DELETE=1                do not advertise session/delete
+//   REPLAY_AGENT_FAIL_DELETE=1              fail session/delete
 //   REPLAY_AGENT_NO_LIST=1                  do not advertise session/list
 //   REPLAY_AGENT_PAGE_SIZE=N                list sessions N at a time, with a cursor
 //   REPLAY_AGENT_FAIL_RECAP=1               fail the prompt that asks the session to summarize itself
@@ -10,7 +12,7 @@
 // A session/load of an id that is not in the file fails (-32001, "session not found"), like a harness whose
 // session was deleted. Prompts after a load or a new session answer with a fixed reply.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const sessions: Record<string, unknown[]> = process.env.REPLAY_AGENT_FILE
   ? JSON.parse(readFileSync(process.env.REPLAY_AGENT_FILE, "utf8"))
@@ -18,6 +20,8 @@ const sessions: Record<string, unknown[]> = process.env.REPLAY_AGENT_FILE
 const noLoad = process.env.REPLAY_AGENT_NO_LOAD === "1";
 const failRecap = process.env.REPLAY_AGENT_FAIL_RECAP === "1";
 const noList = process.env.REPLAY_AGENT_NO_LIST === "1";
+const noDelete = process.env.REPLAY_AGENT_NO_DELETE === "1";
+const failDelete = process.env.REPLAY_AGENT_FAIL_DELETE === "1";
 const pageSize = Number(process.env.REPLAY_AGENT_PAGE_SIZE ?? 0);
 let counter = 1;
 let buffer = "";
@@ -48,7 +52,7 @@ function handle(message: any): void {
             loadSession: !noLoad,
             promptCapabilities: {},
             mcpCapabilities: {},
-            sessionCapabilities: noList ? {} : { list: {} },
+            sessionCapabilities: { ...(noList ? {} : { list: {} }), ...(noDelete ? {} : { delete: {} }) },
           },
           agentInfo: { name: "replay-agent", title: "Replay Agent" },
         },
@@ -68,6 +72,18 @@ function handle(message: any): void {
         send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
       }
       send({ jsonrpc: "2.0", id: message.id, result: { configOptions: [] } });
+      return;
+    }
+    case "session/delete": {
+      const sessionId = String(message.params?.sessionId);
+      if (failDelete || !(sessionId in sessions)) {
+        send({ jsonrpc: "2.0", id: message.id, error: { code: -32001, message: `cannot delete ${sessionId}` } });
+        return;
+      }
+      delete sessions[sessionId];
+      // Another process (the next listing) must see it gone, so the file is the source of truth.
+      if (process.env.REPLAY_AGENT_FILE) writeFileSync(process.env.REPLAY_AGENT_FILE, JSON.stringify(sessions));
+      send({ jsonrpc: "2.0", id: message.id, result: {} });
       return;
     }
     case "session/list": {

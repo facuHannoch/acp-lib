@@ -394,3 +394,55 @@ the summary; the defaults follow the Agent's identity; the Agent's other convers
 - The guide section is new text with no automated check.
 
 **Regressions.** None.
+
+---
+
+## Phase 6: clearing a transcript and deleting a conversation
+
+**Done.**
+- `agent.conversations.clearTranscript(id, { checkpoints? })` -> `{ recordsDeleted, checkpointsDeleted }`: physically
+  deletes every record of the conversation (the detail rows and full-text entries cascade), keeps the conversation row,
+  participants and provider sessions, and does not reuse sequence numbers. Refuses an unknown or deleted conversation and a
+  live conversation that is busy. New optional persistence methods
+  `ConversationRecordPersistence.deleteForConversation?` and `ConversationRecoveryCheckpointRepository.deleteForConversation?`
+  (implemented for SQLite; counted before deleting, because SQLite's `changes` also counts cascaded rows).
+- `agent.conversations.delete(id, options?)` now takes `string | { deletedAt?, providerSession?: "best-effort" | "no",
+  checkpoints? }` and returns `{ providerDeleted: true | false | "unsupported", checkpointsDeleted }` (it returned `void`;
+  a string second argument still means the deletion time). Provider deletion is `AcpClient.deleteSession`
+  (`session/delete`, capability checked; transport method added) run through `deleteProviderSession`
+  (`src/agent/adoption/provider-session-delete.ts`): starts the harness, deletes, stops, and reports `true`,
+  `"unsupported"` or `false`. The local soft delete happens first; a provider failure never undoes it.
+- Types exported (`DeleteConversationOptions`, `DeleteConversationResult`, `ClearTranscriptOptions`,
+  `ClearTranscriptResult`); guide section added.
+
+**Resolved from the spec's open questions.** What `clearTranscript` does to derived checkpoints: they are kept unless
+`checkpoints: true` (and `delete` has the same option); the guide says what that implies for what other conversations can
+still receive.
+
+**Deviation from the spec.** The spec put both methods on the conversation (`conversation.clearTranscript()`,
+`conversation.delete()`). They are on `agent.conversations` and take an id, because the conversation may not be live (a
+stopped or never-opened conversation has no object) and the existing `delete` already lived there.
+
+**Tested.** `test/agent-conversation-removal.test.ts`, 10 tests (replay agent extended with `session/delete`, an option to
+not advertise it and one to make it fail; the steering agent for the busy case): records and detail rows and full-text
+entries are gone while the conversation, participants and provider session stay, and a later prompt's sequences continue
+past the deleted ones; another conversation is untouched; checkpoints deleted only when asked (a real checkpoint is built
+through the internal-inference repository); refusals (unknown, busy, deleted); the legacy string argument; best-effort
+deletion removes the session at the provider (checked in the provider's own list); `"unsupported"` and failure results leave
+the session in place; `"no"` and the default leave it and the session can be adopted again; a conversation with no recorded
+provider session; checkpoints deleted with the conversation. Whole suite: `bun test` 965 pass / 0 fail (955 before);
+`tsc` clean. No-token check of real capabilities: Codex advertises `session/delete`, OpenCode does not.
+
+**Gaps.**
+- `session/delete` was not run against a real harness (destructive); only the fixture exercises it. Codex advertises it.
+- Everything about "forgetting" is documented, not solved: audit entries, identity state derived from records
+  (`identity_memories`, snapshots), other conversations' provider sessions that already received the content, and the
+  provider's own history stay.
+- No event is published for a deletion, so the committed-record bus and any subscriber's view go stale.
+- A live, idle conversation keeps its in-memory activity state after `clearTranscript`; only stored records go.
+- Clearing deletes every record kind, including error records and metering references; there is no way to clear only
+  messages.
+- A backend without `deleteForConversation` refuses `clearTranscript` with an error; there is no test for a custom backend.
+
+**Regressions.** None. The return type of `delete` changed from `void` to an object, which source-compatible callers do
+not notice but a consumer that implements `AgentConversationManager` itself would have to follow.

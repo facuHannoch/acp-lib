@@ -75,6 +75,10 @@ export type {
 export type {
   AgentConfig,
   AgentConversationManager,
+  ClearTranscriptOptions,
+  ClearTranscriptResult,
+  DeleteConversationOptions,
+  DeleteConversationResult,
   AgentConversationRuntimeDefaults,
   AgentPersistenceConfig,
   CreateAgentConversationConfig,

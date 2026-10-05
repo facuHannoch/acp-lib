@@ -49,6 +49,19 @@ implements ConversationRecoveryCheckpointRepository {
     return Number(row?.sequence ?? 0);
   }
 
+  async deleteForConversation(agentConversationId: AgentConversationId): Promise<number> {
+    return await this.runWrite(() => {
+      const count = this.database.query<{ n: number }, [string]>(
+        "SELECT COUNT(*) AS n FROM conversation_recovery_checkpoints WHERE agent_conversation_id = ?",
+      ).get(agentConversationId)?.n ?? 0;
+      // One statement: the checkpoints reference each other (previous_checkpoint_id), and a single DELETE
+      // checks that reference after all of them are gone.
+      this.database.query("DELETE FROM conversation_recovery_checkpoints WHERE agent_conversation_id = ?")
+        .run(agentConversationId);
+      return Number(count);
+    });
+  }
+
   async latest(agentConversationId: AgentConversationId): Promise<ConversationRecoveryCheckpoint | null> {
     const row = this.database.query<CheckpointRow, [string]>(
       `SELECT * FROM conversation_recovery_checkpoints

@@ -518,6 +518,11 @@ export interface ConversationRecordPersistence {
     agentConversationId: AgentConversationId,
     options?: RecordListOptions,
   ): Promise<ConversationRecordPage>;
+  /**
+   * Physically delete every record of a conversation, keeping the conversation itself. Returns how many were
+   * deleted. Sequence numbers are not reused. Optional: an append-only backend cannot clear a transcript.
+   */
+  deleteForConversation?(agentConversationId: AgentConversationId): Promise<number>;
   /** Optional efficient newest-first history API. Use list(afterSequence) for live catch-up. */
   listRecent?(
     agentConversationId: AgentConversationId,

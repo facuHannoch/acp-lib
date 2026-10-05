@@ -189,6 +189,9 @@ export class AcpTransport {
   listSessions(params: schema.ListSessionsRequest): Promise<schema.ListSessionsResponse> {
     return this.conn().listSessions(params);
   }
+  deleteSession(params: schema.DeleteSessionRequest): Promise<schema.DeleteSessionResponse> {
+    return this.conn().deleteSession(params);
+  }
   prompt(params: schema.PromptRequest): Promise<schema.PromptResponse> {
     return this.conn().prompt(params);
   }

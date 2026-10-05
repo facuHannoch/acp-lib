@@ -507,6 +507,19 @@ export class AcpClient implements AgentClient {
     return { sessionId, resumed: true };
   }
 
+  /**
+   * Ask the agent to delete a session it holds (`session/delete`), when advertised. This is the provider's own
+   * deletion: it does not touch any local record, and not every provider offers it.
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    const transport = this.requireTransport();
+    if (!this.capabilities.agent.sessionCapabilities.delete) {
+      throw new Error("agent does not advertise session/delete (sessionCapabilities.delete)");
+    }
+    await transport.deleteSession({ sessionId } as schema.DeleteSessionRequest);
+    this.log.info("session_deleted", { sessionId });
+  }
+
   /** Fork an existing session and switch this client to the newly-created fork. */
   async forkSession(
     sessionId: string,

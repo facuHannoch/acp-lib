@@ -110,6 +110,34 @@ export interface OpenAgentConversationConfig {
   readonly onRecoveryProgress?: (event: ConversationRecoveryProgress) => void;
 }
 
+export interface DeleteConversationOptions {
+  /** When it was deleted. Default now. */
+  readonly deletedAt?: string;
+  /**
+   * `"best-effort"` also asks the provider to delete the conversation's active session (`session/delete`);
+   * `"no"` (the default) leaves it alone. Not every provider offers it; the result says what happened.
+   */
+  readonly providerSession?: "best-effort" | "no";
+  /** Also delete the conversation's recovery checkpoints. */
+  readonly checkpoints?: boolean;
+}
+
+export interface DeleteConversationResult {
+  /** `true` if the provider deleted its session, `"unsupported"` if it cannot, `false` if not asked or it failed. */
+  readonly providerDeleted: boolean | "unsupported";
+  readonly checkpointsDeleted: number;
+}
+
+export interface ClearTranscriptOptions {
+  /** Also delete the conversation's recovery checkpoints, which summarize the records being deleted. */
+  readonly checkpoints?: boolean;
+}
+
+export interface ClearTranscriptResult {
+  readonly recordsDeleted: number;
+  readonly checkpointsDeleted: number;
+}
+
 export interface OpenOwnedAgentConversationResult {
   readonly conversation: AgentConversation;
   readonly providerSession: "already_open" | "loaded" | "new" | "recovered";
@@ -130,7 +158,18 @@ export interface AgentConversationManager {
    */
   listProviderSessions(options?: ListProviderSessionsOptions): Promise<readonly ProviderSessionSummary[]>;
   listPreviews(options?: ConversationListOptions): Promise<ConversationPreviewPage>;
-  delete(id: AgentConversationId, deletedAt?: string): Promise<void>;
+  /**
+   * Delete a conversation (a soft delete: the records stay, and the conversation stops being listed and frees
+   * its provider session). A string is the deletion time, as before. Returns what else was done.
+   */
+  delete(id: AgentConversationId, options?: string | DeleteConversationOptions): Promise<DeleteConversationResult>;
+  /**
+   * Physically delete the stored records of a conversation (messages, tool calls, and the rest), keeping the
+   * conversation, its participants and provider session. This is a local deletion, not forgetting: audit
+   * entries already written, checkpoint summaries delivered to other conversations, and the provider's own
+   * session are not touched.
+   */
+  clearTranscript(id: AgentConversationId, options?: ClearTranscriptOptions): Promise<ClearTranscriptResult>;
   /**
    * Append a completed assistant message the provider did not produce, without a turn or a
    * live provider session. It is published on `agent.events`, and the conversation's next
