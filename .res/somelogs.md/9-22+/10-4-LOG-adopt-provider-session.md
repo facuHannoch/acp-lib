@@ -105,3 +105,25 @@ it for the manager. `agent.ts`: 1342 to 1065 lines. Unused imports pruned. No be
 carried per conversation) will narrow.
 
 **Regressions.** None.
+
+---
+
+## Phase 0, step 4: move `DefaultAgentConversationManager` out of `agent.ts`
+
+**Done.** The conversation manager class (create, open, start, recovery, error recording, metering locks, about 590
+lines) moved unchanged to `src/agent/conversation-manager.ts` (658 lines with imports). Two dynamic type imports inside
+it (`import("./internal-inference/...")`) had their paths fixed. `src/agent.ts` is now the `Agent` class and its
+re-exports only: 1637 lines at the start of Phase 0, 427 now. No behaviour change.
+
+**Tested.** `tsc --noEmit` and `--noUnusedLocals` clean; `bun test` 897 pass / 0 fail.
+
+**Gaps and deviations.**
+- `conversation-manager.ts` is 658 lines, above the 400-line budget in the plan, and it still holds create/open/start,
+  error recording, provider-session persistence and the internal-inference metering locks together. The plan's finer
+  split (orchestration / start / errors) was not done: the class shares private state (`live`, `openings`, the metering
+  locks) and splitting it would mean passing explicit collaborators, which is a design change and not a move.
+  Decision: split only the parts the adoption work touches (create/start get thin hooks; adoption logic lives in
+  `src/agent/adoption/`), and leave the rest. Revisit if the file keeps growing.
+- As with the previous moves, only the typecheck and the existing suite cover it.
+
+**Regressions.** None.
