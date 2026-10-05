@@ -720,7 +720,9 @@ export class AcpClient implements AgentClient {
       } as schema.PromptRequest);
       this.log.debug("prompt_response", { response: res });
 
-      const cancelled = this.active.cancelled;
+      // What the provider reported, not what we asked for: a cancel can lose the race with a normal
+      // ending, and the turn is then complete, not cancelled.
+      const cancelled = res.stopReason === "cancelled";
       const text = this.active.response.text;
       const messages = this.active.response.snapshot();
       // ACP usage is optional and experimental: validate rather than cast. An

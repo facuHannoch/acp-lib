@@ -920,6 +920,105 @@ deprecated `result.text` property is only a compatibility projection and inserts
 line between messages. `formatResponseMessages()` makes any deliberate flattening policy
 consumer-owned.
 
+## Send a message while a turn is running
+
+A prompt sent while a turn runs waits. How it waits is its **delivery**:
+
+- `"queue"` (the default): it runs after the running turn ends, as its own turn.
+- `"steer"`: it is delivered at the next tool boundary. The library cancels the running turn once a
+  tool call has settled and nothing else is running, then sends the message, so the agent gets the
+  information without losing the work it has done. If the turn ends first, the message is sent as the
+  next prompt, so a message is never delivered later than the end of the turn. A text-only turn is not
+  cut short: use `interrupt()` for that.
+
+```ts
+const turn = conversation.prompt("Refactor the parser.");
+
+// A second message, sent while the first turn is running.
+const note = conversation.prompt({ text: "Also keep the public API unchanged.", delivery: "steer" });
+
+const first = await turn;   // stopReason "cancelled", endedBy "steer", followedBy [note.id]
+const answer = await note;  // the turn that carried the message
+```
+
+`prompt()` and `promptFrom()` return a handle: the promise of that prompt's result, plus `id` and
+`withdraw()`. A prompt that does not have to wait runs immediately and `delivery` has no effect.
+
+Set the default for prompts that do not say, per Agent or per conversation. It is `"queue"` unless you
+change it:
+
+```ts
+const agent = await Agent.open({
+  // ...
+  conversationDefaults: { busyDelivery: "steer" },
+});
+```
+
+### What waits, and in what order
+
+The conversation keeps one FIFO. A `steer` message is appended like any other, so a `queue` message sent
+earlier keeps its place ahead of it. At a boundary the library only delivers a message if the head of the
+queue is a `steer` message.
+
+**Consecutive `steer` messages at the head are sent as one prompt**, so the agent sees the whole
+correction at once:
+
+```text
+> working...
+Also, remember x
+and y
+and z
+no, actually forget about y and z      <- the agent receives all four together
+```
+
+The text is the messages in order, separated by a blank line; the library adds nothing, not even sender
+names. It is one operation with one metering record, and every message's promise resolves with the same
+result. Each original message is still stored as its own user message, with its own `participantId` and
+`consumerMetadata`, so a consumer can render or filter them from its own metadata. Each message's
+streaming handlers receive the events of the shared turn.
+
+```ts
+conversation.pendingMessages;           // what waits, in the order it will be sent
+conversation.withdraw(note.id);         // take a message back; also note.withdraw()
+conversation.interrupt();               // cancel now; pending steer messages are then sent
+conversation.interrupt({ clearQueue: true });   // cancel and drop what waits
+```
+
+A withdrawn or dropped message settles as a cancelled prompt (`stopReason: "cancelled"`, `usage: null`,
+`metering: null`).
+
+### Events and results
+
+Messages that had to wait emit events on the conversation event stream:
+
+| Event | Meaning |
+|---|---|
+| `message_pending { id, delivery }` | Accepted and waiting. `delivery` is the mode in effect: `"queue"` while the running operation is not a consumer prompt turn (a handoff, a configuration change). |
+| `message_delivered { ids, via, turnId }` | Sent to the agent. `ids` lists every message in the prompt; `via` is `"tool_boundary"`, `"interrupt"` or `"turn_end"`. |
+| `message_withdrawn { id }` | Removed before delivery. |
+
+A turn cancelled by steering or by `interrupt()` carries `endedBy: "steer" | "interrupt"` and
+`followedBy` (the messages sent after it). They are set only when the provider really stopped the turn:
+if the turn finished by itself before the cancel took effect, neither is present.
+
+### Limits to know about
+
+Cancelling is the only control ACP offers during a turn, so what a harness does with the cancelled turn
+is its own. Measured with the `test11-steerTurn` smoke test:
+
+- Work the agent has completed is kept: the follow-up continues the task rather than restarting it.
+- Codex: a shell command already running keeps running after the cancel, and text the agent was
+  streaming when cancelled is dropped from its context. OpenCode aborts the command.
+- Usage reported over ACP for a cancelled turn is unreliable (OpenCode reports 0 over ACP for a turn
+  whose inference had completed). Only a certified metering integration sees the real spend, so with
+  plain ACP telemetry a steered conversation can under-count the cancelled turn.
+- Codex reports usage in a way the cumulative-counter check can reject: the turn after a cancel was
+  recorded with status `counter_reset` and no attributed tokens in testing. This looks like a property of
+  Codex usage reporting rather than of steering (see the `s9` control in `test11-steerTurn`).
+- `status` and the stored message status follow what the provider reported: a turn the provider ended
+  normally despite a late cancel is `completed`, and `endedBy` is absent.
+- Pending messages live in memory only. They are lost if the process stops, like queued prompts.
+
 ## Observe state, context, and usage
 
 Read a snapshot first, then subscribe to changes:

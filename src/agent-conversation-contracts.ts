@@ -1,4 +1,5 @@
 import type { AgentMode } from "./controller.ts";
+import type { MessageEvent, PendingMessageId, PromptEndedBy } from "./steering/contracts.ts";
 import type { Adapter } from "./adapters.ts";
 import type { ContextWindowStatus, ProviderCostSnapshot } from "./metering/context.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
@@ -204,6 +205,7 @@ export type AgentSessionEvent =
   | { kind: "turn_started"; turnId: string }
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
   | { kind: "turn_failed"; turnId: string; error: string }
+  | MessageEvent
   | { kind: "presentation_recorded"; item: TranscriptPresentationItem }
   | { kind: "internal_session_commands_changed"; commands: readonly InternalSessionCommand[] }
   | { kind: "handoff_started"; handoffId: string; fromInternalSessionId: string | null }
@@ -252,6 +254,13 @@ export interface AgentSessionPromptResult extends PromptResult {
   readonly operationId: string;
   /** Null only when a queued prompt was cancelled before provider dispatch. */
   readonly metering: OperationMeteringRecord | null;
+  /**
+   * Why this turn was cancelled, when steering or `interrupt()` cancelled it and the provider really
+   * stopped it (`stopReason: "cancelled"`). Absent when the turn ended on its own.
+   */
+  readonly endedBy?: PromptEndedBy;
+  /** The messages sent after this turn was cancelled by steering or `interrupt()`, in order. */
+  readonly followedBy?: readonly PendingMessageId[];
 }
 
 /** Ordered envelope delivered to every current AgentSession subscriber. */

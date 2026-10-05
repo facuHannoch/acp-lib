@@ -1,3 +1,5 @@
 chats/
 data/
-**/*.sqlite*
+audit/
+data-before/
+**/*.sqlite*test11-steerTurn/results.json

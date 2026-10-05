@@ -254,6 +254,16 @@ export type { TerminalHandlers } from "./transport/acp-transport.ts";
 
 export { extractChunkText, extractResponseChunk, toActivityEvent } from "./updates.ts";
 export { formatResponseMessages } from "./response.ts";
+export type {
+  MessageDeliveryVia,
+  MessageEvent,
+  PendingMessage,
+  PendingMessageId,
+  PromptDelivery,
+  PromptEndedBy,
+  PromptHandle,
+  PromptPart,
+} from "./steering/index.ts";
 
 export {
   ActivityAggregator,

@@ -364,6 +364,14 @@ class ClientHandler implements acp.Client {
     this.opts.onUpdate?.(params);
   }
 
+  /**
+   * Extension notifications (an agent's own `_vendor/...` updates, such as codex-acp's
+   * `_auth/status_update`) are not part of what this client models. ACP requires unknown
+   * notifications to be ignored; without this handler the SDK answers "Method not found" and logs an
+   * error every time one arrives.
+   */
+  async extNotification(_method: string, _params: Record<string, unknown>): Promise<void> {}
+
   async requestPermission(
     params: schema.RequestPermissionRequest,
   ): Promise<schema.RequestPermissionResponse> {

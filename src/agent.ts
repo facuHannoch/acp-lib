@@ -1186,7 +1186,16 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
   ) {}
 
   async beforePrompt(input: OwnedPromptInput) {
-    const participant = await this.resolveParticipant(input.participantId);
+    // A combined prompt records each original message as it was sent, under the same operation.
+    const parts = input.parts ?? [{
+      id: input.operationId,
+      text: input.text,
+      ...(input.participantId ? { participantId: input.participantId } : {}),
+      ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
+    }];
+    const participants: ParticipantRef[] = [];
+    for (const part of parts) participants.push(await this.resolveParticipant(part.participantId));
+    const participant = participants[0]!;
     const identity = await this.agent.identity.load({
       agentSessionId: this.agent.id,
       agentConversationId: this.conversationId,
@@ -1198,19 +1207,19 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
         ? { timeoutMs: this.settings.identityTimeoutMs }
         : {}),
     });
-    const records = await this.appendMessages([{
-      recordId: `${input.operationId}:user`,
+    const records = await this.appendMessages(parts.map((part, index): NewConversationRecord => ({
+      recordId: index === 0 ? `${input.operationId}:user` : `${input.operationId}:user:${index + 1}`,
       agentSessionId: this.agent.id,
       agentConversationId: this.conversationId,
       kind: "message",
       timestamp: new Date().toISOString(),
       role: "user",
-      participantId: participant.id,
-      ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
-      content: input.text,
+      participantId: participants[index]!.id,
+      ...(part.consumerMetadata !== undefined ? { consumerMetadata: part.consumerMetadata } : {}),
+      content: part.text,
       status: "completed",
       metadata: JSON.stringify({ operationId: input.operationId }),
-    }]);
+    })));
     await this.updateIdentity(records);
     // Read after the user record commits so a concurrent append falls in this turn or the next.
     const outOfBand = records[0]
@@ -1224,6 +1233,7 @@ class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle 
     return Object.freeze({
       providerText: composeProviderPrompt(input.text, identity.promptPreamble, outOfBand),
       participant,
+      participants: Object.freeze(participants),
       ...(identity.deliveryReceipt ? { identityDeliveryReceipt: identity.deliveryReceipt } : {}),
     });
   }

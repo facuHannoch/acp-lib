@@ -1,6 +1,6 @@
 # Steering: messages sent while a turn is running
 
-Status: proposed. Independent of `10-2-SPEC-adopt-provider-session.md` and the persistence
+Status: implemented (steer, interrupt, combining, withdraw, events, `busyDelivery`; default `queue`). Independent of `10-2-SPEC-adopt-provider-session.md` and the persistence
 resolver. Release sequencing is in section 9 of `10-2-PLAN-adopt-session-and-persistence-resolver.md`.
 Open multi-participant question: `10-2-TODO-steer-multi-participant.md`.
 
@@ -31,7 +31,8 @@ A message sent during a running turn is delivered **no later than the end of the
 earliest clean tool boundary**. In the worst case it behaves like today's queue. It never fails
 because the agent or model lacks a feature.
 
-The guarantee is "almost always at a boundary", not "always": see "Boundary race".
+Which tool boundary that is (the first call of a batch or the last) is the agent's choice and is not
+promised: see "Where the steer lands".
 
 ## Overview
 
@@ -138,10 +139,12 @@ The combined prompt is built so that nothing is lost and nothing is invented:
 - **Operation:** one `operationId` and one metering record. Every merged `prompt()` promise resolves
   with the same turn result.
 - **Streaming handlers:** every merged message's handlers receive the same events.
-- **Attribution:** kept as parts. The combined prompt carries the list of its original messages,
-  each with its id, `participantId`, `consumerMetadata` and text, and the records store that list.
-  Messages from different participants are merged too; the consumer decides what the metadata
-  means. A prompt made of a single message is recorded as it is today, with no parts list.
+- **Attribution:** kept per message. The combined prompt carries its original messages as parts, and
+  each is stored as its own user message record, in order, under the same operation: the first as
+  `<operationId>:user`, the others as `<operationId>:user:2`, `:user:3`, ... Each record has its own
+  `participantId` and `consumerMetadata`. Messages from different participants are combined too; the
+  consumer decides what the metadata means. A prompt made of a single message is recorded as it always
+  was.
 
 ### Example: a consumer-side inbox pattern
 
@@ -272,20 +275,14 @@ The streamed output of the first turn ends, and the follow-up streams as a new t
    `via: "turn_end"` and the turn gets no `endedBy`. `via` and `endedBy` record what actually
    happened, not what was intended.
 
-### Boundary race
+### Where the steer lands
 
-Between the tool completion notification and our cancel reaching the agent, the agent may already
-have started the next action. The window includes transport latency, since the cancel is not
-acknowledged. It is unlikely when a model step sits between tool calls, because an inference round
-trip takes seconds. It is possible when an agent runs several tool calls from one model response back
-to back, or announces tool calls late. Waiting until every announced call is terminal covers most of
-it. It cannot be eliminated, which is why the contract says "almost always".
+The boundary is the first tool call that settles while nothing else is running. Which one that is (the
+first of a batch, the last) is the agent's choice and is not controlled or promised: the point is that
+the agent receives the information without stopping altogether. The contract is only "no later than the
+end of the turn". A precise "after the batch" boundary was considered and dropped as arbitrary.
 
-### Cost of the cancel
-
-What is lost is the model's in-flight work after the boundary (its next reasoning or text), not
-completed actions. A following request may or may not hit the provider's prefix cache; this is
-provider-controlled and not guaranteed. The cost is tokens, not correctness.
+What the cancel leaves behind is the harness's business (see "Findings").
 
 ## Persistence
 
@@ -296,23 +293,48 @@ dispatched, as it is for queued prompts now. Internal prompts write it at dispat
 provider call); the user-prompt path is to be confirmed. The
 cancelled turn and the follow-up are two turns in the records.
 
-## Unknowns to resolve before implementation
+## Findings
 
-`session/cancel` always exists, but what a harness does with the partial turn after a cancel varies:
-it may drop the partial output, add its own "interrupted" marker, or report incomplete usage. These
-affect quality and bookkeeping, not whether the feature works. Open points:
+From `smoke-tests/test11-steerTurn` against Codex (`codex-acp` 2.1.1) and OpenCode (1.18.32). The
+library's own steering was prototyped from the outside for these runs; the smoke test now drives the
+real API.
 
-- **Metering.** Does a cancelled turn report usage at all, and is it complete? Is the sum of the
-  cancelled turn and the follow-up plausible? Does the metering state stay consistent (no double
-  counting, no missing delta)? OpenCode matters most, since it is the only one reporting
-  `billing_required`. Existing metering tests for `interrupt()` on an active turn
-  (`test/agent-session-metering-records.test.ts`) are a first data point.
-- **Checkpoint scheduling.** It counts completed assistant messages. Many cancelled turns may delay
-  the next checkpoint, and the partial output of a cancelled turn may or may not be stored.
-- **Presentation.** One user intent becomes two turns. Whether the library merges them for display
-  or leaves that to the consumer.
-- **Records.** Whether the cancelled turn's partial output is stored, and how identity and
-  checkpoints treat it.
+- **Cancel is fast and clean.** The cancelled response arrives in 15–70 ms on both.
+- **Completed work is kept.** After a cancel at a tool boundary, the follow-up continues the task
+  (it re-reads only what it had not read) and still remembers earlier tool results.
+- **Metering on OpenCode stays consistent.** With the certified plugin, the cancelled turn and the
+  follow-up turn are both metered and reconciled; together they cost about the same as the same task
+  run without interruption (50414 tokens against 50134), nothing lost or counted twice.
+- **Usage over ACP on a cancelled turn is unreliable.** OpenCode reports 0 over ACP for a turn whose
+  inference had completed (about 12k tokens; only the plugin sees it). Whether a cancelled turn
+  consumed tokens depends on whether the model's message finished before the abort: when it did not,
+  OpenCode itself records an aborted message with 0 tokens, and the plugin's record matches
+  `opencode export` exactly (checked for two cancelled turns and every follow-up turn). Codex reports a context-size number, and the turn after a
+  boundary cancel was marked `counter_reset` (4 of 4 runs), which attributes it no tokens. The stored
+  records show why: the library reads ACP usage as a cumulative counter and flags a reset when a
+  component decreases, but Codex's `inputTokens` moves with the prompt cache (4326, then 743), so the
+  check trips. This is a limit of how Codex usage is read, not something steering causes; the `s9`
+  control (two plain turns, no cancel) is there to confirm it. Once a turn is flagged, the next one
+  can be flagged too. With plain ACP telemetry,
+  steering can under-count the cancelled turn.
+- **A tool already running:** Codex keeps the process running after the cancel (the file appeared 22
+  seconds later, and the agent had already said it did not exist). OpenCode aborts it, and the agent
+  correctly reported that.
+- **Batched tool calls:** OpenCode announces the calls of a batch together. Codex announces them
+  lazily, one by one, and ran two more after the cancel. This does not matter for the design (see
+  "Where the steer lands") but it means tool calls can still finish after a steer.
+- **Partial text:** Codex drops text it was streaming when cancelled from the model's context.
+  OpenCode's result on this was inconclusive (the model used a tool in that run).
+- **A cancel can lose the race with a normal ending:** on OpenCode 2 of 5, then 4 of 5, cancels sent on
+  the first chunk of a one-word reply ended `end_turn`. `endedBy` is therefore reported only when the
+  provider really stopped the turn. This also exposed a bug, now fixed: the result status (and the
+  stored assistant message status) followed the interrupt request, so a turn the provider ended with
+  `end_turn` was reported `cancelled`. Both now follow the provider's stop reason
+  (`test/steering.test.ts`, "a cancel that loses the race with the end of the turn").
+- **With the implementation, on OpenCode:** a steer message at a tool boundary ends the turn with
+  `endedBy: "steer"`, two steer messages go out as one operation with one stored user message each,
+  `interrupt()` and `withdraw()` behave as specified, and the cancelled plus follow-up turns cost about
+  the same as an uninterrupted run (50017 against 49999 tokens).
 
 ## Settings
 
@@ -341,12 +363,12 @@ module:
 
 ```
 src/steering/
-  pending-messages.ts     view over the queued prompt items: ids, delivery mode, withdraw, FIFO
-                          head rule (not a second list, so `pendingMessages` and
-                          `queuedOperationCount` cannot disagree)
-  boundary-watcher.ts     reads tool-call status, decides "boundary reached"
-  delivery.ts             cancel and hand the head run back to the queue as one combined prompt
-  contracts.ts            PendingMessage, PromptHandle, events, result fields
+  contracts.ts            PromptDelivery, PendingMessage, PromptHandle, message events, PromptPart,
+                          the queued-prompt shape steering reads
+  controller.ts           SteeringController: the delivery mode on queued prompts, the tool-boundary
+                          watcher, delivery (cancel, then the head run), withdraw, pendingMessages.
+                          A view over the one operations queue, not a second list.
+  combine.ts              combinePrompts and mergeHandlers
   index.ts
 ```
 
@@ -357,29 +379,26 @@ Wiring in `agent-session.ts`:
 - The event union gains the three message events.
 - `interrupt()` fills in `endedBy` and handles pending messages per its `clearQueue` option.
 
-## Plan
+## Plan and status
 
-1. **Smoke test first:** `smoke-tests/test11-steerTurn`.
-   - (a) Overall behavior on every adapter in use:
-     - a steered message during a tool-using turn is delivered after the tool completes, and the
-       agent continues the original task;
-     - `interrupt()` during a text-only turn cancels right away and sends the pending run;
-     - a message sent at the very end of a turn behaves like a normal prompt;
-     - the boundary race, including several tool calls from one response;
-     - what each harness does with the partial turn after cancel.
-   - (b) Metering, especially OpenCode: usage of a cancelled turn versus the same turn run to
-     completion, whether usage arrives on cancel at all, whether the totals add up, and that
-     metering state stays consistent.
-2. Revise this spec with what the smoke test shows (metering, checkpoints, presentation).
-3. Contracts and events (`src/steering/contracts.ts`), then the pending list and FIFO head rule.
-4. Boundary watcher and delivery, wired into `prompt()`, `promptFrom()` and the queue.
-5. Combining, withdrawal, and the `interrupt()` interaction.
-6. Setting `busyDelivery`, default `queue`.
-7. Tests: unit tests for the pending list, the head rule and the boundary rule; conversation tests
-   with the fake agent fixture for steer, interrupt, combining (text order, shared result, parts and metadata, handlers, attachments), a `queue` message ending a run, withdraw, the turn-ended-first case, steer behind a
-   queued message, and a handoff or hidden operation running (steering must not cancel it); the
-   consumer guide.
-8. Major release: flip the default to `steer`.
+1. Smoke test `smoke-tests/test11-steerTurn`: done (Codex and OpenCode); see "Findings".
+2. Spec revised with the findings: done.
+3. Contracts, events, the pending view and the FIFO head rule (`src/steering/`): done.
+4. Boundary watcher and delivery, wired into `prompt()`, `promptFrom()` and the queue: done.
+5. Combining, withdrawal and the `interrupt()` interaction: done.
+6. `busyDelivery`, default `queue`: done.
+7. Tests (`test/steering.test.ts`, scripted agent in `test/fixtures/steer-agent.ts`) and the consumer
+   guide: done. The smoke test now drives the real API and is the acceptance test on real harnesses.
+8. Not done yet:
+   - run `test11-steerTurn` on Codex and OpenCode against the implementation;
+   - run `s9` on Codex to confirm the `counter_reset` also happens without steering (Codex run with the
+     implementation is otherwise done: every steering check passes; the two failing checks are Codex
+     behavior: partial text dropped, running process survives);
+   - decide what to do about Codex usage that is not a cumulative counter (metering, separate from
+     steering);
+   - steering during a handoff or another non-prompt operation is covered only by the design (such
+     operations are not consumer prompts, so a tool event cannot trigger a cancel); add a test;
+   - major release: flip the default to `steer`.
 
 ## Non-goals
 
@@ -394,14 +413,10 @@ Wiring in `agent-session.ts`:
 
 ## Open questions
 
-- Is "no announced tool call pending" the right boundary, or should delivery also wait for the next
-  model step to start?
-- Naming: `steer`, `withdraw`, `pending` versus alternatives. Separator for combined text (a blank line proposed).
-- Whether the handle is a promise with methods or a separate object plus by-id methods only.
-- When exactly the user message record is written for a dispatched prompt.
-- Metering attribution of a combined prompt made of several participants' messages (one operation,
-  so which participant, if any, is it attributed to).
-- The adoption recap must be an operation of its own kind in the operations queue, so steering sees
-  it and treats messages as `queue`. A requirement on `10-2-SPEC-adopt-provider-session.md`.
+- Metering attribution of a combined prompt made of several participants' messages (one operation, so
+  which participant, if any, is it attributed to).
+- The adoption recap must be an operation of its own kind in the operations queue, so steering sees it
+  and treats messages as `queue`. A requirement on `10-2-SPEC-adopt-provider-session.md`.
 - Multi-participant behavior: `10-2-TODO-steer-multi-participant.md`.
-- Everything listed under "Unknowns to resolve before implementation".
+- Naming (`steer`, `withdraw`) and the separator for combined text (a blank line) are in use; revisit
+  if consumers object.

@@ -162,6 +162,14 @@ import type {
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
 import { AgentConversationQueue } from "./agent-conversation-queue.ts";
+import {
+  SteeringController,
+  type PendingMessage,
+  type PendingMessageId,
+  type PromptDelivery,
+  type PromptHandle,
+  type SteeringPrompt,
+} from "./steering/index.ts";
 import { AgentConversationPresentation } from "./agent-conversation-presentation.ts";
 import {
   HANDOFF_SUMMARY_PROMPT,
@@ -216,18 +224,9 @@ export type {
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
 
-interface PromptQueueItem {
-  kind: "prompt";
-  turnId: string;
+interface PromptQueueItem extends SteeringPrompt {
   /** How this operation is classified in its metering record. */
   operationKind: MeteredOperationKind;
-  text: string;
-  participantId?: string;
-  consumerMetadata?: PersistenceJsonValue;
-  handlers?: PromptHandlers;
-  attachments?: Attachment[];
-  resolve: (r: AgentSessionPromptResult) => void;
-  reject: (e: unknown) => void;
 }
 
 /** Object-form prompt input for per-message consumer metadata on Agent-owned conversations. */
@@ -236,6 +235,8 @@ export interface AgentConversationPromptInput {
   readonly consumerMetadata?: PersistenceJsonValue;
   readonly handlers?: PromptHandlers;
   readonly attachments?: Attachment[];
+  /** How this prompt waits if a turn is running. Defaults to the conversation's `busyDelivery`. */
+  readonly delivery?: PromptDelivery;
 }
 
 export interface AgentConversationAttributedPromptInput extends AgentConversationPromptInput {
@@ -322,6 +323,11 @@ export interface AgentSessionConfig {
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
   mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
+  /**
+   * How a prompt sent while a turn is running waits when the prompt does not say. `queue` runs it after
+   * the turn ends; `steer` delivers it at the next tool boundary. Default `queue`.
+   */
+  busyDelivery?: PromptDelivery;
   clientInfo?: { name: string; title?: string; version?: string };
   /** What we let the agent do through us (terminals, filesystem). All on by default. */
   clientCapabilities?: AgentControllerConfig["clientCapabilities"];
@@ -449,6 +455,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly log: Logger;
   private transcriptWrite: Promise<void> = Promise.resolve();
   private readonly operations = new AgentConversationQueue<QueueItem>();
+  private readonly steering: SteeringController<QueueItem>;
   private stopPromise: Promise<void> | null = null;
   private phase: AgentSessionPhase = "idle";
   private notificationSeq = 0;
@@ -543,6 +550,15 @@ export class AgentConversation implements AgentClient, Bridgeable {
       ?? (isAgentSessionId(this.agentSessionId) ? this.agentSessionId : null);
     this.ownerLifecycle = config.ownerLifecycle;
     this.defaultPermission = config.defaultPermission ?? "cancel";
+    this.steering = new SteeringController<QueueItem>(
+      {
+        queue: this.operations,
+        emit: (event) => this.emit(event),
+        cancelProviderTurn: () => this.controller.interrupt(),
+        emitState: () => this.emitStateIfChanged(),
+      },
+      config.busyDelivery ?? "queue",
+    );
     this._participants = (config.participants ?? []).map((participant) => Object.freeze({ ...participant }));
     this._adapterId = config.adapterId;
     this.activeAdapter = config.adapter;
@@ -1770,46 +1786,65 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   // --- AgentClient -------------------------------------------------------------
-  prompt(input: AgentConversationPromptInput): Promise<AgentSessionPromptResult>;
+  prompt(input: AgentConversationPromptInput): PromptHandle;
   prompt(
     text: string,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
-  ): Promise<AgentSessionPromptResult>;
-  async prompt(
+  ): PromptHandle;
+  prompt(
     input: string | AgentConversationPromptInput,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
-  ): Promise<AgentSessionPromptResult> {
+  ): PromptHandle {
     return typeof input === "string"
       ? this.enqueuePrompt(input, "prompt", handlers, attachments)
-      : this.enqueuePrompt(input.text, "prompt", input.handlers, input.attachments, undefined, input.consumerMetadata);
+      : this.enqueuePrompt(
+          input.text, "prompt", input.handlers, input.attachments,
+          undefined, input.consumerMetadata, input.delivery,
+        );
+  }
+
+  /** Messages waiting behind the running operation, in the order they will be sent. */
+  get pendingMessages(): readonly PendingMessage[] {
+    return this.steering.pending();
+  }
+
+  /** Take back a message that has not been sent yet. Returns whether it was still pending. */
+  withdraw(id: PendingMessageId): boolean {
+    return this.steering.withdraw(id);
   }
 
   /** Prompt while attributing the caller to a stable participant identity. */
-  promptFrom(input: AgentConversationAttributedPromptInput): Promise<AgentSessionPromptResult>;
+  promptFrom(input: AgentConversationAttributedPromptInput): PromptHandle;
   promptFrom(
     participantId: string,
     text: string,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
-  ): Promise<AgentSessionPromptResult>;
+  ): PromptHandle;
   promptFrom(
     input: string | AgentConversationAttributedPromptInput,
     text?: string,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
-  ): Promise<AgentSessionPromptResult> {
+  ): PromptHandle {
     if (typeof input !== "string") {
-      if (!input.participantId.trim()) return Promise.reject(new Error("participant id cannot be blank"));
+      if (!input.participantId.trim()) return this.rejectedPrompt(new Error("participant id cannot be blank"));
       return this.enqueuePrompt(
         input.text, "prompt", input.handlers, input.attachments,
-        input.participantId.trim(), input.consumerMetadata,
+        input.participantId.trim(), input.consumerMetadata, input.delivery,
       );
     }
     const participantId = input;
-    if (!participantId.trim()) return Promise.reject(new Error("participant id cannot be blank"));
+    if (!participantId.trim()) return this.rejectedPrompt(new Error("participant id cannot be blank"));
     return this.enqueuePrompt(text!, "prompt", handlers, attachments, participantId.trim());
+  }
+
+  private rejectedPrompt(error: Error): PromptHandle {
+    const id = this.mintTurnId();
+    const rejected = Promise.reject<AgentSessionPromptResult>(error);
+    return Object.assign(rejected, { id, withdraw: () => false });
   }
 
   private enqueuePrompt(
@@ -1819,8 +1854,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
     attachments?: Attachment[],
     participantId?: string,
     consumerMetadata?: PersistenceJsonValue,
-  ): Promise<AgentSessionPromptResult> {
-    return new Promise<AgentSessionPromptResult>((resolve, reject) => {
+    delivery?: PromptDelivery,
+  ): PromptHandle {
+    const id = this.mintTurnId();
+    const promise = new Promise<AgentSessionPromptResult>((resolve, reject) => {
       if (this.phase === "stopped") {
         reject(new Error("AgentSession is stopped"));
         return;
@@ -1840,10 +1877,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
         reject(error);
         return;
       }
-      this.operations.enqueue({
+      // Anything already running or queued means this prompt has to wait.
+      const waited = this.operations.isDraining || this.operations.queuedCount > 0;
+      const item: PromptQueueItem = {
         kind: "prompt",
-        turnId: this.mintTurnId(),
+        turnId: id,
         operationKind,
+        delivery: this.steering.resolveDelivery(delivery),
+        waited,
         text,
         ...(participantId ? { participantId } : {}),
         ...(stableConsumerMetadata !== undefined ? { consumerMetadata: stableConsumerMetadata } : {}),
@@ -1851,10 +1892,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
         attachments,
         resolve,
         reject,
-      });
+      };
+      this.operations.enqueue(item);
+      this.steering.accepted(item);
       this.emitStateIfChanged();
       void this.pump();
     });
+    return Object.assign(promise, { id, withdraw: () => this.steering.withdraw(id) });
   }
 
   /**
@@ -1995,18 +2039,25 @@ export class AgentConversation implements AgentClient, Bridgeable {
               : "switching_mode";
         this.emitStateIfChanged();
         if (item.kind === "prompt") {
-          this.emit({ kind: "turn_started", turnId: item.turnId });
+          // A run of steer messages at the head of the queue goes out as one prompt.
+          const prompt = this.steering.prepareRun(item) as PromptQueueItem;
+          this.steering.turnStarted(prompt);
+          this.emit({ kind: "turn_started", turnId: prompt.turnId });
+          let stopReason: string | undefined;
           try {
-            const result = await this.runPrompt(item);
+            const result = await this.runPrompt(prompt);
+            stopReason = result.stopReason;
             this.emit({
               kind: "turn_completed",
-              turnId: item.turnId,
+              turnId: prompt.turnId,
               result: copyPromptResult(result),
             });
-            item.resolve(result);
+            prompt.resolve(result);
           } catch (err) {
-            this.emit({ kind: "turn_failed", turnId: item.turnId, error: String(err) });
-            item.reject(err);
+            this.emit({ kind: "turn_failed", turnId: prompt.turnId, error: String(err) });
+            prompt.reject(err);
+          } finally {
+            this.steering.turnEnded(stopReason);
           }
         } else if (item.kind === "handoff") {
           try {
@@ -3014,11 +3065,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
           targetProviderContextId,
           ...(item.participantId ? { participantId: item.participantId } : {}),
           ...(item.consumerMetadata !== undefined ? { consumerMetadata: item.consumerMetadata } : {}),
+          ...(item.parts ? { parts: item.parts } : {}),
           text: item.text,
         })
       : undefined;
-    if (owned?.participant && !this._participants.some((participant) => participant.id === owned.participant!.id)) {
-      this._participants = [...this._participants, Object.freeze({ ...owned.participant })];
+    for (const participant of owned?.participants ?? (owned?.participant ? [owned.participant] : [])) {
+      if (!this._participants.some((known) => known.id === participant.id)) {
+        this._participants = [...this._participants, Object.freeze({ ...participant })];
+      }
     }
     const providerText = owned?.providerText ?? item.text;
     this.beginTurn(item.turnId);
@@ -3031,16 +3085,21 @@ export class AgentConversation implements AgentClient, Bridgeable {
         operation = await this.openMeteredOperation(item);
         await this.v2Transcript.beginOperation(item.turnId, persistenceOperationKind(item.operationKind));
         transcriptStarted = true;
-        const userRecord = await this.v2Transcript.appendPresentationEvent({
-          kind: "message",
-          operationId: item.turnId,
-          role: "user",
-          text: item.text,
-          status: "completed",
-          presentation: { id: `message:${item.turnId}:user`, revision: 1 },
-        });
+        // A combined prompt shows each original message, as it was sent.
+        const userTexts = item.parts ? item.parts.map((part) => part.text) : [item.text];
+        const userRecords = [];
+        for (const [index, text] of userTexts.entries()) {
+          userRecords.push(await this.v2Transcript.appendPresentationEvent({
+            kind: "message",
+            operationId: item.turnId,
+            role: "user",
+            text,
+            status: "completed",
+            presentation: { id: `message:${item.turnId}:user${index === 0 ? "" : `:${index + 1}`}`, revision: 1 },
+          }));
+        }
         await this.v2Transcript.syncBeforeDispatch();
-        this.presentation.emitPersistedRecord(userRecord);
+        for (const userRecord of userRecords) this.presentation.emitPersistedRecord(userRecord);
       } catch (error) {
         this.endTurn(item.turnId, item.handlers);
         if (transcriptStarted) {
@@ -3161,6 +3220,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // The message snapshot must enter the shared queue before an activity first seen
         // after it. Later activity revisions keep their original presentation position.
         flushAssistantMessage("in_progress");
+        this.steering.observeActivity(item.turnId, event);
         const result = this.presentation.applyActivity(event);
         this.queueActivityRecords(item.turnId, result.emitted);
         item.handlers?.onRecord?.(result);
@@ -3285,7 +3345,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
           status: res.status,
         });
       }
-      const result = Object.freeze({ ...res, operationId: item.turnId, metering: record });
+      const result = Object.freeze({
+        ...res,
+        operationId: item.turnId,
+        metering: record,
+        ...this.steering.resultFields(item.turnId, res.stopReason),
+      });
       await this.ownerRecordWrite;
       if (this.ownerLifecycle) {
         const completed = {
@@ -3714,31 +3779,22 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   interrupt(options?: InterruptOptions): void {
+    this.steering.interrupted();
     if (options?.clearQueue) {
       const dropped = this.operations.clear();
+      // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
+      // metering record is minted (§16).
+      this.steering.dropped(dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"));
       for (const item of dropped) {
-        if (item.kind === "prompt") {
-          // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
-          // metering record is minted (§16).
-          item.resolve({
-            text: "",
-            messages: Object.freeze([]),
-            stopReason: "cancelled",
-            status: "cancelled",
-            usage: null,
-            operationId: item.turnId,
-            metering: null,
-          });
-        } else {
-          const label = item.kind === "handoff"
-            ? "handoff"
-            : item.kind === "set_config" || item.kind === "resolve_config"
-              ? "configuration change"
-              : item.kind === "resolve_recovery"
-                ? "recovery resolution"
+        if (item.kind === "prompt") continue;
+        const label = item.kind === "handoff"
+          ? "handoff"
+          : item.kind === "set_config" || item.kind === "resolve_config"
+            ? "configuration change"
+            : item.kind === "resolve_recovery"
+              ? "recovery resolution"
               : "mode change";
-          item.reject(new Error(`${label} cancelled before it started`));
-        }
+        item.reject(new Error(`${label} cancelled before it started`));
       }
       this.emitStateIfChanged();
     }
