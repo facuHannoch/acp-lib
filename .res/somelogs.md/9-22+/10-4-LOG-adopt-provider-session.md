@@ -446,3 +446,68 @@ provider session; checkpoints deleted with the conversation. Whole suite: `bun t
 
 **Regressions.** None. The return type of `delete` changed from `void` to an object, which source-compatible callers do
 not notice but a consumer that implements `AgentConversationManager` itself would have to follow.
+
+---
+
+## Phase 7: the rest of the persistence-policy spec (audit, metering, checkpoints)
+
+**Done.** The remainder of `9-24-SPEC-conversation-persistence-policy.md`, in the order of its implementation sequence:
+- **Fingerprint stamping.** `SqliteAuditOutboxPersistence.enqueue` no longer overwrites `agent_audit_state.capture_fingerprint`
+  with each item's fingerprint; only `initialize` writes it, so the state holds the Agent's base policy while an entry
+  carries the fingerprint of the policy that projected it.
+- **Audit overrides.** `resolveConversationAuditConfig` (`src/audit/config.ts`): the Agent's destination unchanged, its
+  capture layered over by the conversation's override, its own fingerprint (the base object itself when the override changes
+  nothing); agent-scope kinds are refused (`conversation audit capture cannot select agent-scope kind: identity`).
+  `ManagerSettings.auditCaptureConfig` keeps the Agent's capture as configured. In the resolver, `auditLog: false` sets the
+  conversation's audit settings to none (so the lifecycle, the error records and the checkpoint record enqueue nothing), an
+  object needs an Agent audit log (`conversation audit capture requires an Agent audit log`; `false` is accepted either way).
+- **Exclusion.** `identity` entries are skipped for an excluded conversation (`updateConversationIdentity`), and
+  `internal_inference` audit observations about one are not written (`DefaultAgentConversationManager.auditExcluded`, asked
+  before each such observation). If the policy cannot be resolved, the observation is not written either and the error is kept
+  as the pending audit-observation error.
+- **Metering retention.** `meteringRecords` override (validated: `"all"`, `"none"` or `{ retain: n >= 1 }`), applied by the
+  lifecycle and, through the new `ConversationWritePolicy`, to the detailed records of a conversation's internal inferences.
+- **Checkpoint records and background writes.** `InternalInferenceManager` asks the Agent for the conversation's
+  `ConversationWritePolicy` before an attempt runs (`resolveConversationWrites`; a failure fails the attempt through the
+  normal retry rules and writes nothing). The checkpoint strategy appends its `native_action` record through the new
+  `appendRecord` of the completion context, so it follows the conversation's `native_action` capture (stored or dropped) and
+  audit policy, inside the completion transaction. Without a resolver the policy is the Agent's. Audit delivery is notified
+  after commit.
+- **Relaxed checkpoint guard.** An Agent may enable checkpointing with message capture `none`; only `metadata` is refused
+  (Agent and per conversation). The previous message ("requires content or raw") is gone.
+- Guide: a new section "Choose what each conversation persists". Phase 1's "not supported yet" rejections were removed.
+
+**Tested.** `test/agent-conversation-persistence-policy.test.ts` (12 tests) and the Phase 1 file (updated):
+- `auditLog: false`: no audit entry about the conversation or caused by its records (messages, identity, its
+  checkpoint's internal-inference entries), while another conversation is audited; refusals (capture override without an Agent
+  audit log, agent-scope kind) before any write; a load failure under `auditLog: false` is stored but not audited.
+- a conversation's own audit capture and fingerprint: its entries use its level and content, the other's stay at the Agent's
+  level and fingerprint, agent-scope entries and `status().captureFingerprint` stay the base; an override that changes
+  nothing stamps the base fingerprint.
+- the checkpoint record follows `native_action` capture and audit (dropped and unaudited for one conversation, stored and
+  audited for another, the checkpoint itself exists for both); a resolver that throws during a background checkpoint fails
+  the attempt and writes nothing.
+- checkpointing with a default `message: "none"`: allowed with a conversation overriding to `content`, `metadata` refused; a
+  conversation storing no messages has no successful responses counted, `request()` creates no checkpoint, a lost provider
+  session throws; a sibling's identity context contains nothing from it.
+- metering retention `none` keeps no detailed records (live turns and a checkpoint's inference) while another keeps them; an
+  invalid retention is refused before any write.
+- Whole suite: `bun test` 977 pass / 0 fail (965 before); `tsc` clean.
+
+**Gaps.**
+- The 9-24 test list items not covered: recovery with a resolver (records written by the recovered provider thread and a
+  `recovery_failed` record following the policy; the resolver not called twice), and handoff/switch/reset keeping the
+  policy (true by construction). Resolution of the policy for an audit observation that fails (the pending audit error) is
+  implemented but not asserted.
+- Behaviour change without a resolver: checkpoint completion records, which used to bypass capture and audit, are now stored
+  at the Agent's `native_action` capture level (default `metadata`, as every other native action) and, if the Agent audits,
+  audited. The existing suite did not notice; a consumer that relied on them being unaudited would.
+- `agent_audit_state.capture_fingerprint` used to hold the last enqueued item's fingerprint and now holds the base policy; a
+  reader that inferred "the latest policy" from it would see the difference.
+- Each internal-inference audit observation about a conversation costs one extra read (the exclusion check), and each
+  attempt one conversation read for its write policy.
+- A conversation still receives identity from its siblings; the per-conversation switch (`identity: false`) is the parked TODO.
+- The Hub follow-up in the spec lives outside this repository and was not done.
+
+**Regressions.** None in the suite. The two Phase 1 tests that asserted "not supported yet" were rewritten for the real
+behaviour.

@@ -45,7 +45,22 @@ export async function updateConversationIdentity(
     agentConversationId: conversationId,
     records,
   });
-  await settings.auditIdentityUpdate(conversationId, records);
+  // A conversation kept out of the audit stream causes no `identity` entry either.
+  if (settings.auditLog) await settings.auditIdentityUpdate(conversationId, records);
+}
+
+/**
+ * Append one canonical record about a conversation under that conversation's capture and audit policy, inside
+ * the given transaction. Returns the stored record, or `undefined` when capture dropped it.
+ */
+export async function appendCanonicalRecord(
+  settings: ManagerSettings,
+  persistence: PersistenceScope,
+  record: NewConversationRecord,
+): Promise<ConversationRecord | undefined> {
+  const persisted: ConversationRecord[] = [];
+  await persistObservationsInTransaction(settings, persistence, [record], true, persisted);
+  return persisted[0];
 }
 
 /** Persist canonical records and their audit intents in one transaction, then publish them. */

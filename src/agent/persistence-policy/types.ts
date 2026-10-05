@@ -15,16 +15,17 @@ export type AgentConversationAuditCaptureConfig = Omit<AgentAuditCaptureConfig, 
  * What one conversation persists differently from the Agent defaults. Keys it sets replace the Agent's
  * values; keys it omits follow the Agent. `undefined` and `{}` both mean "use the Agent defaults".
  *
- * Only `capture` is applied today. `auditLog` and `meteringRecords` are part of the contract and are
- * rejected with a clear error until they are implemented, so a consumer never relies on a key that would
- * silently do nothing.
  */
 export interface AgentConversationPersistenceOverride {
   /** Canonical record capture. Keys set here replace the Agent's; omitted keys inherit. */
   readonly capture?: ConversationRecordCaptureConfig;
-  /** `false` keeps this conversation out of the audit stream entirely. Not supported yet. */
+  /**
+   * `false` keeps this conversation out of the audit stream entirely: no entry about it, none caused by its
+   * records. An object changes what its audit entries capture (agent-scope kinds cannot be tuned per
+   * conversation). Requires the Agent to have an audit log.
+   */
   readonly auditLog?: false | { readonly capture?: AgentConversationAuditCaptureConfig };
-  /** Detailed metering-record retention for this conversation. Not supported yet. */
+  /** Detailed metering-record retention for this conversation (`"all"`, `"none"` or `{ retain: n }`). */
   readonly meteringRecords?: MeteringRecordRetention;
 }
 

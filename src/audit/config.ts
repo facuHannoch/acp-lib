@@ -188,3 +188,32 @@ function safeInteger(value: number, minimum: number, label: string): number {
   }
   return value;
 }
+
+/** Audit kinds observed at agent scope. A conversation cannot tune them: they are not about one conversation. */
+const AGENT_SCOPE_AUDIT_KINDS = new Set(["agent_lifecycle", "identity", "internal_inference"]);
+
+/**
+ * The audit configuration one conversation runs with: the Agent's destination and delivery settings
+ * unchanged, with its capture layered over by the conversation's override (keys the override sets replace
+ * the Agent's; omitted keys follow the Agent). The result carries its own fingerprint, so an entry says which
+ * policy projected it. An override that changes nothing returns the Agent's configuration itself.
+ */
+export function resolveConversationAuditConfig(
+  base: ResolvedAgentAuditLogConfig,
+  baseCapture: AgentAuditCaptureConfig | undefined,
+  override: AgentAuditCaptureConfig,
+): ResolvedAgentAuditLogConfig {
+  for (const key of Object.keys(override)) {
+    if (AGENT_SCOPE_AUDIT_KINDS.has(key)) {
+      throw new Error(`conversation audit capture cannot select agent-scope kind: ${key}`);
+    }
+  }
+  const capture = resolveAgentAuditCapture({ ...baseCapture, ...override });
+  const captureFingerprint = sha256CanonicalJson({
+    projectionSchemaVersion: 1,
+    capture,
+    limits: DEFAULT_PERSISTENCE_LIMITS,
+  });
+  if (captureFingerprint === base.captureFingerprint) return base;
+  return Object.freeze({ ...base, capture, captureFingerprint });
+}

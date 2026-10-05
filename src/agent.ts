@@ -167,6 +167,7 @@ export class Agent {
       identityTimeoutMs: config.identityTimeoutMs,
       capture: resolveConversationRecordCapture(config.capture),
       ...(config.capture ? { captureConfig: config.capture } : {}),
+      ...(config.auditLog && config.auditLog.capture ? { auditCaptureConfig: config.auditLog.capture } : {}),
       ...(config.conversationPersistence ? { conversationPersistence: config.conversationPersistence } : {}),
       defaults: config.conversationDefaults ?? {},
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
@@ -182,9 +183,12 @@ export class Agent {
     });
     this.conversations = this.manager;
     if (checkpointing?.enabled) {
+      // Checkpoints summarize stored messages, so `metadata` (messages with no text) would checkpoint nothing
+      // useful. `none` is allowed: a conversation that stores no messages has nothing to checkpoint, and the
+      // conversations that need recovery override to `content` through the resolver.
       const messageCapture = resolveConversationRecordCapture(config.capture).message;
-      if (messageCapture !== "content" && messageCapture !== "raw") {
-        throw new Error("conversation checkpointing requires message capture at content or raw level");
+      if (messageCapture === "metadata") {
+        throw new Error('conversation checkpointing cannot use message capture "metadata"');
       }
     }
     if (config.internalInference || checkpointing?.enabled) {
@@ -238,7 +242,12 @@ export class Agent {
         beginMetering: async (attempt, session) => {
           return await this.manager.beginInternalInferenceMetering(attempt, session);
         },
-        onCommittedRecords: (records) => this.publishCommittedRecords(records),
+        onCommittedRecords: (records) => {
+          this.publishCommittedRecords(records);
+          // A record appended under a conversation's audit policy queued an audit entry in the same transaction.
+          this.audit?.notifyPending();
+        },
+        resolveConversationWrites: (agentConversationId) => this.manager.writePolicyFor(agentConversationId),
         resolveAdapterId: async (requestedAdapterId, agentConversationId) => {
           if (requestedAdapterId) {
             adapters.require(requestedAdapterId);
@@ -269,6 +278,7 @@ export class Agent {
             event.snapshot as unknown as import("./persistence/backend.ts").PersistenceJsonValue,
             `internal-inference:${event.inferenceId}:${event.sequence}`,
             event.inferenceId,
+            event.snapshot.agentConversationId,
           );
         });
       }
@@ -411,9 +421,14 @@ export class Agent {
     payload?: import("./persistence/backend.ts").PersistenceJsonValue,
     sourceObservationId = `${kind}-${randomUUID()}`,
     operationId?: string,
+    agentConversationId?: import("./agent-ids.ts").AgentConversationId,
   ): Promise<void> {
     const auditLog = this.auditLog;
     if (!auditLog) return;
+    // An observation about a conversation that is kept out of the audit stream is not written. If its policy
+    // cannot be resolved the observation is not written either (it never falls back to the Agent's levels,
+    // which could record more than the consumer allowed); the error is kept as the pending audit error.
+    if (agentConversationId && await this.manager.auditExcluded(agentConversationId)) return;
     await enqueueAuditObservation(this.persistence, {
       scope: "agent",
       sourceObservationId,
@@ -433,6 +448,7 @@ export class Agent {
     payload?: import("./persistence/backend.ts").PersistenceJsonValue,
     sourceObservationId?: string,
     operationId?: string,
+    agentConversationId?: import("./agent-ids.ts").AgentConversationId,
   ): void {
     const write = this.auditObservationTail.then(() => this.recordAgentAuditObservation(
       kind,
@@ -440,6 +456,7 @@ export class Agent {
       payload,
       sourceObservationId,
       operationId,
+      agentConversationId,
     ));
     this.auditObservationTail = write.catch((error) => {
       if (this.auditObservationError === undefined) this.auditObservationError = error;

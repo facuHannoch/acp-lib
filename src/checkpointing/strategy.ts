@@ -79,23 +79,29 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
       generatorInternalInferenceId: result.internalInferenceId,
       summary,
     });
-    const appended = await context.persistence.records.append({
+    const record = {
       recordId: `${result.internalInferenceId}:checkpoint`,
       agentSessionId: context.attempt.agentSessionId,
       agentConversationId: conversationId,
-      kind: "native_action",
+      kind: "native_action" as const,
       timestamp: checkpoint.createdAt,
       action: "conversation_checkpoint",
-      state: "completed",
+      state: "completed" as const,
       output: {
         internalInferenceId: result.internalInferenceId,
         checkpointId: checkpoint.checkpointId,
         coveredSequence: checkpoint.coveredSequence,
       },
-    });
+    };
+    // Under the conversation's capture and audit policy when the Agent supplies one: the record is stored at
+    // the conversation's `native_action` level (or dropped) and audited as the conversation says. Without
+    // one it is appended as it always was.
+    const appended = context.appendRecord
+      ? await context.appendRecord(record)
+      : await context.persistence.records.append(record);
     // Hand the committed record to the manager so it reaches the Agent's live bus after
     // the completion transaction commits, exactly like every other Agent-owned record.
-    context.onRecordAppended?.(appended);
+    if (appended) context.onRecordAppended?.(appended);
     return Object.freeze({
       internalInferenceId: result.internalInferenceId,
       rootInternalInferenceId: context.attempt.rootId,

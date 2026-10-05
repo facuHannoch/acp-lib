@@ -4,6 +4,7 @@ export {
   DEFAULT_AUDIT_ROTATION,
   DEFAULT_AUDIT_SHUTDOWN_GRACE_MS,
   resolveAgentAuditCapture,
+  resolveConversationAuditConfig,
   resolveAgentAuditLogConfig,
 } from "./config.ts";
 export type {

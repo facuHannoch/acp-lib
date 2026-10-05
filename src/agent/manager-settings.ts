@@ -11,6 +11,7 @@ import {
   type MeteringRecordRetention,
 } from "../persistence/backend.ts";
 import {
+  type AgentAuditCaptureConfig,
   type ResolvedAgentAuditLogConfig,
 } from "../audit/index.ts";
 import {
@@ -30,6 +31,8 @@ export interface ManagerSettings {
   readonly capture: ConversationRecordCapturePolicy;
   /** The Agent's capture as configured, which per-conversation overrides are layered over. */
   readonly captureConfig?: ConversationRecordCaptureConfig;
+  /** The Agent's audit capture as configured, which per-conversation audit overrides are layered over. */
+  readonly auditCaptureConfig?: AgentAuditCaptureConfig;
   /** The consumer's per-conversation resolver, if any. */
   readonly conversationPersistence?: ConversationPersistenceResolver;
   readonly defaults: AgentConversationRuntimeDefaults;

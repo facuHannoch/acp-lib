@@ -160,8 +160,8 @@ describe("conversation persistence resolver: invalid answers are caller mistakes
     ["an unknown override key", (() => ({ nope: 1 })) as unknown as ConversationPersistenceResolver, /unknown conversation persistence override key: nope/],
     ["an unknown record kind", () => ({ capture: { banana: "content" } as never }), /unknown record capture kind: banana/],
     ["an invalid level", () => ({ capture: { message: "loud" } as never }), /invalid capture level for message: loud/],
-    ["an audit override (not supported yet)", () => ({ auditLog: false as const }), /"auditLog" is not supported yet/],
-    ["a metering override (not supported yet)", () => ({ meteringRecords: "none" as const }), /"meteringRecords" is not supported yet/],
+    ["an audit capture override on an Agent without an audit log", () => ({ auditLog: { capture: { message: "content" as const } } }), /conversation audit capture requires an Agent audit log/],
+    ["an invalid metering retention", () => ({ meteringRecords: { retain: 0 } }), /invalid meteringRecords retention/],
     [
       "metadata message capture while checkpointing is enabled",
       () => ({ capture: { message: "metadata" } }),

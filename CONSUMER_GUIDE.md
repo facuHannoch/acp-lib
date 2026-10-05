@@ -920,6 +920,69 @@ deprecated `result.text` property is only a compatibility projection and inserts
 line between messages. `formatResponseMessages()` makes any deliberate flattening policy
 consumer-owned.
 
+## Choose what each conversation persists
+
+One Agent has one set of persistence defaults (`capture`, the audit log's `capture`, `meteringPersistence`), and every
+conversation it owns uses them. A consumer that hosts different kinds of conversations in one Agent (user chats,
+agent-to-agent channels, adopted sessions) can persist less for some of them with a **resolver**:
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path },
+  adapters,
+  capture: { message: "none" },                           // default: keep no message content
+  checkpointing: {},
+  auditLog: { directory, capture: { message: "none" } },
+  conversationPersistence: ({ agentConversationId, title, metadata, participants, adopted }) =>
+    isUserChat(agentConversationId)
+      ? {
+          capture: { message: "content" },                // keep content, and so recovery
+          auditLog: false,                                // stay out of the audit stream
+          meteringRecords: "none",                        // no detailed metering history
+        }
+      : undefined,                                        // everything else: the Agent's defaults
+});
+```
+
+The resolver returns an **override** over the Agent's defaults, or `undefined`: keys it sets replace the Agent's value
+(`protocol` counts as one key, so its level and method filters are replaced together), keys it omits follow the Agent,
+and `undefined`, `{}` or `{ capture: {} }` mean the Agent's defaults. The library never infers a policy: what a
+conversation *is* stays the consumer's business, and the context carries only what the library knows (id,
+participants, title, metadata, and whether it was created by adopting a provider session).
+
+| key | what it changes |
+|---|---|
+| `capture` | The canonical record kinds stored, and at what level (`none`, `metadata`, `content`, `raw`). |
+| `auditLog` | `false`: no audit entry about the conversation, and none caused by its records (`identity` entries, internal-inference entries). `{ capture }`: what its audit entries capture. Agent-scope kinds (`agent_lifecycle`, `identity`, `internal_inference`) cannot be tuned per conversation. Requires the Agent to have an audit log (`false` is accepted anyway). |
+| `meteringRecords` | Retention of the detailed metering records of the conversation, including those of its internal inferences: `"all"`, `"none"` or `{ retain: n }`. The bounded metering state is always kept. |
+
+**Contract.** The resolver is synchronous, free of side effects, and stable for a given conversation. It is called when a
+conversation starts (`create()` and `open()`), once, and the result is held for the life of the live conversation: a
+change in the resolver's answers applies the next time it is opened. It is also called, just before the write, for
+writes about a conversation that is not live (a checkpoint finishing, an audit observation). A resolver that throws, or
+returns something invalid, is a caller mistake: the start rejects with that error and writes no row, no error record and
+no provider session. A background write whose policy cannot be resolved fails that write; it is never done under the
+Agent's defaults, which could record more than the consumer allowed.
+
+**What it covers.** Every write made for the conversation: its records and audit entries, the error records of a failed
+start, load or recovery, the checkpoint completion record (stored at the conversation's `native_action` level, and audited as
+the conversation says), and the detailed metering records of its inferences. Always persisted, whatever the policy: the
+conversation row, provider-session mappings, the bounded metering state, identity delivery cursors, internal-inference jobs.
+
+**Audit fingerprints.** Each audit entry carries the fingerprint of the policy that projected it: for a conversation with
+its own audit capture, that conversation's; for everything else, the Agent's. `agent.audit.status().captureFingerprint` is
+always the Agent's own.
+
+**Checkpointing.** Checkpoints summarize stored messages, so a conversation that stores none (`message: "none"`) is never
+checkpointed, `checkpointing.request()` for it does nothing, a lost provider session throws instead of recovering, and it
+contributes nothing to other conversations' identity. An Agent may therefore enable checkpointing with a default of
+`message: "none"` and let the conversations that need recovery override to `content`. `message: "metadata"` is refused
+while checkpointing is enabled, at the Agent and per conversation.
+
+**Limits.** A policy is not retroactive: records and audit entries already written stay. A conversation still *receives*
+identity from its siblings (controlling that needs a per-conversation identity switch, not provided). One Agent is one
+SQLite file and one audit destination; different storage locations need a second Agent.
+
 ## Send a message while a turn is running
 
 A prompt sent while a turn runs waits. How it waits is its **delivery**:

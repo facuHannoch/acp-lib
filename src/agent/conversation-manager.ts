@@ -43,6 +43,7 @@ import {
   persistConversationObservations,
   normalizeParticipants,
   internalInferenceMeteringKind,
+  appendCanonicalRecord,
   captureRuntimeRecord,
   enqueueAuditObservation,
   providerSessionErrorDetails,
@@ -63,6 +64,7 @@ import type {
 } from "./config.ts";
 
 import type { Agent } from "../agent.ts";
+import type { ConversationWritePolicy } from "../internal-inference/contracts.ts";
 import { ConversationSettingsResolver } from "./persistence-policy/index.ts";
 import {
   RECAP_INSTRUCTION,
@@ -102,6 +104,28 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       ...(summary.metadata !== undefined && summary.metadata !== null ? { metadata: summary.metadata } : {}),
       adopted: summary.adopted === true,
     };
+  }
+
+  /**
+   * What a conversation persists, for the writes an internal inference makes about it (a checkpoint's
+   * `native_action` record, the detailed metering record). Resolved from the stored conversation, or the live
+   * one's own settings.
+   */
+  async writePolicyFor(id: AgentConversationId): Promise<ConversationWritePolicy> {
+    const summary = await this.agent.persistence.conversations.get(id);
+    const settings = summary && !summary.deletedAt ? this.writeSettings(summary) : this.settings;
+    return {
+      meteringRecords: settings.meteringRecords,
+      appendRecord: (persistence, record) => appendCanonicalRecord(settings, persistence, record),
+    };
+  }
+
+  /** Whether the conversation is kept out of the audit stream (`auditLog: false`), when the Agent audits at all. */
+  async auditExcluded(id: AgentConversationId): Promise<boolean> {
+    if (!this.settings.auditLog) return false;
+    const summary = await this.agent.persistence.conversations.get(id);
+    if (!summary || summary.deletedAt) return false;
+    return this.writeSettings(summary).auditLog === null;
   }
 
   /** Settings for a write about a conversation: the live conversation's own, or what the resolver says now. */

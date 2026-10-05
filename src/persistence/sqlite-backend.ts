@@ -1726,11 +1726,12 @@ class SqliteAuditOutboxPersistence implements AuditOutboxPersistence {
         item.createdAt,
       );
       runSql(this.database,
+        // The state's fingerprint is the Agent's base policy and only `initialize` writes it: an entry
+        // carries the fingerprint of the policy that projected it, which a conversation's override changes.
         `UPDATE agent_audit_state
-         SET last_allocated_sequence = ?, capture_fingerprint = ?, updated_at = ?
+         SET last_allocated_sequence = ?, updated_at = ?
          WHERE singleton = 1`,
         auditSequence,
-        item.captureFingerprint,
         item.createdAt,
       );
       return auditOutboxFromRow(this.database.query<Record<string, unknown>, [string]>(
