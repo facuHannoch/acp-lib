@@ -50,6 +50,8 @@ const HISTORY = [
 async function setup(options: {
   sessions?: Record<string, unknown[]>;
   noLoad?: boolean;
+  failRecap?: boolean;
+  identity?: boolean;
   conversationPersistence?: ConversationPersistenceResolver;
   path?: string;
   directory?: string;
@@ -61,12 +63,18 @@ async function setup(options: {
   process.env.REPLAY_AGENT_FILE = file;
   if (options.noLoad) process.env.REPLAY_AGENT_NO_LOAD = "1";
   else delete process.env.REPLAY_AGENT_NO_LOAD;
+  if (options.failRecap) process.env.REPLAY_AGENT_FAIL_RECAP = "1";
+  else delete process.env.REPLAY_AGENT_FAIL_RECAP;
   const agent = await Agent.open({
     persistence: { kind: "sqlite", path: options.path ?? join(directory, "agent.sqlite") },
     adapters: { replay: { command: ["bun", REPLAY_AGENT] } },
     defaultAdapterId: "replay",
     conversationDefaults: { metering: { pricing: false } },
     ...(options.conversationPersistence ? { conversationPersistence: options.conversationPersistence } : {}),
+    // Checkpoint-backed identity needs checkpointing enabled; the milestone is far away so none runs here.
+    ...(options.identity
+      ? { identity: { kind: "checkpoint-backed" as const }, checkpointing: { schedule: { milestones: [1000], everyAfterMilestones: 1000 } } }
+      : {}),
   });
   agents.push(agent);
   return { agent, directory, path: options.path ?? join(directory, "agent.sqlite") };
@@ -166,6 +174,78 @@ describe("adopting a provider session", () => {
     expect(messages(list).length).toBe(5);
     expect(list.some((record) => record.kind === "tool_call")).toBe(false);
     expect(list.some((record) => record.kind === "thinking")).toBe(false);
+  });
+});
+
+describe("the recap: the model summarizes its own history", () => {
+  test("recap: true stores the model's summary ahead of the imported tail, as a marked assistant message, hidden from the chat", async () => {
+    const { agent } = await setup();
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true } });
+    const list = await records(agent, conversation.id);
+    const stored = messages(list);
+    expect(stored[0]).toMatchObject({ role: "assistant" });
+    expect(stored[0]!.content).toContain("RECAP: the user greeted");
+    expect(JSON.parse(stored[0]!.metadata ?? "{}")).toMatchObject({ origin: "adoption_recap", imported: true });
+    // Then the imported tail (the default is the last two turns), nothing for the question itself.
+    expect(stored.slice(1).map((record) => record.role)).toEqual(["user", "assistant", "user", "assistant", "assistant"]);
+    expect(stored.some((record) => String(record.content).includes("summarize this conversation"))).toBe(false);
+    // The question is an accountable operation: a native action and a metering reference are recorded.
+    expect(list.filter((record) => record.kind === "native_action").map((record) => record.kind === "native_action" && record.state)).toEqual(
+      expect.arrayContaining(["started", "completed"]),
+    );
+    expect(list.some((record) => record.kind === "metering")).toBe(true);
+  });
+
+  test("with importHistory: false only the summary is stored", async () => {
+    const { agent } = await setup();
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true, importHistory: false } });
+    expect(messages(await records(agent, conversation.id)).map((record) => record.role)).toEqual(["assistant"]);
+  });
+
+  test("an Agent with no identity runtime does not recap unless asked; one with identity does by default", async () => {
+    const plain = await setup();
+    const quiet = await plain.agent.conversations.create({ adopt: { providerSessionId: "ses-1" } });
+    expect(messages(await records(plain.agent, quiet.id))).toEqual([]);
+
+    const shared = await setup({ identity: true });
+    const remembered = await shared.agent.conversations.create({ adopt: { providerSessionId: "ses-1" } });
+    expect(messages(await records(shared.agent, remembered.id))[0]!.content).toContain("RECAP:");
+  });
+
+  test("the Agent's other conversations learn about the adopted one", async () => {
+    const { agent } = await setup({ identity: true });
+    await agent.conversations.create({ adopt: { providerSessionId: "ses-1" } });
+    const other = await agent.conversations.create();
+    const identity = await agent.identity.load({
+      agentSessionId: agent.id,
+      agentConversationId: other.id,
+      targetProviderContextId: "context-1",
+      participant: { id: "user", kind: "user" },
+      prompt: "hello",
+      consistency: "eventual",
+    });
+    expect(identity.promptPreamble ?? "").toContain("RECAP: the user greeted");
+  });
+
+  test("a recap that fails is recorded and the adoption still succeeds", async () => {
+    const { agent } = await setup({ failRecap: true });
+    const conversation = await agent.conversations.create({ adopt: { providerSessionId: "ses-1", recap: true } });
+    const list = await records(agent, conversation.id);
+    const errors = list.filter((record) => record.kind === "error");
+    expect(errors.map((record) => record.kind === "error" && record.code)).toEqual(["adoption_recap_failed"]);
+    // No summary, but the imported tail is stored and the conversation works.
+    expect(messages(list).some((record) => String(record.content).startsWith("RECAP"))).toBe(false);
+    expect(messages(list).length).toBe(5);
+    const result = await conversation.prompt("still there?");
+    expect(result.messages.map((message) => message.text)).toContain("LIVE_REPLY");
+  });
+
+  test("normalizeAdoption: the recap default follows the Agent, and sets a small tail", async () => {
+    const { normalizeAdoption: normalize } = await import("../src/agent/adoption/index.ts");
+    expect(normalize({ providerSessionId: "x" }, { recap: true })).toEqual({ providerSessionId: "x", recap: true, importHistory: { last: 2 } });
+    expect(normalize({ providerSessionId: "x" }, { recap: false })).toEqual({ providerSessionId: "x", recap: false, importHistory: false });
+    expect(normalize({ providerSessionId: "x", recap: false, importHistory: { last: 5 } }, { recap: true }).importHistory).toEqual({ last: 5 });
+    expect(() => normalize({ providerSessionId: "x", recap: "yes" as never })).toThrow(/recap must be a boolean/);
   });
 });
 
@@ -300,8 +380,8 @@ describe("turning a replay into turns", () => {
   });
 
   test("normalizeAdoption validates and defaults", () => {
-    expect(normalizeAdoption({ providerSessionId: "x" })).toEqual({ providerSessionId: "x", importHistory: false });
-    expect(normalizeAdoption({ providerSessionId: "x", importHistory: true })).toEqual({ providerSessionId: "x", importHistory: {} });
+    expect(normalizeAdoption({ providerSessionId: "x" })).toEqual({ providerSessionId: "x", recap: false, importHistory: false });
+    expect(normalizeAdoption({ providerSessionId: "x", importHistory: true })).toEqual({ providerSessionId: "x", recap: false, importHistory: {} });
     expect(normalizeAdoption({ providerSessionId: "x", importHistory: { last: 3 } }).importHistory).toEqual({ last: 3 });
     expect(() => normalizeAdoption({ providerSessionId: "x", importHistory: { last: 1.5 } })).toThrow(/positive integer/);
   });

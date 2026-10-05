@@ -3,6 +3,7 @@
 //
 //   REPLAY_AGENT_FILE=/path/sessions.json   { "<sessionId>": [ <raw session/update objects, replayed in order> ] }
 //   REPLAY_AGENT_NO_LOAD=1                  do not advertise loadSession
+//   REPLAY_AGENT_FAIL_RECAP=1               fail the prompt that asks the session to summarize itself
 //
 // A session/load of an id that is not in the file fails (-32001, "session not found"), like a harness whose
 // session was deleted. Prompts after a load or a new session answer with a fixed reply.
@@ -13,6 +14,7 @@ const sessions: Record<string, unknown[]> = process.env.REPLAY_AGENT_FILE
   ? JSON.parse(readFileSync(process.env.REPLAY_AGENT_FILE, "utf8"))
   : {};
 const noLoad = process.env.REPLAY_AGENT_NO_LOAD === "1";
+const failRecap = process.env.REPLAY_AGENT_FAIL_RECAP === "1";
 let counter = 1;
 let buffer = "";
 
@@ -73,10 +75,23 @@ function handle(message: any): void {
       return;
     case "session/prompt": {
       const sessionId = String(message.params?.sessionId);
+      const asked = (message.params?.prompt ?? []).map((block: any) => block?.text ?? "").join("\n");
+      const recap = /summarize this conversation for the memory/.test(asked);
+      if (recap && failRecap) {
+        send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "recap failed on purpose" } });
+        return;
+      }
       send({
         jsonrpc: "2.0",
         method: "session/update",
-        params: { sessionId, update: { sessionUpdate: "agent_message_chunk", messageId: `live-${counter++}`, content: { type: "text", text: "LIVE_REPLY" } } },
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: `live-${counter++}`,
+            content: { type: "text", text: recap ? "RECAP: the user greeted and asked to read a.txt, which says kiwi." : "LIVE_REPLY" },
+          },
+        },
       });
       send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn", usage: { totalTokens: 8, inputTokens: 3, outputTokens: 5 } } });
       return;

@@ -60,7 +60,15 @@ import type {
 
 import type { Agent } from "../agent.ts";
 import { ConversationSettingsResolver } from "./persistence-policy/index.ts";
-import { normalizeAdoption, selectTail, turnsFromReplay, type NormalizedAdoption } from "./adoption/index.ts";
+import {
+  RECAP_INSTRUCTION,
+  RECAP_ORIGIN,
+  normalizeAdoption,
+  selectTail,
+  turnsFromReplay,
+  type NormalizedAdoption,
+} from "./adoption/index.ts";
+import { NoopAgentIdentityRuntime } from "../identity.ts";
 import type { ConversationPersistenceContext } from "./persistence-policy/index.ts";
 
 export class DefaultAgentConversationManager implements AgentConversationManager {
@@ -99,7 +107,9 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     const participants = normalizeParticipants(config.participants);
     // What this conversation persists is decided before any write, so a resolver that throws or
     // returns something invalid leaves no row, no error record and no provider session behind.
-    const adoption = config.adopt ? normalizeAdoption(config.adopt) : undefined;
+    const adoption = config.adopt
+      ? normalizeAdoption(config.adopt, { recap: !(this.agent.identity instanceof NoopAgentIdentityRuntime) })
+      : undefined;
     const settings = this.policies.settingsFor({
       agentConversationId: id,
       participants,
@@ -184,6 +194,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     }
     try {
       await this.recordAdoptedProviderSession(conversation, id, attemptId);
+      if (adoption.recap) await this.recap(conversation, id, attemptId, settings);
       if (adoption.importHistory) {
         const turns = selectTail(turnsFromReplay(replay), adoption.importHistory.last);
         await conversation.importHistory(turns, `${attemptId}-import`);
@@ -194,6 +205,35 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       throw error;
     }
     return conversation;
+  }
+
+  /**
+   * Ask the adopted session to summarize itself and store the answer ahead of the imported turns. A recap
+   * that fails is recorded and does not fail the adoption: the conversation is usable, but is not in the
+   * Agent's memory until something summarizes it.
+   */
+  private async recap(
+    conversation: AgentConversation,
+    id: AgentConversationId,
+    attemptId: string,
+    settings: ManagerSettings,
+  ): Promise<void> {
+    const recapId = `${attemptId}-recap`;
+    try {
+      const summary = await conversation.requestRecap(RECAP_INSTRUCTION, recapId);
+      await conversation.recordRecap(summary, recapId, RECAP_ORIGIN);
+    } catch (error) {
+      await this.recordConversationError({
+        settings,
+        agentConversationId: id,
+        attemptId: recapId,
+        source: "operation",
+        code: "adoption_recap_failed",
+        recoverability: "retryable",
+        message: "The adopted session could not be summarized.",
+        details: providerSessionErrorDetails(error),
+      });
+    }
   }
 
   /** Record a failed provider-session load and build the structured error for it. */

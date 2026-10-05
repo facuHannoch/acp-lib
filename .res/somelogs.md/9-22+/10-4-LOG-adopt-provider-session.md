@@ -294,3 +294,58 @@ append. No test relied on the old order.
   ordinary records.
 
 **Regressions.** None in the suite.
+
+---
+
+## Phase 4: the recap (the model summarizes its own history)
+
+**Done.**
+- `adopt.recap?: boolean`. When on, right after the session is attached and recorded, the library asks the adopted
+  session to summarize itself with a **hidden turn** (`AgentConversation.requestRecap`, built on the existing
+  `meteredInternalPrompt` that handoff and recovery already use): the exchange is metered (a metering reference record is
+  written) and leaves `native_action` records (`adoption_recap` started/completed/failed), but it is not a message of the
+  conversation. The answer is stored as an **assistant message** with `origin: "adoption_recap"` in its metadata
+  (`AgentConversation.recordRecap`), ahead of the imported tail.
+- Defaults: `recap` is `true` when the Agent's identity runtime shares conversations (it is not the no-op one), otherwise
+  `false`; `importHistory` defaults to the last two turns (`DEFAULT_RECAP_TAIL_TURNS`) when a recap is made, otherwise
+  `false`. Both can be set explicitly.
+- `create()` waits for the recap and then returns, so nothing can interleave with it (the conversation is not yet in the
+  consumer's hands). This is how the recap avoids needing its own operation kind in the queue for steering.
+- A recap that fails does not fail the adoption: an `adoption_recap_failed` error record (retryable) is written, the
+  imported tail is still stored, and the conversation works but is not in the Agent's memory.
+- The instruction (`RECAP_INSTRUCTION`) asks for a self-contained summary (goals, decisions, state, open tasks, key facts),
+  without running tools. The model decides how to compress; the library never summarizes a history.
+
+**Deviation from the spec (to fold back into it).** The spec said the recap is stored "as the first checkpoint record".
+A recovery checkpoint needs a row in the internal-inference tables (`generator_internal_inference_id` is a foreign key),
+and there is no API to insert a completed inference: the only way in is `enqueue` then `claimNext`, which claims the next
+due job of any conversation, not the one just enqueued. Running the recap through the internal-inference manager instead
+would make its metering collide with the conversation's own. So the recap is a marked assistant message. Effects, all
+tested: identity delivers it to the Agent's other conversations like any stored message; later periodic checkpoints
+summarize it with the rest of the records; and unlike a checkpoint it sits in the message stream, so a UI that lists
+messages will show it (it can recognize it by the `origin`). A true checkpoint can replace it later.
+
+**Tested.** 6 new tests in `test/agent-adoption.test.ts` (26 in the file), using the replay agent extended to answer the
+recap question (and to fail it on demand): the summary is stored first, marked, followed by the imported tail, and the
+question itself is not stored as a message; native action and metering records exist; `importHistory: false` stores only
+the summary; the defaults follow the Agent's identity; the Agent's other conversations receive the summary through
+`identity.load` (checkpoint-backed identity); a failing recap is recorded and the adoption still succeeds and works;
+`normalizeAdoption` defaults. Whole suite: `bun test` 950 pass / 0 fail (944 before); `tsc` clean.
+
+**Gaps.**
+- Not run against Codex or OpenCode. The model is only *asked* not to use tools: ACP has no way to forbid them for one
+  turn. The conversation's default permission is `cancel`, so a tool that needs permission is refused, but a harness that
+  auto-approves could run one during the recap.
+- The recap is a hidden turn on the adopted session itself, so the provider's own history now contains the question and
+  the answer (visible if the session is loaded elsewhere). Using `session/fork` where available was not done.
+- No retry for a failed recap beyond the error record; a conversation adopted again through `open()` (a retried adoption)
+  does not recap or import history.
+- The recap and the imported turns carry an `operationId`, so they count as completed responses for the checkpoint schedule
+  and may bring the first periodic checkpoint forward.
+- With `recap: true` and `importHistory: true`, the Agent's other conversations receive both the summary and the whole
+  history (within identity's character budget).
+- The metering of the recap uses the existing operation kind `conversation_checkpoint`; no new kind was added, so it
+  cannot be told from a checkpoint's metering by kind alone (the `adoption_recap` native action identifies it).
+- `create()` can take as long as the model takes to summarize a long session; there is no timeout of its own.
+
+**Regressions.** None.

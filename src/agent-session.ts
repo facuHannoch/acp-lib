@@ -2042,6 +2042,51 @@ export class AgentConversation implements AgentClient, Bridgeable {
     await this.ownerRecordWrite;
   }
 
+  /**
+   * @internal Ask the provider session to summarize its own history, as a hidden turn: the exchange is metered
+   * and leaves a native action record, but is not a message of this conversation. Used right after an adoption,
+   * before the conversation is handed to its owner, so nothing can interleave with it.
+   */
+  async requestRecap(instruction: string, recapId: string): Promise<string> {
+    if (!instruction.trim()) throw new Error("recap instruction cannot be blank");
+    const records: OperationMeteringRecord[] = [];
+    await this.recordNativeAction(recapId, "adoption_recap", "started");
+    try {
+      const result = await this.meteredInternalPrompt(recapId, "conversation_checkpoint", instruction, records);
+      if (result.status !== "completed") throw new Error(`adoption recap ${result.status}`);
+      const summary = formatResponseMessages(result.messages, "\n\n").trim();
+      if (!summary) throw new Error("adoption recap returned an empty summary");
+      await this.recordNativeAction(recapId, "adoption_recap", "completed", { output: { chars: summary.length } });
+      return summary;
+    } catch (error) {
+      await this.recordNativeAction(recapId, "adoption_recap", "failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * @internal Store a recap as an assistant message, marked with `origin` in its metadata so it can be told
+   * from something the model said in a turn. It goes through the same capture policy as every message, and
+   * identity delivers it to the Agent's other conversations like any other.
+   */
+  async recordRecap(summary: string, recapId: string, origin: string): Promise<void> {
+    if (!this.ownerAgentSessionId || !this.ownerLifecycle?.record) return;
+    await this.recordOwned({
+      recordId: `${recapId}:assistant:1`,
+      agentSessionId: this.ownerAgentSessionId,
+      agentConversationId: this.agentConversationId,
+      kind: "message",
+      timestamp: new Date().toISOString(),
+      role: "assistant",
+      logicalMessageId: `message:${recapId}:assistant:1`,
+      content: summary,
+      status: "completed",
+      metadata: JSON.stringify({ operationId: recapId, origin, imported: true }),
+    });
+  }
+
   /** @internal Seed a newly created provider thread from a durable recovery checkpoint. */
   async seedRecoveryContext(text: string): Promise<PromptResult> {
     if (!text.trim()) throw new Error("recovery context cannot be blank");
