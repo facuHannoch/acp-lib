@@ -511,3 +511,29 @@ not notice but a consumer that implements `AgentConversationManager` itself woul
 
 **Regressions.** None in the suite. The two Phase 1 tests that asserted "not supported yet" were rewritten for the real
 behaviour.
+
+---
+
+## Final state
+
+**Done.** Phases 0 to 7 of `10-2-PLAN-adopt-session-and-persistence-resolver.md` are committed on `session-loading` (commits
+`680f7a8` to `b97cebd`, after the steering commit `9dd5005`). `agent.ts` went from 1637 to 427 lines.
+
+**Verified at the end.** `bun test` 977 pass; `tsc --noEmit` clean; the mock steering smoke test passes every check; adoption
+was run against real Codex and OpenCode sessions (no model call) and passed (Phase 5).
+
+**Intermittent test failures seen, not reproduced, not caused by a change in the failing area as far as could be told.**
+1. `test/session-manager-restoration.test.ts` "reactivates a tombstone with its retained transcript and reports continuation"
+   failed once in a full run (Phase 2); passed in four isolated runs and in the next full run.
+2. `test/agent-session-config-persistence.test.ts` "ordered continuation falls back to a consumer reconstruction after load
+   fails" failed once in a full run after Phase 7 (216 ms); it passed in eight isolated runs and in the next six full runs.
+Both are in the older session layer and spawn processes; both look like timing under a loaded machine. If either returns, the
+first thing to check is whether the replay seam (`onSessionReplay`, Phase 3) or the steering controller changed a startup
+path they use.
+
+**Not done, by design or for lack of authorization** (details in each phase's gaps):
+- the recap and `session/delete` were not run against a real harness (token cost; destructive);
+- adoption retry through `open()` does not import history or recap, and a failed recap has no retry;
+- `attach` and per-conversation `identity: false` (parked TODOs); the Hub follow-up (outside this repository);
+- the 9-24 tests for recovery under a resolver, and a custom-backend test for adoption/clearing;
+- `conversation-manager.ts` is 658 lines (above the budget in the plan) and was not split further.
