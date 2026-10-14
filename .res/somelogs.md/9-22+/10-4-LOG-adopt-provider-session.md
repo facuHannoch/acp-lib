@@ -656,3 +656,39 @@ A second full run failed once in `session-manager-restoration` ("installs explic
 artifacts"); that file and `session-manager-load` then passed three times in a row. Both sit in the same family as the earlier
 `session-manager-restoration` failure, and none of these tests sends a prompt while a turn runs, so the new default does not
 reach them. Not investigated further.
+
+---
+
+## Real-harness pass (2026-10-14, authorized by the user)
+
+Run on Codex and OpenCode with throwaway sessions created by the script itself (a fresh workspace under `/tmp`, two trivial
+prompts about a favourite fruit), so no session of the user's was adopted, changed or deleted. Script: not committed
+(scratchpad `real/pass.ts`); it creates a session, adopts it with `recap: true` in a second database, checks the recap, the
+floor checkpoint, a follow-up prompt, then `delete({ providerSession: "best-effort", checkpoints: true })`.
+
+**OpenCode.** Recap made in 16.9 s and stored (mentions the fruit); no error records; no tool-call records; the recap turn is
+metered; the floor checkpoint is `adoption_recap` with the recap as its summary; the adopted session answers a follow-up
+("kiwi"). `delete` reports `providerDeleted: "unsupported"` and the session stays listed, as expected (OpenCode has no
+`session/delete`); the conversation is deleted locally with its checkpoint.
+
+**Codex.** Same checks, all pass (recap in 3.3 s, no tools). `delete` reports `providerDeleted: true` and `session/list` no
+longer lists the session: `session/delete` works on a real harness.
+
+**`s9` (two plain turns, no cancel, no steering) on Codex: the second turn is `counter_reset`.** So steering is not the
+cause. Stored reports of the two turns of one session:
+
+| turn | totalTokens | inputTokens | outputTokens | cachedReadTokens |
+|---|---|---|---|---|
+| 1 | 17948 | 782 | 14 | 17152 |
+| 2 | 18080 | 7059 | 13 | 11008 |
+
+Each report satisfies `total = input + output + cachedRead` on its own, and `output`, `input` and `cachedRead` all move
+both ways between turns. These are per-turn figures, the same signature that made OpenCode a `PER_TURN_ADAPTERS` member
+(`src/metering/provider.ts`, "harness matrix findings", Finding 5). Codex is still classed `cumulative`, so the second turn is
+compared against the first and `outputTokens decreased from 14 to 13` is reported as a reset. **Not changed yet**; the fix is
+to add `codex` to `PER_TURN_ADAPTERS` (affects new sessions only; `counterInterpretation` is recorded per record and the spec
+forbids switching mid-session). Evidence is one session of two turns plus the earlier runs.
+
+**Gaps closed:** recap on OpenCode; `session/delete` on a real harness; whether steering causes `counter_reset`.
+**Still open:** tools the model runs during a recap are not recorded (none were used in these runs); the Codex metering
+classification above.
