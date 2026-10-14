@@ -55,6 +55,7 @@ export interface ConversationErrorDetailInput {
   readonly providerCode?: unknown;
   readonly rpcCode?: unknown;
   readonly service?: unknown;
+  readonly errorName?: unknown;
   readonly exitCode?: unknown;
   readonly signal?: unknown;
   readonly transportState?: unknown;
@@ -73,6 +74,7 @@ export function buildConversationErrorDetails(
   const providerCode = allowCode(input.providerCode);
   const rpcCode = allowInteger(input.rpcCode);
   const service = allowLabel(input.service);
+  const errorName = allowLabel(input.errorName);
   const exitCode = allowInteger(input.exitCode);
   const signal = allowLabel(input.signal);
   const transportState = allowLabel(input.transportState);
@@ -80,6 +82,7 @@ export function buildConversationErrorDetails(
     ...(providerCode === undefined ? {} : { providerCode }),
     ...(rpcCode === undefined ? {} : { rpcCode }),
     ...(service === undefined ? {} : { service }),
+    ...(errorName === undefined ? {} : { errorName }),
     ...(exitCode === undefined ? {} : { exitCode }),
     ...(signal === undefined ? {} : { signal }),
     ...(transportState === undefined ? {} : { transportState }),
@@ -101,4 +104,24 @@ function allowLabel(value: unknown): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   return trimmed.slice(0, MAX_ERROR_DETAIL_CHARS);
+}
+
+/**
+ * Allow-listed machine-readable detail from a thrown ACP error, when it exposes any: the JSON-RPC code
+ * (standard, so the same for every harness, if coarse) and, from `data`, the labels harnesses are known to
+ * send. `data` itself is never copied; see `buildConversationErrorDetails`.
+ */
+export function conversationErrorDetailsFromError(error: unknown): ConversationErrorDetails | undefined {
+  const value = typeof error === "object" && error !== null
+    ? error as { code?: unknown; data?: unknown }
+    : null;
+  const data = typeof value?.data === "object" && value.data !== null
+    ? value.data as Record<string, unknown>
+    : undefined;
+  return buildConversationErrorDetails({
+    rpcCode: typeof value?.code === "number" ? value.code : undefined,
+    service: data?.service,
+    errorName: data?.errorName,
+    providerCode: data?.providerCode,
+  });
 }

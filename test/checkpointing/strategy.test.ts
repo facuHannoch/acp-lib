@@ -278,6 +278,84 @@ describe("conversation checkpoint strategy", () => {
       await agent.close();
     }
   });
+
+  test("a failed attempt keeps the RPC code and the labels the harness sent, and nothing else of its data", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-checkpoint-failure-details-"));
+    roots.push(root);
+    const runtime: InternalInferenceRuntime = {
+      async run() {
+        // Shaped like OpenCode's answer to a prompt whose upstream request failed.
+        throw Object.assign(new Error("Internal error: Upstream request failed: Insufficient account funds"), {
+          code: -32603,
+          data: { service: "session", errorName: "APIError", secretToken: "must-not-be-stored" },
+        });
+      },
+    };
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      internalInference: { runtime, strategies: [new ConversationCheckpointStrategy()], retry: { maxAttempts: 1 } },
+    });
+    try {
+      const conversationId = createAgentConversationId();
+      await agent.persistence.conversations.create({ agentSessionId: agent.id, agentConversationId: conversationId });
+      await appendMessagePair(agent, conversationId, "hello", "hi", 1);
+      const run = await agent.internalInferences!.enqueue({
+        purpose: "conversation_checkpoint",
+        agentConversationId: conversationId,
+        input: checkpointInput(),
+        sourceFromSequence: 0,
+        sourceThroughSequence: 2,
+        requestedThroughSequence: 2,
+      });
+      await expect(run.result).rejects.toThrow("Insufficient account funds");
+      const attempt = await agent.persistence.internalInferences!.getAttempt(run.rootId);
+      expect(attempt).toMatchObject({
+        status: "failed",
+        error: "Internal error: Upstream request failed: Insufficient account funds",
+        failureDetails: { rpcCode: -32603, service: "session", errorName: "APIError" },
+      });
+      expect(JSON.stringify(attempt)).not.toContain("must-not-be-stored");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("an attempt that failed without an RPC error has no failure details", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-checkpoint-no-details-"));
+    roots.push(root);
+    const runtime: InternalInferenceRuntime = {
+      async run() {
+        throw new Error("the process went away");
+      },
+    };
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+      adapters: { test: { command: ["unused"] } },
+      defaultAdapterId: "test",
+      internalInference: { runtime, strategies: [new ConversationCheckpointStrategy()], retry: { maxAttempts: 1 } },
+    });
+    try {
+      const conversationId = createAgentConversationId();
+      await agent.persistence.conversations.create({ agentSessionId: agent.id, agentConversationId: conversationId });
+      await appendMessagePair(agent, conversationId, "hello", "hi", 1);
+      const run = await agent.internalInferences!.enqueue({
+        purpose: "conversation_checkpoint",
+        agentConversationId: conversationId,
+        input: checkpointInput(),
+        sourceFromSequence: 0,
+        sourceThroughSequence: 2,
+        requestedThroughSequence: 2,
+      });
+      await expect(run.result).rejects.toThrow("the process went away");
+      const attempt = await agent.persistence.internalInferences!.getAttempt(run.rootId);
+      expect(attempt?.status).toBe("failed");
+      expect(attempt?.failureDetails).toBeUndefined();
+    } finally {
+      await agent.close();
+    }
+  });
 });
 
 function checkpointInput() {

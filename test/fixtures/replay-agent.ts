@@ -9,6 +9,8 @@
 //   REPLAY_AGENT_PAGE_SIZE=N                list sessions N at a time, with a cursor
 //   REPLAY_AGENT_FAIL_RECAP=1               fail the prompt that asks the session to summarize itself
 //
+// A prompt that contains ECHO_OPENCODE_CONFIG is answered with the OPENCODE_CONFIG_CONTENT this process was started with.
+//
 // A session/load of an id that is not in the file fails (-32001, "session not found"), like a harness whose
 // session was deleted. Prompts after a load or a new session answer with a fixed reply.
 
@@ -122,7 +124,9 @@ function handle(message: any): void {
           update: {
             sessionUpdate: "agent_message_chunk",
             messageId: `live-${counter++}`,
-            content: { type: "text", text: recap ? "RECAP: the user greeted and asked to read a.txt, which says kiwi." : "LIVE_REPLY" },
+            content: { type: "text", text: /ECHO_OPENCODE_CONFIG/.test(asked)
+              ? `ENV=${process.env.OPENCODE_CONFIG_CONTENT ?? "unset"}`
+              : recap ? "RECAP: the user greeted and asked to read a.txt, which says kiwi." : "LIVE_REPLY" },
           },
         },
       });

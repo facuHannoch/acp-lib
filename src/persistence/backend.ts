@@ -170,6 +170,8 @@ export interface ConversationErrorDetails {
   readonly providerCode?: string | number;
   readonly rpcCode?: number;
   readonly service?: string;
+  /** The provider's name for the error class (OpenCode: `APIError`). A label, not a message. */
+  readonly errorName?: string;
   readonly exitCode?: number;
   readonly signal?: string;
   readonly transportState?: string;

@@ -8,3 +8,5 @@ export { DefaultInternalInferenceManager } from "./coordination/manager.ts";
 export type { DefaultInternalInferenceManagerConfig } from "./coordination/manager.ts";
 export type { InternalInferenceRepository } from "./persistence/repository.ts";
 export type * from "./persistence/records.ts";
+export { withoutHarnessBackgroundWork, openCodeConfigWithoutTitle, isOpenCode } from "./runtime/disposable-session-env.ts";
+export type { DisposableSessionLaunch } from "./runtime/disposable-session-env.ts";

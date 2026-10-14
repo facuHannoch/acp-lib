@@ -28,7 +28,7 @@ import {
   type NormalizedAgentObservation,
   type ResolvedAgentAuditLogConfig,
 } from "../audit/index.ts";
-import { buildConversationErrorDetails } from "../persistence/error-records.ts";
+import { conversationErrorDetailsFromError } from "../persistence/error-records.ts";
 
 
 import type { Agent } from "../agent.ts";
@@ -216,19 +216,7 @@ export async function enqueueAuditObservation(
 }
 
 /** Allow-listed machine-readable detail from a raw ACP error, when it exposes any. */
-export function providerSessionErrorDetails(error: unknown): ConversationErrorDetails | undefined {
-  const value = typeof error === "object" && error !== null
-    ? error as { code?: unknown; data?: unknown }
-    : null;
-  const data = typeof value?.data === "object" && value.data !== null
-    ? value.data as Record<string, unknown>
-    : undefined;
-  return buildConversationErrorDetails({
-    rpcCode: typeof value?.code === "number" ? value.code : undefined,
-    service: data?.service,
-    providerCode: data?.providerCode,
-  });
-}
+export const providerSessionErrorDetails = conversationErrorDetailsFromError;
 
 export function operationIdFromMetadata(metadata: string | undefined): string | undefined {
   if (!metadata) return undefined;

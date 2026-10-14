@@ -40,6 +40,7 @@ import type {
 } from "./internal-inference/contracts.ts";
 import { DefaultInternalInferenceManager } from "./internal-inference/coordination/manager.ts";
 import { HarnessInternalInferenceRuntime } from "./internal-inference/runtime/harness-runtime.ts";
+import { withoutHarnessBackgroundWork } from "./internal-inference/runtime/disposable-session-env.ts";
 import {
   ConversationCheckpointCoordinator,
   ConversationCheckpointStrategy,
@@ -197,29 +198,30 @@ export class Agent {
       if (!persistence.internalInferences) {
         throw new Error("persistence backend does not support internal inference");
       }
+      const suppressBackgroundWork = inferenceConfig.suppressHarnessBackgroundWork !== false;
       const runtime = settings.runtime ?? new HarnessInternalInferenceRuntime({
-        controllerConfig: (request) => ({
-          adapter: adapters.require(request.adapterId),
-          adapterId: request.adapterId,
-          ...(config.conversationDefaults?.launcher
-            ? { launcher: config.conversationDefaults.launcher }
-            : {}),
-          ...(config.conversationDefaults?.execPrefix
-            ? { execPrefix: config.conversationDefaults.execPrefix }
-            : {}),
-          ...(config.conversationDefaults?.env ? { env: config.conversationDefaults.env } : {}),
-          ...(config.conversationDefaults?.cwd ? { cwd: config.conversationDefaults.cwd } : {}),
-          ...(config.conversationDefaults?.clientInfo
-            ? { clientInfo: config.conversationDefaults.clientInfo }
-            : {}),
-          ...(config.conversationDefaults?.clientCapabilities
-            ? { clientCapabilities: config.conversationDefaults.clientCapabilities }
-            : {}),
-          ...(config.conversationDefaults?.logger
-            ? { logger: config.conversationDefaults.logger }
-            : {}),
-          ...(config.conversationDefaults?.wire ? { wire: config.conversationDefaults.wire } : {}),
-        }),
+        controllerConfig: (request) => {
+          const adapter = adapters.require(request.adapterId);
+          const defaults = config.conversationDefaults;
+          const launch = suppressBackgroundWork
+            ? withoutHarnessBackgroundWork(request.adapterId, adapter, {
+              ...(defaults?.env ? { env: defaults.env } : {}),
+              ...(defaults?.launcher ? { launcher: defaults.launcher } : {}),
+            })
+            : { env: defaults?.env, launcher: defaults?.launcher };
+          return {
+            adapter,
+            adapterId: request.adapterId,
+            ...(launch.launcher ? { launcher: launch.launcher } : {}),
+            ...(defaults?.execPrefix ? { execPrefix: defaults.execPrefix } : {}),
+            ...(launch.env ? { env: launch.env } : {}),
+            ...(defaults?.cwd ? { cwd: defaults.cwd } : {}),
+            ...(defaults?.clientInfo ? { clientInfo: defaults.clientInfo } : {}),
+            ...(defaults?.clientCapabilities ? { clientCapabilities: defaults.clientCapabilities } : {}),
+            ...(defaults?.logger ? { logger: defaults.logger } : {}),
+            ...(defaults?.wire ? { wire: defaults.wire } : {}),
+          };
+        },
       });
       const strategies = [...(inferenceConfig.strategies ?? [])];
       if (checkpointing?.enabled) {

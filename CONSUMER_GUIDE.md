@@ -564,6 +564,22 @@ into the visible transcript. Attempts are queued in SQLite, leased to one worker
 with a new `aii-…` attempt ID, observable, cancellable, and resumed when the database is
 reopened.
 
+Each attempt runs in a fresh, disposable harness session that is stopped as soon as its prompt is answered. A harness
+may start work of its own in that session which the answer does not wait for, and ACP gives the client no way to wait for
+it: OpenCode names a session with a second request on a small model, started at the first prompt, and stopping the process
+right after the answer can cut it off mid-stream (behind a gateway that is a cancelled, half-accounted request). So for
+OpenCode the default runtime starts the disposable process with `OPENCODE_CONFIG_CONTENT` set to turn the title agent off,
+for internal inference only: conversations are not touched, and an `OPENCODE_CONFIG_CONTENT` you already set (in
+`conversationDefaults.env` or the process environment) is kept, with the title agent switched off inside it. With a
+`launcher`, the variable is added to its `spawnEnv`; a launcher that starts the harness elsewhere (a container, a remote
+host) must forward it. Set `internalInference: { suppressHarnessBackgroundWork: false }` to leave the harness as configured.
+It has no effect with a custom `runtime`; see `withoutHarnessBackgroundWork` to apply it there.
+
+A failed attempt keeps the original error for whoever awaits it, and records on the attempt (`failureDetails`) the
+JSON-RPC code and the labels harnesses send in `data` (`service`, `errorName`, `providerCode`), nothing else of `data`. A
+harness decides what its errors carry: OpenCode's ACP adapter, for example, sends the upstream message text but not the HTTP
+status, gateway error code or request id, so those cannot be recovered here.
+
 Consumers register versioned strategies. A strategy derives a prompt from durable input,
 then validates and publishes the result inside the transaction that completes the attempt.
 The generic runtime deliberately does not define checkpoint or identity artifact schemas.

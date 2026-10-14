@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionId } from "../../agent-ids.ts";
-import type { ConversationRecord, PersistenceBackend } from "../../persistence/backend.ts";
+import type { ConversationRecord, PersistenceBackend, PersistenceJsonValue } from "../../persistence/backend.ts";
+import { conversationErrorDetailsFromError } from "../../persistence/error-records.ts";
 import type { OperationMeteringRecord } from "../../metering/record.ts";
 import { SubscriptionHub } from "../../observation/subscription-hub.ts";
 import { createInternalInferenceId } from "../ids.ts";
@@ -398,6 +399,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
   ): Promise<void> {
     const strategy = this.registry.get(attempt.purpose, attempt.input.strategyId, attempt.input.version);
     const disposition = strategy?.classifyError(error) ?? { kind: "terminal" as const, code: "unknown_strategy" };
+    const failureDetails = conversationErrorDetailsFromError(error);
     const canRetry = disposition.kind === "retryable"
       && attempt.attemptNumber < this.config.settings.retry.maxAttempts;
     const delay = retryDelay(this.config.settings.retry.backoffMs, attempt.attemptNumber);
@@ -421,6 +423,7 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         leaseToken,
         error: error instanceof Error ? error.message : String(error),
         failureCode: disposition.code,
+        ...(failureDetails ? { resultMetadata: failureDetails as PersistenceJsonValue } : {}),
         ...(canRetry
           ? {
               retry: {

@@ -98,6 +98,7 @@ export {
   CONVERSATION_ERROR_RECOVERABILITIES,
   CONVERSATION_ERROR_SOURCES,
   buildConversationErrorDetails,
+  conversationErrorDetailsFromError,
   sanitizeConversationErrorMessage,
 } from "./persistence/error-records.ts";
 export type {

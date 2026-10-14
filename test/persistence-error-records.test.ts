@@ -6,6 +6,7 @@ import {
   CONVERSATION_ERROR_CODES,
   SqliteAgentPersistence,
   buildConversationErrorDetails,
+  conversationErrorDetailsFromError,
   createAgentConversationId,
   createAgentSessionId,
   resolveConversationRecordCapture,
@@ -18,6 +19,33 @@ afterEach(async () => {
     recursive: true,
     force: true,
   })));
+});
+
+describe("details of a thrown ACP error", () => {
+  test("keeps the RPC code and the allow-listed labels of data, and nothing else", () => {
+    const error = Object.assign(new Error("Internal error: Upstream request failed"), {
+      code: -32603,
+      data: { service: "session", errorName: "APIError", providerCode: "E42", body: "<secret>", headers: { auth: "x" } },
+    });
+    expect(conversationErrorDetailsFromError(error)).toEqual({
+      rpcCode: -32603,
+      service: "session",
+      errorName: "APIError",
+      providerCode: "E42",
+    });
+  });
+
+  test("an error with no code or data has no details", () => {
+    expect(conversationErrorDetailsFromError(new Error("plain"))).toBeUndefined();
+    expect(conversationErrorDetailsFromError("a string")).toBeUndefined();
+    expect(conversationErrorDetailsFromError(null)).toBeUndefined();
+  });
+
+  test("labels are bounded and non-strings are dropped", () => {
+    const details = conversationErrorDetailsFromError({ data: { errorName: "x".repeat(500), service: 7 } });
+    expect(details?.errorName?.length).toBe(128);
+    expect(details?.service).toBeUndefined();
+  });
 });
 
 describe("conversation error record model", () => {

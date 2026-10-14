@@ -1,5 +1,5 @@
 import type { AgentConversationId, AgentSessionId } from "../../agent-ids.ts";
-import type { PersistenceJsonValue } from "../../persistence/backend.ts";
+import type { ConversationErrorDetails, PersistenceJsonValue } from "../../persistence/backend.ts";
 import type {
   InternalInferenceChainStatus,
   InternalInferenceCompletion,
@@ -38,6 +38,8 @@ export interface InternalInferenceAttemptRecord {
   readonly completion?: InternalInferenceCompletion;
   readonly error?: string;
   readonly failureCode?: string;
+  /** Allow-listed detail of the error behind a failed attempt (RPC code, provider labels), when it had any. */
+  readonly failureDetails?: ConversationErrorDetails;
   readonly meteringOperationId?: string;
   readonly metadata?: string;
 }

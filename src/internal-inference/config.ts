@@ -9,6 +9,13 @@ export interface InternalInferenceRetryPolicy {
 
 export interface InternalInferenceConfig {
   readonly runtime?: InternalInferenceRuntime;
+  /**
+   * Keep a harness from starting work of its own in a disposable session (OpenCode names the session with a
+   * second request that the answer does not wait for, and stopping the process after the answer can cut it
+   * off). On by default for the default runtime; `false` leaves the harness as configured. Has no effect
+   * with a custom `runtime`. See `withoutHarnessBackgroundWork`.
+   */
+  readonly suppressHarnessBackgroundWork?: boolean;
   readonly adapter?: "same" | string;
   readonly maxConcurrency?: number;
   readonly leaseDurationMs?: number;

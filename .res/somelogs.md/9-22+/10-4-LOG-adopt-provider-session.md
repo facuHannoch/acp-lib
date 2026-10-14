@@ -731,3 +731,47 @@ So the upstream message text survives, and `data` has `service` and `errorName`;
 sends. What the library does with what it gets: conversation errors keep `rpcCode`, `service`, `providerCode` (allow-listed;
 `errorName` is in `data` but not kept); an internal-inference failure keeps only the message string and a failure code in the
 attempt record (`internal_inferences.error`), not the RPC code or `data`.
+
+---
+
+## Disposable internal-inference sessions: no OpenCode title request; failure details on attempts (2026-10-14)
+
+**Corrects the previous entry:** the default internal-inference runtime *does* receive `conversationDefaults` (launcher, execPrefix,
+env, cwd, clientInfo, ...). What it does not receive are the per-conversation settings (no MCP servers, `defaultPermission:
+"cancel"`, no client handlers). So `conversationDefaults.env` already reached both kinds of process.
+
+**Done.**
+- `src/internal-inference/runtime/disposable-session-env.ts`: for an OpenCode adapter (by id `opencode` or by a command that is
+  `opencode`), the default runtime launches the disposable process with `OPENCODE_CONFIG_CONTENT` carrying
+  `agent.title.disable = true`, merged into any config the consumer already has (`conversationDefaults.env`, else the process
+  environment; config that is not a JSON object is left alone). With a launcher the variable is added to its `spawnEnv` (the
+  launcher contract makes `env` irrelevant then); a launcher that starts the harness elsewhere must forward it. Conversations are
+  not touched. Opt out: `internalInference: { suppressHarnessBackgroundWork: false }`; no effect with a custom `runtime`.
+  Exported: `withoutHarnessBackgroundWork`, `openCodeConfigWithoutTitle`, `isOpenCode`.
+- Failed internal-inference attempts record `failureDetails` (`InternalInferenceAttemptRecord`): the JSON-RPC code and the
+  allow-listed labels from the error's `data`. This reuses the allow-list that conversation errors already use
+  (`buildConversationErrorDetails`: unknown provider fields are discarded, not copied, which was a deliberate decision), so it
+  differs from what I proposed to the user (a bounded copy of `data`); `errorName` was added to the allow-list, which also
+  benefits conversation error records. `providerSessionErrorDetails` is now `conversationErrorDetailsFromError` in
+  `persistence/error-records.ts` (internal inference cannot import the agent layer).
+
+**Tested.** `bun test` 1013 pass, `tsc` clean. New: unit tests for the config merge, adapter detection, env/launcher paths;
+integration through `Agent` with a fixture adapter (the fixture echoes the `OPENCODE_CONFIG_CONTENT` it was started with): a
+checkpoint session gets the title agent disabled, a consumer config is kept, a conversation's own session is unchanged,
+`suppressHarnessBackgroundWork: false` leaves it unset; failure details kept for an RPC-shaped error and not for a plain one,
+`data` fields outside the allow-list not stored (`strategy.test.ts`, `persistence-error-records.test.ts`). A test of mine failed in
+the full run only because other files leave `REPLAY_AGENT_*` variables in the process environment; the new test clears them.
+
+**Real OpenCode (1.18.34), through the library.** A checkpoint inference over a stored two-message conversation, with OpenCode's own
+log captured: with suppression on there is no `agent=title` request in the log (0 in the 9 logs kept; the later batches overwrote their log),
+with it off there are (2 log lines per run in the logs kept). Summaries were produced in both modes.
+
+**Finding: stalls.** Some runs got no answer to the main request within 40 s (120 s in the first run): the `agent=build` request on
+`big-pickle` was sent and nothing came back. Counted over all the checkpoint runs I made through the library: **5 of 25 with
+suppression on, 1 of 26 with it off** (batches of different sizes, not a designed experiment; Fisher's exact test gives about 0.09, so
+suggestive, not established). The logs of the stalled runs show nothing different on the OpenCode side except the missing title
+request, an earlier un-modified raw run also took 52 s for the same request, and the free model's upstream is variable, so I have not
+established that disabling the title request causes it. Worth a larger, designed comparison before relying on this in production, and
+the off switch exists for that reason.
+**Related gap, existing before this change:** `HarnessInternalInferenceRuntime.run` has no timeout on the prompt, so a harness request
+that never answers holds the checkpoint worker until the agent shuts down (the lease heartbeat keeps renewing).
