@@ -692,3 +692,42 @@ forbids switching mid-session). Evidence is one session of two turns plus the ea
 **Gaps closed:** recap on OpenCode; `session/delete` on a real harness; whether steering causes `counter_reset`.
 **Still open:** tools the model runs during a recap are not recorded (none were used in these runs); the Codex metering
 classification above.
+
+---
+
+## Codex counters are per-turn; disposable-session and error-detail findings (2026-10-14)
+
+**Done: Codex is a per-turn adapter.** `PER_TURN_ADAPTERS` is now `opencode`, `codex` (`src/metering/provider.ts`, with the
+measurement in the comment). Test in `test/metering-provider.test.ts` uses the real numbers from `s9`: read as cumulative the
+second turn is a `counter_reset`, as per-turn both are attributable as reported. Re-ran `s9` on real Codex: both turns
+`metered` (17879, 17994). `bun test` 996 pass, `tsc` clean. Affects new sessions only; stored records keep their recorded
+`counterInterpretation`. Not re-run on Codex: the other `test11` scenarios (s1 to s8), which also meter Codex turns.
+
+**Checked: background work of the harness at the end of a disposable session** (a note from a consumer's incident: OpenCode
+title generation cancelled when a checkpoint session was stopped).
+- In this library, `HarnessInternalInferenceRuntime.run` calls `controller.stop()` in `finally` as soon as the prompt resolves;
+  `stop()` is SIGTERM, up to 500 ms, then SIGKILL (`acp-transport.ts`). Nothing waits for, or asks about, work the harness
+  started on its own. The note is right about that.
+- Measured with `opencode acp` driven directly (OpenCode 1.18.34): at the first prompt of a session OpenCode starts a second
+  request in parallel, `agent=title` on the small model (`gpt-5.4-nano` here), before the main `agent=build` request. ACP never
+  reports it complete (no ACP message is tied to it), so the prompt response says nothing about it. I did **not** reproduce the
+  cancellation itself (here the title request failed in 0.6 s with "Insufficient account funds", before the main answer); the
+  mechanism (concurrent, untracked, outlives the prompt if the small model is slower than the main one) is established.
+- OpenCode can be told not to do it: `OPENCODE_CONFIG_CONTENT='{"agent":{"title":{"disable":true}}}'` removes the title request
+  entirely; the prompt behaves the same.
+- What the library can express today: `HarnessInternalInferenceRuntime` and `controllerConfig(request)` are exported, and the
+  request carries `purpose`, so a consumer can pass `internalInference: { runtime: new HarnessInternalInferenceRuntime({
+  controllerConfig: (request) => ... }) }` with an `env`/launcher that sets the variable for checkpoints only. What it cannot do
+  is a small change to the default path: the default runtime copies `conversationDefaults` (env, launcher, execPrefix, cwd) and
+  ignores the purpose, so there is no per-purpose env or launcher without replacing the runtime and re-creating that mapping.
+  `env` on `AgentControllerConfig` is marked deprecated in favour of the launcher's `spawnEnv`, so a hosted-container launcher has
+  to carry the variable itself. A drain or "wait for background work" is not possible: ACP exposes no signal for it.
+
+**Checked: what error detail the library gets from OpenCode.** A main prompt on a model that fails upstream (the same
+"Insufficient account funds"): OpenCode retried the request six times over about 72 s, then answered the ACP prompt with
+`{"code":-32603,"message":"Internal error: Upstream request failed: Insufficient account funds","data":{"service":"session","errorName":"APIError"}}`.
+So the upstream message text survives, and `data` has `service` and `errorName`; no HTTP status, gateway error code or request id
+(they appear only in OpenCode's own logs). That part of the note is right: the library cannot recover what the adapter never
+sends. What the library does with what it gets: conversation errors keep `rpcCode`, `service`, `providerCode` (allow-listed;
+`errorName` is in `data` but not kept); an internal-inference failure keeps only the message string and a failure code in the
+attempt record (`internal_inferences.error`), not the RPC code or `data`.
