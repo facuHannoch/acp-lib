@@ -131,7 +131,7 @@ the model's reply.
 - An error record is written: code `stalled`, source `operation`, recoverability `retryable`, with the phase.
 
 **Resend.** With `turns.resendUnanswered: true` and phase `no_response`, the library sends the same prompt once more,
-in the same operation, before giving up. If the second attempt also stalls, the turn rejects as above. It never
+as a new operation linked to the stalled one (section 11), before giving up. If the second attempt also stalls, the turn rejects as above. It never
 resends after `incomplete_response`: tools may already have acted. Default `false`: one prompt is one attempt, the
 consumer learns of the failure after one wait instead of two, and the harness's history never gets the prompt twice
 unless someone asked for it. To try again, the consumer calls `prompt()` again; there is no separate retry API.
@@ -223,6 +223,18 @@ interface OperationLifecycleConfig {
 - `HarnessInternalInferenceRuntime.run` and the recap run their prompt through the same supervisor.
 - Reconnect-on-demand lives in `AgentSession`, next to `startPersistent`, reusing its load-or-recover logic.
 
+**What it does not own.** Updates keep their current path: transport → `AcpClient` (response accumulation, prompt
+handlers) → `AgentSession`, which fans them out to record capture, presentation, steering and metering. The supervisor
+is one more observer of that stream; it never holds or rewrites content. It owns only timing, the stage, the stall
+timers, the cancel escalation and the ending reason.
+
+**How it reports.** Through the existing channels, no new mechanism:
+- the stage and `OperationActivity` on the session snapshot (`emitStateIfChanged`);
+- `operation_stage_changed` and `provider_reconnected` as `AgentSessionEvent`s next to `turn_started` / `turn_failed`;
+- the error record and the `incomplete` assistant message through the normal persistence writes, so they reach the
+  committed-record event bus (`src/observation/agent-event-bus.ts`) like any other record;
+- internal inference stages through the existing handle subscriptions (`coordination/handles.ts`).
+
 This is the first slice of the provider-session interface (step 3 of the note's order).
 
 ## 8. Non-goals
@@ -261,11 +273,22 @@ Replay-agent fixture modes (env-driven, like the existing `REPLAY_AGENT_*`):
 
 Timers injectable so the tests run in milliseconds.
 
-## 11. Open details
+## 11. Decided details
 
-- Metering of a resent turn: one operation with two provider requests. Either one record with the second attempt's
-  usage plus a note, or one record per attempt under the same operation id. Decide with requirement 1 (operation ids on
-  all records).
-- A harness that sends periodic `usage` updates while otherwise silent would hide a stall. Count only non-usage updates
-  if measurement shows this happens.
-- Whether `stop()` should skip the grace (force immediately after one cancel), since the caller is tearing down anyway.
+- **A resend is its own operation.** A metering record is one provider request's reading: one `usage.status`, one
+  provider report, one `nextState` in the chain, keyed `(agent_conversation_id, operation_id)`. Two requests in one
+  record would need an invented combined report and a single status for a stalled attempt (usually
+  `usage_unavailable`) and a metered one. So the resend gets a new operation id and its own metering record, linked to
+  the stalled one (`resendOf` / `resentAs`), the way a steered turn and the prompt that follows it are two operations
+  today. The user's message stays one message, in the first operation.
+- **`stop()` does not wait for the grace.** It already doesn't: `AgentSession.stop()` clears the queue, sends
+  `session/cancel`, and calls `controller.stop()` right away, which kills the process (SIGTERM, 500 ms, SIGKILL).
+  Teardown is not a cancel; it stays as it is. The grace applies to cancels after which the conversation continues
+  (Stop, steering, a stall).
+
+## 12. Open
+
+- A harness that sends periodic `usage` updates while otherwise silent would hide a stall. Not observed; left open.
+  If it shows up, count only non-usage updates.
+- Measurements (section 9) run at the end, before the release: they only set default values, which are config. Build
+  and test against fixtures with injectable timers first.
