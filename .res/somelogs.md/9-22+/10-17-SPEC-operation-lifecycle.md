@@ -21,6 +21,10 @@ Today neither is guaranteed:
 - **Cancel is fire-and-forget.** `AcpClient.interrupt()` sends `session/cancel` (a notification, never acknowledged) and
   waits for the prompt to resolve on its own (`src/client.ts`, `interrupt`). If the harness ignores it, the turn never
   ends. Steering cancels at every steer boundary, so this path is used often.
+- **A cancel leaves our own permission requests unanswered.** `AcpClient.handlePermission` awaits the consumer's
+  handler with no way to end that wait. ACP requires the client to answer every pending `session/request_permission`
+  with `cancelled` once it sends `session/cancel`. A Stop or a steer during an open permission prompt can therefore
+  wait on us, not on the harness.
 - **A dead process is not replaced.** When the process exits unexpectedly, `onCrash` clears the transport and the
   session id; the provider is only started again from `open()` (`AgentSession.start` / `startPersistent`). The next
   prompt on that conversation fails until the consumer reopens it.
@@ -29,21 +33,25 @@ Today neither is guaranteed:
 
 ## Guarantee
 
-For every operation (a conversation turn, an internal inference attempt, a recap, and the control requests below):
+For every operation (a conversation turn, an internal inference attempt, a recap, and the control requests in
+section 6):
 
-1. Its state is always visible: what it is doing and since when.
-2. It always ends, in bounded time once it stops making progress, with a recorded reason.
-3. After it ends, the conversation accepts the next prompt with no call other than `prompt()`.
+1. **Visible.** Its state is always readable: what it is waiting on and since when.
+2. **Ends when stale.** When it is stale (section 2), it ends in bounded time with a recorded reason.
+3. **Cancel is bounded.** Any cancel ends it within the cancel grace, whatever the harness does.
+4. **Usable afterwards.** After it ends, the conversation accepts the next prompt with no call other than `prompt()`.
 
-It does **not** bound how long a working operation may take. A turn that streams, or runs tools, for an hour is fine.
+Not promised: a bound on how long a working operation takes. A turn that streams, or runs tools, for an hour is fine.
+An operation waiting on something identified (a tool in flight, a pending permission) is not stale; it stays visible in
+that stage, and a cancel still ends it within the grace.
 
 ## Terms
 
-- **Activity:** any `session/update` notification for the operation's session (text, thought, tool call, tool update,
+- **Output:** any `session/update` notification for the operation's session (text, thought, tool call, tool update,
   plan, usage, anything), and any request from the agent to the client (permission, file read/write, terminal).
 - **Tool in flight:** a tool call announced and not yet `completed` or `failed`. The same tracking steering uses for
   its boundaries (`SteeringController.observeActivity`); it moves to one place and both read it.
-- **Permission pending:** the agent is waiting on the consumer. Never a stall.
+- **Permission pending:** a permission request the consumer has not answered.
 
 ## 1. Visibility (always on)
 
@@ -51,8 +59,8 @@ Each running operation has a stage:
 
 | Stage | Meaning |
 |---|---|
-| `waiting` | sent, no activity yet |
-| `streaming` | activity seen, no tool in flight |
+| `waiting` | prompt sent, no output yet |
+| `streaming` | output seen, no tool in flight |
 | `tool_running` | at least one tool in flight |
 | `awaiting_permission` | a permission request is pending |
 | `cancelling` | a cancel was requested and the request has not ended |
@@ -65,76 +73,90 @@ interface OperationActivity {
   readonly kind: "turn" | "internal_inference" | "recap";
   readonly stage: OperationStage;
   readonly startedAt: number;
-  readonly lastActivityAt: number | null;
+  readonly lastOutputAt: number | null;
   readonly toolsInFlight: number;
   /** Set while cancelling: why, and when the cancel was first sent. */
   readonly cancel?: { readonly reason: CancelReason; readonly requestedAt: number };
 }
+
+type CancelReason = "interrupt" | "steer" | "stalled" | "stop" | "abort";
 ```
 
-An event `operation_stage_changed` fires on stage changes only. `lastActivityAt` is read from the snapshot, not
-evented per update.
+The snapshot also shows the provider connection: `connected` | `disconnected` (after a forced stop or an exit, until
+the next operation reconnects, section 4) | `reconnecting`.
 
-## 2. Stall policy (on by default, every kind)
+An event `operation_stage_changed` fires on stage changes only. `lastOutputAt` is read from the snapshot, not evented per
+update.
 
-A stall is silence where silence is not explained:
+## 2. When an operation is stale
 
-| Stage | Limit |
-|---|---|
-| `waiting` | `firstActivityMs` |
-| `streaming` | `idleMs` since the last activity |
-| `tool_running` | none (a build or test may run for a long time) |
-| `awaiting_permission` | none (waiting on us) |
+Stale is a condition that must be met, not the absence of a list of good signs. An operation is active by default, and
+stale only when **all** of these hold:
 
-When a limit is reached, the operation is cancelled (section 3) with reason `stalled`, and its phase is recorded:
+1. **The provider owes model output.** One of:
+   - the prompt was sent and nothing has come back (`waiting`);
+   - the last tool in flight ended and nothing has come after it: the model owes its next response;
+   - a message was streaming and stopped before the turn ended.
+2. **Nothing explains the silence.** No tool in flight, no pending permission, no harness signal recognised as work.
+   That list starts empty; a harness notice for compaction or similar is added when the measurements (section 10) show
+   one exists.
+3. **It has lasted longer than the limit** for the situation:
+   - `firstOutputMs`: the first case;
+   - `nextOutputMs`: the other two.
 
-- `no_response`: nothing arrived (stalled in `waiting`);
-- `incomplete_response`: something arrived, then nothing (stalled in `streaming`).
+Everything else is never timed: tools running, pending permissions, session loads with their replay, logins.
 
-Provisional defaults, to be replaced by measurement (section 9): `firstActivityMs` 120 000, `idleMs` 180 000. They are
-deliberately below OpenCode's own 300 s header timeout: a harness only cares about itself, and this library runs many
-of them.
+Provisional defaults, replaced by measurement: `firstOutputMs` 120 000, `nextOutputMs` 180 000. Both are below
+OpenCode's own 300 s header timeout on purpose: a harness only cares about itself, and this library runs many of them.
+An optional `toolMs` (off by default) bounds a single tool in flight, for consumers who would rather fail a hung tool
+than wait.
 
-`idleMs` also covers the silent gap between two model requests inside one turn (after a tool result, before the next
-model response). Thinking models normally stream thought chunks, which count as activity.
+When a stale operation is detected, it is cancelled (section 3) with reason `stalled`, and its phase is recorded:
+
+- `no_response`: nothing arrived;
+- `incomplete_response`: something arrived, then nothing.
+
+Known false-stale risk: automatic compaction (Claude, Codex) can be minutes of silence after a tool result. Unless the
+harness signals it, it meets condition 1, and `nextOutputMs` must cover it.
 
 ## 3. Bounded cancel (always on)
 
-Every cancel goes through one path, whoever asks for it: `interrupt()`, steering, the stall policy, `stop()`, an
+Every cancel goes through one path, whoever asks for it: `interrupt()`, steering, the stall policy, an
 internal-inference abort signal.
 
-1. Send `session/cancel`. Stage `cancelling`.
-2. At half the grace, send it again (a notification can be lost or arrive before the harness is ready for it).
-3. At `cancelGraceMs`, force-stop: kill the provider process (the existing SIGTERM, 500 ms, SIGKILL), end the in-flight
+1. Answer every pending permission request of the session with `cancelled`, and abort the consumer's permission handler
+   (it receives an `AbortSignal`; a late answer is ignored).
+2. Send `session/cancel`. Stage `cancelling`.
+3. At half the grace, send it again (a notification can be lost or arrive before the harness is ready for it).
+4. At `cancelGraceMs`, force-stop: kill the provider process (the existing SIGTERM, 500 ms, SIGKILL), end the in-flight
    request as forced, and mark the provider disconnected.
 
 `cancelGraceMs` is per adapter, default 30 000. The measured OpenCode cancel latency is ~65 ms, so a forced stop means
 the harness is not answering, not that it is slow.
 
-The result records how the cancel ended: `cancel: "acknowledged" | "forced"`. A steer or interrupt that had to be
-forced still ends with `endedBy: "steer" | "interrupt"`; it is the same ending, reached the hard way.
+The ending records how the cancel went: `cancel: "acknowledged" | "forced"`. A steer or interrupt that had to be forced
+resolves exactly as an acknowledged one: the cancelled result, `endedBy: "steer" | "interrupt"`, the messages that
+arrived, plus `cancel: "forced"`. The forced-stop rejection from the controller is converted, never surfaced. The
+follow-up steer is then delivered after the reconnect.
+
+`stop()` is not a cancel and is unchanged: it already sends `session/cancel` and kills the process right away. The
+grace applies only to cancels after which the conversation carries on.
 
 Killing the process is safe for the conversation because each conversation owns its provider process. Disposable
 internal-inference sessions already end with `stop()`.
 
-## 4. After the operation ends
+## 4. After a stale turn
 
-### Conversation turn
+The user's message was delivered and stays in the transcript as sent. What is missing is the model's reply, so the
+turn ends with an error:
 
-The turn ends with an error. The user's message was delivered and stays in the transcript as sent; what is missing is
-the model's reply.
+- `prompt()` **rejects** with `OperationStalledError` (code `stalled`, `phase`, `operationId`, the messages that did
+  arrive, and `followedBy` when steers were delivered after it). It does not resolve normally: a consumer that does not
+  check would take half a reply for a full one.
+- The conversation recovers (below), then sends what the user said next.
 
-- `prompt()` **rejects** with `OperationStalledError` (code `stalled`, `phase`, `operationId`, and the messages that did
-  arrive). It does not resolve normally, because a consumer that does not check would take half a reply for a full
-  one.
-- A partial assistant message is stored with status `incomplete`.
-- An error record is written: code `stalled`, source `operation`, recoverability `retryable`, with the phase.
-
-**Resend.** With `turns.resendUnanswered: true` and phase `no_response`, the library sends the same prompt once more,
-as a new operation linked to the stalled one (section 11), before giving up. If the second attempt also stalls, the turn rejects as above. It never
-resends after `incomplete_response`: tools may already have acted. Default `false`: one prompt is one attempt, the
-consumer learns of the failure after one wait instead of two, and the harness's history never gets the prompt twice
-unless someone asked for it. To try again, the consumer calls `prompt()` again; there is no separate retry API.
+Nothing is resent. A resend would duplicate the prompt in the harness's history, is awkward with attachments, and
+makes the user wait twice to see the error. To try again, the user sends a message.
 
 ### Recovery of the conversation (always)
 
@@ -142,153 +164,188 @@ Self-healing is not a setting.
 
 - **Cancel acknowledged:** the process and the session are untouched. Nothing to do.
 - **Forced stop, or the process exited on its own** (the same path; today's crash case is included): the next operation
-  that needs the provider (the resend, the next prompt, a config change) starts a new process and loads the session
-  with `session/load`, falling back to checkpoint recovery under the existing recovery rules. An event
-  `provider_reconnected` reports which (`loaded` | `recovered`).
-- Prompts queued meanwhile wait for the reconnect; they do not fail.
+  that needs the provider starts a new process and loads the session with `session/load`, falling back to checkpoint
+  recovery under the existing recovery rules. An event `provider_reconnected` reports which (`loaded` | `recovered`).
 - If the reconnect fails, that operation fails with the existing codes (`provider_session_load_failed`,
   `recovery_failed`) and the next operation tries again. The conversation never enters a state that only a call other
   than `prompt()` can leave.
 
-### Internal inference attempt
+### Pending messages after a failed turn
 
-The attempt fails with code `stalled` in its `failureDetails`; the existing retry policy (`retry.maxAttempts`,
-`backoffMs`) runs the next attempt in a fresh session. No change to how attempts are counted.
+A stall is a steer boundary: the turn is already lost, so cancelling costs nothing.
 
-### Recap
+- **Steers** waiting at the head of the queue are delivered as soon as the conversation has recovered, combined into one
+  prompt as at any other boundary (`message_delivered` with `via: "stall"`). In
+  `work on X` → stall → `what happened?` + `anddd...??`, the two steers are the next prompt. This applies to both phases:
+  the steers are the user's new words, not a repeat.
+- **Queued** messages are for the happy path: they assume the turn before them did what it was meant to do. After a
+  turn that ends `stalled` or `error`, every queued message is **held** (`message_held`, naming the failed turn).
+- While held:
+  - a new message sent with `steer` (the default delivery) runs right away, even though the conversation is idle;
+  - a new message sent with `queue` goes to the end of the held queue. `queue` is an explicit choice and is respected;
+  - `withdraw()` works as usual.
+- The held queue is **released** (`message_released`) by the next turn that completes normally. Its messages then run in
+  order, including those added while held.
 
-The recap is abandoned; the adoption still succeeds. An `adoption_recap_failed` record carries code `stalled`, and the
-checkpoint floor is placed without a recap (`adoption_baseline`). This closes the "`create()` waits on the recap with no
-timeout" gap.
+Accepted consequence: a consumer that sends only `queue` (for example `busyDelivery: "queue"`) sees everything pile up
+after a failure until it sends one prompt with `delivery: "steer"` or withdraws. It is visible: every held message has
+its event, and the snapshot shows the hold. No release call is added.
 
-### Control requests
+Holding applies only after `stalled` and `error`. After `interrupt` and `steer`, pending messages behave as today.
 
-`initialize`, `session/new`, `session/load`, `session/set_config_option`, `session/set_mode`, `session/list` and
-`session/delete` are not inference. They get a plain deadline, `control.requestMs` (default 60 000; `session/load` of a
-long history may need more, measure). On expiry the request fails with code `provider_request_timeout`, the process is
-force-stopped, and recovery is as above.
+## 5. Internal inference and recap
 
-### Upstream accounting
+- **Internal inference attempt:** a stale attempt fails with code `stalled` in its `failureDetails`; the existing retry
+  policy (`retry.maxAttempts`, `backoffMs`) runs the next attempt in a fresh session. No change to how attempts are
+  counted.
+- **Recap:** a stale recap is abandoned and the adoption still succeeds. The `adoption_recap_failed` record carries the
+  stall in its details, and the checkpoint floor is placed without a recap (`adoption_baseline`). This closes the
+  "`create()` waits on the recap with no timeout" gap.
 
-A cancelled or forced attempt keeps its metering record with status `cancelled` and usage `null` when the provider did
-not report any. A gateway in front of the provider must account for cancelled upstream requests on its own; the
-library records what it saw and never invents usage.
+## 6. Control requests
 
-## 5. Records and the turn ending
+Requests that are not inference are plain request/response and get a deadline per kind, `control.*Ms`:
+
+| Request | Deadline |
+|---|---|
+| `initialize` | counted from the process being up and reading, so a first-run `npx` download is not cut off |
+| `session/new`, `session/set_config_option`, `session/set_mode`, `session/list`, `session/delete` | `control.requestMs`, default 60 000 |
+| `session/load` | `control.loadIdleMs` since the last replay update, not total: a long load that is replaying is working |
+| `authenticate` | none: it can be an interactive login |
+
+On expiry the request fails with code `provider_request_timeout`, the process is force-stopped, and recovery is as in
+section 4.
+
+## 7. Records and events
+
+What a stale turn leaves, all through the existing write paths:
+
+| Kind | Where |
+|---|---|
+| error record: code `stalled`, phase, operation id; source `operation`, recoverability `retryable` | database, and the committed-record event bus |
+| the partial assistant message, status `incomplete` | database |
+| the metering record: outcome `cancelled`, usage `null` if the provider reported none | database |
+| what the load or checkpoint recovery path already writes | database |
+| how the turn ended: `stalled` (requirement 3) | database |
+| `turn_failed` with the stall error | live event |
+| `provider_reconnected` (`loaded` / `recovered`) | live event |
+| `message_delivered` (`via: "stall"`), `message_held`, `message_released` | live events |
+
+The library has no setting to hide a failure or a recovery. Every piece is typed, so a consumer that wants a quiet UI
+filters out the `stalled` record, and one that wants it explicit shows "No response, recovered".
 
 New error codes in `CONVERSATION_ERROR_CODES`: `stalled`, `provider_request_timeout`.
 
-The turn ending extends `PromptEndedBy` from `"steer" | "interrupt"` to `"steer" | "interrupt" | "stalled" | "error"`.
-Persisting it with the turn is requirement 3 of `10-13-acp-client-requirements.md`; this spec fixes the values, and
-requirement 3 stores them, so after a reload a client can show "Redirected", "Stopped" or "No response".
+**The turn ending.** `PromptEndedBy` goes from `"steer" | "interrupt"` to `"steer" | "interrupt" | "stalled" | "error"`:
 
-## 6. Settings (per operation kind)
+- `stalled`: section 2;
+- `error`: the process exited mid-turn, or the request failed for any other reason.
+
+Live, a turn ending `stalled` or `error` rejects, so these two values appear only in persisted history. Persisting it
+with the turn is requirement 3 of `10-13-acp-client-requirements.md`; this spec fixes the values, and requirement 3
+stores them, so after a reload a client can show "Redirected", "Stopped" or "No response".
+
+**Upstream accounting.** A cancelled or forced attempt keeps its metering record; the library never invents usage. A
+gateway in front of the provider must account for cancelled upstream requests on its own.
+
+Metering stays one record per operation. A record is one provider request's reading (one `usage.status`, one report,
+one `nextState` in the chain, keyed `(agent_conversation_id, operation_id)`), so steers delivered after a stall are
+their own operation and record, as after any steer.
+
+## 8. Settings (per operation kind)
 
 ```ts
 interface OperationLifecycleConfig {
-  readonly turns?: {
-    readonly firstActivityMs?: number | false;
-    readonly idleMs?: number | false;
-    /** Resend the prompt once when nothing came back. Default false. */
-    readonly resendUnanswered?: boolean;
+  readonly turns?: StaleLimits;
+  readonly internalInference?: StaleLimits;
+  readonly recap?: StaleLimits;
+  readonly control?: {
+    readonly requestMs?: number;
+    readonly initializeMs?: number;
+    readonly loadIdleMs?: number;
   };
-  readonly internalInference?: { readonly firstActivityMs?: number | false; readonly idleMs?: number | false };
-  readonly recap?: { readonly firstActivityMs?: number | false; readonly idleMs?: number | false };
-  readonly control?: { readonly requestMs?: number };
+}
+
+interface StaleLimits {
+  readonly firstOutputMs?: number | false;
+  readonly nextOutputMs?: number | false;
+  /** Off by default. */
+  readonly toolMs?: number | false;
 }
 ```
 
 - Set on the Agent config; `false` turns a limit off for that kind.
 - `cancelGraceMs` is per adapter (adapter config), not per kind: it depends on how the harness answers a cancel.
-- Bounded cancel and recovery have no switch.
+- Bounded cancel, recovery, and steer delivery after a stall have no switch.
 - Not in this step: per-conversation overrides through the resolver, and a per-prompt override for a known-long
   request. Both fit the shape later.
 
-## 7. Where it lives
+## 9. Where it lives
 
 ```
  queue (AgentConversationQueue) ──► OperationSupervisor ──► controller
-                                     │  stage, lastActivityAt     prompt(), cancel(), forceStop()
-                                     │  stall timers
-                                     │  cancel escalation
+                                     │  stage, lastOutputAt       prompt(), cancel(), forceStop()
+                                     │  stale timers
+                                     │  cancel escalation, pending permissions
  steering ── requestCancel("steer") ─┘  (reads stage / tools in flight)
 ```
 
-- `OperationSupervisor` (new, `src/operations/`) wraps one provider request: it starts it, observes activity, runs the
-  stall timers, and owns every cancel. Steering stops calling `controller.interrupt()` directly and asks the supervisor;
-  its boundary detection reads the supervisor's tool tracking.
+- `OperationSupervisor` (new, `src/operations/`) wraps one provider request: it starts it, observes output, runs the
+  stale timers, and owns every cancel. Steering stops calling `controller.interrupt()` directly and asks the supervisor;
+  its boundary detection reads the supervisor's tool tracking, and a stall is one more boundary for it.
 - The controller supplies two primitives and nothing else for this: `cancel()` (today's `interrupt`) and `forceStop()`
   (new: kill the process, reject the in-flight prompt with a forced-stop error, become disconnected). For a later
   model-call controller these are "abort the stream" and "drop the connection".
 - `HarnessInternalInferenceRuntime.run` and the recap run their prompt through the same supervisor.
 - Reconnect-on-demand lives in `AgentSession`, next to `startPersistent`, reusing its load-or-recover logic.
+- The hold is steering state: it already owns the pending list and its events.
 
 **What it does not own.** Updates keep their current path: transport → `AcpClient` (response accumulation, prompt
 handlers) → `AgentSession`, which fans them out to record capture, presentation, steering and metering. The supervisor
-is one more observer of that stream; it never holds or rewrites content. It owns only timing, the stage, the stall
+is one more observer of that stream; it never holds or rewrites content. It owns only timing, the stage, the stale
 timers, the cancel escalation and the ending reason.
 
-**How it reports.** Through the existing channels, no new mechanism:
-- the stage and `OperationActivity` on the session snapshot (`emitStateIfChanged`);
-- `operation_stage_changed` and `provider_reconnected` as `AgentSessionEvent`s next to `turn_started` / `turn_failed`;
-- the error record and the `incomplete` assistant message through the normal persistence writes, so they reach the
-  committed-record event bus (`src/observation/agent-event-bus.ts`) like any other record;
-- internal inference stages through the existing handle subscriptions (`coordination/handles.ts`).
+**How it reports.** Through the existing channels, no new mechanism: the snapshot (`emitStateIfChanged`), the
+`AgentSessionEvent` stream next to `turn_started` / `turn_failed`, the normal persistence writes (hence the
+committed-record event bus, `src/observation/agent-event-bus.ts`), and the internal-inference handle subscriptions
+(`coordination/handles.ts`).
 
 This is the first slice of the provider-session interface (step 3 of the note's order).
 
-## 8. Non-goals
+## 10. Measurements before the defaults
 
-- No limit on total duration.
-- No automatic resend after any reply arrived.
-- No retry API.
-- No limit while a tool runs or a permission is pending.
-- No change to the provider's own retries: if a harness retries internally and streams within our limits, we never
-  notice.
-
-## 9. Measurements before the defaults
-
-Spend tokens; run with the user's authorization, throwaway sessions only, models not set.
+Run at the end, before the release: they only set default values. Spend tokens; approved by the user; throwaway
+sessions only; models not set.
 
 - Cancel latency (cancel sent → prompt resolved) on Codex and Claude; OpenCode has ~65 ms.
-- Time to first activity distribution per adapter.
-- The longest silent gap mid-turn with no tool in flight (between model requests, thinking models).
-- `session/load` duration for a long history (for `control.requestMs`).
+- Time to first output, per adapter.
+- The longest silent gap mid-turn with no tool in flight, including automatic compaction, and whether any harness
+  signals compaction over ACP.
+- `session/load` duration and replay gaps for a long history.
 
-## 10. Tests
+## 11. Tests
 
-Replay-agent fixture modes (env-driven, like the existing `REPLAY_AGENT_*`):
+Replay-agent fixture modes (env-driven, like the existing `REPLAY_AGENT_*`), timers injectable so they run in
+milliseconds:
 
-- silent forever after a prompt → `stalled`/`no_response`; with `resendUnanswered` one resend, then reject;
-- partial text then silence → `stalled`/`incomplete_response`, partial message `incomplete`, no resend;
-- ignores `session/cancel` → second cancel at half grace, forced stop at grace, `cancel: "forced"`, next prompt
-  reconnects with `session/load`;
-- exits mid-turn → turn fails `provider_process_exited`, next prompt reconnects;
-- a long tool call with no other activity → no stall;
-- pending permission → no stall;
-- steer against a harness that ignores cancel → delivered after the forced stop, `endedBy: "steer"`;
+- silent after a prompt → `stalled` / `no_response`, rejection, error record, conversation usable;
+- partial text then silence → `stalled` / `incomplete_response`, partial message `incomplete`;
+- stall with steers pending → steers delivered after recovery, `via: "stall"`, `followedBy` on the error;
+- stall with queued messages → held; a `queue` message joins them; a `steer` message runs and its completion releases
+  them in order; `withdraw()` works while held;
+- ignores `session/cancel` → second cancel at half grace, forced stop at grace, `cancel: "forced"`, the steer or
+  interrupt result unchanged otherwise, next prompt reconnects with `session/load`;
+- cancel during a pending permission → the request is answered `cancelled`, the handler aborted;
+- exits mid-turn → turn fails with `endedBy` `error`, queue held, next prompt reconnects;
+- a long tool call with no other output → not stale; with `toolMs` set → stale;
+- pending permission for longer than every limit → not stale;
 - internal inference stall → attempt fails `stalled`, retry in a fresh session;
 - recap stall → adoption succeeds, baseline floor, `adoption_recap_failed`;
-- control request deadline → `provider_request_timeout`, recovery.
-
-Timers injectable so the tests run in milliseconds.
-
-## 11. Decided details
-
-- **A resend is its own operation.** A metering record is one provider request's reading: one `usage.status`, one
-  provider report, one `nextState` in the chain, keyed `(agent_conversation_id, operation_id)`. Two requests in one
-  record would need an invented combined report and a single status for a stalled attempt (usually
-  `usage_unavailable`) and a metered one. So the resend gets a new operation id and its own metering record, linked to
-  the stalled one (`resendOf` / `resentAs`), the way a steered turn and the prompt that follows it are two operations
-  today. The user's message stays one message, in the first operation.
-- **`stop()` does not wait for the grace.** It already doesn't: `AgentSession.stop()` clears the queue, sends
-  `session/cancel`, and calls `controller.stop()` right away, which kills the process (SIGTERM, 500 ms, SIGKILL).
-  Teardown is not a cancel; it stays as it is. The grace applies to cancels after which the conversation continues
-  (Stop, steering, a stall).
+- control request deadline → `provider_request_timeout`, recovery; a load that keeps replaying is not cut off.
 
 ## 12. Open
 
 - A harness that sends periodic `usage` updates while otherwise silent would hide a stall. Not observed; left open.
-  If it shows up, count only non-usage updates.
-- Measurements (section 9) run at the end, before the release: they only set default values, which are config. Build
-  and test against fixtures with injectable timers first.
+  If it shows up, usage updates stop counting as output.
+- Consumers: requirement 12 suggests agents-core retires and reopens a conversation it sees as disconnected.
+  Reconnect-on-demand changes what consumers see; the release notes say so.
