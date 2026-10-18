@@ -150,3 +150,9 @@ the harness answers or the process exits (the ACP SDK rejects pending requests w
   `delivery: "steer"`.
 - Validation: typecheck passed; full suite 1038 passed, 0 failed.
 - Separate topic noted: automatic rotation or handoff for long sessions that load slowly.
+
+## Spec: recovery steers stop at the next queued message (review item 5)
+
+Spec section 4 now states the rule explicitly, with the user's example: after a stall, the steers combined into the
+recovery prompt are those up to the next queued message, not including it; steers after a held queued message run
+after it, in order. The implementation still combines steers across a held queued message; the fix is pending.

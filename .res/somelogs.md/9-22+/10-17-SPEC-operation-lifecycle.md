@@ -178,6 +178,11 @@ A stall is a steer boundary: the turn is already lost, so cancelling costs nothi
   prompt as at any other boundary (`message_delivered` with `via: "stall"`). In
   `work on X` → stall → `what happened?` + `anddd...??`, the two steers are the next prompt. This applies to both phases:
   the steers are the user's new words, not a repeat.
+  The steers combined are those **up to the next queued message, not including it**. A held queued message keeps its
+  place: steers sent after it run after it, in order. In
+  `work on X` → stall → `what happened?` (steer) + `deploy the website` (queue) + `and update the record` (steer),
+  the recovery prompt is `what happened?` alone; when it completes, the hold is released and `deploy the website`
+  runs, then `and update the record`.
 - **Queued** messages are for the happy path: they assume the turn before them did what it was meant to do. After a
   turn that ends `stalled` or `error`, every queued message is **held** (`message_held`, naming the failed turn).
 - While held:
