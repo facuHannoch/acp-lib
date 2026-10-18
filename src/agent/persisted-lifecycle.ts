@@ -47,6 +47,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     private readonly conversationId: AgentConversationId,
     private readonly initialParticipants: readonly ParticipantRef[],
     private readonly settings: ManagerSettings,
+    readonly recoverInPlace?: (error: unknown) => Promise<void>,
   ) {}
 
   async operationFailed(input: { operationId: string; error: OperationStalledError }): Promise<void> {

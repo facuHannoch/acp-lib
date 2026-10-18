@@ -204,6 +204,7 @@ export class AcpClient implements AgentClient {
    * startup would otherwise be unobserved. Mirrors how `availableCommands` is cached and
    * re-emitted on attach.
    */
+  private readonly disconnectListeners = new Set<() => void>();
   private readonly pendingPermissions = new Set<() => void>();
   private readonly outputListeners = new Set<OutputListener>();
   private lastUsageUpdate: { update: unknown; sessionId: string | null } | null = null;
@@ -292,6 +293,10 @@ export class AcpClient implements AgentClient {
     }
     return () => this.usageUpdateListeners.delete(listener);
   }
+  subscribeDisconnect(listener: () => void): () => void {
+    this.disconnectListeners.add(listener);
+    return () => this.disconnectListeners.delete(listener);
+  }
   subscribeOutput(listener: OutputListener): () => void {
     this.outputListeners.add(listener);
     return () => this.outputListeners.delete(listener);
@@ -307,7 +312,7 @@ export class AcpClient implements AgentClient {
   }
   /** True once connect() has spawned + initialized (a session may not exist yet). */
   get isConnected(): boolean {
-    return this.transport !== null;
+    return this.transport?.isConnected ?? false;
   }
   /** True once a session has been created or loaded. */
   get hasSession(): boolean {
@@ -360,6 +365,12 @@ export class AcpClient implements AgentClient {
         this.log.debug("agent_stderr", { line });
         this.authStderrSink?.(line);
       },
+      onDisconnect: () => {
+        for (const cancel of [...this.pendingPermissions]) cancel();
+        for (const listener of [...this.disconnectListeners]) {
+          try { listener(); } catch (error) { this.log.warn("disconnect_listener_failed", { error: String(error) }); }
+        }
+      },
       onCrash: (code) => {
         for (const cancel of [...this.pendingPermissions]) cancel();
         this.terminals?.releaseAll();
@@ -369,6 +380,9 @@ export class AcpClient implements AgentClient {
         this.commandTransition = null;
         this.setAvailableCommands([]);
         this.log.error("process_exit", { code });
+        for (const listener of [...this.disconnectListeners]) {
+          try { listener(); } catch (error) { this.log.warn("disconnect_listener_failed", { error: String(error) }); }
+        }
       },
     });
     try {

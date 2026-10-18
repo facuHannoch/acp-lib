@@ -29,6 +29,7 @@ export type AgentSessionPhase =
 /** Authoritative, immutable point-in-time state for orchestration consumers. */
 export interface AgentSessionState {
   readonly operation: OperationActivity | null;
+  readonly providerConnection: "connected" | "disconnected" | "reconnecting";
   readonly phase: AgentSessionPhase;
   /** True only while an operation is executing; queued work is reported separately. */
   readonly isBusy: boolean;
@@ -203,6 +204,7 @@ export interface HandoffResult {
 
 /** Conversation-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
 export type AgentSessionEvent =
+  | { kind: "provider_reconnected"; via: "loaded" | "recovered"; internalSessionId: string }
   | { kind: "operation_stage_changed"; activity: OperationActivity }
   | { kind: "state_changed"; state: AgentSessionState }
   | { kind: "turn_started"; turnId: string }

@@ -21,3 +21,12 @@ a harness that auto-approves cannot exercise this scenario and the runner report
 `s5` runs a tool longer than the configured silence limit and checks it completes without a stall.
 `ACP_TEST13_FIRST_OUTPUT_MS` and `ACP_TEST13_NEXT_OUTPUT_MS` set the general smoke limits (5000ms).
 The mock scenario uses 100ms limits and a 150ms tool; real prompts use an eight-second sleep.
+
+`s2` freezes its harness with SIGSTOP, verifies a no-response stall and stored error, and checks that
+loading the same session preserves a remembered keyword. `s3` sends SIGKILL during a prompt and checks
+that the next prompt loads the same session and remembers the keyword. The launcher writes only its
+own newly spawned harness PID to `harness.pid`; signals never target an existing consumer session.
+`ACP_TEST13_CANCEL_GRACE_MS` defaults to 1000ms for smoke runs.
+
+For a quick mock fault run:
+`ACP_TEST13_ONLY=s2,s3 ACP_TEST13_FIRST_OUTPUT_MS=100 ACP_TEST13_NEXT_OUTPUT_MS=100 ACP_TEST13_CANCEL_GRACE_MS=100 bun smoke-tests/test13-operationLifecycle/index.ts`.

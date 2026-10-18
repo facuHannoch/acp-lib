@@ -58,6 +58,7 @@ export interface AcpTransportOptions {
    */
   onWire?: (entry: WireEntry) => void;
   /** The process exited unexpectedly (not via stop()). */
+  onDisconnect?: () => void;
   onCrash?: (code: number | null) => void;
 }
 
@@ -71,6 +72,8 @@ export class AcpTransport {
   constructor(private opts: AcpTransportOptions) {
     this.disposeLaunch = onceDispose(opts.launch.dispose);
   }
+
+  get isConnected(): boolean { return !!this.connection && !this.connection.signal.aborted; }
 
   async start(): Promise<void> {
     if (this.proc) return;
@@ -110,6 +113,7 @@ export class AcpTransport {
       this.tap = tap;
       const handler = new ClientHandler(this.opts);
       this.connection = new acp.ClientSideConnection(() => handler, stream);
+      this.connection.signal.addEventListener("abort", () => this.opts.onDisconnect?.(), { once: true });
 
       if (proc.stderr) this.pumpStderr(proc.stderr as ReadableStream<Uint8Array>);
 

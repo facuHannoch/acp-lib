@@ -1,3 +1,4 @@
+import { ProviderSessionError } from "./agent-conversation-errors.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import type { OperationLifecycleConfig } from "./operations/contracts.ts";
 import { OperationSupervisor } from "./operations/supervisor.ts";
@@ -505,6 +506,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly managedOpenProgress?: ManagedOpenProgressReporter;
   private managedInitializationReported = false;
   private readonly operationLifecycle: OperationLifecycleConfig;
+  private reconnecting = false;
+  private detachControllerConnection: (() => void) | null = null;
   private activeSupervisor: OperationSupervisor | null = null;
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
@@ -676,6 +679,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private bindController(controller: AgentController): void {
+    this.detachControllerConnection?.();
+    this.detachControllerConnection = controller.subscribeConnection(() => this.emitStateIfChanged());
     this.detachControllerCommands?.();
     this.detachControllerUsage?.();
     this.detachControllerCommands = controller.subscribeAvailableCommands((commands) => {
@@ -1774,6 +1779,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   get state(): AgentSessionState {
     return Object.freeze({
       operation: this.activeSupervisor?.activity ?? null,
+      providerConnection: this.reconnecting ? "reconnecting" : this.controller.isConnected ? "connected" : "disconnected",
       phase: this.phase,
       isBusy: this.isBusy,
       queuedOperationCount: this.queuedOperationCount,
@@ -2300,6 +2306,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
+    await this.ensureProvider();
     const fromInternalSessionId = this._internalSessionId;
     const fromAdapterId = this.adapterId;
     const targetAdapterId = item.options.target?.adapterId ?? fromAdapterId;
@@ -2706,6 +2713,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runSetConfig(item: ConfigQueueItem): Promise<void> {
+    await this.ensureProvider();
     if (!this.v2Transcript || this.persistence === false) {
       await this.controller.setConfig(item.configId, item.value);
       return;
@@ -3060,6 +3068,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runSetMode(item: ModeQueueItem): Promise<ConnectResult> {
+    await this.ensureProvider();
     if (item.mode === this._mode) return await this.controller.setMode(item.mode);
     if (!this.v2Transcript) {
       const result = await this.controller.setMode(item.mode);
@@ -3178,6 +3187,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
+    await this.ensureProvider();
     const targetProviderContextId = this.ownerLifecycle
       ? this._internalSessionId ?? `runtime:${this.ownerContextNonce ??= crypto.randomUUID()}`
       : undefined;
@@ -3717,6 +3727,53 @@ export class AgentConversation implements AgentClient, Bridgeable {
    * Operation ids are deterministic children of the handoff id rather than freshly
    * minted, so a consumer can tie both halves back to the handoff that caused them.
    */
+  /** @internal Acquire a fresh leaf for checkpoint recovery without replacing this conversation. */
+  async restartProviderFresh(): Promise<void> {
+    await this.controller.forceStop();
+    const result = await this.controller.startFresh();
+    if (!result.sessionId) throw new Error("provider returned no fresh session");
+    this.installProviderAttachment(result.sessionId, "runtime_only", true);
+  }
+
+  private async ensureProvider(): Promise<void> {
+    if (this.controller.isConnected) return;
+    if (this.phase === "stopped") throw new Error("conversation is stopped");
+    const sessionId = this._internalSessionId;
+    const attachment = this.providerAttachment;
+    this.reconnecting = true;
+    this.emitStateIfChanged();
+    let via: "loaded" | "recovered" = "loaded";
+    try {
+      try {
+        if (sessionId) await this.controller.reconnect(sessionId);
+        else await this.controller.startFresh();
+      } catch (error) {
+        if (this.ownerLifecycle?.recoverInPlace && sessionId) {
+          await this.ownerLifecycle.recoverInPlace(error);
+          via = "recovered";
+        } else {
+          throw new ProviderSessionError({ agentSessionId: this.ownerAgentSessionId ?? this.agentSessionId as import("./agent-ids.ts").AgentSessionId,
+            agentConversationId: this.agentConversationId, attemptId: `reconnect-${crypto.randomUUID()}`,
+            internalSessionId: sessionId ?? undefined, source: "provider_session", code: "provider_session_load_failed", recoverability: "retryable", cause: error });
+        }
+      }
+      if (this.state.phase === "stopped") { await this.controller.forceStop(); throw new Error("conversation stopped during reconnect"); }
+      if (via === "loaded") {
+        const loadedId = this.controller.currentSessionId;
+        if (loadedId && loadedId !== this._internalSessionId) this.installProviderAttachment(loadedId, "runtime_only", !sessionId);
+      }
+      this.emit({ kind: "provider_reconnected", via, internalSessionId: this._internalSessionId! });
+    } catch (error) {
+      await this.controller.forceStop().catch(() => {});
+      this.providerAttachment = attachment;
+      this.setInternalSessionId(sessionId);
+      throw error;
+    } finally {
+      this.reconnecting = false;
+      this.emitStateIfChanged();
+    }
+  }
+
   private cancelOperation(reason: CancelReason): void {
     if (this.activeSupervisor) this.activeSupervisor.cancel(reason);
     else this.controller.cancel();
@@ -3746,6 +3803,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     target?: InternalPromptTarget,
   ): Promise<PromptResult> {
     const controller = target?.controller ?? this.controller;
+    if (!target && !this.reconnecting) await this.ensureProvider();
     const metering = target?.metering ?? this.metering;
     const advertised = target ? activeModel(target.controller.configOptions) : this.advertisedModel;
     const reference = target ? resolveModelReference(target.adapterId, advertised) : null;
@@ -4302,6 +4360,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private emitStateIfChanged(): void {
     const state = this.state;
     const key = [
+      state.providerConnection,
       state.operation?.stage ?? "",
       state.operation?.operationId ?? "",
       state.phase,

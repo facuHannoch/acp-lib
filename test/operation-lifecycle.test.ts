@@ -34,6 +34,7 @@ test("ignored cancel is bounded, sent twice, and exposes cancelling", async () =
   const result = await pending;
   expect(Date.now() - start).toBeLessThan(1000); expect(result.cancel).toBe("forced"); expect(result.endedBy).toBe("interrupt");
   expect(outgoing.filter((line) => line.includes('"method":"session/cancel"')).length).toBe(2);
+  expect((await value.prompt("after forced interrupt")).status).toBe("completed");
 });
 
 test("silence and partial silence reject with the phase and captured messages", async () => {
@@ -46,6 +47,7 @@ test("silence and partial silence reject with the phase and captured messages", 
     expect(error.messages.map((message: any) => message.text).join("")).toBe(mode === "partial" ? "partial reply" : "");
     expect(error.metering.outcome).toBe("cancelled"); expect(error.cancel).toBe("forced");
     expect(Date.now() - start).toBeLessThan(1000);
+    expect((await value.prompt("after stall")).status).toBe("completed");
   }
 });
 test("a tool and pending permission explain silence; optional toolMs bounds a tool", async () => {
@@ -103,4 +105,61 @@ test("a stalled adoption recap succeeds with its failure detail and baseline che
   const records = (await agent.persistence.records.list(value.id, { limit: 1000 })).records;
   expect(records.find((record: any) => record.kind === "error" && record.code === "adoption_recap_failed")).toMatchObject({ details: { providerCode: "stalled", phase: "no_response" } });
   expect(await agent.persistence.recoveryCheckpoints!.latest(value.id)).toMatchObject({ source: "adoption_baseline" });
+});
+test("a killed provider is loaded on the next prompt with context and the same conversation object", async () => {
+  const value = await conversation(); const events: any[] = [];
+  value.subscribe(({ event }) => events.push(event));
+  const first = await value.prompt("remember pineapple"); const id = value.internalSessionId;
+  const pid = Number(/pid=(\d+)/.exec(first.text)![1]);
+  const pending = value.prompt("[lifecycle:ignore]"); const failed = pending.catch((error) => error);
+  await until(() => value.state.operation !== null); await Bun.sleep(20);
+  process.kill(pid, "SIGKILL");
+  expect((await failed).name).toBe("AgentSessionOperationError");
+  const next = await value.prompt("what did I ask you to remember?");
+  expect(next.text).toContain("remember pineapple"); expect(value.internalSessionId).toBe(id);
+  expect(events.some((event) => event.kind === "provider_reconnected" && event.via === "loaded")).toBe(true);
+  expect(value.state.providerConnection).toBe("connected");
+});
+test("a frozen harness stalls, is forcibly killed, then loads with its earlier context", async () => {
+  const value = await conversation({ operationLifecycle: { turns: { firstOutputMs: 40, nextOutputMs: 40 } } });
+  const first = await value.prompt("remember plum"); const pid = Number(/pid=(\d+)/.exec(first.text)![1]);
+  process.kill(pid, "SIGSTOP");
+  const error = await value.prompt("frozen turn").catch((error) => error);
+  expect(error.code).toBe("stalled"); expect(error.phase).toBe("no_response"); expect(error.cancel).toBe("forced");
+  expect(value.state.providerConnection).toBe("disconnected");
+  const next = await value.prompt("remember what?"); expect(next.text).toContain("remember plum");
+}, 5000);
+test("missing provider history recovers from checkpoint in the same owned conversation", async () => {
+  const { Agent } = await import("../src/agent.ts");
+  const { createConversationRecoveryCheckpointId } = await import("../src/checkpointing/ids.ts");
+  const { writeFile } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "acp-inplace-recovery-")); cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const state = join(directory, "sessions.json");
+  const agent = await Agent.open({ persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+    adapters: { mock: { command: [process.execPath, resolve(import.meta.dir, "fixtures/lifecycle-agent.ts")], cancelGraceMs: 30 } }, defaultAdapterId: "mock",
+    checkpointing: { schedule: { milestones: [100], everyAfterMilestones: 100 }, recovery: { onLoadFailure: "recover" } },
+    conversationDefaults: { metering: { pricing: false }, env: { LIFECYCLE_STATE: state } } }); cleanups.push(() => agent.close());
+  const value = await agent.conversations.create(); const events: any[] = []; value.subscribe(({ event }) => events.push(event));
+  await value.prompt("remember nectarines"); const previous = value.internalSessionId;
+  const sequence = await agent.persistence.recoveryCheckpoints!.latestMessageSequence(value.id);
+  await agent.persistence.recoveryCheckpoints!.publish({ checkpointId: createConversationRecoveryCheckpointId(), agentConversationId: value.id,
+    source: "adoption_recap", summary: "The user asked to remember nectarines.", coveredSequence: sequence });
+  await value.connection.forceStop(); await writeFile(state, "{}");
+  const result = await value.prompt("what fruit?");
+  expect(result.text).toContain("nectarines"); expect(value.internalSessionId).not.toBe(previous);
+  expect(events.some((event) => event.kind === "provider_reconnected" && event.via === "recovered")).toBe(true);
+  expect((await agent.conversations.open(value.id)).conversation).toBe(value);
+  expect((await agent.persistence.providerSessions.active(value.id))!.internalSessionId).toBe(value.internalSessionId);
+});
+test("a failed detached reload leaves the conversation retryable on the next prompt", async () => {
+  const { readFile, writeFile } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "acp-load-retry-")); cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const state = join(directory, "sessions.json");
+  const value = await conversation({ env: { LIFECYCLE_STATE: state } });
+  await value.prompt("remember guava"); const id = value.internalSessionId;
+  const saved = await readFile(state, "utf8"); await value.connection.forceStop(); await writeFile(state, "{}");
+  expect((await value.prompt("first reconnect").catch((error) => error)).code).toBe("provider_session_load_failed");
+  expect(value.state.providerConnection).toBe("disconnected"); expect(value.internalSessionId).toBe(id);
+  await writeFile(state, saved);
+  expect((await value.prompt("second reconnect")).text).toContain("guava");
 });

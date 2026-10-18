@@ -453,107 +453,116 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     } catch (error) {
       // No recorded mapping means this open was creating a thread, not loading one.
       if (!active) return await this.throwCreateFailure(id, attemptId, error, settings);
-      const recovery = settings.checkpointing?.recovery;
-      const classification = classifyProviderSessionLoadError(error, recovery?.isMissingProviderSession);
-      const recorded = await this.recordConversationError({
+      return await this.recoverAfterLoadFailure(id, active.internalSessionId, error, settings, config,
+        async () => await this.start(id, summary.participants, { ...startConfig, providerSession: "new", settings }),
+        async (conversation) => { this.live.delete(id); await conversation.stop().catch(() => undefined); });
+    }
+  }
+
+  /** Shared recovery policy for opening and reconnecting the same logical conversation. */
+  private async recoverAfterLoadFailure(
+    id: AgentConversationId, previousInternalSessionId: string, error: unknown, settings: ManagerSettings,
+    config: Pick<OpenAgentConversationConfig, "onRecoveryProgress">,
+    fresh: () => Promise<AgentConversation>, dispose: (conversation: AgentConversation) => Promise<void>,
+  ): Promise<OpenOwnedAgentConversationResult> {
+    const summary = await this.agent.persistence.conversations.get(id);
+    if (!summary) throw new Error(`unknown conversation: ${id}`);
+    const attemptId = `provider-load-${randomUUID()}`;
+    const recovery = settings.checkpointing?.recovery;
+    const classification = classifyProviderSessionLoadError(error, recovery?.isMissingProviderSession);
+    const recorded = await this.recordConversationError({
+      settings,
+      agentConversationId: id,
+      attemptId,
+      source: "provider_session",
+      code: classification.code,
+      recoverability: classification.recoverability,
+      message: "The provider session could not be loaded.",
+      transitionId: attemptId,
+      internalSessionId: previousInternalSessionId,
+      details: providerSessionErrorDetails(error),
+    });
+    const structuredError = (): ProviderSessionError => new ProviderSessionError({
+      agentSessionId: this.agent.id,
+      agentConversationId: id,
+      attemptId,
+      internalSessionId: previousInternalSessionId,
+      code: classification.code,
+      source: "provider_session",
+      recoverability: classification.recoverability,
+      ...(recorded.record ? { recordId: recorded.record.recordId } : {}),
+      ...(recorded.recordingError ? { recordingError: recorded.recordingError } : {}),
+      cause: error,
+    });
+    if (recovery?.onLoadFailure !== "recover" || !classification.missing) throw structuredError();
+    config.onRecoveryProgress?.({ stage: "load_failed" });
+    config.onRecoveryProgress?.({ stage: "loading_checkpoint" });
+    const checkpoint = await this.agent.persistence.recoveryCheckpoints?.latest(id);
+    if (!checkpoint) throw structuredError();
+    config.onRecoveryProgress?.({ stage: "loading_checkpoint", checkpointId: checkpoint.checkpointId });
+    const recoveryAttemptId = `recovery-${randomUUID()}`;
+    try {
+      const seed = await buildRecoverySeed(
+        this.agent.persistence.messages,
+        id,
+        checkpoint,
+        summary.latestSequence,
+        recovery,
+      );
+      config.onRecoveryProgress?.({ stage: "creating_session", checkpointId: checkpoint.checkpointId });
+      const conversation = await fresh();
+      try {
+        config.onRecoveryProgress?.({ stage: "seeding", checkpointId: checkpoint.checkpointId });
+        await conversation.seedRecoveryContext(seed.prompt);
+        const acknowledgement = await this.persistProviderSession(conversation, id, {
+          transitionId: recoveryAttemptId,
+          metadata: JSON.stringify({
+            recoveryCheckpointId: checkpoint.checkpointId,
+            previousInternalSessionId,
+            recoveredThroughSequence: seed.recoveredThroughSequence,
+          }),
+        }, true);
+        conversation.acknowledgeProviderAttachment(acknowledgement);
+      } catch (recoveryError) {
+        await dispose(conversation);
+        throw recoveryError;
+      }
+      const result: ConversationRecoveryResult = Object.freeze({
+        checkpointId: checkpoint.checkpointId,
+        coveredSequence: checkpoint.coveredSequence,
+        recoveredThroughSequence: seed.recoveredThroughSequence,
+        previousInternalSessionId,
+        newInternalSessionId: conversation.internalSessionId!,
+      });
+      config.onRecoveryProgress?.({ stage: "completed", checkpointId: checkpoint.checkpointId });
+      return Object.freeze({ conversation, providerSession: "recovered", recovery: result });
+    } catch (recoveryError) {
+      // A recovery failure is a distinct root cause from the load failure already
+      // recorded above; it prevents the logical conversation from reopening.
+      const recoveryRecorded = await this.recordConversationError({
         settings,
         agentConversationId: id,
-        attemptId,
-        source: "provider_session",
-        code: classification.code,
-        recoverability: classification.recoverability,
-        message: "The provider session could not be loaded.",
-        transitionId: attemptId,
-        internalSessionId: active.internalSessionId,
-        details: providerSessionErrorDetails(error),
+        attemptId: recoveryAttemptId,
+        source: "recovery",
+        code: "recovery_failed",
+        recoverability: "recoverable",
+        message: "The conversation could not be recovered from its checkpoint.",
+        transitionId: recoveryAttemptId,
+        internalSessionId: previousInternalSessionId,
       });
-      const structuredError = (): ProviderSessionError => new ProviderSessionError({
+      throw new ProviderSessionError({
         agentSessionId: this.agent.id,
         agentConversationId: id,
-        attemptId,
-        internalSessionId: active.internalSessionId,
-        code: classification.code,
-        source: "provider_session",
-        recoverability: classification.recoverability,
-        ...(recorded.record ? { recordId: recorded.record.recordId } : {}),
-        ...(recorded.recordingError ? { recordingError: recorded.recordingError } : {}),
-        cause: error,
+        attemptId: recoveryAttemptId,
+        internalSessionId: previousInternalSessionId,
+        code: "recovery_failed",
+        source: "recovery",
+        recoverability: "recoverable",
+        message: "The conversation could not be recovered from its checkpoint.",
+        ...(recoveryRecorded.record ? { recordId: recoveryRecorded.record.recordId } : {}),
+        ...(recoveryRecorded.recordingError ? { recordingError: recoveryRecorded.recordingError } : {}),
+        cause: recoveryError,
       });
-      if (recovery?.onLoadFailure !== "recover" || !classification.missing) throw structuredError();
-      config.onRecoveryProgress?.({ stage: "load_failed" });
-      config.onRecoveryProgress?.({ stage: "loading_checkpoint" });
-      const checkpoint = await this.agent.persistence.recoveryCheckpoints?.latest(id);
-      if (!checkpoint) throw structuredError();
-      config.onRecoveryProgress?.({ stage: "loading_checkpoint", checkpointId: checkpoint.checkpointId });
-      const recoveryAttemptId = `recovery-${randomUUID()}`;
-      try {
-        const seed = await buildRecoverySeed(
-          this.agent.persistence.messages,
-          id,
-          checkpoint,
-          summary.latestSequence,
-          recovery,
-        );
-        config.onRecoveryProgress?.({ stage: "creating_session", checkpointId: checkpoint.checkpointId });
-        const conversation = await this.start(id, summary.participants, {
-          ...startConfig,
-          providerSession: "new",
-          settings,
-        });
-        try {
-          config.onRecoveryProgress?.({ stage: "seeding", checkpointId: checkpoint.checkpointId });
-          await conversation.seedRecoveryContext(seed.prompt);
-          const acknowledgement = await this.persistProviderSession(conversation, id, {
-            transitionId: recoveryAttemptId,
-            metadata: JSON.stringify({
-              recoveryCheckpointId: checkpoint.checkpointId,
-              previousInternalSessionId: active.internalSessionId,
-              recoveredThroughSequence: seed.recoveredThroughSequence,
-            }),
-          }, true);
-          conversation.acknowledgeProviderAttachment(acknowledgement);
-        } catch (recoveryError) {
-          this.live.delete(id);
-          await conversation.stop().catch(() => undefined);
-          throw recoveryError;
-        }
-        const result: ConversationRecoveryResult = Object.freeze({
-          checkpointId: checkpoint.checkpointId,
-          coveredSequence: checkpoint.coveredSequence,
-          recoveredThroughSequence: seed.recoveredThroughSequence,
-          previousInternalSessionId: active.internalSessionId,
-          newInternalSessionId: conversation.internalSessionId!,
-        });
-        config.onRecoveryProgress?.({ stage: "completed", checkpointId: checkpoint.checkpointId });
-        return Object.freeze({ conversation, providerSession: "recovered", recovery: result });
-      } catch (recoveryError) {
-        // A recovery failure is a distinct root cause from the load failure already
-        // recorded above; it prevents the logical conversation from reopening.
-        const recoveryRecorded = await this.recordConversationError({
-          settings,
-          agentConversationId: id,
-          attemptId: recoveryAttemptId,
-          source: "recovery",
-          code: "recovery_failed",
-          recoverability: "recoverable",
-          message: "The conversation could not be recovered from its checkpoint.",
-          transitionId: recoveryAttemptId,
-          internalSessionId: active.internalSessionId,
-        });
-        throw new ProviderSessionError({
-          agentSessionId: this.agent.id,
-          agentConversationId: id,
-          attemptId: recoveryAttemptId,
-          internalSessionId: active.internalSessionId,
-          code: "recovery_failed",
-          source: "recovery",
-          recoverability: "recoverable",
-          message: "The conversation could not be recovered from its checkpoint.",
-          ...(recoveryRecorded.record ? { recordId: recoveryRecorded.record.recordId } : {}),
-          ...(recoveryRecorded.recordingError ? { recordingError: recoveryRecorded.recordingError } : {}),
-          cause: recoveryError,
-        });
-      }
     }
   }
 
@@ -822,6 +831,12 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         id,
         participants,
         config.settings,
+        async (loadError) => {
+          const current = conversation!;
+          await this.recoverAfterLoadFailure(id, current.internalSessionId!, loadError, config.settings, {},
+            async () => { await current.restartProviderFresh(); return current; },
+            async () => { await current.connection.forceStop(); });
+        },
       );
       this.liveSettings.set(id, config.settings);
       conversation = await AgentConversation.create({
