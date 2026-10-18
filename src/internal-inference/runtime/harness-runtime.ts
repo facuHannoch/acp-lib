@@ -1,5 +1,5 @@
 import { OperationSupervisor } from "../../operations/supervisor.ts";
-import type { OperationActivity, OutputListener } from "../../operations/contracts.ts";
+import type { OutputListener } from "../../operations/contracts.ts";
 import { AgentController, type AgentControllerConfig } from "../../controller.ts";
 import type { PromptResult } from "../../types.ts";
 import type {

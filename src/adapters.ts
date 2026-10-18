@@ -1,4 +1,4 @@
-// Adapters carry ONLY what's needed to LAUNCH the connection — the command.
+// Adapters carry the launch command and the grace for terminating an unresponsive harness.
 // Everything else (auth methods, capabilities, features) is DISCOVERED from initialize.
 // See SPEC.md "Adapters" + "Core principles".
 

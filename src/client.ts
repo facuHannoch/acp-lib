@@ -853,7 +853,10 @@ export class AcpClient implements AgentClient {
     if (this.active && this.transport && this._sessionId) {
       this.active.cancelled = true;
       // ACP baseline: session/cancel. The in-flight prompt() then resolves naturally.
-      void this.transport.cancel({ sessionId: this._sessionId } as schema.CancelNotification);
+      try {
+        void this.transport.cancel({ sessionId: this._sessionId } as schema.CancelNotification)
+          .catch((error) => this.log.warn("cancel_notification_failed", { error: String(error) }));
+      } catch (error) { this.log.warn("cancel_notification_failed", { error: String(error) }); }
     }
   }
 

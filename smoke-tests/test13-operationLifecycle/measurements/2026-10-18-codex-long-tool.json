@@ -1,0 +1,10 @@
+{
+  "adapterId": "codex",
+  "measurements": [
+    {
+      "scenario": "s5",
+      "status": "completed"
+    }
+  ],
+  "failures": []
+}

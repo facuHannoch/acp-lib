@@ -194,3 +194,11 @@ test("idle hold respects explicit queue, permits withdrawal, and releases only a
   const results = await Promise.all([held, another]); expect(results.every((result) => result.status === "completed")).toBe(true);
   expect(value.state.pendingHold).toBeNull();
 });
+test("a stalled handoff target uses its own adapter cancellation grace", async () => {
+  const command = [process.execPath, resolve(import.meta.dir, "fixtures/lifecycle-agent.ts")];
+  const value = await conversation({ adapter: { command, cancelGraceMs: 2000 }, operationLifecycle: { internalInference: { firstOutputMs: 30, nextOutputMs: 30 } } });
+  const start = Date.now();
+  const error = await value.handoff({ continuation: { kind: "none" }, target: { adapterId: "other", adapter: { command, cancelGraceMs: 30 } }, targetPrompt: "[lifecycle:silent]" }).catch((error) => error);
+  expect(error.cause?.code).toBe("stalled"); expect(Date.now() - start).toBeLessThan(1000);
+  expect((await value.prompt("source still works")).status).toBe("completed");
+});

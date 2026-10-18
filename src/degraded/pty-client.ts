@@ -1,3 +1,4 @@
+import type { OutputListener } from "../operations/contracts.ts";
 // PtyClient — degraded-mode AgentClient. Drives an agent's INTERACTIVE CLI inside a pty
 // (via PtyTransport) and scrapes the screen back into the same prompt()/onChunk contract
 // AcpClient exposes, so the REPL and controller work against it unchanged.
@@ -62,6 +63,7 @@ export class PtyClient implements AgentClient, Bridgeable {
   private screen: EmulatorScreen | null = null;
   private turn: Turn | null = null;
   // Raw pty-output subscribers (used by bridge() to mirror the pty to the user's screen).
+  private readonly outputListeners = new Set<OutputListener>();
   private rawListeners = new Set<(data: string) => void>();
   private readonly settleMs: number;
   private readonly submitDelayMs: number;
@@ -75,6 +77,12 @@ export class PtyClient implements AgentClient, Bridgeable {
     this.cols = opts.cols ?? 100;
     this.rows = opts.rows ?? 30;
     this.log = opts.logger ?? noopLogger;
+  }
+
+  /** Raw terminal bytes explain activity even before a scraped reply has settled. */
+  subscribeOutput(listener: OutputListener): () => void {
+    this.outputListeners.add(listener);
+    return () => this.outputListeners.delete(listener);
   }
 
   get isConnected(): boolean {
@@ -181,6 +189,10 @@ export class PtyClient implements AgentClient, Bridgeable {
   // --- internals ----------------------------------------------------------------
 
   private onData(data: string): void {
+    for (const listener of [...this.outputListeners]) {
+      try { listener({ kind: "update", sessionId: null }); }
+      catch (error) { this.log.warn("pty_output_listener_failed", { error: String(error) }); }
+    }
     this.screen?.write(data);
     for (const listener of this.rawListeners) listener(data);
     if (this.turn) this.armSettle();

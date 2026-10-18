@@ -1,0 +1,84 @@
+{
+  "adapterId": "mock",
+  "measurements": [
+    {
+      "scenario": "s4",
+      "status": "passed",
+      "events": [
+        {
+          "kind": "message_pending",
+          "id": "mvd6edre6qm4",
+          "delivery": "queue"
+        },
+        {
+          "kind": "message_pending",
+          "id": "mvd6edreon7y",
+          "delivery": "steer"
+        },
+        {
+          "kind": "message_pending",
+          "id": "mvd6edrebxfg",
+          "delivery": "steer"
+        },
+        {
+          "kind": "message_held",
+          "id": "mvd6edre6qm4",
+          "failedTurnId": "mvd6edrdira8"
+        },
+        {
+          "kind": "message_delivered",
+          "ids": [
+            "mvd6edreon7y",
+            "mvd6edrebxfg"
+          ],
+          "via": "stall",
+          "turnId": "mvd6edreon7y"
+        },
+        {
+          "kind": "message_released",
+          "id": "mvd6edre6qm4",
+          "failedTurnId": "mvd6edrdira8"
+        },
+        {
+          "kind": "message_delivered",
+          "ids": [
+            "mvd6edre6qm4"
+          ],
+          "via": "turn_end",
+          "turnId": "mvd6edre6qm4"
+        }
+      ]
+    },
+    {
+      "scenario": "s2",
+      "error": "OperationStalledError: Provider operation stalled (no_response).",
+      "nextStatus": "completed"
+    },
+    {
+      "scenario": "s3",
+      "error": "AgentSessionOperationError: ACP connection closed",
+      "nextStatus": "completed"
+    },
+    {
+      "scenario": "s5",
+      "status": "completed"
+    },
+    {
+      "scenario": "s1",
+      "elapsedMs": 6,
+      "cancel": "acknowledged"
+    },
+    {
+      "run": 0,
+      "firstOutputMs": 2,
+      "longestGapMs": 3,
+      "normalMs": 4,
+      "cancelLatencyMs": 0,
+      "cancelStatus": "completed",
+      "loadMs": 1,
+      "replayCount": 2,
+      "longestReplayGapMs": 0
+    }
+  ],
+  "failures": []
+}

@@ -48,3 +48,28 @@ test("normal settlement removes cancellation timers and subscriptions", async ()
   resolve({ text: "partial", messages: [{ text: "partial" }], usage: null, status: "cancelled", stopReason: "cancelled" });
   expect((await pending).cancel).toBe("acknowledged"); expect(detached).toBe(true); expect(clock.jobs.size).toBe(0);
 });
+test("a broken cancellation notification or force primitive cannot leave the request pending", async () => {
+  const clock = new Clock();
+  const supervisor = new OperationSupervisor({ prompt: () => new Promise(() => {}), subscribeOutput: () => () => {},
+    cancel() { throw new Error("connection already closed"); }, forceStop() { throw new Error("cleanup failed"); },
+  }, { operationId: "broken", kind: "turn", timers: clock, cancelGraceMs: 10 });
+  const pending = supervisor.run(); supervisor.cancel("interrupt"); clock.advance(10);
+  expect((await pending).cancel).toBe("forced"); expect(clock.jobs.size).toBe(0);
+});
+test("a cancel that loses the completion race does not claim acknowledgement", async () => {
+  const supervisor = new OperationSupervisor({ async prompt() { return { text: "done", messages: [{ text: "done" }], status: "completed", stopReason: "end_turn", usage: null }; },
+    subscribeOutput: () => () => {}, cancel() {}, async forceStop() {},
+  }, { operationId: "complete", kind: "turn" });
+  const result = supervisor.run(); supervisor.cancel("interrupt"); expect((await result).cancel).toBeUndefined();
+});
+test("same-stage output updates snapshot timing without producing stage events", async () => {
+  const clock = new Clock(); let output!: OutputListener; let finish!: (result: any) => void; const stages: string[] = [];
+  const supervisor = new OperationSupervisor({ prompt: () => new Promise((resolve) => { finish = resolve; }),
+    subscribeOutput: (listener) => { output = listener; return () => {}; }, cancel() {}, async forceStop() {},
+  }, { operationId: "timestamps", kind: "turn", timers: clock, onStageChanged: (activity) => stages.push(activity.stage) });
+  const pending = supervisor.run(); await Promise.resolve();
+  clock.advance(10); output({ kind: "update", sessionId: null });
+  clock.advance(10); output({ kind: "request", sessionId: null });
+  expect(stages).toEqual(["waiting", "streaming"]); expect(supervisor.activity.lastOutputAt).toBe(20);
+  finish({ text: "done", messages: [], usage: null, stopReason: "end_turn", status: "completed" }); await pending;
+});

@@ -76,19 +76,22 @@ export class OperationSupervisor {
       this.cancel("stalled");
     }, Math.max(0, decision.deadline - this.timers.now()));
   }
+  private sendCancel(): void {
+    try { this.provider.cancel(); } catch { /* Escalation still bounds a broken notification transport. */ }
+  }
   cancel(reason: CancelReason): void {
     if (this.finished || this.cancellation) return;
     this.timers.clearTimeout(this.staleHandle);
     this.cancellation = { reason, requestedAt: this.timers.now() };
     this.publishStage();
-    this.provider.cancel();
+    this.sendCancel();
     const grace = this.options.cancelGraceMs ?? 30_000;
-    this.handles.push(this.timers.setTimeout(() => { if (!this.finished) this.provider.cancel(); }, grace / 2));
+    this.handles.push(this.timers.setTimeout(() => { if (!this.finished) this.sendCancel(); }, grace / 2));
     this.handles.push(this.timers.setTimeout(() => {
       if (this.finished) return;
       this.forced = true;
       // Start teardown before releasing the queue; reconnect waits for teardown in the controller.
-      void this.provider.forceStop().catch(() => {});
+      void Promise.resolve().then(() => this.provider.forceStop()).catch(() => {});
       this.finishForced?.({ text: "", messages: Object.freeze([]), stopReason: "cancelled", status: "cancelled", usage: null, cancel: "forced" });
     }, grace));
   }
@@ -106,7 +109,7 @@ export class OperationSupervisor {
         error.cancel = this.forced ? "forced" : "acknowledged";
         throw error;
       }
-      return this.cancellation ? { ...result, cancel: this.forced ? "forced" : "acknowledged" } : result;
+      return this.cancellation && result.status === "cancelled" ? { ...result, cancel: this.forced ? "forced" : "acknowledged" } : result;
     } catch (error) {
       if (this.stallPhase) {
         const stalled = error instanceof OperationStalledError ? error : new OperationStalledError(this.options.operationId, this.stallPhase);

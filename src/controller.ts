@@ -1,4 +1,4 @@
-import { ProviderRequestTimeoutError } from "./operations/errors.ts";
+import { ProviderRequestTimeoutError, ForcedStopError } from "./operations/errors.ts";
 import type { OutputListener } from "./operations/contracts.ts";
 import {
   AcpClient,
@@ -116,6 +116,7 @@ export class AgentController implements AgentClient {
   // mode, a PtyClient in degraded mode. `acp` is the SAME object only in normal mode,
   // typed for the rich ACP surface; it is null when degraded (that surface genuinely
   // doesn't exist when screen-scraping).
+  private readonly forceStopListeners = new Set<() => void>();
   private readonly connectionListeners = new Set<() => void>();
   private detachDisconnect: (() => void) | null = null;
   private stopping: Promise<void> = Promise.resolve();
@@ -137,7 +138,7 @@ export class AgentController implements AgentClient {
     this.mode = config.mode ?? "normal";
   }
 
-  get isConnected(): boolean { return this.current !== null && (this.acp === null || this.acp.isConnected); }
+  get isConnected(): boolean { return this.current !== null && ((this.current as AgentClient & { isConnected?: boolean }).isConnected ?? true); }
   subscribeConnection(listener: () => void): () => void {
     this.connectionListeners.add(listener);
     return () => this.connectionListeners.delete(listener);
@@ -160,6 +161,8 @@ export class AgentController implements AgentClient {
     }
     return brought.result;
   }
+
+  get cancelGraceMs(): number | undefined { return this.config.adapter.cancelGraceMs; }
 
   get currentAdapterId(): string {
     return this.config.adapterId;
@@ -258,14 +261,23 @@ export class AgentController implements AgentClient {
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
-    return this.requireCurrent().prompt(text, handlers, attachments);
+    const current = this.requireCurrent();
+    let forced!: () => void;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      forced = () => reject(new ForcedStopError());
+      this.forceStopListeners.add(forced);
+    });
+    try {
+      return Promise.race([current.prompt(text, handlers, attachments), interrupted])
+        .finally(() => this.forceStopListeners.delete(forced));
+    } catch (error) { this.forceStopListeners.delete(forced); throw error; }
   }
 
   cancel(): void { this.current?.interrupt(); }
 
   forceStop(): Promise<void> {
-    this.stopping = this.stop();
-    return this.stopping;
+    for (const force of [...this.forceStopListeners]) force();
+    return this.stop();
   }
 
   interrupt(options?: InterruptOptions): void {
@@ -315,7 +327,13 @@ export class AgentController implements AgentClient {
     this.detachOutput?.();
     this.detachOutput = null;
     this.emitAvailableCommands(NO_AVAILABLE_COMMANDS);
-    if (client) await client.stop();
+    if (client) {
+      const pending = client.stop();
+      this.stopping = pending.then(() => {}, () => {});
+      await pending;
+    } else {
+      await this.stopping;
+    }
   }
 
   /**
@@ -617,7 +635,7 @@ export class AgentController implements AgentClient {
     this.detachDisconnect = this.acp?.subscribeDisconnect(() => this.connectionChanged()) ?? null;
     this.connectionChanged();
     this.detachOutput?.();
-    this.detachOutput = this.acp?.subscribeOutput((output) => {
+    this.detachOutput = (this.current as (AgentClient & { subscribeOutput?: (listener: OutputListener) => () => void }) | null)?.subscribeOutput?.((output) => {
       for (const listener of [...this.outputListeners]) {
         try { listener(output); }
         catch (error) { this.config.logger?.warn("controller_output_listener_failed", { error: String(error) }); }

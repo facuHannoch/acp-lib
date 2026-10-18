@@ -3789,12 +3789,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   private async supervisedPrompt(controller: AgentController, operationId: string,
     kind: "turn" | "internal_inference" | "recap", prompt: () => Promise<PromptResult>): Promise<PromptResult> {
+    const limits = kind === "turn" ? this.operationLifecycle.turns : kind === "recap" ? this.operationLifecycle.recap : this.operationLifecycle.internalInference;
     const supervisor = new OperationSupervisor({ prompt,
       subscribeOutput: (listener) => controller.subscribeOutput(listener),
       cancel: () => controller.cancel(), forceStop: () => controller.forceStop(),
     }, { operationId, kind, sessionId: controller.currentSessionId,
-      cancelGraceMs: this.activeAdapter.cancelGraceMs,
-      limits: kind === "turn" ? this.operationLifecycle.turns : kind === "recap" ? this.operationLifecycle.recap : this.operationLifecycle.internalInference,
+      cancelGraceMs: controller.cancelGraceMs,
+      limits: controller.isDegraded ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits,
       onStageChanged: (activity) => { this.emit({ kind: "operation_stage_changed", activity }); this.emitStateIfChanged(); },
       onToolBoundary: () => this.steering.toolBoundary(operationId),
     });
@@ -4051,6 +4052,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // candidate, and a recorded one is preserved by its provider row, so neither should
       // survive on the stopped object.
       this.clearProviderAttachment();
+      this.detachControllerConnection?.();
+      this.detachControllerConnection = null;
       await this.presentation.drain().catch(() => undefined);
       try {
         await this.transcriptWrite;

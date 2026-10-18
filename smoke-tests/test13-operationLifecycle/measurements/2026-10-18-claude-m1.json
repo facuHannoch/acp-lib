@@ -1,0 +1,39 @@
+{
+  "adapterId": "claude",
+  "measurements": [
+    {
+      "run": 0,
+      "firstOutputMs": 15,
+      "longestGapMs": 4296,
+      "normalMs": 6646,
+      "cancelLatencyMs": 5,
+      "cancelStatus": "cancelled",
+      "loadMs": 836,
+      "replayCount": 4,
+      "longestReplayGapMs": 835
+    },
+    {
+      "run": 1,
+      "firstOutputMs": 3,
+      "longestGapMs": 2456,
+      "normalMs": 4240,
+      "cancelLatencyMs": 4,
+      "cancelStatus": "cancelled",
+      "loadMs": 828,
+      "replayCount": 4,
+      "longestReplayGapMs": 826
+    },
+    {
+      "run": 2,
+      "firstOutputMs": 3,
+      "longestGapMs": 1989,
+      "normalMs": 4259,
+      "cancelLatencyMs": 5,
+      "cancelStatus": "cancelled",
+      "loadMs": 848,
+      "replayCount": 4,
+      "longestReplayGapMs": 847
+    }
+  ],
+  "failures": []
+}

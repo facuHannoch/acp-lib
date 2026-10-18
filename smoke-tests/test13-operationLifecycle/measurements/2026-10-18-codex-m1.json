@@ -1,0 +1,38 @@
+{
+  "adapterId": "codex",
+  "measurements": [
+    {
+      "run": 0,
+      "firstOutputMs": 12,
+      "longestGapMs": 4128,
+      "normalMs": 4288,
+      "cancelLatencyMs": 72,
+      "cancelStatus": "cancelled",
+      "loadMs": 514,
+      "replayCount": 5,
+      "longestReplayGapMs": 491
+    },
+    {
+      "run": 1,
+      "firstOutputMs": 8,
+      "longestGapMs": 4058,
+      "normalMs": 4231,
+      "cancelLatencyMs": 32,
+      "cancelStatus": "cancelled",
+      "loadMs": 516,
+      "replayCount": 5,
+      "longestReplayGapMs": 506
+    },
+    {
+      "run": 2,
+      "firstOutputMs": 10,
+      "longestGapMs": 3260,
+      "normalMs": 3432,
+      "cancelLatencyMs": 42,
+      "cancelStatus": "cancelled",
+      "loadMs": 621,
+      "replayCount": 5,
+      "longestReplayGapMs": 611
+    }
+  ]
+}
