@@ -30,3 +30,8 @@ own newly spawned harness PID to `harness.pid`; signals never target an existing
 
 For a quick mock fault run:
 `ACP_TEST13_ONLY=s2,s3 ACP_TEST13_FIRST_OUTPUT_MS=100 ACP_TEST13_NEXT_OUTPUT_MS=100 ACP_TEST13_CANCEL_GRACE_MS=100 bun smoke-tests/test13-operationLifecycle/index.ts`.
+
+`s4` freezes its own harness with SIGSTOP with one queue and two steers pending. It checks the
+stall error's followedBy IDs, a combined steer turn delivered via stall, and queue hold/release events.
+These message events are live observations; s4 saves them in results.json. Canonical stored stall errors
+can be read with `records.list(id, { kinds: ["error"] })`; provider mappings with `providerSessions.active(id)`.

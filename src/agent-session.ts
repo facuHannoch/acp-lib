@@ -1778,6 +1778,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   /** Immutable current state. Late subscribers read this before listening for deltas. */
   get state(): AgentSessionState {
     return Object.freeze({
+      pendingHold: this.steering.hold,
       operation: this.activeSupervisor?.activity ?? null,
       providerConnection: this.reconnecting ? "reconnecting" : this.controller.isConnected ? "connected" : "disconnected",
       phase: this.phase,
@@ -2184,6 +2185,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
             });
             prompt.resolve(result);
           } catch (err) {
+            stopReason = err instanceof OperationStalledError ? "stalled" : "error";
+            this.steering.failed(prompt.turnId, err instanceof OperationStalledError ? "stalled" : "error");
+            if (err instanceof OperationStalledError) {
+              const following = this.steering.followingSteers();
+              if (following.length) err.followedBy = following;
+            }
             this.emit({ kind: "turn_failed", turnId: prompt.turnId, error: String(err) });
             prompt.reject(err);
           } finally {
@@ -2292,7 +2299,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // Settle here only when no next item exists, preserving both that ordering and
         // the no-idle-gap guarantee between queued operations.
         this.settleIdleIfDrained();
-      });
+      }, () => this.steering.takeNext());
     } finally {
       if (this.phase !== "stopped") this.phase = "idle";
       this.emitStateIfChanged();
@@ -2300,7 +2307,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private settleIdleIfDrained(): void {
-    if (this.operations.queuedCount !== 0 || this.phase === "stopped") return;
+    if (this.steering.hasRunnable || this.phase === "stopped") return;
     this.phase = "idle";
     this.emitStateIfChanged();
   }
@@ -4360,6 +4367,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private emitStateIfChanged(): void {
     const state = this.state;
     const key = [
+      state.pendingHold?.failedTurnId ?? "",
       state.providerConnection,
       state.operation?.stage ?? "",
       state.operation?.operationId ?? "",

@@ -29,6 +29,7 @@ export type AgentSessionPhase =
 /** Authoritative, immutable point-in-time state for orchestration consumers. */
 export interface AgentSessionState {
   readonly operation: OperationActivity | null;
+  readonly pendingHold: { readonly failedTurnId: string } | null;
   readonly providerConnection: "connected" | "disconnected" | "reconnecting";
   readonly phase: AgentSessionPhase;
   /** True only while an operation is executing; queued work is reported separately. */

@@ -53,3 +53,12 @@ This is the log requested by the user; it supersedes the old log filename mentio
 - Validation: typecheck passed; 47 lifecycle, startup, continuation, load and error-record tests passed. Mock test13 s2/s3 passed with real SIGSTOP/SIGKILL, stored stall error and retained context after the next prompt. New tests cover forced interrupt/stall followed by prompt, immediate next prompt after a crash, in-place checkpoint recovery and a failed load followed by a successful retry.
 - Review caught a disconnect ordering race: SDK request rejection can precede the process exit callback. Transport now checks the SDK AbortSignal synchronously and notifies connection observers on abort, preventing the next prompt from reusing a dead stream. Recovery failures stop the candidate and restore the old logical attachment for retry.
 - Testing gaps: real adapter reloads and long histories remain for phase 7. The SessionManager process-death uncertain boundary remains explicitly out of scope. No new regression identified; baseline restoration timestamp issue remains.
+
+## Phase 5 — recovery steers and held queues
+
+- Added stalled/error turn endings, stall delivery, held/released events, heldBy on pending messages and pendingHold on snapshots.
+- The serial executor now accepts a selection callback. Steering selects eligible work while preserving held queue messages in place; recovery steers can combine across those held messages. The next normal turn releases the hold; explicit queue messages remain held, and withdrawal works.
+- Stall rejections include followedBy IDs for the combined recovery steers. Interrupt/steer behavior is unchanged, including a cancel that loses a race with normal completion.
+- Validation: typecheck passed; 35 lifecycle/steering/queue tests passed; mock test13 s4 passed using SIGSTOP. Added integration coverage for a queue ahead of two recovery steers, idle hold, explicit queue during hold, withdrawal and ordered release.
+- Review: held-only conversations become idle without spinning the drain; controls remain eligible; default busyDelivery queue continues to require an explicit steer after a failure, as specified.
+- Testing gaps: message hold/release events are live (captured in smoke results), not new canonical record kinds. Persisted turn-ending storage remains the separate requirement 3 identified by the spec; this phase extends the typed values. Real harness s4 remains for phase 7. No new regression identified; baseline restoration issue remains.

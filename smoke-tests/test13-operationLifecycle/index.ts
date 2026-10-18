@@ -20,6 +20,26 @@ const agent = await Agent.open({ persistence: { kind: "sqlite", path: database }
 const measurements: unknown[] = [];
 try {
   const only = env("ONLY")?.split(",") ?? ["m1"];
+  if (only.includes("s4")) {
+    console.log(`${adapterId} s4: freezing with queued messages and recovery steers`);
+    const conversation = await agent.conversations.create(); const events: any[] = [];
+    conversation.subscribe(({ event }) => events.push(event));
+    await conversation.prompt("Remember cherry. Reply ready.");
+    const pid = Number((await readFile(pidFile, "utf8")).trim()); process.kill(pid, "SIGSTOP");
+    const first = conversation.prompt("Reply ready."); const failure = first.catch((error) => error);
+    const queued = conversation.prompt({ text: "Now reply done.", delivery: "queue" });
+    const a = conversation.prompt({ text: "What happened?", delivery: "steer" });
+    const b = conversation.prompt({ text: "Continue with a short reply.", delivery: "steer" });
+    const error = await failure;
+    if (error.code !== "stalled" || JSON.stringify(error.followedBy) !== JSON.stringify([a.id, b.id])) throw new Error("s4: missing stall follow-up");
+    const [one, two, final] = await Promise.all([a, b, queued]);
+    if (one.operationId !== two.operationId || final.status !== "completed") throw new Error("s4: wrong recovery delivery");
+    if (!events.some((event) => event.kind === "message_delivered" && event.via === "stall")
+      || !events.some((event) => event.kind === "message_held" && event.id === queued.id)
+      || !events.some((event) => event.kind === "message_released" && event.id === queued.id)) throw new Error("s4: missing hold/delivery/release events");
+    measurements.push({ scenario: "s4", status: "passed", events: events.filter((event) => event.kind.startsWith("message_")) });
+    console.log("s4 PASS: steers combined via stall, queued message held then released"); await conversation.stop();
+  }
   for (const scenario of ["s2", "s3"]) if (only.includes(scenario)) {
     console.log(`${adapterId} ${scenario}: preparing a disposable session`);
     const conversation = await agent.conversations.create();

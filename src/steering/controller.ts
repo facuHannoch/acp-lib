@@ -40,10 +40,11 @@ function isConsumerPrompt<T extends { readonly kind: string }>(item: T): item is
  *
  * There is one FIFO (the conversation's operations queue). This class adds a delivery mode to the
  * prompts in it, watches the running turn for a tool boundary, and sends the head of the queue by
- * cancelling the turn. It never reorders the queue and never cancels anything but a consumer prompt.
+ * cancelling the turn. It skips held queue messages after failures and only cancels consumer prompts.
  */
 export class SteeringController<T extends { readonly kind: string }> {
   #active: ActiveTurn | null = null;
+  #heldBy: string | null = null;
   /** How the previous turn ended, for the `via` of the next delivery. */
   #previousEndedBy: PromptEndedBy | null = null;
 
@@ -52,17 +53,44 @@ export class SteeringController<T extends { readonly kind: string }> {
     readonly defaultDelivery: PromptDelivery,
   ) {}
 
+  get hold(): { readonly failedTurnId: string } | null { return this.#heldBy ? Object.freeze({ failedTurnId: this.#heldBy }) : null; }
+  #eligible(item: T): boolean { return !this.#heldBy || !isConsumerPrompt(item) || item.delivery !== "queue"; }
+  get hasRunnable(): boolean { return this.host.queue.snapshot().some((item) => this.#eligible(item)); }
+  takeNext(): T | undefined { return this.host.queue.remove((item) => this.#eligible(item)); }
+  #peekNext(): T | undefined { return this.host.queue.snapshot().find((item) => this.#eligible(item)); }
+  followingSteers(): readonly string[] { return this.#headRun().map((item) => item.turnId); }
+  /** Failure holds every happy-path queued message, allowing steers to repair the turn. */
+  failed(turnId: string, reason: "stalled" | "error"): void {
+    this.#previousEndedBy = reason;
+    this.#heldBy = turnId;
+    for (const item of this.host.queue.snapshot()) {
+      if (isConsumerPrompt(item) && item.delivery === "queue") this.host.emit({ kind: "message_held", id: item.turnId, failedTurnId: turnId });
+    }
+    this.#active = null;
+    this.host.emitState();
+  }
+  #release(): void {
+    const failedTurnId = this.#heldBy;
+    if (!failedTurnId) return;
+    this.#heldBy = null;
+    for (const item of this.host.queue.snapshot()) {
+      if (isConsumerPrompt(item) && item.delivery === "queue") this.host.emit({ kind: "message_released", id: item.turnId, failedTurnId });
+    }
+    this.host.emitState();
+  }
+
   resolveDelivery(requested: PromptDelivery | undefined): PromptDelivery {
     return requested ?? this.defaultDelivery;
   }
 
   /** The mode in effect for a message accepted now. */
   effectiveDelivery(requested: PromptDelivery): PromptDelivery {
-    return this.#active ? requested : "queue";
+    return this.#active || this.#heldBy ? requested : "queue";
   }
 
   /** Called when a prompt has been queued. Only prompts that had to wait are reported. */
   accepted(item: SteeringPrompt): void {
+    if (this.#heldBy && item.delivery === "queue") this.host.emit({ kind: "message_held", id: item.turnId, failedTurnId: this.#heldBy });
     if (!item.waited) return;
     this.host.emit({
       kind: "message_pending",
@@ -106,6 +134,8 @@ export class SteeringController<T extends { readonly kind: string }> {
 
   /** The turn finished. `endedBy` is reported only if the provider really stopped the turn. */
   turnEnded(stopReason: string | undefined): void {
+    if (stopReason === "stalled" || stopReason === "error") return;
+    if (stopReason && stopReason !== "cancelled") this.#release();
     const endedBy = this.#active?.endedBy;
     this.#previousEndedBy = endedBy && stopReason === "cancelled" ? endedBy : null;
     this.#active = null;
@@ -126,9 +156,14 @@ export class SteeringController<T extends { readonly kind: string }> {
    * sent as one prompt; anything else is sent as it is.
    */
   prepareRun(head: SteeringPrompt): SteeringPrompt {
-    const run = head.operationKind === "prompt" && head.delivery === "steer"
-      ? [head, ...(this.host.queue.takeWhile((item) => isConsumerPrompt(item) && item.delivery === "steer") as unknown as SteeringPrompt[])]
-      : [head];
+    const run = [head];
+    if (head.operationKind === "prompt" && head.delivery === "steer") {
+      for (;;) {
+        const next = this.#peekNext();
+        if (!next || !isConsumerPrompt(next) || next.delivery !== "steer") break;
+        run.push(this.takeNext() as unknown as SteeringPrompt);
+      }
+    }
     const waited = run.filter((item) => item.waited);
     if (waited.length > 0) {
       this.host.emit({
@@ -144,7 +179,7 @@ export class SteeringController<T extends { readonly kind: string }> {
   }
 
   #via(): MessageDeliveryVia {
-    return this.#previousEndedBy === "steer"
+    return this.#previousEndedBy === "stalled" ? "stall" : this.#previousEndedBy === "steer"
       ? "tool_boundary"
       : this.#previousEndedBy === "interrupt"
         ? "interrupt"
@@ -153,7 +188,7 @@ export class SteeringController<T extends { readonly kind: string }> {
 
   #headRun(): SteeringPrompt[] {
     const run: SteeringPrompt[] = [];
-    for (const item of this.host.queue.snapshot()) {
+    for (const item of this.host.queue.snapshot().filter((item) => this.#eligible(item))) {
       if (!isConsumerPrompt(item) || item.delivery !== "steer") break;
       run.push(item);
     }
@@ -167,6 +202,7 @@ export class SteeringController<T extends { readonly kind: string }> {
     return this.host.queue.snapshot().filter(isConsumerPrompt).map((item) => ({
       id: item.turnId,
       delivery: item.delivery,
+      ...(this.#heldBy && item.delivery === "queue" ? { heldBy: this.#heldBy } : {}),
       ...(item.participantId ? { participantId: item.participantId } : {}),
       text: item.text,
     }));

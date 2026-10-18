@@ -163,3 +163,34 @@ test("a failed detached reload leaves the conversation retryable on the next pro
   await writeFile(state, saved);
   expect((await value.prompt("second reconnect")).text).toContain("guava");
 });
+test("a stall combines recovery steers, holds queued messages, then releases them in order", async () => {
+  const value = await conversation({ operationLifecycle: { turns: { firstOutputMs: 40, nextOutputMs: 40 } } });
+  const events: any[] = []; value.subscribe(({ event }) => events.push(event));
+  const first = value.prompt("[lifecycle:partial]"); const failure = first.catch((error) => error);
+  await until(() => value.state.operation !== null);
+  const queued = value.prompt({ text: "queued happy path", delivery: "queue" });
+  const steer1 = value.prompt({ text: "what happened?", delivery: "steer" });
+  const steer2 = value.prompt({ text: "please continue", delivery: "steer" });
+  const error = await failure; expect(error.code).toBe("stalled"); expect(error.followedBy).toEqual([steer1.id, steer2.id]);
+  const [a, b, q] = await Promise.all([steer1, steer2, queued]);
+  expect(a.operationId).toBe(b.operationId); expect(q.operationId).not.toBe(a.operationId);
+  expect(events.find((event) => event.kind === "message_delivered" && event.via === "stall")?.ids).toEqual([steer1.id, steer2.id]);
+  expect(events.some((event) => event.kind === "message_held" && event.id === queued.id && event.failedTurnId === first.id)).toBe(true);
+  expect(events.some((event) => event.kind === "message_released" && event.id === queued.id)).toBe(true);
+  expect(value.state.pendingHold).toBeNull();
+});
+test("idle hold respects explicit queue, permits withdrawal, and releases only after a successful steer", async () => {
+  const value = await conversation({ operationLifecycle: { turns: { firstOutputMs: 30, nextOutputMs: 30 } } });
+  const first = value.prompt("[lifecycle:silent]"); const failure = first.catch((error) => error);
+  const held = value.prompt({ text: "old queued", delivery: "queue" }); await failure;
+  await until(() => !value.isBusy);
+  expect(value.state.pendingHold?.failedTurnId).toBe(first.id);
+  expect(value.pendingMessages[0]?.heldBy).toBe(first.id);
+  const another = value.prompt({ text: "new queued", delivery: "queue" });
+  const withdrawn = value.prompt({ text: "withdraw this", delivery: "queue" }); expect(withdrawn.withdraw()).toBe(true);
+  expect((await withdrawn).status).toBe("cancelled");
+  await Bun.sleep(30); expect(value.pendingMessages.map((message) => message.id)).toEqual([held.id, another.id]);
+  await value.prompt({ text: "repair", delivery: "steer" });
+  const results = await Promise.all([held, another]); expect(results.every((result) => result.status === "completed")).toBe(true);
+  expect(value.state.pendingHold).toBeNull();
+});
