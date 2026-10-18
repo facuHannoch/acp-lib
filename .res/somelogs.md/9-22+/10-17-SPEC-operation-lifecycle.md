@@ -189,14 +189,16 @@ A stall is a steer boundary: the turn is already lost, so cancelling costs nothi
   - a new message sent with `steer` (the default delivery) runs right away, even though the conversation is idle;
   - a new message sent with `queue` goes to the end of the held queue. `queue` is an explicit choice and is respected;
   - `withdraw()` works as usual.
-- The held queue is **released** (`message_released`) by the next turn that completes normally. Its messages then run in
+- The held queue is **released** (`message_released`) by the next consumer turn that completes normally (internal prompts such as a recap do not release it). Its messages then run in
   order, including those added while held.
 
 Accepted consequence: a consumer that sends only `queue` (for example `busyDelivery: "queue"`) sees everything pile up
 after a failure until it sends one prompt with `delivery: "steer"` or withdraws. It is visible: every held message has
 its event, and the snapshot shows the hold. No release call is added.
 
-Holding applies only after `stalled` and `error`. After `interrupt` and `steer`, pending messages behave as today.
+Holding applies only after `stalled` and `error`, and only for a turn the provider received. A prompt rejected before it
+was sent (blocked, invalid input, the provider could not be reached) did not fail at the provider and holds nothing;
+it fails on its own as today. After `interrupt` and `steer`, pending messages behave as today.
 
 ## 5. Internal inference and recap
 

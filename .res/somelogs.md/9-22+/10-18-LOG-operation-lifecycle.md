@@ -156,3 +156,10 @@ the harness answers or the process exits (the ACP SDK rejects pending requests w
 Spec section 4 now states the rule explicitly, with the user's example: after a stall, the steers combined into the
 recovery prompt are those up to the next queued message, not including it; steers after a held queued message run
 after it, in order. The implementation still combines steers across a held queued message; the fix is pending.
+
+## Spec: hold trigger and release scope (review item 6)
+
+Agreed and written into spec section 4: only a turn the provider received that ends `stalled` or `error` holds the
+queue; a prompt rejected before it was sent holds nothing. Only a consumer turn that completes releases the hold;
+internal prompts (recap and similar) do not. The implementation still holds on any queue-loop failure and releases on
+any successful prompt-kind item; the fix is pending.
