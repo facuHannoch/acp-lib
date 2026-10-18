@@ -14,10 +14,18 @@ await mkdir(directory, { recursive: true });
 const database = join(directory, "agent.sqlite");
 for (const suffix of ["", "-wal", "-shm", ".agent-owner.sqlite"]) await rm(database + suffix, { force: true });
 const agent = await Agent.open({ persistence: { kind: "sqlite", path: database }, adapters: { [adapterId]: adapter },
-  defaultAdapterId: adapterId, conversationDefaults: { metering: { pricing: false }, ...(adapterId === "mock" ? { env: { LIFECYCLE_STATE: join(directory, "sessions.json") } } : {}) } });
+  defaultAdapterId: adapterId, operationLifecycle: { turns: { firstOutputMs: Number(env("FIRST_OUTPUT_MS") ?? 5000), nextOutputMs: Number(env("NEXT_OUTPUT_MS") ?? 5000) } }, conversationDefaults: { metering: { pricing: false }, ...(adapterId === "mock" ? { env: { LIFECYCLE_STATE: join(directory, "sessions.json") } } : {}) } });
 const measurements: unknown[] = [];
 try {
   const only = env("ONLY")?.split(",") ?? ["m1"];
+  if (only.includes("s5")) {
+    console.log(`${adapterId} s5: running a tool longer than both silence limits`);
+    const conversation = await agent.conversations.create({ runtime: { operationLifecycle: { turns: { firstOutputMs: 100, nextOutputMs: 100 } } } });
+    const result = await conversation.prompt(adapterId === "mock" ? "[lifecycle:tool]" : "Run sleep 8 in a terminal tool, then reply done.");
+    if (result.status !== "completed") throw new Error("s5: long tool did not complete");
+    measurements.push({ scenario: "s5", status: result.status }); console.log("s5 PASS: long tool did not become stale");
+    await conversation.stop();
+  }
   if (only.includes("s1")) {
     console.log(`${adapterId} s1: waiting for an open permission`);
     const conversation = await agent.conversations.create();

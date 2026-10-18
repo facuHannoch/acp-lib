@@ -1,3 +1,5 @@
+import { OperationStalledError } from "./operations/errors.ts";
+import type { OperationLifecycleConfig } from "./operations/contracts.ts";
 import { OperationSupervisor } from "./operations/supervisor.ts";
 import type { CancelReason } from "./operations/contracts.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
@@ -377,6 +379,7 @@ export interface AgentSessionConfig {
    * with the pinned models.dev catalog and no restored state. Metering is not something a
    * consumer must turn on merely to see protocol facts.
    */
+  operationLifecycle?: OperationLifecycleConfig;
   metering?: MeteringConfig;
   /**
    * @deprecated Use `providerSession: { kind: "load", internalSessionId, onFailure }`.
@@ -501,6 +504,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private managedAuditLog: AuditLogIdentity | null = null;
   private readonly managedOpenProgress?: ManagedOpenProgressReporter;
   private managedInitializationReported = false;
+  private readonly operationLifecycle: OperationLifecycleConfig;
   private activeSupervisor: OperationSupervisor | null = null;
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
@@ -554,6 +558,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.agentConversationId = config.agentConversationId ?? createAgentConversationId();
     this.ownerAgentSessionId = config.ownerAgentSessionId
       ?? (isAgentSessionId(this.agentSessionId) ? this.agentSessionId : null);
+    this.operationLifecycle = config.operationLifecycle ?? {};
     this.ownerLifecycle = config.ownerLifecycle;
     this.defaultPermission = config.defaultPermission ?? "cancel";
     this.steering = new SteeringController<QueueItem>(
@@ -3569,12 +3574,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // the rejection rather than only reaching event subscribers.
       // Already metered: the failure happened after the operation closed (a transcript or
       // catalog write), so the record stands and must not be minted a second time.
-      const record = closed ?? (await this.closeOperation(operation, "error", null, String(err)));
+      const record = closed ?? (await this.closeOperation(operation, err instanceof OperationStalledError ? "cancelled" : "error", null, String(err)));
       await this.ownerLifecycle?.meteringRecorded?.(record);
       if (this.v2Transcript && !transcriptClosed) {
         await this.finishV2Prompt("error", record, "unknown").catch(
           (persistenceError) => this.log.warn("transcript_terminal_write_failed", { error: String(persistenceError) }),
         );
+      }
+      if (err instanceof OperationStalledError) {
+        err.messages = messages;
+        err.metering = record;
+        await this.ownerLifecycle?.operationFailed?.({ operationId: item.turnId, error: err }).catch((error) => {
+          this.log.warn("operation_failure_recording_failed", { error: String(error) });
+        });
+        throw err;
       }
       throw new AgentSessionOperationError(item.turnId, record, err);
     }
@@ -3715,6 +3728,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       cancel: () => controller.cancel(), forceStop: () => controller.forceStop(),
     }, { operationId, kind, sessionId: controller.currentSessionId,
       cancelGraceMs: this.activeAdapter.cancelGraceMs,
+      limits: kind === "turn" ? this.operationLifecycle.turns : kind === "recap" ? this.operationLifecycle.recap : this.operationLifecycle.internalInference,
       onStageChanged: (activity) => { this.emit({ kind: "operation_stage_changed", activity }); this.emitStateIfChanged(); },
       onToolBoundary: () => this.steering.toolBoundary(operationId),
     });
@@ -4364,6 +4378,7 @@ function ownHandoffOptions(options: HandoffOptions): HandoffOptions {
               ? {}
               : {
                   adapter: Object.freeze({
+                    ...(options.target.adapter.cancelGraceMs === undefined ? {} : { cancelGraceMs: options.target.adapter.cancelGraceMs }),
                     ...options.target.adapter,
                     command: Object.freeze([...options.target.adapter.command]) as unknown as string[],
                     ...(options.target.adapter.ptyCommand

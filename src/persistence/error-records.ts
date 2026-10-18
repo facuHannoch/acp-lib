@@ -13,6 +13,8 @@ export const CONVERSATION_ERROR_CODES = Object.freeze([
   "connection_lost",
   "prompt_interrupted",
   "recovery_failed",
+  "stalled",
+  "provider_request_timeout",
   "unknown",
 ] as const);
 
@@ -52,6 +54,7 @@ export function sanitizeConversationErrorMessage(value: unknown): string | undef
 }
 
 export interface ConversationErrorDetailInput {
+  readonly phase?: unknown;
   readonly providerCode?: unknown;
   readonly rpcCode?: unknown;
   readonly service?: unknown;
@@ -79,6 +82,7 @@ export function buildConversationErrorDetails(
   const signal = allowLabel(input.signal);
   const transportState = allowLabel(input.transportState);
   const details: ConversationErrorDetails = Object.freeze({
+    ...(input.phase === "no_response" || input.phase === "incomplete_response" ? { phase: input.phase } : {}),
     ...(providerCode === undefined ? {} : { providerCode }),
     ...(rpcCode === undefined ? {} : { rpcCode }),
     ...(service === undefined ? {} : { service }),
@@ -120,6 +124,7 @@ export function conversationErrorDetailsFromError(error: unknown): ConversationE
     : undefined;
   return buildConversationErrorDetails({
     rpcCode: typeof value?.code === "number" ? value.code : undefined,
+    phase: data?.phase,
     service: data?.service,
     errorName: data?.errorName,
     providerCode: data?.providerCode,

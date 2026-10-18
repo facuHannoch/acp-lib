@@ -1,3 +1,6 @@
+import { stalePolicy, validateStaleLimits, type StallPhase } from "./stale-policy.ts";
+import { OperationStalledError } from "./errors.ts";
+import type { StaleLimits } from "./contracts.ts";
 import type { PromptResult } from "../types.ts";
 import type { CancelReason, OperationActivity, SupervisedOperationKind, OutputListener, ProviderOutput } from "./contracts.ts";
 import { ToolTracker } from "./activity-tracker.ts";
@@ -14,6 +17,7 @@ export interface SupervisorOptions {
   readonly sessionId?: string | null;
   readonly cancelGraceMs?: number;
   readonly timers?: Timers;
+  readonly limits?: StaleLimits;
   readonly onStageChanged?: (activity: OperationActivity) => void;
   readonly onToolBoundary?: () => void;
 }
@@ -27,11 +31,15 @@ export class OperationSupervisor {
   private cancellation?: { reason: CancelReason; requestedAt: number };
   private stage: OperationActivity["stage"] = "waiting";
   private handles: unknown[] = [];
+  private staleHandle: unknown;
+  private stallPhase?: StallPhase;
   private finished = false;
   private started = false;
   private forced = false;
   private finishForced?: (result: PromptResult) => void;
   constructor(private readonly provider: SupervisedProvider, private readonly options: SupervisorOptions) {
+    validateStaleLimits(options.limits ?? {});
+    if (options.cancelGraceMs !== undefined && (!Number.isFinite(options.cancelGraceMs) || options.cancelGraceMs <= 0)) throw new Error("cancelGraceMs must be positive and finite");
     this.timers = options.timers ?? realTimers;
     this.startedAt = this.timers.now();
   }
@@ -57,9 +65,20 @@ export class OperationSupervisor {
       if (settled && !this.tools.inFlight) this.options.onToolBoundary?.();
     }
     this.publishStage();
+    this.armStaleTimer();
+  }
+  private armStaleTimer(): void {
+    this.timers.clearTimeout(this.staleHandle);
+    const decision = stalePolicy(this.activity, this.permissions, this.tools.oldestStartedAt, this.options.limits ?? {}, this.timers.now());
+    if (!decision || this.finished) return;
+    this.staleHandle = this.timers.setTimeout(() => {
+      this.stallPhase = decision.phase;
+      this.cancel("stalled");
+    }, Math.max(0, decision.deadline - this.timers.now()));
   }
   cancel(reason: CancelReason): void {
     if (this.finished || this.cancellation) return;
+    this.timers.clearTimeout(this.staleHandle);
     this.cancellation = { reason, requestedAt: this.timers.now() };
     this.publishStage();
     this.provider.cancel();
@@ -78,15 +97,27 @@ export class OperationSupervisor {
     this.started = true;
     const detach = this.provider.subscribeOutput((output) => this.observe(output));
     this.options.onStageChanged?.(this.activity);
+    this.armStaleTimer();
     try {
       const forced = new Promise<PromptResult>((resolve) => { this.finishForced = resolve; });
       const result = await Promise.race([Promise.resolve().then(() => this.provider.prompt()), forced]);
+      if (this.stallPhase) {
+        const error = new OperationStalledError(this.options.operationId, this.stallPhase);
+        error.cancel = this.forced ? "forced" : "acknowledged";
+        throw error;
+      }
       return this.cancellation ? { ...result, cancel: this.forced ? "forced" : "acknowledged" } : result;
     } catch (error) {
+      if (this.stallPhase) {
+        const stalled = error instanceof OperationStalledError ? error : new OperationStalledError(this.options.operationId, this.stallPhase);
+        stalled.cancel = this.forced ? "forced" : "acknowledged";
+        throw stalled;
+      }
       if (this.forced) return { text: "", messages: Object.freeze([]), stopReason: "cancelled", status: "cancelled", usage: null, cancel: "forced" };
       throw error;
     } finally {
       this.finished = true;
+      this.timers.clearTimeout(this.staleHandle);
       detach();
       for (const handle of this.handles) this.timers.clearTimeout(handle);
       this.handles = [];

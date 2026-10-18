@@ -27,3 +27,12 @@ This is the log requested by the user; it supersedes the old log filename mentio
 - Validation: typecheck passed, 34 tests passed (supervisor fake clock, actual ACP permission/ignored-cancel fixtures, existing steering and permission regressions); mock test13 s1 passed through a second prompt.
 - Review: timers and output listeners are disposed after settlement, repeated cancels preserve the first reason, unrelated session output is filtered, and forced-stop teardown starts before queue release.
 - Testing gaps: automatic reconnect after forced stop belongs to phase 4. Real s1 depends on the harness exposing an actual permission request. Fixture tests cover late/unanswered permission handling but do not cancel arbitrary filesystem/terminal host work. No new regressions identified in the focused checks; the baseline restoration issue remains.
+
+## Phase 2 — stale detection and recorded failures
+
+- Added a pure stale policy (first/next output, independently disabled limits, optional oldest-tool deadline), validated limits, and supervisor timers that suspend for permissions/tools.
+- Stalls cancel through the same bounded path and reject with OperationStalledError, phase, operation ID, partial messages, cancellation disposition and metering. Existing failure capture persists partial replies as failed. Stalled metering closes cancelled with no invented usage.
+- Added Agent and detached-conversation lifecycle config, owner operationFailed hook, shared error writer use, error codes and allow-listed phase details. Confirmed canonical error publication on the committed-record bus.
+- Validation: typecheck passed; 32 tests passed across lifecycle, supervisor, policy and existing error-record suites; mock test13 s5 passed. Checked both silent phases, optional tool timeout, permissions lasting beyond limits, failed partial messages and committed stall errors.
+- Review found and fixed a phase 1 integration regression: AgentAdapterRegistry copied only the old adapter fields, losing cancelGraceMs, so Agent-owned conversations silently used 30 seconds. It now validates and preserves the configured grace, including transition snapshots. The owned fixture test exposed this by timing out, and now passes.
+- Testing gaps: forced-stop recovery is still phase 4, so phase 2 does not yet promise a second prompt after forced stop. Real compaction signals and upstream header stalls remain unmeasured. Baseline restoration failure remains; no additional known regression after the registry fix.

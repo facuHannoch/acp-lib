@@ -17,3 +17,7 @@ Additional fault scenarios are added with their implementation phases.
 `s1` opens a permission whose handler never answers, interrupts, checks its AbortSignal and cancellation,
 and sends a second prompt. It spends tokens on real adapters. A real adapter must actually ask permission;
 a harness that auto-approves cannot exercise this scenario and the runner reports that gap as a failure.
+
+`s5` runs a tool longer than the configured silence limit and checks it completes without a stall.
+`ACP_TEST13_FIRST_OUTPUT_MS` and `ACP_TEST13_NEXT_OUTPUT_MS` set the general smoke limits (5000ms).
+The mock scenario uses 100ms limits and a 150ms tool; real prompts use an eight-second sleep.

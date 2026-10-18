@@ -170,7 +170,7 @@ export class Agent {
       ...(config.capture ? { captureConfig: config.capture } : {}),
       ...(config.auditLog && config.auditLog.capture ? { auditCaptureConfig: config.auditLog.capture } : {}),
       ...(config.conversationPersistence ? { conversationPersistence: config.conversationPersistence } : {}),
-      defaults: config.conversationDefaults ?? {},
+      defaults: { ...config.conversationDefaults, ...(config.operationLifecycle ? { operationLifecycle: config.operationLifecycle } : {}) },
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
       checkpointing,
       auditLog,

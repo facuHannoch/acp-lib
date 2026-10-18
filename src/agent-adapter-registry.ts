@@ -56,7 +56,9 @@ function ownAdapter(adapter: Adapter): Adapter {
   if (!adapter.command.length || adapter.command.some((part) => !part)) {
     throw new Error("adapter command must contain non-empty arguments");
   }
+  if (adapter.cancelGraceMs !== undefined && (!Number.isFinite(adapter.cancelGraceMs) || adapter.cancelGraceMs <= 0)) throw new Error("cancelGraceMs must be positive and finite");
   return Object.freeze({
+    ...(adapter.cancelGraceMs === undefined ? {} : { cancelGraceMs: adapter.cancelGraceMs }),
     command: Object.freeze([...adapter.command]) as unknown as string[],
     ...(adapter.ptyCommand
       ? { ptyCommand: Object.freeze([...adapter.ptyCommand]) as unknown as string[] }

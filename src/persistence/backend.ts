@@ -167,6 +167,7 @@ export type ConversationErrorRecoverability =
 
 /** Allow-listed provider detail, retained only at raw capture. */
 export interface ConversationErrorDetails {
+  readonly phase?: "no_response" | "incomplete_response";
   readonly providerCode?: string | number;
   readonly rpcCode?: number;
   readonly service?: string;
