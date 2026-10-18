@@ -1,3 +1,5 @@
+import { ProviderRequestTimeoutError } from "./operations/errors.ts";
+import type { OperationLifecycleConfig } from "./operations/contracts.ts";
 import type { OutputListener, ProviderOutput } from "./operations/contracts.ts";
 // AcpClient — the core deliverable. Implements the AgentClient output contract and
 // adds the rich ACP input surface (capabilities, configOptions, sessions, auth).
@@ -40,6 +42,7 @@ import type {
 } from "./types.ts";
 
 export interface AcpClientConfig {
+  operationLifecycle?: OperationLifecycleConfig;
   /** How to launch the agent binary. */
   adapter: Adapter;
   /** Runtime-specific launcher for exact ACP/PTY host process preparation. */
@@ -204,6 +207,7 @@ export class AcpClient implements AgentClient {
    * startup would otherwise be unobserved. Mirrors how `availableCommands` is cached and
    * re-emitted on attach.
    */
+  private stopPromise: Promise<void> | null = null;
   private readonly disconnectListeners = new Set<() => void>();
   private readonly pendingPermissions = new Set<() => void>();
   private readonly outputListeners = new Set<OutputListener>();
@@ -241,6 +245,9 @@ export class AcpClient implements AgentClient {
 
   constructor(private config: AcpClientConfig) {
     this.log = config.logger ?? noopLogger;
+    for (const [name, value] of Object.entries(config.operationLifecycle?.control ?? {})) {
+      if (value !== undefined && (!Number.isFinite(value) || value <= 0)) throw new Error(`control.${name} must be positive and finite`);
+    }
     this.handlers = resolveClientHandlers(config.clientHandlers, config.clientCapabilities);
     this.clientCapabilities = {
       fs: {
@@ -391,7 +398,7 @@ export class AcpClient implements AgentClient {
       this.transport = transport;
 
       const init = await transport.raceExit(
-        transport.initialize({
+        this.controlRequest(transport, "initialize", () => transport.initialize({
           protocolVersion: PROTOCOL_VERSION,
           clientCapabilities: caps as unknown as schema.ClientCapabilities,
           clientInfo: this.config.clientInfo ?? {
@@ -399,7 +406,7 @@ export class AcpClient implements AgentClient {
             title: "ACP Lib",
             version: "0.1.0",
           },
-        } as schema.InitializeRequest),
+        } as schema.InitializeRequest)),
       );
       this._capabilities = parseCapabilities(init, caps);
       this.log.info("initialized", {
@@ -443,7 +450,7 @@ export class AcpClient implements AgentClient {
         resumed = result.resumed;
       } catch (err) {
         this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
-        if (loadFailure === "error") throw err;
+        if (loadFailure === "error" || err instanceof ProviderRequestTimeoutError) throw err;
         sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
       }
     } else if (resumeId && loadFailure === "error") {
@@ -476,12 +483,12 @@ export class AcpClient implements AgentClient {
     this.replay = { sessionId, onUpdate: options.onUpdate };
     let res: schema.LoadSessionResponse;
     try {
-      res = await transport.loadSession({
+      res = await this.controlRequest(transport, "session/load", () => transport.loadSession({
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
         additionalDirectories: options.additionalDirectories,
-      } as schema.LoadSessionRequest);
+      } as schema.LoadSessionRequest), sessionId);
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -513,12 +520,12 @@ export class AcpClient implements AgentClient {
     this.replay = { sessionId, onUpdate: options.onUpdate };
     let res: schema.ResumeSessionResponse;
     try {
-      res = await transport.resumeSession({
+      res = await this.controlRequest(transport, "session/resume", () => transport.resumeSession({
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
         additionalDirectories: options.additionalDirectories,
-      } as schema.ResumeSessionRequest);
+      } as schema.ResumeSessionRequest), sessionId);
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -545,7 +552,7 @@ export class AcpClient implements AgentClient {
     if (!this.capabilities.agent.sessionCapabilities.delete) {
       throw new Error("agent does not advertise session/delete (sessionCapabilities.delete)");
     }
-    await transport.deleteSession({ sessionId } as schema.DeleteSessionRequest);
+    await this.controlRequest(transport, "session/delete", () => transport.deleteSession({ sessionId } as schema.DeleteSessionRequest));
     this.log.info("session_deleted", { sessionId });
   }
 
@@ -562,12 +569,12 @@ export class AcpClient implements AgentClient {
     this.replay = { sessionId, onUpdate: options.onUpdate };
     let res: schema.ForkSessionResponse;
     try {
-      res = await transport.forkSession({
+      res = await this.controlRequest(transport, "session/fork", () => transport.forkSession({
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
         additionalDirectories: options.additionalDirectories,
-      } as schema.ForkSessionRequest);
+      } as schema.ForkSessionRequest), sessionId);
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -601,7 +608,7 @@ export class AcpClient implements AgentClient {
     const cwd = options.cwd ?? this.config.cwd;
     if (cwd) params.cwd = cwd;
     if (options.cursor) params.cursor = options.cursor;
-    const res = await transport.listSessions(params as schema.ListSessionsRequest);
+    const res = await this.controlRequest(transport, "session/list", () => transport.listSessions(params as schema.ListSessionsRequest));
     this.log.debug("list_sessions_response", { response: res });
     return {
       sessions: (res.sessions ?? []).map((s) => {
@@ -655,7 +662,7 @@ export class AcpClient implements AgentClient {
     this.beginCommandTransition();
     let res: schema.NewSessionResponse;
     try {
-      res = await transport.newSession({ cwd, mcpServers } as schema.NewSessionRequest);
+      res = await this.controlRequest(transport, "session/new", () => transport.newSession({ cwd, mcpServers } as schema.NewSessionRequest));
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -671,6 +678,35 @@ export class AcpClient implements AgentClient {
     return res.sessionId;
   }
 
+  /** One deadline implementation for all bounded control calls. Replay refreshes load idle time. */
+  private async controlRequest<T>(transport: AcpTransport, request: string,
+    invoke: () => Promise<T>, replaySessionId?: string): Promise<T> {
+    const control = this.config.operationLifecycle?.control;
+    const idle = request === "session/load" || request === "session/resume" || request === "session/fork";
+    const limit = request === "initialize" ? control?.initializeMs ?? 60_000
+      : idle ? control?.loadIdleMs ?? 60_000 : control?.requestMs ?? 60_000;
+    let handle: ReturnType<typeof setTimeout> | undefined;
+    let expired = false;
+    let fail!: (error: Error) => void;
+    const deadline = new Promise<never>((_resolve, reject) => { fail = reject; });
+    const arm = () => {
+      clearTimeout(handle);
+      handle = setTimeout(() => {
+        expired = true;
+        fail(new ProviderRequestTimeoutError(request));
+        // Disconnect synchronously. Subsequent controller operations await the stop fence.
+        if (this.transport === transport) void this.stop().catch(() => {});
+        else void transport.stop().catch(() => {});
+      }, limit);
+    };
+    const detach = idle ? this.subscribeOutput((output) => {
+      if (!expired && output.kind === "update" && (!output.sessionId || output.sessionId === replaySessionId)) arm();
+    }) : () => {};
+    arm();
+    try { return await Promise.race([Promise.resolve().then(invoke), deadline]); }
+    finally { clearTimeout(handle); detach(); }
+  }
+
   private requireTransport(): AcpTransport {
     if (!this.transport) throw new NotConnectedError();
     return this.transport;
@@ -681,7 +717,8 @@ export class AcpClient implements AgentClient {
     if (!this._sessionId) await this.startSession();
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
     for (const cancel of [...this.pendingPermissions]) cancel();
     const t = this.transport;
     this.transport = null;
@@ -690,8 +727,9 @@ export class AcpClient implements AgentClient {
     this.setAvailableCommands([]);
     this.terminals?.releaseAll();
     this.terminals = null;
-    if (t) await t.stop();
-    this.log.info("stopped", {});
+    const pending = t ? t.stop() : Promise.resolve();
+    this.stopPromise = pending.finally(() => { this.stopPromise = null; this.log.info("stopped", {}); });
+    return this.stopPromise;
   }
 
   /** Adapt the registry to the transport's async handler shape. */
@@ -824,12 +862,13 @@ export class AcpClient implements AgentClient {
   async setConfig(configId: string, value: unknown): Promise<void> {
     if (!this.transport || !this._sessionId) throw new NotConnectedError();
     const existing = this._configOptions.get(configId);
-    const res = await this.transport.setSessionConfigOption({
+    const transport = this.transport;
+    const res = await this.controlRequest(transport, "session/set_config_option", () => transport.setSessionConfigOption({
       sessionId: this._sessionId,
       configId,
       ...(existing?.type === "boolean" ? { type: "boolean" } : {}),
       value,
-    } as unknown as schema.SetSessionConfigOptionRequest);
+    } as unknown as schema.SetSessionConfigOptionRequest));
     this._configOptions = parseConfigOptions(res.configOptions);
   }
 

@@ -1,5 +1,5 @@
 import { writeConversationError } from "./error-record-writer.ts";
-import type { OperationStalledError } from "../operations/errors.ts";
+import { OperationStalledError, type ProviderRequestTimeoutError } from "../operations/errors.ts";
 import { randomUUID } from "node:crypto";
 import {
   type AgentConversationId,
@@ -50,11 +50,12 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     readonly recoverInPlace?: (error: unknown) => Promise<void>,
   ) {}
 
-  async operationFailed(input: { operationId: string; error: OperationStalledError }): Promise<void> {
+  async operationFailed(input: { operationId: string; error: OperationStalledError | ProviderRequestTimeoutError }): Promise<void> {
     const written = await writeConversationError(this.agent, this.settings, {
       agentConversationId: this.conversationId, attemptId: input.operationId,
-      operationId: input.operationId, source: "operation", code: "stalled", recoverability: "retryable",
-      message: "The provider stopped producing output.", details: { phase: input.error.phase },
+      operationId: input.operationId, source: "operation", code: input.error.code, recoverability: "retryable",
+      message: input.error instanceof OperationStalledError ? "The provider stopped producing output." : "The provider control request timed out.",
+      ...(input.error instanceof OperationStalledError ? { details: { phase: input.error.phase } } : {}),
     });
     if (written.recordingError) throw written.recordingError;
   }
