@@ -39,7 +39,9 @@ scope, see section 6):
 1. **Visible.** Its state is always readable: what it is waiting on and since when.
 2. **Ends when stale.** When it is stale (section 2), it ends in bounded time with a recorded reason.
 3. **Cancel is bounded.** Any cancel ends it within the cancel grace, whatever the harness does.
-4. **Usable afterwards.** After it ends, the conversation accepts the next prompt with no call other than `prompt()`.
+4. **Usable afterwards.** After it ends, the next `prompt()` either runs, or is refused with a visible reason that
+   does not change on retry (`continuation_unavailable`). How the conversation continues once its provider session is
+   gone is decided by the existing continuation rules, not by this spec (section 4).
 
 Not promised: a bound on how long a working operation takes. A turn that streams, or runs tools, for an hour is fine.
 An operation waiting on something identified (a tool in flight, a pending permission) is not stale; it stays visible in
@@ -164,11 +166,26 @@ Self-healing is not a setting.
 
 - **Cancel acknowledged:** the process and the session are untouched. Nothing to do.
 - **Forced stop, or the process exited on its own** (the same path; today's crash case is included): the next operation
-  that needs the provider starts a new process and loads the session with `session/load`, falling back to checkpoint
-  recovery under the existing recovery rules. An event `provider_reconnected` reports which (`loaded` | `recovered`).
-- If the reconnect fails, that operation fails with the existing codes (`provider_session_load_failed`,
-  `recovery_failed`) and the next operation tries again. The conversation never enters a state that only a call other
-  than `prompt()` can leave.
+  that needs the provider starts a new process and loads the session with `session/load`. An event
+  `provider_reconnected` reports how it continued (`loaded` | `recovered`).
+- **The load fails** (the harness no longer has the session): this spec adds no rule of its own. The conversation
+  applies the same rule it applies when it is opened:
+
+  | Conversation | Existing rule (at open) | After a crash |
+  |---|---|---|
+  | Agent-owned | `onLoadFailure`: checkpoint recovery (`ConversationManager`, extracted as `recoverAfterLoadFailure`) | the same, in place (`recoverInPlace`); already implemented |
+  | SessionManager | the conversation's `ContinuationStrategy` list, in order (`acquireOpeningContinuation`): load, then `new_from_transcript`, then `new_from_consumer_continuation` as configured | the same list; the part of `acquireOpeningContinuation` that only opening needs (transcript bootstrap) is separated so both call it |
+  | no persistence | `sessionLoadFailure` (`"new"` starts a fresh session, `"error"` fails) | the same |
+
+  When the rule has nothing left (for SessionManager, the default list is load only: a replacement session spends
+  tokens and changes routing, so it is used only when the consumer configured it), the conversation is marked
+  "can't continue": `promptability` reports `continuation_unavailable` with the attempts and their reasons, and
+  `prompt()` is refused with it, instead of failing on every prompt with a load error.
+- **A transient failure** (the process could not be started, the load request itself failed rather than reporting the
+  session missing) fails that operation with the existing codes (`provider_session_load_failed`, `recovery_failed`),
+  and the next operation tries again.
+- `ensureProvider` owns only noticing that the process is gone, starting a new one, and handing a failed load to the
+  conversation's rule. It does not decide how the conversation continues.
 
 ### Pending messages after a failed turn
 
@@ -302,7 +319,8 @@ interface StaleLimits {
   (new: kill the process, reject the in-flight prompt with a forced-stop error, become disconnected). For a later
   model-call controller these are "abort the stream" and "drop the connection".
 - `HarnessInternalInferenceRuntime.run` and the recap run their prompt through the same supervisor.
-- Reconnect-on-demand lives in `AgentSession`, next to `startPersistent`, reusing its load-or-recover logic.
+- Reconnect-on-demand lives in `AgentSession` (`ensureProvider`). After a failed load it calls the conversation's
+  existing continuation rule (section 4); it has no load-or-recover logic of its own.
 - The hold is steering state: it already owns the pending list and its events.
 
 **What it does not own.** Updates keep their current path: transport → `AcpClient` (response accumulation, prompt
@@ -342,6 +360,9 @@ milliseconds:
   interrupt result unchanged otherwise, next prompt reconnects with `session/load`;
 - cancel during a pending permission → the request is answered `cancelled`, the handler aborted;
 - exits mid-turn → turn fails with `endedBy` `error`, queue held, next prompt reconnects;
+- the harness lost the session after a crash → Agent-owned recovers from a checkpoint; SessionManager follows its
+  strategy list (`new_from_transcript` when configured); with nothing left, `continuation_unavailable` is visible in
+  `promptability` and the next prompt is refused with it rather than retrying the load;
 - a long tool call with no other output → not stale; with `toolMs` set → stale;
 - pending permission for longer than every limit → not stale;
 - internal inference stall → attempt fails `stalled`, retry in a fresh session;

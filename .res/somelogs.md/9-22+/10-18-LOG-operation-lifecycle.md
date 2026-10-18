@@ -163,3 +163,14 @@ Agreed and written into spec section 4: only a turn the provider received that e
 queue; a prompt rejected before it was sent holds nothing. Only a consumer turn that completes releases the hold;
 internal prompts (recap and similar) do not. The implementation still holds on any queue-loop failure and releases on
 any successful prompt-kind item; the fix is pending.
+
+## Spec: continuation after a crash uses the existing rules (review item 3)
+
+Agreed and written into spec sections Guarantee, 4, 9 and 11. Reconnect (`ensureProvider`) only notices the process is
+gone, starts a new one and loads the session. When the load fails because the harness no longer has the session, the
+conversation applies the rule it applies at open: Agent-owned checkpoint recovery (already reused via
+`recoverInPlace`), SessionManager's `ContinuationStrategy` list via `acquireOpeningContinuation` (to be separated from
+the opening-only transcript bootstrap), or `sessionLoadFailure` without persistence. With nothing left, the
+conversation shows `continuation_unavailable` instead of failing every prompt with a load error. Guarantee 4 was
+reworded accordingly: the next prompt runs or is refused with a visible, stable reason. Implementation pending; today
+`ensureProvider` throws `provider_session_load_failed` on every prompt outside Agent-owned conversations.
