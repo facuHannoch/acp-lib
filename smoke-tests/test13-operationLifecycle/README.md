@@ -13,3 +13,7 @@ as completed, so its duration must not be interpreted as an acknowledged cancell
 Inspect records through `agent.persistence.records.list(conversationId, { limit: 1000 })` and
 `agent.persistence.providerSessions.active(conversationId)`. Error records have `kind === "error"`.
 Additional fault scenarios are added with their implementation phases.
+
+`s1` opens a permission whose handler never answers, interrupts, checks its AbortSignal and cancellation,
+and sends a second prompt. It spends tokens on real adapters. A real adapter must actually ask permission;
+a harness that auto-approves cannot exercise this scenario and the runner reports that gap as a failure.

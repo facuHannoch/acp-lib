@@ -86,6 +86,10 @@ export class SteeringController<T extends { readonly kind: string }> {
     if (settled && active.tools.inFlight === 0) this.#boundary(active);
   }
 
+  toolBoundary(turnId: string): void {
+    if (this.#active?.turnId === turnId) this.#boundary(this.#active);
+  }
+
   /** A tool call has settled and nothing else is running: send the head of the queue if it steers. */
   #boundary(active: ActiveTurn): void {
     if (active.endedBy) return;

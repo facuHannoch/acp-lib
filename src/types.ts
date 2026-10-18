@@ -58,6 +58,7 @@ export type Usage = TokenUsage;
  * call RESOLVES (not rejects) with whatever partial text arrived.
  */
 export interface PromptResult {
+  readonly cancel?: "acknowledged" | "forced";
   /**
    * Legacy lossy projection of `messages`, separated by one blank line.
    * @deprecated Use `messages`, preserving each logical ACP response message. Consumers
@@ -273,6 +274,7 @@ export interface PromptHandlers {
    */
   onPermissionRequest?: (
     request: PermissionRequest,
+    signal?: AbortSignal,
   ) => PermissionOutcome | Promise<PermissionOutcome>;
 }
 

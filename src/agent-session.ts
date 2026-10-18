@@ -1,3 +1,5 @@
+import { OperationSupervisor } from "./operations/supervisor.ts";
+import type { CancelReason } from "./operations/contracts.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
 // face. Existing consumers still import this constructor as `AgentSession`; both names
 // refer to the same class while the new agent-level owner is introduced.
@@ -499,6 +501,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private managedAuditLog: AuditLogIdentity | null = null;
   private readonly managedOpenProgress?: ManagedOpenProgressReporter;
   private managedInitializationReported = false;
+  private activeSupervisor: OperationSupervisor | null = null;
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
   private ownerRecordWrite: Promise<void> = Promise.resolve();
@@ -557,7 +560,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       {
         queue: this.operations,
         emit: (event) => this.emit(event),
-        cancelProviderTurn: () => this.controller.interrupt(),
+        cancelProviderTurn: () => this.cancelOperation("steer"),
         emitState: () => this.emitStateIfChanged(),
       },
       config.busyDelivery ?? "steer",
@@ -1764,6 +1767,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   /** Immutable current state. Late subscribers read this before listening for deltas. */
   get state(): AgentSessionState {
     return Object.freeze({
+      operation: this.activeSupervisor?.activity ?? null,
       phase: this.phase,
       isBusy: this.isBusy,
       queuedOperationCount: this.queuedOperationCount,
@@ -3334,13 +3338,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // The message snapshot must enter the shared queue before an activity first seen
         // after it. Later activity revisions keep their original presentation position.
         flushAssistantMessage("in_progress");
-        this.steering.observeActivity(item.turnId, event);
+        if (!this.activeSupervisor) this.steering.observeActivity(item.turnId, event);
         const result = this.presentation.applyActivity(event);
         this.queueActivityRecords(item.turnId, result.emitted);
         item.handlers?.onRecord?.(result);
         item.handlers?.onActivity?.(event);
       },
-      onPermissionRequest: async (request) => {
+      onPermissionRequest: async (request, signal) => {
         const permissionBase = `${item.turnId}:permission:${request.toolCallId}`;
         if (this.ownerAgentSessionId) {
           await this.recordOwned({
@@ -3360,7 +3364,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           });
         }
         const outcome = item.handlers?.onPermissionRequest
-          ? await item.handlers.onPermissionRequest(request)
+          ? await permissionWithAbort(() => item.handlers!.onPermissionRequest!(request, signal), signal)
           : defaultPermissionOutcome(request, this.defaultPermission);
         if (this.ownerAgentSessionId) {
           await this.recordOwned({
@@ -3385,7 +3389,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // closest observable acquisition time when `session/new` happens inside `prompt()`.
     const dispatchedAt = new Date().toISOString();
     try {
-      const res = await this.controller.prompt(providerText, wrappedHandlers, item.attachments);
+      let res = await this.supervisedPrompt(this.controller, item.turnId, "turn", () => this.controller.prompt(providerText, wrappedHandlers, item.attachments));
+      if (res.cancel === "forced") {
+        const messages = response.snapshot();
+        res = { ...res, messages, text: response.text || chunks.join("") };
+      }
       providerSettled = true;
       if (this.v2Transcript) {
         if (assistantOrdinal === 0) {
@@ -3695,6 +3703,26 @@ export class AgentConversation implements AgentClient, Bridgeable {
    * Operation ids are deterministic children of the handoff id rather than freshly
    * minted, so a consumer can tie both halves back to the handoff that caused them.
    */
+  private cancelOperation(reason: CancelReason): void {
+    if (this.activeSupervisor) this.activeSupervisor.cancel(reason);
+    else this.controller.cancel();
+  }
+
+  private async supervisedPrompt(controller: AgentController, operationId: string,
+    kind: "turn" | "internal_inference" | "recap", prompt: () => Promise<PromptResult>): Promise<PromptResult> {
+    const supervisor = new OperationSupervisor({ prompt,
+      subscribeOutput: (listener) => controller.subscribeOutput(listener),
+      cancel: () => controller.cancel(), forceStop: () => controller.forceStop(),
+    }, { operationId, kind, sessionId: controller.currentSessionId,
+      cancelGraceMs: this.activeAdapter.cancelGraceMs,
+      onStageChanged: (activity) => { this.emit({ kind: "operation_stage_changed", activity }); this.emitStateIfChanged(); },
+      onToolBoundary: () => this.steering.toolBoundary(operationId),
+    });
+    this.activeSupervisor = supervisor;
+    try { return await supervisor.run(); }
+    finally { this.activeSupervisor = null; this.emitStateIfChanged(); }
+  }
+
   private async meteredInternalPrompt(
     operationId: string,
     operationKind: MeteredOperationKind,
@@ -3738,7 +3766,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let closed = false;
     let transcriptClosed = false;
     try {
-      const result = await controller.prompt(text);
+      const result = await this.supervisedPrompt(controller, operationId, operationKind === "conversation_checkpoint" ? "recap" : "internal_inference", () => controller.prompt(text));
       const record = await this.closeOperation(
         operation,
         result.status,
@@ -3912,7 +3940,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       this.emitStateIfChanged();
     }
-    this.controller.interrupt(options);
+    this.cancelOperation("interrupt");
   }
 
   stop(): Promise<void> {
@@ -4259,6 +4287,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private emitStateIfChanged(): void {
     const state = this.state;
     const key = [
+      state.operation?.stage ?? "",
+      state.operation?.operationId ?? "",
       state.phase,
       state.queuedOperationCount,
       state.internalSessionId ?? "",
@@ -4578,4 +4608,16 @@ function copyPromptResult(result: PromptResult): PromptResult {
     ),
     usage: result.usage ? Object.freeze({ ...result.usage }) : null,
   });
+}
+
+/** Settle our wrapper too, so cancelled permission decisions are durably recorded. */
+async function permissionWithAbort(handler: () => import("./types.ts").PermissionOutcome | Promise<import("./types.ts").PermissionOutcome>, signal?: AbortSignal): Promise<import("./types.ts").PermissionOutcome> {
+  if (signal?.aborted) return { outcome: "cancelled" };
+  let abort!: () => void;
+  const cancelled = new Promise<import("./types.ts").PermissionOutcome>((resolve) => {
+    abort = () => resolve({ outcome: "cancelled" });
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([Promise.resolve().then(handler), cancelled]); }
+  finally { signal?.removeEventListener("abort", abort); }
 }

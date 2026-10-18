@@ -204,6 +204,7 @@ export class AcpClient implements AgentClient {
    * startup would otherwise be unobserved. Mirrors how `availableCommands` is cached and
    * re-emitted on attach.
    */
+  private readonly pendingPermissions = new Set<() => void>();
   private readonly outputListeners = new Set<OutputListener>();
   private lastUsageUpdate: { update: unknown; sessionId: string | null } | null = null;
   private commandTransition: CommandTransition | null = null;
@@ -360,6 +361,7 @@ export class AcpClient implements AgentClient {
         this.authStderrSink?.(line);
       },
       onCrash: (code) => {
+        for (const cancel of [...this.pendingPermissions]) cancel();
         this.terminals?.releaseAll();
         this.terminals = null;
         this.transport = null;
@@ -666,6 +668,7 @@ export class AcpClient implements AgentClient {
   }
 
   async stop(): Promise<void> {
+    for (const cancel of [...this.pendingPermissions]) cancel();
     const t = this.transport;
     this.transport = null;
     this._sessionId = null;
@@ -782,6 +785,7 @@ export class AcpClient implements AgentClient {
   }
 
   interrupt(options: InterruptOptions = {}): void {
+    for (const cancel of [...this.pendingPermissions]) cancel();
     if (options.clearQueue) {
       const dropped = this.queue.splice(0);
       for (const item of dropped) {
@@ -906,11 +910,24 @@ export class AcpClient implements AgentClient {
     const handler = this.active?.handlers?.onPermissionRequest;
     const request = toPermissionRequest(params);
 
+    const abort = new AbortController();
+    let cancel!: () => void;
+    const cancelled = new Promise<PermissionOutcome>((resolve) => {
+      cancel = () => { abort.abort(); resolve({ outcome: "cancelled" }); };
+    });
+    this.pendingPermissions.add(cancel);
+    this.emitOutput({ kind: "permission_started", sessionId: params.sessionId });
     let outcome: PermissionOutcome;
-    if (handler) {
-      outcome = await handler(request);
-    } else {
-      outcome = this.defaultOutcome(request);
+    try {
+      if (this.active?.cancelled) cancel();
+      outcome = await Promise.race([
+        cancelled,
+        Promise.resolve().then(() => abort.signal.aborted ? { outcome: "cancelled" as const }
+          : handler ? handler(request, abort.signal) : this.defaultOutcome(request)),
+      ]);
+    } finally {
+      this.pendingPermissions.delete(cancel);
+      this.emitOutput({ kind: "permission_ended", sessionId: params.sessionId });
     }
 
     this.log.debug("permission_response", { outcome });

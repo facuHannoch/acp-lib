@@ -114,6 +114,7 @@ export class AgentController implements AgentClient {
   // mode, a PtyClient in degraded mode. `acp` is the SAME object only in normal mode,
   // typed for the rich ACP surface; it is null when degraded (that surface genuinely
   // doesn't exist when screen-scraping).
+  private stopping: Promise<void> = Promise.resolve();
   private current: AgentClient | null = null;
   private acp: AcpClient | null = null;
   private mode: AgentMode;
@@ -226,6 +227,13 @@ export class AgentController implements AgentClient {
     attachments?: Attachment[],
   ): Promise<PromptResult> {
     return this.requireCurrent().prompt(text, handlers, attachments);
+  }
+
+  cancel(): void { this.current?.interrupt(); }
+
+  forceStop(): Promise<void> {
+    this.stopping = this.stop();
+    return this.stopping;
   }
 
   interrupt(options?: InterruptOptions): void {

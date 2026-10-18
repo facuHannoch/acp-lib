@@ -3,6 +3,8 @@
 // See SPEC.md "Adapters" + "Core principles".
 
 export interface Adapter {
+  /** Maximum cancellation wait before terminating this provider process. */
+  cancelGraceMs?: number;
   /** The command to spawn the ACP agent binary, e.g. ["kimi", "acp"]. */
   command: string[];
   /**
