@@ -678,11 +678,18 @@ export class AcpClient implements AgentClient {
     return res.sessionId;
   }
 
-  /** One deadline implementation for all bounded control calls. Replay refreshes load idle time. */
+  /**
+   * One deadline implementation for all bounded control calls. Replay refreshes load idle time.
+   *
+   * A request the session's state depends on (startup, a load, a configuration change) stops the process when it
+   * expires, so the next operation reconnects. `session/list` and `session/delete` change nothing about this
+   * session and may be sent while a turn is running, so their expiry fails only that request.
+   */
   private async controlRequest<T>(transport: AcpTransport, request: string,
     invoke: () => Promise<T>, replaySessionId?: string): Promise<T> {
     const control = this.config.operationLifecycle?.control;
     const idle = request === "session/load" || request === "session/resume" || request === "session/fork";
+    const stopsOnExpiry = request !== "session/list" && request !== "session/delete";
     const limit = request === "initialize" ? control?.initializeMs ?? 60_000
       : idle ? control?.loadIdleMs ?? 60_000 : control?.requestMs ?? 60_000;
     let handle: ReturnType<typeof setTimeout> | undefined;
@@ -694,6 +701,7 @@ export class AcpClient implements AgentClient {
       handle = setTimeout(() => {
         expired = true;
         fail(new ProviderRequestTimeoutError(request));
+        if (!stopsOnExpiry) return;
         // Disconnect synchronously. Subsequent controller operations await the stop fence.
         if (this.transport === transport) void this.stop().catch(() => {});
         else void transport.stop().catch(() => {});
@@ -975,7 +983,8 @@ export class AcpClient implements AgentClient {
     this.emitOutput({ kind: "permission_started", sessionId: params.sessionId });
     let outcome: PermissionOutcome;
     try {
-      if (this.active?.cancelled) cancel();
+      // A stopped client may still read requests the dying process wrote; they belong to no turn.
+      if (this.active?.cancelled || !this.transport) cancel();
       outcome = await Promise.race([
         cancelled,
         Promise.resolve().then(() => abort.signal.aborted ? { outcome: "cancelled" as const }

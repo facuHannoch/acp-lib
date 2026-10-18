@@ -214,7 +214,9 @@ Requests that are not inference are plain request/response and get a deadline pe
 | `authenticate` | none: it can be an interactive login |
 
 On expiry the request fails with code `provider_request_timeout`, the process is force-stopped, and recovery is as in
-section 4.
+section 4. Exception: `session/list` and `session/delete` change nothing about the session and can be sent outside the
+queue while a turn runs (`AgentConversation.listSessions()`), so their expiry fails only that request and leaves the
+process running.
 
 ## 7. Records and events
 

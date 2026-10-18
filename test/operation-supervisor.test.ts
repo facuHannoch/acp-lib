@@ -73,3 +73,23 @@ test("same-stage output updates snapshot timing without producing stage events",
   expect(stages).toEqual(["waiting", "streaming"]); expect(supervisor.activity.lastOutputAt).toBe(20);
   finish({ text: "done", messages: [], usage: null, stopReason: "end_turn", status: "completed" }); await pending;
 });
+
+test("a turn that completes normally after the stall cancel keeps its result", async () => {
+  const clock = new Clock();
+  let finish!: (result: any) => void;
+  const supervisor = new OperationSupervisor({
+    prompt: () => new Promise((resolve) => { finish = resolve; }),
+    subscribeOutput: () => () => {},
+    cancel() {},
+    async forceStop() { throw new Error("unexpected force"); },
+  }, { operationId: "late", kind: "turn", timers: clock, cancelGraceMs: 1000, limits: { firstOutputMs: 100 } });
+  const pending = supervisor.run();
+  await Promise.resolve();
+  clock.advance(100);
+  expect(supervisor.activity.cancel?.reason).toBe("stalled");
+  finish({ text: "full answer", messages: [{ text: "full answer" }], usage: null, stopReason: "end_turn", status: "completed" });
+  const result = await pending;
+  expect(result.status).toBe("completed");
+  expect(result.text).toBe("full answer");
+  expect(result.cancel).toBeUndefined();
+});

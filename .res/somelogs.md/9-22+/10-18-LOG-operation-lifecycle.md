@@ -102,3 +102,28 @@ This is the log requested by the user; it supersedes the old log filename mentio
 - Final manual artifacts: /tmp/acp-operation-manual-1792289055860/agent.sqlite (conversation agc-3bcb0811-b579-48bc-adfc-90b8884a159e). The disposable interactive driver was /tmp/acp-operation-manual.ts. Artifacts are local inspection evidence and are not committed databases.
 - Cleaned up the obsolete sandbox-restricted initial baseline run and its known fixture processes after the successful unrestricted validation. Remaining working-tree changes are the user's original README.md/todo.md edits and original untracked files; none were included in implementation commits.
 - Testing scope: unit/fake-clock policy and escalation, real ACP fixtures, full regression suite, all mock smoke scenarios, real Codex/Claude measurements, real Codex freeze/crash/long-tool/steer smoke checks, and a manually driven real Codex recovery. Remaining gaps and known limitations are listed in phases 6–7 (OpenCode provider access, native Codex permission scenario, compaction, PTY execution and installer readiness). No unresolved regression produced by these commits remains identified.
+
+## Post-implementation review — fixes 1, 2, 4
+
+A review of the whole branch diff (2026-10-18) found defects not listed above. Three were fixed here; the others
+(missing-session recovery outside Agent-owned checkpoints, steer combining across held messages, the hold's
+trigger/release scope, and maintainability) wait for decisions or a cleanup pass.
+
+- **1. A normal completion racing the stall cancel was reported as a stall.** The supervisor threw
+  `OperationStalledError` whenever the stall timer had fired, even if the harness then answered `end_turn`, so a
+  complete reply was stored as failed. It now reports a stall only when the request really ended cancelled.
+  Test: `operation-supervisor.test.ts` "a turn that completes normally after the stall cancel keeps its result".
+- **2. A timed-out `session/list` killed the running turn.** `AgentConversation.listSessions()` sends it outside the
+  queue on the live client; its deadline stopped the process and the working turn failed with `ACP connection
+  closed`, while `listSessions()` still reported success. `session/list` and `session/delete` now fail only the
+  request on expiry; startup, load and configuration requests still stop the process. Spec section 6 updated.
+  Tests: `operation-lifecycle.test.ts` "a session/list that times out during a running turn fails only the list";
+  `operation-control.test.ts` now expects list/delete to keep the process.
+- **4. Late output after a forced stop.** On inspection, updates were already safe: `AcpClient.stop()` clears the
+  session id and `handleUpdate` drops updates for any other session. The remaining hole was a permission request
+  the dying process wrote after `stop()` without a prior cancel; it is now answered `cancelled` without reaching
+  the finished turn's handler. Not covered by a dedicated test (the window is the SIGTERM→SIGKILL interval).
+- Both new tests fail without the fixes and pass with them. Validation: typecheck passed; full suite 1042 passed,
+  0 failed.
+- Gap still open: `AgentConversation.listSessions()` swallows a provider listing failure and returns the catalog
+  entries only; that predates this branch and was left unchanged.

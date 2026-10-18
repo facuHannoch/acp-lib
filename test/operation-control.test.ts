@@ -23,7 +23,11 @@ test("initialize and new/list/config/delete control requests time out and discon
         : request === "session/delete" ? value.deleteSession(value.currentSessionId!) : value.setConfig("x", "y");
     }
     const error = await pending.catch((error) => error);
-    expect(error.code).toBe("provider_request_timeout"); expect(error.request).toBe(request); expect(value.isConnected).toBe(false);
+    expect(error.code).toBe("provider_request_timeout");
+    expect(error.request).toBe(request);
+    // list and delete change nothing about the session, so only the request fails.
+    const keepsProcess = request === "session/list" || request === "session/delete";
+    expect(value.isConnected).toBe(keepsProcess);
   }
 });
 test("load idle timeout resets for each matching replay update", async () => {

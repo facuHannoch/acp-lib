@@ -205,3 +205,23 @@ test("a stalled handoff target uses its own adapter cancellation grace", async (
   expect(error.cause?.code).toBe("stalled"); expect(Date.now() - start).toBeLessThan(1000);
   expect((await value.prompt("source still works")).status).toBe("completed");
 });
+
+test("a session/list that times out during a running turn fails only the list", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "acp-lifecycle-"));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const slow = await AgentConversation.create({
+    adapterId: "mock",
+    adapter: { command: [process.execPath, resolve(import.meta.dir, "fixtures/lifecycle-agent.ts")], cancelGraceMs: 80 },
+    env: { LIFECYCLE_STATE: join(directory, "sessions.json"), LIFECYCLE_HANG_CONTROL: "session/list", LIFECYCLE_TOOL_MS: "400" },
+    metering: { pricing: false },
+    operationLifecycle: { control: { requestMs: 100 } },
+  });
+  cleanups.push(() => slow.stop());
+  const turn = slow.prompt("[lifecycle:tool]");
+  await until(() => slow.state.operation?.stage === "tool_running");
+  await slow.listSessions();
+  const result = await turn;
+  expect(result.status).toBe("completed");
+  expect(result.text).toContain("tool finished");
+  expect(slow.state.providerConnection).toBe("connected");
+});
