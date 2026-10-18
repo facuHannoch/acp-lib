@@ -2171,11 +2171,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this.emitStateIfChanged();
         if (item.kind === "prompt") {
           // A run of steer messages at the head of the queue goes out as one prompt.
-          const prompt = this.steering.prepareRun(item) as PromptQueueItem;
+          let reportDelivery: (() => void) | undefined;
+          const prompt = this.steering.prepareRun(item, (event) => { reportDelivery = () => this.emit(event); }) as PromptQueueItem;
           this.steering.turnStarted(prompt);
           this.emit({ kind: "turn_started", turnId: prompt.turnId });
           let stopReason: string | undefined;
           try {
+            await this.ensureProvider();
+            reportDelivery?.();
             const result = await this.runPrompt(prompt);
             stopReason = result.stopReason;
             this.emit({
@@ -3195,7 +3198,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
-    await this.ensureProvider();
     const targetProviderContextId = this.ownerLifecycle
       ? this._internalSessionId ?? `runtime:${this.ownerContextNonce ??= crypto.randomUUID()}`
       : undefined;

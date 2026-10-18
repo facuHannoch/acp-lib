@@ -175,6 +175,9 @@ test("a stall combines recovery steers, holds queued messages, then releases the
   const [a, b, q] = await Promise.all([steer1, steer2, queued]);
   expect(a.operationId).toBe(b.operationId); expect(q.operationId).not.toBe(a.operationId);
   expect(events.find((event) => event.kind === "message_delivered" && event.via === "stall")?.ids).toEqual([steer1.id, steer2.id]);
+  const reconnected = events.findIndex((event) => event.kind === "provider_reconnected");
+  const delivered = events.findIndex((event) => event.kind === "message_delivered" && event.via === "stall");
+  expect(reconnected).toBeGreaterThanOrEqual(0); expect(delivered).toBeGreaterThan(reconnected);
   expect(events.some((event) => event.kind === "message_held" && event.id === queued.id && event.failedTurnId === first.id)).toBe(true);
   expect(events.some((event) => event.kind === "message_released" && event.id === queued.id)).toBe(true);
   expect(value.state.pendingHold).toBeNull();

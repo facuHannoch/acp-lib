@@ -155,7 +155,7 @@ export class SteeringController<T extends { readonly kind: string }> {
    * Called when a prompt reaches the head of the queue. A run of consecutive `steer` messages is
    * sent as one prompt; anything else is sent as it is.
    */
-  prepareRun(head: SteeringPrompt): SteeringPrompt {
+  prepareRun(head: SteeringPrompt, deliver: (event: MessageEvent) => void = (event) => this.host.emit(event)): SteeringPrompt {
     const run = [head];
     if (head.operationKind === "prompt" && head.delivery === "steer") {
       for (;;) {
@@ -166,7 +166,7 @@ export class SteeringController<T extends { readonly kind: string }> {
     }
     const waited = run.filter((item) => item.waited);
     if (waited.length > 0) {
-      this.host.emit({
+      deliver({
         kind: "message_delivered",
         ids: waited.map((item) => item.turnId),
         via: this.#via(),
