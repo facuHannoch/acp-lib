@@ -1,3 +1,4 @@
+import type { OutputListener } from "./operations/contracts.ts";
 import {
   AcpClient,
   type AcpClientConfig,
@@ -123,6 +124,8 @@ export class AgentController implements AgentClient {
   private readonly usageUpdateListeners = new Set<
     (update: unknown, sessionId: string | null) => void
   >();
+  private readonly outputListeners = new Set<OutputListener>();
+  private detachOutput: (() => void) | null = null;
   private detachUsageUpdates: (() => void) | null = null;
 
   constructor(private readonly config: AgentControllerConfig) {
@@ -186,6 +189,11 @@ export class AgentController implements AgentClient {
   subscribeUsageUpdate(listener: (update: unknown, sessionId: string | null) => void): () => void {
     this.usageUpdateListeners.add(listener);
     return () => this.usageUpdateListeners.delete(listener);
+  }
+
+  subscribeOutput(listener: OutputListener): () => void {
+    this.outputListeners.add(listener);
+    return () => this.outputListeners.delete(listener);
   }
 
   async start(onProgress?: (event: AgentControllerStartEvent) => void): Promise<ConnectResult> {
@@ -261,6 +269,8 @@ export class AgentController implements AgentClient {
     this.detachAvailableCommands = null;
     this.detachUsageUpdates?.();
     this.detachUsageUpdates = null;
+    this.detachOutput?.();
+    this.detachOutput = null;
     this.emitAvailableCommands(NO_AVAILABLE_COMMANDS);
     if (client) await client.stop();
   }
@@ -558,6 +568,13 @@ export class AgentController implements AgentClient {
   }
 
   private attachAvailableCommandSource(): void {
+    this.detachOutput?.();
+    this.detachOutput = this.acp?.subscribeOutput((output) => {
+      for (const listener of [...this.outputListeners]) {
+        try { listener(output); }
+        catch (error) { this.config.logger?.warn("controller_output_listener_failed", { error: String(error) }); }
+      }
+    }) ?? null;
     this.detachAvailableCommands?.();
     this.detachAvailableCommands = this.acp?.subscribeAvailableCommands((commands) =>
       this.emitAvailableCommands(commands)) ?? null;

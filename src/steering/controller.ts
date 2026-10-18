@@ -1,3 +1,4 @@
+import { ToolTracker } from "../operations/activity-tracker.ts";
 import type { AgentSessionPromptResult } from "../agent-conversation-contracts.ts";
 import type { AgentConversationQueue } from "../agent-conversation-queue.ts";
 import type { ActivityEvent } from "../types.ts";
@@ -24,11 +25,10 @@ export interface SteeringHost<T extends { readonly kind: string }> {
 
 interface ActiveTurn {
   readonly turnId: string;
-  readonly tools: Map<string, string>;
+  readonly tools: ToolTracker;
   endedBy?: PromptEndedBy;
 }
 
-const TERMINAL = new Set(["completed", "failed"]);
 
 /** A prompt the consumer started and that steering may cancel. Hidden or internal turns are not. */
 function isConsumerPrompt<T extends { readonly kind: string }>(item: T): item is T & SteeringPrompt {
@@ -74,7 +74,7 @@ export class SteeringController<T extends { readonly kind: string }> {
   // --- the running turn --------------------------------------------------------------------
 
   turnStarted(item: SteeringPrompt): void {
-    this.#active = item.operationKind === "prompt" ? { turnId: item.turnId, tools: new Map() } : null;
+    this.#active = item.operationKind === "prompt" ? { turnId: item.turnId, tools: new ToolTracker() } : null;
   }
 
   /** Activity of the running turn. A tool call settling is where a steer message is delivered. */
@@ -82,13 +82,8 @@ export class SteeringController<T extends { readonly kind: string }> {
     const active = this.#active;
     if (!active || active.turnId !== turnId) return;
     if (event.kind !== "tool" && event.kind !== "tool_update") return;
-    const previous = active.tools.get(event.toolCallId);
-    const status = event.status ?? previous ?? "pending";
-    active.tools.set(event.toolCallId, status);
-    const settled = TERMINAL.has(status) && !(previous !== undefined && TERMINAL.has(previous));
-    if (!settled) return;
-    const inFlight = [...active.tools.values()].some((value) => !TERMINAL.has(value));
-    if (!inFlight) this.#boundary(active);
+    const settled = active.tools.observe(event);
+    if (settled && active.tools.inFlight === 0) this.#boundary(active);
   }
 
   /** A tool call has settled and nothing else is running: send the head of the queue if it steers. */

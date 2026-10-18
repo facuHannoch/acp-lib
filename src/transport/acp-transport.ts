@@ -29,6 +29,7 @@ export interface AcpTransportOptions {
    * takes these off the wire itself rather than going through the SDK. See
    * `interceptUpdates` for why.
    */
+  onRequest?: (sessionId: string | null) => void;
   onUpdate?: (notification: schema.SessionNotification) => void;
   /** The agent asked for permission (blocking — must resolve to an outcome). */
   onPermissionRequest?: (
@@ -349,16 +350,16 @@ class ClientHandler implements acp.Client {
   writeTextFile?: acp.Client["writeTextFile"];
 
   constructor(private opts: AcpTransportOptions) {
-    if (opts.onReadTextFile) this.readTextFile = (p) => opts.onReadTextFile!(p);
-    if (opts.onWriteTextFile) this.writeTextFile = (p) => opts.onWriteTextFile!(p);
+    if (opts.onReadTextFile) this.readTextFile = (p) => { opts.onRequest?.(p.sessionId); return opts.onReadTextFile!(p); };
+    if (opts.onWriteTextFile) this.writeTextFile = (p) => { opts.onRequest?.(p.sessionId); return opts.onWriteTextFile!(p); };
 
     const terminals = opts.terminals;
     if (terminals) {
-      this.createTerminal = (p) => terminals.create(p);
-      this.terminalOutput = (p) => terminals.output(p);
-      this.waitForTerminalExit = (p) => terminals.waitForExit(p);
-      this.killTerminal = (p) => terminals.kill(p);
-      this.releaseTerminal = (p) => terminals.release(p);
+      this.createTerminal = (p) => { opts.onRequest?.(p.sessionId); return terminals.create(p); };
+      this.terminalOutput = (p) => { opts.onRequest?.(p.sessionId); return terminals.output(p); };
+      this.waitForTerminalExit = (p) => { opts.onRequest?.(p.sessionId); return terminals.waitForExit(p); };
+      this.killTerminal = (p) => { opts.onRequest?.(p.sessionId); return terminals.kill(p); };
+      this.releaseTerminal = (p) => { opts.onRequest?.(p.sessionId); return terminals.release(p); };
     }
   }
 

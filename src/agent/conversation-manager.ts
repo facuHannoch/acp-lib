@@ -1,3 +1,4 @@
+import { writeConversationError } from "./error-record-writer.ts";
 import { randomUUID } from "node:crypto";
 import {
   createAgentConversationId,
@@ -917,45 +918,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     readonly internalSessionId?: string;
     readonly details?: ConversationErrorDetails;
   }): Promise<{ readonly record?: ConversationRecord; readonly recordingError?: Error }> {
-    const record: NewConversationRecord = {
-      recordId: `${input.attemptId}:error`,
-      agentSessionId: this.agent.id,
-      agentConversationId: input.agentConversationId,
-      kind: "error",
-      timestamp: new Date().toISOString(),
-      source: input.source,
-      code: input.code,
-      recoverability: input.recoverability,
-      ...(input.message === undefined ? {} : { message: input.message }),
-      ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
-      ...(input.transitionId === undefined ? {} : { transitionId: input.transitionId }),
-      ...(input.internalSessionId === undefined ? {} : { internalSessionId: input.internalSessionId }),
-      ...(input.details === undefined ? {} : { details: input.details }),
-    };
-    const settings = input.settings ?? this.settings;
-    const level = settings.capture.error;
-    const audit = settings.auditLog;
-    let persisted: ConversationRecord | undefined;
-    try {
-      await this.agent.persistence.transaction(async (persistence) => {
-        if (level !== "none") {
-          persisted = await persistence.records.append(captureRuntimeRecord(record, level));
-        }
-        if (audit) {
-          await enqueueAuditObservation(persistence, {
-            scope: "conversation",
-            sourceObservationId: record.recordId,
-            ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
-            record,
-          }, audit);
-        }
-      });
-    } catch (error) {
-      return { recordingError: error instanceof Error ? error : new Error(String(error)) };
-    }
-    if (persisted) this.agent.publishCommittedRecords([persisted]);
-    if (audit) this.agent.audit?.notifyPending();
-    return persisted ? { record: persisted } : {};
+    return writeConversationError(this.agent, this.settings, input);
   }
 
   /**

@@ -1,3 +1,4 @@
+import type { OutputListener, ProviderOutput } from "./operations/contracts.ts";
 // AcpClient — the core deliverable. Implements the AgentClient output contract and
 // adds the rich ACP input surface (capabilities, configOptions, sessions, auth).
 //
@@ -203,6 +204,7 @@ export class AcpClient implements AgentClient {
    * startup would otherwise be unobserved. Mirrors how `availableCommands` is cached and
    * re-emitted on attach.
    */
+  private readonly outputListeners = new Set<OutputListener>();
   private lastUsageUpdate: { update: unknown; sessionId: string | null } | null = null;
   private commandTransition: CommandTransition | null = null;
   private _sessionId: string | null = null;
@@ -289,6 +291,16 @@ export class AcpClient implements AgentClient {
     }
     return () => this.usageUpdateListeners.delete(listener);
   }
+  subscribeOutput(listener: OutputListener): () => void {
+    this.outputListeners.add(listener);
+    return () => this.outputListeners.delete(listener);
+  }
+  private emitOutput(output: ProviderOutput): void {
+    for (const listener of [...this.outputListeners]) {
+      try { listener(output); }
+      catch (error) { this.log.warn("output_listener_failed", { error: String(error) }); }
+    }
+  }
   get currentSessionId(): string | null {
     return this._sessionId;
   }
@@ -336,6 +348,7 @@ export class AcpClient implements AgentClient {
 
     const transport = new AcpTransport({
       launch,
+      onRequest: (sessionId) => this.emitOutput({ kind: "request", sessionId }),
       onUpdate: (n) => this.handleUpdate(n),
       onPermissionRequest: (p) => this.handlePermission(p),
       onReadTextFile: readHandler,
@@ -808,6 +821,8 @@ export class AcpClient implements AgentClient {
     // Raw protocol trace (logged even outside an active turn, e.g. session/load replay).
     this.log.debug("session_update", { notification });
 
+    this.emitOutput({ kind: "update", sessionId: notification.sessionId ?? null,
+      activity: toActivityEvent(notification.update) ?? undefined });
     const update = notification.update;
     const kind = (update as Record<string, any>).sessionUpdate;
     if (
