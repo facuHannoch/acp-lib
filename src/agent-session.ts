@@ -509,6 +509,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private reconnecting = false;
   private detachControllerConnection: (() => void) | null = null;
   private activeSupervisor: OperationSupervisor | null = null;
+  /** The last consumer turn whose provider request itself failed (stalled, crashed, errored). Only such a turn holds the queue. */
+  private providerFailedTurnId: string | null = null;
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
   private ownerRecordWrite: Promise<void> = Promise.resolve();
@@ -2188,8 +2190,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
             });
             prompt.resolve(result);
           } catch (err) {
-            stopReason = err instanceof OperationStalledError ? "stalled" : "error";
-            this.steering.failed(prompt.turnId, err instanceof OperationStalledError ? "stalled" : "error");
+            // A prompt that never reached the provider (blocked, rejected, no provider) holds nothing.
+            const providerFailed = this.providerFailedTurnId === prompt.turnId;
+            stopReason = !providerFailed ? undefined : err instanceof OperationStalledError ? "stalled" : "error";
+            if (providerFailed) this.steering.failed(prompt.turnId, err instanceof OperationStalledError ? "stalled" : "error");
             if (err instanceof OperationStalledError) {
               const following = this.steering.followingSteers();
               if (following.length) err.followedBy = following;
@@ -2198,6 +2202,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             prompt.reject(err);
           } finally {
             this.steering.turnEnded(stopReason);
+            this.providerFailedTurnId = null;
           }
         } else if (item.kind === "handoff") {
           try {
@@ -3802,7 +3807,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
     this.activeSupervisor = supervisor;
     try { return await supervisor.run(); }
-    finally { this.activeSupervisor = null; this.emitStateIfChanged(); }
+    catch (error) {
+      if (kind === "turn") this.providerFailedTurnId = operationId;
+      throw error;
+    } finally { this.activeSupervisor = null; this.emitStateIfChanged(); }
   }
 
   private async meteredInternalPrompt(

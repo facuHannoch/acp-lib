@@ -17,8 +17,10 @@ policy, preserving the conversation object. Observe `state.providerConnection` a
 conversation can now keep it and send the next prompt normally. A failed reconnect is retryable on the
 next operation. SessionManager's manual recovery after the library process itself dies is unchanged.
 
-After a stall or error, explicit queue messages are held. Pending steers run after recovery with
-`via: stall`; the next successful turn releases the held queue. Inspect `state.pendingHold`,
+After a turn the provider received ends in a stall or error, explicit queue messages are held (a prompt
+that fails before reaching the provider holds nothing). Pending steers up to the next queued message run
+after recovery as one prompt with `via: stall`; the next consumer turn that completes releases the held
+queue (internal prompts such as a recap do not). Inspect `state.pendingHold`,
 `pendingMessages[].heldBy`, and `message_held` / `message_released` events. With `busyDelivery: queue`,
 every prompt sent after a failure joins the hold, so the conversation stays held until you send one prompt
 with `delivery: steer` (or withdraw). Withdrawal still works.

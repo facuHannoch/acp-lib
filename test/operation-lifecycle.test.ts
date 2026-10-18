@@ -182,6 +182,21 @@ test("a stall combines recovery steers, holds queued messages, then releases the
   expect(events.some((event) => event.kind === "message_released" && event.id === queued.id)).toBe(true);
   expect(value.state.pendingHold).toBeNull();
 });
+test("recovery steers stop at the next queued message; steers after it run after it", async () => {
+  const value = await conversation({ operationLifecycle: { turns: { firstOutputMs: 40, nextOutputMs: 40 } } });
+  const events: any[] = []; value.subscribe(({ event }) => events.push(event));
+  const first = value.prompt("[lifecycle:partial]"); const failure = first.catch((error) => error);
+  await until(() => value.state.operation !== null);
+  const steer1 = value.prompt({ text: "what happened?", delivery: "steer" });
+  const queued = value.prompt({ text: "deploy the website", delivery: "queue" });
+  const steer2 = value.prompt({ text: "and update the record", delivery: "steer" });
+  const error = await failure; expect(error.code).toBe("stalled"); expect(error.followedBy).toEqual([steer1.id]);
+  const [a, q, b] = await Promise.all([steer1, queued, steer2]);
+  expect(new Set([a.operationId, q.operationId, b.operationId]).size).toBe(3);
+  expect(events.find((event) => event.kind === "message_delivered" && event.via === "stall")?.ids).toEqual([steer1.id]);
+  const started = events.filter((event) => event.kind === "turn_started").map((event) => event.turnId);
+  expect(started.slice(-3)).toEqual([steer1.id, queued.id, steer2.id]);
+});
 test("idle hold respects explicit queue, permits withdrawal, and releases only after a successful steer", async () => {
   const value = await conversation({ operationLifecycle: { turns: { firstOutputMs: 30, nextOutputMs: 30 } } });
   const first = value.prompt("[lifecycle:silent]"); const failure = first.catch((error) => error);
@@ -195,6 +210,21 @@ test("idle hold respects explicit queue, permits withdrawal, and releases only a
   await Bun.sleep(30); expect(value.pendingMessages.map((message) => message.id)).toEqual([held.id, another.id]);
   await value.prompt({ text: "repair", delivery: "steer" });
   const results = await Promise.all([held, another]); expect(results.every((result) => result.status === "completed")).toBe(true);
+  expect(value.state.pendingHold).toBeNull();
+});
+test("a prompt that fails before reaching the provider holds nothing", async () => {
+  const { writeFile } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "acp-no-hold-")); cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const state = join(directory, "sessions.json");
+  const value = await conversation({ env: { LIFECYCLE_STATE: state, LIFECYCLE_FAIL_LOAD_FILE: join(directory, "fail-load") } });
+  const events: any[] = []; value.subscribe(({ event }) => events.push(event));
+  await value.prompt("hello");
+  await writeFile(join(directory, "fail-load"), "1"); await value.connection.forceStop();
+  const first = value.prompt("reconnect fails").catch((error) => error);
+  const queued = value.prompt({ text: "queued behind", delivery: "queue" }).catch((error) => error);
+  expect((await first).code).toBe("provider_session_load_failed");
+  await queued;
+  expect(events.some((event) => event.kind === "message_held")).toBe(false);
   expect(value.state.pendingHold).toBeNull();
 });
 test("a stalled handoff target uses its own adapter cancellation grace", async () => {

@@ -34,7 +34,13 @@ function handle(m: any): void {
       const id = randomUUID(); sessions[id] = []; save(); reply(m.id, { sessionId: id }); return;
     }
     case "session/load": {
-      if (!sessions[m.params.sessionId] || process.env.LIFECYCLE_FAIL_LOAD === "1") { send({ id: m.id, error: { code: -32001, message: "session not found" } }); return; }
+      if (!sessions[m.params.sessionId] || process.env.LIFECYCLE_FAIL_LOAD === "1") {
+        send({ id: m.id, error: { code: -32001, message: "session not found" } }); return;
+      }
+      // A failure that is not "session missing": the request fails while the session still exists.
+      if (process.env.LIFECYCLE_FAIL_LOAD_FILE && existsSync(process.env.LIFECYCLE_FAIL_LOAD_FILE)) {
+        send({ id: m.id, error: { code: -32603, message: "internal error" } }); return;
+      }
       for (const value of sessions[m.params.sessionId]!) text(m.params.sessionId, value);
       reply(m.id, {});
       return;

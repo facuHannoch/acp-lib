@@ -1955,9 +1955,12 @@ loads its provider session automatically and emits `provider_reconnected` with `
 moves through `disconnected`, `reconnecting`, and `connected`. Failed reconnects can be retried by
 another prompt. SessionManager's existing library-crash uncertainty recovery remains separate.
 
-After a turn fails, queued messages remain held. Read `state.pendingHold`, `pendingMessages[].heldBy`
-and the `message_held` / `message_released` events. Send a message with `delivery: steer` to continue;
-its successful completion releases queued messages in order. Explicit queue delivery while held
+After a turn the provider received fails (stalled, crashed, or errored), queued messages remain held.
+A prompt that fails before reaching the provider holds nothing. Read `state.pendingHold`,
+`pendingMessages[].heldBy` and the `message_held` / `message_released` events. Steers waiting after a
+stall are sent as the recovery prompt, up to the next queued message (not including it); steers after
+that message run after it. Send a message with `delivery: steer` to continue; its successful
+completion releases queued messages in order (internal prompts such as a recap do not release). Explicit queue delivery while held
 adds to the hold, including when idle. `withdraw()` remains available.
 
 **If your default is `busyDelivery: "queue"`**, every prompt sent after a failure joins the hold, so

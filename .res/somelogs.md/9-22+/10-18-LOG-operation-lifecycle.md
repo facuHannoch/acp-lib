@@ -174,3 +174,21 @@ the opening-only transcript bootstrap), or `sessionLoadFailure` without persiste
 conversation shows `continuation_unavailable` instead of failing every prompt with a load error. Guarantee 4 was
 reworded accordingly: the next prompt runs or is refused with a visible, stable reason. Implementation pending; today
 `ensureProvider` throws `provider_session_load_failed` on every prompt outside Agent-owned conversations.
+
+## Implementation: review items 5 and 6
+
+- **5. Recovery steers stop at the next queued message.** `SteeringController.prepareRun` combined steers by skipping
+  held queue messages, so `steer, queue, steer` after a stall sent both steers together. `takeNext()` now records
+  where it took the head from, and the run continues only with the items that directly follow it in the FIFO,
+  stopping at any non-steer (held or not). `#headRun` (used for `followedBy`) applies the same rule from the first
+  runnable item.
+- **6. Hold trigger and release.** `supervisedPrompt` records the turn whose supervised provider request itself
+  rejected (`providerFailedTurnId`); only that turn calls `steering.failed()`. A prompt that fails before reaching
+  the provider (reconnect failure, owned preparation, blocked) ends with `turnEnded(undefined)` and holds nothing.
+  `turnEnded` releases the hold only for a consumer turn (`#active` is set only for consumer prompts).
+- Tests (`operation-lifecycle.test.ts`): "recovery steers stop at the next queued message; steers after it run after
+  it" (the user's example: `what happened?` alone, then `deploy the website`, then `and update the record`) and "a
+  prompt that fails before reaching the provider holds nothing" (a transient load failure via the fixture's new
+  `LIFECYCLE_FAIL_LOAD_FILE`). Both fail without the fix and pass with it. Release by internal prompts is not covered
+  by a dedicated test.
+- Changelog and consumer guide updated. Validation: typecheck passed; full suite 1040 passed, 0 failed.
