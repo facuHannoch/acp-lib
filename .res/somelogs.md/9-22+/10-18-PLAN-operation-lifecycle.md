@@ -90,8 +90,15 @@ Changes outside `operations/`:
 
 ## 4. Phases
 
-Each phase: tests, a log entry in `10-4-LOG-adopt-provider-session.md`, a commit with explicit paths. Phase 0 changes no
-behaviour, so the full suite has to pass unchanged after it.
+Each phase:
+
+- tests;
+- its smoke scenario, when it has one (section 5);
+- a log entry in `10-4-LOG-adopt-provider-session.md`;
+- a commit with explicit paths.
+
+Phase 0 changes no behaviour, so the full suite has to pass unchanged after it. Phase 0 also adds the test13 skeleton,
+its `README.md`, and `m1`.
 
 0. **Preparatory extractions, no behaviour change:**
    - the shared error-record writer;
@@ -119,9 +126,53 @@ behaviour, so the full suite has to pass unchanged after it.
    Starts by reading the open/continuation path end to end. If it does not fit, stop and report before changing it.
 5. **Steers after a stall, and the hold.** Steering only.
 6. **Control request deadlines.** `AcpClient` only.
-7. **Measurements and defaults** (tokens; approved), then release notes.
+7. **Measurements and defaults** (tokens; approved): test13 `m1` on each adapter, then the full test13 run, then release
+   notes.
 
-## 5. Risks
+## 5. Smoke test: `smoke-tests/test13-operationLifecycle/`
+
+Fixtures prove the logic; this proves it against a real harness. Same conventions as test11 and test12:
+
+- `index.ts` and a `README.md`;
+- `ACP_TEST13_*` variables;
+- adapters `codex`, `opencode` or `mock`; the model is never set;
+- throwaway conversations only;
+- `agent.sqlite` and `results.json` left in the directory (replaced on every run, git-ignored), so what was stored can be
+  studied;
+- live progress lines, so a hang is visibly a hang.
+
+A real harness is made to misbehave with signals to its own process, which needs no change to its config:
+
+- `SIGSTOP` freezes it: no output, no answer to the cancel. Exactly what a wedged harness looks like.
+- `SIGKILL` is a crash.
+
+Short limits (`firstOutputMs`, `nextOutputMs`, `cancelGraceMs`) are set through config so a run takes minutes.
+
+| Scenario | Trigger | Checks | Passes after |
+|---|---|---|---|
+| `m1` measurements | normal prompts, `ACP_TEST13_RUNS` times | time to first output, cancel latency, longest silent gap mid-turn with no tool in flight. Written to `results.json`; these set the defaults. | phase 0 (the output subscription) |
+| `s1` cancel with a permission open | a prompt that needs permission; the handler never answers; `interrupt()` | the request is answered `cancelled`, the handler's signal aborts, the turn ends within the grace, the next prompt answers | phase 1 |
+| `s2` frozen harness | `SIGSTOP` mid-turn | stale with the right phase, cancel sent twice then forced, `OperationStalledError`, error record stored, reconnect, the next prompt answers and knows the earlier context | phases 2 and 4 |
+| `s3` killed harness | `SIGKILL` mid-turn | the turn fails with `error`, `provider_reconnected` with `loaded`, the next prompt answers with context. Fails today (the dead-leaf bug). | phase 4 |
+| `s4` steer and queue after a failure | `SIGSTOP` with one `queue` message and two `steer` messages pending | the steers are the recovery prompt (`via: "stall"`), the queued message is held, then released after the steer turn completes | phase 5 |
+| `s5` long tool | a prompt that runs `sleep` longer than every limit | never stale | phase 2 |
+
+Built incrementally: the skeleton and the `README.md` with `m1` come first, then each scenario lands with its phase.
+`ACP_TEST13_ONLY` selects scenarios, so one that cannot pass yet is not run.
+
+The `README.md` says, for each scenario:
+
+- what it does to the harness;
+- what it checks;
+- whether it spends tokens: all do with `codex` or `opencode`, none with `mock`;
+- the variables it reads;
+- how to read the stored records afterwards: the queries for the error record, the held and released messages, and the
+  provider session after a reconnect.
+
+Not covered: OpenCode's real upstream stall (no response headers). Reproducing it needs a local proxy that withholds
+responses, set as OpenCode's provider in a throwaway config. A later, optional scenario.
+
+## 6. Risks
 
 - **Phase 4.** Reconnect touches the continuation and ownership path, which is the least uniform part of the codebase
   (three persistence paths). It comes late so that phases 1–3 deliver on their own.
