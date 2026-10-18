@@ -223,7 +223,7 @@ What a stale turn leaves, all through the existing write paths:
 | Kind | Where |
 |---|---|
 | error record: code `stalled`, phase, operation id; source `operation`, recoverability `retryable` | database, and the committed-record event bus |
-| the partial assistant message, status `incomplete` | database |
+| the partial assistant message, with the status the existing failure path already writes (`failed`) | database |
 | the metering record: outcome `cancelled`, usage `null` if the provider reported none | database |
 | what the load or checkpoint recovery path already writes | database |
 | how the turn ended: `stalled` (requirement 3) | database |
@@ -329,7 +329,7 @@ Replay-agent fixture modes (env-driven, like the existing `REPLAY_AGENT_*`), tim
 milliseconds:
 
 - silent after a prompt → `stalled` / `no_response`, rejection, error record, conversation usable;
-- partial text then silence → `stalled` / `incomplete_response`, partial message `incomplete`;
+- partial text then silence → `stalled` / `incomplete_response`, partial message stored as `failed`;
 - stall with steers pending → steers delivered after recovery, `via: "stall"`, `followedBy` on the error;
 - stall with queued messages → held; a `queue` message joins them; a `steer` message runs and its completion releases
   them in order; `withdraw()` works while held;
