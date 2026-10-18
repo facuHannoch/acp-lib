@@ -212,6 +212,7 @@ export class Agent {
           return {
             adapter,
             adapterId: request.adapterId,
+            operationLifecycle: config.operationLifecycle ?? defaults?.operationLifecycle,
             ...(launch.launcher ? { launcher: launch.launcher } : {}),
             ...(defaults?.execPrefix ? { execPrefix: defaults.execPrefix } : {}),
             ...(launch.env ? { env: launch.env } : {}),

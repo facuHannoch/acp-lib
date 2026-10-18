@@ -1,3 +1,5 @@
+import { OperationSupervisor } from "../../operations/supervisor.ts";
+import type { OperationActivity, OutputListener } from "../../operations/contracts.ts";
 import { AgentController, type AgentControllerConfig } from "../../controller.ts";
 import type { PromptResult } from "../../types.ts";
 import type {
@@ -16,6 +18,9 @@ export interface HarnessInternalInferenceRuntimeConfig {
 export interface InternalInferenceController {
   startFresh(): Promise<{ sessionId: string }>;
   prompt(text: string): Promise<PromptResult>;
+  subscribeOutput?(listener: OutputListener): () => void;
+  cancel?(): void;
+  forceStop?(): Promise<void>;
   interrupt(): void;
   stop(): Promise<void>;
 }
@@ -41,7 +46,8 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
     };
     const controller = this.config.createController?.(controllerConfig)
       ?? new AgentController(controllerConfig);
-    const abort = () => controller.interrupt();
+    let supervisor: OperationSupervisor | undefined;
+    const abort = () => supervisor ? supervisor.cancel("abort") : controller.interrupt();
     signal?.addEventListener("abort", abort, { once: true });
     try {
       if (signal?.aborted) throw abortError();
@@ -50,7 +56,17 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
       await lifecycle?.sessionStarted({ internalSessionId: connection.sessionId, model: null });
       if (signal?.aborted) throw abortError();
       lifecycle?.stageChanged?.("prompting");
-      const result = await controller.prompt(request.prompt);
+      supervisor = new OperationSupervisor({
+        prompt: () => controller.prompt(request.prompt),
+        subscribeOutput: (listener) => controller.subscribeOutput?.(listener) ?? (() => {}),
+        cancel: () => controller.cancel ? controller.cancel() : controller.interrupt(),
+        forceStop: () => controller.forceStop ? controller.forceStop() : controller.stop(),
+      }, { operationId: request.internalInferenceId, kind: "internal_inference", sessionId: connection.sessionId,
+        cancelGraceMs: controllerConfig.adapter.cancelGraceMs,
+        limits: controllerConfig.operationLifecycle?.internalInference,
+        onStageChanged: () => lifecycle?.operationChanged?.(() => supervisor!.activity),
+      });
+      const result = await supervisor.run();
       if (result.status !== "completed") {
         throw new Error(`internal inference prompt ${result.status}: ${result.stopReason}`);
       }
@@ -65,6 +81,7 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
         ...(request.metadata ? { metadata: request.metadata } : {}),
       });
     } finally {
+      lifecycle?.operationChanged?.(null);
       signal?.removeEventListener("abort", abort);
       await controller.stop();
     }

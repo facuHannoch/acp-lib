@@ -82,3 +82,25 @@ test("an owned partial stall persists failed reply, one error, cancelled meterin
   expect(errors[0]).toMatchObject({ code: "stalled", source: "operation", recoverability: "retryable", operationId: error.operationId, details: { phase: "incomplete_response" } });
   expect(records.some((record: any) => record.kind === "message" && record.role === "assistant" && record.status === "failed" && record.content === "partial reply")).toBe(true);
 });
+test("a stalled adoption recap succeeds with its failure detail and baseline checkpoint floor", async () => {
+  const { Agent } = await import("../src/agent.ts");
+  const { writeFile } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "acp-recap-stall-"));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "history.json");
+  await writeFile(file, JSON.stringify({ adopted: Array.from({ length: 60 }, (_, index) => [
+    { sessionUpdate: "user_message_chunk", messageId: `u${index}`, content: { type: "text", text: `remember kiwi ${index}` } },
+    { sessionUpdate: "agent_message_chunk", messageId: `a${index}`, content: { type: "text", text: `remembered ${index}` } },
+  ]).flat() }));
+  const agent = await Agent.open({ persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+    adapters: { mock: { command: [process.execPath, resolve(import.meta.dir, "fixtures/replay-agent.ts")], cancelGraceMs: 50 } },
+    defaultAdapterId: "mock", capture: { message: "content", error: "raw" },
+    checkpointing: { schedule: { milestones: [100], everyAfterMilestones: 100 } },
+    operationLifecycle: { recap: { firstOutputMs: 30, nextOutputMs: 30 } },
+    conversationDefaults: { metering: { pricing: false }, env: { REPLAY_AGENT_FILE: file, REPLAY_AGENT_STALL_RECAP: "1" } } });
+  cleanups.push(() => agent.close());
+  const value = await agent.conversations.create({ adopt: { providerSessionId: "adopted", recap: true, importHistory: true } });
+  const records = (await agent.persistence.records.list(value.id, { limit: 1000 })).records;
+  expect(records.find((record: any) => record.kind === "error" && record.code === "adoption_recap_failed")).toMatchObject({ details: { providerCode: "stalled", phase: "no_response" } });
+  expect(await agent.persistence.recoveryCheckpoints!.latest(value.id)).toMatchObject({ source: "adoption_baseline" });
+});

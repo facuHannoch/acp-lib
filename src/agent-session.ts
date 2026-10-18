@@ -628,6 +628,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       createdActiveThread: providerSession.kind === "new",
     });
     this.controllerDefaults = {
+      operationLifecycle: this.operationLifecycle,
       launcher: config.launcher,
       execPrefix: config.execPrefix,
       env: config.env,
@@ -3807,7 +3808,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       return result;
     } catch (err) {
       if (!closed) {
-        const record = await this.closeOperation(operation, "error", null, String(err), metering);
+        const record = await this.closeOperation(operation, err instanceof OperationStalledError ? "cancelled" : "error", null, String(err), metering);
         records.push(record);
         closed = true;
         await this.ownerLifecycle?.meteringRecorded?.(record);

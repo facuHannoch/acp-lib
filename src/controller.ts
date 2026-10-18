@@ -35,6 +35,7 @@ const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([
 export type AgentMode = "normal" | "degraded";
 
 export interface AgentControllerConfig {
+  operationLifecycle?: import("./operations/contracts.ts").OperationLifecycleConfig;
   /** The single adapter this controller drives. Switching adapter = a new AgentSession. */
   adapter: Adapter;
   /** Stable id for the adapter (catalog/display, e.g. "codex"). */
