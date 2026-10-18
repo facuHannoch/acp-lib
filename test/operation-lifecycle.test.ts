@@ -206,7 +206,7 @@ test("a stalled handoff target uses its own adapter cancellation grace", async (
   expect((await value.prompt("source still works")).status).toBe("completed");
 });
 
-test("a session/list that times out during a running turn fails only the list", async () => {
+test("an unanswered session/list during a running turn neither fails nor stops the turn", async () => {
   const directory = await mkdtemp(join(tmpdir(), "acp-lifecycle-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const slow = await AgentConversation.create({
@@ -214,14 +214,18 @@ test("a session/list that times out during a running turn fails only the list", 
     adapter: { command: [process.execPath, resolve(import.meta.dir, "fixtures/lifecycle-agent.ts")], cancelGraceMs: 80 },
     env: { LIFECYCLE_STATE: join(directory, "sessions.json"), LIFECYCLE_HANG_CONTROL: "session/list", LIFECYCLE_TOOL_MS: "400" },
     metering: { pricing: false },
-    operationLifecycle: { control: { requestMs: 100 } },
   });
   cleanups.push(() => slow.stop());
   const turn = slow.prompt("[lifecycle:tool]");
   await until(() => slow.state.operation?.stage === "tool_running");
-  await slow.listSessions();
+  let listed = false;
+  const list = slow.listSessions().then(() => { listed = true; }, () => { listed = true; });
   const result = await turn;
   expect(result.status).toBe("completed");
   expect(result.text).toContain("tool finished");
   expect(slow.state.providerConnection).toBe("connected");
+  // Control requests have no deadline: the list waits for the harness, or for the process to end.
+  expect(listed).toBe(false);
+  await slow.stop();
+  await list;
 });

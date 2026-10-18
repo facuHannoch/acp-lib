@@ -14,7 +14,6 @@ export const CONVERSATION_ERROR_CODES = Object.freeze([
   "prompt_interrupted",
   "recovery_failed",
   "stalled",
-  "provider_request_timeout",
   "unknown",
 ] as const);
 

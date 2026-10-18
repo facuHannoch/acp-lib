@@ -33,8 +33,8 @@ Today neither is guaranteed:
 
 ## Guarantee
 
-For every operation (a conversation turn, an internal inference attempt, a recap, and the control requests in
-section 6):
+For every operation (a conversation turn, an internal inference attempt, and a recap; control requests are out of
+scope, see section 6):
 
 1. **Visible.** Its state is always readable: what it is waiting on and since when.
 2. **Ends when stale.** When it is stale (section 2), it ends in bounded time with a recorded reason.
@@ -204,19 +204,20 @@ Holding applies only after `stalled` and `error`. After `interrupt` and `steer`,
 
 ## 6. Control requests
 
-Requests that are not inference are plain request/response and get a deadline per kind, `control.*Ms`:
+Revised 2026-10-18: no deadlines. Requests that are not inference (`initialize`, `session/new`, `session/load`,
+`session/list`, `session/delete`, `session/set_config_option`, `authenticate`) wait for the harness's answer, as they
+did before this spec. They end when the harness answers or when the process exits: the ACP SDK rejects every pending
+request when the connection closes.
 
-| Request | Deadline |
-|---|---|
-| `initialize` | counted from the process being up and reading, so a first-run `npx` download is not cut off |
-| `session/new`, `session/set_config_option`, `session/set_mode`, `session/list`, `session/delete` | `control.requestMs`, default 60 000 |
-| `session/load` | `control.loadIdleMs` since the last replay update, not total: a long load that is replaying is working |
-| `authenticate` | none: it can be an interactive login |
+A first implementation gave each kind a fixed deadline (`control.requestMs`, `initializeMs`, `loadIdleMs`, default
+60 s) that force-stopped the process on expiry. It was removed because it contradicted "active by default":
 
-On expiry the request fails with code `provider_request_timeout`, the process is force-stopped, and recovery is as in
-section 4. Exception: `session/list` and `session/delete` change nothing about the session and can be sent outside the
-queue while a turn runs (`AgentConversation.listSessions()`), so their expiry fails only that request and leaves the
-process running.
+- no hanging control request was ever observed; the clock only guessed at one;
+- a slow `session/list` sent during a healthy turn killed the turn;
+- a large session can take a minute or more to load, possibly before any replay update. A deadline would kill that
+  load on every attempt, turning a slow conversation into an unusable one.
+
+Long sessions that load slowly are a separate topic (automatic rotation or handoff).
 
 ## 7. Records and events
 
@@ -236,7 +237,7 @@ What a stale turn leaves, all through the existing write paths:
 The library has no setting to hide a failure or a recovery. Every piece is typed, so a consumer that wants a quiet UI
 filters out the `stalled` record, and one that wants it explicit shows "No response, recovered".
 
-New error codes in `CONVERSATION_ERROR_CODES`: `stalled`, `provider_request_timeout`.
+New error code in `CONVERSATION_ERROR_CODES`: `stalled`.
 
 **The turn ending.** `PromptEndedBy` goes from `"steer" | "interrupt"` to `"steer" | "interrupt" | "stalled" | "error"`:
 
@@ -261,11 +262,6 @@ interface OperationLifecycleConfig {
   readonly turns?: StaleLimits;
   readonly internalInference?: StaleLimits;
   readonly recap?: StaleLimits;
-  readonly control?: {
-    readonly requestMs?: number;
-    readonly initializeMs?: number;
-    readonly loadIdleMs?: number;
-  };
 }
 
 interface StaleLimits {
@@ -343,7 +339,7 @@ milliseconds:
 - pending permission for longer than every limit → not stale;
 - internal inference stall → attempt fails `stalled`, retry in a fresh session;
 - recap stall → adoption succeeds, baseline floor, `adoption_recap_failed`;
-- control request deadline → `provider_request_timeout`, recovery; a load that keeps replaying is not cut off.
+- an unanswered control request during a running turn → neither fails nor stops the turn.
 
 ## 12. Open
 

@@ -22,7 +22,7 @@ Each row: what the spec needs, what is there today, and what to do with it.
 | Internal inference retry | `coordination/manager.ts`: attempts, backoff, `recordFailure` with `failureDetails`. | Unchanged. A stall is one more failure that flows through it. |
 | State and events | `emitStateIfChanged`, `AgentSessionState`, the `AgentSessionEvent` union, the committed-record bus. | New fields and event kinds only. |
 | Timers | No clock abstraction in `src/`. `setTimeout` is used directly (internal-inference backoff, transport stop). | A small injectable `Timers` in `operations/`, so tests run in milliseconds. |
-| Process exit during a request | `AcpTransport.raceExit` exists and is used for `initialize`. | Control-request deadlines sit next to it in `AcpClient`: one helper wrapping the transport calls. |
+| Process exit during a request | `AcpTransport.raceExit` exists and is used for `initialize`. | ~~Control-request deadlines sit next to it in `AcpClient`.~~ Removed 2026-10-18 (spec section 6): control requests keep no deadline; process exit already rejects them. |
 
 ## 2. Findings that change the spec
 

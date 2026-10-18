@@ -24,5 +24,4 @@ export interface OperationLifecycleConfig {
   readonly turns?: StaleLimits;
   readonly internalInference?: StaleLimits;
   readonly recap?: StaleLimits;
-  readonly control?: { readonly requestMs?: number; readonly initializeMs?: number; readonly loadIdleMs?: number };
 }

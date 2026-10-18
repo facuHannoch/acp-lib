@@ -1024,7 +1024,9 @@ const answer = await note;  // the turn that carried the message
 `withdraw()`. A prompt that does not have to wait runs immediately and `delivery` has no effect.
 
 Set the default for prompts that do not say, per Agent or per conversation. It is `"steer"` unless you
-change it (before this was `"queue"`; set `busyDelivery: "queue"` to keep the old behaviour):
+change it (before this was `"queue"`; set `busyDelivery: "queue"` to keep the old behaviour). With `"queue"`
+as the default, a failed turn holds every later prompt until one is sent with `delivery: "steer"`; see
+[Operation lifecycle](#operation-lifecycle-and-automatic-provider-recovery).
 
 ```ts
 const agent = await Agent.open({
@@ -1934,7 +1936,6 @@ operationLifecycle: {
   turns: { firstOutputMs: 120_000, nextOutputMs: 180_000 },
   internalInference: { firstOutputMs: 120_000 },
   recap: { nextOutputMs: 180_000 },
-  control: { requestMs: 60_000, initializeMs: 60_000, loadIdleMs: 60_000 },
 }
 ```
 
@@ -1957,14 +1958,16 @@ another prompt. SessionManager's existing library-crash uncertainty recovery rem
 After a turn fails, queued messages remain held. Read `state.pendingHold`, `pendingMessages[].heldBy`
 and the `message_held` / `message_released` events. Send a message with `delivery: steer` to continue;
 its successful completion releases queued messages in order. Explicit queue delivery while held
-adds to the hold, including when idle. `withdraw()` remains available. These message events are live
+adds to the hold, including when idle. `withdraw()` remains available.
+
+**If your default is `busyDelivery: "queue"`**, every prompt sent after a failure joins the hold, so
+nothing runs until you send a prompt with `delivery: "steer"` explicitly (or withdraw). Give the user
+a way to send that steer, for example when `state.pendingHold` is set. These message events are live
 observations; consumers may store them if needed.
 
-Control deadlines throw `ProviderRequestTimeoutError` (`code: provider_request_timeout`) and terminate
-the failed process. A load that keeps replaying updates may run longer than its idle deadline.
-Authentication has no deadline. Initialize timing starts after launcher preparation and transport
-startup; installer downloads inside the spawned command still count. Put preparatory installation in
-a custom launcher's `prepare()` when it must be excluded.
+Control requests (initialize, new, load, list, delete, config, authenticate) have no deadline. They
+end when the harness answers or when the process exits. A large session can take a minute or more to
+load; that is not treated as a failure.
 
 Degraded PTY mode observes raw terminal output but cannot identify ACP tools or permissions. Its
 output silence limits are disabled by default to preserve long-running tools; explicit configured

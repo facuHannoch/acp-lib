@@ -20,13 +20,15 @@ next operation. SessionManager's manual recovery after the library process itsel
 After a stall or error, explicit queue messages are held. Pending steers run after recovery with
 `via: stall`; the next successful turn releases the held queue. Inspect `state.pendingHold`,
 `pendingMessages[].heldBy`, and `message_held` / `message_released` events. With `busyDelivery: queue`,
-send an explicit steer to recover before queued messages can resume. Withdrawal still works.
+every prompt sent after a failure joins the hold, so the conversation stays held until you send one prompt
+with `delivery: steer` (or withdraw). Withdrawal still works.
 
 Configure `AgentConfig.operationLifecycle` (or the same field on a detached conversation) with
-`turns`, `internalInference`, `recap`, and `control`. First/next-output limits default to 120/180 seconds;
+`turns`, `internalInference`, and `recap`. First/next-output limits default to 120/180 seconds;
 `false` disables an individual inference limit. Tools and permissions explain silence and suspend
 those limits; optional `toolMs` bounds a tool. Adapter `cancelGraceMs` defaults to 30 seconds.
-Control requests default to 60 seconds; loads use a replay idle deadline. Authentication stays untimed.
+Control requests (initialize, new, load, list, delete, config, authenticate) have no deadline: they end when the
+harness answers or the process exits.
 
 Codex measurements on 2026-10-18 (three throwaway sessions, default model): first protocol output
 8–12ms, longest observed tool-free silence 3260–4128ms, acknowledged cancel 32–72ms, and session load

@@ -1,4 +1,4 @@
-import { ProviderRequestTimeoutError, ForcedStopError } from "./operations/errors.ts";
+import { ForcedStopError } from "./operations/errors.ts";
 import type { OutputListener } from "./operations/contracts.ts";
 import {
   AcpClient,
@@ -553,7 +553,6 @@ export class AgentController implements AgentClient {
     }
 
     const client = new AcpClient({
-      operationLifecycle: this.config.operationLifecycle,
       adapter,
       launcher: this.config.launcher,
       execPrefix: this.config.execPrefix,
@@ -586,7 +585,7 @@ export class AgentController implements AgentClient {
         ...(this.config.onSessionReplay ? { onReplayUpdate: this.config.onSessionReplay } : {}),
       });
     } catch (err) {
-      if ((sessionId && loadFailure === "error") || err instanceof ProviderRequestTimeoutError) {
+      if (sessionId && loadFailure === "error") {
         await client.stop();
         throw err;
       }

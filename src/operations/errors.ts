@@ -14,13 +14,6 @@ export class OperationStalledError extends Error {
     this.data = { providerCode: "stalled", phase };
   }
 }
-export class ProviderRequestTimeoutError extends Error {
-  readonly code = "provider_request_timeout";
-  constructor(readonly request: string) {
-    super(`Provider request timed out: ${request}`);
-    this.name = "ProviderRequestTimeoutError";
-  }
-}
 export class ForcedStopError extends Error {
   constructor() { super("Provider process was forcibly stopped."); this.name = "ForcedStopError"; }
 }

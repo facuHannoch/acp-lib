@@ -35,12 +35,8 @@ function handle(m: any): void {
     }
     case "session/load": {
       if (!sessions[m.params.sessionId] || process.env.LIFECYCLE_FAIL_LOAD === "1") { send({ id: m.id, error: { code: -32001, message: "session not found" } }); return; }
-      const interval = Number(process.env.LIFECYCLE_REPLAY_INTERVAL ?? 0);
-      const history = sessions[m.params.sessionId]!;
-      if (interval) {
-        history.forEach((value, i) => setTimeout(() => text(m.params.sessionId, value), interval * (i + 1)));
-        setTimeout(() => reply(m.id, {}), interval * (history.length + 1));
-      } else { for (const value of history) text(m.params.sessionId, value); reply(m.id, {}); }
+      for (const value of sessions[m.params.sessionId]!) text(m.params.sessionId, value);
+      reply(m.id, {});
       return;
     }
     case "session/list": reply(m.id, { sessions: [] }); return;

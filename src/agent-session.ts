@@ -1,5 +1,5 @@
 import { ProviderSessionError } from "./agent-conversation-errors.ts";
-import { OperationStalledError, ProviderRequestTimeoutError } from "./operations/errors.ts";
+import { OperationStalledError } from "./operations/errors.ts";
 import type { OperationLifecycleConfig } from "./operations/contracts.ts";
 import { OperationSupervisor } from "./operations/supervisor.ts";
 import type { CancelReason } from "./operations/contracts.ts";
@@ -2254,7 +2254,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
                 error: String(persistenceError),
               }));
             }
-            if (err instanceof ProviderRequestTimeoutError) await this.ownerLifecycle?.operationFailed?.({ operationId: item.operationId, error: err }).catch(() => {});
             this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
             item.reject(err);
           }

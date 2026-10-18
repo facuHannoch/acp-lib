@@ -127,3 +127,26 @@ trigger/release scope, and maintainability) wait for decisions or a cleanup pass
   0 failed.
 - Gap still open: `AgentConversation.listSessions()` swallows a provider listing failure and returns the catalog
   entries only; that predates this branch and was left unchanged.
+
+## Control requests: deadlines removed; queue-default note
+
+Decision (2026-10-18): the operation lifecycle covers model requests (turns, internal inference, recap) and cancel,
+not control requests. The fixed control deadlines (`control.requestMs` / `initializeMs` / `loadIdleMs`, 60 s, which
+force-stopped the process on expiry) contradicted "active by default": no hanging control request was ever observed,
+a slow `session/list` during a healthy turn killed the turn (review item 2), and a large session that takes a minute
+or more to load would be killed on every attempt. Control requests are back to the pre-spec behaviour: they end when
+the harness answers or the process exits (the ACP SDK rejects pending requests when the connection closes).
+
+- Removed `AcpClient.controlRequest`, `ProviderRequestTimeoutError`, the `provider_request_timeout` error code,
+  `OperationLifecycleConfig.control` and its pass-through to the client (controller and manager), and the
+  list/delete special case from fix 2 (now moot). `initialize` is raced against process exit only, as before.
+  The `stop()` fence added with the deadlines stays; `forceStop` uses it.
+- Tests: `operation-control.test.ts` removed (it only tested deadlines); the fixture's replay-interval option went
+  with it. The list test now asserts that an unanswered `session/list` during a running turn neither fails nor stops
+  the turn and stays pending until the process ends.
+- Docs: spec section 6 rewritten with the reason, guarantee scope, settings and tests updated; plan row struck;
+  changelog and consumer guide updated. The guide now states the `busyDelivery: "queue"` consequence in the lifecycle
+  section and next to the `busyDelivery` setting: after a failure every prompt joins the hold until one is sent with
+  `delivery: "steer"`.
+- Validation: typecheck passed; full suite 1038 passed, 0 failed.
+- Separate topic noted: automatic rotation or handoff for long sessions that load slowly.

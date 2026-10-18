@@ -578,7 +578,6 @@ export class DefaultAgentConversationManager implements AgentConversationManager
   private providerClient() {
     const defaults = this.settings.defaults;
     return {
-      ...(defaults.operationLifecycle ? { operationLifecycle: defaults.operationLifecycle } : {}),
       ...(defaults.launcher ? { launcher: defaults.launcher } : {}),
       ...(defaults.execPrefix ? { execPrefix: defaults.execPrefix } : {}),
       ...(defaults.env ? { env: defaults.env } : {}),
