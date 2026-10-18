@@ -192,3 +192,29 @@ reworded accordingly: the next prompt runs or is refused with a visible, stable 
   `LIFECYCLE_FAIL_LOAD_FILE`). Both fail without the fix and pass with it. Release by internal prompts is not covered
   by a dedicated test.
 - Changelog and consumer guide updated. Validation: typecheck passed; full suite 1040 passed, 0 failed.
+
+## Implementation: continuation after a crash (review item 3)
+
+- `ensureProvider` keeps only reconnecting: start a process, load the session. A load failure goes to
+  `continueWithoutProviderSession`, which applies the conversation's existing rule:
+  - Agent-owned: `recoverInPlace` (unchanged); a `provider_session_missing` failure from it (no `recover` policy or
+    no checkpoint) now marks the conversation unavailable instead of failing every prompt.
+  - SessionManager (v2 transcript): `acquireOpeningContinuation` was split; the strategy loop is now
+    `acquireContinuation(checkpoint, strategies, failedLoad?)`, called at open and after a crash with the current
+    checkpoint and the reconstruction strategies of the list the conversation was opened with (stored as
+    `continuationStrategies`). The opening-only parts (transcript bootstrap, staging a loaded session) stay in the
+    opening path; the transcript builder now reads `v2TranscriptPath`.
+  - No transcript persistence: `providerSession.onFailure` (stored as `sessionLoadFailure`; `"new"` for a
+    conversation started new). `"new"` starts a fresh session and reports `provider_reconnected` with the new
+    `via: "fresh"`.
+  - A failure that is not "session missing" (`isMissingProviderSessionError`) stays transient: that operation fails
+    with `provider_session_load_failed` and the next one retries.
+  - With nothing left: `continuationAcquired = false`, so `promptability` reports `continuation_unavailable`, the
+    prompt that found it rejects with the reason, and later prompts are refused.
+- Tests (`operation-lifecycle.test.ts`): the detached reload test now uses a transient failure (fixture
+  `LIFECYCLE_FAIL_LOAD_FILE`) and checks it stays promptable; new tests cover a detached conversation (`"new"` →
+  `via: fresh`; `onFailure: "error"` → unavailable), a SessionManager conversation (load-only → unavailable;
+  `new_from_transcript` → recovered with a new session), and an Agent-owned conversation without `recover` →
+  unavailable. The three new tests fail without the change.
+- Spec section 4 wording aligned (where the reasons are reported; the "no transcript persistence" row).
+  Changelog and consumer guide updated. Validation: typecheck passed; full suite 1043 passed, 0 failed.

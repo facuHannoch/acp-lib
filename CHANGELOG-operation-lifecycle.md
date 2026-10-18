@@ -15,7 +15,11 @@ same session; Agent-owned conversations can recover from a checkpoint under thei
 policy, preserving the conversation object. Observe `state.providerConnection` and
 `provider_reconnected` (`via: loaded | recovered`). Consumers that previously retired a disconnected
 conversation can now keep it and send the next prompt normally. A failed reconnect is retryable on the
-next operation. SessionManager's manual recovery after the library process itself dies is unchanged.
+next operation. When the provider no longer has the session, the conversation applies the rule it
+applies at open: Agent-owned checkpoint recovery, SessionManager continuation strategies, or
+`providerSession.onFailure` without transcript persistence (`"new"` reports `via: fresh`). With nothing
+left, the conversation reports `continuation_unavailable` instead of failing every prompt.
+SessionManager's manual recovery after the library process itself dies is unchanged.
 
 After a turn the provider received ends in a stall or error, explicit queue messages are held (a prompt
 that fails before reaching the provider holds nothing). Pending steers up to the next queued message run

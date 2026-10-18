@@ -1,5 +1,6 @@
 import { ProviderSessionError } from "./agent-conversation-errors.ts";
 import { OperationStalledError } from "./operations/errors.ts";
+import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
 import type { OperationLifecycleConfig } from "./operations/contracts.ts";
 import { OperationSupervisor } from "./operations/supervisor.ts";
 import type { CancelReason } from "./operations/contracts.ts";
@@ -498,6 +499,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private _title?: string;
   private readonly openBootstrap: AgentSessionOpenBootstrap | null;
   private continuationAcquired = true;
+  /** The continuation strategies the conversation was opened with; reconnect applies the same list. */
+  private continuationStrategies: readonly ContinuationStrategy[] = [{ kind: "load_internal_session" }];
+  /** What the conversation does when its provider session cannot be loaded, when it has no transcript persistence. */
+  private sessionLoadFailure: "error" | "new" = "new";
   private _recovery: SessionRecoveryStatus = { kind: "clean" };
   private _configurationRestore: ConfigurationRestoreStatus = { kind: "matched" };
   private readonly managedCreation: ManagedAgentSessionCreationBootstrap | null;
@@ -653,6 +658,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           }
         : {}),
     };
+    if (providerSession.kind === "load") this.sessionLoadFailure = providerSession.onFailure ?? "error";
     this.controller = this.createController(config.adapter, config.adapterId, this._mode, {
       sessionId: requestedInternalSessionId,
       sessionLoadFailure: providerSession.kind === "load"
@@ -1245,13 +1251,35 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.v2Transcript = this.openBootstrap.transcript;
     this.v2TranscriptPath = this.openBootstrap.transcriptPath;
     this._recovery = this.v2Transcript.recovery;
+    this.continuationStrategies = strategies;
+    return await this.acquireContinuation(checkpoint, strategies);
+  }
+
+  /**
+   * Walk the continuation strategies in order: at open, and again after a crash when the provider no
+   * longer has the session (`failedLoad`, then only the reconstruction strategies are passed).
+   */
+  private async acquireContinuation(
+    checkpoint: AgentSessionCheckpoint,
+    strategies: readonly ContinuationStrategy[],
+    failedLoad?: unknown,
+  ): Promise<ContinuationReport> {
+    if (!this.v2Transcript) throw new Error("continuation requires transcript persistence");
     this.continuationAcquired = false;
 
-    const attempts: ContinuationAttempt[] = [];
-    let recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"] = "not_checked";
+    const attempts: ContinuationAttempt[] = failedLoad === undefined ? [] : [Object.freeze({
+      strategy: "load_internal_session" as const,
+      status: "failed" as const,
+      errorCode: "internal_session_unavailable" as const,
+      reason: String(failedLoad),
+    })];
+    let recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"] = failedLoad === undefined
+      ? "not_checked"
+      : "unavailable";
 
     for (const strategy of strategies) {
       if (strategy.kind === "load_internal_session") {
+        if (!this.openBootstrap) throw new Error("loading the recorded session is an opening strategy");
         if (!checkpoint.internalSessionId) {
           attempts.push(Object.freeze({
             strategy: strategy.kind,
@@ -1326,11 +1354,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
       let continuation: string;
       const source = strategy.kind === "new_from_transcript" ? "transcript" as const : "consumer" as const;
       try {
+        if (strategy.kind === "new_from_transcript" && !this.v2TranscriptPath) throw new Error("no transcript to build from");
         continuation = strategy.kind === "new_from_transcript"
           ? (await strategy.buildContinuation(Object.freeze({
               agentSessionId: this.agentSessionId,
               checkpoint: structuredClone(checkpoint),
-              transcript: new TranscriptReader(this.openBootstrap.transcriptPath),
+              transcript: new TranscriptReader(this.v2TranscriptPath!),
               targetAdapterId: this.adapterId,
             }))).continuation
           : strategy.continuation;
@@ -3752,24 +3781,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private async ensureProvider(): Promise<void> {
     if (this.controller.isConnected) return;
     if (this.phase === "stopped") throw new Error("conversation is stopped");
+    if (!this.continuationAcquired) throw new AgentSessionPromptBlockedError(["continuation_unavailable"]);
     const sessionId = this._internalSessionId;
     const attachment = this.providerAttachment;
     this.reconnecting = true;
     this.emitStateIfChanged();
-    let via: "loaded" | "recovered" = "loaded";
+    let via: "loaded" | "recovered" | "fresh" = "loaded";
     try {
       try {
         if (sessionId) await this.controller.reconnect(sessionId);
         else await this.controller.startFresh();
       } catch (error) {
-        if (this.ownerLifecycle?.recoverInPlace && sessionId) {
-          await this.ownerLifecycle.recoverInPlace(error);
-          via = "recovered";
-        } else {
-          throw new ProviderSessionError({ agentSessionId: this.ownerAgentSessionId ?? this.agentSessionId as import("./agent-ids.ts").AgentSessionId,
-            agentConversationId: this.agentConversationId, attemptId: `reconnect-${crypto.randomUUID()}`,
-            internalSessionId: sessionId ?? undefined, source: "provider_session", code: "provider_session_load_failed", recoverability: "retryable", cause: error });
-        }
+        if (!sessionId) throw error;
+        via = await this.continueWithoutProviderSession(sessionId, error);
       }
       if (this.state.phase === "stopped") { await this.controller.forceStop(); throw new Error("conversation stopped during reconnect"); }
       if (via === "loaded") {
@@ -3779,13 +3803,54 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.emit({ kind: "provider_reconnected", via, internalSessionId: this._internalSessionId! });
     } catch (error) {
       await this.controller.forceStop().catch(() => {});
-      this.providerAttachment = attachment;
-      this.setInternalSessionId(sessionId);
+      if (this.continuationAcquired) {
+        this.providerAttachment = attachment;
+        this.setInternalSessionId(sessionId);
+      }
       throw error;
     } finally {
       this.reconnecting = false;
       this.emitStateIfChanged();
     }
+  }
+
+  /**
+   * The provider session could not be loaded after the process was replaced. A transient failure is
+   * thrown for the next operation to retry. When the provider no longer has the session, the
+   * conversation's own rule decides, the same one it applies at open; when that rule has nothing left,
+   * the conversation stops accepting prompts (`continuation_unavailable`) and the error says why.
+   */
+  private async continueWithoutProviderSession(sessionId: string, error: unknown): Promise<"recovered" | "fresh"> {
+    const unavailable = (cause: unknown): never => {
+      this.continuationAcquired = false;
+      throw cause;
+    };
+    if (this.ownerLifecycle?.recoverInPlace) {
+      try {
+        await this.ownerLifecycle.recoverInPlace(error);
+        return "recovered";
+      } catch (failure) {
+        if (failure instanceof ProviderSessionError && failure.code === "provider_session_missing") unavailable(failure);
+        throw failure;
+      }
+    }
+    const loadFailed = (code: "provider_session_missing" | "provider_session_load_failed") => new ProviderSessionError({
+      agentSessionId: this.ownerAgentSessionId ?? this.agentSessionId as import("./agent-ids.ts").AgentSessionId,
+      agentConversationId: this.agentConversationId, attemptId: `reconnect-${crypto.randomUUID()}`,
+      internalSessionId: sessionId, source: "provider_session", code,
+      recoverability: code === "provider_session_missing" ? "recoverable" : "retryable", cause: error });
+    if (!isMissingProviderSessionError(error)) throw loadFailed("provider_session_load_failed");
+    if (this.v2Transcript) {
+      const report = await this.acquireContinuation(this.v2Transcript.checkpoint,
+        this.continuationStrategies.filter((strategy) => strategy.kind !== "load_internal_session"), error);
+      if (report.outcome.kind === "unavailable") unavailable(new ContinuationUnavailableError(report, { cause: error }));
+      return "recovered";
+    }
+    if (this.sessionLoadFailure === "error") unavailable(loadFailed("provider_session_missing"));
+    const created = await this.controller.startFresh();
+    if (!created.sessionId) throw new Error("harness returned no session id for a replacement session");
+    this.installProviderAttachment(created.sessionId, "runtime_only", true);
+    return "fresh";
   }
 
   private cancelOperation(reason: CancelReason): void {

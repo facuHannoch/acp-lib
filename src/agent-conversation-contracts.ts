@@ -205,7 +205,7 @@ export interface HandoffResult {
 
 /** Conversation-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
 export type AgentSessionEvent =
-  | { kind: "provider_reconnected"; via: "loaded" | "recovered"; internalSessionId: string }
+  | { kind: "provider_reconnected"; via: "loaded" | "recovered" | "fresh"; internalSessionId: string }
   | { kind: "operation_stage_changed"; activity: OperationActivity }
   | { kind: "state_changed"; state: AgentSessionState }
   | { kind: "turn_started"; turnId: string }

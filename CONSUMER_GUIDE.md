@@ -1952,8 +1952,17 @@ resolve cancelled and expose `cancel: forced`; acknowledged cancellation reports
 After a provider exit or forced stop, keep the conversation and send the next prompt. The library
 loads its provider session automatically and emits `provider_reconnected` with `via: loaded` or
 `recovered` (Agent-owned checkpoint recovery under the configured policy). The snapshot connection
-moves through `disconnected`, `reconnecting`, and `connected`. Failed reconnects can be retried by
-another prompt. SessionManager's existing library-crash uncertainty recovery remains separate.
+moves through `disconnected`, `reconnecting`, and `connected`. A transient reconnect failure fails
+that prompt, and the next prompt tries again.
+
+When the harness no longer has the session, the conversation applies the same rule it applies when
+opened: checkpoint recovery for Agent-owned conversations (`onLoadFailure: "recover"`), the
+`continuation.strategies` list for SessionManager conversations (only `new_from_transcript` or a
+consumer continuation can replace the session; the default list is load only), and
+`providerSession.onFailure` otherwise (`"new"` starts a fresh session without the earlier context and
+reports `via: fresh`). When the rule has nothing left, the prompt rejects with the reason, `promptability`
+reports `continuation_unavailable`, and later prompts are refused until the conversation is reopened
+with a different policy. SessionManager's existing library-crash uncertainty recovery remains separate.
 
 After a turn the provider received fails (stalled, crashed, or errored), queued messages remain held.
 A prompt that fails before reaching the provider holds nothing. Read `state.pendingHold`,

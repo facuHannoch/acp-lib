@@ -175,14 +175,17 @@ Self-healing is not a setting.
   |---|---|---|
   | Agent-owned | `onLoadFailure`: checkpoint recovery (`ConversationManager`, extracted as `recoverAfterLoadFailure`) | the same, in place (`recoverInPlace`); already implemented |
   | SessionManager | the conversation's `ContinuationStrategy` list, in order (`acquireOpeningContinuation`): load, then `new_from_transcript`, then `new_from_consumer_continuation` as configured | the same list; the part of `acquireOpeningContinuation` that only opening needs (transcript bootstrap) is separated so both call it |
-  | no persistence | `sessionLoadFailure` (`"new"` starts a fresh session, `"error"` fails) | the same |
+  | no transcript persistence (detached, catalog) | `providerSession.onFailure` (`"new"` starts a fresh session, `"error"` fails; a conversation started new uses `"new"`) | the same; a fresh session reports `provider_reconnected` with `via: "fresh"`, since the harness context is gone |
 
   When the rule has nothing left (for SessionManager, the default list is load only: a replacement session spends
   tokens and changes routing, so it is used only when the consumer configured it), the conversation is marked
-  "can't continue": `promptability` reports `continuation_unavailable` with the attempts and their reasons, and
-  `prompt()` is refused with it, instead of failing on every prompt with a load error.
+  "can't continue": the prompt that found it rejects with the reason (`ContinuationUnavailableError` with the
+  attempts for SessionManager, `ProviderSessionError` with code `provider_session_missing` otherwise),
+  `promptability` reports `continuation_unavailable`, and later prompts are refused with it instead of failing on
+  every prompt with a load error.
 - **A transient failure** (the process could not be started, the load request itself failed rather than reporting the
-  session missing) fails that operation with the existing codes (`provider_session_load_failed`, `recovery_failed`),
+  session missing; told apart with the existing `isMissingProviderSessionError`, and for Agent-owned conversations
+  its configured override) fails that operation with the existing codes (`provider_session_load_failed`, `recovery_failed`),
   and the next operation tries again.
 - `ensureProvider` owns only noticing that the process is gone, starting a new one, and handing a failed load to the
   conversation's rule. It does not decide how the conversation continues.

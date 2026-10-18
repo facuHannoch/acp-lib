@@ -151,17 +151,84 @@ test("missing provider history recovers from checkpoint in the same owned conver
   expect((await agent.conversations.open(value.id)).conversation).toBe(value);
   expect((await agent.persistence.providerSessions.active(value.id))!.internalSessionId).toBe(value.internalSessionId);
 });
-test("a failed detached reload leaves the conversation retryable on the next prompt", async () => {
-  const { readFile, writeFile } = await import("node:fs/promises");
+test("a transient reload failure leaves the conversation retryable on the next prompt", async () => {
+  const { unlink, writeFile } = await import("node:fs/promises");
   const directory = await mkdtemp(join(tmpdir(), "acp-load-retry-")); cleanups.push(() => rm(directory, { recursive: true, force: true }));
-  const state = join(directory, "sessions.json");
-  const value = await conversation({ env: { LIFECYCLE_STATE: state } });
+  const flag = join(directory, "fail-load");
+  const value = await conversation({ env: { LIFECYCLE_STATE: join(directory, "sessions.json"), LIFECYCLE_FAIL_LOAD_FILE: flag } });
   await value.prompt("remember guava"); const id = value.internalSessionId;
-  const saved = await readFile(state, "utf8"); await value.connection.forceStop(); await writeFile(state, "{}");
+  await writeFile(flag, "1"); await value.connection.forceStop();
   expect((await value.prompt("first reconnect").catch((error) => error)).code).toBe("provider_session_load_failed");
   expect(value.state.providerConnection).toBe("disconnected"); expect(value.internalSessionId).toBe(id);
-  await writeFile(state, saved);
+  expect(value.promptability.promptable).toBe(true);
+  await unlink(flag);
   expect((await value.prompt("second reconnect")).text).toContain("guava");
+});
+test("a detached conversation whose provider lost the session follows its load-failure rule", async () => {
+  const { writeFile } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "acp-load-missing-")); cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const state = join(directory, "sessions.json");
+  // Started new: the rule is "new", so a fresh session replaces it and the event says the context is gone.
+  const fresh = await conversation({ env: { LIFECYCLE_STATE: state } });
+  const events: any[] = []; fresh.subscribe(({ event }) => events.push(event));
+  await fresh.prompt("remember guava"); const id = fresh.internalSessionId!;
+  await fresh.connection.forceStop(); await writeFile(state, "{}");
+  expect((await fresh.prompt("after crash")).text).not.toContain("guava");
+  expect(fresh.internalSessionId).not.toBe(id);
+  expect(events.some((event) => event.kind === "provider_reconnected" && event.via === "fresh")).toBe(true);
+  await fresh.stop();
+  // Loaded with onFailure "error": the conversation stops accepting prompts instead of failing each one.
+  const strict = await conversation({ env: { LIFECYCLE_STATE: state },
+    providerSession: { kind: "load", internalSessionId: fresh.internalSessionId!, onFailure: "error" } });
+  await strict.connection.forceStop(); await writeFile(state, "{}");
+  expect((await strict.prompt("after crash").catch((error) => error)).code).toBe("provider_session_missing");
+  expect(strict.promptability.blockers).toContain("continuation_unavailable");
+  expect((await Promise.resolve().then(() => strict.prompt("again")).catch((error) => error)).name).toBe("AgentSessionPromptBlockedError");
+});
+test("a SessionManager conversation whose provider lost the session applies its continuation strategies", async () => {
+  const { AgentSession } = await import("../src/agent-session.ts");
+  const { writeFile } = await import("node:fs/promises");
+  const root = await mkdtemp(join(tmpdir(), "acp-continuation-reconnect-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const state = join(root, "sessions.json");
+  const base = { adapterId: "mock", adapter: { command: [process.execPath, resolve(import.meta.dir, "fixtures/lifecycle-agent.ts")], cancelGraceMs: 80 },
+    env: { LIFECYCLE_STATE: state }, metering: { pricing: false as const }, persistence: { root } };
+  const created = await AgentSession.create({ ...base, agentSessionId: "reconnect-continuation", creationId: "reconnect-continuation-1" });
+  await created.prompt("remember quince"); await created.stop();
+  // Default strategies (load only): nothing is left, so the conversation reports it cannot continue.
+  const loadOnly = (await AgentSession.open({ ...base, agentSessionId: "reconnect-continuation" })).session;
+  cleanups.push(() => loadOnly.stop());
+  const saved = await Bun.file(state).text();
+  await loadOnly.connection.forceStop(); await writeFile(state, "{}");
+  expect((await loadOnly.prompt("after crash").catch((error) => error)).name).toBe("ContinuationUnavailableError");
+  expect(loadOnly.promptability.blockers).toContain("continuation_unavailable");
+  await loadOnly.stop(); await writeFile(state, saved);
+  // With a transcript builder configured, a replacement session is seeded and the prompt runs.
+  let built = 0;
+  const rebuilt = (await AgentSession.open({ ...base, agentSessionId: "reconnect-continuation", continuation: { strategies: [
+    { kind: "load_internal_session" },
+    { kind: "new_from_transcript", strategyId: "test-v1", buildContinuation: async () => { built++; return { continuation: "The user asked to remember quince." }; } },
+  ] } })).session;
+  cleanups.push(() => rebuilt.stop());
+  const events: any[] = []; rebuilt.subscribe(({ event }) => events.push(event));
+  const previous = rebuilt.internalSessionId;
+  await rebuilt.connection.forceStop(); await writeFile(state, "{}");
+  expect((await rebuilt.prompt("what fruit?")).text).toContain("quince");
+  expect(built).toBe(1); expect(rebuilt.internalSessionId).not.toBe(previous);
+  expect(events.some((event) => event.kind === "provider_reconnected" && event.via === "recovered")).toBe(true);
+});
+test("an Agent-owned conversation without checkpoint recovery reports it cannot continue", async () => {
+  const { Agent } = await import("../src/agent.ts");
+  const { writeFile } = await import("node:fs/promises");
+  const directory = await mkdtemp(join(tmpdir(), "acp-owned-missing-")); cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const state = join(directory, "sessions.json");
+  const agent = await Agent.open({ persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+    adapters: { mock: { command: [process.execPath, resolve(import.meta.dir, "fixtures/lifecycle-agent.ts")], cancelGraceMs: 30 } }, defaultAdapterId: "mock",
+    conversationDefaults: { metering: { pricing: false }, env: { LIFECYCLE_STATE: state } } }); cleanups.push(() => agent.close());
+  const value = await agent.conversations.create();
+  await value.prompt("remember figs");
+  await value.connection.forceStop(); await writeFile(state, "{}");
+  expect((await value.prompt("after crash").catch((error) => error)).code).toBe("provider_session_missing");
+  expect(value.promptability.blockers).toContain("continuation_unavailable");
 });
 test("a stall combines recovery steers, holds queued messages, then releases them in order", async () => {
   const value = await conversation({ operationLifecycle: { turns: { firstOutputMs: 40, nextOutputMs: 40 } } });
