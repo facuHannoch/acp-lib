@@ -1024,7 +1024,9 @@ const answer = await note;  // the turn that carried the message
 `withdraw()`. A prompt that does not have to wait runs immediately and `delivery` has no effect.
 
 Set the default for prompts that do not say, per Agent or per conversation. It is `"steer"` unless you
-change it (before this was `"queue"`; set `busyDelivery: "queue"` to keep the old behaviour):
+change it (before this was `"queue"`; set `busyDelivery: "queue"` to keep the old behaviour). With `"queue"`
+as the default, a failed turn holds every later prompt until one is sent with `delivery: "steer"`; see
+[Operation lifecycle](#operation-lifecycle-and-automatic-provider-recovery).
 
 ```ts
 const agent = await Agent.open({
@@ -1919,3 +1921,78 @@ boundary. Strict V2 creation never claims an already initialized legacy file imp
 - Keep local commands distinct from harness commands.
 - Stop every live session during application shutdown.
 - Do not infer provider loading from a transcript path or file contents.
+
+## Operation lifecycle and automatic provider recovery
+
+`conversation.state.operation` is null when no model request is running. While running it exposes
+`operationId`, `kind`, `stage`, `startedAt`, `lastOutputAt`, `toolsInFlight` and optional cancellation
+reason/time. `operation_stage_changed` fires on stage changes; read the snapshot for current output
+timestamps. Internal-inference attempt handles expose the same information at `handle.snapshot.operation`.
+
+Set `operationLifecycle` on `Agent.open()` or a detached conversation:
+
+```ts
+operationLifecycle: {
+  turns: { firstOutputMs: 120_000, nextOutputMs: 180_000 },
+  internalInference: { firstOutputMs: 120_000 },
+  recap: { nextOutputMs: 180_000 },
+}
+```
+
+Individual inference limits accept `false`; tools and pending permissions suspend output deadlines.
+`toolMs` is optional and disabled by default. Each adapter may set `cancelGraceMs` (default 30 seconds).
+Permission handlers may accept a second optional AbortSignal; discard UI and stop asynchronous work
+when it aborts. A late permission answer cannot change the cancelled outcome.
+
+A stalled turn rejects with `OperationStalledError`, including `phase` (`no_response` or
+`incomplete_response`), `messages`, `operationId`, `metering` and optional `followedBy` steer IDs.
+Its partial response is failed, and its metering outcome is cancelled. Forced interrupts and steers
+resolve cancelled and expose `cancel: forced`; acknowledged cancellation reports `acknowledged`.
+
+After a provider exit or forced stop, keep the conversation and send the next prompt. The library
+loads its provider session automatically and emits `provider_reconnected` with `via: loaded` or
+`recovered` (Agent-owned checkpoint recovery under the configured policy). The snapshot connection
+moves through `disconnected`, `reconnecting`, and `connected`. A transient reconnect failure fails
+that prompt, and the next prompt tries again.
+
+When the harness no longer has the session, the conversation applies the same rule it applies when
+opened: checkpoint recovery for Agent-owned conversations (`onLoadFailure: "recover"`), the
+`continuation.strategies` list for SessionManager conversations (only `new_from_transcript` or a
+consumer continuation can replace the session; the default list is load only), and
+`providerSession.onFailure` otherwise (`"new"` starts a fresh session without the earlier context and
+reports `via: fresh`). When the rule has nothing left, the prompt rejects with the reason, `promptability`
+reports `continuation_unavailable`, and later prompts are refused until the conversation is reopened
+with a different policy. SessionManager's existing library-crash uncertainty recovery remains separate.
+
+Harness behaviours seen after a crash (test13, 2026-10-19):
+
+- **OpenCode finishes the interrupted turn first.** When a reloaded session has a turn that was cut
+  off (the process was killed or frozen mid-turn), OpenCode completes that interrupted request before
+  answering the next prompt. The reply to the next prompt can therefore start with the old turn's
+  output, and it can be silent for longer than usual while the old request runs. The failed turn was
+  already reported as an error; treat the start of the next reply accordingly, and keep the silence
+  limits generous on OpenCode (the defaults are).
+- **Codex archives a deleted session.** Loading it fails until it is unarchived with
+  `codex unarchive <id>`; the library treats it as missing, so the conversation's continuation rule
+  applies (a replacement session, when the rule provides one).
+
+After a turn the provider received fails (stalled, crashed, or errored), queued messages remain held.
+A prompt that fails before reaching the provider holds nothing. Read `state.pendingHold`,
+`pendingMessages[].heldBy` and the `message_held` / `message_released` events. Steers waiting after a
+stall are sent as the recovery prompt, up to the next queued message (not including it); steers after
+that message run after it. Send a message with `delivery: steer` to continue; its successful
+completion releases queued messages in order (internal prompts such as a recap do not release). Explicit queue delivery while held
+adds to the hold, including when idle. `withdraw()` remains available.
+
+**If your default is `busyDelivery: "queue"`**, every prompt sent after a failure joins the hold, so
+nothing runs until you send a prompt with `delivery: "steer"` explicitly (or withdraw). Give the user
+a way to send that steer, for example when `state.pendingHold` is set. These message events are live
+observations; consumers may store them if needed.
+
+Control requests (initialize, new, load, list, delete, config, authenticate) have no deadline. They
+end when the harness answers or when the process exits. A large session can take a minute or more to
+load; that is not treated as a failure.
+
+Degraded PTY mode observes raw terminal output but cannot identify ACP tools or permissions. Its
+output silence limits are disabled by default to preserve long-running tools; explicit configured
+limits still apply, and cancellation is bounded.

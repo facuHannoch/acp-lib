@@ -1,3 +1,5 @@
+import { writeConversationError } from "./error-record-writer.ts";
+import type { OperationStalledError } from "../operations/errors.ts";
 import { randomUUID } from "node:crypto";
 import {
   type AgentConversationId,
@@ -45,7 +47,17 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     private readonly conversationId: AgentConversationId,
     private readonly initialParticipants: readonly ParticipantRef[],
     private readonly settings: ManagerSettings,
+    readonly recoverInPlace?: (error: unknown) => Promise<void>,
   ) {}
+
+  async operationFailed(input: { operationId: string; error: OperationStalledError }): Promise<void> {
+    const written = await writeConversationError(this.agent, this.settings, {
+      agentConversationId: this.conversationId, attemptId: input.operationId,
+      operationId: input.operationId, source: "operation", code: "stalled", recoverability: "retryable",
+      message: "The provider stopped producing output.", details: { phase: input.error.phase },
+    });
+    if (written.recordingError) throw written.recordingError;
+  }
 
   async beforePrompt(input: OwnedPromptInput) {
     // A combined prompt records each original message as it was sent, under the same operation.

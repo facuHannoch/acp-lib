@@ -1,8 +1,10 @@
-// Adapters carry ONLY what's needed to LAUNCH the connection — the command.
+// Adapters carry the launch command and the grace for terminating an unresponsive harness.
 // Everything else (auth methods, capabilities, features) is DISCOVERED from initialize.
 // See SPEC.md "Adapters" + "Core principles".
 
 export interface Adapter {
+  /** Maximum cancellation wait before terminating this provider process. */
+  cancelGraceMs?: number;
   /** The command to spawn the ACP agent binary, e.g. ["kimi", "acp"]. */
   command: string[];
   /**

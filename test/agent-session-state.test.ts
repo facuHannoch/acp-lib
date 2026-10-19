@@ -34,6 +34,9 @@ describe("AgentSession state and notifications", () => {
 
     expect(session.state).toEqual({
       phase: "idle",
+      operation: null,
+      pendingHold: null,
+      providerConnection: "connected",
       isBusy: false,
       queuedOperationCount: 0,
       agentSessionId: session.agentSessionId,

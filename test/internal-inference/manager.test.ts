@@ -329,3 +329,32 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+test("a supervised stall retries in a fresh session and exposes activity and failure details", async () => {
+  const root = await mkdtemp(join(tmpdir(), "acp-inference-stall-retry-")); roots.push(root);
+  const { resolve } = await import("node:path");
+  const strategy = testStrategy(true);
+  let preparations = 0;
+  strategy.prepare = async () => ({ prompt: ++preparations === 1 ? "[lifecycle:silent]" : "ready" });
+  const agent = await Agent.open({ persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+    adapters: { mock: { command: [process.execPath, resolve(import.meta.dir, "../fixtures/lifecycle-agent.ts")], cancelGraceMs: 30 } }, defaultAdapterId: "mock",
+    operationLifecycle: { internalInference: { firstOutputMs: 30, nextOutputMs: 30 } },
+    conversationDefaults: { metering: { pricing: false }, env: { LIFECYCLE_STATE: join(root, "sessions.json") } },
+    internalInference: { strategies: [strategy], retry: { maxAttempts: 2, backoffMs: [0] } } });
+  try {
+    const seen: string[] = [];
+    agent.internalInferences!.subscribe((event) => { if (event.snapshot.operation) seen.push(event.snapshot.operation.stage); });
+    const run = await agent.internalInferences!.enqueue({ purpose: "conversation_checkpoint", input: { strategyId: "test", version: 1, payload: { prompt: "unused" } } });
+    const completion = await run.result;
+    expect(completion.internalSessionId).toBeTruthy();
+    const attempts = (await agent.internalInferences!.list({ rootId: run.rootId })).attempts;
+    expect(attempts.length).toBe(2); expect(preparations).toBe(2);
+    const failed = await agent.persistence.internalInferences!.getAttempt(run.rootId);
+    expect(failed!.failureDetails).toMatchObject({ providerCode: "stalled", phase: "no_response" });
+    expect(seen).toContain("waiting"); expect(seen).toContain("cancelling");
+    const { readFile } = await import("node:fs/promises");
+    const sessions = JSON.parse(await readFile(join(root, "sessions.json"), "utf8"));
+    expect(Object.keys(sessions).length).toBe(2);
+    expect(run.activeAttempt.snapshot.operation).toBeNull();
+  } finally { await agent.close(); }
+});

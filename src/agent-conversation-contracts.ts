@@ -1,3 +1,4 @@
+import type { OperationActivity } from "./operations/contracts.ts";
 import type { AgentMode } from "./controller.ts";
 import type { MessageEvent, PendingMessageId, PromptEndedBy } from "./steering/contracts.ts";
 import type { Adapter } from "./adapters.ts";
@@ -27,6 +28,9 @@ export type AgentSessionPhase =
 
 /** Authoritative, immutable point-in-time state for orchestration consumers. */
 export interface AgentSessionState {
+  readonly operation: OperationActivity | null;
+  readonly pendingHold: { readonly failedTurnId: string } | null;
+  readonly providerConnection: "connected" | "disconnected" | "reconnecting";
   readonly phase: AgentSessionPhase;
   /** True only while an operation is executing; queued work is reported separately. */
   readonly isBusy: boolean;
@@ -201,6 +205,8 @@ export interface HandoffResult {
 
 /** Conversation-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
 export type AgentSessionEvent =
+  | { kind: "provider_reconnected"; via: "loaded" | "recovered" | "fresh"; internalSessionId: string }
+  | { kind: "operation_stage_changed"; activity: OperationActivity }
   | { kind: "state_changed"; state: AgentSessionState }
   | { kind: "turn_started"; turnId: string }
   | { kind: "turn_completed"; turnId: string; result: PromptResult }

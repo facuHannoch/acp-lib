@@ -1,3 +1,4 @@
+import type { OperationLifecycleConfig } from "../operations/contracts.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { AgentAdapterRegistration } from "../agent-adapter-registry.ts";
@@ -60,6 +61,7 @@ export type AgentConversationRuntimeDefaults = Omit<
 >;
 
 export interface AgentConfig {
+  readonly operationLifecycle?: OperationLifecycleConfig;
   readonly id?: AgentSessionId;
   readonly persistence: AgentPersistenceConfig;
   readonly adapters: Readonly<Record<string, import("../adapters.ts").Adapter>>

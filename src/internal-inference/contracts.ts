@@ -1,3 +1,4 @@
+import type { OperationActivity } from "../operations/contracts.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { OperationMeteringRecord, OperationOutcome } from "../metering/record.ts";
@@ -72,6 +73,7 @@ export interface InternalInferenceCompletion {
 }
 
 export interface InternalInferenceSnapshot {
+  readonly operation?: OperationActivity | null;
   readonly id: InternalInferenceId;
   readonly rootId: InternalInferenceId;
   readonly agentSessionId: AgentSessionId;
@@ -169,6 +171,7 @@ export interface InternalInferenceRuntime {
 }
 
 export interface InternalInferenceRuntimeLifecycle {
+  operationChanged?(activity: (() => OperationActivity) | null): void;
   stageChanged?(stage: Extract<InternalInferenceStage, "creating_session" | "prompting">): void;
   sessionStarted(input: {
     readonly internalSessionId: string;

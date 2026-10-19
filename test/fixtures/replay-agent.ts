@@ -112,6 +112,7 @@ function handle(message: any): void {
       const sessionId = String(message.params?.sessionId);
       const asked = (message.params?.prompt ?? []).map((block: any) => block?.text ?? "").join("\n");
       const recap = /summarize this conversation for the memory/.test(asked);
+      if (recap && process.env.REPLAY_AGENT_STALL_RECAP === "1") return;
       if (recap && failRecap) {
         send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "recap failed on purpose" } });
         return;

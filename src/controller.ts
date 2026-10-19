@@ -1,3 +1,5 @@
+import { ForcedStopError } from "./operations/errors.ts";
+import type { OperationLifecycleConfig, OutputListener } from "./operations/contracts.ts";
 import {
   AcpClient,
   type AcpClientConfig,
@@ -33,7 +35,14 @@ const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([
  */
 export type AgentMode = "normal" | "degraded";
 
+/** The lifecycle surface both leaf clients (ACP and PTY) offer beyond `AgentClient`. */
+type ObservableLeaf = AgentClient & {
+  readonly isConnected?: boolean;
+  subscribeOutput?(listener: OutputListener): () => void;
+};
+
 export interface AgentControllerConfig {
+  operationLifecycle?: OperationLifecycleConfig;
   /** The single adapter this controller drives. Switching adapter = a new AgentSession. */
   adapter: Adapter;
   /** Stable id for the adapter (catalog/display, e.g. "codex"). */
@@ -113,6 +122,10 @@ export class AgentController implements AgentClient {
   // mode, a PtyClient in degraded mode. `acp` is the SAME object only in normal mode,
   // typed for the rich ACP surface; it is null when degraded (that surface genuinely
   // doesn't exist when screen-scraping).
+  private readonly forceStopListeners = new Set<() => void>();
+  private readonly connectionListeners = new Set<() => void>();
+  private detachDisconnect: (() => void) | null = null;
+  private stopping: Promise<void> = Promise.resolve();
   private current: AgentClient | null = null;
   private acp: AcpClient | null = null;
   private mode: AgentMode;
@@ -123,11 +136,48 @@ export class AgentController implements AgentClient {
   private readonly usageUpdateListeners = new Set<
     (update: unknown, sessionId: string | null) => void
   >();
+  private readonly outputListeners = new Set<OutputListener>();
+  private detachOutput: (() => void) | null = null;
   private detachUsageUpdates: (() => void) | null = null;
 
   constructor(private readonly config: AgentControllerConfig) {
     this.mode = config.mode ?? "normal";
   }
+
+  get isConnected(): boolean {
+    return this.current !== null && ((this.current as ObservableLeaf).isConnected ?? true);
+  }
+
+  subscribeConnection(listener: () => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => this.connectionListeners.delete(listener);
+  }
+
+  private connectionChanged(): void {
+    for (const listener of [...this.connectionListeners]) {
+      try {
+        listener();
+      } catch (error) {
+        this.config.logger?.warn("connection_listener_failed", { error: String(error) });
+      }
+    }
+  }
+
+  async reconnect(sessionId: string): Promise<ConnectResult> {
+    await this.stopping;
+    await this.stop();
+    const brought = await this.bringUp(this.mode, sessionId, undefined, "error");
+    this.current = brought.client;
+    this.acp = brought.acp;
+    this.attachAvailableCommandSource();
+    if (!brought.result.resumed || brought.result.sessionId !== sessionId) {
+      await this.stop();
+      throw new Error("provider did not load the requested session");
+    }
+    return brought.result;
+  }
+
+  get cancelGraceMs(): number | undefined { return this.config.adapter.cancelGraceMs; }
 
   get currentAdapterId(): string {
     return this.config.adapterId;
@@ -188,7 +238,14 @@ export class AgentController implements AgentClient {
     return () => this.usageUpdateListeners.delete(listener);
   }
 
+  subscribeOutput(listener: OutputListener): () => void {
+    this.outputListeners.add(listener);
+    return () => this.outputListeners.delete(listener);
+  }
+
   async start(onProgress?: (event: AgentControllerStartEvent) => void): Promise<ConnectResult> {
+    await this.stopping;
+    if (this.current && !this.isConnected) await this.stop();
     if (this.current) {
       return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
     }
@@ -201,6 +258,8 @@ export class AgentController implements AgentClient {
 
   /** Explicitly create a fresh provider thread, ignoring any startup load target. */
   async startFresh(onProgress?: (event: AgentControllerStartEvent) => void): Promise<ConnectResult> {
+    await this.stopping;
+    if (this.current && !this.isConnected) await this.stop();
     if (this.current) {
       if (!this.acp) throw new Error("fresh provider sessions require ACP normal mode");
       return await this.newSession();
@@ -217,7 +276,21 @@ export class AgentController implements AgentClient {
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
-    return this.requireCurrent().prompt(text, handlers, attachments);
+    const current = this.requireCurrent();
+    let forced!: () => void;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      forced = () => reject(new ForcedStopError());
+      this.forceStopListeners.add(forced);
+    });
+    return Promise.race([current.prompt(text, handlers, attachments), interrupted])
+      .finally(() => this.forceStopListeners.delete(forced));
+  }
+
+  cancel(): void { this.current?.interrupt(); }
+
+  forceStop(): Promise<void> {
+    for (const force of [...this.forceStopListeners]) force();
+    return this.stop();
   }
 
   interrupt(options?: InterruptOptions): void {
@@ -257,12 +330,23 @@ export class AgentController implements AgentClient {
     const client = this.current;
     this.current = null;
     this.acp = null;
+    this.detachDisconnect?.();
+    this.detachDisconnect = null;
+    this.connectionChanged();
     this.detachAvailableCommands?.();
     this.detachAvailableCommands = null;
     this.detachUsageUpdates?.();
     this.detachUsageUpdates = null;
+    this.detachOutput?.();
+    this.detachOutput = null;
     this.emitAvailableCommands(NO_AVAILABLE_COMMANDS);
-    if (client) await client.stop();
+    if (client) {
+      const pending = client.stop();
+      this.stopping = pending.then(() => {}, () => {});
+      await pending;
+    } else {
+      await this.stopping;
+    }
   }
 
   /**
@@ -459,6 +543,7 @@ export class AgentController implements AgentClient {
     mode: AgentMode,
     sessionId?: string,
     onProgress?: (event: AgentControllerStartEvent) => void,
+    loadFailure = this.config.sessionLoadFailure,
   ): Promise<{ client: AgentClient; acp: AcpClient | null; result: ConnectResult }> {
     const adapter = this.config.adapter;
     if (mode === "degraded") {
@@ -487,7 +572,7 @@ export class AgentController implements AgentClient {
       env: this.config.env,
       cwd: this.config.cwd,
       sessionId,
-      sessionLoadFailure: this.config.sessionLoadFailure,
+      sessionLoadFailure: loadFailure,
       defaultPermission: this.config.defaultPermission,
       clientInfo: this.config.clientInfo,
       clientCapabilities: this.config.clientCapabilities,
@@ -509,11 +594,11 @@ export class AgentController implements AgentClient {
     try {
       result = await client.startSession({
         mcpServers: this.config.mcpServers,
-        loadFailure: this.config.sessionLoadFailure,
+        loadFailure: loadFailure,
         ...(this.config.onSessionReplay ? { onReplayUpdate: this.config.onSessionReplay } : {}),
       });
     } catch (err) {
-      if (sessionId && this.config.sessionLoadFailure === "error") {
+      if (sessionId && loadFailure === "error") {
         await client.stop();
         throw err;
       }
@@ -558,6 +643,19 @@ export class AgentController implements AgentClient {
   }
 
   private attachAvailableCommandSource(): void {
+    this.detachDisconnect?.();
+    this.detachDisconnect = this.acp?.subscribeDisconnect(() => this.connectionChanged()) ?? null;
+    this.connectionChanged();
+    this.detachOutput?.();
+    this.detachOutput = (this.current as ObservableLeaf | null)?.subscribeOutput?.((output) => {
+      for (const listener of [...this.outputListeners]) {
+        try {
+          listener(output);
+        } catch (error) {
+          this.config.logger?.warn("controller_output_listener_failed", { error: String(error) });
+        }
+      }
+    }) ?? null;
     this.detachAvailableCommands?.();
     this.detachAvailableCommands = this.acp?.subscribeAvailableCommands((commands) =>
       this.emitAvailableCommands(commands)) ?? null;

@@ -9,6 +9,10 @@
 // Adapter ownership remains here during the compatibility tranche. The later Agent owner
 // supplies the adapter registry used by cross-adapter conversation transitions.
 
+import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
+import type { CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
+import { OperationStalledError } from "./operations/errors.ts";
+import { OperationSupervisor } from "./operations/supervisor.ts";
 import {
   AgentController,
   type AgentControllerConfig,
@@ -135,6 +139,7 @@ import {
   AgentSessionPromptBlockedError,
   ContinuationUnavailableError,
   DirectAuditPersistenceUnsupportedError,
+  ProviderSessionError,
 } from "./agent-conversation-errors.ts";
 import type {
   AgentSessionEvent,
@@ -370,6 +375,8 @@ export interface AgentSessionConfig {
   agentSessionId?: string;
   /** Provider-thread startup intent. Default `{ kind: "new" }`. */
   providerSession?: ProviderSession;
+  /** Stale limits per operation kind (turns, internal inference, recap). */
+  operationLifecycle?: OperationLifecycleConfig;
   /**
    * Token/cost metering policy. Optional: omitting it selects best-effort enforcement
    * with the pinned models.dev catalog and no restored state. Metering is not something a
@@ -492,6 +499,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private _title?: string;
   private readonly openBootstrap: AgentSessionOpenBootstrap | null;
   private continuationAcquired = true;
+  /** The continuation strategies the conversation was opened with; reconnect applies the same list. */
+  private continuationStrategies: readonly ContinuationStrategy[] = [{ kind: "load_internal_session" }];
+  /**
+   * What the conversation does when its provider session cannot be loaded and it has no transcript
+   * persistence (`providerSession.onFailure`).
+   */
+  private sessionLoadFailure: "error" | "new" = "new";
   private _recovery: SessionRecoveryStatus = { kind: "clean" };
   private _configurationRestore: ConfigurationRestoreStatus = { kind: "matched" };
   private readonly managedCreation: ManagedAgentSessionCreationBootstrap | null;
@@ -499,6 +513,15 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private managedAuditLog: AuditLogIdentity | null = null;
   private readonly managedOpenProgress?: ManagedOpenProgressReporter;
   private managedInitializationReported = false;
+  private readonly operationLifecycle: OperationLifecycleConfig;
+  private reconnecting = false;
+  private detachControllerConnection: (() => void) | null = null;
+  private activeSupervisor: OperationSupervisor | null = null;
+  /**
+   * The last consumer turn whose provider request itself failed (stalled, crashed, errored). Only
+   * such a turn holds the queue.
+   */
+  private providerFailedTurnId: string | null = null;
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
   private ownerRecordWrite: Promise<void> = Promise.resolve();
@@ -551,13 +574,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.agentConversationId = config.agentConversationId ?? createAgentConversationId();
     this.ownerAgentSessionId = config.ownerAgentSessionId
       ?? (isAgentSessionId(this.agentSessionId) ? this.agentSessionId : null);
+    this.operationLifecycle = config.operationLifecycle ?? {};
     this.ownerLifecycle = config.ownerLifecycle;
     this.defaultPermission = config.defaultPermission ?? "cancel";
     this.steering = new SteeringController<QueueItem>(
       {
         queue: this.operations,
         emit: (event) => this.emit(event),
-        cancelProviderTurn: () => this.controller.interrupt(),
+        cancelProviderTurn: () => this.cancelOperation("steer"),
         emitState: () => this.emitStateIfChanged(),
       },
       config.busyDelivery ?? "steer",
@@ -620,6 +644,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       createdActiveThread: providerSession.kind === "new",
     });
     this.controllerDefaults = {
+      operationLifecycle: this.operationLifecycle,
       launcher: config.launcher,
       execPrefix: config.execPrefix,
       env: config.env,
@@ -639,6 +664,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           }
         : {}),
     };
+    if (providerSession.kind === "load") this.sessionLoadFailure = providerSession.onFailure ?? "error";
     this.controller = this.createController(config.adapter, config.adapterId, this._mode, {
       sessionId: requestedInternalSessionId,
       sessionLoadFailure: providerSession.kind === "load"
@@ -667,6 +693,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private bindController(controller: AgentController): void {
+    this.detachControllerConnection?.();
+    this.detachControllerConnection = controller.subscribeConnection(() => this.emitStateIfChanged());
     this.detachControllerCommands?.();
     this.detachControllerUsage?.();
     this.detachControllerCommands = controller.subscribeAvailableCommands((commands) => {
@@ -1229,13 +1257,35 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.v2Transcript = this.openBootstrap.transcript;
     this.v2TranscriptPath = this.openBootstrap.transcriptPath;
     this._recovery = this.v2Transcript.recovery;
+    this.continuationStrategies = strategies;
+    return await this.acquireContinuation(checkpoint, strategies);
+  }
+
+  /**
+   * Walk the continuation strategies in order: at open, and again after a crash when the provider no
+   * longer has the session (`failedLoad`, then only the reconstruction strategies are passed).
+   */
+  private async acquireContinuation(
+    checkpoint: AgentSessionCheckpoint,
+    strategies: readonly ContinuationStrategy[],
+    failedLoad?: unknown,
+  ): Promise<ContinuationReport> {
+    if (!this.v2Transcript) throw new Error("continuation requires transcript persistence");
     this.continuationAcquired = false;
 
-    const attempts: ContinuationAttempt[] = [];
-    let recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"] = "not_checked";
+    const attempts: ContinuationAttempt[] = failedLoad === undefined ? [] : [Object.freeze({
+      strategy: "load_internal_session" as const,
+      status: "failed" as const,
+      errorCode: "internal_session_unavailable" as const,
+      reason: String(failedLoad),
+    })];
+    let recordedThreadAvailability: ContinuationReport["recordedThreadAvailability"] = failedLoad === undefined
+      ? "not_checked"
+      : "unavailable";
 
     for (const strategy of strategies) {
       if (strategy.kind === "load_internal_session") {
+        if (!this.openBootstrap) throw new Error("loading the recorded session is an opening strategy");
         if (!checkpoint.internalSessionId) {
           attempts.push(Object.freeze({
             strategy: strategy.kind,
@@ -1310,11 +1360,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
       let continuation: string;
       const source = strategy.kind === "new_from_transcript" ? "transcript" as const : "consumer" as const;
       try {
+        if (strategy.kind === "new_from_transcript" && !this.v2TranscriptPath) {
+          throw new Error("no transcript to build from");
+        }
         continuation = strategy.kind === "new_from_transcript"
           ? (await strategy.buildContinuation(Object.freeze({
               agentSessionId: this.agentSessionId,
               checkpoint: structuredClone(checkpoint),
-              transcript: new TranscriptReader(this.openBootstrap.transcriptPath),
+              transcript: new TranscriptReader(this.v2TranscriptPath!),
               targetAdapterId: this.adapterId,
             }))).continuation
           : strategy.continuation;
@@ -1764,6 +1817,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
   /** Immutable current state. Late subscribers read this before listening for deltas. */
   get state(): AgentSessionState {
     return Object.freeze({
+      pendingHold: this.steering.hold,
+      operation: this.activeSupervisor?.activity ?? null,
+      providerConnection: this.reconnecting
+        ? "reconnecting"
+        : this.controller.isConnected ? "connected" : "disconnected",
       phase: this.phase,
       isBusy: this.isBusy,
       queuedOperationCount: this.queuedOperationCount,
@@ -2154,11 +2212,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this.emitStateIfChanged();
         if (item.kind === "prompt") {
           // A run of steer messages at the head of the queue goes out as one prompt.
-          const prompt = this.steering.prepareRun(item) as PromptQueueItem;
+          let reportDelivery: (() => void) | undefined;
+          const prompt = this.steering.prepareRun(item, (event) => {
+            reportDelivery = () => this.emit(event);
+          }) as PromptQueueItem;
           this.steering.turnStarted(prompt);
           this.emit({ kind: "turn_started", turnId: prompt.turnId });
           let stopReason: string | undefined;
           try {
+            await this.ensureProvider();
+            reportDelivery?.();
             const result = await this.runPrompt(prompt);
             stopReason = result.stopReason;
             this.emit({
@@ -2168,10 +2231,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
             });
             prompt.resolve(result);
           } catch (err) {
+            // A prompt that never reached the provider (blocked, rejected, no provider) holds nothing.
+            const failure = err instanceof OperationStalledError ? "stalled" : "error";
+            const providerFailed = this.providerFailedTurnId === prompt.turnId;
+            stopReason = providerFailed ? failure : undefined;
+            if (providerFailed) this.steering.failed(prompt.turnId, failure);
+            if (err instanceof OperationStalledError) {
+              const following = this.steering.followingSteers();
+              if (following.length) err.followedBy = following;
+            }
             this.emit({ kind: "turn_failed", turnId: prompt.turnId, error: String(err) });
             prompt.reject(err);
           } finally {
             this.steering.turnEnded(stopReason);
+            this.providerFailedTurnId = null;
           }
         } else if (item.kind === "handoff") {
           try {
@@ -2276,7 +2349,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // Settle here only when no next item exists, preserving both that ordering and
         // the no-idle-gap guarantee between queued operations.
         this.settleIdleIfDrained();
-      });
+      }, () => this.steering.takeNext());
     } finally {
       if (this.phase !== "stopped") this.phase = "idle";
       this.emitStateIfChanged();
@@ -2284,12 +2357,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private settleIdleIfDrained(): void {
-    if (this.operations.queuedCount !== 0 || this.phase === "stopped") return;
+    if (this.steering.hasRunnable || this.phase === "stopped") return;
     this.phase = "idle";
     this.emitStateIfChanged();
   }
 
   private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
+    await this.ensureProvider();
     const fromInternalSessionId = this._internalSessionId;
     const fromAdapterId = this.adapterId;
     const targetAdapterId = item.options.target?.adapterId ?? fromAdapterId;
@@ -2696,6 +2770,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runSetConfig(item: ConfigQueueItem): Promise<void> {
+    await this.ensureProvider();
     if (!this.v2Transcript || this.persistence === false) {
       await this.controller.setConfig(item.configId, item.value);
       return;
@@ -3050,6 +3125,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runSetMode(item: ModeQueueItem): Promise<ConnectResult> {
+    await this.ensureProvider();
     if (item.mode === this._mode) return await this.controller.setMode(item.mode);
     if (!this.v2Transcript) {
       const result = await this.controller.setMode(item.mode);
@@ -3334,13 +3410,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // The message snapshot must enter the shared queue before an activity first seen
         // after it. Later activity revisions keep their original presentation position.
         flushAssistantMessage("in_progress");
-        this.steering.observeActivity(item.turnId, event);
+        if (!this.activeSupervisor) this.steering.observeActivity(item.turnId, event);
         const result = this.presentation.applyActivity(event);
         this.queueActivityRecords(item.turnId, result.emitted);
         item.handlers?.onRecord?.(result);
         item.handlers?.onActivity?.(event);
       },
-      onPermissionRequest: async (request) => {
+      onPermissionRequest: async (request, signal) => {
         const permissionBase = `${item.turnId}:permission:${request.toolCallId}`;
         if (this.ownerAgentSessionId) {
           await this.recordOwned({
@@ -3360,7 +3436,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           });
         }
         const outcome = item.handlers?.onPermissionRequest
-          ? await item.handlers.onPermissionRequest(request)
+          ? await permissionWithAbort(() => item.handlers!.onPermissionRequest!(request, signal), signal)
           : defaultPermissionOutcome(request, this.defaultPermission);
         if (this.ownerAgentSessionId) {
           await this.recordOwned({
@@ -3385,7 +3461,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // closest observable acquisition time when `session/new` happens inside `prompt()`.
     const dispatchedAt = new Date().toISOString();
     try {
-      const res = await this.controller.prompt(providerText, wrappedHandlers, item.attachments);
+      let res = await this.supervisedPrompt(this.controller, item.turnId, "turn",
+        () => this.controller.prompt(providerText, wrappedHandlers, item.attachments));
+      if (res.cancel === "forced") {
+        const messages = response.snapshot();
+        res = { ...res, messages, text: response.text || chunks.join("") };
+      }
       providerSettled = true;
       if (this.v2Transcript) {
         if (assistantOrdinal === 0) {
@@ -3561,12 +3642,21 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // the rejection rather than only reaching event subscribers.
       // Already metered: the failure happened after the operation closed (a transcript or
       // catalog write), so the record stands and must not be minted a second time.
-      const record = closed ?? (await this.closeOperation(operation, "error", null, String(err)));
+      const outcome = err instanceof OperationStalledError ? "cancelled" : "error";
+      const record = closed ?? (await this.closeOperation(operation, outcome, null, String(err)));
       await this.ownerLifecycle?.meteringRecorded?.(record);
       if (this.v2Transcript && !transcriptClosed) {
         await this.finishV2Prompt("error", record, "unknown").catch(
           (persistenceError) => this.log.warn("transcript_terminal_write_failed", { error: String(persistenceError) }),
         );
+      }
+      if (err instanceof OperationStalledError) {
+        err.messages = messages;
+        err.metering = record;
+        await this.ownerLifecycle?.operationFailed?.({ operationId: item.turnId, error: err }).catch((error) => {
+          this.log.warn("operation_failure_recording_failed", { error: String(error) });
+        });
+        throw err;
       }
       throw new AgentSessionOperationError(item.turnId, record, err);
     }
@@ -3685,6 +3775,146 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return { before, after };
   }
 
+  /** @internal Acquire a fresh leaf for checkpoint recovery without replacing this conversation. */
+  async restartProviderFresh(): Promise<void> {
+    await this.controller.forceStop();
+    const result = await this.controller.startFresh();
+    if (!result.sessionId) throw new Error("provider returned no fresh session");
+    this.installProviderAttachment(result.sessionId, "runtime_only", true);
+  }
+
+  private async ensureProvider(): Promise<void> {
+    if (this.controller.isConnected) return;
+    if (this.phase === "stopped") throw new Error("conversation is stopped");
+    if (!this.continuationAcquired) throw new AgentSessionPromptBlockedError(["continuation_unavailable"]);
+    const sessionId = this._internalSessionId;
+    const attachment = this.providerAttachment;
+    this.reconnecting = true;
+    this.emitStateIfChanged();
+    let via: "loaded" | "recovered" | "fresh" = "loaded";
+    try {
+      try {
+        if (sessionId) await this.controller.reconnect(sessionId);
+        else await this.controller.startFresh();
+      } catch (error) {
+        if (!sessionId) throw error;
+        via = await this.continueWithoutProviderSession(sessionId, error);
+      }
+      if (this.state.phase === "stopped") {
+        await this.controller.forceStop();
+        throw new Error("conversation stopped during reconnect");
+      }
+      const loadedId = this.controller.currentSessionId;
+      if (via === "loaded" && loadedId && loadedId !== this._internalSessionId) {
+        this.installProviderAttachment(loadedId, "runtime_only", !sessionId);
+      }
+      this.emit({ kind: "provider_reconnected", via, internalSessionId: this._internalSessionId! });
+    } catch (error) {
+      await this.controller.forceStop().catch(() => {});
+      if (this.continuationAcquired) {
+        this.providerAttachment = attachment;
+        this.setInternalSessionId(sessionId);
+      }
+      throw error;
+    } finally {
+      this.reconnecting = false;
+      this.emitStateIfChanged();
+    }
+  }
+
+  /**
+   * The provider session could not be loaded after the process was replaced. A transient failure is
+   * thrown for the next operation to retry. When the provider no longer has the session, the
+   * conversation's own rule decides, the same one it applies at open; when that rule has nothing left,
+   * the conversation stops accepting prompts (`continuation_unavailable`) and the error says why.
+   */
+  private async continueWithoutProviderSession(sessionId: string, error: unknown): Promise<"recovered" | "fresh"> {
+    const unavailable = (cause: unknown): never => {
+      this.continuationAcquired = false;
+      throw cause;
+    };
+    if (this.ownerLifecycle?.recoverInPlace) {
+      try {
+        await this.ownerLifecycle.recoverInPlace(error);
+        return "recovered";
+      } catch (failure) {
+        const missing = failure instanceof ProviderSessionError && failure.code === "provider_session_missing";
+        if (missing) unavailable(failure);
+        throw failure;
+      }
+    }
+    const loadFailed = (code: "provider_session_missing" | "provider_session_load_failed") =>
+      new ProviderSessionError({
+        agentSessionId: this.ownerAgentSessionId ?? this.agentSessionId as AgentSessionId,
+        agentConversationId: this.agentConversationId,
+        attemptId: `reconnect-${crypto.randomUUID()}`,
+        internalSessionId: sessionId,
+        source: "provider_session",
+        code,
+        recoverability: code === "provider_session_missing" ? "recoverable" : "retryable",
+        cause: error,
+      });
+    if (!isMissingProviderSessionError(error)) throw loadFailed("provider_session_load_failed");
+    if (this.v2Transcript) {
+      const reconstruction = this.continuationStrategies.filter((strategy) => strategy.kind !== "load_internal_session");
+      const report = await this.acquireContinuation(this.v2Transcript.checkpoint, reconstruction, error);
+      if (report.outcome.kind === "unavailable") {
+        unavailable(new ContinuationUnavailableError(report, { cause: error }));
+      }
+      return "recovered";
+    }
+    if (this.sessionLoadFailure === "error") unavailable(loadFailed("provider_session_missing"));
+    const created = await this.controller.startFresh();
+    if (!created.sessionId) throw new Error("harness returned no session id for a replacement session");
+    this.installProviderAttachment(created.sessionId, "runtime_only", true);
+    return "fresh";
+  }
+
+  private cancelOperation(reason: CancelReason): void {
+    if (this.activeSupervisor) this.activeSupervisor.cancel(reason);
+    else this.controller.cancel();
+  }
+
+  /** Run one provider request under its own supervisor: stage, stale conditions, cancel escalation. */
+  private async supervisedPrompt(
+    controller: AgentController,
+    operationId: string,
+    kind: "turn" | "internal_inference" | "recap",
+    prompt: () => Promise<PromptResult>,
+  ): Promise<PromptResult> {
+    const limits = kind === "turn"
+      ? this.operationLifecycle.turns
+      : kind === "recap" ? this.operationLifecycle.recap : this.operationLifecycle.internalInference;
+    const supervisor = new OperationSupervisor({
+      prompt,
+      subscribeOutput: (listener) => controller.subscribeOutput(listener),
+      cancel: () => controller.cancel(),
+      forceStop: () => controller.forceStop(),
+    }, {
+      operationId,
+      kind,
+      sessionId: controller.currentSessionId,
+      cancelGraceMs: controller.cancelGraceMs,
+      // A screen-scraped harness cannot report tools or permissions, so silence explains nothing.
+      limits: controller.isDegraded ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits,
+      onStageChanged: (activity) => {
+        this.emit({ kind: "operation_stage_changed", activity });
+        this.emitStateIfChanged();
+      },
+      onToolBoundary: () => this.steering.toolBoundary(operationId),
+    });
+    this.activeSupervisor = supervisor;
+    try {
+      return await supervisor.run();
+    } catch (error) {
+      if (kind === "turn") this.providerFailedTurnId = operationId;
+      throw error;
+    } finally {
+      this.activeSupervisor = null;
+      this.emitStateIfChanged();
+    }
+  }
+
   /**
    * Run a library-internal prompt through the same metering primitive as a user prompt.
    *
@@ -3703,6 +3933,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     target?: InternalPromptTarget,
   ): Promise<PromptResult> {
     const controller = target?.controller ?? this.controller;
+    if (!target && !this.reconnecting) await this.ensureProvider();
     const metering = target?.metering ?? this.metering;
     const advertised = target ? activeModel(target.controller.configOptions) : this.advertisedModel;
     const reference = target ? resolveModelReference(target.adapterId, advertised) : null;
@@ -3738,7 +3969,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let closed = false;
     let transcriptClosed = false;
     try {
-      const result = await controller.prompt(text);
+      const kind = operationKind === "conversation_checkpoint" ? "recap" : "internal_inference";
+      const result = await this.supervisedPrompt(controller, operationId, kind, () => controller.prompt(text));
       const record = await this.closeOperation(
         operation,
         result.status,
@@ -3765,7 +3997,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       return result;
     } catch (err) {
       if (!closed) {
-        const record = await this.closeOperation(operation, "error", null, String(err), metering);
+        const outcome = err instanceof OperationStalledError ? "cancelled" : "error";
+        const record = await this.closeOperation(operation, outcome, null, String(err), metering);
         records.push(record);
         closed = true;
         await this.ownerLifecycle?.meteringRecorded?.(record);
@@ -3912,7 +4145,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       this.emitStateIfChanged();
     }
-    this.controller.interrupt(options);
+    this.cancelOperation("interrupt");
   }
 
   stop(): Promise<void> {
@@ -3942,6 +4175,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // candidate, and a recorded one is preserved by its provider row, so neither should
       // survive on the stopped object.
       this.clearProviderAttachment();
+      this.detachControllerConnection?.();
+      this.detachControllerConnection = null;
       await this.presentation.drain().catch(() => undefined);
       try {
         await this.transcriptWrite;
@@ -4088,18 +4323,23 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   // --- sessions (merged catalog + live) ----------------------------------------
-  /** The merged session list: our catalog ∪ the agent's live list (ACP mode). */
+  /**
+   * The merged session list: our catalog ∪ the agent's live list (ACP mode).
+   *
+   * A failed harness listing throws; it used to return the catalog half silently.
+   *
+   * @deprecated It mixes the library's conversations with the harness's sessions (for a harness-only
+   * entry `agentSessionId` holds the harness id). Use the Agent API instead: `agent.conversations` for the library's
+   * conversations and `agent.conversations.listProviderSessions()` for the harness's sessions with
+   * their owners.
+   */
   async listSessions(): Promise<MergedSession[]> {
     let agentEntries: SessionListEntry[] = [];
     if (
       !this.controller.isDegraded &&
       this.controller.capabilities.agent.sessionCapabilities.list
     ) {
-      try {
-        agentEntries = (await this.controller.listSessions()).sessions;
-      } catch {
-        /* agent list broken/empty — fall back to catalog only */
-      }
+      agentEntries = (await this.controller.listSessions()).sessions;
     }
     if (this.sessions) return this.sessions.listMerged(agentEntries, this.adapterId);
     return agentEntries.map((e) => ({
@@ -4259,6 +4499,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private emitStateIfChanged(): void {
     const state = this.state;
     const key = [
+      state.pendingHold?.failedTurnId ?? "",
+      state.providerConnection,
+      state.operation?.stage ?? "",
+      state.operation?.operationId ?? "",
       state.phase,
       state.queuedOperationCount,
       state.internalSessionId ?? "",
@@ -4334,6 +4578,9 @@ function ownHandoffOptions(options: HandoffOptions): HandoffOptions {
               ? {}
               : {
                   adapter: Object.freeze({
+                    ...(options.target.adapter.cancelGraceMs === undefined
+                      ? {}
+                      : { cancelGraceMs: options.target.adapter.cancelGraceMs }),
                     ...options.target.adapter,
                     command: Object.freeze([...options.target.adapter.command]) as unknown as string[],
                     ...(options.target.adapter.ptyCommand
@@ -4578,4 +4825,22 @@ function copyPromptResult(result: PromptResult): PromptResult {
     ),
     usage: result.usage ? Object.freeze({ ...result.usage }) : null,
   });
+}
+
+/** Settle our wrapper too, so cancelled permission decisions are durably recorded. */
+async function permissionWithAbort(
+  handler: () => PermissionOutcome | Promise<PermissionOutcome>,
+  signal?: AbortSignal,
+): Promise<PermissionOutcome> {
+  if (signal?.aborted) return { outcome: "cancelled" };
+  let abort!: () => void;
+  const cancelled = new Promise<PermissionOutcome>((resolve) => {
+    abort = () => resolve({ outcome: "cancelled" });
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(handler), cancelled]);
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
 }

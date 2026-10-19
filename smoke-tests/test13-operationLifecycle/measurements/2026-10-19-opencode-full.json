@@ -1,0 +1,38 @@
+{
+  "adapterId": "opencode",
+  "measurements": [],
+  "failures": [
+    {
+      "scenario": "s4",
+      "error": "AgentSessionOperationError: Internal error: OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address. This isn't related to your account. If you're on a VPN or proxy, turn it off and try again, or subscribe to OpenCode Go at https://opencode.ai/go to keep building."
+    },
+    {
+      "scenario": "s2",
+      "error": "AgentSessionOperationError: Internal error: OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address. This isn't related to your account. If you're on a VPN or proxy, turn it off and try again, or subscribe to OpenCode Go at https://opencode.ai/go to keep building."
+    },
+    {
+      "scenario": "s3",
+      "error": "AgentSessionOperationError: Internal error: OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address. This isn't related to your account. If you're on a VPN or proxy, turn it off and try again, or subscribe to OpenCode Go at https://opencode.ai/go to keep building."
+    },
+    {
+      "scenario": "s5",
+      "error": "AgentSessionOperationError: Internal error: OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address. This isn't related to your account. If you're on a VPN or proxy, turn it off and try again, or subscribe to OpenCode Go at https://opencode.ai/go to keep building."
+    },
+    {
+      "scenario": "s1",
+      "error": "AgentSessionOperationError: Internal error: OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address. This isn't related to your account. If you're on a VPN or proxy, turn it off and try again, or subscribe to OpenCode Go at https://opencode.ai/go to keep building."
+    },
+    {
+      "scenario": "m1-0",
+      "error": "AgentSessionOperationError: Internal error: OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address. This isn't related to your account. If you're on a VPN or proxy, turn it off and try again, or subscribe to OpenCode Go at https://opencode.ai/go to keep building."
+    },
+    {
+      "scenario": "m1-1",
+      "error": "AgentSessionOperationError: Internal error: OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address. This isn't related to your account. If you're on a VPN or proxy, turn it off and try again, or subscribe to OpenCode Go at https://opencode.ai/go to keep building."
+    },
+    {
+      "scenario": "m1-2",
+      "error": "AgentSessionOperationError: Internal error: OpenCode's free models aren't available from your current network because we've detected abusive traffic from this IP address. This isn't related to your account. If you're on a VPN or proxy, turn it off and try again, or subscribe to OpenCode Go at https://opencode.ai/go to keep building."
+    }
+  ]
+}

@@ -15,10 +15,10 @@ export type PromptDelivery = "steer" | "queue";
 export type PendingMessageId = string;
 
 /** Why a pending message was delivered when it was. */
-export type MessageDeliveryVia = "tool_boundary" | "interrupt" | "turn_end";
+export type MessageDeliveryVia = "tool_boundary" | "interrupt" | "turn_end" | "stall";
 
 /** Why a turn was cancelled. Reported only when the turn really ended cancelled. */
-export type PromptEndedBy = "steer" | "interrupt";
+export type PromptEndedBy = "steer" | "interrupt" | "stalled" | "error";
 
 export interface PendingMessage {
   readonly id: PendingMessageId;
@@ -26,6 +26,7 @@ export interface PendingMessage {
   readonly delivery: PromptDelivery;
   readonly participantId?: string;
   readonly text: string;
+  readonly heldBy?: string;
 }
 
 /**
@@ -40,6 +41,8 @@ export interface PromptHandle extends Promise<AgentSessionPromptResult> {
 
 /** Events about messages that wait. They go on the conversation event stream. */
 export type MessageEvent =
+  | { readonly kind: "message_held"; readonly id: PendingMessageId; readonly failedTurnId: string }
+  | { readonly kind: "message_released"; readonly id: PendingMessageId; readonly failedTurnId: string }
   | {
       readonly kind: "message_pending";
       readonly id: PendingMessageId;

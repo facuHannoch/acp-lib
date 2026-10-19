@@ -733,3 +733,5 @@ export type {
   InternalSessionCommandInput,
   WireEntry,
 } from "./types.ts";
+
+export * from "./operations/index.ts";

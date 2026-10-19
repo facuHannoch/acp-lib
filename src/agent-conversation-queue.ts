@@ -52,7 +52,7 @@ export class AgentConversationQueue<T> {
    * Drain every item serially. Concurrent calls share the active drain; an item
    * enqueued by an active operation is observed by the same loop.
    */
-  drain(execute: (item: T) => Promise<void>): Promise<void> {
+  drain(execute: (item: T) => Promise<void>, select?: () => T | undefined): Promise<void> {
     if (this.#activeDrain) return this.#activeDrain;
     this.#draining = true;
     let resolveDrain!: () => void;
@@ -67,7 +67,8 @@ export class AgentConversationQueue<T> {
     void (async () => {
       try {
         while (this.#items.length > 0) {
-          const item = this.#items.shift()!;
+          const item = select ? select() : this.#items.shift();
+          if (item === undefined) break;
           await execute(item);
         }
       } finally {

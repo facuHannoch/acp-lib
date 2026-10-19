@@ -5,6 +5,7 @@
 // session/new|load) → prompt(). Capabilities and configOptions are populated by
 // connect() so callers can inspect them BEFORE prompting.
 
+import type { OutputListener, ProviderOutput } from "./operations/contracts.ts";
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 import type { Adapter } from "./adapters.ts";
@@ -196,6 +197,12 @@ export class AcpClient implements AgentClient {
   private _availableCommands: readonly InternalSessionCommand[] = Object.freeze([]);
   private readonly availableCommandListeners = new Set<AvailableCommandsListener>();
   private readonly usageUpdateListeners = new Set<UsageUpdateListener>();
+  /** The stop in progress; later operations wait on it before reconnecting. */
+  private stopPromise: Promise<void> | null = null;
+  private readonly disconnectListeners = new Set<() => void>();
+  /** Answers `cancelled` to each permission request still waiting on the consumer's handler. */
+  private readonly pendingPermissions = new Set<() => void>();
+  private readonly outputListeners = new Set<OutputListener>();
   /**
    * Latest usage_update seen, replayed to a late subscriber.
    *
@@ -289,12 +296,34 @@ export class AcpClient implements AgentClient {
     }
     return () => this.usageUpdateListeners.delete(listener);
   }
+  subscribeDisconnect(listener: () => void): () => void {
+    this.disconnectListeners.add(listener);
+    return () => this.disconnectListeners.delete(listener);
+  }
+  subscribeOutput(listener: OutputListener): () => void {
+    this.outputListeners.add(listener);
+    return () => this.outputListeners.delete(listener);
+  }
+  private notifyDisconnected(): void {
+    for (const listener of [...this.disconnectListeners]) {
+      try { listener(); } catch (error) { this.log.warn("disconnect_listener_failed", { error: String(error) }); }
+    }
+  }
+  private cancelPendingPermissions(): void {
+    for (const cancel of [...this.pendingPermissions]) cancel();
+  }
+  private emitOutput(output: ProviderOutput): void {
+    for (const listener of [...this.outputListeners]) {
+      try { listener(output); }
+      catch (error) { this.log.warn("output_listener_failed", { error: String(error) }); }
+    }
+  }
   get currentSessionId(): string | null {
     return this._sessionId;
   }
   /** True once connect() has spawned + initialized (a session may not exist yet). */
   get isConnected(): boolean {
-    return this.transport !== null;
+    return this.transport?.isConnected ?? false;
   }
   /** True once a session has been created or loaded. */
   get hasSession(): boolean {
@@ -336,6 +365,7 @@ export class AcpClient implements AgentClient {
 
     const transport = new AcpTransport({
       launch,
+      onRequest: (sessionId) => this.emitOutput({ kind: "request", sessionId }),
       onUpdate: (n) => this.handleUpdate(n),
       onPermissionRequest: (p) => this.handlePermission(p),
       onReadTextFile: readHandler,
@@ -346,7 +376,12 @@ export class AcpClient implements AgentClient {
         this.log.debug("agent_stderr", { line });
         this.authStderrSink?.(line);
       },
+      onDisconnect: () => {
+        this.cancelPendingPermissions();
+        this.notifyDisconnected();
+      },
       onCrash: (code) => {
+        this.cancelPendingPermissions();
         this.terminals?.releaseAll();
         this.terminals = null;
         this.transport = null;
@@ -354,6 +389,7 @@ export class AcpClient implements AgentClient {
         this.commandTransition = null;
         this.setAvailableCommands([]);
         this.log.error("process_exit", { code });
+        this.notifyDisconnected();
       },
     });
     try {
@@ -652,7 +688,9 @@ export class AcpClient implements AgentClient {
     if (!this._sessionId) await this.startSession();
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.cancelPendingPermissions();
     const t = this.transport;
     this.transport = null;
     this._sessionId = null;
@@ -660,8 +698,12 @@ export class AcpClient implements AgentClient {
     this.setAvailableCommands([]);
     this.terminals?.releaseAll();
     this.terminals = null;
-    if (t) await t.stop();
-    this.log.info("stopped", {});
+    const pending = t ? t.stop() : Promise.resolve();
+    this.stopPromise = pending.finally(() => {
+      this.stopPromise = null;
+      this.log.info("stopped", {});
+    });
+    return this.stopPromise;
   }
 
   /** Adapt the registry to the transport's async handler shape. */
@@ -769,6 +811,7 @@ export class AcpClient implements AgentClient {
   }
 
   interrupt(options: InterruptOptions = {}): void {
+    this.cancelPendingPermissions();
     if (options.clearQueue) {
       const dropped = this.queue.splice(0);
       for (const item of dropped) {
@@ -784,7 +827,10 @@ export class AcpClient implements AgentClient {
     if (this.active && this.transport && this._sessionId) {
       this.active.cancelled = true;
       // ACP baseline: session/cancel. The in-flight prompt() then resolves naturally.
-      void this.transport.cancel({ sessionId: this._sessionId } as schema.CancelNotification);
+      try {
+        void this.transport.cancel({ sessionId: this._sessionId } as schema.CancelNotification)
+          .catch((error) => this.log.warn("cancel_notification_failed", { error: String(error) }));
+      } catch (error) { this.log.warn("cancel_notification_failed", { error: String(error) }); }
     }
   }
 
@@ -808,6 +854,8 @@ export class AcpClient implements AgentClient {
     // Raw protocol trace (logged even outside an active turn, e.g. session/load replay).
     this.log.debug("session_update", { notification });
 
+    this.emitOutput({ kind: "update", sessionId: notification.sessionId ?? null,
+      activity: toActivityEvent(notification.update) ?? undefined });
     const update = notification.update;
     const kind = (update as Record<string, any>).sessionUpdate;
     if (
@@ -891,11 +939,30 @@ export class AcpClient implements AgentClient {
     const handler = this.active?.handlers?.onPermissionRequest;
     const request = toPermissionRequest(params);
 
+    const abort = new AbortController();
+    let cancel!: () => void;
+    const cancelled = new Promise<PermissionOutcome>((resolve) => {
+      cancel = () => {
+        abort.abort();
+        resolve({ outcome: "cancelled" });
+      };
+    });
+    this.pendingPermissions.add(cancel);
+    this.emitOutput({ kind: "permission_started", sessionId: params.sessionId });
     let outcome: PermissionOutcome;
-    if (handler) {
-      outcome = await handler(request);
-    } else {
-      outcome = this.defaultOutcome(request);
+    try {
+      // A stopped client may still read requests the dying process wrote; they belong to no turn.
+      if (this.active?.cancelled || !this.transport) cancel();
+      outcome = await Promise.race([
+        cancelled,
+        Promise.resolve().then(() => {
+          if (abort.signal.aborted) return { outcome: "cancelled" as const };
+          return handler ? handler(request, abort.signal) : this.defaultOutcome(request);
+        }),
+      ]);
+    } finally {
+      this.pendingPermissions.delete(cancel);
+      this.emitOutput({ kind: "permission_ended", sessionId: params.sessionId });
     }
 
     this.log.debug("permission_response", { outcome });

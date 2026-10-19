@@ -29,6 +29,7 @@ export interface AcpTransportOptions {
    * takes these off the wire itself rather than going through the SDK. See
    * `interceptUpdates` for why.
    */
+  onRequest?: (sessionId: string | null) => void;
   onUpdate?: (notification: schema.SessionNotification) => void;
   /** The agent asked for permission (blocking — must resolve to an outcome). */
   onPermissionRequest?: (
@@ -56,6 +57,8 @@ export interface AcpTransportOptions {
    * our interpretation, and the SDK sees neither the lines we intercept nor what it wrote.
    */
   onWire?: (entry: WireEntry) => void;
+  /** The ACP connection closed, whatever the cause (exit, crash or stop()). */
+  onDisconnect?: () => void;
   /** The process exited unexpectedly (not via stop()). */
   onCrash?: (code: number | null) => void;
 }
@@ -70,6 +73,8 @@ export class AcpTransport {
   constructor(private opts: AcpTransportOptions) {
     this.disposeLaunch = onceDispose(opts.launch.dispose);
   }
+
+  get isConnected(): boolean { return !!this.connection && !this.connection.signal.aborted; }
 
   async start(): Promise<void> {
     if (this.proc) return;
@@ -109,6 +114,7 @@ export class AcpTransport {
       this.tap = tap;
       const handler = new ClientHandler(this.opts);
       this.connection = new acp.ClientSideConnection(() => handler, stream);
+      this.connection.signal.addEventListener("abort", () => this.opts.onDisconnect?.(), { once: true });
 
       if (proc.stderr) this.pumpStderr(proc.stderr as ReadableStream<Uint8Array>);
 
@@ -349,16 +355,21 @@ class ClientHandler implements acp.Client {
   writeTextFile?: acp.Client["writeTextFile"];
 
   constructor(private opts: AcpTransportOptions) {
-    if (opts.onReadTextFile) this.readTextFile = (p) => opts.onReadTextFile!(p);
-    if (opts.onWriteTextFile) this.writeTextFile = (p) => opts.onWriteTextFile!(p);
+    // Every request from the agent is output for the operation lifecycle.
+    const observed = <P extends { sessionId: string }, R>(handle: (p: P) => R) => (p: P): R => {
+      opts.onRequest?.(p.sessionId);
+      return handle(p);
+    };
+    if (opts.onReadTextFile) this.readTextFile = observed(opts.onReadTextFile);
+    if (opts.onWriteTextFile) this.writeTextFile = observed(opts.onWriteTextFile);
 
     const terminals = opts.terminals;
     if (terminals) {
-      this.createTerminal = (p) => terminals.create(p);
-      this.terminalOutput = (p) => terminals.output(p);
-      this.waitForTerminalExit = (p) => terminals.waitForExit(p);
-      this.killTerminal = (p) => terminals.kill(p);
-      this.releaseTerminal = (p) => terminals.release(p);
+      this.createTerminal = observed((p) => terminals.create(p));
+      this.terminalOutput = observed((p) => terminals.output(p));
+      this.waitForTerminalExit = observed((p) => terminals.waitForExit(p));
+      this.killTerminal = observed((p) => terminals.kill(p));
+      this.releaseTerminal = observed((p) => terminals.release(p));
     }
   }
 

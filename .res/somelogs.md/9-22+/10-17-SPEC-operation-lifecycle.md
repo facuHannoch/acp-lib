@@ -1,6 +1,6 @@
 # Operation lifecycle: never invisible, never stuck
 
-Status: spec, not implemented. 2026-10-17. Step 1 of the order in `10-17-NOTE-model-call-controller.md`, before the
+Status: implemented on `operation-lifecycle` (2026-10-19; steps and validation in `10-18-LOG-operation-lifecycle.md`). Written 2026-10-17. Step 1 of the order in `10-17-NOTE-model-call-controller.md`, before the
 10-13 requirements (`10-13-acp-client-requirements.md`). Builds on steering (`10-2-SPEC-steer-pending-messages.md`) and
 the error records (`9-22-SPEC-conversation-error-records.md`).
 
@@ -33,13 +33,15 @@ Today neither is guaranteed:
 
 ## Guarantee
 
-For every operation (a conversation turn, an internal inference attempt, a recap, and the control requests in
-section 6):
+For every operation (a conversation turn, an internal inference attempt, and a recap; control requests are out of
+scope, see section 6):
 
 1. **Visible.** Its state is always readable: what it is waiting on and since when.
 2. **Ends when stale.** When it is stale (section 2), it ends in bounded time with a recorded reason.
 3. **Cancel is bounded.** Any cancel ends it within the cancel grace, whatever the harness does.
-4. **Usable afterwards.** After it ends, the conversation accepts the next prompt with no call other than `prompt()`.
+4. **Usable afterwards.** After it ends, the next `prompt()` either runs, or is refused with a visible reason that
+   does not change on retry (`continuation_unavailable`). How the conversation continues once its provider session is
+   gone is decided by the existing continuation rules, not by this spec (section 4).
 
 Not promised: a bound on how long a working operation takes. A turn that streams, or runs tools, for an hour is fine.
 An operation waiting on something identified (a tool in flight, a pending permission) is not stale; it stays visible in
@@ -164,11 +166,29 @@ Self-healing is not a setting.
 
 - **Cancel acknowledged:** the process and the session are untouched. Nothing to do.
 - **Forced stop, or the process exited on its own** (the same path; today's crash case is included): the next operation
-  that needs the provider starts a new process and loads the session with `session/load`, falling back to checkpoint
-  recovery under the existing recovery rules. An event `provider_reconnected` reports which (`loaded` | `recovered`).
-- If the reconnect fails, that operation fails with the existing codes (`provider_session_load_failed`,
-  `recovery_failed`) and the next operation tries again. The conversation never enters a state that only a call other
-  than `prompt()` can leave.
+  that needs the provider starts a new process and loads the session with `session/load`. An event
+  `provider_reconnected` reports how it continued (`loaded` | `recovered`).
+- **The load fails** (the harness no longer has the session): this spec adds no rule of its own. The conversation
+  applies the same rule it applies when it is opened:
+
+  | Conversation | Existing rule (at open) | After a crash |
+  |---|---|---|
+  | Agent-owned | `onLoadFailure`: checkpoint recovery (`ConversationManager`, extracted as `recoverAfterLoadFailure`) | the same, in place (`recoverInPlace`); already implemented |
+  | SessionManager | the conversation's `ContinuationStrategy` list, in order (`acquireOpeningContinuation`): load, then `new_from_transcript`, then `new_from_consumer_continuation` as configured | the same list; the part of `acquireOpeningContinuation` that only opening needs (transcript bootstrap) is separated so both call it |
+  | no transcript persistence (detached, catalog) | `providerSession.onFailure` (`"new"` starts a fresh session, `"error"` fails; a conversation started new uses `"new"`) | the same; a fresh session reports `provider_reconnected` with `via: "fresh"`, since the harness context is gone |
+
+  When the rule has nothing left (for SessionManager, the default list is load only: a replacement session spends
+  tokens and changes routing, so it is used only when the consumer configured it), the conversation is marked
+  "can't continue": the prompt that found it rejects with the reason (`ContinuationUnavailableError` with the
+  attempts for SessionManager, `ProviderSessionError` with code `provider_session_missing` otherwise),
+  `promptability` reports `continuation_unavailable`, and later prompts are refused with it instead of failing on
+  every prompt with a load error.
+- **A transient failure** (the process could not be started, the load request itself failed rather than reporting the
+  session missing; told apart with the existing `isMissingProviderSessionError`, and for Agent-owned conversations
+  its configured override) fails that operation with the existing codes (`provider_session_load_failed`, `recovery_failed`),
+  and the next operation tries again.
+- `ensureProvider` owns only noticing that the process is gone, starting a new one, and handing a failed load to the
+  conversation's rule. It does not decide how the conversation continues.
 
 ### Pending messages after a failed turn
 
@@ -178,20 +198,27 @@ A stall is a steer boundary: the turn is already lost, so cancelling costs nothi
   prompt as at any other boundary (`message_delivered` with `via: "stall"`). In
   `work on X` → stall → `what happened?` + `anddd...??`, the two steers are the next prompt. This applies to both phases:
   the steers are the user's new words, not a repeat.
+  The steers combined are those **up to the next queued message, not including it**. A held queued message keeps its
+  place: steers sent after it run after it, in order. In
+  `work on X` → stall → `what happened?` (steer) + `deploy the website` (queue) + `and update the record` (steer),
+  the recovery prompt is `what happened?` alone; when it completes, the hold is released and `deploy the website`
+  runs, then `and update the record`.
 - **Queued** messages are for the happy path: they assume the turn before them did what it was meant to do. After a
   turn that ends `stalled` or `error`, every queued message is **held** (`message_held`, naming the failed turn).
 - While held:
   - a new message sent with `steer` (the default delivery) runs right away, even though the conversation is idle;
   - a new message sent with `queue` goes to the end of the held queue. `queue` is an explicit choice and is respected;
   - `withdraw()` works as usual.
-- The held queue is **released** (`message_released`) by the next turn that completes normally. Its messages then run in
+- The held queue is **released** (`message_released`) by the next consumer turn that completes normally (internal prompts such as a recap do not release it). Its messages then run in
   order, including those added while held.
 
 Accepted consequence: a consumer that sends only `queue` (for example `busyDelivery: "queue"`) sees everything pile up
 after a failure until it sends one prompt with `delivery: "steer"` or withdraws. It is visible: every held message has
 its event, and the snapshot shows the hold. No release call is added.
 
-Holding applies only after `stalled` and `error`. After `interrupt` and `steer`, pending messages behave as today.
+Holding applies only after `stalled` and `error`, and only for a turn the provider received. A prompt rejected before it
+was sent (blocked, invalid input, the provider could not be reached) did not fail at the provider and holds nothing;
+it fails on its own as today. After `interrupt` and `steer`, pending messages behave as today.
 
 ## 5. Internal inference and recap
 
@@ -204,17 +231,20 @@ Holding applies only after `stalled` and `error`. After `interrupt` and `steer`,
 
 ## 6. Control requests
 
-Requests that are not inference are plain request/response and get a deadline per kind, `control.*Ms`:
+Revised 2026-10-18: no deadlines. Requests that are not inference (`initialize`, `session/new`, `session/load`,
+`session/list`, `session/delete`, `session/set_config_option`, `authenticate`) wait for the harness's answer, as they
+did before this spec. They end when the harness answers or when the process exits: the ACP SDK rejects every pending
+request when the connection closes.
 
-| Request | Deadline |
-|---|---|
-| `initialize` | counted from the process being up and reading, so a first-run `npx` download is not cut off |
-| `session/new`, `session/set_config_option`, `session/set_mode`, `session/list`, `session/delete` | `control.requestMs`, default 60 000 |
-| `session/load` | `control.loadIdleMs` since the last replay update, not total: a long load that is replaying is working |
-| `authenticate` | none: it can be an interactive login |
+A first implementation gave each kind a fixed deadline (`control.requestMs`, `initializeMs`, `loadIdleMs`, default
+60 s) that force-stopped the process on expiry. It was removed because it contradicted "active by default":
 
-On expiry the request fails with code `provider_request_timeout`, the process is force-stopped, and recovery is as in
-section 4.
+- no hanging control request was ever observed; the clock only guessed at one;
+- a slow `session/list` sent during a healthy turn killed the turn;
+- a large session can take a minute or more to load, possibly before any replay update. A deadline would kill that
+  load on every attempt, turning a slow conversation into an unusable one.
+
+Long sessions that load slowly are a separate topic (automatic rotation or handoff).
 
 ## 7. Records and events
 
@@ -234,7 +264,7 @@ What a stale turn leaves, all through the existing write paths:
 The library has no setting to hide a failure or a recovery. Every piece is typed, so a consumer that wants a quiet UI
 filters out the `stalled` record, and one that wants it explicit shows "No response, recovered".
 
-New error codes in `CONVERSATION_ERROR_CODES`: `stalled`, `provider_request_timeout`.
+New error code in `CONVERSATION_ERROR_CODES`: `stalled`.
 
 **The turn ending.** `PromptEndedBy` goes from `"steer" | "interrupt"` to `"steer" | "interrupt" | "stalled" | "error"`:
 
@@ -259,11 +289,6 @@ interface OperationLifecycleConfig {
   readonly turns?: StaleLimits;
   readonly internalInference?: StaleLimits;
   readonly recap?: StaleLimits;
-  readonly control?: {
-    readonly requestMs?: number;
-    readonly initializeMs?: number;
-    readonly loadIdleMs?: number;
-  };
 }
 
 interface StaleLimits {
@@ -297,7 +322,8 @@ interface StaleLimits {
   (new: kill the process, reject the in-flight prompt with a forced-stop error, become disconnected). For a later
   model-call controller these are "abort the stream" and "drop the connection".
 - `HarnessInternalInferenceRuntime.run` and the recap run their prompt through the same supervisor.
-- Reconnect-on-demand lives in `AgentSession`, next to `startPersistent`, reusing its load-or-recover logic.
+- Reconnect-on-demand lives in `AgentSession` (`ensureProvider`). After a failed load it calls the conversation's
+  existing continuation rule (section 4); it has no load-or-recover logic of its own.
 - The hold is steering state: it already owns the pending list and its events.
 
 **What it does not own.** Updates keep their current path: transport → `AcpClient` (response accumulation, prompt
@@ -337,11 +363,14 @@ milliseconds:
   interrupt result unchanged otherwise, next prompt reconnects with `session/load`;
 - cancel during a pending permission → the request is answered `cancelled`, the handler aborted;
 - exits mid-turn → turn fails with `endedBy` `error`, queue held, next prompt reconnects;
+- the harness lost the session after a crash → Agent-owned recovers from a checkpoint; SessionManager follows its
+  strategy list (`new_from_transcript` when configured); with nothing left, `continuation_unavailable` is visible in
+  `promptability` and the next prompt is refused with it rather than retrying the load;
 - a long tool call with no other output → not stale; with `toolMs` set → stale;
 - pending permission for longer than every limit → not stale;
 - internal inference stall → attempt fails `stalled`, retry in a fresh session;
 - recap stall → adoption succeeds, baseline floor, `adoption_recap_failed`;
-- control request deadline → `provider_request_timeout`, recovery; a load that keeps replaying is not cut off.
+- an unanswered control request during a running turn → neither fails nor stops the turn.
 
 ## 12. Open
 
