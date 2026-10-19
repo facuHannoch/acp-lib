@@ -4323,7 +4323,15 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   // --- sessions (merged catalog + live) ----------------------------------------
-  /** The merged session list: our catalog ∪ the agent's live list (ACP mode). */
+  /**
+   * The merged session list: our catalog ∪ the agent's live list (ACP mode).
+   *
+   * @deprecated It mixes the library's conversations with the harness's sessions (for a harness-only
+   * entry `agentSessionId` holds the harness id), and a failed harness listing silently returns the
+   * catalog half only. Use the Agent API instead: `agent.conversations` for the library's
+   * conversations and `agent.conversations.listProviderSessions()` for the harness's sessions with
+   * their owners.
+   */
   async listSessions(): Promise<MergedSession[]> {
     let agentEntries: SessionListEntry[] = [];
     if (

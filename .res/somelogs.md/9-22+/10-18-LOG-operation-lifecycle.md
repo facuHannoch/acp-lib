@@ -304,3 +304,11 @@ the user's OpenCode config is unchanged). A one-prompt check confirmed the model
 - `README.md`: rewritten in the test11 layout (how to run, variables table, scenarios table, reading the results,
   results by date). The 15000ms / 60000ms limit advice and the `OPENCODE_CONFIG_CONTENT` model override are in
   the variables and intro; all earlier findings kept.
+
+## Deprecate AgentConversation.listSessions()
+
+Agreed with the user. `AgentConversation.listSessions()` (legacy SessionManager surface) merges the catalog and the
+harness's `session/list` into `MergedSession[]`, puts the harness id in `agentSessionId` for harness-only entries,
+and swallows a harness listing failure. It is marked `@deprecated` in favour of `agent.conversations` and
+`agent.conversations.listProviderSessions()` (which propagates failures). Behaviour unchanged. Changelog updated;
+the user's README.md example was not touched.

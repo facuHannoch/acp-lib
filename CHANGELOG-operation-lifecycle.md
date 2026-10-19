@@ -54,3 +54,8 @@ and cancellation remains bounded. Handoff operations use the target adapter's ca
 
 A separate Codex run with 24 additional short turns replayed 53 updates in 554ms (maximum replay gap
 535ms, including initial wait). No automatic-compaction stress run was performed.
+
+`AgentConversation.listSessions()` is deprecated. It merges the library's catalog with the harness's
+session list into one `MergedSession` shape, and when the harness listing fails it returns the catalog
+half without saying so. Use `agent.conversations` for conversations and
+`agent.conversations.listProviderSessions()` for harness sessions; that one reports listing failures.
