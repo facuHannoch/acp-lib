@@ -1,6 +1,6 @@
 # Operation lifecycle: never invisible, never stuck
 
-Status: spec, not implemented. 2026-10-17. Step 1 of the order in `10-17-NOTE-model-call-controller.md`, before the
+Status: implemented on `operation-lifecycle` (2026-10-19; steps and validation in `10-18-LOG-operation-lifecycle.md`). Written 2026-10-17. Step 1 of the order in `10-17-NOTE-model-call-controller.md`, before the
 10-13 requirements (`10-13-acp-client-requirements.md`). Builds on steering (`10-2-SPEC-steer-pending-messages.md`) and
 the error records (`9-22-SPEC-conversation-error-records.md`).
 
