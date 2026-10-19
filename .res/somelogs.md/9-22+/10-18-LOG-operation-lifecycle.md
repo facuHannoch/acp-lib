@@ -295,3 +295,12 @@ the user's OpenCode config is unchanged). A one-prompt check confirmed the model
 - `fixtures/lifecycle-agent.ts`: a header documenting its modes and faults; the prompt handler moved to its own
   function; one statement per line.
 - Validation: full suite 1043 passed, 0 failed; test13 mock s1–s5 passed.
+
+## Cleanup 3: test13 runner and README (no behaviour change)
+
+- `index.ts`: one function per scenario (`s1`, `freezeOrKill` for s2/s3, `s4`, `s5`, `m1`), helpers `check`,
+  `harnessPid`, `newConversation`, `recordEvents`, `ask` (mock or real prompt); one statement per line. Variables,
+  console lines and the `results.json` format are unchanged. Mock run: s1–s5 and m1 ×3 passed.
+- `README.md`: rewritten in the test11 layout (how to run, variables table, scenarios table, reading the results,
+  results by date). The 15000ms / 60000ms limit advice and the `OPENCODE_CONFIG_CONTENT` model override are in
+  the variables and intro; all earlier findings kept.
