@@ -35,6 +35,9 @@ export function isMissingProviderSessionError(
     && message.toLowerCase() === "internal error: opencode service failure"
     && data?.service === "session"
   ) return true;
+  // ACP's standard "resource not found". This classifier only sees `session/load` failures, so the
+  // resource is the session (Claude reports a missing session this way).
+  if (value?.code === -32002) return true;
   const text = [
     message,
     safeJson(value?.data),
@@ -42,6 +45,8 @@ export function isMissingProviderSessionError(
   return [
     "failed to resolve rollout path",
     "no rollout found for thread id",
+    // Codex archives a deleted session; it cannot be loaded until unarchived outside the library.
+    "is archived. run `codex unarchive",
     "session not found",
     "unknown session",
     "no such session",

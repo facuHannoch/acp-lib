@@ -15,7 +15,8 @@ Only newly created throwaway conversations are used. The model is not selected; 
 configured one. To run OpenCode with a specific model for one run without touching its config, set
 `OPENCODE_CONFIG_CONTENT='{"model":"<provider>/<model>"}'` (the harness inherits the environment).
 
-Each run replaces `agent.sqlite` and `results.json` in the data directory (both git-ignored). Every
+Each run replaces `agent.sqlite`, `agent.sqlite-recovery` (s6) and `results.json` in the data directory
+(all git-ignored). Every
 scenario runs even when an earlier one fails; failures are printed, saved in `results.json`, and set exit
 code 1. Progress is printed before each operation, with an elapsed-time heartbeat every ten seconds.
 
@@ -48,6 +49,7 @@ A quick mock fault run:
 | s3 | SIGKILL the harness during a prompt | the killed prompt rejects; the next prompt reloads the same session and remembers the keyword |
 | s4 | SIGSTOP with one queued message and two steers pending | the stall error's `followedBy` names both steers; they go out as one prompt delivered `via: "stall"`; the queued message is held, then released and completed |
 | s5 | A tool that runs longer than both silence limits (mock: 100ms limits, 150ms tool; real: 15s limits, `sleep 20`) | not stale; the turn completes |
+| s6 | The harness lost the session after a crash: the process is stopped and the session deleted in the harness (`session/delete`; OpenCode, which lacks it over ACP, through `opencode session delete`). Only sessions this run created are deleted | without a checkpoint, the next prompt rejects `provider_session_missing` and `promptability` reports `continuation_unavailable`; on a second Agent with `onLoadFailure: "recover"` and a published checkpoint, the next prompt recovers in place (`via: "recovered"`, a new provider session) and remembers the keyword |
 | m1 | Measurement, repeated `ACP_TEST13_RUNS` times | first output, the longest gap without a running tool, cancel latency, and `session/load` time with its replay gaps |
 
 A short normal completion before m1's interrupt is reported as `cancelStatus: "completed"`; its latency is
@@ -88,3 +90,10 @@ silence defaults and the 30-second cancel grace remain conservative.
   turn that was cut off, OpenCode first completes that interrupted request and only then answers the new
   prompt, so the reply can be silent for more than 15 seconds and contain the old turn's output (in s3, an
   8,800-character story followed by the keyword).
+- s6 on Codex, Claude and OpenCode (DeepSeek V4.1 Flash): the first run failed on Codex and Claude,
+  because the library did not recognise their "session missing" errors and treated them as temporary,
+  so every prompt would have failed. Claude reports `-32002 Resource not found`; Codex reports a deleted
+  session as `-32603` with "session … is archived. Run `codex unarchive …`" in `data.details`. Both are
+  now recognised (`isMissingProviderSessionError`). OpenCode's `-32603 OpenCode service failure`
+  (`service: "session"`) was already recognised. After the fix s6 passed on all three.
+

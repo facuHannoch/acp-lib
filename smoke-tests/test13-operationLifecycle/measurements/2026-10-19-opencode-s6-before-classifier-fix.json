@@ -1,0 +1,10 @@
+{
+  "adapterId": "opencode",
+  "measurements": [],
+  "failures": [
+    {
+      "scenario": "s6",
+      "error": "Error: agent does not advertise session/delete (sessionCapabilities.delete)"
+    }
+  ]
+}

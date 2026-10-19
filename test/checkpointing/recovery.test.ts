@@ -31,6 +31,17 @@ describe("checkpoint recovery", () => {
       message: "Internal error: OpenCode service failure",
       data: { service: "provider" },
     })).toBeFalse();
+    expect(isMissingProviderSessionError({
+      code: -32002,
+      message: "Resource not found: 1693ca18-ac92-404e-8cc2-375d3a6899da",
+      data: { uri: "1693ca18-ac92-404e-8cc2-375d3a6899da" },
+    })).toBeTrue();
+    expect(isMissingProviderSessionError({
+      code: -32603,
+      message: "Internal error",
+      data: { details: "session 01a1 is archived. Run `codex unarchive 01a1` to unarchive it first." },
+    })).toBeTrue();
+    expect(isMissingProviderSessionError({ code: -32603, message: "Internal error" })).toBeFalse();
     expect(isMissingProviderSessionError(new Error("authentication failed"))).toBeFalse();
   });
 

@@ -7,7 +7,8 @@
  * cancel), `permission` asks for permission, `tool` runs a tool for `LIFECYCLE_TOOL_MS`. Any other prompt
  * echoes the process id and the session's history, so a test can kill the process and check context.
  *
- * Faults: `LIFECYCLE_HANG_CONTROL` never answers that one method; `LIFECYCLE_FAIL_LOAD=1` reports
+ * Faults: `LIFECYCLE_HANG_CONTROL` never answers that one method, `LIFECYCLE_FAIL_CONTROL` answers it
+ * with an error; `LIFECYCLE_FAIL_LOAD=1` reports
  * every session missing; while the file `LIFECYCLE_FAIL_LOAD_FILE` exists, loads fail with an internal
  * error although the session exists.
  */
@@ -51,6 +52,10 @@ function handle(m: any): void {
     return;
   }
   if (process.env.LIFECYCLE_HANG_CONTROL === m.method) return;
+  if (process.env.LIFECYCLE_FAIL_CONTROL === m.method) {
+    send({ id: m.id, error: { code: -32603, message: "internal error" } });
+    return;
+  }
   switch (m.method) {
     case "initialize":
       reply(m.id, {
@@ -82,6 +87,11 @@ function handle(m: any): void {
     }
     case "session/list":
       reply(m.id, { sessions: [] });
+      return;
+    case "session/delete":
+      delete sessions[m.params.sessionId];
+      save();
+      reply(m.id, {});
       return;
     case "session/prompt":
       prompt(m);

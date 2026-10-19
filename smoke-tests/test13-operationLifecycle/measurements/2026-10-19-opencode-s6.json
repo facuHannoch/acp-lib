@@ -1,0 +1,11 @@
+{
+  "adapterId": "opencode",
+  "measurements": [
+    {
+      "scenario": "s6",
+      "unrecoverable": "provider_session_missing",
+      "recoveredStatus": "completed"
+    }
+  ],
+  "failures": []
+}

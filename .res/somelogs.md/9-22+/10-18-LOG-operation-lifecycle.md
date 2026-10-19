@@ -312,3 +312,20 @@ harness's `session/list` into `MergedSession[]`, puts the harness id in `agentSe
 and swallows a harness listing failure. It is marked `@deprecated` in favour of `agent.conversations` and
 `agent.conversations.listProviderSessions()` (which propagates failures). Behaviour unchanged. Changelog updated;
 the user's README.md example was not touched.
+
+## Item 3 on real harnesses: test13 s6 and the missing-session classifier
+
+- New test13 scenario s6: stop the process, delete the session in the harness (`session/delete`, or
+  `opencode session delete` for OpenCode, which does not offer it over ACP; only sessions the run created), prompt
+  again. Without a checkpoint: expects `provider_session_missing` and `continuation_unavailable`. With a second Agent
+  (`onLoadFailure: "recover"`, its own `agent.sqlite-recovery`) and a manually published checkpoint: expects
+  `via: "recovered"`, a new provider session and the keyword. The mock fixture now deletes on `session/delete`.
+- First real run: Codex and Claude failed with `provider_session_load_failed`, i.e. the missing session was treated
+  as transient and every prompt would fail. Probes captured the errors: Claude `-32002 Resource not found: <id>`;
+  Codex `-32603 Internal error` with `data.details` "session <id> is archived. Run `codex unarchive <id>` ..." (its
+  delete archives) or "no rollout found for thread id" (never existed, already recognised); OpenCode `-32603
+  Internal error: OpenCode service failure` with `data.service: "session"` (already recognised).
+- `isMissingProviderSessionError` now also recognises `-32002` (ACP resource not found; the classifier only sees load
+  failures) and the Codex archived text. Unit tests added in `test/checkpointing/recovery.test.ts`.
+- Rerun: s6 passed on Codex, Claude and OpenCode (DeepSeek V4.1 Flash via `OPENCODE_CONFIG_CONTENT`). Results in
+  `measurements/2026-10-19-*-s6*.json`. Full suite 1044 passed; mock test13 s1–s6 passed.

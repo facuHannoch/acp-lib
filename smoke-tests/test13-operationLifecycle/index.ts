@@ -6,6 +6,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Agent, ADAPTERS, AcpClient, type Adapter } from "../../src/index.ts";
 import { ToolTracker } from "../../src/operations/activity-tracker.ts";
+import { createConversationRecoveryCheckpointId } from "../../src/checkpointing/ids.ts";
 
 const env = (key: string) => process.env[`ACP_TEST13_${key}`];
 const adapterId = env("ADAPTER") ?? "mock";
@@ -30,9 +31,13 @@ const adapter: Adapter = {
 const harnessEnv = mock ? { env: { LIFECYCLE_STATE: join(directory, "sessions.json") } } : {};
 
 const database = join(directory, "agent.sqlite");
-for (const suffix of ["", "-wal", "-shm", ".agent-owner.sqlite"]) await rm(database + suffix, { force: true });
-const agent = await Agent.open({
-  persistence: { kind: "sqlite", path: database },
+// s6 uses a second Agent with checkpoint recovery, in its own database next to the first.
+const recoveryDatabase = join(directory, "agent.sqlite-recovery");
+for (const path of [database, recoveryDatabase]) {
+  for (const suffix of ["", "-wal", "-shm", ".agent-owner.sqlite"]) await rm(path + suffix, { force: true });
+}
+const openAgent = (path: string, extra: Partial<Parameters<typeof Agent.open>[0]> = {}) => Agent.open({
+  persistence: { kind: "sqlite", path },
   adapters: { [adapterId]: adapter },
   defaultAdapterId: adapterId,
   operationLifecycle: {
@@ -42,7 +47,9 @@ const agent = await Agent.open({
     },
   },
   conversationDefaults: { metering: { pricing: false }, ...harnessEnv },
+  ...extra,
 });
+const agent = await openAgent(database);
 
 type Conversation = Awaited<ReturnType<typeof agent.conversations.create>>;
 const measurements: unknown[] = [];
@@ -201,6 +208,77 @@ async function s1(): Promise<void> {
   console.log("s1 PASS: handler aborted, prompt cancelled, next prompt completed");
 }
 
+/**
+ * Delete a session in the harness, as if the harness had lost it: through `session/delete`, or for
+ * OpenCode, which does not offer it over ACP, through its CLI. Only sessions this run created.
+ */
+async function deleteInHarness(internalSessionId: string): Promise<void> {
+  const client = new AcpClient({ adapter, ...harnessEnv });
+  try {
+    await client.connect();
+    if (client.capabilities.agent.sessionCapabilities.delete) {
+      await client.deleteSession(internalSessionId);
+      return;
+    }
+  } finally {
+    await client.stop();
+  }
+  if (adapterId !== "opencode") throw new Error(`s6: ${adapterId} cannot delete a session`);
+  const cli = Bun.spawn(["opencode", "session", "delete", internalSessionId], { stdout: "ignore", stderr: "pipe" });
+  if ((await cli.exited) !== 0) throw new Error(`s6: opencode session delete failed: ${await new Response(cli.stderr).text()}`);
+}
+
+/**
+ * s6: the harness lost the session after a crash. Without a checkpoint the conversation reports it
+ * cannot continue (instead of failing every prompt); with one it recovers in place from it.
+ */
+async function s6(): Promise<void> {
+  console.log(`${adapterId} s6: deleting the provider session after a crash, without a checkpoint`);
+  const unrecoverable = await newConversation();
+  await unrecoverable.prompt("Remember the keyword plum. Reply ready.");
+  const lostSession = unrecoverable.internalSessionId!;
+  await unrecoverable.connection.forceStop();
+  await deleteInHarness(lostSession);
+  const error = await unrecoverable.prompt("What keyword did I ask you to remember?").catch((error) => error);
+  check(error.code === "provider_session_missing", `s6: missing session not recognised: ${error.code ?? error}`);
+  check(unrecoverable.promptability.blockers.includes("continuation_unavailable"), "s6: not reported as unable to continue");
+  await unrecoverable.stop();
+
+  console.log(`${adapterId} s6: deleting the provider session after a crash, with a checkpoint`);
+  const recoveryAgent = await openAgent(recoveryDatabase, {
+    checkpointing: { schedule: { milestones: [1000], everyAfterMilestones: 1000 }, recovery: { onLoadFailure: "recover" } },
+  });
+  try {
+    await recoverFromCheckpoint(recoveryAgent, error.code);
+  } finally {
+    await recoveryAgent.close();
+  }
+}
+
+async function recoverFromCheckpoint(recoveryAgent: Awaited<ReturnType<typeof openAgent>>, unrecoverableCode: string): Promise<void> {
+  const recoverable = await recoveryAgent.conversations.create();
+  const events = recordEvents(recoverable);
+  const keyword = `fruit${Date.now()}`;
+  await recoverable.prompt(`Remember the keyword ${keyword}. Reply ready.`);
+  const previous = recoverable.internalSessionId!;
+  const checkpoints = recoveryAgent.persistence.recoveryCheckpoints!;
+  await checkpoints.publish({
+    checkpointId: createConversationRecoveryCheckpointId(),
+    agentConversationId: recoverable.id,
+    source: "adoption_recap",
+    summary: `The user asked to remember the keyword ${keyword}.`,
+    coveredSequence: await checkpoints.latestMessageSequence(recoverable.id),
+  });
+  await recoverable.connection.forceStop();
+  await deleteInHarness(previous);
+  const next = await recoverable.prompt("What exact keyword did I ask you to remember? Reply with it.");
+  check(next.text.includes(keyword), "s6: recovered conversation lost the keyword");
+  check(events.some((event) => event.kind === "provider_reconnected" && event.via === "recovered"), "s6: no recovered event");
+  check(recoverable.internalSessionId !== previous, "s6: provider session not replaced");
+  measurements.push({ scenario: "s6", unrecoverable: unrecoverableCode, recoveredStatus: next.status });
+  console.log("s6 PASS: lost session reported unrecoverable without a checkpoint, recovered with one");
+}
+
 /** m1: first output, the longest gap without a running tool, cancel latency, and load/replay timing. */
 async function m1(run: number): Promise<void> {
   console.log(`${adapterId} m1 run ${run + 1}: starting`);
@@ -274,13 +352,14 @@ async function m1(run: number): Promise<void> {
 }
 
 try {
-  const only = env("ONLY")?.split(",") ?? ["m1", "s1", "s2", "s3", "s4", "s5"];
+  const only = env("ONLY")?.split(",") ?? ["m1", "s1", "s2", "s3", "s4", "s5", "s6"];
   if (only.includes("s4")) await runScenario("s4", s4);
   for (const scenario of ["s2", "s3"] as const) {
     if (only.includes(scenario)) await runScenario(scenario, () => freezeOrKill(scenario));
   }
   if (only.includes("s5")) await runScenario("s5", s5);
   if (only.includes("s1")) await runScenario("s1", s1);
+  if (only.includes("s6")) await runScenario("s6", s6);
   if (only.includes("m1")) {
     for (let run = 0; run < Number(env("RUNS") ?? 3); run++) await runScenario(`m1-${run}`, () => m1(run));
   }
