@@ -1,0 +1,65 @@
+{
+  "adapterId": "opencode",
+  "measurements": [
+    {
+      "scenario": "s5",
+      "status": "completed",
+      "elapsedMs": 24141,
+      "toolSeen": true
+    },
+    {
+      "run": 0,
+      "firstOutputMs": 2,
+      "longestGapMs": 4232,
+      "normalMs": 4323,
+      "historyTurns": 0,
+      "cancelLatencyMs": 91,
+      "cancelStatus": "cancelled",
+      "loadMs": 575,
+      "replayCount": 4,
+      "longestReplayGapMs": 572
+    },
+    {
+      "run": 1,
+      "firstOutputMs": 3,
+      "longestGapMs": 2121,
+      "normalMs": 2277,
+      "historyTurns": 0,
+      "cancelLatencyMs": 67,
+      "cancelStatus": "cancelled",
+      "loadMs": 592,
+      "replayCount": 3,
+      "longestReplayGapMs": 590
+    },
+    {
+      "run": 2,
+      "firstOutputMs": 2,
+      "longestGapMs": 2417,
+      "normalMs": 2533,
+      "historyTurns": 0,
+      "cancelLatencyMs": 76,
+      "cancelStatus": "cancelled",
+      "loadMs": 554,
+      "replayCount": 3,
+      "longestReplayGapMs": 553
+    }
+  ],
+  "failures": [
+    {
+      "scenario": "s4",
+      "error": "OperationStalledError: Provider operation stalled (incomplete_response)."
+    },
+    {
+      "scenario": "s2",
+      "error": "OperationStalledError: Provider operation stalled (incomplete_response)."
+    },
+    {
+      "scenario": "s3",
+      "error": "OperationStalledError: Provider operation stalled (incomplete_response)."
+    },
+    {
+      "scenario": "s1",
+      "error": "Error: s1: harness did not request permission"
+    }
+  ]
+}

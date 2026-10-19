@@ -76,3 +76,18 @@ describe("HarnessInternalInferenceRuntime", () => {
     expect(calls).toEqual(["interrupt", "stop"]);
   });
 });
+
+test("a silent inference is supervised, fails stalled and stops its disposable process", async () => {
+  const { resolve } = await import("node:path");
+  const runtime = new HarnessInternalInferenceRuntime({ controllerConfig: () => ({
+    adapterId: "mock", adapter: { command: [process.execPath, resolve(import.meta.dir, "../fixtures/lifecycle-agent.ts")], cancelGraceMs: 30 },
+    operationLifecycle: { internalInference: { firstOutputMs: 20, nextOutputMs: 20 } },
+  }) });
+  const stages: string[] = [];
+  const error = await runtime.run({ internalInferenceId: "aii-00000000-0000-0000-0000-000000000003", purpose: "conversation_checkpoint",
+    agentSessionId: "ags-00000000-0000-0000-0000-000000000001", adapterId: "mock", prompt: "[lifecycle:silent]" }, undefined, {
+    sessionStarted() {}, operationChanged: (source) => { if (source) stages.push(source().stage); },
+  }).catch((error) => error);
+  expect(error.code).toBe("stalled"); expect(error.phase).toBe("no_response");
+  expect(stages).toEqual(["waiting", "cancelling"]);
+});

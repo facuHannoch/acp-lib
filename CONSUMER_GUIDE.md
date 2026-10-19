@@ -293,6 +293,91 @@ first streams provisionally, then arrives as a committed `tool_call`. Detached
 `AgentConversation` instances without an owning `Agent` are outside this bus, and a
 consumer-direct `persistence.records.append()` is not observed.
 
+### Conversation error records
+
+Important runtime failures are stored as an immutable `error` record in the same ordered
+timeline as messages, activities, and metering references — and delivered live through
+`agent.events`. An error is a system timeline item, not a message:
+
+```ts
+const errors = (await agent.persistence.records.list(conversation.id, {
+  kinds: ["error"],
+})).records;
+
+for (const record of errors) {
+  if (record.kind !== "error") continue;
+  // record.source, record.code, record.recoverability, record.message
+  // record.operationId / transitionId / internalSessionId correlate it with the failure
+}
+```
+
+`source` is one of `provider_session`, `transport`, `operation`, `recovery`. `code` is an
+open string; the library exports `CONVERSATION_ERROR_CODES` for the codes it owns and
+readers must tolerate unknown future values. `recoverability` describes the failed
+operation, not a promise:
+
+- `retryable` — repeating the same action may succeed.
+- `recoverable` — another action (checkpoint recovery, a fresh provider session) may
+  continue the logical conversation.
+- `terminal` — the library knows of no supported continuation.
+- `unknown` — evidence is insufficient to choose.
+
+`message` is a sanitized display fallback; it never carries a stack trace, credentials, a
+prompt, environment values, or a raw provider payload. At raw capture, allow-listed
+provider detail is available in `details`. Canonical capture defaults to
+`capture.error = "content"` (metadata drops the message; `none` stores nothing); the audit
+destination has its own independent `auditLog.capture.error`.
+
+A failed `conversations.open()` throws `ProviderSessionError` instead of returning a
+conversation. It carries the same `code`, `attemptId`, `recoverability`, and — when
+canonical capture accepted it — `recordId` as the durable row, plus
+`agentConversationId` (always, even for a generated id) so the caller can find the
+conversation. If writing the record also fails, that failure is attached as
+`recordingError` and the provider diagnosis stays primary. The failed provider mapping is
+kept as evidence and is not deleted; recovery or a future fresh-session operation
+supersedes it. A `session/load` failure that is recoverable and has a usable checkpoint
+still recovers, with the error recorded before the recovery action.
+
+### Append an assistant message without a turn
+
+`conversations.appendAssistantMessage()` adds a completed assistant message the provider
+did not produce — for example, a notification the agent sends from another channel. It
+runs no turn and needs no live provider session:
+
+```ts
+const record = await agent.conversations.appendAssistantMessage(conversation.id, {
+  text: "Your build finished; 3 tests failed.",
+  consumerMetadata: { kind: "send_message_to_user" },
+});
+```
+
+The record is an ordinary `message` with `role: "assistant"` and `status: "completed"`,
+published on `agent.events` and returned by history reads like any other message. Its
+envelope `metadata` carries `origin: "out_of_band"` (exported as
+`OUT_OF_BAND_MESSAGE_ORIGIN`; `isOutOfBandMessage(record)` tests it), so readers and
+audits can tell it apart from provider output.
+
+The provider learns about it on the conversation's next turn. That turn's provider text
+carries every out-of-band message appended since the user message of the last completed
+turn, in a `<messages-you-sent>` block between any identity preamble and
+`<current-message>`. Only the user's own text is persisted as the user message. Rules:
+
+- A failed turn does not count as delivery; the next turn carries the messages again.
+- A message appended while a turn is running reaches the provider on the following turn.
+- A recovery seed covers messages through `recoveredThroughSequence`, so they are not
+  repeated after recovery. A loaded provider session is treated like one that never
+  closed.
+- A turn that completes without an assistant message does not advance delivery, so its
+  pending messages are repeated once more.
+- The block is capped at `OUT_OF_BAND_PROMPT_MAX_CHARS`; the oldest messages are dropped
+  first with an omission note. The transcript always keeps all of them.
+
+Other conversations of the same agent see the message through identity like any other
+canonical message. Appending requires `capture.message` of `"content"` or `"raw"`, since
+the provider could not be told otherwise; it rejects blank text and unknown or deleted
+conversations. Backends without `records.listRecent` scan the conversation's messages
+forward to find the last completed turn.
+
 ### Agent audit log
 
 An SQLite-backed `Agent` can copy selected observations into an independently located,
@@ -478,6 +563,22 @@ identity features. It is not a participant turn and does not write its prompt or
 into the visible transcript. Attempts are queued in SQLite, leased to one worker, retried
 with a new `aii-…` attempt ID, observable, cancellable, and resumed when the database is
 reopened.
+
+Each attempt runs in a fresh, disposable harness session that is stopped as soon as its prompt is answered. A harness
+may start work of its own in that session which the answer does not wait for, and ACP gives the client no way to wait for
+it: OpenCode names a session with a second request on a small model, started at the first prompt, and stopping the process
+right after the answer can cut it off mid-stream (behind a gateway that is a cancelled, half-accounted request). So for
+OpenCode the default runtime starts the disposable process with `OPENCODE_CONFIG_CONTENT` set to turn the title agent off,
+for internal inference only: conversations are not touched, and an `OPENCODE_CONFIG_CONTENT` you already set (in
+`conversationDefaults.env` or the process environment) is kept, with the title agent switched off inside it. With a
+`launcher`, the variable is added to its `spawnEnv`; a launcher that starts the harness elsewhere (a container, a remote
+host) must forward it. Set `internalInference: { suppressHarnessBackgroundWork: false }` to leave the harness as configured.
+It has no effect with a custom `runtime`; see `withoutHarnessBackgroundWork` to apply it there.
+
+A failed attempt keeps the original error for whoever awaits it, and records on the attempt (`failureDetails`) the
+JSON-RPC code and the labels harnesses send in `data` (`service`, `errorName`, `providerCode`), nothing else of `data`. A
+harness decides what its errors carry: OpenCode's ACP adapter, for example, sends the upstream message text but not the HTTP
+status, gateway error code or request id, so those cannot be recovered here.
 
 Consumers register versioned strategies. A strategy derives a prompt from durable input,
 then validates and publishes the result inside the transaction that completes the attempt.
@@ -834,6 +935,279 @@ distinct assistant messages; render them separately when the UI supports that. T
 deprecated `result.text` property is only a compatibility projection and inserts a blank
 line between messages. `formatResponseMessages()` makes any deliberate flattening policy
 consumer-owned.
+
+## Choose what each conversation persists
+
+One Agent has one set of persistence defaults (`capture`, the audit log's `capture`, `meteringPersistence`), and every
+conversation it owns uses them. A consumer that hosts different kinds of conversations in one Agent (user chats,
+agent-to-agent channels, adopted sessions) can persist less for some of them with a **resolver**:
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path },
+  adapters,
+  capture: { message: "none" },                           // default: keep no message content
+  checkpointing: {},
+  auditLog: { directory, capture: { message: "none" } },
+  conversationPersistence: ({ agentConversationId, title, metadata, participants, adopted }) =>
+    isUserChat(agentConversationId)
+      ? {
+          capture: { message: "content" },                // keep content, and so recovery
+          auditLog: false,                                // stay out of the audit stream
+          meteringRecords: "none",                        // no detailed metering history
+        }
+      : undefined,                                        // everything else: the Agent's defaults
+});
+```
+
+The resolver returns an **override** over the Agent's defaults, or `undefined`: keys it sets replace the Agent's value
+(`protocol` counts as one key, so its level and method filters are replaced together), keys it omits follow the Agent,
+and `undefined`, `{}` or `{ capture: {} }` mean the Agent's defaults. The library never infers a policy: what a
+conversation *is* stays the consumer's business, and the context carries only what the library knows (id,
+participants, title, metadata, and whether it was created by adopting a provider session).
+
+| key | what it changes |
+|---|---|
+| `capture` | The canonical record kinds stored, and at what level (`none`, `metadata`, `content`, `raw`). |
+| `auditLog` | `false`: no audit entry about the conversation, and none caused by its records (`identity` entries, internal-inference entries). `{ capture }`: what its audit entries capture. Agent-scope kinds (`agent_lifecycle`, `identity`, `internal_inference`) cannot be tuned per conversation. Requires the Agent to have an audit log (`false` is accepted anyway). |
+| `meteringRecords` | Retention of the detailed metering records of the conversation, including those of its internal inferences: `"all"`, `"none"` or `{ retain: n }`. The bounded metering state is always kept. |
+
+**Contract.** The resolver is synchronous, free of side effects, and stable for a given conversation. It is called when a
+conversation starts (`create()` and `open()`), once, and the result is held for the life of the live conversation: a
+change in the resolver's answers applies the next time it is opened. It is also called, just before the write, for
+writes about a conversation that is not live (a checkpoint finishing, an audit observation). A resolver that throws, or
+returns something invalid, is a caller mistake: the start rejects with that error and writes no row, no error record and
+no provider session. A background write whose policy cannot be resolved fails that write; it is never done under the
+Agent's defaults, which could record more than the consumer allowed.
+
+**What it covers.** Every write made for the conversation: its records and audit entries, the error records of a failed
+start, load or recovery, the checkpoint completion record (stored at the conversation's `native_action` level, and audited as
+the conversation says), and the detailed metering records of its inferences. Always persisted, whatever the policy: the
+conversation row, provider-session mappings, the bounded metering state, identity delivery cursors, internal-inference jobs.
+
+**Audit fingerprints.** Each audit entry carries the fingerprint of the policy that projected it: for a conversation with
+its own audit capture, that conversation's; for everything else, the Agent's. `agent.audit.status().captureFingerprint` is
+always the Agent's own.
+
+**Checkpointing.** Checkpoints summarize stored messages, so a conversation that stores none (`message: "none"`) is never
+checkpointed, `checkpointing.request()` for it does nothing, a lost provider session throws instead of recovering, and it
+contributes nothing to other conversations' identity. An Agent may therefore enable checkpointing with a default of
+`message: "none"` and let the conversations that need recovery override to `content`. `message: "metadata"` is refused
+while checkpointing is enabled, at the Agent and per conversation.
+
+**Limits.** A policy is not retroactive: records and audit entries already written stay. A conversation still *receives*
+identity from its siblings (controlling that needs a per-conversation identity switch, not provided). One Agent is one
+SQLite file and one audit destination; different storage locations need a second Agent.
+
+## Send a message while a turn is running
+
+A prompt sent while a turn runs waits. How it waits is its **delivery**:
+
+- `"queue"`: it runs after the running turn ends, as its own turn.
+- `"steer"` (the default): it is delivered at the next tool boundary. The library cancels the running turn once a
+  tool call has settled and nothing else is running, then sends the message, so the agent gets the
+  information without losing the work it has done. If the turn ends first, the message is sent as the
+  next prompt, so a message is never delivered later than the end of the turn. A text-only turn is not
+  cut short: use `interrupt()` for that.
+
+```ts
+const turn = conversation.prompt("Refactor the parser.");
+
+// A second message, sent while the first turn is running.
+const note = conversation.prompt({ text: "Also keep the public API unchanged.", delivery: "steer" });
+
+const first = await turn;   // stopReason "cancelled", endedBy "steer", followedBy [note.id]
+const answer = await note;  // the turn that carried the message
+```
+
+`prompt()` and `promptFrom()` return a handle: the promise of that prompt's result, plus `id` and
+`withdraw()`. A prompt that does not have to wait runs immediately and `delivery` has no effect.
+
+Set the default for prompts that do not say, per Agent or per conversation. It is `"steer"` unless you
+change it (before this was `"queue"`; set `busyDelivery: "queue"` to keep the old behaviour). With `"queue"`
+as the default, a failed turn holds every later prompt until one is sent with `delivery: "steer"`; see
+[Operation lifecycle](#operation-lifecycle-and-automatic-provider-recovery).
+
+```ts
+const agent = await Agent.open({
+  // ...
+  conversationDefaults: { busyDelivery: "queue" },
+});
+```
+
+### What waits, and in what order
+
+The conversation keeps one FIFO. A `steer` message is appended like any other, so a `queue` message sent
+earlier keeps its place ahead of it. At a boundary the library only delivers a message if the head of the
+queue is a `steer` message.
+
+**Consecutive `steer` messages at the head are sent as one prompt**, so the agent sees the whole
+correction at once:
+
+```text
+> working...
+Also, remember x
+and y
+and z
+no, actually forget about y and z      <- the agent receives all four together
+```
+
+The text is the messages in order, separated by a blank line; the library adds nothing, not even sender
+names. It is one operation with one metering record, and every message's promise resolves with the same
+result. Each original message is still stored as its own user message, with its own `participantId` and
+`consumerMetadata`, so a consumer can render or filter them from its own metadata. Each message's
+streaming handlers receive the events of the shared turn.
+
+```ts
+conversation.pendingMessages;           // what waits, in the order it will be sent
+conversation.withdraw(note.id);         // take a message back; also note.withdraw()
+conversation.interrupt();               // cancel now; pending steer messages are then sent
+conversation.interrupt({ clearQueue: true });   // cancel and drop what waits
+```
+
+A withdrawn or dropped message settles as a cancelled prompt (`stopReason: "cancelled"`, `usage: null`,
+`metering: null`).
+
+### Events and results
+
+Messages that had to wait emit events on the conversation event stream:
+
+| Event | Meaning |
+|---|---|
+| `message_pending { id, delivery }` | Accepted and waiting. `delivery` is the mode in effect: `"queue"` while the running operation is not a consumer prompt turn (a handoff, a configuration change). |
+| `message_delivered { ids, via, turnId }` | Sent to the agent. `ids` lists every message in the prompt; `via` is `"tool_boundary"`, `"interrupt"` or `"turn_end"`. |
+| `message_withdrawn { id }` | Removed before delivery. |
+
+A turn cancelled by steering or by `interrupt()` carries `endedBy: "steer" | "interrupt"` and
+`followedBy` (the messages sent after it). They are set only when the provider really stopped the turn:
+if the turn finished by itself before the cancel took effect, neither is present.
+
+### Limits to know about
+
+Cancelling is the only control ACP offers during a turn, so what a harness does with the cancelled turn
+is its own. Measured with the `test11-steerTurn` smoke test:
+
+- Work the agent has completed is kept: the follow-up continues the task rather than restarting it.
+- Codex: a shell command already running keeps running after the cancel, and text the agent was
+  streaming when cancelled is dropped from its context. OpenCode aborts the command.
+- Usage reported over ACP for a cancelled turn is unreliable (OpenCode reports 0 over ACP for a turn
+  whose inference had completed). Only a certified metering integration sees the real spend, so with
+  plain ACP telemetry a steered conversation can under-count the cancelled turn.
+- Codex reports usage in a way the cumulative-counter check can reject: the turn after a cancel was
+  recorded with status `counter_reset` and no attributed tokens in testing. This looks like a property of
+  Codex usage reporting rather than of steering (see the `s9` control in `test11-steerTurn`).
+- `status` and the stored message status follow what the provider reported: a turn the provider ended
+  normally despite a late cancel is `completed`, and `endedBy` is absent.
+- Pending messages live in memory only. They are lost if the process stops, like queued prompts.
+
+## Adopt a session the provider already holds
+
+A harness may hold sessions this library did not create (made in its own UI, by another client, before the
+conversation existed here). `agent.conversations.create({ adopt })` brings one in as a conversation of the Agent: it
+is created around the session and loaded with `session/load` instead of starting a new provider thread.
+
+```ts
+// Which sessions does the provider hold, and which are already owned by a conversation?
+const sessions = await agent.conversations.listProviderSessions({ limit: 20 });
+for (const session of sessions) console.log(session.providerSessionId, session.title, session.adoptedBy);
+
+const conversation = await agent.conversations.create({
+  adopt: { providerSessionId: sessions[0].providerSessionId },
+});
+await conversation.prompt("Where were we?"); // continues the provider's own session
+```
+
+`listProviderSessions({ adapterId?, cwd?, limit? })` starts the harness for the call and asks it (`session/list`, so
+the provider decides the order and which sessions it reports). It throws `ProviderSessionListUnsupportedError` if the
+agent does not advertise `session/list`.
+
+### What adopting stores
+
+The provider keeps the history; adoption does not copy it unless asked.
+
+| option | effect |
+|---|---|
+| `importHistory: true` / `{ last: n }` | Also store the history the load replays: messages, tool calls and thoughts, through the same capture policy as a live turn (a kind the conversation does not capture is not stored). A turn starts at each user message. Stored records are marked `imported: true` and carry the time of the import, since a replay has no timestamps. |
+| `recap: true` | Ask the model to summarize its own history, as a hidden turn on the adopted session, and store the answer as an assistant message (`origin: "adoption_recap"` in its metadata) ahead of the imported turns. It is not shown as a user message, and `create()` returns once it is answered. The model decides how to compress a long history. |
+
+Defaults: when the Agent has an identity runtime that shares conversations, `recap` is on and the last two turns are
+imported; otherwise nothing beyond what happens from now on is stored. A recap lets the Agent's *other* conversations learn
+about this one: identity delivers stored messages to them. A recap that fails is recorded as an error
+(`adoption_recap_failed`, retryable) and the conversation still works, but is not in the Agent's memory.
+
+Adopting needs the conversation to capture messages at `content` or `raw` (otherwise it would join the Agent's memory
+empty); a conversation that must store nothing is driven with `acp-client` instead. A conversation persistence resolver can
+tell an adopted conversation by `adopted: true` in its context and choose what it stores.
+
+### Failures and ownership
+
+- **One owner.** A provider session can belong to one conversation. Adopting one that another conversation owns (or has
+  asked to adopt) throws `ProviderSessionInUseError`, whose `ownedBy` names it, so a UI can open that one instead. The check
+  and the new row are one transaction. Deleting the conversation frees the session. A persistence backend that cannot tell
+  who owns a session cannot adopt one.
+- **The session cannot be loaded** (it no longer exists, the agent does not support `session/load`, degraded mode): a
+  `ProviderSessionError` is thrown and the failure is recorded, and the conversation row **stays**. Opening that conversation
+  later retries the load of the session it asked for; it never starts a new session in its place. Retrying records the
+  session on success but does not repeat the history import or the recap.
+- **After a restart** an adopted conversation opens like any other: by loading its recorded provider session.
+
+### Where checkpointing starts
+
+Summarizing stored messages is a prompt, and a long history does not fit one (Codex refuses a message past 1,048,576
+characters), so an adopted conversation's checkpoints never look at the history that came before its adoption. When the
+conversation checkpoints, adoption places a **floor**: a checkpoint covering everything up to 50 messages before the end of
+what is stored (or the recap, when the history is shorter than that).
+
+- With a recap, the floor's summary *is* the recap. It stands for the whole provider history, imported or not, and a
+  recovery seeds the recap plus the messages after the floor.
+- Without a recap, the floor is a baseline with no summary: a recovery seeds only the messages after it, and identity
+  delivers the stored messages as it would without a checkpoint.
+- A conversation with no recap and 50 messages or fewer stored gets no floor; its first scheduled checkpoint summarizes them.
+- Every stored message stays readable (listing, pagination, search); only summarizing starts after the floor. Checkpoints that
+  follow chain from it.
+- The checkpoint schedule (responses 1, 5, 10, ...) counts responses after what the adoption stored, as for a new conversation.
+- A checkpoint whose records do not fit one prompt (700,000 characters) fails with `checkpoint_source_too_large` and is not
+  retried. Only a conversation that stores a very long run of messages between two checkpoints can reach it.
+
+### Limits to know about
+
+- Replays differ by harness (measured on Codex and OpenCode with `smoke-tests/session-replay-probe`): both send message
+  boundaries, tool calls and, for OpenCode, thoughts; neither sends timestamps or usage. Codex replays the tool call of a turn
+  that was cancelled mid-tool after the next turn's user message, and it is imported where it arrives.
+- The recap is a hidden turn on the adopted session itself, so the provider's own history then contains the question and the
+  answer. The model is asked not to use tools; ACP gives no way to forbid them for one turn. A later adoption of the same
+  session does not import that question or its answer as turns.
+- With `importHistory: true`, every imported message is also delivered to the Agent's other conversations (within identity's
+  budget): prefer the default tail with a recap for long sessions.
+- The first prompt after an adoption runs on a thread whose usage counters did not start at zero, so its metering is
+  attributable only after a baseline.
+
+## Clear a transcript, delete a conversation
+
+```ts
+// Remove what is stored, keep the conversation (its title, participants and provider session).
+await agent.conversations.clearTranscript(id);                    // { recordsDeleted, checkpointsDeleted: 0 }
+await agent.conversations.clearTranscript(id, { checkpoints: true }); // also its recovery checkpoints
+
+// Delete the conversation; optionally ask the provider to delete its session too.
+const { providerDeleted } = await agent.conversations.delete(id, { providerSession: "best-effort", checkpoints: true });
+// providerDeleted: true | "unsupported" | false
+```
+
+`clearTranscript` physically deletes every stored record of the conversation (messages, tool calls, and the rest). It
+refuses a conversation that is running an operation. Sequence numbers are not reused, so new records continue after the
+deleted ones. `delete` is a soft delete as before (the records stay, the conversation stops being listed, and a provider
+session it owned can be adopted again); a string second argument is still read as the deletion time.
+
+Both are **local** deletions, not forgetting:
+
+- The provider's own session is untouched unless you ask `delete` for `providerSession: "best-effort"`. That sends
+  `session/delete`, which not every agent offers: Codex advertises it, OpenCode does not (`"unsupported"`). A failure is
+  reported as `false` and does not undo the local deletion.
+- Recovery checkpoints summarize the records being deleted. They are kept unless `checkpoints: true`, so by default the Agent's
+  other conversations can still receive a summary of cleared content.
+- Audit entries already written, content already delivered into other conversations, and identity state derived from the
+  records are not removed. No event is published when records are deleted, so a UI has to refresh.
 
 ## Observe state, context, and usage
 
@@ -1547,3 +1921,78 @@ boundary. Strict V2 creation never claims an already initialized legacy file imp
 - Keep local commands distinct from harness commands.
 - Stop every live session during application shutdown.
 - Do not infer provider loading from a transcript path or file contents.
+
+## Operation lifecycle and automatic provider recovery
+
+`conversation.state.operation` is null when no model request is running. While running it exposes
+`operationId`, `kind`, `stage`, `startedAt`, `lastOutputAt`, `toolsInFlight` and optional cancellation
+reason/time. `operation_stage_changed` fires on stage changes; read the snapshot for current output
+timestamps. Internal-inference attempt handles expose the same information at `handle.snapshot.operation`.
+
+Set `operationLifecycle` on `Agent.open()` or a detached conversation:
+
+```ts
+operationLifecycle: {
+  turns: { firstOutputMs: 120_000, nextOutputMs: 180_000 },
+  internalInference: { firstOutputMs: 120_000 },
+  recap: { nextOutputMs: 180_000 },
+}
+```
+
+Individual inference limits accept `false`; tools and pending permissions suspend output deadlines.
+`toolMs` is optional and disabled by default. Each adapter may set `cancelGraceMs` (default 30 seconds).
+Permission handlers may accept a second optional AbortSignal; discard UI and stop asynchronous work
+when it aborts. A late permission answer cannot change the cancelled outcome.
+
+A stalled turn rejects with `OperationStalledError`, including `phase` (`no_response` or
+`incomplete_response`), `messages`, `operationId`, `metering` and optional `followedBy` steer IDs.
+Its partial response is failed, and its metering outcome is cancelled. Forced interrupts and steers
+resolve cancelled and expose `cancel: forced`; acknowledged cancellation reports `acknowledged`.
+
+After a provider exit or forced stop, keep the conversation and send the next prompt. The library
+loads its provider session automatically and emits `provider_reconnected` with `via: loaded` or
+`recovered` (Agent-owned checkpoint recovery under the configured policy). The snapshot connection
+moves through `disconnected`, `reconnecting`, and `connected`. A transient reconnect failure fails
+that prompt, and the next prompt tries again.
+
+When the harness no longer has the session, the conversation applies the same rule it applies when
+opened: checkpoint recovery for Agent-owned conversations (`onLoadFailure: "recover"`), the
+`continuation.strategies` list for SessionManager conversations (only `new_from_transcript` or a
+consumer continuation can replace the session; the default list is load only), and
+`providerSession.onFailure` otherwise (`"new"` starts a fresh session without the earlier context and
+reports `via: fresh`). When the rule has nothing left, the prompt rejects with the reason, `promptability`
+reports `continuation_unavailable`, and later prompts are refused until the conversation is reopened
+with a different policy. SessionManager's existing library-crash uncertainty recovery remains separate.
+
+Harness behaviours seen after a crash (test13, 2026-10-19):
+
+- **OpenCode finishes the interrupted turn first.** When a reloaded session has a turn that was cut
+  off (the process was killed or frozen mid-turn), OpenCode completes that interrupted request before
+  answering the next prompt. The reply to the next prompt can therefore start with the old turn's
+  output, and it can be silent for longer than usual while the old request runs. The failed turn was
+  already reported as an error; treat the start of the next reply accordingly, and keep the silence
+  limits generous on OpenCode (the defaults are).
+- **Codex archives a deleted session.** Loading it fails until it is unarchived with
+  `codex unarchive <id>`; the library treats it as missing, so the conversation's continuation rule
+  applies (a replacement session, when the rule provides one).
+
+After a turn the provider received fails (stalled, crashed, or errored), queued messages remain held.
+A prompt that fails before reaching the provider holds nothing. Read `state.pendingHold`,
+`pendingMessages[].heldBy` and the `message_held` / `message_released` events. Steers waiting after a
+stall are sent as the recovery prompt, up to the next queued message (not including it); steers after
+that message run after it. Send a message with `delivery: steer` to continue; its successful
+completion releases queued messages in order (internal prompts such as a recap do not release). Explicit queue delivery while held
+adds to the hold, including when idle. `withdraw()` remains available.
+
+**If your default is `busyDelivery: "queue"`**, every prompt sent after a failure joins the hold, so
+nothing runs until you send a prompt with `delivery: "steer"` explicitly (or withdraw). Give the user
+a way to send that steer, for example when `state.pendingHold` is set. These message events are live
+observations; consumers may store them if needed.
+
+Control requests (initialize, new, load, list, delete, config, authenticate) have no deadline. They
+end when the harness answers or when the process exits. A large session can take a minute or more to
+load; that is not treated as a failure.
+
+Degraded PTY mode observes raw terminal output but cannot identify ACP tools or permissions. Its
+output silence limits are disabled by default to preserve long-running tools; explicit configured
+limits still apply, and cancellation is bounded.

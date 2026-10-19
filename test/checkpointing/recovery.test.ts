@@ -5,7 +5,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent } from "../../src/agent.ts";
 import type { ConversationRecoveryProgress } from "../../src/checkpointing/recovery.ts";
-import { isMissingProviderSessionError } from "../../src/checkpointing/recovery.ts";
+import {
+  classifyProviderSessionLoadError,
+  isMissingProviderSessionError,
+} from "../../src/checkpointing/recovery.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -28,7 +31,31 @@ describe("checkpoint recovery", () => {
       message: "Internal error: OpenCode service failure",
       data: { service: "provider" },
     })).toBeFalse();
+    expect(isMissingProviderSessionError({
+      code: -32002,
+      message: "Resource not found: 1693ca18-ac92-404e-8cc2-375d3a6899da",
+      data: { uri: "1693ca18-ac92-404e-8cc2-375d3a6899da" },
+    })).toBeTrue();
+    expect(isMissingProviderSessionError({
+      code: -32603,
+      message: "Internal error",
+      data: { details: "session 01a1 is archived. Run `codex unarchive 01a1` to unarchive it first." },
+    })).toBeTrue();
+    expect(isMissingProviderSessionError({ code: -32603, message: "Internal error" })).toBeFalse();
     expect(isMissingProviderSessionError(new Error("authentication failed"))).toBeFalse();
+  });
+
+  test("classifies a load failure conservatively", () => {
+    expect(classifyProviderSessionLoadError({ message: "session not found" })).toEqual({
+      missing: true,
+      code: "provider_session_missing",
+      recoverability: "recoverable",
+    });
+    expect(classifyProviderSessionLoadError(new Error("authentication failed"))).toEqual({
+      missing: false,
+      code: "provider_session_load_failed",
+      recoverability: "unknown",
+    });
   });
 
   test("creates and seeds a new provider session when the recorded one is missing", async () => {

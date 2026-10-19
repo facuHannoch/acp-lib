@@ -1,0 +1,4 @@
+agent.sqlite*
+results.json
+sessions.json
+harness.pid

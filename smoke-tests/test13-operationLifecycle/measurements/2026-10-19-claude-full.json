@@ -1,0 +1,100 @@
+{
+  "adapterId": "claude",
+  "measurements": [
+    {
+      "scenario": "s4",
+      "status": "passed",
+      "events": [
+        {
+          "kind": "message_pending",
+          "id": "mvetji6n30lk",
+          "delivery": "queue"
+        },
+        {
+          "kind": "message_pending",
+          "id": "mvetji6n8gf3",
+          "delivery": "steer"
+        },
+        {
+          "kind": "message_pending",
+          "id": "mvetji6nvqjn",
+          "delivery": "steer"
+        },
+        {
+          "kind": "message_held",
+          "id": "mvetji6n30lk",
+          "failedTurnId": "mvetji6kjvuv"
+        },
+        {
+          "kind": "message_delivered",
+          "ids": [
+            "mvetji6n8gf3",
+            "mvetji6nvqjn"
+          ],
+          "via": "stall",
+          "turnId": "mvetji6n8gf3"
+        },
+        {
+          "kind": "message_released",
+          "id": "mvetji6n30lk",
+          "failedTurnId": "mvetji6kjvuv"
+        },
+        {
+          "kind": "message_delivered",
+          "ids": [
+            "mvetji6n30lk"
+          ],
+          "via": "turn_end",
+          "turnId": "mvetji6n30lk"
+        }
+      ]
+    },
+    {
+      "scenario": "s3",
+      "error": "AgentSessionOperationError: ACP connection closed",
+      "nextStatus": "completed"
+    },
+    {
+      "run": 0,
+      "firstOutputMs": 3,
+      "longestGapMs": 919,
+      "normalMs": 3565,
+      "historyTurns": 0,
+      "cancelLatencyMs": 4,
+      "cancelStatus": "cancelled",
+      "loadMs": 719,
+      "replayCount": 4,
+      "longestReplayGapMs": 718
+    },
+    {
+      "run": 2,
+      "firstOutputMs": 3,
+      "longestGapMs": 1015,
+      "normalMs": 2717,
+      "historyTurns": 0,
+      "cancelLatencyMs": 4,
+      "cancelStatus": "cancelled",
+      "loadMs": 786,
+      "replayCount": 4,
+      "longestReplayGapMs": 785
+    }
+  ],
+  "failures": [
+    {
+      "scenario": "s2",
+      "error": "OperationStalledError: Provider operation stalled (incomplete_response)."
+    },
+    {
+      "scenario": "s5",
+      "error": "Error: s5: harness did not execute the requested long tool"
+    },
+    {
+      "scenario": "s1",
+      "error": "Error: s1: harness did not request permission"
+    },
+    {
+      "scenario": "m1-1",
+      "error": "OperationStalledError: Provider operation stalled (incomplete_response)."
+    }
+  ]
+}

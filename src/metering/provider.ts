@@ -106,8 +106,15 @@ export type CounterInterpretation = "cumulative" | "per_turn";
  * (every turn re-reads the same cached context), which is why comparing totals is not a
  * valid test and reported "cumulative" until the components were checked.
  * See .res/somelogs.md/9-5+/9-6-harness-matrix-findings.md, Finding 5.
+ *
+ * Codex: two plain turns of one session (no cancel, no steering) reported
+ * total/input/output/cachedRead of 17948/782/14/17152 and then 18080/7059/13/11008. Each report
+ * satisfies `total === input + output + cachedRead` on its own, and input, output and cachedRead
+ * move both ways between turns, which no cumulative counter can do; read as cumulative the second
+ * turn was a `counter_reset` ("outputTokens decreased from 14 to 13").
+ * See .res/somelogs.md/9-22+/10-4-LOG-adopt-provider-session.md, "Real-harness pass".
  */
-const PER_TURN_ADAPTERS: ReadonlySet<string> = new Set(["opencode"]);
+const PER_TURN_ADAPTERS: ReadonlySet<string> = new Set(["opencode", "codex"]);
 
 /**
  * The interpretation to apply for an adapter.

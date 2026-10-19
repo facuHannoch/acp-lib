@@ -3,10 +3,12 @@ import type { Adapter } from "./adapters.ts";
 import type { AgentMode } from "./controller.ts";
 import type { NewConversationRecord, ParticipantRef, PersistenceJsonValue } from "./persistence/backend.ts";
 import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts";
+import type { PromptPart } from "./steering/contracts.ts";
 import type { ResponseMessage } from "./types.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
 import type { IdentityDeliveryReceipt } from "./identity.ts";
+import type { OperationStalledError } from "./operations/errors.ts";
 import type {
   ProviderAttachmentCommitAcknowledgement,
   ProviderAttachmentState,
@@ -19,12 +21,16 @@ export interface OwnedPromptInput {
   readonly targetProviderContextId?: string;
   readonly participantId?: string;
   readonly consumerMetadata?: PersistenceJsonValue;
+  /** Present when several messages were combined into this one prompt: each is recorded as sent. */
+  readonly parts?: readonly PromptPart[];
   readonly text: string;
 }
 
 export interface OwnedPromptPreparation {
   readonly providerText?: string;
   readonly participant?: ParticipantRef;
+  /** Every participant of a combined prompt, in order. `participant` is the first. */
+  readonly participants?: readonly ParticipantRef[];
   readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
 }
 
@@ -56,7 +62,11 @@ export interface OwnedPromptFailed extends OwnedPromptInput {
 
 /** @internal Agent-owned persistence and identity boundary for a conversation turn. */
 export interface AgentConversationOwnerLifecycle {
+  operationFailed?(input: { readonly operationId: string; readonly error: OperationStalledError }): Promise<void>;
+  recoverInPlace?(error: unknown): Promise<void>;
   beforePrompt(input: OwnedPromptInput): Promise<OwnedPromptPreparation>;
+  /** The participant that history imported from an adopted provider session is attributed to. */
+  importParticipant?(): Promise<ParticipantRef>;
   afterPrompt(input: OwnedPromptCompleted): Promise<OwnedPromptCommitResult | void>;
   promptFailed(input: OwnedPromptFailed): Promise<void>;
   /** Durably commit one normalized operation record and its bounded next state. */

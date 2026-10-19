@@ -33,6 +33,7 @@ export const CONVERSATION_RECORD_KINDS = [
   "thinking",
   "activity",
   "metering",
+  "error",
 ] as const;
 
 export type ConversationRecordKind = (typeof CONVERSATION_RECORD_KINDS)[number];
@@ -150,6 +151,47 @@ export interface MeteringReferenceRecord extends ConversationRecordEnvelope<"met
   readonly status: "available" | "partial" | "unavailable";
 }
 
+/** Operational boundary a conversation error was observed at. Closed taxonomy. */
+export type ConversationErrorSource =
+  | "provider_session"
+  | "transport"
+  | "operation"
+  | "recovery";
+
+/** What a consumer may reasonably do about a failed operation. */
+export type ConversationErrorRecoverability =
+  | "retryable"
+  | "recoverable"
+  | "terminal"
+  | "unknown";
+
+/** Allow-listed provider detail, retained only at raw capture. */
+export interface ConversationErrorDetails {
+  readonly phase?: "no_response" | "incomplete_response";
+  readonly providerCode?: string | number;
+  readonly rpcCode?: number;
+  readonly service?: string;
+  /** The provider's name for the error class (OpenCode: `APIError`). A label, not a message. */
+  readonly errorName?: string;
+  readonly exitCode?: number;
+  readonly signal?: string;
+  readonly transportState?: string;
+}
+
+/** Immutable, sanitized diagnosis at a meaningful conversation boundary. */
+export interface ErrorRecord extends ConversationRecordEnvelope<"error"> {
+  readonly source: ConversationErrorSource;
+  /** Stable machine-readable value. The type stays open for future codes. */
+  readonly code: string;
+  readonly recoverability: ConversationErrorRecoverability;
+  /** Sanitized fallback text intended for display, not a raw exception dump. */
+  readonly message?: string;
+  readonly operationId?: string;
+  readonly transitionId?: string;
+  readonly internalSessionId?: string;
+  readonly details?: ConversationErrorDetails;
+}
+
 export type ConversationRecord =
   | MessageRecord
   | ToolCallRecord
@@ -160,7 +202,8 @@ export type ConversationRecord =
   | AgentActionRecord
   | ThinkingRecord
   | ActivityRecord
-  | MeteringReferenceRecord;
+  | MeteringReferenceRecord
+  | ErrorRecord;
 
 type WithoutSequence<T> = T extends ConversationRecord ? Omit<T, "sequence"> : never;
 export type NewConversationRecord = WithoutSequence<ConversationRecord>;
@@ -209,6 +252,7 @@ export const DEFAULT_CONVERSATION_RECORD_CAPTURE: ConversationRecordCapturePolic
   thinking: "none",
   activity: "metadata",
   metering: "metadata",
+  error: "content",
 });
 
 export interface AgentPersistenceIdentity {
@@ -228,6 +272,10 @@ export interface AgentConversationSummary {
   readonly latestSequence: number;
   readonly deletedAt?: string;
   readonly metadata?: string;
+  /** True when the conversation was created by adopting an existing provider session. Absent otherwise. */
+  readonly adopted?: boolean;
+  /** The provider session an adoption asked for, kept so a failed adoption can be retried. */
+  readonly adoptProviderSessionId?: string;
 }
 
 export interface CreateAgentConversationInput {
@@ -237,6 +285,8 @@ export interface CreateAgentConversationInput {
   readonly title?: string;
   readonly createdAt?: string;
   readonly metadata?: string;
+  /** Mark the conversation as created by adopting this provider session. */
+  readonly adoptProviderSessionId?: string;
 }
 
 export interface ConversationListOptions {
@@ -471,6 +521,11 @@ export interface ConversationRecordPersistence {
     agentConversationId: AgentConversationId,
     options?: RecordListOptions,
   ): Promise<ConversationRecordPage>;
+  /**
+   * Physically delete every record of a conversation, keeping the conversation itself. Returns how many were
+   * deleted. Sequence numbers are not reused. Optional: an append-only backend cannot clear a transcript.
+   */
+  deleteForConversation?(agentConversationId: AgentConversationId): Promise<number>;
   /** Optional efficient newest-first history API. Use list(afterSequence) for live catch-up. */
   listRecent?(
     agentConversationId: AgentConversationId,
@@ -497,6 +552,12 @@ export interface ProviderSessionPersistence {
   append(record: ProviderSessionRecord): Promise<void>;
   list(agentConversationId: AgentConversationId): Promise<readonly ProviderSessionRecord[]>;
   active(agentConversationId: AgentConversationId): Promise<ProviderSessionRecord | null>;
+  /**
+   * Conversations that own this provider session: those where it is the active session, and those
+   * that asked to adopt it and have not attached it yet. Deleted conversations do not count.
+   * Optional: a backend without it cannot refuse a second adoption of the same session.
+   */
+  conversationsUsing?(internalSessionId: string): Promise<readonly AgentConversationId[]>;
 }
 
 export type MeteringRecordRetention = "all" | "none" | { readonly retain: number };
@@ -822,6 +883,10 @@ export function searchableText(record: ConversationRecord): string {
       return [record.activityType, contentText(record.content), jsonText(record.data)].filter(Boolean).join("\n");
     case "metering":
       return [record.operationId, record.meteringRecordId, record.status].join("\n");
+    case "error":
+      // Errors are operational history, not searchable conversation content; v1 keeps them
+      // out of full-text search.
+      return "";
   }
 }
 

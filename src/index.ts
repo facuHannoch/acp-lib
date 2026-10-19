@@ -44,7 +44,25 @@ export type {
   CreateAgentConversationConfig,
   OpenAgentConversationConfig,
   OpenOwnedAgentConversationResult,
+  AdoptProviderSessionConfig,
+  ClearTranscriptOptions,
+  ClearTranscriptResult,
+  DeleteConversationOptions,
+  DeleteConversationResult,
+  ListProviderSessionsOptions,
+  ProviderSessionSummary,
+  AgentConversationAuditCaptureConfig,
+  AgentConversationPersistenceOverride,
+  AgentScopeAuditObservationKind,
+  ConversationPersistenceContext,
+  ConversationPersistenceResolver,
 } from "./agent.ts";
+export {
+  OUT_OF_BAND_MESSAGE_ORIGIN,
+  OUT_OF_BAND_PROMPT_MAX_CHARS,
+  isOutOfBandMessage,
+} from "./out-of-band-messages.ts";
+export type { AppendAssistantMessageInput } from "./out-of-band-messages.ts";
 export { AgentAdapterRegistry } from "./agent-adapter-registry.ts";
 export type { AgentAdapterRegistration } from "./agent-adapter-registry.ts";
 export { NoopAgentIdentityRuntime, composeIdentityPrompt } from "./identity.ts";
@@ -76,6 +94,18 @@ export {
   searchableText,
 } from "./persistence/backend.ts";
 export {
+  CONVERSATION_ERROR_CODES,
+  CONVERSATION_ERROR_RECOVERABILITIES,
+  CONVERSATION_ERROR_SOURCES,
+  buildConversationErrorDetails,
+  conversationErrorDetailsFromError,
+  sanitizeConversationErrorMessage,
+} from "./persistence/error-records.ts";
+export type {
+  ConversationErrorCode,
+  ConversationErrorDetailInput,
+} from "./persistence/error-records.ts";
+export {
   AgentDatabaseInUseError,
   SQLITE_AGENT_SCHEMA_VERSION,
   SqliteAgentPersistence,
@@ -96,6 +126,10 @@ export type {
   ConversationRecordCapturePolicy,
   ConversationRecordEnvelope,
   ConversationRecordKind,
+  ConversationErrorDetails,
+  ConversationErrorRecoverability,
+  ConversationErrorSource,
+  ErrorRecord,
   RecentRecordPage,
   RecentRecordPageOptions,
   IdentityMemoryObservation,
@@ -158,7 +192,11 @@ export {
   AdapterMismatchError,
   ContinuationUnavailableError,
   DirectAuditPersistenceUnsupportedError,
+  ProviderSessionError,
+  ProviderSessionInUseError,
+  ProviderSessionListUnsupportedError,
 } from "./agent-session.ts";
+export type { ProviderSessionErrorDetails } from "./agent-session.ts";
 export type {
   AgentConversationConfig,
   AgentConversationOpenConfig,
@@ -231,6 +269,16 @@ export type { TerminalHandlers } from "./transport/acp-transport.ts";
 
 export { extractChunkText, extractResponseChunk, toActivityEvent } from "./updates.ts";
 export { formatResponseMessages } from "./response.ts";
+export type {
+  MessageDeliveryVia,
+  MessageEvent,
+  PendingMessage,
+  PendingMessageId,
+  PromptDelivery,
+  PromptEndedBy,
+  PromptHandle,
+  PromptPart,
+} from "./steering/index.ts";
 
 export {
   ActivityAggregator,
@@ -685,3 +733,5 @@ export type {
   InternalSessionCommandInput,
   WireEntry,
 } from "./types.ts";
+
+export * from "./operations/index.ts";

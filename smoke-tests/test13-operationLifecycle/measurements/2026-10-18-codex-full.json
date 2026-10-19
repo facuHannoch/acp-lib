@@ -1,0 +1,84 @@
+{
+  "adapterId": "codex",
+  "measurements": [
+    {
+      "scenario": "s4",
+      "status": "passed",
+      "events": [
+        {
+          "kind": "message_pending",
+          "id": "mvd6a43rakpq",
+          "delivery": "queue"
+        },
+        {
+          "kind": "message_pending",
+          "id": "mvd6a43sudcu",
+          "delivery": "steer"
+        },
+        {
+          "kind": "message_pending",
+          "id": "mvd6a43sgges",
+          "delivery": "steer"
+        },
+        {
+          "kind": "message_held",
+          "id": "mvd6a43rakpq",
+          "failedTurnId": "mvd6a43rsg89"
+        },
+        {
+          "kind": "message_delivered",
+          "ids": [
+            "mvd6a43sudcu",
+            "mvd6a43sgges"
+          ],
+          "via": "stall",
+          "turnId": "mvd6a43sudcu"
+        },
+        {
+          "kind": "message_released",
+          "id": "mvd6a43rakpq",
+          "failedTurnId": "mvd6a43rsg89"
+        },
+        {
+          "kind": "message_delivered",
+          "ids": [
+            "mvd6a43rakpq"
+          ],
+          "via": "turn_end",
+          "turnId": "mvd6a43rakpq"
+        }
+      ]
+    },
+    {
+      "scenario": "s2",
+      "error": "OperationStalledError: Provider operation stalled (no_response).",
+      "nextStatus": "completed"
+    },
+    {
+      "scenario": "s3",
+      "error": "AgentSessionOperationError: ACP connection closed",
+      "nextStatus": "completed"
+    },
+    {
+      "scenario": "s5",
+      "status": "completed"
+    },
+    {
+      "run": 0,
+      "firstOutputMs": 10,
+      "longestGapMs": 4821,
+      "normalMs": 4993,
+      "cancelLatencyMs": 59,
+      "cancelStatus": "cancelled",
+      "loadMs": 514,
+      "replayCount": 5,
+      "longestReplayGapMs": 504
+    }
+  ],
+  "failures": [
+    {
+      "scenario": "s1",
+      "error": "Error: s1: harness did not request permission"
+    }
+  ]
+}

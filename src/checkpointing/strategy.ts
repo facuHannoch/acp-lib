@@ -13,6 +13,20 @@ const CHECKPOINT_READ_ONLY_INSTRUCTION = [
   "Only summarize the records supplied in this prompt.",
 ].join(" ");
 
+/**
+ * The most characters of stored records one checkpoint prompt may carry. Harnesses refuse a message past
+ * about a million characters (Codex: "Message exceeds the maximum length of 1048576 characters"), and a
+ * prompt that cannot be sent cannot succeed however often it is retried.
+ */
+export const MAX_CHECKPOINT_SOURCE_CHARS = 700_000;
+
+export class CheckpointSourceTooLargeError extends Error {
+  constructor(readonly chars: number, readonly limit: number) {
+    super(`conversation checkpoint source is too large: ${chars} characters, the limit is ${limit}`);
+    this.name = "CheckpointSourceTooLargeError";
+  }
+}
+
 export type ConversationCheckpointPayload = {
   readonly instruction: string;
 };
@@ -47,15 +61,20 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
     if (through <= from) throw new Error("conversation checkpoint source range is empty");
     const records = await readRecords(context.persistence.records, conversationId, from, through);
     if (!records.length) throw new Error("conversation checkpoint source contains no records");
+    const serialized = JSON.stringify(records);
+    if (serialized.length + (previous?.summary.length ?? 0) > MAX_CHECKPOINT_SOURCE_CHARS) {
+      throw new CheckpointSourceTooLargeError(serialized.length + (previous?.summary.length ?? 0), MAX_CHECKPOINT_SOURCE_CHARS);
+    }
     return Object.freeze({
       prompt: [
         payload.instruction,
         CHECKPOINT_READ_ONLY_INSTRUCTION,
-        previous
+        // An adoption baseline is a floor without a summary: nothing to build on, and nothing before it is read.
+        previous?.summary
           ? `Previous continuation summary:\n${previous.summary}`
           : "There is no previous continuation summary.",
         `New canonical records after sequence ${from} through ${through}:`,
-        JSON.stringify(records),
+        serialized,
       ].join("\n\n"),
       metadata: JSON.stringify({ previousCheckpointId: previous?.checkpointId ?? null, through }),
     });
@@ -77,25 +96,32 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
         ? { previousCheckpointId: context.attempt.sourceCheckpointId as `chk-${string}` }
         : {}),
       generatorInternalInferenceId: result.internalInferenceId,
+      source: "internal_inference",
       summary,
     });
-    const appended = await context.persistence.records.append({
+    const record = {
       recordId: `${result.internalInferenceId}:checkpoint`,
       agentSessionId: context.attempt.agentSessionId,
       agentConversationId: conversationId,
-      kind: "native_action",
+      kind: "native_action" as const,
       timestamp: checkpoint.createdAt,
       action: "conversation_checkpoint",
-      state: "completed",
+      state: "completed" as const,
       output: {
         internalInferenceId: result.internalInferenceId,
         checkpointId: checkpoint.checkpointId,
         coveredSequence: checkpoint.coveredSequence,
       },
-    });
+    };
+    // Under the conversation's capture and audit policy when the Agent supplies one: the record is stored at
+    // the conversation's `native_action` level (or dropped) and audited as the conversation says. Without
+    // one it is appended as it always was.
+    const appended = context.appendRecord
+      ? await context.appendRecord(record)
+      : await context.persistence.records.append(record);
     // Hand the committed record to the manager so it reaches the Agent's live bus after
     // the completion transaction commits, exactly like every other Agent-owned record.
-    context.onRecordAppended?.(appended);
+    if (appended) context.onRecordAppended?.(appended);
     return Object.freeze({
       internalInferenceId: result.internalInferenceId,
       rootInternalInferenceId: context.attempt.rootId,
@@ -108,6 +134,9 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
   }
 
   classifyError(error: unknown) {
+    if (error instanceof CheckpointSourceTooLargeError) {
+      return { kind: "terminal" as const, code: "checkpoint_source_too_large" };
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("source changed") || message.includes("coverage") || message.includes("source range")) {
       return { kind: "terminal" as const, code: "checkpoint_source_conflict" };

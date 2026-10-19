@@ -1,0 +1,10 @@
+{
+  "adapterId": "codex",
+  "measurements": [],
+  "failures": [
+    {
+      "scenario": "s6",
+      "error": "Error: s6: missing session not recognised: provider_session_load_failed"
+    }
+  ]
+}

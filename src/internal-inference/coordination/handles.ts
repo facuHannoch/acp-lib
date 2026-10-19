@@ -1,3 +1,4 @@
+import type { OperationActivity } from "../../operations/contracts.ts";
 import { SubscriptionHub } from "../../observation/subscription-hub.ts";
 import type {
   InternalInference,
@@ -19,14 +20,22 @@ export class AttemptHandle implements InternalInference {
   private readonly deferred = promiseWithResolvers<InternalInferenceCompletion>();
   readonly result = this.deferred.promise;
 
-  constructor(record: InternalInferenceAttemptRecord, private readonly cancelRun: (reason?: string) => Promise<void>) {
+  constructor(
+    record: InternalInferenceAttemptRecord,
+    private readonly cancelRun: (reason?: string) => Promise<void>,
+    /** The running attempt's provider operation, for the snapshot. */
+    private readonly operation?: () => OperationActivity | null,
+  ) {
     this.current = snapshotOf(record);
     this.result.catch(() => {});
     this.settle(record);
   }
 
   get id(): InternalInferenceId { return this.current.id; }
-  get snapshot(): InternalInferenceSnapshot { return this.current; }
+  get snapshot(): InternalInferenceSnapshot {
+    const operation = this.current.status === "running" ? this.operation?.() ?? null : null;
+    return Object.freeze({ ...this.current, operation });
+  }
   subscribe(listener: (event: InternalInferenceEvent) => void): () => void { return this.hub.subscribe(listener); }
   cancel(): Promise<void> { return this.cancelRun(); }
   emit(event: InternalInferenceEvent): void { this.hub.emit(event); }

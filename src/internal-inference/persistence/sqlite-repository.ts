@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { AgentConversationId, AgentSessionId } from "../../agent-ids.ts";
-import { PersistenceConflictError } from "../../persistence/backend.ts";
+import { PersistenceConflictError, type ConversationErrorDetails } from "../../persistence/backend.ts";
 import type {
   InternalInferenceChainStatus,
   InternalInferenceCompletion,
@@ -489,6 +489,9 @@ function attemptFromRow(row: AttemptRow): InternalInferenceAttemptRecord {
     revision: row.revision,
     ...(row.result_json && row.status === "completed"
       ? { completion: JSON.parse(row.result_json) as InternalInferenceCompletion }
+      : {}),
+    ...(row.result_json && row.status === "failed"
+      ? { failureDetails: JSON.parse(row.result_json) as ConversationErrorDetails }
       : {}),
     ...(row.error ? { error: row.error } : {}),
     ...(row.failure_code ? { failureCode: row.failure_code } : {}),

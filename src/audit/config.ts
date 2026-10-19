@@ -19,6 +19,7 @@ export interface AgentAuditCaptureConfig {
   readonly agent_action?: RecordCaptureLevel;
   readonly thinking?: RecordCaptureLevel;
   readonly activity?: RecordCaptureLevel;
+  readonly error?: RecordCaptureLevel;
   readonly metering?: "none" | "metadata" | "summary" | "raw";
   readonly agent_lifecycle?: RecordCaptureLevel;
   readonly identity?: RecordCaptureLevel;
@@ -54,6 +55,7 @@ export interface ResolvedAgentAuditCapturePolicy {
   readonly agent_action: RecordCaptureLevel;
   readonly thinking: RecordCaptureLevel;
   readonly activity: RecordCaptureLevel;
+  readonly error: RecordCaptureLevel;
   readonly metering: "none" | "metadata" | "summary" | "raw";
   readonly agent_lifecycle: RecordCaptureLevel;
   readonly identity: RecordCaptureLevel;
@@ -80,6 +82,7 @@ export const DEFAULT_AGENT_AUDIT_CAPTURE: ResolvedAgentAuditCapturePolicy = Obje
   agent_action: "metadata",
   thinking: "none",
   activity: "metadata",
+  error: "content",
   metering: "summary",
   agent_lifecycle: "metadata",
   identity: "metadata",
@@ -166,6 +169,7 @@ export function resolveAgentAuditCapture(
     agent_action: general("agent_action"),
     thinking: general("thinking"),
     activity: general("activity"),
+    error: general("error"),
     metering: specialized("metering", ["none", "metadata", "summary", "raw"]),
     agent_lifecycle: general("agent_lifecycle"),
     identity: general("identity"),
@@ -183,4 +187,33 @@ function safeInteger(value: number, minimum: number, label: string): number {
     throw new Error(`audit ${label} must be a safe integer greater than or equal to ${minimum}`);
   }
   return value;
+}
+
+/** Audit kinds observed at agent scope. A conversation cannot tune them: they are not about one conversation. */
+const AGENT_SCOPE_AUDIT_KINDS = new Set(["agent_lifecycle", "identity", "internal_inference"]);
+
+/**
+ * The audit configuration one conversation runs with: the Agent's destination and delivery settings
+ * unchanged, with its capture layered over by the conversation's override (keys the override sets replace
+ * the Agent's; omitted keys follow the Agent). The result carries its own fingerprint, so an entry says which
+ * policy projected it. An override that changes nothing returns the Agent's configuration itself.
+ */
+export function resolveConversationAuditConfig(
+  base: ResolvedAgentAuditLogConfig,
+  baseCapture: AgentAuditCaptureConfig | undefined,
+  override: AgentAuditCaptureConfig,
+): ResolvedAgentAuditLogConfig {
+  for (const key of Object.keys(override)) {
+    if (AGENT_SCOPE_AUDIT_KINDS.has(key)) {
+      throw new Error(`conversation audit capture cannot select agent-scope kind: ${key}`);
+    }
+  }
+  const capture = resolveAgentAuditCapture({ ...baseCapture, ...override });
+  const captureFingerprint = sha256CanonicalJson({
+    projectionSchemaVersion: 1,
+    capture,
+    limits: DEFAULT_PERSISTENCE_LIMITS,
+  });
+  if (captureFingerprint === base.captureFingerprint) return base;
+  return Object.freeze({ ...base, capture, captureFingerprint });
 }

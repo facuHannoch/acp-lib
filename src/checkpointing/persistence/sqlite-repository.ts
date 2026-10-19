@@ -7,6 +7,7 @@ import type {
   ConversationRecoveryCheckpointId,
   ConversationRecoveryCheckpointListOptions,
   ConversationRecoveryCheckpointRepository,
+  ConversationRecoveryCheckpointSource,
   PublishConversationRecoveryCheckpointInput,
 } from "../contracts.ts";
 
@@ -18,8 +19,10 @@ interface CheckpointRow {
   revision: number;
   covered_sequence: number;
   previous_checkpoint_id: string | null;
-  generator_internal_inference_id: string;
+  generator_internal_inference_id: string | null;
+  source: string;
   summary: string;
+  responses_counted_after_sequence: number | null;
   created_at: string;
   metadata: string | null;
 }
@@ -36,7 +39,12 @@ implements ConversationRecoveryCheckpointRepository {
        WHERE r.agent_conversation_id = ? AND r.kind = 'message'
          AND m.role = 'assistant'
          AND m.status = 'completed'
-         AND r.operation_id IS NOT NULL`,
+         AND r.operation_id IS NOT NULL
+         AND r.sequence > COALESCE((
+           SELECT c.responses_counted_after_sequence FROM conversation_recovery_checkpoints c
+           WHERE c.agent_conversation_id = r.agent_conversation_id AND c.source <> 'internal_inference'
+           ORDER BY c.revision LIMIT 1
+         ), 0)`,
     ).get(agentConversationId);
     return Number(row?.count ?? 0);
   }
@@ -47,6 +55,19 @@ implements ConversationRecoveryCheckpointRepository {
        WHERE agent_conversation_id = ? AND kind = 'message'`,
     ).get(agentConversationId);
     return Number(row?.sequence ?? 0);
+  }
+
+  async deleteForConversation(agentConversationId: AgentConversationId): Promise<number> {
+    return await this.runWrite(() => {
+      const count = this.database.query<{ n: number }, [string]>(
+        "SELECT COUNT(*) AS n FROM conversation_recovery_checkpoints WHERE agent_conversation_id = ?",
+      ).get(agentConversationId)?.n ?? 0;
+      // One statement: the checkpoints reference each other (previous_checkpoint_id), and a single DELETE
+      // checks that reference after all of them are gone.
+      this.database.query("DELETE FROM conversation_recovery_checkpoints WHERE agent_conversation_id = ?")
+        .run(agentConversationId);
+      return Number(count);
+    });
   }
 
   async latest(agentConversationId: AgentConversationId): Promise<ConversationRecoveryCheckpoint | null> {
@@ -84,7 +105,17 @@ implements ConversationRecoveryCheckpointRepository {
   async publish(input: PublishConversationRecoveryCheckpointInput): Promise<ConversationRecoveryCheckpoint> {
     return await this.runWrite(() => {
       const summary = input.summary.trim();
-      if (!summary) throw new Error("recovery checkpoint summary cannot be blank");
+      const source = input.source ?? "internal_inference";
+      // Only a baseline is a floor with nothing to say; every other checkpoint summarizes something, and
+      // only an internal inference has a generator.
+      if (source === "adoption_baseline" ? summary !== "" : !summary) {
+        throw new Error(source === "adoption_baseline"
+          ? "an adoption baseline checkpoint has no summary"
+          : "recovery checkpoint summary cannot be blank");
+      }
+      if ((source === "internal_inference") !== (input.generatorInternalInferenceId !== undefined)) {
+        throw new Error("only an internal-inference checkpoint has a generator, and it must have one");
+      }
       if (!Number.isSafeInteger(input.coveredSequence) || input.coveredSequence < 1) {
         throw new Error("recovery checkpoint coveredSequence must be a positive integer");
       }
@@ -97,6 +128,7 @@ implements ConversationRecoveryCheckpointRepository {
           checkpoint.agentConversationId !== input.agentConversationId
           || checkpoint.coveredSequence !== input.coveredSequence
           || checkpoint.generatorInternalInferenceId !== input.generatorInternalInferenceId
+          || checkpoint.source !== source
           || checkpoint.summary !== summary
         ) throw new PersistenceConflictError(`recovery checkpoint id conflict: ${input.checkpointId}`);
         return checkpoint;
@@ -117,20 +149,23 @@ implements ConversationRecoveryCheckpointRepository {
       this.database.query(
         `INSERT INTO conversation_recovery_checkpoints(
           checkpoint_id, agent_conversation_id, revision, covered_sequence,
-          previous_checkpoint_id, generator_internal_inference_id, summary, created_at, metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          previous_checkpoint_id, generator_internal_inference_id, source, summary,
+          responses_counted_after_sequence, created_at, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         input.checkpointId,
         input.agentConversationId,
         revision,
         input.coveredSequence,
         input.previousCheckpointId ?? null,
-        input.generatorInternalInferenceId,
+        input.generatorInternalInferenceId ?? null,
+        source,
         summary,
+        input.responsesCountedAfterSequence ?? null,
         createdAt,
         input.metadata ?? null,
       );
-      return Object.freeze({ ...input, summary, revision, createdAt });
+      return Object.freeze({ ...input, source, summary, revision, createdAt });
     });
   }
 }
@@ -144,8 +179,14 @@ function fromRow(row: CheckpointRow): ConversationRecoveryCheckpoint {
     ...(row.previous_checkpoint_id
       ? { previousCheckpointId: row.previous_checkpoint_id as ConversationRecoveryCheckpointId }
       : {}),
-    generatorInternalInferenceId: row.generator_internal_inference_id as InternalInferenceId,
+    ...(row.generator_internal_inference_id
+      ? { generatorInternalInferenceId: row.generator_internal_inference_id as InternalInferenceId }
+      : {}),
+    source: row.source as ConversationRecoveryCheckpointSource,
     summary: row.summary,
+    ...(row.responses_counted_after_sequence !== null
+      ? { responsesCountedAfterSequence: Number(row.responses_counted_after_sequence) }
+      : {}),
     createdAt: row.created_at,
     ...(row.metadata ? { metadata: row.metadata } : {}),
   });

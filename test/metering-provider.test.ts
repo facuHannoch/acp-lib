@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { calculateDelta } from "../src/metering/delta.ts";
 import {
   activeModel,
   counterInterpretationForAdapter,
@@ -51,8 +52,22 @@ describe("counter interpretation evidence", () => {
     expect(counterInterpretationForAdapter("opencode")).toBe("per_turn");
   });
 
+  test("Codex is recorded as per-turn from measurement", () => {
+    // Two plain turns of one session: 17948/782/14/17152 then 18080/7059/13/11008 (total/input/output/cachedRead).
+    // Read as cumulative, the second is a counter reset; as per-turn, both are attributable as reported.
+    expect(counterInterpretationForAdapter("codex")).toBe("per_turn");
+    const first = { totalTokens: 17948, inputTokens: 782, outputTokens: 14, cachedReadTokens: 17152, thoughtTokens: 0 };
+    const second = { totalTokens: 18080, inputTokens: 7059, outputTokens: 13, cachedReadTokens: 11008, thoughtTokens: 0 };
+    for (const report of [first, second]) {
+      expect(report.totalTokens).toBe(report.inputTokens + report.outputTokens + report.cachedReadTokens);
+    }
+    expect(calculateDelta(first, second, { trustedZeroBaseline: false })).toMatchObject({ kind: "counter_reset" });
+    expect(calculateDelta(first, second, { trustedZeroBaseline: false, interpretation: counterInterpretationForAdapter("codex") }))
+      .toEqual({ kind: "attributable", delta: second });
+  });
+
   test("everything else defaults to cumulative until measured", () => {
-    for (const adapter of ["claude", "codex", "kimi", "pi", "unknown"]) {
+    for (const adapter of ["claude", "kimi", "pi", "unknown"]) {
       expect(counterInterpretationForAdapter(adapter)).toBe("cumulative");
     }
   });

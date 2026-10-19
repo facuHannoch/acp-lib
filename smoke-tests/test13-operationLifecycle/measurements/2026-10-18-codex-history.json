@@ -1,0 +1,18 @@
+{
+  "adapterId": "codex",
+  "measurements": [
+    {
+      "run": 0,
+      "firstOutputMs": 14,
+      "longestGapMs": 4190,
+      "normalMs": 4349,
+      "historyTurns": 24,
+      "cancelLatencyMs": 10,
+      "cancelStatus": "cancelled",
+      "loadMs": 554,
+      "replayCount": 53,
+      "longestReplayGapMs": 535
+    }
+  ],
+  "failures": []
+}

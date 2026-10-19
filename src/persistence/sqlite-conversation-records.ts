@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type {
+  ConversationErrorDetails,
+  ConversationErrorRecoverability,
+  ConversationErrorSource,
   ConversationRecord,
   ConversationRecordKind,
   NewConversationRecord,
@@ -24,6 +27,7 @@ type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 
 export function operationIdFromRecord(record: NewConversationRecord): string | null {
   if (record.kind === "metering") return record.operationId;
+  if (record.kind === "error") return record.operationId ?? null;
   if (!record.metadata) return null;
   try {
     const metadata = JSON.parse(record.metadata) as { operationId?: unknown };
@@ -194,6 +198,22 @@ export function insertConversationRecordDetail(
         record.status,
       );
       return;
+    case "error":
+      run(database,
+        `INSERT INTO conversation_error_records(
+          record_row_id, source, code, recoverability, message, transition_id,
+          internal_session_id, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        rowId,
+        record.source,
+        record.code,
+        record.recoverability,
+        record.message ?? null,
+        record.transitionId ?? null,
+        record.internalSessionId ?? null,
+        encodeJson(record.details as PersistenceJsonValue | undefined),
+      );
+      return;
   }
 }
 
@@ -240,6 +260,7 @@ const DETAIL_TABLES: Readonly<Record<ConversationRecordKind, string>> = Object.f
   thinking: "conversation_thinking_events",
   activity: "conversation_activity_events",
   metering: "conversation_metering_references",
+  error: "conversation_error_records",
 });
 
 function recordFromRows(
@@ -359,6 +380,23 @@ function recordFromRows(
         operationId: string(detail.operation_id),
         meteringRecordId: string(detail.metering_record_id),
         status: string(detail.status) as "available" | "partial" | "unavailable",
+      });
+    case "error":
+      return Object.freeze({
+        ...envelope,
+        kind: "error",
+        source: string(detail.source) as ConversationErrorSource,
+        code: string(detail.code),
+        recoverability: string(detail.recoverability) as ConversationErrorRecoverability,
+        ...(detail.message !== null ? { message: string(detail.message) } : {}),
+        ...(row.operation_id !== null ? { operationId: string(row.operation_id) } : {}),
+        ...(detail.transition_id !== null ? { transitionId: string(detail.transition_id) } : {}),
+        ...(detail.internal_session_id !== null
+          ? { internalSessionId: string(detail.internal_session_id) }
+          : {}),
+        ...(detail.details_json !== null
+          ? { details: decodeJson(detail.details_json) as ConversationErrorDetails }
+          : {}),
       });
   }
 }

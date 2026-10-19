@@ -1,4 +1,6 @@
+import type { OperationActivity } from "./operations/contracts.ts";
 import type { AgentMode } from "./controller.ts";
+import type { MessageEvent, PendingMessageId, PromptEndedBy } from "./steering/contracts.ts";
 import type { Adapter } from "./adapters.ts";
 import type { ContextWindowStatus, ProviderCostSnapshot } from "./metering/context.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
@@ -26,6 +28,9 @@ export type AgentSessionPhase =
 
 /** Authoritative, immutable point-in-time state for orchestration consumers. */
 export interface AgentSessionState {
+  readonly operation: OperationActivity | null;
+  readonly pendingHold: { readonly failedTurnId: string } | null;
+  readonly providerConnection: "connected" | "disconnected" | "reconnecting";
   readonly phase: AgentSessionPhase;
   /** True only while an operation is executing; queued work is reported separately. */
   readonly isBusy: boolean;
@@ -200,10 +205,13 @@ export interface HandoffResult {
 
 /** Conversation-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
 export type AgentSessionEvent =
+  | { kind: "provider_reconnected"; via: "loaded" | "recovered" | "fresh"; internalSessionId: string }
+  | { kind: "operation_stage_changed"; activity: OperationActivity }
   | { kind: "state_changed"; state: AgentSessionState }
   | { kind: "turn_started"; turnId: string }
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
   | { kind: "turn_failed"; turnId: string; error: string }
+  | MessageEvent
   | { kind: "presentation_recorded"; item: TranscriptPresentationItem }
   | { kind: "internal_session_commands_changed"; commands: readonly InternalSessionCommand[] }
   | { kind: "handoff_started"; handoffId: string; fromInternalSessionId: string | null }
@@ -252,6 +260,13 @@ export interface AgentSessionPromptResult extends PromptResult {
   readonly operationId: string;
   /** Null only when a queued prompt was cancelled before provider dispatch. */
   readonly metering: OperationMeteringRecord | null;
+  /**
+   * Why this turn was cancelled, when steering or `interrupt()` cancelled it and the provider really
+   * stopped it (`stopReason: "cancelled"`). Absent when the turn ended on its own.
+   */
+  readonly endedBy?: PromptEndedBy;
+  /** The messages sent after this turn was cancelled by steering or `interrupt()`, in order. */
+  readonly followedBy?: readonly PendingMessageId[];
 }
 
 /** Ordered envelope delivered to every current AgentSession subscriber. */
@@ -291,4 +306,6 @@ export type ProviderSession =
       readonly internalSessionId: string;
       /** Default "error": never silently replace a requested thread. */
       readonly onFailure?: "error" | "new";
+      /** Receives the history the loaded thread replays (raw `session/update` notifications). */
+      readonly onReplay?: (notification: unknown) => void;
     };

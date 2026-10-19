@@ -1,5 +1,8 @@
 import type { AgentConversationId } from "../agent-ids.ts";
-import type { ConversationMessagePersistence } from "../persistence/backend.ts";
+import type {
+  ConversationErrorRecoverability,
+  ConversationMessagePersistence,
+} from "../persistence/backend.ts";
 import type { ConversationRecoveryCheckpoint } from "./contracts.ts";
 import type { ResolvedConversationRecoveryConfig } from "./config.ts";
 
@@ -32,6 +35,9 @@ export function isMissingProviderSessionError(
     && message.toLowerCase() === "internal error: opencode service failure"
     && data?.service === "session"
   ) return true;
+  // ACP's standard "resource not found". This classifier only sees `session/load` failures, so the
+  // resource is the session (Claude reports a missing session this way).
+  if (value?.code === -32002) return true;
   const text = [
     message,
     safeJson(value?.data),
@@ -39,6 +45,8 @@ export function isMissingProviderSessionError(
   return [
     "failed to resolve rollout path",
     "no rollout found for thread id",
+    // Codex archives a deleted session; it cannot be loaded until unarchived outside the library.
+    "is archived. run `codex unarchive",
     "session not found",
     "unknown session",
     "no such session",
@@ -49,6 +57,25 @@ export function isMissingProviderSessionError(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export interface ProviderSessionLoadClassification {
+  readonly missing: boolean;
+  readonly code: "provider_session_missing" | "provider_session_load_failed";
+  readonly recoverability: ConversationErrorRecoverability;
+}
+
+/**
+ * Classify a failed `session/load` conservatively. A recognized missing-session signal is
+ * recoverable from a checkpoint; anything else stays `unknown` rather than guessing.
+ */
+export function classifyProviderSessionLoadError(
+  error: unknown,
+  override?: (error: unknown) => boolean,
+): ProviderSessionLoadClassification {
+  return isMissingProviderSessionError(error, override)
+    ? { missing: true, code: "provider_session_missing", recoverability: "recoverable" }
+    : { missing: false, code: "provider_session_load_failed", recoverability: "unknown" };
 }
 
 export async function buildRecoverySeed(
@@ -68,8 +95,10 @@ export async function buildRecoverySeed(
   return Object.freeze({
     prompt: [
       config.seedInstruction,
-      `Continuation checkpoint through canonical sequence ${checkpoint.coveredSequence}:`,
-      checkpoint.summary,
+      // An adoption baseline has no summary: only the messages after it are known.
+      ...(checkpoint.summary
+        ? [`Continuation checkpoint through canonical sequence ${checkpoint.coveredSequence}:`, checkpoint.summary]
+        : []),
       tail.length
         ? `Canonical messages after the checkpoint:\n${JSON.stringify(tail)}`
         : "There are no canonical messages after the checkpoint.",

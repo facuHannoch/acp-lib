@@ -1,9 +1,12 @@
+import type { OperationActivity } from "../operations/contracts.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { OperationMeteringRecord, OperationOutcome } from "../metering/record.ts";
 import type { StatefulSubscribable, Subscribable } from "../observation/contracts.ts";
 import type {
   ConversationRecord,
+  MeteringRecordRetention,
+  NewConversationRecord,
   PersistenceJsonValue,
   PersistenceScope,
 } from "../persistence/backend.ts";
@@ -70,6 +73,7 @@ export interface InternalInferenceCompletion {
 }
 
 export interface InternalInferenceSnapshot {
+  readonly operation?: OperationActivity | null;
   readonly id: InternalInferenceId;
   readonly rootId: InternalInferenceId;
   readonly agentSessionId: AgentSessionId;
@@ -167,6 +171,7 @@ export interface InternalInferenceRuntime {
 }
 
 export interface InternalInferenceRuntimeLifecycle {
+  operationChanged?(activity: (() => OperationActivity) | null): void;
   stageChanged?(stage: Extract<InternalInferenceStage, "creating_session" | "prompting">): void;
   sessionStarted(input: {
     readonly internalSessionId: string;
@@ -201,6 +206,21 @@ export interface InternalInferencePreparationContext {
   readonly signal?: AbortSignal;
 }
 
+/**
+ * What one conversation persists, for the writes an internal inference makes about it. Resolved before the
+ * inference runs, so a policy that cannot be resolved fails the attempt instead of writing under defaults.
+ */
+export interface ConversationWritePolicy {
+  /** Retention of the detailed metering record of this conversation's inferences. */
+  readonly meteringRecords: MeteringRecordRetention;
+  /**
+   * Append a canonical record as the conversation's capture and audit policy say: it is stored at its capture
+   * level (or dropped, when the level is `none`) and its audit entry is queued, in the given transaction.
+   * Returns the stored record, or `undefined` when capture dropped it.
+   */
+  appendRecord(persistence: PersistenceScope, record: NewConversationRecord): Promise<ConversationRecord | undefined>;
+}
+
 export interface InternalInferenceCompletionContext {
   readonly attempt: InternalInferenceSnapshot;
   /** Transaction-scoped persistence used to publish the purpose artifact atomically. */
@@ -213,6 +233,12 @@ export interface InternalInferenceCompletionContext {
    * simply do not call it.
    */
   readonly onRecordAppended?: (record: ConversationRecord) => void;
+  /**
+   * Append a canonical record about the attempt's conversation under that conversation's capture and audit
+   * policy, inside this completion transaction. Absent when the Agent has no per-conversation policy to
+   * apply, in which case a strategy appends through `persistence.records` as before.
+   */
+  readonly appendRecord?: (record: NewConversationRecord) => Promise<ConversationRecord | undefined>;
 }
 
 export interface InternalInferenceStrategy<TPayload = PersistenceJsonValue> {
