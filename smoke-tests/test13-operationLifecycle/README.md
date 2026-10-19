@@ -44,7 +44,7 @@ A quick mock fault run:
 
 | id | what | checks |
 |---|---|---|
-| s1 | Interrupt while the permission handler never answers | the handler's AbortSignal fires, the prompt resolves `cancelled`, the next prompt completes. The harness must actually ask for permission; one that auto-approves or asks in chat is reported as a failure (a coverage gap, not a library defect) |
+| s1 | Interrupt while the permission handler never answers | the handler's AbortSignal fires, the prompt resolves `cancelled`, the next prompt completes. The harness must actually ask for permission; one that auto-approves or asks in chat is reported as a failure (a coverage gap, not a library defect). OpenCode asks when run with `OPENCODE_CONFIG_CONTENT='{"model":"…","permission":{"bash":"ask","edit":"ask"}}'` |
 | s2 | SIGSTOP the harness, then prompt | the prompt rejects `stalled`, phase `no_response`, `cancel: "forced"`; one stored `stalled` error record; the next prompt reloads the same session (`provider_reconnected`, `via: "loaded"`) and remembers a keyword |
 | s3 | SIGKILL the harness during a prompt | the killed prompt rejects; the next prompt reloads the same session and remembers the keyword |
 | s4 | SIGSTOP with one queued message and two steers pending | the stall error's `followedBy` names both steers; they go out as one prompt delivered `via: "stall"`; the queued message is held, then released and completed |
@@ -97,3 +97,11 @@ silence defaults and the 30-second cancel grace remain conservative.
   now recognised (`isMissingProviderSessionError`). OpenCode's `-32603 OpenCode service failure`
   (`service: "session"`) was already recognised. After the fix s6 passed on all three.
 
+### 2026-10-19 (s1 on a real harness)
+
+- OpenCode 1.18.34 with `OPENCODE_CONFIG_CONTENT='{"model":"opencode-go/deepseek-v4.1-flash","permission":{"bash":"ask","edit":"ask"}}'`
+  (for the run only) and 60000ms limits: the model ran `pwd` through its bash tool, OpenCode sent
+  `session/request_permission`, and s1 passed: the handler's AbortSignal fired, the prompt resolved `cancelled`
+  (`cancel: "acknowledged"`) and the next prompt completed, 2.2s from interrupt to the next reply. The real s1 prompt
+  now tells the model to call the tool without asking first, so it no longer asks in chat.
+  `measurements/2026-10-19-opencode-s1.json`.

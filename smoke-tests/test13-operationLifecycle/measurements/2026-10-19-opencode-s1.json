@@ -1,0 +1,11 @@
+{
+  "adapterId": "opencode",
+  "measurements": [
+    {
+      "scenario": "s1",
+      "elapsedMs": 2164,
+      "cancel": "acknowledged"
+    }
+  ],
+  "failures": []
+}

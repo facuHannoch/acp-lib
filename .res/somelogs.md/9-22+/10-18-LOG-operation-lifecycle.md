@@ -342,3 +342,12 @@ the s6 change). Changelog updated. Full suite 1044 passed.
 The lifecycle section of `CONSUMER_GUIDE.md` now notes two observed harness behaviours: OpenCode completes the
 interrupted turn before answering the next prompt after a reload, and Codex archives a deleted session (treated as
 missing). An issue for OpenCode was drafted for the user to review and post; it was not posted.
+
+## 2026-10-19: test13 s1 covered on OpenCode
+
+s1 (interrupt while the permission handler never answers) had never run on a real harness: none asked for
+permission. OpenCode asks when given `"permission":{"bash":"ask","edit":"ask"}` in `OPENCODE_CONFIG_CONTENT` (for the
+run only, with `"model":"opencode-go/deepseek-v4.1-flash"`). The real s1 prompt was reworded to tell the model to call
+the bash tool without asking first (the old wording invited a chat question); the mock path is unchanged and passes.
+One real run: s1 passed (AbortSignal fired, prompt `cancelled`, `cancel: "acknowledged"`, next prompt completed).
+No library change. Results in `measurements/2026-10-19-opencode-s1.json`.
