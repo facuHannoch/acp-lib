@@ -8,6 +8,7 @@ import type { ResponseMessage } from "./types.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
 import type { IdentityDeliveryReceipt } from "./identity.ts";
+import type { OperationStalledError } from "./operations/errors.ts";
 import type {
   ProviderAttachmentCommitAcknowledgement,
   ProviderAttachmentState,
@@ -61,7 +62,7 @@ export interface OwnedPromptFailed extends OwnedPromptInput {
 
 /** @internal Agent-owned persistence and identity boundary for a conversation turn. */
 export interface AgentConversationOwnerLifecycle {
-  operationFailed?(input: { readonly operationId: string; readonly error: import("./operations/errors.ts").OperationStalledError }): Promise<void>;
+  operationFailed?(input: { readonly operationId: string; readonly error: OperationStalledError }): Promise<void>;
   recoverInPlace?(error: unknown): Promise<void>;
   beforePrompt(input: OwnedPromptInput): Promise<OwnedPromptPreparation>;
   /** The participant that history imported from an adopted provider session is attributed to. */

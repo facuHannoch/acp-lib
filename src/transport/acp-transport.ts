@@ -57,8 +57,9 @@ export interface AcpTransportOptions {
    * our interpretation, and the SDK sees neither the lines we intercept nor what it wrote.
    */
   onWire?: (entry: WireEntry) => void;
-  /** The process exited unexpectedly (not via stop()). */
+  /** The ACP connection closed, whatever the cause (exit, crash or stop()). */
   onDisconnect?: () => void;
+  /** The process exited unexpectedly (not via stop()). */
   onCrash?: (code: number | null) => void;
 }
 

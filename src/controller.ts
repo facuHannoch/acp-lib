@@ -1,5 +1,5 @@
 import { ForcedStopError } from "./operations/errors.ts";
-import type { OutputListener } from "./operations/contracts.ts";
+import type { OperationLifecycleConfig, OutputListener } from "./operations/contracts.ts";
 import {
   AcpClient,
   type AcpClientConfig,
@@ -36,7 +36,7 @@ const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([
 export type AgentMode = "normal" | "degraded";
 
 export interface AgentControllerConfig {
-  operationLifecycle?: import("./operations/contracts.ts").OperationLifecycleConfig;
+  operationLifecycle?: OperationLifecycleConfig;
   /** The single adapter this controller drives. Switching adapter = a new AgentSession. */
   adapter: Adapter;
   /** Stable id for the adapter (catalog/display, e.g. "codex"). */
@@ -267,10 +267,8 @@ export class AgentController implements AgentClient {
       forced = () => reject(new ForcedStopError());
       this.forceStopListeners.add(forced);
     });
-    try {
-      return Promise.race([current.prompt(text, handlers, attachments), interrupted])
-        .finally(() => this.forceStopListeners.delete(forced));
-    } catch (error) { this.forceStopListeners.delete(forced); throw error; }
+    return Promise.race([current.prompt(text, handlers, attachments), interrupted])
+      .finally(() => this.forceStopListeners.delete(forced));
   }
 
   cancel(): void { this.current?.interrupt(); }

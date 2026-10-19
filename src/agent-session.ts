@@ -1,9 +1,3 @@
-import { ProviderSessionError } from "./agent-conversation-errors.ts";
-import { OperationStalledError } from "./operations/errors.ts";
-import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
-import type { OperationLifecycleConfig } from "./operations/contracts.ts";
-import { OperationSupervisor } from "./operations/supervisor.ts";
-import type { CancelReason } from "./operations/contracts.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
 // face. Existing consumers still import this constructor as `AgentSession`; both names
 // refer to the same class while the new agent-level owner is introduced.
@@ -15,6 +9,10 @@ import type { CancelReason } from "./operations/contracts.ts";
 // Adapter ownership remains here during the compatibility tranche. The later Agent owner
 // supplies the adapter registry used by cross-adapter conversation transitions.
 
+import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
+import type { CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
+import { OperationStalledError } from "./operations/errors.ts";
+import { OperationSupervisor } from "./operations/supervisor.ts";
 import {
   AgentController,
   type AgentControllerConfig,
@@ -141,6 +139,7 @@ import {
   AgentSessionPromptBlockedError,
   ContinuationUnavailableError,
   DirectAuditPersistenceUnsupportedError,
+  ProviderSessionError,
 } from "./agent-conversation-errors.ts";
 import type {
   AgentSessionEvent,
@@ -376,12 +375,13 @@ export interface AgentSessionConfig {
   agentSessionId?: string;
   /** Provider-thread startup intent. Default `{ kind: "new" }`. */
   providerSession?: ProviderSession;
+  /** Stale limits per operation kind (turns, internal inference, recap). */
+  operationLifecycle?: OperationLifecycleConfig;
   /**
    * Token/cost metering policy. Optional: omitting it selects best-effort enforcement
    * with the pinned models.dev catalog and no restored state. Metering is not something a
    * consumer must turn on merely to see protocol facts.
    */
-  operationLifecycle?: OperationLifecycleConfig;
   metering?: MeteringConfig;
   /**
    * @deprecated Use `providerSession: { kind: "load", internalSessionId, onFailure }`.
@@ -3760,16 +3760,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return { before, after };
   }
 
-  /**
-   * Run a library-internal prompt through the same metering primitive as a user prompt.
-   *
-   * Handoff summary generation and continuation seeding consume real tokens. Calling
-   * `controller.prompt()` directly for them would spend a consumer's money invisibly, so
-   * that path is not permitted any more (§16).
-   *
-   * Operation ids are deterministic children of the handoff id rather than freshly
-   * minted, so a consumer can tie both halves back to the handoff that caused them.
-   */
   /** @internal Acquire a fresh leaf for checkpoint recovery without replacing this conversation. */
   async restartProviderFresh(): Promise<void> {
     await this.controller.forceStop();
@@ -3835,7 +3825,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
     }
     const loadFailed = (code: "provider_session_missing" | "provider_session_load_failed") => new ProviderSessionError({
-      agentSessionId: this.ownerAgentSessionId ?? this.agentSessionId as import("./agent-ids.ts").AgentSessionId,
+      agentSessionId: this.ownerAgentSessionId ?? this.agentSessionId as AgentSessionId,
       agentConversationId: this.agentConversationId, attemptId: `reconnect-${crypto.randomUUID()}`,
       internalSessionId: sessionId, source: "provider_session", code,
       recoverability: code === "provider_session_missing" ? "recoverable" : "retryable", cause: error });
@@ -3878,6 +3868,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
     } finally { this.activeSupervisor = null; this.emitStateIfChanged(); }
   }
 
+  /**
+   * Run a library-internal prompt through the same metering primitive as a user prompt.
+   *
+   * Handoff summary generation and continuation seeding consume real tokens. Calling
+   * `controller.prompt()` directly for them would spend a consumer's money invisibly, so
+   * that path is not permitted any more (§16).
+   *
+   * Operation ids are deterministic children of the handoff id rather than freshly
+   * minted, so a consumer can tie both halves back to the handoff that caused them.
+   */
   private async meteredInternalPrompt(
     operationId: string,
     operationKind: MeteredOperationKind,
@@ -4772,10 +4772,10 @@ function copyPromptResult(result: PromptResult): PromptResult {
 }
 
 /** Settle our wrapper too, so cancelled permission decisions are durably recorded. */
-async function permissionWithAbort(handler: () => import("./types.ts").PermissionOutcome | Promise<import("./types.ts").PermissionOutcome>, signal?: AbortSignal): Promise<import("./types.ts").PermissionOutcome> {
+async function permissionWithAbort(handler: () => PermissionOutcome | Promise<PermissionOutcome>, signal?: AbortSignal): Promise<PermissionOutcome> {
   if (signal?.aborted) return { outcome: "cancelled" };
   let abort!: () => void;
-  const cancelled = new Promise<import("./types.ts").PermissionOutcome>((resolve) => {
+  const cancelled = new Promise<PermissionOutcome>((resolve) => {
     abort = () => resolve({ outcome: "cancelled" });
     signal?.addEventListener("abort", abort, { once: true });
   });

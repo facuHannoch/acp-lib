@@ -1,4 +1,3 @@
-import type { OutputListener } from "../operations/contracts.ts";
 // PtyClient — degraded-mode AgentClient. Drives an agent's INTERACTIVE CLI inside a pty
 // (via PtyTransport) and scrapes the screen back into the same prompt()/onChunk contract
 // AcpClient exposes, so the REPL and controller work against it unchanged.
@@ -11,6 +10,7 @@ import type { OutputListener } from "../operations/contracts.ts";
 // `extractReply` is the deterministic default; an injected `parser` (ScreenParser/SML)
 // can replace it for messier TUIs without touching the transport/turn machinery.
 
+import type { OutputListener } from "../operations/contracts.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "../agent-client.ts";
 import type { Adapter } from "../adapters.ts";
 import { prepareLaunch, type AcpLauncher } from "../launcher.ts";

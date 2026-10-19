@@ -255,3 +255,17 @@ the user's OpenCode config is unchanged). A one-prompt check confirmed the model
 - Consumer-visible consequence to note for later: on OpenCode the reply after a crash recovery can contain the
   interrupted turn's output. Not addressed here.
 - Results: `measurements/2026-10-19-opencode-*`. README updated (use 60000ms limits for OpenCode).
+
+## Cleanup 1: comments, imports, dead code (no behaviour change)
+
+- Doc comments put back on the code they describe: `meteredInternalPrompt` (was above `restartProviderFresh`), the
+  metering config doc (was above `operationLifecycle`, which got its own), `lastUsageUpdate` in `AcpClient` (was
+  above `stopPromise`; `stopPromise` and `pendingPermissions` got short docs), and `AcpTransport.onCrash` (was above
+  `onDisconnect`, which now says it fires on any connection close).
+- Imports moved below the file header comments in `agent-session.ts`, `client.ts`, `degraded/pty-client.ts`;
+  duplicate imports merged; the inline `import("…")` types the branch added replaced by normal imports
+  (`agent-session.ts`, `controller.ts`, `agent-conversation-owner.ts`).
+- `AgentController.prompt`: removed a `try`/`catch` that could never catch (the client's `prompt` is async).
+- `AcpClient`: the repeated permission-cancel and disconnect-listener loops became `cancelPendingPermissions()` and
+  `notifyDisconnected()`.
+- Validation: typecheck passed; full suite 1043 passed, 0 failed.

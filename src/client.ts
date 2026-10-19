@@ -1,4 +1,3 @@
-import type { OutputListener, ProviderOutput } from "./operations/contracts.ts";
 // AcpClient — the core deliverable. Implements the AgentClient output contract and
 // adds the rich ACP input surface (capabilities, configOptions, sessions, auth).
 //
@@ -6,6 +5,7 @@ import type { OutputListener, ProviderOutput } from "./operations/contracts.ts";
 // session/new|load) → prompt(). Capabilities and configOptions are populated by
 // connect() so callers can inspect them BEFORE prompting.
 
+import type { OutputListener, ProviderOutput } from "./operations/contracts.ts";
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 import type { Adapter } from "./adapters.ts";
@@ -197,6 +197,12 @@ export class AcpClient implements AgentClient {
   private _availableCommands: readonly InternalSessionCommand[] = Object.freeze([]);
   private readonly availableCommandListeners = new Set<AvailableCommandsListener>();
   private readonly usageUpdateListeners = new Set<UsageUpdateListener>();
+  /** The stop in progress; later operations wait on it before reconnecting. */
+  private stopPromise: Promise<void> | null = null;
+  private readonly disconnectListeners = new Set<() => void>();
+  /** Answers `cancelled` to each permission request still waiting on the consumer's handler. */
+  private readonly pendingPermissions = new Set<() => void>();
+  private readonly outputListeners = new Set<OutputListener>();
   /**
    * Latest usage_update seen, replayed to a late subscriber.
    *
@@ -204,10 +210,6 @@ export class AcpClient implements AgentClient {
    * startup would otherwise be unobserved. Mirrors how `availableCommands` is cached and
    * re-emitted on attach.
    */
-  private stopPromise: Promise<void> | null = null;
-  private readonly disconnectListeners = new Set<() => void>();
-  private readonly pendingPermissions = new Set<() => void>();
-  private readonly outputListeners = new Set<OutputListener>();
   private lastUsageUpdate: { update: unknown; sessionId: string | null } | null = null;
   private commandTransition: CommandTransition | null = null;
   private _sessionId: string | null = null;
@@ -302,6 +304,14 @@ export class AcpClient implements AgentClient {
     this.outputListeners.add(listener);
     return () => this.outputListeners.delete(listener);
   }
+  private notifyDisconnected(): void {
+    for (const listener of [...this.disconnectListeners]) {
+      try { listener(); } catch (error) { this.log.warn("disconnect_listener_failed", { error: String(error) }); }
+    }
+  }
+  private cancelPendingPermissions(): void {
+    for (const cancel of [...this.pendingPermissions]) cancel();
+  }
   private emitOutput(output: ProviderOutput): void {
     for (const listener of [...this.outputListeners]) {
       try { listener(output); }
@@ -367,13 +377,11 @@ export class AcpClient implements AgentClient {
         this.authStderrSink?.(line);
       },
       onDisconnect: () => {
-        for (const cancel of [...this.pendingPermissions]) cancel();
-        for (const listener of [...this.disconnectListeners]) {
-          try { listener(); } catch (error) { this.log.warn("disconnect_listener_failed", { error: String(error) }); }
-        }
+        this.cancelPendingPermissions();
+        this.notifyDisconnected();
       },
       onCrash: (code) => {
-        for (const cancel of [...this.pendingPermissions]) cancel();
+        this.cancelPendingPermissions();
         this.terminals?.releaseAll();
         this.terminals = null;
         this.transport = null;
@@ -381,9 +389,7 @@ export class AcpClient implements AgentClient {
         this.commandTransition = null;
         this.setAvailableCommands([]);
         this.log.error("process_exit", { code });
-        for (const listener of [...this.disconnectListeners]) {
-          try { listener(); } catch (error) { this.log.warn("disconnect_listener_failed", { error: String(error) }); }
-        }
+        this.notifyDisconnected();
       },
     });
     try {
@@ -684,7 +690,7 @@ export class AcpClient implements AgentClient {
 
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
-    for (const cancel of [...this.pendingPermissions]) cancel();
+    this.cancelPendingPermissions();
     const t = this.transport;
     this.transport = null;
     this._sessionId = null;
@@ -802,7 +808,7 @@ export class AcpClient implements AgentClient {
   }
 
   interrupt(options: InterruptOptions = {}): void {
-    for (const cancel of [...this.pendingPermissions]) cancel();
+    this.cancelPendingPermissions();
     if (options.clearQueue) {
       const dropped = this.queue.splice(0);
       for (const item of dropped) {
