@@ -236,3 +236,22 @@ session scratchpad, models not set. Results saved as `smoke-tests/test13-operati
   wrong. No library defect found. README now recommends 15000ms limits for real runs.
 - Not exercised on a real harness: the item-3 path (harness lost the session after a crash); s2/s3 only cover a
   session that reloads.
+
+## OpenCode real runs with a configured model (2026-10-19)
+
+The user logged into OpenCode; the default model was still a free one, blocked from this network. At the user's
+request the model was set for the runs only through `OPENCODE_CONFIG_CONTENT` (`opencode-go/deepseek-v4.1-flash`;
+the user's OpenCode config is unchanged). A one-prompt check confirmed the model answers.
+
+- Full run, 15000ms limits: s5 and m1 ×3 passed; s1 produced a chat question, not a permission request; s2, s3, s4
+  stalled `incomplete_response` on the first prompt after the reconnect.
+- Isolation: a raw `AcpClient` load-then-prompt in a fresh process answered in 2s; a mid-turn SIGKILL followed by
+  load-then-prompt answered in 3s; the Agent API `forceStop` + reconnect answered in 2s; test13 s3 alone with 120000ms
+  limits passed in 15s. s2–s4 together with 60000ms limits passed.
+- Cause (harness behaviour, not a library defect): after a reload, OpenCode first completes the interrupted turn and
+  only then answers the new prompt. In s3 the reply to "What exact keyword ...?" was the 8,800-character story the
+  killed turn had asked for, followed by the keyword, completed 16s after the prompt. The silence is long enough to
+  trip 15s limits; the 120/180s defaults cover it.
+- Consumer-visible consequence to note for later: on OpenCode the reply after a crash recovery can contain the
+  interrupted turn's output. Not addressed here.
+- Results: `measurements/2026-10-19-opencode-*`. README updated (use 60000ms limits for OpenCode).

@@ -60,5 +60,14 @@ uncovered on these harnesses. OpenCode's upstream rejected every call from this 
 IP block); nothing was changed in its configuration. Claude m1: first output 2–5ms, longest gap
 1.4–2.3s, cancel 3–7ms, load 750–1001ms.
 
+OpenCode was then run with `OPENCODE_CONFIG_CONTENT='{"model":"opencode-go/deepseek-v4.1-flash"}'`
+(set for the run only, at the user's request). With 15000ms limits s5 and m1 ×3 passed (first output
+2–3ms, longest gap 2.1–4.2s, cancel 67–91ms, load 554–592ms); s1 got a chat question instead of a
+permission request; s2, s3 and s4 stalled on the first prompt after the reconnect. Rerun with 60000ms
+limits, s2–s4 passed. Cause, a harness behaviour: when a reloaded session has a turn that was cut off
+(frozen or killed mid-turn), OpenCode first completes that interrupted request and only then answers
+the new prompt, so the next reply can be silent for more than 15 seconds and contain the old turn's
+output (in s3, an 8,800-character story followed by the keyword). Use 60000ms limits for OpenCode.
+
 A further Codex m1 run added 24 short history turns: loading replayed 53 updates in 554ms, with a
 535ms maximum replay gap (including the initial wait). It did not exercise context compaction.
