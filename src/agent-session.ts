@@ -48,7 +48,7 @@ import {
   type ProviderAttachmentState,
 } from "./persistence/provider-attachment.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
-import type { AgentCapabilities, Capabilities } from "./capabilities.ts";
+import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
@@ -2602,7 +2602,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
             ? { model: activeModel(targetController.configOptions)! }
             : {}),
           activatedAt,
-          ...promptCapabilitiesOf(targetController),
         });
       } catch (error) {
         this.markManagedPersistenceUnhealthy();
@@ -3343,7 +3342,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
       text: string;
       revision: number;
       dirty: boolean;
-      ended: boolean;
     } | null = null;
     const beginAssistantMessage = (providerMessageId?: string) => {
       assistantOrdinal++;
@@ -3353,45 +3351,37 @@ export class AgentConversation implements AgentClient, Bridgeable {
         text: "",
         revision: 0,
         dirty: false,
-        ended: false,
       };
       return assistantMessage;
     };
-    // Live signal that the current message will receive no more text, so a client can drop
-    // its caret before the turn ends. Once per message, whatever path ends it.
-    const endAssistantMessage = (status: "completed" | "cancelled" | "error") => {
-      const message = assistantMessage;
-      if (!message || message.ended) return;
-      message.ended = true;
-      this.emit({
-        kind: "message_completed",
-        turnId: item.turnId,
-        messageId: message.id,
-        ...(message.providerMessageId === undefined ? {} : { providerMessageId: message.providerMessageId }),
-        status,
-      });
-    };
+    // When each message that ended before the turn did received its last text, in order. The
+    // turn's commit records those messages as completed at these times; only the last message
+    // takes the turn's own outcome.
+    const messageEnds: string[] = [];
     const flushAssistantMessage = (
       status: "in_progress" | "completed" | "cancelled" | "error",
       stopReason?: string,
       force = false,
+      ended = false,
     ) => {
       if ((!this.v2Transcript && !this.ownerLifecycle) || !assistantMessage
         || (!assistantMessage.dirty && !force)) return;
       assistantMessage.revision++;
       assistantMessage.dirty = false;
       const message = assistantMessage;
-      if (this.ownerAgentSessionId && status === "in_progress") {
+      const timestamp = new Date().toISOString();
+      if (ended) messageEnds.push(timestamp);
+      if (this.ownerAgentSessionId && (status === "in_progress" || ended)) {
         this.queueOwnedRecord({
           recordId: `${message.id}:snapshot:${message.revision}`,
           agentSessionId: this.ownerAgentSessionId,
           agentConversationId: this.agentConversationId,
           kind: "message",
-          timestamp: new Date().toISOString(),
+          timestamp,
           role: "assistant",
           logicalMessageId: message.id,
           content: message.text,
-          status,
+          status: ended ? "completed" : "in_progress",
           metadata: JSON.stringify({ operationId: item.turnId,
             ...(message.providerMessageId ? { providerMessageId: message.providerMessageId } : {}) }),
         });
@@ -3413,6 +3403,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
         presentation: { id: message.id, revision: message.revision },
       });
     };
+    // A message receives no more text once the next message or a tool call begins. Record it
+    // completed then, rather than leaving it open until the turn ends.
+    const endAssistantMessage = () => {
+      flushAssistantMessage("completed", undefined, true, true);
+      assistantMessage = null;
+    };
     const wrappedHandlers: PromptHandlers = {
       ...item.handlers,
       // Fired from here, from the one aggregator this session owns — nothing below needs
@@ -3429,26 +3425,28 @@ export class AgentConversation implements AgentClient, Bridgeable {
           item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
         }
         response.append(chunk);
-        if (chunk.startsMessage) {
-          flushAssistantMessage("completed", undefined, assistantMessage !== null);
-          endAssistantMessage("completed");
-          beginAssistantMessage(chunk.messageId);
+        if (this.v2Transcript || this.ownerLifecycle) {
+          if (chunk.startsMessage) {
+            endAssistantMessage();
+            beginAssistantMessage(chunk.messageId);
+          }
+          const current = assistantMessage ?? beginAssistantMessage(chunk.messageId);
+          if (current.providerMessageId === undefined && chunk.messageId !== undefined) {
+            current.providerMessageId = chunk.messageId;
+          }
+          current.text += chunk.text;
+          current.dirty = true;
+          // Persist the first usable snapshot. Later token chunks remain in memory until
+          // an interleaving item, a new message, or the operation boundary.
+          if (current.revision === 0) flushAssistantMessage("in_progress");
         }
-        const current = assistantMessage ?? beginAssistantMessage(chunk.messageId);
-        if (current.providerMessageId === undefined && chunk.messageId !== undefined) {
-          current.providerMessageId = chunk.messageId;
-        }
-        current.text += chunk.text;
-        current.dirty = true;
-        // Persist the first usable snapshot. Later token chunks remain in memory until
-        // an interleaving item, a new message, or the operation boundary.
-        if (current.revision === 0) flushAssistantMessage("in_progress");
         item.handlers?.onResponseChunk?.(chunk);
       },
       onActivity: (event) => {
         // The message snapshot must enter the shared queue before an activity first seen
         // after it. Later activity revisions keep their original presentation position.
-        flushAssistantMessage("in_progress");
+        if (event.kind === "tool") endAssistantMessage();
+        else flushAssistantMessage("in_progress");
         if (!this.activeSupervisor) this.steering.observeActivity(item.turnId, event);
         const result = this.presentation.applyActivity(event);
         this.queueActivityRecords(item.turnId, result.emitted);
@@ -3507,18 +3505,17 @@ export class AgentConversation implements AgentClient, Bridgeable {
         res = { ...res, messages, text: response.text || chunks.join("") };
       }
       providerSettled = true;
-      // Without persistence the flushes write nothing; they still end each message.
-      if (assistantOrdinal === 0) {
-        for (const message of res.messages) {
-          const current = beginAssistantMessage(message.messageId);
-          current.text = message.text;
-          current.dirty = true;
+      if (this.v2Transcript) {
+        if (assistantOrdinal === 0) {
+          for (const message of res.messages) {
+            const current = beginAssistantMessage(message.messageId);
+            current.text = message.text;
+            current.dirty = true;
+            flushAssistantMessage(res.status, res.stopReason, true);
+          }
+        } else {
           flushAssistantMessage(res.status, res.stopReason, true);
-          endAssistantMessage(res.status);
         }
-      } else {
-        flushAssistantMessage(res.status, res.stopReason, true);
-        endAssistantMessage(res.status);
       }
       // Before the assistant msg: `msg` delimits a turn, so anything still open has to
       // land inside those fences.
@@ -3599,6 +3596,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           ...(item.participantId ? { participantId: item.participantId } : {}),
           text: item.text,
           result,
+          messageEnds,
           providerAttachment: this.providerAttachment,
         };
         try {
@@ -3646,6 +3644,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           ...(item.participantId ? { participantId: item.participantId } : {}),
           text: item.text,
           messages,
+          messageEnds,
           error: err,
         }).catch((persistenceError) => {
           this.log.warn("owned_prompt_failure_persistence_failed", { error: String(persistenceError) });
@@ -3661,7 +3660,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
             current.text = message.text;
             current.dirty = true;
             flushAssistantMessage("error", "error", true);
-            endAssistantMessage("error");
           }
         } else if (!transcriptClosed) {
           flushAssistantMessage("error", "error", true);
@@ -3679,7 +3677,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
           status: "error",
         });
       }
-      endAssistantMessage("error");
       // A failed operation may still have consumed tokens, so its record has to survive
       // the rejection rather than only reaching event subscribers.
       // Already metered: the failure happened after the operation closed (a transcript or
@@ -4484,7 +4481,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
       ...(this.model ? { model: this.model } : {}),
       acquiredAt: options.acquiredAt ?? new Date().toISOString(),
       ...(options.transitionId ? { transitionId: options.transitionId } : {}),
-      ...promptCapabilitiesOf(this.controller),
     };
     this.providerAttachment = kind === "runtime_only"
       ? runtimeOnlyProviderAttachment(descriptor)
@@ -4723,17 +4719,6 @@ function validateReplacementSelections(
       recordedAt: new Date(0).toISOString(),
     });
     if (issue) throw new Error(`${issue}: ${selection.configId}`);
-  }
-}
-
-/** `{ promptCapabilities }` of a connected controller, or nothing when it has no agent connection. */
-function promptCapabilitiesOf(
-  controller: AgentController,
-): { promptCapabilities?: AgentCapabilities["promptCapabilities"] } {
-  try {
-    return { promptCapabilities: structuredClone(controller.capabilities.agent.promptCapabilities) };
-  } catch {
-    return {};
   }
 }
 

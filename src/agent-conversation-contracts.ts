@@ -211,18 +211,6 @@ export type AgentSessionEvent =
   | { kind: "turn_started"; turnId: string }
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
   | { kind: "turn_failed"; turnId: string; error: string }
-  /**
-   * An assistant message of the turn will receive no more text: the next message started, or the
-   * turn ended. `messageId` is the logical id its records carry (`logicalMessageId`, and the
-   * presentation item id). The turn's last message reports the turn's status.
-   */
-  | {
-      kind: "message_completed";
-      turnId: string;
-      messageId: string;
-      providerMessageId?: string;
-      status: "completed" | "cancelled" | "error";
-    }
   | MessageEvent
   | { kind: "presentation_recorded"; item: TranscriptPresentationItem }
   | { kind: "internal_session_commands_changed"; commands: readonly InternalSessionCommand[] }

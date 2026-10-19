@@ -1,4 +1,3 @@
-import type { AgentCapabilities } from "../capabilities.ts";
 import type { AgentMode } from "../controller.ts";
 
 export interface ProviderAttachmentDescriptor {
@@ -10,7 +9,6 @@ export interface ProviderAttachmentDescriptor {
   readonly acquiredAt: string;
   readonly providerSessionRecordId?: string;
   readonly transitionId?: string;
-  readonly promptCapabilities?: AgentCapabilities["promptCapabilities"];
 }
 
 export type ProviderAttachmentState =

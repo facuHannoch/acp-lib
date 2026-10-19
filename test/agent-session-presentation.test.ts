@@ -56,7 +56,8 @@ describe("AgentSession presentation persistence", () => {
     // Every revision reports when its item began: the first revision's time, live and on reload.
     for (const item of page.items) {
       expect(item.startedAt).toBe(recorded.find((live) => live.id === item.id)!.timestamp);
-      expect(item.startedAt).toBeLessThanOrEqual(item.timestamp);
+      expect(item.startedAt).toBeLessThanOrEqual(item.updatedAt);
+      expect(item.timestamp).toBe(item.updatedAt);
     }
     const tool = page.items.find((item) => item.kind === "activity");
     expect(tool).toMatchObject({ revision: expect.any(Number), status: "completed" });

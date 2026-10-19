@@ -23,6 +23,18 @@ describe("response text projection", () => {
     expect(response.text).toBe("first message\n\nsecond");
   });
 
+  test("a closed message ends even without message ids; closing before any text does nothing", () => {
+    const response = new ResponseAccumulator();
+    response.closeMessage();
+    expect(response.append({ text: "before" }).startsMessage).toBe(true);
+    response.append({ text: " tool" });
+    response.closeMessage();
+    expect(response.append({ text: "after" }).startsMessage).toBe(true);
+    expect(response.append({ text: " tool" }).startsMessage).toBe(false);
+
+    expect(response.snapshot()).toEqual([{ text: "before tool" }, { text: "after tool" }]);
+  });
+
   test("empty entries participate in the documented literal join", () => {
     expect(joinResponseMessages([{ text: "first" }, { text: "" }, { text: "third" }]))
       .toBe("first\n\n\n\nthird");

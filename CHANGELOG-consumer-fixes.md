@@ -1,15 +1,15 @@
 # Consumer fixes (from the 2026-10-13 agents-core requirements)
 
+- **Message boundaries.** A new tool call now ends the assistant message before it, also when the
+  agent sends no message ids (before, message → tool → message was one message). Tool updates
+  do not split. Applies to the live `result.messages` and to stored messages.
+- **Message completion is stored when it happens.** Agent-owned conversations record a message
+  `completed` when the next message or a tool call begins, with that time, instead of completing
+  every message of the turn at its end with one shared timestamp. Only the turn's last message
+  takes the turn's outcome; messages that ended before a failure or cancel stay `completed`.
 - **Item times.** `ConversationTimelineItem` has `startedAt` (first revision) and `updatedAt`
-  (latest). Presentation items have `startedAt` next to `timestamp`, both live
-  (`presentation_recorded`) and from `TranscriptReader.readPresentationPage`. Show `startedAt`:
-  a message's latest revision can share one instant with the rest of its turn.
-- **`message_completed` event** on conversations: an assistant message will receive no more
-  text (`turnId`, `messageId` = the records' `logicalMessageId`, `providerMessageId?`, `status`).
-  Emitted when the next message starts and at the turn's end, once per message.
+  (latest). Presentation items have `startedAt` and `updatedAt`; their `timestamp` is now a
+  deprecated alias of `updatedAt`.
 - **No-op settings are not recorded.** `setConfig` with the value the option already has (and,
   with a transcript, that is already the explicit restoration target) sends, records and emits
   nothing.
-- **Prompt capabilities are persisted.** Agent provider session records carry
-  `promptCapabilities` (`image`, `audio`, `embeddedContext`). SQLite agent schema 15 adds the
-  column; version 14 databases migrate in place.

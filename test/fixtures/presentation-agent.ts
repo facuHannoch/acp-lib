@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
+// One turn: message A, a tool call, message B. With the argument `no-ids` the chunks carry no
+// message ids, so only the tool call separates the two messages.
 
+const withIds = process.argv[2] !== "no-ids";
 const decoder = new TextDecoder();
 let buffer = "";
 for await (const chunk of Bun.stdin.stream()) {
@@ -36,12 +39,12 @@ function handle(message: any): void {
       });
       update({
         sessionUpdate: "agent_message_chunk",
-        messageId: "assistant-a",
+        ...(withIds ? { messageId: "assistant-a" } : {}),
         content: { type: "text", text: "A" },
       });
       update({
         sessionUpdate: "agent_message_chunk",
-        messageId: "assistant-a",
+        ...(withIds ? { messageId: "assistant-a" } : {}),
         content: { type: "text", text: " before tool" },
       });
       update({
@@ -58,7 +61,7 @@ function handle(message: any): void {
       });
       update({
         sessionUpdate: "agent_message_chunk",
-        messageId: "assistant-b",
+        ...(withIds ? { messageId: "assistant-b" } : {}),
         content: { type: "text", text: "B after tool" },
       });
       return send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });

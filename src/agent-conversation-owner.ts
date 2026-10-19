@@ -1,6 +1,5 @@
 import type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 import type { Adapter } from "./adapters.ts";
-import type { AgentCapabilities } from "./capabilities.ts";
 import type { AgentMode } from "./controller.ts";
 import type { NewConversationRecord, ParticipantRef, PersistenceJsonValue } from "./persistence/backend.ts";
 import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts";
@@ -27,6 +26,16 @@ export interface OwnedPromptInput {
   readonly text: string;
 }
 
+/** How a turn's assistant messages ended, for its commit. */
+interface OwnedPromptMessageEnds {
+  /**
+   * When each message that ended before the turn did (the next message or a tool call began)
+   * received its last text, in order. Those messages are completed at these times; the rest take
+   * the turn's outcome.
+   */
+  readonly messageEnds?: readonly string[];
+}
+
 export interface OwnedPromptPreparation {
   readonly providerText?: string;
   readonly participant?: ParticipantRef;
@@ -35,7 +44,7 @@ export interface OwnedPromptPreparation {
   readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
 }
 
-export interface OwnedPromptCompleted extends OwnedPromptInput {
+export interface OwnedPromptCompleted extends OwnedPromptInput, OwnedPromptMessageEnds {
   readonly result: AgentSessionPromptResult;
   readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
   readonly providerAttachment: ProviderAttachmentState;
@@ -56,7 +65,7 @@ export class OwnedPromptPostCommitError extends Error {
   }
 }
 
-export interface OwnedPromptFailed extends OwnedPromptInput {
+export interface OwnedPromptFailed extends OwnedPromptInput, OwnedPromptMessageEnds {
   readonly messages: readonly ResponseMessage[];
   readonly error: unknown;
 }
@@ -85,7 +94,6 @@ export interface AgentConversationOwnerLifecycle {
     readonly mode: AgentMode;
     readonly model?: string;
     readonly activatedAt: string;
-    readonly promptCapabilities?: AgentCapabilities["promptCapabilities"];
   }): Promise<void>;
   /** Append a typed non-message runtime observation under the owner's capture policy. */
   record?(record: NewConversationRecord): Promise<void>;

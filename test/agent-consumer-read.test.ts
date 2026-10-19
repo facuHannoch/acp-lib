@@ -33,19 +33,8 @@ describe("Agent consumer transcript workflow", () => {
     const agent = await Agent.open(configuration);
     agents.push(agent);
     const conversation = await agent.conversations.create();
-    const completed: unknown[] = [];
-    conversation.subscribe(({ event }) => {
-      if (event.kind === "message_completed") completed.push(event);
-    });
     const result = await conversation.prompt("show the order");
     expect(result.messages.map((message) => message.text)).toEqual(["A before tool", "B after tool"]);
-    // Each message is reported complete once, the first as soon as the second begins.
-    expect(completed).toEqual([
-      { kind: "message_completed", turnId: result.operationId, messageId: `message:${result.operationId}:assistant:1`,
-        providerMessageId: "assistant-a", status: "completed" },
-      { kind: "message_completed", turnId: result.operationId, messageId: `message:${result.operationId}:assistant:2`,
-        providerMessageId: "assistant-b", status: "completed" },
-    ]);
 
     await agent.close();
     agents.splice(agents.indexOf(agent), 1);
@@ -71,6 +60,10 @@ describe("Agent consumer transcript workflow", () => {
       updatedAt: items[1]!.revisions.at(-1)!.timestamp,
     });
     expect(items[1]!.current.timestamp).toBe(items[1]!.updatedAt);
+    // A is recorded completed when the tool call begins, not when the turn ends.
+    const aCompleted = items[1]!.revisions.find((revision) => revision.kind === "message" && revision.status === "completed")!;
+    expect(aCompleted.sequence).toBeLessThan(items[2]!.firstSequence);
+    expect(items[1]!.updatedAt <= items[3]!.startedAt).toBe(true);
     const firstAssistantSequence = items[1]!.firstSequence;
     expect((await reopened.persistence.messages.list(conversation.id, {
       throughSequence: firstAssistantSequence,
@@ -80,6 +73,32 @@ describe("Agent consumer transcript workflow", () => {
     })).messages.map((message) => message.content)).toEqual(["A before tool", "B after tool"]);
     expect((await reopened.persistence.messages.list(conversation.id)).messages.map((message) => message.content))
       .toEqual(["show the order", "A before tool", "B after tool"]);
+  }, 20_000);
+
+  test("a tool call ends the message before it when the agent sends no message ids", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-no-ids-"));
+    directories.push(directory);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE, "no-ids"] } },
+      defaultAdapterId: "fixture",
+    });
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    const result = await conversation.prompt("show the order");
+    expect(result.messages.map((message) => message.text)).toEqual(["A before tool", "B after tool"]);
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 100 })).records;
+    const items = reconcileConversationTimeline([], records)
+      .filter((item) => item.kind === "message" || item.kind === "tool_call");
+    expect(items.map((item) => item.kind === "message"
+      ? [item.kind, item.current.content, item.current.status]
+      : [item.kind, item.current.toolCallId])).toEqual([
+      ["message", "show the order", "completed"],
+      ["message", "A before tool", "completed"],
+      ["tool_call", "tool-1"],
+      ["message", "B after tool", "completed"],
+    ]);
   }, 20_000);
 
   test("round-trips sender metadata, recent history, live catch-up, and previews", async () => {

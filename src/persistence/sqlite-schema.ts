@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 15;
+export const SQLITE_AGENT_SCHEMA_VERSION = 14;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -249,8 +249,7 @@ CREATE TABLE IF NOT EXISTS provider_sessions (
   activated_at TEXT NOT NULL,
   deactivated_at TEXT,
   transition_id TEXT,
-  metadata TEXT,
-  prompt_capabilities_json TEXT CHECK (prompt_capabilities_json IS NULL OR json_valid(prompt_capabilities_json))
+  metadata TEXT
 );
 
 CREATE INDEX IF NOT EXISTS provider_sessions_conversation_idx
@@ -558,7 +557,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -614,13 +613,6 @@ export function migrateSqliteAgentSchema(database: Database): void {
         if (violations.length > 0) {
           throw new Error("SQLite schema migration to version 14 left foreign key violations");
         }
-      }
-      // The agent's accepted prompt media, kept with each provider session. Checked by column
-      // rather than version: an older database rebuilt by a step above already has it.
-      const providerSessionColumns = database.query<{ name: string }, []>("PRAGMA table_info(provider_sessions)").all();
-      if (!providerSessionColumns.some((column) => column.name === "prompt_capabilities_json")) {
-        database.exec(`ALTER TABLE provider_sessions ADD COLUMN prompt_capabilities_json TEXT
-          CHECK (prompt_capabilities_json IS NULL OR json_valid(prompt_capabilities_json))`);
       }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(

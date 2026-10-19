@@ -717,9 +717,9 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(15);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(14);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 15; recreate the database",
+      "SQLite agent schema 7 is incompatible with 14; recreate the database",
     );
   });
 
@@ -758,7 +758,7 @@ describe("SQLite agent persistence", () => {
     }]);
     expect((await migrated.identityDelivery.get(targetConversationId, "provider-1", conversationId))?.deliveredThroughSequence).toBe(1);
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM identity_delivery_cursors").get()?.count).toBe(1);
     inspection.close();
   });
@@ -829,53 +829,9 @@ describe("SQLite agent persistence", () => {
     expect(baseline).toMatchObject({ source: "adoption_baseline", summary: "" });
     expect(baseline.generatorInternalInferenceId).toBeUndefined();
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
     expect(inspection.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(inspection.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()?.integrity_check).toBe("ok");
-    inspection.close();
-  });
-
-  test("migrates version 14 to provider sessions that keep the agent's prompt capabilities", async () => {
-    const { backend, path, agentSessionId } = await openBackend();
-    const conversationId = createAgentConversationId();
-    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
-    await backend.providerSessions.append({
-      providerSessionRecordId: "provider-before",
-      agentConversationId: conversationId,
-      internalSessionId: "session-before",
-      adapterId: "test",
-      mode: "normal",
-      activatedAt: "2026-10-18T00:00:00.000Z",
-    });
-    await backend.close();
-    opened.splice(opened.indexOf(backend), 1);
-
-    const old = new Database(path, { readwrite: true });
-    old.exec(`
-      ALTER TABLE provider_sessions DROP COLUMN prompt_capabilities_json;
-      DELETE FROM schema_migrations WHERE version >= 15;
-      INSERT INTO schema_migrations(version, applied_at) VALUES (14, '2026-10-18T00:00:00.000Z');
-    `);
-    old.close();
-
-    const migrated = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
-    expect((await migrated.providerSessions.active(conversationId))?.promptCapabilities).toBeUndefined();
-    const promptCapabilities = { image: true, audio: false, embeddedContext: true };
-    await migrated.providerSessions.append({
-      providerSessionRecordId: "provider-after",
-      agentConversationId: conversationId,
-      internalSessionId: "session-after",
-      adapterId: "test",
-      mode: "normal",
-      activatedAt: "2026-10-19T00:00:00.000Z",
-      promptCapabilities,
-    });
-    expect(await migrated.providerSessions.active(conversationId)).toMatchObject({
-      internalSessionId: "session-after",
-      promptCapabilities,
-    });
-    const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
     inspection.close();
   });
 
@@ -1019,7 +975,7 @@ describe("SQLite agent persistence", () => {
       operationId: "op-load-1",
     });
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM conversation_records").get()?.count).toBe(2);
     inspection.close();
   });

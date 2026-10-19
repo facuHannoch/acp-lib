@@ -907,6 +907,9 @@ export class AcpClient implements AgentClient {
       this.active.handlers?.onChunk?.(chunk.text);
     }
     const activity = toActivityEvent(update);
+    // Text after a new tool call is a new message, even when the agent sends no message ids.
+    // Tool updates do not split: a running tool's output can arrive while the agent writes.
+    if (activity?.kind === "tool") this.active.response.closeMessage();
     if (activity) this.active.handlers?.onActivity?.(this.enrich(activity));
   }
 
