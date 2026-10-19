@@ -336,3 +336,9 @@ Following the deprecation, `AgentConversation.listSessions()` no longer swallows
 instead of returning the catalog half as if complete. The REPL's own listing code is unchanged. Test: "a failed
 harness listing is reported by the deprecated merged listSessions" (fixture `LIFECYCLE_FAIL_CONTROL`, committed with
 the s6 change). Changelog updated. Full suite 1044 passed.
+
+## Consumer guide: harness behaviours after a crash; OpenCode issue draft
+
+The lifecycle section of `CONSUMER_GUIDE.md` now notes two observed harness behaviours: OpenCode completes the
+interrupted turn before answering the next prompt after a reload, and Codex archives a deleted session (treated as
+missing). An issue for OpenCode was drafted for the user to review and post; it was not posted.

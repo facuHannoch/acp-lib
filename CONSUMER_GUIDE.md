@@ -1964,6 +1964,18 @@ reports `via: fresh`). When the rule has nothing left, the prompt rejects with t
 reports `continuation_unavailable`, and later prompts are refused until the conversation is reopened
 with a different policy. SessionManager's existing library-crash uncertainty recovery remains separate.
 
+Harness behaviours seen after a crash (test13, 2026-10-19):
+
+- **OpenCode finishes the interrupted turn first.** When a reloaded session has a turn that was cut
+  off (the process was killed or frozen mid-turn), OpenCode completes that interrupted request before
+  answering the next prompt. The reply to the next prompt can therefore start with the old turn's
+  output, and it can be silent for longer than usual while the old request runs. The failed turn was
+  already reported as an error; treat the start of the next reply accordingly, and keep the silence
+  limits generous on OpenCode (the defaults are).
+- **Codex archives a deleted session.** Loading it fails until it is unarchived with
+  `codex unarchive <id>`; the library treats it as missing, so the conversation's continuation rule
+  applies (a replacement session, when the rule provides one).
+
 After a turn the provider received fails (stalled, crashed, or errored), queued messages remain held.
 A prompt that fails before reaching the provider holds nothing. Read `state.pendingHold`,
 `pendingMessages[].heldBy` and the `message_held` / `message_released` events. Steers waiting after a
