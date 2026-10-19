@@ -88,3 +88,31 @@ A stalled turn is reported, not hung (`--timeout-ms`, default 120s). Try a small
 An earlier version collapsed capture and attribution, and scored a successful capture of
 19 compaction inferences as a failure because a stalled turn meant nothing had been
 attributed yet.
+
+## Is compaction silent on ACP? (2026-10-19)
+
+A separate question from metering: does a compaction send anything to the ACP client while it runs,
+or does the turn look silent? It matters for the operation lifecycle, which stops a turn after
+120s without a first output or 180s between outputs (a running tool call suspends that clock).
+
+```bash
+bun smoke-tests/test7-compaction/compaction-smoke.ts --model opencode-go/deepseek-v4.1-flash \
+  --context-limit 12000 --stress-compaction 200000 --turns 2 --record-updates <file.jsonl>
+```
+
+`--record-updates` writes every `session/update` with its time; the compactions' start and end come
+from `opencode export` (`summary: true` messages, `time.created`/`time.completed`).
+
+Result (OpenCode 1.18.34, DeepSeek V4.1 Flash, about 175s, 40 compactions):
+
+- Compaction is **not a tool call**, and it is **not silent**. The summary streams as ordinary
+  `agent_message_chunk` updates (3,005 during the 40 compactions, plus 525 `agent_thought_chunk`);
+  no `tool_call` was sent. So the summary text also shows up as the turn's reply text.
+- From a compaction's start to its first update: at most 1.3s. Longest gap between updates during a
+  compaction: 4.4s, which was also the longest in the whole run. Far below 120s and 180s.
+
+The limit of this run: each compaction took only 2 to 6 seconds, because the window was tiny. It
+doesn't directly show a 3-minute compaction of a large context. Since the summary streams, a longer
+compaction should mostly mean more chunks rather than longer silences. The one thing still
+unmeasured is the pause before the first word on a very large context. On this run it stayed under
+1.3s every time.
