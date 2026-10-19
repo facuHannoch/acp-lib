@@ -284,3 +284,14 @@ the user's OpenCode config is unchanged). A one-prompt check confirmed the model
   manager, the internal-inference handles and manager, and the steering controller (which gained
   `#queuedMessages()` for the hold/release loops).
 - Validation: typecheck passed; full suite 1043 passed, 0 failed.
+
+## Cleanup 2b: test style pass (no behaviour change)
+
+- `operation-lifecycle.test.ts`: shared helpers (`tempDir`, `ownedAgent`, `recordEvents`, `hangingPermission`,
+  `harnessPid`), static imports instead of per-test dynamic ones, one statement per line. Test names and assertions
+  unchanged; the list test now uses the common `conversation()` helper.
+- `operation-supervisor.test.ts`: the fake clock expanded, `completed()` and `controllablePrompt()` helpers.
+  `operation-stale-policy.test.ts`: the fixtures split onto lines.
+- `fixtures/lifecycle-agent.ts`: a header documenting its modes and faults; the prompt handler moved to its own
+  function; one statement per line.
+- Validation: full suite 1043 passed, 0 failed; test13 mock s1–s5 passed.
