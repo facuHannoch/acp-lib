@@ -208,7 +208,10 @@ completed revision supplies their final content and status. Providers that expos
 message only in the final prompt result cannot supply an earlier position. Records
 written before schema version 11 have no such boundaries to reconstruct. The helper's
 items retain every revision, carry the latest merged fields in `current`, and sort by
-the earliest loaded sequence. Loading an older page may move an item to its true
+the earliest loaded sequence. Show an item's time from `startedAt` (its first revision,
+e.g. when a message began), not `current.timestamp`: Codex re-saves every message of a turn
+as completed at the turn's end, so the latest revisions share one instant. `updatedAt` is
+the latest revision's time. Loading an older page may move an item to its true
 earlier position when its first revision arrives. Configuration, protocol, agent
 actions, and metering references remain individual records unless they have an
 explicit logical identity; metering details are read from `persistence.metering`.
@@ -1237,7 +1240,14 @@ const unsubscribe = session.subscribe((notification: AgentSessionNotification) =
 `presentation_recorded` notification means the displayed item revision has been appended
 to the V2 transcript. Its ID, first position, revision, record sequence, and operation ID
 are exactly the values the presentation reader returns after a restart. Upsert by `id`
-and ignore revisions older than the one already rendered.
+and ignore revisions older than the one already rendered. `timestamp` is when that revision
+was written; `startedAt` is when the item's first revision was, and is the time to show.
+
+`message_completed` (`turnId`, `messageId`, `providerMessageId?`, `status`) reports that an
+assistant message will receive no more text: the next message started, or the turn ended
+(the last message carries the turn's status). Clients can drop a message's caret on it
+without waiting for the turn. `messageId` is the message records' `logicalMessageId` and the
+presentation item `id`.
 
 Useful live properties include:
 
@@ -1501,7 +1511,15 @@ await session.authenticate(methodId, { onOutput: showAuthOutput });
 ```
 
 Configuration selected through `AgentSession` is checkpointed according to the configured
-`sessionConfiguration` persistence policy and reapplied during loading.
+`sessionConfiguration` persistence policy and reapplied during loading. Selecting the value an
+option already has (the harness reports it, and with a transcript it is already the explicit
+restoration target) is a no-op: nothing is sent, recorded or emitted, so re-applying
+settings on every start does not fill the history with repeated changes.
+
+Agent-owned conversations keep the media the agent accepts in prompts with each provider
+session record, so a client can refuse unsupported attachments without a live session:
+`(await agent.persistence.providerSessions.active(id))?.promptCapabilities`
+(`{ image, audio, embeddedContext }`; absent on records written before schema 15).
 
 Harness slash commands are discovered as metadata:
 

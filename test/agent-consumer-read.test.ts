@@ -33,8 +33,19 @@ describe("Agent consumer transcript workflow", () => {
     const agent = await Agent.open(configuration);
     agents.push(agent);
     const conversation = await agent.conversations.create();
+    const completed: unknown[] = [];
+    conversation.subscribe(({ event }) => {
+      if (event.kind === "message_completed") completed.push(event);
+    });
     const result = await conversation.prompt("show the order");
     expect(result.messages.map((message) => message.text)).toEqual(["A before tool", "B after tool"]);
+    // Each message is reported complete once, the first as soon as the second begins.
+    expect(completed).toEqual([
+      { kind: "message_completed", turnId: result.operationId, messageId: `message:${result.operationId}:assistant:1`,
+        providerMessageId: "assistant-a", status: "completed" },
+      { kind: "message_completed", turnId: result.operationId, messageId: `message:${result.operationId}:assistant:2`,
+        providerMessageId: "assistant-b", status: "completed" },
+    ]);
 
     await agent.close();
     agents.splice(agents.indexOf(agent), 1);
@@ -53,7 +64,13 @@ describe("Agent consumer transcript workflow", () => {
     ]);
     expect(items[1]?.revisions.length).toBeGreaterThan(1);
     expect(items[1]?.firstSequence).toBeLessThan(items[2]!.firstSequence);
-    expect(items[1]?.current).toMatchObject({ status: "completed" });
+    expect(items[1]?.current).toMatchObject({ status: "completed", logicalMessageId: `message:${result.operationId}:assistant:1` });
+    // A message's time is when it began; its last revision's time is kept separately.
+    expect(items[1]).toMatchObject({
+      startedAt: items[1]!.revisions[0]!.timestamp,
+      updatedAt: items[1]!.revisions.at(-1)!.timestamp,
+    });
+    expect(items[1]!.current.timestamp).toBe(items[1]!.updatedAt);
     const firstAssistantSequence = items[1]!.firstSequence;
     expect((await reopened.persistence.messages.list(conversation.id, {
       throughSequence: firstAssistantSequence,

@@ -371,6 +371,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         activatedAt: descriptor.acquiredAt,
         transitionId,
         metadata: JSON.stringify({ adopted: true }),
+        ...(descriptor.promptCapabilities ? { promptCapabilities: descriptor.promptCapabilities } : {}),
       });
     });
   }
@@ -1023,6 +1024,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         mode: descriptor.mode,
         ...(descriptor.model ? { model: descriptor.model } : {}),
         activatedAt: descriptor.acquiredAt,
+        ...(descriptor.promptCapabilities ? { promptCapabilities: descriptor.promptCapabilities } : {}),
         ...extra,
       });
     });

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentConversationId,
 } from "../agent-ids.ts";
+import type { AgentCapabilities } from "../capabilities.ts";
 import type { AgentMode } from "../controller.ts";
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
@@ -150,6 +151,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
           ...(descriptor.model ? { model: descriptor.model } : {}),
           activatedAt: descriptor.acquiredAt,
           ...(descriptor.transitionId ? { transitionId: descriptor.transitionId } : {}),
+          ...(descriptor.promptCapabilities ? { promptCapabilities: descriptor.promptCapabilities } : {}),
         });
         providerAttachment = Object.freeze({
           attachmentAttemptId: descriptor.attachmentAttemptId,
@@ -208,6 +210,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     readonly mode: AgentMode;
     readonly model?: string;
     readonly activatedAt: string;
+    readonly promptCapabilities?: AgentCapabilities["promptCapabilities"];
   }): Promise<void> {
     await this.agent.persistence.transaction(async (persistence) => {
       await persistence.identityDelivery?.reset(input.agentConversationId, input.internalSessionId);
@@ -220,6 +223,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         ...(input.model ? { model: input.model } : {}),
         activatedAt: input.activatedAt,
         transitionId: input.transitionId,
+        ...(input.promptCapabilities ? { promptCapabilities: input.promptCapabilities } : {}),
       });
     });
   }

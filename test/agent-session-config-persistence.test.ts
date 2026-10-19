@@ -87,6 +87,8 @@ describe("AgentSession persisted configuration", () => {
     await session.setConfig("model", "beta");
     expect(session.model).toBe("beta");
     expect(session.state.phase).toBe("idle");
+    // Already the harness's value and the restoration target: not applied or recorded again.
+    await session.setConfig("model", "beta");
     await session.stop();
 
     const scan = await scanTranscriptContinuation(session.transcriptPath!);

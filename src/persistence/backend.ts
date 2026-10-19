@@ -1,4 +1,5 @@
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
+import type { AgentCapabilities } from "../capabilities.ts";
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
@@ -379,6 +380,12 @@ export interface ProviderSessionRecord {
   readonly deactivatedAt?: string;
   readonly transitionId?: string;
   readonly metadata?: string;
+  /**
+   * The media the agent said it accepts in prompts when this session was recorded, so a client can
+   * refuse unsupported attachments without a live session. Absent on records written before it was
+   * kept, or when the agent was not reachable.
+   */
+  readonly promptCapabilities?: AgentCapabilities["promptCapabilities"];
 }
 
 export interface SearchQuery {

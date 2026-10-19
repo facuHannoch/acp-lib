@@ -53,6 +53,11 @@ describe("AgentSession presentation persistence", () => {
 
     const finalLive = new Map(recorded.map((item) => [item.id, item]));
     expect(page.items.map((item) => finalLive.get(item.id))).toEqual(page.items);
+    // Every revision reports when its item began: the first revision's time, live and on reload.
+    for (const item of page.items) {
+      expect(item.startedAt).toBe(recorded.find((live) => live.id === item.id)!.timestamp);
+      expect(item.startedAt).toBeLessThanOrEqual(item.timestamp);
+    }
     const tool = page.items.find((item) => item.kind === "activity");
     expect(tool).toMatchObject({ revision: expect.any(Number), status: "completed" });
     expect(tool!.position).toBeLessThan(tool!.recordSequence);

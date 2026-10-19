@@ -6,6 +6,10 @@ export interface ConversationTimelineItem {
   readonly kind: ConversationRecordKind;
   readonly firstSequence: number;
   readonly lastSequence: number;
+  /** When the first revision was written: the item's own time, e.g. when a message began. */
+  readonly startedAt: string;
+  /** When the latest revision was written (also `current.timestamp`). */
+  readonly updatedAt: string;
   /** Records in canonical order; retain these when rendering lifecycle details. */
   readonly revisions: readonly ConversationRecord[];
   /** Later fields override earlier ones, while omitted fields are retained. */
@@ -39,6 +43,8 @@ export function reconcileConversationTimeline(
       kind: revisions[0]!.kind,
       firstSequence: revisions[0]!.sequence,
       lastSequence: revisions.at(-1)!.sequence,
+      startedAt: revisions[0]!.timestamp,
+      updatedAt: revisions.at(-1)!.timestamp,
       revisions: Object.freeze(revisions),
       current: Object.freeze(Object.assign({}, ...revisions)) as ConversationRecord,
     }));

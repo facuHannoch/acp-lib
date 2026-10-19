@@ -48,7 +48,7 @@ import {
   type ProviderAttachmentState,
 } from "./persistence/provider-attachment.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
-import type { Capabilities } from "./capabilities.ts";
+import type { AgentCapabilities, Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
@@ -2252,6 +2252,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
           } catch (err) {
             item.reject(err);
           }
+        } else if (item.kind === "set_config" && await this.isUnchangedSelection(item)) {
+          item.resolve();
         } else if (item.kind === "set_config") {
           this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
           try {
@@ -2600,6 +2602,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             ? { model: activeModel(targetController.configOptions)! }
             : {}),
           activatedAt,
+          ...promptCapabilitiesOf(targetController),
         });
       } catch (error) {
         this.markManagedPersistenceUnhealthy();
@@ -2767,6 +2770,27 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ...(targetResult ? { targetResult } : {}),
       });
     }
+  }
+
+  /**
+   * A selection that changes nothing is not applied or recorded: the harness already reports the
+   * value, and (with a transcript) it is already the explicit restoration target. Consumers that
+   * re-apply settings on every start would otherwise record a change each time. Any doubt,
+   * including a failed connection, returns false so the normal path runs and reports it.
+   */
+  private async isUnchangedSelection(item: ConfigQueueItem): Promise<boolean> {
+    try {
+      await this.ensureProvider();
+    } catch {
+      return false;
+    }
+    const option = this.controller.configOptions.get(item.configId);
+    if (!option || !sameJsonValue(item.value, option.currentValue as JsonValue)) return false;
+    if (!this.v2Transcript || this.persistence === false) return true;
+    return this.v2Transcript.checkpoint.sessionConfiguration.restorationTargets.some((target) =>
+      target.configId === item.configId
+      && target.source === "explicit_selection"
+      && sameJsonValue(item.value, target.value));
   }
 
   private async runSetConfig(item: ConfigQueueItem): Promise<void> {
@@ -3319,6 +3343,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       text: string;
       revision: number;
       dirty: boolean;
+      ended: boolean;
     } | null = null;
     const beginAssistantMessage = (providerMessageId?: string) => {
       assistantOrdinal++;
@@ -3328,8 +3353,23 @@ export class AgentConversation implements AgentClient, Bridgeable {
         text: "",
         revision: 0,
         dirty: false,
+        ended: false,
       };
       return assistantMessage;
+    };
+    // Live signal that the current message will receive no more text, so a client can drop
+    // its caret before the turn ends. Once per message, whatever path ends it.
+    const endAssistantMessage = (status: "completed" | "cancelled" | "error") => {
+      const message = assistantMessage;
+      if (!message || message.ended) return;
+      message.ended = true;
+      this.emit({
+        kind: "message_completed",
+        turnId: item.turnId,
+        messageId: message.id,
+        ...(message.providerMessageId === undefined ? {} : { providerMessageId: message.providerMessageId }),
+        status,
+      });
     };
     const flushAssistantMessage = (
       status: "in_progress" | "completed" | "cancelled" | "error",
@@ -3389,21 +3429,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
           item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
         }
         response.append(chunk);
-        if (this.v2Transcript || this.ownerLifecycle) {
-          if (chunk.startsMessage) {
-            flushAssistantMessage("completed", undefined, assistantMessage !== null);
-            beginAssistantMessage(chunk.messageId);
-          }
-          const current = assistantMessage ?? beginAssistantMessage(chunk.messageId);
-          if (current.providerMessageId === undefined && chunk.messageId !== undefined) {
-            current.providerMessageId = chunk.messageId;
-          }
-          current.text += chunk.text;
-          current.dirty = true;
-          // Persist the first usable snapshot. Later token chunks remain in memory until
-          // an interleaving item, a new message, or the operation boundary.
-          if (current.revision === 0) flushAssistantMessage("in_progress");
+        if (chunk.startsMessage) {
+          flushAssistantMessage("completed", undefined, assistantMessage !== null);
+          endAssistantMessage("completed");
+          beginAssistantMessage(chunk.messageId);
         }
+        const current = assistantMessage ?? beginAssistantMessage(chunk.messageId);
+        if (current.providerMessageId === undefined && chunk.messageId !== undefined) {
+          current.providerMessageId = chunk.messageId;
+        }
+        current.text += chunk.text;
+        current.dirty = true;
+        // Persist the first usable snapshot. Later token chunks remain in memory until
+        // an interleaving item, a new message, or the operation boundary.
+        if (current.revision === 0) flushAssistantMessage("in_progress");
         item.handlers?.onResponseChunk?.(chunk);
       },
       onActivity: (event) => {
@@ -3468,17 +3507,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
         res = { ...res, messages, text: response.text || chunks.join("") };
       }
       providerSettled = true;
-      if (this.v2Transcript) {
-        if (assistantOrdinal === 0) {
-          for (const message of res.messages) {
-            const current = beginAssistantMessage(message.messageId);
-            current.text = message.text;
-            current.dirty = true;
-            flushAssistantMessage(res.status, res.stopReason, true);
-          }
-        } else {
+      // Without persistence the flushes write nothing; they still end each message.
+      if (assistantOrdinal === 0) {
+        for (const message of res.messages) {
+          const current = beginAssistantMessage(message.messageId);
+          current.text = message.text;
+          current.dirty = true;
           flushAssistantMessage(res.status, res.stopReason, true);
+          endAssistantMessage(res.status);
         }
+      } else {
+        flushAssistantMessage(res.status, res.stopReason, true);
+        endAssistantMessage(res.status);
       }
       // Before the assistant msg: `msg` delimits a turn, so anything still open has to
       // land inside those fences.
@@ -3621,6 +3661,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             current.text = message.text;
             current.dirty = true;
             flushAssistantMessage("error", "error", true);
+            endAssistantMessage("error");
           }
         } else if (!transcriptClosed) {
           flushAssistantMessage("error", "error", true);
@@ -3638,6 +3679,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           status: "error",
         });
       }
+      endAssistantMessage("error");
       // A failed operation may still have consumed tokens, so its record has to survive
       // the rejection rather than only reaching event subscribers.
       // Already metered: the failure happened after the operation closed (a transcript or
@@ -4442,6 +4484,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       ...(this.model ? { model: this.model } : {}),
       acquiredAt: options.acquiredAt ?? new Date().toISOString(),
       ...(options.transitionId ? { transitionId: options.transitionId } : {}),
+      ...promptCapabilitiesOf(this.controller),
     };
     this.providerAttachment = kind === "runtime_only"
       ? runtimeOnlyProviderAttachment(descriptor)
@@ -4680,6 +4723,17 @@ function validateReplacementSelections(
       recordedAt: new Date(0).toISOString(),
     });
     if (issue) throw new Error(`${issue}: ${selection.configId}`);
+  }
+}
+
+/** `{ promptCapabilities }` of a connected controller, or nothing when it has no agent connection. */
+function promptCapabilitiesOf(
+  controller: AgentController,
+): { promptCapabilities?: AgentCapabilities["promptCapabilities"] } {
+  try {
+    return { promptCapabilities: structuredClone(controller.capabilities.agent.promptCapabilities) };
+  } catch {
+    return {};
   }
 }
 

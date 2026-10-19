@@ -1,5 +1,6 @@
 import type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 import type { Adapter } from "./adapters.ts";
+import type { AgentCapabilities } from "./capabilities.ts";
 import type { AgentMode } from "./controller.ts";
 import type { NewConversationRecord, ParticipantRef, PersistenceJsonValue } from "./persistence/backend.ts";
 import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts";
@@ -84,6 +85,7 @@ export interface AgentConversationOwnerLifecycle {
     readonly mode: AgentMode;
     readonly model?: string;
     readonly activatedAt: string;
+    readonly promptCapabilities?: AgentCapabilities["promptCapabilities"];
   }): Promise<void>;
   /** Append a typed non-message runtime observation under the owner's capture policy. */
   record?(record: NewConversationRecord): Promise<void>;

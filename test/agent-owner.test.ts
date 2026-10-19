@@ -54,7 +54,11 @@ describe("Agent owner", () => {
     await conversation.prompt("confirm this provider attachment");
 
     const recorded = await agent.persistence.providerSessions.active(conversationId);
-    expect(recorded).toMatchObject({ internalSessionId: conversation.internalSessionId });
+    expect(recorded).toMatchObject({
+      internalSessionId: conversation.internalSessionId,
+      // Kept so a client can tell which media the agent accepts without a live session.
+      promptCapabilities: conversation.capabilities.agent.promptCapabilities,
+    });
     if (!recorded) throw new Error("provider attachment was not recorded");
     await conversation.prompt("reuse the recorded attachment");
     expect(await agent.persistence.providerSessions.list(conversationId)).toHaveLength(1);
@@ -408,6 +412,8 @@ describe("Agent owner", () => {
       capture: { configuration: "content" },
     }));
     const conversation = await agent.conversations.create();
+    await conversation.setConfig("model", "beta");
+    // Re-applying the value it already has changes nothing, so nothing is recorded.
     await conversation.setConfig("model", "beta");
 
     const records = (await agent.persistence.records.list(conversation.id, {

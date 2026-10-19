@@ -55,6 +55,8 @@ export class AgentConversationPresentation {
   readonly #persistence: () => PersistenceStateRuntime | null;
   readonly #appendLegacyActivity?: (line: TranscriptActivityLine) => Promise<void>;
   readonly #onPresentation: (item: TranscriptPresentationItem) => void;
+  /** First-revision time of each item emitted live, so later revisions report when it began. */
+  readonly #startedAt = new Map<string, number>();
   #presentationWrite: Promise<void> = Promise.resolve();
 
   constructor(options: AgentConversationPresentationOptions) {
@@ -115,7 +117,10 @@ export class AgentConversationPresentation {
     record: Awaited<ReturnType<PersistenceStateRuntime["appendPresentationEvent"]>>,
   ): void {
     if (!record) return;
-    const item = presentationItemFromRecord(record);
+    const id = record.presentation?.id;
+    let startedAt = id === undefined ? undefined : this.#startedAt.get(id);
+    if (id !== undefined && startedAt === undefined) this.#startedAt.set(id, startedAt = record.ts);
+    const item = presentationItemFromRecord(record, startedAt);
     if (item) this.#onPresentation(item);
   }
 

@@ -931,8 +931,9 @@ class SqliteProviderSessionPersistence implements ProviderSessionPersistence {
       runSql(this.database,
         `INSERT INTO provider_sessions(
           provider_session_record_id, agent_conversation_id, internal_session_id,
-          adapter_id, mode, model, activated_at, deactivated_at, transition_id, metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          adapter_id, mode, model, activated_at, deactivated_at, transition_id, metadata,
+          prompt_capabilities_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         record.providerSessionRecordId,
         record.agentConversationId,
         record.internalSessionId,
@@ -943,6 +944,7 @@ class SqliteProviderSessionPersistence implements ProviderSessionPersistence {
         record.deactivatedAt ?? null,
         record.transitionId ?? null,
         record.metadata ?? null,
+        record.promptCapabilities ? JSON.stringify(record.promptCapabilities) : null,
       );
     });
   }
@@ -1985,6 +1987,9 @@ function providerSessionFromRow(row: Record<string, unknown>): ProviderSessionRe
     ...(row.deactivated_at !== null ? { deactivatedAt: String(row.deactivated_at) } : {}),
     ...(row.transition_id !== null ? { transitionId: String(row.transition_id) } : {}),
     ...(row.metadata !== null ? { metadata: String(row.metadata) } : {}),
+    ...(row.prompt_capabilities_json != null
+      ? { promptCapabilities: JSON.parse(String(row.prompt_capabilities_json)) }
+      : {}),
   });
 }
 
