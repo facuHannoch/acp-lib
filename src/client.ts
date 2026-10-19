@@ -699,7 +699,10 @@ export class AcpClient implements AgentClient {
     this.terminals?.releaseAll();
     this.terminals = null;
     const pending = t ? t.stop() : Promise.resolve();
-    this.stopPromise = pending.finally(() => { this.stopPromise = null; this.log.info("stopped", {}); });
+    this.stopPromise = pending.finally(() => {
+      this.stopPromise = null;
+      this.log.info("stopped", {});
+    });
     return this.stopPromise;
   }
 
@@ -939,7 +942,10 @@ export class AcpClient implements AgentClient {
     const abort = new AbortController();
     let cancel!: () => void;
     const cancelled = new Promise<PermissionOutcome>((resolve) => {
-      cancel = () => { abort.abort(); resolve({ outcome: "cancelled" }); };
+      cancel = () => {
+        abort.abort();
+        resolve({ outcome: "cancelled" });
+      };
     });
     this.pendingPermissions.add(cancel);
     this.emitOutput({ kind: "permission_started", sessionId: params.sessionId });
@@ -949,8 +955,10 @@ export class AcpClient implements AgentClient {
       if (this.active?.cancelled || !this.transport) cancel();
       outcome = await Promise.race([
         cancelled,
-        Promise.resolve().then(() => abort.signal.aborted ? { outcome: "cancelled" as const }
-          : handler ? handler(request, abort.signal) : this.defaultOutcome(request)),
+        Promise.resolve().then(() => {
+          if (abort.signal.aborted) return { outcome: "cancelled" as const };
+          return handler ? handler(request, abort.signal) : this.defaultOutcome(request);
+        }),
       ]);
     } finally {
       this.pendingPermissions.delete(cancel);

@@ -35,6 +35,12 @@ const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([
  */
 export type AgentMode = "normal" | "degraded";
 
+/** The lifecycle surface both leaf clients (ACP and PTY) offer beyond `AgentClient`. */
+type ObservableLeaf = AgentClient & {
+  readonly isConnected?: boolean;
+  subscribeOutput?(listener: OutputListener): () => void;
+};
+
 export interface AgentControllerConfig {
   operationLifecycle?: OperationLifecycleConfig;
   /** The single adapter this controller drives. Switching adapter = a new AgentSession. */
@@ -138,16 +144,25 @@ export class AgentController implements AgentClient {
     this.mode = config.mode ?? "normal";
   }
 
-  get isConnected(): boolean { return this.current !== null && ((this.current as AgentClient & { isConnected?: boolean }).isConnected ?? true); }
+  get isConnected(): boolean {
+    return this.current !== null && ((this.current as ObservableLeaf).isConnected ?? true);
+  }
+
   subscribeConnection(listener: () => void): () => void {
     this.connectionListeners.add(listener);
     return () => this.connectionListeners.delete(listener);
   }
+
   private connectionChanged(): void {
     for (const listener of [...this.connectionListeners]) {
-      try { listener(); } catch (error) { this.config.logger?.warn("connection_listener_failed", { error: String(error) }); }
+      try {
+        listener();
+      } catch (error) {
+        this.config.logger?.warn("connection_listener_failed", { error: String(error) });
+      }
     }
   }
+
   async reconnect(sessionId: string): Promise<ConnectResult> {
     await this.stopping;
     await this.stop();
@@ -632,10 +647,13 @@ export class AgentController implements AgentClient {
     this.detachDisconnect = this.acp?.subscribeDisconnect(() => this.connectionChanged()) ?? null;
     this.connectionChanged();
     this.detachOutput?.();
-    this.detachOutput = (this.current as (AgentClient & { subscribeOutput?: (listener: OutputListener) => () => void }) | null)?.subscribeOutput?.((output) => {
+    this.detachOutput = (this.current as ObservableLeaf | null)?.subscribeOutput?.((output) => {
       for (const listener of [...this.outputListeners]) {
-        try { listener(output); }
-        catch (error) { this.config.logger?.warn("controller_output_listener_failed", { error: String(error) }); }
+        try {
+          listener(output);
+        } catch (error) {
+          this.config.logger?.warn("controller_output_listener_failed", { error: String(error) });
+        }
       }
     }) ?? null;
     this.detachAvailableCommands?.();

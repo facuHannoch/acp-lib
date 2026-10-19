@@ -1,15 +1,25 @@
 import type { ActivityEvent } from "../types.ts";
+
 const terminal = new Set(["completed", "failed"]);
-/** Timing state only; tool content stays in the presentation aggregator. */
+
+/**
+ * Which tool calls are in flight, and since when. Timing state only; tool content stays in the
+ * presentation aggregator.
+ */
 export class ToolTracker {
   private readonly tools = new Map<string, { status: string; startedAt: number }>();
+
   get inFlight(): number {
     return [...this.tools.values()].filter((tool) => !terminal.has(tool.status)).length;
   }
+
   get oldestStartedAt(): number | null {
-    const starts = [...this.tools.values()].filter((tool) => !terminal.has(tool.status)).map((tool) => tool.startedAt);
+    const starts = [...this.tools.values()]
+      .filter((tool) => !terminal.has(tool.status))
+      .map((tool) => tool.startedAt);
     return starts.length ? Math.min(...starts) : null;
   }
+
   /** True when this update settles a previously unsettled tool. */
   observe(event: ActivityEvent, now = Date.now()): boolean {
     if (event.kind !== "tool" && event.kind !== "tool_update") return false;

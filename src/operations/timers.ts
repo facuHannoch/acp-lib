@@ -4,6 +4,7 @@ export interface Timers {
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(handle: unknown): void;
 }
+
 export const realTimers: Timers = {
   now: () => Date.now(),
   setTimeout: (callback, delay) => setTimeout(callback, delay),

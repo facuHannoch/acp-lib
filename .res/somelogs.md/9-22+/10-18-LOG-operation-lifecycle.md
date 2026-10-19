@@ -269,3 +269,18 @@ the user's OpenCode config is unchanged). A one-prompt check confirmed the model
 - `AcpClient`: the repeated permission-cancel and disconnect-listener loops became `cancelPendingPermissions()` and
   `notifyDisconnected()`.
 - Validation: typecheck passed; full suite 1043 passed, 0 failed.
+
+## Cleanup 2a: source style pass (no behaviour change)
+
+- `src/operations/*`: header comment on the supervisor, doc comments on the exported types and limits, blank lines
+  between members, one statement per line; the supervisor's repeated forced result and stall-error marking became
+  `forcedResult()`, `stalled()` and `markCancel()`. Logic unchanged.
+- `agent-session.ts`: `supervisedPrompt`, `ensureProvider`, `continueWithoutProviderSession`, `permissionWithAbort`
+  and the long lines in the queue loop, `runPrompt` and `meteredInternalPrompt` split to the file's usual layout.
+- `controller.ts`: an `ObservableLeaf` type replaces two inline casts; listener loops expanded. `client.ts`: the stop
+  fence, permission cancel and permission race expanded. `acp-transport.ts`: the seven request wrappers share one
+  `observed()` helper.
+- `agent/error-record-writer.ts` re-indented with a doc comment; long lines split in `agent.ts`, the conversation
+  manager, the internal-inference handles and manager, and the steering controller (which gained
+  `#queuedMessages()` for the hold/release loops).
+- Validation: typecheck passed; full suite 1043 passed, 0 failed.

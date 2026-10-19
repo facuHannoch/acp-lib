@@ -349,7 +349,8 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
       if (this.fenced.has(attempt.internalInferenceId)) return;
       const openedMetering = metering as InternalInferenceMeteringOperation | null;
       if (openedMetering && !meteringRecord) {
-        meteringRecord = await openedMetering.close({ outcome: abort.signal.aborted || error instanceof OperationStalledError ? "cancelled" : "error", error })
+        const cancelled = abort.signal.aborted || error instanceof OperationStalledError;
+        meteringRecord = await openedMetering.close({ outcome: cancelled ? "cancelled" : "error", error })
           .catch(() => null);
       }
       if (this.closed && abort.signal.aborted) {
@@ -451,7 +452,11 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
   private ownAttempt(record: InternalInferenceAttemptRecord): AttemptHandle {
     let handle = this.attempts.get(record.internalInferenceId);
     if (!handle) {
-      handle = new AttemptHandle(record, (reason) => this.cancel(record.rootInternalInferenceId, reason), () => this.operationSources.get(record.internalInferenceId)?.() ?? null);
+      handle = new AttemptHandle(
+        record,
+        (reason) => this.cancel(record.rootInternalInferenceId, reason),
+        () => this.operationSources.get(record.internalInferenceId)?.() ?? null,
+      );
       this.attempts.set(record.internalInferenceId, handle);
     } else handle.update(record);
     return handle;

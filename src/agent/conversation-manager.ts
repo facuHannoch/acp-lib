@@ -455,7 +455,10 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       if (!active) return await this.throwCreateFailure(id, attemptId, error, settings);
       return await this.recoverAfterLoadFailure(id, active.internalSessionId, error, settings, config,
         async () => await this.start(id, summary.participants, { ...startConfig, providerSession: "new", settings }),
-        async (conversation) => { this.live.delete(id); await conversation.stop().catch(() => undefined); });
+        async (conversation) => {
+          this.live.delete(id);
+          await conversation.stop().catch(() => undefined);
+        });
     }
   }
 
@@ -834,8 +837,13 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         async (loadError) => {
           const current = conversation!;
           await this.recoverAfterLoadFailure(id, current.internalSessionId!, loadError, config.settings, {},
-            async () => { await current.restartProviderFresh(); return current; },
-            async () => { await current.connection.forceStop(); });
+            async () => {
+              await current.restartProviderFresh();
+              return current;
+            },
+            async () => {
+              await current.connection.forceStop();
+            });
         },
       );
       this.liveSettings.set(id, config.settings);

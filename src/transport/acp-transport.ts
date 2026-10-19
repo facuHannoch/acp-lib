@@ -355,16 +355,21 @@ class ClientHandler implements acp.Client {
   writeTextFile?: acp.Client["writeTextFile"];
 
   constructor(private opts: AcpTransportOptions) {
-    if (opts.onReadTextFile) this.readTextFile = (p) => { opts.onRequest?.(p.sessionId); return opts.onReadTextFile!(p); };
-    if (opts.onWriteTextFile) this.writeTextFile = (p) => { opts.onRequest?.(p.sessionId); return opts.onWriteTextFile!(p); };
+    // Every request from the agent is output for the operation lifecycle.
+    const observed = <P extends { sessionId: string }, R>(handle: (p: P) => R) => (p: P): R => {
+      opts.onRequest?.(p.sessionId);
+      return handle(p);
+    };
+    if (opts.onReadTextFile) this.readTextFile = observed(opts.onReadTextFile);
+    if (opts.onWriteTextFile) this.writeTextFile = observed(opts.onWriteTextFile);
 
     const terminals = opts.terminals;
     if (terminals) {
-      this.createTerminal = (p) => { opts.onRequest?.(p.sessionId); return terminals.create(p); };
-      this.terminalOutput = (p) => { opts.onRequest?.(p.sessionId); return terminals.output(p); };
-      this.waitForTerminalExit = (p) => { opts.onRequest?.(p.sessionId); return terminals.waitForExit(p); };
-      this.killTerminal = (p) => { opts.onRequest?.(p.sessionId); return terminals.kill(p); };
-      this.releaseTerminal = (p) => { opts.onRequest?.(p.sessionId); return terminals.release(p); };
+      this.createTerminal = observed((p) => terminals.create(p));
+      this.terminalOutput = observed((p) => terminals.output(p));
+      this.waitForTerminalExit = observed((p) => terminals.waitForExit(p));
+      this.killTerminal = observed((p) => terminals.kill(p));
+      this.releaseTerminal = observed((p) => terminals.release(p));
     }
   }
 

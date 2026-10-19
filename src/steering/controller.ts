@@ -55,14 +55,31 @@ export class SteeringController<T extends { readonly kind: string }> {
     readonly defaultDelivery: PromptDelivery,
   ) {}
 
-  get hold(): { readonly failedTurnId: string } | null { return this.#heldBy ? Object.freeze({ failedTurnId: this.#heldBy }) : null; }
-  #eligible(item: T): boolean { return !this.#heldBy || !isConsumerPrompt(item) || item.delivery !== "queue"; }
-  get hasRunnable(): boolean { return this.host.queue.snapshot().some((item) => this.#eligible(item)); }
+  /** The failed turn holding the queue, if any. */
+  get hold(): { readonly failedTurnId: string } | null {
+    return this.#heldBy ? Object.freeze({ failedTurnId: this.#heldBy }) : null;
+  }
+
+  /** Whether an item may run now: everything except a queued message during a hold. */
+  #eligible(item: T): boolean {
+    return !this.#heldBy || !isConsumerPrompt(item) || item.delivery !== "queue";
+  }
+
+  get hasRunnable(): boolean {
+    return this.host.queue.snapshot().some((item) => this.#eligible(item));
+  }
+
+  /** The next item that may run, removed from the queue. */
   takeNext(): T | undefined {
     this.#takenAt = this.host.queue.snapshot().findIndex((item) => this.#eligible(item));
     return this.host.queue.remove((item) => this.#eligible(item));
   }
-  followingSteers(): readonly string[] { return this.#headRun().map((item) => item.turnId); }
+
+  /** The steers the next delivery would combine. */
+  followingSteers(): readonly string[] {
+    return this.#headRun().map((item) => item.turnId);
+  }
+
   /**
    * A turn the provider received ended `stalled` or `error`: every happy-path queued message is held,
    * and steers may repair the turn. A prompt that failed before reaching the provider calls
@@ -71,8 +88,8 @@ export class SteeringController<T extends { readonly kind: string }> {
   failed(turnId: string, reason: "stalled" | "error"): void {
     this.#previousEndedBy = reason;
     this.#heldBy = turnId;
-    for (const item of this.host.queue.snapshot()) {
-      if (isConsumerPrompt(item) && item.delivery === "queue") this.host.emit({ kind: "message_held", id: item.turnId, failedTurnId: turnId });
+    for (const item of this.#queuedMessages()) {
+      this.host.emit({ kind: "message_held", id: item.turnId, failedTurnId: turnId });
     }
     this.#active = null;
     this.host.emitState();
@@ -81,10 +98,14 @@ export class SteeringController<T extends { readonly kind: string }> {
     const failedTurnId = this.#heldBy;
     if (!failedTurnId) return;
     this.#heldBy = null;
-    for (const item of this.host.queue.snapshot()) {
-      if (isConsumerPrompt(item) && item.delivery === "queue") this.host.emit({ kind: "message_released", id: item.turnId, failedTurnId });
+    for (const item of this.#queuedMessages()) {
+      this.host.emit({ kind: "message_released", id: item.turnId, failedTurnId });
     }
     this.host.emitState();
+  }
+
+  #queuedMessages(): SteeringPrompt[] {
+    return this.host.queue.snapshot().filter(isConsumerPrompt).filter((item) => item.delivery === "queue");
   }
 
   resolveDelivery(requested: PromptDelivery | undefined): PromptDelivery {
@@ -98,7 +119,9 @@ export class SteeringController<T extends { readonly kind: string }> {
 
   /** Called when a prompt has been queued. Only prompts that had to wait are reported. */
   accepted(item: SteeringPrompt): void {
-    if (this.#heldBy && item.delivery === "queue") this.host.emit({ kind: "message_held", id: item.turnId, failedTurnId: this.#heldBy });
+    if (this.#heldBy && item.delivery === "queue") {
+      this.host.emit({ kind: "message_held", id: item.turnId, failedTurnId: this.#heldBy });
+    }
     if (!item.waited) return;
     this.host.emit({
       kind: "message_pending",
@@ -167,7 +190,10 @@ export class SteeringController<T extends { readonly kind: string }> {
    * sent as one prompt; anything else is sent as it is. The run stops at the next queued message,
    * held or not: steers sent after it run after it.
    */
-  prepareRun(head: SteeringPrompt, deliver: (event: MessageEvent) => void = (event) => this.host.emit(event)): SteeringPrompt {
+  prepareRun(
+    head: SteeringPrompt,
+    deliver: (event: MessageEvent) => void = (event) => this.host.emit(event),
+  ): SteeringPrompt {
     const run = [head];
     if (head.operationKind === "prompt" && head.delivery === "steer") {
       for (;;) {
