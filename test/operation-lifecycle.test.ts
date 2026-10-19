@@ -490,3 +490,11 @@ test("an unanswered session/list during a running turn neither fails nor stops t
   await slow.stop();
   await list;
 });
+
+test("a failed harness listing is reported by the deprecated merged listSessions", async () => {
+  const directory = await tempDir("acp-list-failure-");
+  const value = await conversation({
+    env: { LIFECYCLE_STATE: join(directory, "sessions.json"), LIFECYCLE_FAIL_CONTROL: "session/list" },
+  });
+  expect(await value.listSessions().then(() => "listed", (error) => String(error))).toContain("internal error");
+});

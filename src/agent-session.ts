@@ -4326,9 +4326,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
   /**
    * The merged session list: our catalog ∪ the agent's live list (ACP mode).
    *
+   * A failed harness listing throws; it used to return the catalog half silently.
+   *
    * @deprecated It mixes the library's conversations with the harness's sessions (for a harness-only
-   * entry `agentSessionId` holds the harness id), and a failed harness listing silently returns the
-   * catalog half only. Use the Agent API instead: `agent.conversations` for the library's
+   * entry `agentSessionId` holds the harness id). Use the Agent API instead: `agent.conversations` for the library's
    * conversations and `agent.conversations.listProviderSessions()` for the harness's sessions with
    * their owners.
    */
@@ -4338,11 +4339,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       !this.controller.isDegraded &&
       this.controller.capabilities.agent.sessionCapabilities.list
     ) {
-      try {
-        agentEntries = (await this.controller.listSessions()).sessions;
-      } catch {
-        /* agent list broken/empty — fall back to catalog only */
-      }
+      agentEntries = (await this.controller.listSessions()).sessions;
     }
     if (this.sessions) return this.sessions.listMerged(agentEntries, this.adapterId);
     return agentEntries.map((e) => ({

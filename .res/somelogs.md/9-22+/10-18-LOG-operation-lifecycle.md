@@ -329,3 +329,10 @@ the user's README.md example was not touched.
   failures) and the Codex archived text. Unit tests added in `test/checkpointing/recovery.test.ts`.
 - Rerun: s6 passed on Codex, Claude and OpenCode (DeepSeek V4.1 Flash via `OPENCODE_CONFIG_CONTENT`). Results in
   `measurements/2026-10-19-*-s6*.json`. Full suite 1044 passed; mock test13 s1–s6 passed.
+
+## listSessions(): a failed harness listing throws
+
+Following the deprecation, `AgentConversation.listSessions()` no longer swallows a failed harness listing; it throws
+instead of returning the catalog half as if complete. The REPL's own listing code is unchanged. Test: "a failed
+harness listing is reported by the deprecated merged listSessions" (fixture `LIFECYCLE_FAIL_CONTROL`, committed with
+the s6 change). Changelog updated. Full suite 1044 passed.
