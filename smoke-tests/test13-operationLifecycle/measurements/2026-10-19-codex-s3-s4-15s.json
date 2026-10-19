@@ -1,0 +1,59 @@
+{
+  "adapterId": "codex",
+  "measurements": [
+    {
+      "scenario": "s4",
+      "status": "passed",
+      "events": [
+        {
+          "kind": "message_pending",
+          "id": "mvetm4m7svg0",
+          "delivery": "queue"
+        },
+        {
+          "kind": "message_pending",
+          "id": "mvetm4m7vqbx",
+          "delivery": "steer"
+        },
+        {
+          "kind": "message_pending",
+          "id": "mvetm4m7zh7i",
+          "delivery": "steer"
+        },
+        {
+          "kind": "message_held",
+          "id": "mvetm4m7svg0",
+          "failedTurnId": "mvetm4m7h9tp"
+        },
+        {
+          "kind": "message_delivered",
+          "ids": [
+            "mvetm4m7vqbx",
+            "mvetm4m7zh7i"
+          ],
+          "via": "stall",
+          "turnId": "mvetm4m7vqbx"
+        },
+        {
+          "kind": "message_released",
+          "id": "mvetm4m7svg0",
+          "failedTurnId": "mvetm4m7h9tp"
+        },
+        {
+          "kind": "message_delivered",
+          "ids": [
+            "mvetm4m7svg0"
+          ],
+          "via": "turn_end",
+          "turnId": "mvetm4m7svg0"
+        }
+      ]
+    },
+    {
+      "scenario": "s3",
+      "error": "AgentSessionOperationError: ACP connection closed",
+      "nextStatus": "completed"
+    }
+  ],
+  "failures": []
+}

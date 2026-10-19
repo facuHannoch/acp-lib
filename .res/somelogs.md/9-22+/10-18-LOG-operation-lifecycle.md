@@ -218,3 +218,21 @@ reworded accordingly: the next prompt runs or is refused with a visible, stable 
   unavailable. The three new tests fail without the change.
 - Spec section 4 wording aligned (where the reasons are reported; the "no transcript persistence" row).
   Changelog and consumer guide updated. Validation: typecheck passed; full suite 1043 passed, 0 failed.
+
+## Real-harness runs after the review fixes (2026-10-19)
+
+Authorized by the user. test13 full runs on Codex, Claude and OpenCode, throwaway conversations only, data in the
+session scratchpad, models not set. Results saved as `smoke-tests/test13-operationLifecycle/measurements/2026-10-19-*`.
+
+- Codex (5000ms limits): s2, s5, m1 ×3 passed; s3 and s4 failed with `incomplete_response` stalls; s1 failed
+  (no native permission request, as on 10-18).
+- Claude (5000ms limits): s3, s4, m1 runs 1 and 3 passed; s2 and m1 run 2 failed with `incomplete_response`; s1 (no
+  permission request) and s5 (the tool was not run) failed as harness coverage gaps.
+- OpenCode: every model call rejected upstream ("free models aren't available from your current network ...
+  abusive traffic from this IP"). Each failure surfaced as a normal prompt error; no configuration was changed.
+- Rerun with 15000ms limits: Codex s3, s4 passed; Claude s2 and m1 ×3 passed. The 5000ms failures were real silences
+  over 5 seconds (in s2/s3 on the prompt after the reconnect, not the frozen prompt: that one stalled `no_response`
+  as expected). A first suspicion that trailing updates from the previous turn were misclassifying the phase was
+  wrong. No library defect found. README now recommends 15000ms limits for real runs.
+- Not exercised on a real harness: the item-3 path (harness lost the session after a crash); s2/s3 only cover a
+  session that reloads.

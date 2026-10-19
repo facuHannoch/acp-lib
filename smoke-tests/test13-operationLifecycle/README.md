@@ -50,5 +50,15 @@ exercise automatic compaction, so 120/180-second silence limits and 30-second ca
 remain conservative defaults. Canonical record queries use the persistence API, not the live message
 hold events, which s4 explicitly stores in results.json.
 
+Runs from 2026-10-19 (after the review fixes; `measurements/2026-10-19-*`), default 5000ms limits:
+Codex passed s2, s5 and m1 ×3; Claude passed s3, s4 and m1 ×2. The other stalls (Codex s3 and s4,
+Claude s2 and m1 run 2) were real mid-turn silences longer than 5 seconds, mostly on the prompt right
+after a reconnect. Rerun with `ACP_TEST13_FIRST_OUTPUT_MS=15000 ACP_TEST13_NEXT_OUTPUT_MS=15000`,
+they all passed (Codex s3, s4; Claude s2, m1 ×3). Use 15000ms limits for real runs. Neither Codex nor
+Claude asked for permission in s1, and Claude did not run the s5 tool, so both scenarios remain
+uncovered on these harnesses. OpenCode's upstream rejected every call from this network (free-model
+IP block); nothing was changed in its configuration. Claude m1: first output 2–5ms, longest gap
+1.4–2.3s, cancel 3–7ms, load 750–1001ms.
+
 A further Codex m1 run added 24 short history turns: loading replayed 53 updates in 554ms, with a
 535ms maximum replay gap (including the initial wait). It did not exercise context compaction.

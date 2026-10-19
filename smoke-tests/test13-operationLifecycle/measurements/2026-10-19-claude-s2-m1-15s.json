@@ -1,0 +1,47 @@
+{
+  "adapterId": "claude",
+  "measurements": [
+    {
+      "scenario": "s2",
+      "error": "OperationStalledError: Provider operation stalled (no_response).",
+      "nextStatus": "completed"
+    },
+    {
+      "run": 0,
+      "firstOutputMs": 3,
+      "longestGapMs": 2250,
+      "normalMs": 4162,
+      "historyTurns": 0,
+      "cancelLatencyMs": 5,
+      "cancelStatus": "cancelled",
+      "loadMs": 1001,
+      "replayCount": 4,
+      "longestReplayGapMs": 1000
+    },
+    {
+      "run": 1,
+      "firstOutputMs": 2,
+      "longestGapMs": 1714,
+      "normalMs": 3455,
+      "historyTurns": 0,
+      "cancelLatencyMs": 3,
+      "cancelStatus": "cancelled",
+      "loadMs": 750,
+      "replayCount": 4,
+      "longestReplayGapMs": 749
+    },
+    {
+      "run": 2,
+      "firstOutputMs": 5,
+      "longestGapMs": 1434,
+      "normalMs": 3484,
+      "historyTurns": 0,
+      "cancelLatencyMs": 7,
+      "cancelStatus": "cancelled",
+      "loadMs": 756,
+      "replayCount": 4,
+      "longestReplayGapMs": 755
+    }
+  ],
+  "failures": []
+}
