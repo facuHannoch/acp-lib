@@ -420,6 +420,9 @@ describe("Agent owner", () => {
       "completed",
     ]);
     expect(records[1]).toMatchObject({ configId: "model", value: "beta" });
+    // Both records belong to the one setting change.
+    expect(records[0]!.operationId).toBeString();
+    expect(records[1]!.operationId).toBe(records[0]!.operationId);
   });
 
   test("promptFrom adds a stable local participant without treating it as authentication", async () => {

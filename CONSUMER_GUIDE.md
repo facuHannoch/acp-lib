@@ -201,6 +201,14 @@ if (older) items = reconcileConversationTimeline(items, older.records);
 ```
 
 Every physical record has a stable `recordId` and a conversation-local `sequence`.
+`operationId` says which library operation wrote it: a turn (`result.operationId`), an
+internal inference or recap, a setting change, a mode change or a handoff. Every record of one
+operation shares it, so a turn's messages, tool calls, permissions and thinking can be grouped
+without inferring turns from their position; `sequence` gives the order. A tool call keeps the
+operation that announced it, even when its updates arrive during a later turn. Records written
+outside any operation (protocol lines while connecting, an out-of-band message) have none.
+Databases from before schema 15 recover it for tool call, thinking, activity, permission,
+configuration and mode-change records; `records.list(id, { operationId })` filters by it.
 The reconciliation helper keeps distinct messages separate and groups revisions of an
 assistant message, tool call, permission, thinking block, activity, or transition by its
 logical ID. Assistant snapshots take their position from the first streamed text; the

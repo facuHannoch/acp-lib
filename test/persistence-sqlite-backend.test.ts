@@ -717,9 +717,9 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(14);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(15);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 14; recreate the database",
+      "SQLite agent schema 7 is incompatible with 15; recreate the database",
     );
   });
 
@@ -758,7 +758,7 @@ describe("SQLite agent persistence", () => {
     }]);
     expect((await migrated.identityDelivery.get(targetConversationId, "provider-1", conversationId))?.deliveredThroughSequence).toBe(1);
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM identity_delivery_cursors").get()?.count).toBe(1);
     inspection.close();
   });
@@ -829,10 +829,45 @@ describe("SQLite agent persistence", () => {
     expect(baseline).toMatchObject({ source: "adoption_baseline", summary: "" });
     expect(baseline.generatorInternalInferenceId).toBeUndefined();
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
     expect(inspection.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(inspection.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()?.integrity_check).toBe("ok");
     inspection.close();
+  });
+
+  test("migrates version 14 by recovering the operation id of records written without one", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    const envelope = { agentSessionId, agentConversationId: conversationId, timestamp: now() };
+    // Written as before version 15: the operation only in the record id (or the transition id).
+    for (const record of [
+      { ...envelope, recordId: "turn-1:runtime:tool-a:1", kind: "tool_call", toolCallId: "tool-a", state: "announced" },
+      { ...envelope, recordId: "turn-1:permission:tool-a:requested", kind: "permission", permissionId: "tool-a", state: "requested" },
+      { ...envelope, recordId: "config-2:configuration:started", kind: "configuration", operation: "set", status: "started" },
+      { ...envelope, recordId: "mode-3:native:started", kind: "native_action", action: "mode_change", transitionId: "mode-3", state: "started" },
+      { ...envelope, recordId: "protocol-4", kind: "protocol", direction: "in" },
+    ] as NewConversationRecord[]) await backend.records.append(record);
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+
+    const old = new Database(path, { readwrite: true });
+    old.exec(`
+      UPDATE conversation_records SET operation_id = NULL;
+      DELETE FROM schema_migrations WHERE version >= 15;
+      INSERT INTO schema_migrations(version, applied_at) VALUES (14, '2026-10-18T00:00:00.000Z');
+    `);
+    old.close();
+
+    const migrated = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    const records = (await migrated.records.list(conversationId, { limit: 10 })).records;
+    expect(records.map((record) => [record.recordId, record.operationId])).toEqual([
+      ["turn-1:runtime:tool-a:1", "turn-1"],
+      ["turn-1:permission:tool-a:requested", "turn-1"],
+      ["config-2:configuration:started", "config-2"],
+      ["mode-3:native:started", "mode-3"],
+      ["protocol-4", undefined],
+    ]);
   });
 
   test("migrates version 9 to message consumer metadata without changing existing records", async () => {
@@ -975,7 +1010,7 @@ describe("SQLite agent persistence", () => {
       operationId: "op-load-1",
     });
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM conversation_records").get()?.count).toBe(2);
     inspection.close();
   });

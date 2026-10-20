@@ -42,3 +42,25 @@ Each proposal was re-checked against its original problem:
   never restore settings. That is why the Hub re-applies. The skip stays; restoring settings for
   Agent-owned conversations is a separate item.
 - Full suite: 1046 pass.
+
+## 2026-10-20, item 1: operation id on every record
+
+- Finding: the `operation_id` column existed and was indexed, filled from `metadata.operationId`
+  (messages) or the record's own field (metering, error). Tool calls, thinking, activity,
+  permissions and configuration only had the id inside their record id; native actions in
+  `transitionId`; protocol lines nowhere. So most were stored without it.
+- `operationId?` on the record envelope (write and read); the backend fills the column from it,
+  `metadata` stays the fallback for old records. Capture reduction keeps it.
+- Stamped at every write site: runtime records (`recordOperation`: a tool call keeps its announcing
+  operation through `toolCallOperations`, removed at a terminal state), permissions (the tool's
+  operation), configuration, native actions (`transitionId`), imported and recap messages, assistant
+  snapshots, lifecycle messages, protocol lines (`runningOperationId`, set by the pump for prompt,
+  handoff, set_config, set_mode).
+- Not stamped: out-of-band messages and the checkpoint `native_action` record (written outside the
+  conversation's operation queue).
+- `records.list(id, { operationId })`.
+- Schema 15 backfills `operation_id` from `<id>:runtime:`, `<id>:permission:`,
+  `<id>:configuration:` record ids and native action `transition_id`. Migration test.
+- Not tested: a tool update arriving in a later turn keeping the announcing operation (no fixture
+  spans turns).
+- Full suite: 1047 pass.

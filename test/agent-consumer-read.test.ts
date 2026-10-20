@@ -41,6 +41,14 @@ describe("Agent consumer transcript workflow", () => {
     const reopened = await Agent.open(configuration);
     agents.push(reopened);
     const records = (await reopened.persistence.records.list(conversation.id, { limit: 100 })).records;
+    // Every record of the turn, its tool call included, says which operation it belongs to.
+    const turnRecords = records.filter((record) => ["message", "tool_call", "thinking"].includes(record.kind));
+    expect(turnRecords.length).toBeGreaterThan(3);
+    expect(new Set(turnRecords.map((record) => record.operationId))).toEqual(new Set([result.operationId]));
+    const byOperation = (await reopened.persistence.records.list(conversation.id, { operationId: result.operationId })).records;
+    expect(byOperation.map((record) => record.recordId)).toEqual(
+      records.filter((record) => record.operationId === result.operationId).map((record) => record.recordId),
+    );
     const items = reconcileConversationTimeline([], records)
       .filter((item) => item.kind === "message" || item.kind === "tool_call");
     expect(items.map((item) => item.kind === "message"

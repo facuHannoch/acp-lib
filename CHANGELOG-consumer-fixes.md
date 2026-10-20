@@ -13,3 +13,9 @@
 - **No-op settings are not recorded.** `setConfig` with the value the option already has (and,
   with a transcript, that is already the explicit restoration target) sends, records and emits
   nothing.
+- **Every record carries its operation.** Records have a typed `operationId`: the library
+  operation that wrote them (turn, internal inference or recap, setting change, mode change,
+  handoff). Tool calls, permissions, thinking, activity, configuration, mode changes and protocol
+  lines now carry it as messages already did; a tool call keeps the operation that announced it.
+  Records outside an operation have none. `records.list(id, { operationId })` filters by it.
+  SQLite agent schema 15 recovers it on older records from their record ids.

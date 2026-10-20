@@ -517,6 +517,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private reconnecting = false;
   private detachControllerConnection: (() => void) | null = null;
   private activeSupervisor: OperationSupervisor | null = null;
+  /** The queued operation now running, so records written during it (protocol lines) carry its id. */
+  private runningOperationId: string | null = null;
+  /** The operation that announced each open tool call: its later updates keep that id. */
+  private readonly toolCallOperations = new Map<string, string>();
   /**
    * The last consumer turn whose provider request itself failed (stalled, crashed, errored). Only
    * such a turn holds the queue.
@@ -749,6 +753,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       agentConversationId: this.agentConversationId,
       kind: "protocol",
       timestamp: new Date(entry.ts).toISOString(),
+      ...(this.runningOperationId ? { operationId: this.runningOperationId } : {}),
       direction: entry.dir === "err" ? "error" : entry.dir,
       ...(protocolMethod(message) ? { method: protocolMethod(message)! } : {}),
       message,
@@ -764,8 +769,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
         turnId,
         record,
       );
-      if (runtimeRecord) this.queueOwnedRecord(runtimeRecord);
+      if (runtimeRecord) this.queueOwnedRecord({ ...runtimeRecord, operationId: this.recordOperation(runtimeRecord, turnId) });
     }
+  }
+
+  /**
+   * The operation a runtime record belongs to: the running turn, except for a tool call, which keeps
+   * the operation that announced it even when its updates arrive during a later turn.
+   */
+  private recordOperation(record: NewConversationRecord, turnId: string): string {
+    if (record.kind !== "tool_call") return turnId;
+    const operationId = this.toolCallOperations.get(record.toolCallId) ?? turnId;
+    if (record.state === "completed" || record.state === "failed") this.toolCallOperations.delete(record.toolCallId);
+    else this.toolCallOperations.set(record.toolCallId, operationId);
+    return operationId;
   }
 
   private async recordNativeAction(
@@ -781,6 +798,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       agentConversationId: this.agentConversationId,
       kind: "native_action",
       timestamp: new Date().toISOString(),
+      operationId: transitionId,
       action,
       transitionId,
       state,
@@ -2074,6 +2092,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "message",
             timestamp: new Date().toISOString(),
+            operationId: turnId,
             role: "user",
             ...(user ? { participantId: user.id } : {}),
             content: item.text,
@@ -2088,6 +2107,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "message",
             timestamp: new Date().toISOString(),
+            operationId: turnId,
             role: "assistant",
             logicalMessageId: `message:${turnId}:assistant:${assistants}`,
             content: item.text,
@@ -2138,6 +2158,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       agentConversationId: this.agentConversationId,
       kind: "message",
       timestamp: new Date().toISOString(),
+      operationId: recapId,
       role: "assistant",
       logicalMessageId: `message:${recapId}:assistant:1`,
       content: summary,
@@ -2210,12 +2231,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
                 ? "recovering"
               : "switching_mode";
         this.emitStateIfChanged();
+        this.runningOperationId = item.kind === "prompt" ? item.turnId
+          : item.kind === "handoff" ? item.handoffId
+          : item.kind === "set_config" ? item.operationId
+          : item.kind === "set_mode" ? item.transitionId
+          : null;
         if (item.kind === "prompt") {
           // A run of steer messages at the head of the queue goes out as one prompt.
           let reportDelivery: (() => void) | undefined;
           const prompt = this.steering.prepareRun(item, (event) => {
             reportDelivery = () => this.emit(event);
           }) as PromptQueueItem;
+          this.runningOperationId = prompt.turnId;
           this.steering.turnStarted(prompt);
           this.emit({ kind: "turn_started", turnId: prompt.turnId });
           let stopReason: string | undefined;
@@ -2264,6 +2291,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
                 agentConversationId: this.agentConversationId,
                 kind: "configuration",
                 timestamp: new Date().toISOString(),
+                operationId: item.operationId,
                 operation: "set",
                 configId: item.configId,
                 value: toPersistenceJsonValue(item.value),
@@ -2278,6 +2306,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
                 agentConversationId: this.agentConversationId,
                 kind: "configuration",
                 timestamp: new Date().toISOString(),
+                operationId: item.operationId,
                 operation: "set",
                 configId: item.configId,
                 value: toPersistenceJsonValue(item.value),
@@ -2294,6 +2323,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
                 agentConversationId: this.agentConversationId,
                 kind: "configuration",
                 timestamp: new Date().toISOString(),
+                operationId: item.operationId,
                 operation: "set",
                 configId: item.configId,
                 value: toPersistenceJsonValue(item.value),
@@ -2345,6 +2375,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             item.reject(err);
           }
         }
+        this.runningOperationId = null;
         // Promise consumers must observe the settled public state. The old in-class
         // loop reached its `finally` synchronously after resolving the last item;
         // crossing the extracted queue's async callback adds a microtask boundary.
@@ -2353,6 +2384,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this.settleIdleIfDrained();
       }, () => this.steering.takeNext());
     } finally {
+      this.runningOperationId = null;
       if (this.phase !== "stopped") this.phase = "idle";
       this.emitStateIfChanged();
     }
@@ -3378,6 +3410,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           agentConversationId: this.agentConversationId,
           kind: "message",
           timestamp,
+          operationId: item.turnId,
           role: "assistant",
           logicalMessageId: message.id,
           content: message.text,
@@ -3462,6 +3495,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "permission",
             timestamp: new Date().toISOString(),
+            operationId: this.toolCallOperations.get(request.toolCallId) ?? item.turnId,
             permissionId: request.toolCallId,
             state: "requested",
             request: toPersistenceJsonValue({
@@ -3482,6 +3516,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "permission",
             timestamp: new Date().toISOString(),
+            operationId: this.toolCallOperations.get(request.toolCallId) ?? item.turnId,
             permissionId: request.toolCallId,
             state: "resolved",
             outcome: permissionRecordOutcome(request, outcome),

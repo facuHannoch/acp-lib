@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 14;
+export const SQLITE_AGENT_SCHEMA_VERSION = 15;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -548,6 +548,31 @@ AFTER DELETE ON conversation_activity_events BEGIN
 END;
 `;
 
+/**
+ * Version 15: records written before every write site passed its operation id recover it where it
+ * is still known. Runtime, permission and configuration record ids begin with it; native actions
+ * keep it as their transition id. Anything else stays without one.
+ */
+function backfillRecordOperationIds(database: Database): void {
+  for (const [separator, kinds] of [
+    [":runtime:", "'tool_call', 'thinking', 'activity'"],
+    [":permission:", "'permission'"],
+    [":configuration:", "'configuration'"],
+  ] as const) {
+    database.query<unknown, [string, string]>(
+      `UPDATE conversation_records SET operation_id = substr(record_id, 1, instr(record_id, ?) - 1)
+       WHERE operation_id IS NULL AND kind IN (${kinds}) AND instr(record_id, ?) > 1`,
+    ).run(separator, separator);
+  }
+  database.exec(`UPDATE conversation_records SET operation_id = (
+      SELECT n.transition_id FROM conversation_native_action_events n WHERE n.record_row_id = conversation_records.row_id
+    )
+    WHERE operation_id IS NULL AND kind = 'native_action' AND EXISTS (
+      SELECT 1 FROM conversation_native_action_events n
+      WHERE n.record_row_id = conversation_records.row_id AND n.transition_id IS NOT NULL
+    )`);
+}
+
 export function migrateSqliteAgentSchema(database: Database): void {
   const hasMigrations = database.query<{ present: number }, []>(
     "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
@@ -557,7 +582,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -614,6 +639,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
           throw new Error("SQLite schema migration to version 14 left foreign key violations");
         }
       }
+      if (version > 0 && version < 15) backfillRecordOperationIds(database);
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

@@ -47,7 +47,13 @@ export interface ConversationRecordEnvelope<K extends ConversationRecordKind = C
   readonly kind: K;
   /** ISO-8601 instant supplied by the producer and preserved verbatim. */
   readonly timestamp: string;
-  /** Legacy envelope metadata; Agent-created records use it for internal operation correlation. */
+  /**
+   * The library operation the record was written in: a turn, an internal inference or recap, a
+   * setting change, a mode change, a handoff. Every record of one operation shares it. Absent on
+   * records written outside an operation (for example protocol lines while connecting).
+   */
+  readonly operationId?: string;
+  /** Legacy envelope metadata. Older records carried the operation id here (`{"operationId": …}`). */
   readonly metadata?: string;
 }
 
@@ -323,6 +329,8 @@ export interface ConversationPreviewPage {
 
 export interface RecordListOptions {
   readonly kinds?: readonly ConversationRecordKind[];
+  /** Only the records of this operation (a turn's `operationId`, for example). */
+  readonly operationId?: string;
   readonly afterSequence?: number;
   readonly throughSequence?: number;
   readonly limit?: number;

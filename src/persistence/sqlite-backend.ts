@@ -673,6 +673,10 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
       where.push(`kind IN (${options.kinds.map(() => "?").join(", ")})`);
       parameters.push(...options.kinds);
     }
+    if (options.operationId !== undefined) {
+      where.push("operation_id = ?");
+      parameters.push(nonblank(options.operationId, "operationId"));
+    }
     parameters.push(limit + 1, offset);
     const rows = this.database.query<ConversationRecordRow, SqlValue[]>(
       `SELECT * FROM conversation_records

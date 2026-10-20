@@ -26,8 +26,7 @@ export interface ConversationRecordRow {
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 
 export function operationIdFromRecord(record: NewConversationRecord): string | null {
-  if (record.kind === "metering") return record.operationId;
-  if (record.kind === "error") return record.operationId ?? null;
+  if (record.operationId?.trim()) return record.operationId;
   if (!record.metadata) return null;
   try {
     const metadata = JSON.parse(record.metadata) as { operationId?: unknown };
@@ -274,6 +273,7 @@ function recordFromRows(
     sequence: Number(row.sequence),
     kind: row.kind,
     timestamp: row.timestamp,
+    ...(row.operation_id !== null ? { operationId: row.operation_id } : {}),
     ...(row.metadata !== null ? { metadata: row.metadata } : {}),
   };
   switch (row.kind as ConversationRecordKind) {
