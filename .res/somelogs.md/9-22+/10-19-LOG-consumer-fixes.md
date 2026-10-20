@@ -64,3 +64,14 @@ Each proposal was re-checked against its original problem:
 - Not tested: a tool update arriving in a later turn keeping the announcing operation (no fixture
   spans turns).
 - Full suite: 1047 pass.
+
+## 2026-10-20, end-to-end smoke test for operation ids
+
+- `smoke-tests/end-to-end`: collects each turn's `operationId`, appends one out-of-band assistant
+  message, and checks through raw SQL (`listStoredOperations`, `listStoredUnattributedRecords` in
+  `queries.ts`) that the turns are operations in run order, each with its messages, that only the
+  out-of-band message is outside any operation, and that `records.list({ operationId })` matches.
+  Runs after the initial phase and after the reopen.
+- It found a gap: the checkpoint `native_action` record had no operation id. Now stamped with the
+  internal inference id that wrote the summary (`src/checkpointing/strategy.ts`).
+- Deterministic run (`ACP_TEST8_ADAPTER=test`, recovery skipped): all PASS. Real harness not run.

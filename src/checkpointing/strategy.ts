@@ -105,6 +105,8 @@ implements InternalInferenceStrategy<ConversationCheckpointPayload> {
       agentConversationId: conversationId,
       kind: "native_action" as const,
       timestamp: checkpoint.createdAt,
+      // The internal inference that wrote the summary is the operation this action belongs to.
+      operationId: result.internalInferenceId,
       action: "conversation_checkpoint",
       state: "completed" as const,
       output: {

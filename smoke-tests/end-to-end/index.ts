@@ -24,6 +24,8 @@ import {
   inspectStoredAuditOutbox,
   inspectStoredProtocolCapture,
   listStoredMessages,
+  listStoredOperations,
+  listStoredUnattributedRecords,
 } from "./queries.ts";
 
 // Full drive of agent
@@ -68,6 +70,7 @@ const prompts = [
   "The answer to PWEAS is 3",
   "We need to work on adding the internal tools to the agent",
 ] as const;
+const outOfBandText = "I also sent you the release notes by email.";
 
 type ExpectedMessage = {
   readonly role: "assistant" | "user";
@@ -85,10 +88,12 @@ try {
   const conversation = await firstAgent.conversations.create();
   const conversationId = conversation.id;
   const expectedMessages: ExpectedMessage[] = [];
+  const turnOperationIds: string[] = [];
 
   for (const prompt of prompts) {
     const result = await conversation.prompt(prompt);
     assert.equal(result.status, "completed", `prompt failed: ${prompt}`);
+    turnOperationIds.push(result.operationId);
     expectedMessages.push(
       { role: "user", content: prompt },
       ...result.messages.map((message) => ({
@@ -97,6 +102,10 @@ try {
       })),
     );
   }
+
+  // An assistant message sent through another channel: stored without a turn.
+  const outOfBand = await firstAgent.conversations.appendAssistantMessage(conversationId, { text: outOfBandText });
+  expectedMessages.push({ role: "assistant", content: outOfBandText });
 
   // Exercise one agent-wide order under writes from separate conversations.
   const concurrentLeft = await firstAgent.conversations.create({ adapterId: "test", title: "audit-left" });
@@ -112,6 +121,7 @@ try {
   );
   assertSqliteHistory(conversationId, expectedMessages);
   assertSqliteProtocolPolicy(conversationId);
+  await assertSqliteOperations(firstAgent, conversationId, turnOperationIds, [outOfBand.recordId]);
   const originalInternalSessionId = conversation.internalSessionId;
   assert.ok(originalInternalSessionId, "initial conversation has no internal session id");
   console.log(
@@ -129,6 +139,7 @@ try {
   const interruptedPrompt = "Audit delivery should recover after this message";
   const interrupted = await conversation.prompt(interruptedPrompt);
   assert.equal(interrupted.status, "completed", "canonical prompt was blocked by audit delivery failure");
+  turnOperationIds.push(interrupted.operationId);
   expectedMessages.push(
     { role: "user", content: interruptedPrompt },
     ...interrupted.messages.map((message) => ({ role: "assistant" as const, content: message.text })),
@@ -174,6 +185,7 @@ try {
   const recallPrompt = "What is the answer to pweas? respond with just the answer or with 'DN' if you don't know";
   const result = await conversationAfterReopening.prompt(recallPrompt);
   assert.equal(result.status, "completed", "reopened conversation recall prompt failed");
+  turnOperationIds.push(result.operationId);
   const reopenedAnswer = checkSemanticRecall(
     "reopened provider thread",
     result.messages.map((message) => message.text).join("").trim(),
@@ -196,6 +208,7 @@ try {
     "recall turn was not appended to the reopened conversation history",
   );
   assertSqliteHistory(conversationId, expectedMessages);
+  await assertSqliteOperations(reopenedAgent, conversationId, turnOperationIds, [outOfBand.recordId]);
   console.log(
     `PASS reopened agent=${reopenedAgent.id} conversation=${conversationId} answer=${JSON.stringify(reopenedAnswer)} messages=${persistedAfterRecall.messages.length}`,
   );
@@ -602,6 +615,53 @@ function assertSqliteHistory(
       stored.map(({ role, content }) => ({ role, content })),
       expectedMessages,
       "SQLite message history does not match the four prompt results",
+    );
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Every record of a turn names that turn's operation, and the turns appear in the order they
+ * ran. Only `outsideOperations` (an out-of-band message) may belong to no operation. Other
+ * operations (checkpoints, recoveries) may sit between the turns.
+ */
+async function assertSqliteOperations(
+  agent: Agent,
+  conversationId: AgentConversationId,
+  turnOperationIds: readonly string[],
+  outsideOperations: readonly string[],
+): Promise<void> {
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    const operations = listStoredOperations(database, conversationId);
+    const turns = operations.filter((operation) => turnOperationIds.includes(operation.operationId));
+    assert.deepEqual(
+      turns.map((operation) => operation.operationId),
+      turnOperationIds,
+      "SQLite does not hold every turn as an operation, in the order the turns ran",
+    );
+    for (const turn of turns) {
+      assert.ok(turn.kinds.split(",").includes("message"), `turn ${turn.operationId} has no message records`);
+    }
+    assert.deepEqual(
+      listStoredUnattributedRecords(database, conversationId).map((record) => record.recordId),
+      outsideOperations,
+      "SQLite holds records outside any operation besides the out-of-band message",
+    );
+
+    // The library's own filter returns exactly what the raw query grouped.
+    const last = turns.at(-1)!;
+    const filtered = await agent.persistence.records.list(conversationId, { operationId: last.operationId, limit: 1_000 });
+    assert.equal(
+      filtered.records.filter((record) => record.kind !== "protocol").length,
+      last.records,
+      "records.list({ operationId }) disagrees with SQLite",
+    );
+    const kinds = new Set(turns.flatMap((turn) => turn.kinds.split(",")));
+    console.log(
+      `PASS operations turns=${turns.length} others=${operations.length - turns.length} kinds=${[...kinds].sort().join(",")}`
+        + ` outside=${outsideOperations.length}`,
     );
   } finally {
     database.close();

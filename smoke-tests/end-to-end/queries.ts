@@ -29,6 +29,18 @@ export interface StoredProtocolCaptureSummary {
   readonly bodies: number;
 }
 
+export interface StoredOperationRow {
+  readonly operationId: string;
+  readonly firstSequence: number;
+  readonly records: number;
+  readonly kinds: string;
+}
+
+export interface StoredUnattributedRow {
+  readonly recordId: string;
+  readonly kind: string;
+}
+
 export interface StoredAuditOutboxSummary {
   readonly pending: number;
   readonly lastAllocatedSequence: number;
@@ -148,6 +160,40 @@ export function findStoredMeteringState(
     FROM conversation_metering_state
     WHERE agent_conversation_id = ?
   `).get(agentConversationId);
+}
+
+/**
+ * Group the timeline by the operation that wrote each record, in the order the operations
+ * started. Protocol lines are left out: they follow whichever operation was running.
+ */
+export function listStoredOperations(
+  database: Database,
+  agentConversationId: string,
+): readonly StoredOperationRow[] {
+  return database.query<StoredOperationRow, [string]>(`
+    SELECT
+      operation_id AS operationId,
+      MIN(sequence) AS firstSequence,
+      COUNT(*) AS records,
+      GROUP_CONCAT(DISTINCT kind) AS kinds
+    FROM conversation_records
+    WHERE agent_conversation_id = ? AND operation_id IS NOT NULL AND kind <> 'protocol'
+    GROUP BY operation_id
+    ORDER BY firstSequence
+  `).all(agentConversationId);
+}
+
+/** Records that belong to no operation, protocol lines excluded. */
+export function listStoredUnattributedRecords(
+  database: Database,
+  agentConversationId: string,
+): readonly StoredUnattributedRow[] {
+  return database.query<StoredUnattributedRow, [string]>(`
+    SELECT record_id AS recordId, kind
+    FROM conversation_records
+    WHERE agent_conversation_id = ? AND operation_id IS NULL AND kind <> 'protocol'
+    ORDER BY sequence
+  `).all(agentConversationId);
 }
 
 /** Inspect durable audit delivery state independently of the Agent runtime. */
