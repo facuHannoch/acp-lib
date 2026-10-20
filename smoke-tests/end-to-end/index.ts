@@ -14,6 +14,7 @@ import {
   type Adapter,
   type AgentAuditEntryV2,
   type AgentConversationId,
+  type MessageRecord,
   type OperationMeteringRecord,
 } from "@qlairoslabs/acp-client";
 import {
@@ -121,7 +122,7 @@ try {
   );
   assertSqliteHistory(conversationId, expectedMessages);
   assertSqliteProtocolPolicy(conversationId);
-  await assertSqliteOperations(firstAgent, conversationId, turnOperationIds, [outOfBand.recordId]);
+  await assertSqliteOperations(firstAgent, conversationId, turnOperationIds, outOfBand);
   const originalInternalSessionId = conversation.internalSessionId;
   assert.ok(originalInternalSessionId, "initial conversation has no internal session id");
   console.log(
@@ -208,7 +209,7 @@ try {
     "recall turn was not appended to the reopened conversation history",
   );
   assertSqliteHistory(conversationId, expectedMessages);
-  await assertSqliteOperations(reopenedAgent, conversationId, turnOperationIds, [outOfBand.recordId]);
+  await assertSqliteOperations(reopenedAgent, conversationId, turnOperationIds, outOfBand);
   console.log(
     `PASS reopened agent=${reopenedAgent.id} conversation=${conversationId} answer=${JSON.stringify(reopenedAnswer)} messages=${persistedAfterRecall.messages.length}`,
   );
@@ -623,14 +624,14 @@ function assertSqliteHistory(
 
 /**
  * Every record of a turn names that turn's operation, and the turns appear in the order they
- * ran. Only `outsideOperations` (an out-of-band message) may belong to no operation. Other
- * operations (checkpoints, recoveries) may sit between the turns.
+ * ran. The out-of-band message is an operation of its own, and nothing but protocol lines
+ * belongs to no operation. Other operations (checkpoints, recoveries) may sit between the turns.
  */
 async function assertSqliteOperations(
   agent: Agent,
   conversationId: AgentConversationId,
   turnOperationIds: readonly string[],
-  outsideOperations: readonly string[],
+  outOfBand: MessageRecord,
 ): Promise<void> {
   const database = new Database(databasePath, { readonly: true });
   try {
@@ -644,10 +645,12 @@ async function assertSqliteOperations(
     for (const turn of turns) {
       assert.ok(turn.kinds.split(",").includes("message"), `turn ${turn.operationId} has no message records`);
     }
+    const appended = operations.find((operation) => operation.operationId === outOfBand.operationId);
+    assert.ok(outOfBand.operationId && appended?.records === 1, "the out-of-band message is not an operation of its own");
     assert.deepEqual(
-      listStoredUnattributedRecords(database, conversationId).map((record) => record.recordId),
-      outsideOperations,
-      "SQLite holds records outside any operation besides the out-of-band message",
+      listStoredUnattributedRecords(database, conversationId),
+      [],
+      "SQLite holds records outside any operation",
     );
 
     // The library's own filter returns exactly what the raw query grouped.
@@ -660,8 +663,7 @@ async function assertSqliteOperations(
     );
     const kinds = new Set(turns.flatMap((turn) => turn.kinds.split(",")));
     console.log(
-      `PASS operations turns=${turns.length} others=${operations.length - turns.length} kinds=${[...kinds].sort().join(",")}`
-        + ` outside=${outsideOperations.length}`,
+      `PASS operations turns=${turns.length} others=${operations.length - turns.length} kinds=${[...kinds].sort().join(",")}`,
     );
   } finally {
     database.close();

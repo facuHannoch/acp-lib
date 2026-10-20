@@ -75,3 +75,6 @@ Each proposal was re-checked against its original problem:
 - It found a gap: the checkpoint `native_action` record had no operation id. Now stamped with the
   internal inference id that wrote the summary (`src/checkpointing/strategy.ts`).
 - Deterministic run (`ACP_TEST8_ADAPTER=test`, recovery skipped): all PASS. Real harness not run.
+- Appended (out-of-band) messages now carry their own one-record operation (`append-<uuid>`), so
+  paging by operations can't drop them. The smoke test expects no record outside an operation
+  (protocol lines aside). Deterministic run: all PASS.

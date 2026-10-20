@@ -682,6 +682,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       agentConversationId: id,
       kind: "message",
       timestamp: new Date().toISOString(),
+      // The append is its own one-record operation in the timeline, not part of any turn.
+      operationId: appendId,
       role: "assistant",
       logicalMessageId: `message:${appendId}:assistant`,
       ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
