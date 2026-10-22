@@ -584,6 +584,32 @@ test("a JSONL transcript records the cancellation of a turn", async () => {
   ]);
 }, 20_000);
 
+test("stopping a conversation records its running turn's cancellation as a stop", async () => {
+  const root = await tempDir("acp-lifecycle-stop-jsonl-");
+  const session = await AgentSession.create({
+    adapter: { command, cancelGraceMs: 80 },
+    adapterId: "mock",
+    agentSessionId: "stop-jsonl",
+    creationId: "stop-jsonl-create",
+    env: { LIFECYCLE_STATE: join(root, "sessions.json"), LIFECYCLE_TOOL_MS: "5000" },
+    metering: { pricing: false },
+    persistence: { root, transcript: { preset: "activity" } },
+  });
+  cleanups.push(() => session.stop());
+  const pending = session.prompt("[lifecycle:tool]");
+  await until(() => session.state.operation?.stage === "tool_running");
+  const stopped = session.stop();
+  // Stopping closes the connection, so the turn usually fails rather than returning `endedBy: "stop"`.
+  await pending.catch(() => undefined);
+  await stopped;
+
+  const reasons = (await Bun.file(session.transcriptPath!).text()).trim().split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((record) => record.t === "cancellation")
+    .map((record) => record.reason);
+  expect(reasons).toEqual(["stop", "stop"]);
+}, 20_000);
+
 test("a JSONL transcript records a stalled internal prompt's cancellation and stays writable", async () => {
   const root = await tempDir("acp-lifecycle-internal-cancellation-jsonl-");
   const session = await AgentSession.create({

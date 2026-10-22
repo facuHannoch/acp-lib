@@ -4245,6 +4245,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   /** Stop the running operation, and with `clearQueue` everything queued behind it. */
   private cancelRunning(reason: "interrupt" | "stop", options?: InterruptOptions): void {
+    // A stop closes the connection, so its turn fails and `endedBy` is never reported for it.
     this.steering.interrupted();
     if (options?.clearQueue) {
       const dropped = this.operations.clear();
