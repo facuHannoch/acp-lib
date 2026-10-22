@@ -23,7 +23,8 @@ export type CancelReason = "interrupt" | "steer" | "stalled" | "stop" | "abort";
 
 /**
  * How a requested cancel ended: the provider stopped (`acknowledged`), the process was killed
- * (`forced`), the operation finished on its own first (`too_late`), or it failed with another error.
+ * (`forced`), the operation finished on its own first (`too_late`), or it ended in an error, thrown or
+ * reported as an `error` result (`failed`).
  */
 export type CancelOutcome = "acknowledged" | "forced" | "too_late" | "failed";
 

@@ -123,7 +123,9 @@ export class OperationSupervisor {
     try {
       const forced = new Promise<PromptResult>((resolve) => { this.finishForced = resolve; });
       const result = await Promise.race([Promise.resolve().then(() => this.provider.prompt()), forced]);
-      outcome = this.forced ? "forced" : result.status === "cancelled" ? "acknowledged" : "too_late";
+      outcome = this.forced ? "forced"
+        : result.status === "cancelled" ? "acknowledged"
+          : result.status === "error" ? "failed" : "too_late";
       // A cancel can lose the race with a normal ending: the turn is then complete, even when the
       // stall policy asked for the cancel.
       if (this.stallPhase && result.status === "cancelled") throw this.stalled();

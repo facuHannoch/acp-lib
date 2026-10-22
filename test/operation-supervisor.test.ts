@@ -228,6 +228,8 @@ test("reports a cancel once when requested and once with how it ended", async ()
     .toEqual(["requested:interrupt", "resolved:interrupt:too_late"]);
   expect(await run("interrupt", (_finish, fail) => fail(new Error("transport closed"))))
     .toEqual(["requested:interrupt", "resolved:interrupt:failed"]);
+  expect(await run("interrupt", (finish) => finish({ ...completed(""), status: "error", stopReason: "error" })))
+    .toEqual(["requested:interrupt", "resolved:interrupt:failed"]);
   expect(await run("stalled", (finish) => finish(cancelled)))
     .toEqual(["requested:stalled", "resolved:stalled:acknowledged"]);
 });
