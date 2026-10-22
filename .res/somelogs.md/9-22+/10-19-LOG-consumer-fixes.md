@@ -78,3 +78,24 @@ Each proposal was re-checked against its original problem:
 - Appended (out-of-band) messages now carry their own one-record operation (`append-<uuid>`), so
   paging by operations can't drop them. The smoke test expects no record outside an operation
   (protocol lines aside). Deterministic run: all PASS.
+
+## 2026-10-22, item 3: cancellations recorded
+
+- Problem restated: after a reload, a turn cut short showed only `cancelled`; why (steer, Stop)
+  was lost. `endedBy` / `followedBy` existed only on the live result. A cancel itself (ACP
+  `session/cancel`) was stored nowhere by default (protocol capture is off).
+- Options weighed: fields on the turn (the doc's suggestion), a timeline record of the cancel,
+  marks on the steer messages, a per-operation row, inference. Chosen with the user: a
+  mechanism-independent record kind, `cancellation`, so a non-ACP controller fits too.
+- Written by the supervisor (`onCancelRequested` / `onCancelResolved`), the one place every turn,
+  inference and recap cancel goes through. Outcome: `acknowledged`, `forced`, `too_late`,
+  `failed`. `stop()` now cancels with reason `stop`.
+- SQLite: kind, detail table `conversation_cancellation_events`, schema 15 rebuild of
+  `conversation_records` (one rebuild admits `error` and `cancellation`). JSONL: `t: cancellation`,
+  validated, written through the presentation queue so it stays ordered. Audit: capture key.
+- `sameConversationRecord` now accounts for `operationId` read back from `metadata`.
+- Tests: supervisor outcomes; Agent-owned interrupt (acknowledged), steer (too_late with the
+  fixture, which answers in the same instant the tool settles), ignored cancel (forced); JSONL
+  transcript; migration from a real version 14 table.
+- Pre-existing flakiness under load (`session-manager-restoration` "replacement generations",
+  config-persistence `accept_effective`): fails about 1 in 6 on the previous commit too.

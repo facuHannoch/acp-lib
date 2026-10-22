@@ -18,6 +18,7 @@ import {
   type TranscriptMessageRecord,
   type TranscriptMeteringReferenceRecord,
   type TranscriptPermissionRecord,
+  type TranscriptCancellationRecord,
   type TranscriptProtocolMetadataRecord,
   type TranscriptReasoningRecord,
   type TranscriptRecordType,
@@ -41,12 +42,12 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const RECORD_TYPE_ORDER: readonly TranscriptRecordType[] = Object.freeze([
   "header", "checkpoint", "operation", "message", "reasoning", "activity",
   "configuration", "permission", "transition", "metering_reference", "lifecycle",
-  "protocol", "raw",
+  "protocol", "raw", "cancellation",
 ]);
 const RECORD_TYPES = new Set(RECORD_TYPE_ORDER);
 const TIMELINE_TYPES = new Set<TranscriptRecordType>([
   "message", "reasoning", "activity", "configuration", "permission", "transition",
-  "metering_reference", "lifecycle", "protocol",
+  "metering_reference", "lifecycle", "protocol", "cancellation",
 ]);
 
 export type TranscriptView = "conversation" | "timeline" | "records";
@@ -92,6 +93,7 @@ export type TranscriptTimelineItem =
   | TranscriptActivityRecord
   | TranscriptConfigurationRecord
   | TranscriptPermissionRecord
+  | TranscriptCancellationRecord
   | TranscriptTransitionRecord
   | TranscriptMeteringReferenceRecord
   | TranscriptLifecycleRecord

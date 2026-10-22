@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS conversation_records (
     'thinking',
     'activity',
     'metering',
-    'error'
+    'error',
+    'cancellation'
   )),
   timestamp TEXT NOT NULL,
   operation_id TEXT,
@@ -230,6 +231,14 @@ CREATE TABLE IF NOT EXISTS conversation_error_records (
 
 CREATE INDEX IF NOT EXISTS conversation_error_source_code_idx
   ON conversation_error_records(source, code, record_row_id);
+
+CREATE TABLE IF NOT EXISTS conversation_cancellation_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  cancellation_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('requested', 'resolved')),
+  reason TEXT NOT NULL CHECK (reason IN ('interrupt', 'steer', 'stalled', 'stop', 'abort')),
+  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('acknowledged', 'forced', 'too_late', 'failed'))
+);
 
 CREATE TABLE IF NOT EXISTS conversation_checkpoints (
   agent_conversation_id TEXT PRIMARY KEY REFERENCES conversations(agent_conversation_id),
@@ -587,10 +596,10 @@ export function migrateSqliteAgentSchema(database: Database): void {
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
   }
-  // Admitting the `error` kind means rebuilding conversation_records: its kind CHECK is a
+  // Admitting a new record kind means rebuilding conversation_records: its kind CHECK is a
   // closed list SQLite cannot alter in place. Foreign keys must be off for that drop, or
   // the implicit delete would cascade into every detail table.
-  const rebuildRecords = existing > 0 && existing < 14;
+  const rebuildRecords = existing > 0 && existing < 15;
   if (rebuildRecords) database.exec("PRAGMA foreign_keys = OFF");
   try {
     database.exec("BEGIN IMMEDIATE");
@@ -619,11 +628,12 @@ export function migrateSqliteAgentSchema(database: Database): void {
       database.exec(`CREATE INDEX IF NOT EXISTS conversation_messages_logical_idx
         ON conversation_messages(logical_message_id, record_row_id)
         WHERE logical_message_id IS NOT NULL`);
-      if (version > 0 && version < 12) {
-        rebuildConversationRecordsForErrorKind(database);
+      if (version > 0 && version < 15) {
+        // Version 12 admitted `error`, version 15 `cancellation`: one rebuild admits every kind.
+        rebuildConversationRecordsForKinds(database);
         const violations = database.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all();
         if (violations.length > 0) {
-          throw new Error("SQLite schema migration to version 12 left foreign key violations");
+          throw new Error("SQLite schema migration to version 15 left foreign key violations");
         }
       }
       if (version > 0 && version < 13) {
@@ -704,7 +714,8 @@ CREATE TABLE conversation_recovery_checkpoints (
  * the swap. The caller runs this with foreign keys disabled and verifies with
  * `PRAGMA foreign_key_check` afterward.
  */
-function rebuildConversationRecordsForErrorKind(database: Database): void {
+/** Recreate conversation_records with the current kind CHECK, keeping every row and its row id. */
+function rebuildConversationRecordsForKinds(database: Database): void {
   database.exec(`CREATE TABLE conversation_records_v12 (
     row_id INTEGER PRIMARY KEY,
     record_id TEXT NOT NULL UNIQUE,
@@ -722,7 +733,8 @@ function rebuildConversationRecordsForErrorKind(database: Database): void {
       'thinking',
       'activity',
       'metering',
-      'error'
+      'error',
+      'cancellation'
     )),
     timestamp TEXT NOT NULL,
     operation_id TEXT,

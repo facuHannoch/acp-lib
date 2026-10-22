@@ -107,7 +107,8 @@ export type TranscriptRecordType =
   | "metering_reference"
   | "lifecycle"
   | "protocol"
-  | "raw";
+  | "raw"
+  | "cancellation";
 
 export interface TranscriptEnvelope {
   readonly v: 2;
@@ -220,6 +221,16 @@ export interface TranscriptPermissionRecord extends TranscriptEnvelope {
   readonly details?: JsonValue;
 }
 
+/** A running operation was cancelled: `requested` (why), then `resolved` (how it ended). */
+export interface TranscriptCancellationRecord extends TranscriptEnvelope {
+  readonly t: "cancellation";
+  readonly operationId: string;
+  readonly cancellationId: string;
+  readonly event: "requested" | "resolved";
+  readonly reason: "interrupt" | "steer" | "stalled" | "stop" | "abort";
+  readonly outcome?: "acknowledged" | "forced" | "too_late" | "failed";
+}
+
 export interface TranscriptTransitionRecord extends TranscriptEnvelope {
   readonly t: "transition";
   readonly transitionId: string;
@@ -290,7 +301,8 @@ export type KnownTranscriptRecord =
   | TranscriptMeteringReferenceRecord
   | TranscriptLifecycleRecord
   | TranscriptProtocolMetadataRecord
-  | TranscriptRawRecord;
+  | TranscriptRawRecord
+  | TranscriptCancellationRecord;
 
 export interface UnknownTranscriptRecord {
   readonly v: number;
@@ -471,7 +483,7 @@ export function validateAuditLogRecord(
 const TRANSCRIPT_TYPES = new Set<string>([
   "header", "checkpoint", "operation", "message", "reasoning", "activity",
   "configuration", "permission", "transition", "metering_reference", "lifecycle",
-  "protocol", "raw",
+  "protocol", "raw", "cancellation",
 ]);
 const AUDIT_TYPES = new Set<string>([
   "header", "operation", "reasoning", "activity", "configuration", "permission",
@@ -576,6 +588,15 @@ function validateRecognizedRecord(
       return;
     case "transition":
       validateTransition(record, sink);
+      return;
+    case "cancellation":
+      requiredOperationId(record);
+      nonblank(record.cancellationId, "cancellationId");
+      oneOf(record.event, ["requested", "resolved"], "cancellation.event");
+      oneOf(record.reason, ["interrupt", "steer", "stalled", "stop", "abort"], "cancellation.reason");
+      if (record.outcome !== undefined) {
+        oneOf(record.outcome, ["acknowledged", "forced", "too_late", "failed"], "cancellation.outcome");
+      }
       return;
     case "metering_reference":
       requiredOperationId(record);

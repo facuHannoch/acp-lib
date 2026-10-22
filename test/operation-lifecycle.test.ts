@@ -498,3 +498,73 @@ test("a failed harness listing is reported by the deprecated merged listSessions
   });
   expect(await value.listSessions().then(() => "listed", (error) => String(error))).toContain("internal error");
 });
+
+test("a cancelled turn records why it was cancelled and how the cancel ended", async () => {
+  const directory = await tempDir("acp-lifecycle-cancellation-");
+  const agent = await ownedAgent(directory, {
+    LIFECYCLE_STATE: join(directory, "sessions.json"),
+    LIFECYCLE_TOOL_MS: "300",
+  });
+  const value = await agent.conversations.create();
+
+  // Stop during a tool: the harness acknowledges.
+  const stopped = value.prompt("[lifecycle:tool]");
+  await until(() => value.state.operation?.stage === "tool_running");
+  value.interrupt();
+  const stoppedResult = await stopped;
+
+  // A steer waits for the running tool to settle. This fixture answers in the same instant, so
+  // the cancel is recorded as requested and too late; the steer is the next turn.
+  const redirected = value.prompt("[lifecycle:tool]");
+  await until(() => value.state.operation?.stage === "tool_running");
+  const steer = value.prompt({ text: "focus on something else", delivery: "steer" });
+  const redirectedResult = await redirected;
+  const steerResult = await steer;
+
+  // A harness that ignores the cancel is killed at the end of the grace period.
+  const ignored = value.prompt("[lifecycle:ignore]");
+  await until(() => value.state.operation?.kind === "turn" && value.state.operation.stage === "waiting");
+  value.interrupt();
+  const ignoredResult = await ignored;
+
+  expect([stoppedResult.status, steerResult.status, ignoredResult.status])
+    .toEqual(["cancelled", "completed", "cancelled"]);
+  const records = (await agent.persistence.records.list(value.id, { kinds: ["cancellation"] })).records;
+  expect(records.map((record) => record.kind === "cancellation"
+    && [record.operationId, record.state, record.reason, record.outcome ?? null])).toEqual([
+    [stoppedResult.operationId, "requested", "interrupt", null],
+    [stoppedResult.operationId, "resolved", "interrupt", "acknowledged"],
+    [redirectedResult.operationId, "requested", "steer", null],
+    [redirectedResult.operationId, "resolved", "steer", redirectedResult.status === "cancelled" ? "acknowledged" : "too_late"],
+    [ignoredResult.operationId, "requested", "interrupt", null],
+    [ignoredResult.operationId, "resolved", "interrupt", "forced"],
+  ]);
+  expect(steerResult.operationId).not.toBe(redirectedResult.operationId);
+}, 20_000);
+
+test("a JSONL transcript records the cancellation of a turn", async () => {
+  const root = await tempDir("acp-lifecycle-cancellation-jsonl-");
+  const session = await AgentSession.create({
+    adapter: { command, cancelGraceMs: 80 },
+    adapterId: "mock",
+    agentSessionId: "cancellation-jsonl",
+    creationId: "cancellation-jsonl-create",
+    env: { LIFECYCLE_STATE: join(root, "sessions.json"), LIFECYCLE_TOOL_MS: "5000" },
+    metering: { pricing: false },
+    persistence: { root, transcript: { preset: "activity" } },
+  });
+  cleanups.push(() => session.stop());
+  const pending = session.prompt("[lifecycle:tool]");
+  await until(() => session.state.operation?.stage === "tool_running");
+  session.interrupt();
+  const result = await pending;
+  await session.stop();
+
+  const lines = (await Bun.file(session.transcriptPath!).text()).trim().split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((record) => record.t === "cancellation");
+  expect(lines.map((record) => [record.operationId, record.event, record.reason, record.outcome ?? null])).toEqual([
+    [result.operationId, "requested", "interrupt", null],
+    [result.operationId, "resolved", "interrupt", "acknowledged"],
+  ]);
+}, 20_000);

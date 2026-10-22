@@ -64,6 +64,7 @@ export function conversationTimelineItemId(record: ConversationRecord): string {
     case "thinking": return `${prefix}${JSON.stringify([scope, record.thinkingId])}`;
     case "activity": return `${prefix}${JSON.stringify([scope, record.activityId])}`;
     case "native_action": return `${prefix}${JSON.stringify([record.transitionId ?? record.recordId])}`;
+    case "cancellation": return `${prefix}${JSON.stringify([record.cancellationId])}`;
     default: return `${prefix}${JSON.stringify([record.recordId])}`;
   }
 }

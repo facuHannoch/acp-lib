@@ -10,7 +10,7 @@
 // supplies the adapter registry used by cross-adapter conversation transitions.
 
 import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
-import type { CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
+import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor } from "./operations/supervisor.ts";
 import {
@@ -3949,6 +3949,38 @@ export class AgentConversation implements AgentClient, Bridgeable {
     else this.controller.cancel();
   }
 
+  /** A supervised operation is cancelled at most once, so its cancellation is named after it. */
+  private recordCancellation(
+    operationId: string,
+    state: "requested" | "resolved",
+    reason: CancelReason,
+    outcome?: CancelOutcome,
+  ): void {
+    if (this.v2Transcript) {
+      this.presentation.queueEvent({
+        kind: "cancellation",
+        operationId,
+        cancellationId: `${operationId}:cancellation`,
+        event: state,
+        reason,
+        ...(outcome ? { outcome } : {}),
+      });
+    }
+    if (!this.ownerAgentSessionId) return;
+    this.queueOwnedRecord({
+      recordId: `${operationId}:cancellation:${state}`,
+      agentSessionId: this.ownerAgentSessionId,
+      agentConversationId: this.agentConversationId,
+      kind: "cancellation",
+      timestamp: new Date().toISOString(),
+      operationId,
+      cancellationId: `${operationId}:cancellation`,
+      state,
+      reason,
+      ...(outcome ? { outcome } : {}),
+    });
+  }
+
   /** Run one provider request under its own supervisor: stage, stale conditions, cancel escalation. */
   private async supervisedPrompt(
     controller: AgentController,
@@ -3976,6 +4008,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this.emitStateIfChanged();
       },
       onToolBoundary: () => this.steering.toolBoundary(operationId),
+      onCancelRequested: (reason) => this.recordCancellation(operationId, "requested", reason),
+      onCancelResolved: (reason, outcome) => this.recordCancellation(operationId, "resolved", reason, outcome),
     });
     this.activeSupervisor = supervisor;
     try {
@@ -4200,6 +4234,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   interrupt(options?: InterruptOptions): void {
+    this.cancelRunning("interrupt", options);
+  }
+
+  /** Stop the running operation, and with `clearQueue` everything queued behind it. */
+  private cancelRunning(reason: "interrupt" | "stop", options?: InterruptOptions): void {
     this.steering.interrupted();
     if (options?.clearQueue) {
       const dropped = this.operations.clear();
@@ -4219,7 +4258,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       this.emitStateIfChanged();
     }
-    this.cancelOperation("interrupt");
+    this.cancelOperation(reason);
   }
 
   stop(): Promise<void> {
@@ -4267,7 +4306,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
     this.stopPromise = completion;
     try {
-      this.interrupt({ clearQueue: true });
+      this.cancelRunning("stop", { clearQueue: true });
     } catch (error) {
       failures.push(error);
     }

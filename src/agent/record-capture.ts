@@ -190,6 +190,7 @@ export function captureRuntimeRecord(
     case "activity":
       return { ...record, content: undefined, data: undefined };
     case "metering":
+    case "cancellation":
       return record;
   }
 }

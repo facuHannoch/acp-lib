@@ -21,6 +21,7 @@ import type {
   TranscriptEnvelope,
   TranscriptLifecycleRecord,
   TranscriptTransitionRecord,
+  TranscriptCancellationRecord,
   TranscriptPresentationMetadata,
   InternalSessionDescriptor,
   InternalSessionHistoryEntry,
@@ -125,6 +126,14 @@ export type NormalizedPersistenceEvent =
       readonly fullDetails?: JsonValue;
     }
   | {
+      readonly kind: "cancellation";
+      readonly operationId: string;
+      readonly cancellationId: string;
+      readonly event: "requested" | "resolved";
+      readonly reason: TranscriptCancellationRecord["reason"];
+      readonly outcome?: TranscriptCancellationRecord["outcome"];
+    }
+  | {
       readonly kind: "transition";
       readonly transitionId: string;
       readonly transitionKind: TranscriptTransitionRecord["kind"];
@@ -205,6 +214,11 @@ export function projectTranscriptEvent(
       const projected = configurationData(event, context.policy.configuration);
       return projected ? { ...base, t: "configuration", ...projected } : null;
     }
+    case "cancellation":
+      return {
+        ...base, t: "cancellation", operationId: event.operationId, cancellationId: event.cancellationId,
+        event: event.event, reason: event.reason, ...(event.outcome === undefined ? {} : { outcome: event.outcome }),
+      };
     case "permission": {
       if (context.policy.permissions === "none") return null;
       return {
@@ -258,6 +272,7 @@ export function projectAuditEvent(
     case "message":
     case "protocol_metadata":
     case "raw_protocol":
+    case "cancellation":
       return null;
     case "reasoning":
       if (context.policy.reasoning === "none") return null;

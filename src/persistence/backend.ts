@@ -1,4 +1,5 @@
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
+import type { CancelOutcome, CancelReason } from "../operations/contracts.ts";
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
@@ -34,6 +35,7 @@ export const CONVERSATION_RECORD_KINDS = [
   "activity",
   "metering",
   "error",
+  "cancellation",
 ] as const;
 
 export type ConversationRecordKind = (typeof CONVERSATION_RECORD_KINDS)[number];
@@ -198,6 +200,21 @@ export interface ErrorRecord extends ConversationRecordEnvelope<"error"> {
   readonly details?: ConversationErrorDetails;
 }
 
+/**
+ * A running operation was cancelled, whatever the mechanism (an ACP `session/cancel`, killing a
+ * screen-scraped harness). One cancellation has two revisions under its `cancellationId`:
+ * `requested` (when, and why) and `resolved` (how it ended). Its `operationId` is the cancelled
+ * operation's.
+ */
+export interface CancellationRecord extends ConversationRecordEnvelope<"cancellation"> {
+  readonly cancellationId: string;
+  readonly state: "requested" | "resolved";
+  /** `steer`: a message sent mid-turn; `interrupt`: Stop; `stalled`: the stale policy; `stop`: shutdown. */
+  readonly reason: CancelReason;
+  /** On `resolved` only. `too_late`: the operation finished on its own before the cancel took effect. */
+  readonly outcome?: CancelOutcome;
+}
+
 export type ConversationRecord =
   | MessageRecord
   | ToolCallRecord
@@ -209,7 +226,8 @@ export type ConversationRecord =
   | ThinkingRecord
   | ActivityRecord
   | MeteringReferenceRecord
-  | ErrorRecord;
+  | ErrorRecord
+  | CancellationRecord;
 
 type WithoutSequence<T> = T extends ConversationRecord ? Omit<T, "sequence"> : never;
 export type NewConversationRecord = WithoutSequence<ConversationRecord>;
@@ -259,6 +277,7 @@ export const DEFAULT_CONVERSATION_RECORD_CAPTURE: ConversationRecordCapturePolic
   activity: "metadata",
   metering: "metadata",
   error: "content",
+  cancellation: "metadata",
 });
 
 export interface AgentPersistenceIdentity {
@@ -894,6 +913,7 @@ export function searchableText(record: ConversationRecord): string {
     case "error":
       // Errors are operational history, not searchable conversation content; v1 keeps them
       // out of full-text search.
+    case "cancellation":
       return "";
   }
 }

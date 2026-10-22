@@ -851,8 +851,27 @@ describe("SQLite agent persistence", () => {
     await backend.close();
     opened.splice(opened.indexOf(backend), 1);
 
+    // The version 14 records table: its kind CHECK has no `cancellation`.
     const old = new Database(path, { readwrite: true });
+    old.exec("PRAGMA foreign_keys = OFF");
     old.exec(`
+      CREATE TABLE records_v14 AS SELECT * FROM conversation_records;
+      DROP TABLE conversation_records;
+      CREATE TABLE conversation_records (
+        row_id INTEGER PRIMARY KEY,
+        record_id TEXT NOT NULL UNIQUE,
+        agent_session_id TEXT NOT NULL,
+        agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+        sequence INTEGER NOT NULL CHECK (sequence > 0),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'tool_call', 'permission', 'configuration', 'protocol',
+          'native_action', 'agent_action', 'thinking', 'activity', 'metering', 'error')),
+        timestamp TEXT NOT NULL,
+        operation_id TEXT,
+        metadata TEXT,
+        UNIQUE (agent_conversation_id, sequence)
+      );
+      INSERT INTO conversation_records SELECT * FROM records_v14;
+      DROP TABLE records_v14;
       UPDATE conversation_records SET operation_id = NULL;
       DELETE FROM schema_migrations WHERE version >= 15;
       INSERT INTO schema_migrations(version, applied_at) VALUES (14, '2026-10-18T00:00:00.000Z');
@@ -867,6 +886,15 @@ describe("SQLite agent persistence", () => {
       ["config-2:configuration:started", "config-2"],
       ["mode-3:native:started", "mode-3"],
       ["protocol-4", undefined],
+    ]);
+
+    // Version 15 also admits the cancellation kind, which the version 14 table refused.
+    await migrated.records.append({
+      ...envelope, recordId: "turn-5:cancellation:requested", kind: "cancellation", operationId: "turn-5",
+      cancellationId: "turn-5:cancellation", state: "requested", reason: "steer",
+    });
+    expect((await migrated.records.list(conversationId, { operationId: "turn-5" })).records).toMatchObject([
+      { kind: "cancellation", cancellationId: "turn-5:cancellation", state: "requested", reason: "steer" },
     ]);
   });
 

@@ -185,3 +185,49 @@ test("a turn that completes normally after the stall cancel keeps its result", a
   expect(result.text).toBe("full answer");
   expect(result.cancel).toBeUndefined();
 });
+
+test("reports a cancel once when requested and once with how it ended", async () => {
+  const run = async (
+    reason: "interrupt" | "steer" | "stalled",
+    settle: (finish: (result: PromptResult) => void, fail: (error: Error) => void, clock: Clock) => void,
+  ) => {
+    const clock = new Clock();
+    let finish!: (result: PromptResult) => void;
+    let fail!: (error: Error) => void;
+    const events: string[] = [];
+    const supervisor = new OperationSupervisor({
+      prompt: () => new Promise<PromptResult>((resolve, reject) => { finish = resolve; fail = reject; }),
+      subscribeOutput: () => () => {},
+      cancel() {},
+      async forceStop() {},
+    }, {
+      operationId: "op",
+      kind: "turn",
+      timers: clock,
+      cancelGraceMs: 100,
+      limits: reason === "stalled" ? { firstOutputMs: 10 } : {},
+      onCancelRequested: (requested) => events.push(`requested:${requested}`),
+      onCancelResolved: (resolved, outcome) => events.push(`resolved:${resolved}:${outcome}`),
+    });
+    const pending = supervisor.run().catch(() => undefined);
+    await Promise.resolve();
+    if (reason === "stalled") clock.advance(10);
+    else supervisor.cancel(reason);
+    supervisor.cancel("interrupt");
+    settle(finish, fail, clock);
+    await pending;
+    return events;
+  };
+  const cancelled = { ...completed(""), status: "cancelled" as const, stopReason: "cancelled" };
+
+  expect(await run("steer", (finish) => finish(cancelled)))
+    .toEqual(["requested:steer", "resolved:steer:acknowledged"]);
+  expect(await run("interrupt", (_finish, _fail, clock) => clock.advance(100)))
+    .toEqual(["requested:interrupt", "resolved:interrupt:forced"]);
+  expect(await run("interrupt", (finish) => finish(completed("done"))))
+    .toEqual(["requested:interrupt", "resolved:interrupt:too_late"]);
+  expect(await run("interrupt", (_finish, fail) => fail(new Error("transport closed"))))
+    .toEqual(["requested:interrupt", "resolved:interrupt:failed"]);
+  expect(await run("stalled", (finish) => finish(cancelled)))
+    .toEqual(["requested:stalled", "resolved:stalled:acknowledged"]);
+});

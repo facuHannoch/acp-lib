@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
+import type { CancelOutcome } from "../operations/contracts.ts";
 import type {
+  CancellationRecord,
   ConversationErrorDetails,
   ConversationErrorRecoverability,
   ConversationErrorSource,
@@ -213,6 +215,18 @@ export function insertConversationRecordDetail(
         encodeJson(record.details as PersistenceJsonValue | undefined),
       );
       return;
+    case "cancellation":
+      run(database,
+        `INSERT INTO conversation_cancellation_events(
+          record_row_id, cancellation_id, state, reason, outcome
+        ) VALUES (?, ?, ?, ?, ?)`,
+        rowId,
+        record.cancellationId,
+        record.state,
+        record.reason,
+        record.outcome ?? null,
+      );
+      return;
   }
 }
 
@@ -245,7 +259,9 @@ export function sameConversationRecord(
   candidate: NewConversationRecord,
 ): boolean {
   const { sequence: _sequence, ...withoutSequence } = persisted;
-  return stableJson(withoutSequence) === stableJson(candidate);
+  // A record that names its operation only in `metadata` reads back with `operationId` filled in.
+  const operationId = operationIdFromRecord(candidate);
+  return stableJson(withoutSequence) === stableJson(operationId ? { ...candidate, operationId } : candidate);
 }
 
 const DETAIL_TABLES: Readonly<Record<ConversationRecordKind, string>> = Object.freeze({
@@ -260,6 +276,7 @@ const DETAIL_TABLES: Readonly<Record<ConversationRecordKind, string>> = Object.f
   activity: "conversation_activity_events",
   metering: "conversation_metering_references",
   error: "conversation_error_records",
+  cancellation: "conversation_cancellation_events",
 });
 
 function recordFromRows(
@@ -397,6 +414,15 @@ function recordFromRows(
         ...(detail.details_json !== null
           ? { details: decodeJson(detail.details_json) as ConversationErrorDetails }
           : {}),
+      });
+    case "cancellation":
+      return Object.freeze({
+        ...envelope,
+        kind: "cancellation",
+        cancellationId: string(detail.cancellation_id),
+        state: string(detail.state) as CancellationRecord["state"],
+        reason: string(detail.reason) as CancellationRecord["reason"],
+        ...(detail.outcome !== null ? { outcome: string(detail.outcome) as CancelOutcome } : {}),
       });
   }
 }

@@ -19,3 +19,10 @@
   lines now carry it as messages already did; a tool call keeps the operation that announced it.
   Records outside an operation have none. `records.list(id, { operationId })` filters by it.
   SQLite agent schema 15 recovers it on older records from their record ids.
+- **Cancellations are recorded.** A new record kind, `cancellation` (SQLite and JSONL), with
+  `requested` (reason: `steer`, `interrupt`, `stalled`, `stop`, `abort`) and `resolved`
+  (outcome: `acknowledged`, `forced`, `too_late`, `failed`) revisions under the cancelled
+  operation's id. After a reload a turn can still be shown as stopped or redirected. Stopping a
+  conversation mid-turn now reports reason `stop` instead of `interrupt`. SQLite schema 15
+  rebuilds `conversation_records` to admit the kind. Audit capture key `cancellation`
+  (default `metadata`).

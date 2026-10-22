@@ -210,6 +210,14 @@ operation that announced it, even when its updates arrive during a later turn. R
 outside any operation (protocol lines while connecting) have none. Operations can interleave:
 a message appended during a turn, or a tool update arriving in a later turn, sits inside
 another operation's sequence range, so group by `operationId`, not by range.
+A cancelled operation records why and how in a `cancellation` record (two revisions under one
+`cancellationId`, carrying the cancelled operation's `operationId`): `requested` with its
+`reason` (`steer`: a message sent mid-turn; `interrupt`: Stop; `stalled`: the stale policy;
+`stop`: the conversation was stopped), then `resolved` with its `outcome` (`acknowledged`,
+`forced` when the process had to be killed, `too_late` when the turn finished first, or
+`failed`). So after a reload a client can still show a turn as "Stopped" or "Redirected"; for
+a steer, the redirecting message is the next turn's. It describes the cancellation, not the
+mechanism (ACP `session/cancel`). JSONL transcripts write the same record (`t: "cancellation"`).
 Databases from before schema 15 recover it for tool call, thinking, activity, permission,
 configuration and mode-change records; `records.list(id, { operationId })` filters by it.
 The reconciliation helper keeps distinct messages separate and groups revisions of an

@@ -21,6 +21,12 @@ export type SupervisedOperationKind = "turn" | "internal_inference" | "recap";
 
 export type CancelReason = "interrupt" | "steer" | "stalled" | "stop" | "abort";
 
+/**
+ * How a requested cancel ended: the provider stopped (`acknowledged`), the process was killed
+ * (`forced`), the operation finished on its own first (`too_late`), or it failed with another error.
+ */
+export type CancelOutcome = "acknowledged" | "forced" | "too_late" | "failed";
+
 /** The readable state of one running operation. Contains no content. */
 export interface OperationActivity {
   readonly operationId: string;

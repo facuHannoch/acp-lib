@@ -6,6 +6,7 @@ import {
 } from "./activity.ts";
 import type { Logger } from "./logger.ts";
 import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
+import type { NormalizedPersistenceEvent } from "./persistence/projection.ts";
 import {
   presentationItemFromRecord,
   type TranscriptPresentationItem,
@@ -110,6 +111,13 @@ export class AgentConversationPresentation {
       if (!persistence) return;
       const record = await persistence.appendPresentationEvent(event);
       this.emitPersistedRecord(record);
+    });
+  }
+
+  /** Append a non-presentation event in the same order as the presentation writes. */
+  queueEvent(event: NormalizedPersistenceEvent): void {
+    this.#presentationWrite = this.#presentationWrite.then(async () => {
+      await this.#persistence()?.appendEvent(event);
     });
   }
 
