@@ -272,6 +272,21 @@ test("a transient reload failure leaves the conversation retryable on the next p
   expect((await value.prompt("second reconnect")).text).toContain("guava");
 });
 
+test("a setConfig while the harness cannot reconnect tries to connect once and reports the failure", async () => {
+  const directory = await tempDir("acp-config-reconnect-");
+  const flag = join(directory, "fail-load");
+  const value = await conversation({ env: { LIFECYCLE_STATE: join(directory, "sessions.json"), LIFECYCLE_FAIL_LOAD_FILE: flag } });
+  const events = recordEvents(value);
+  await value.prompt("remember guava");
+
+  await writeFile(flag, "");
+  await value.connection.forceStop();
+  expect((await value.setConfig("model", "other").catch((error) => error)).code).toBe("provider_session_load_failed");
+  expect((await Bun.file(flag).text()).trim().split("\n")).toEqual(["load"]);
+  expect(events.filter((event) => event.kind.startsWith("configuration_")).map((event) => event.kind))
+    .toEqual(["configuration_started", "configuration_failed"]);
+});
+
 test("a detached conversation whose provider lost the session follows its load-failure rule", async () => {
   const directory = await tempDir("acp-load-missing-");
   const state = join(directory, "sessions.json");

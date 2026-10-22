@@ -2279,62 +2279,70 @@ export class AgentConversation implements AgentClient, Bridgeable {
           } catch (err) {
             item.reject(err);
           }
-        } else if (item.kind === "set_config" && await this.isUnchangedSelection(item)) {
-          item.resolve();
         } else if (item.kind === "set_config") {
-          this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
-          try {
-            if (this.ownerAgentSessionId) {
-              await this.recordOwned({
-                recordId: `${item.operationId}:configuration:started`,
-                agentSessionId: this.ownerAgentSessionId,
-                agentConversationId: this.agentConversationId,
-                kind: "configuration",
-                timestamp: new Date().toISOString(),
-                operationId: item.operationId,
-                operation: "set",
-                configId: item.configId,
-                value: toPersistenceJsonValue(item.value),
-                status: "started",
-              });
-            }
-            await this.runSetConfig(item);
-            if (this.ownerAgentSessionId) {
-              await this.recordOwned({
-                recordId: `${item.operationId}:configuration:completed`,
-                agentSessionId: this.ownerAgentSessionId,
-                agentConversationId: this.agentConversationId,
-                kind: "configuration",
-                timestamp: new Date().toISOString(),
-                operationId: item.operationId,
-                operation: "set",
-                configId: item.configId,
-                value: toPersistenceJsonValue(item.value),
-                status: "completed",
-              });
-            }
-            this.emit({ kind: "configuration_completed", operationId: item.operationId, configId: item.configId });
+          // One connection attempt: a failure is reported by the normal path below, not retried by it.
+          const connectError = await this.ensureProvider().then(
+            () => null,
+            (error: unknown) => error ?? new Error("provider connection failed"),
+          );
+          if (connectError === null && this.isUnchangedSelection(item)) {
             item.resolve();
-          } catch (err) {
-            if (this.ownerAgentSessionId) {
-              await this.recordOwned({
-                recordId: `${item.operationId}:configuration:failed`,
-                agentSessionId: this.ownerAgentSessionId,
-                agentConversationId: this.agentConversationId,
-                kind: "configuration",
-                timestamp: new Date().toISOString(),
-                operationId: item.operationId,
-                operation: "set",
-                configId: item.configId,
-                value: toPersistenceJsonValue(item.value),
-                status: "failed",
-                error: String(err),
-              }).catch((persistenceError) => this.log.warn("configuration_failure_persistence_failed", {
-                error: String(persistenceError),
-              }));
+          } else {
+            this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
+            try {
+              if (this.ownerAgentSessionId) {
+                await this.recordOwned({
+                  recordId: `${item.operationId}:configuration:started`,
+                  agentSessionId: this.ownerAgentSessionId,
+                  agentConversationId: this.agentConversationId,
+                  kind: "configuration",
+                  timestamp: new Date().toISOString(),
+                  operationId: item.operationId,
+                  operation: "set",
+                  configId: item.configId,
+                  value: toPersistenceJsonValue(item.value),
+                  status: "started",
+                });
+              }
+              if (connectError !== null) throw connectError;
+              await this.runSetConfig(item);
+              if (this.ownerAgentSessionId) {
+                await this.recordOwned({
+                  recordId: `${item.operationId}:configuration:completed`,
+                  agentSessionId: this.ownerAgentSessionId,
+                  agentConversationId: this.agentConversationId,
+                  kind: "configuration",
+                  timestamp: new Date().toISOString(),
+                  operationId: item.operationId,
+                  operation: "set",
+                  configId: item.configId,
+                  value: toPersistenceJsonValue(item.value),
+                  status: "completed",
+                });
+              }
+              this.emit({ kind: "configuration_completed", operationId: item.operationId, configId: item.configId });
+              item.resolve();
+            } catch (err) {
+              if (this.ownerAgentSessionId) {
+                await this.recordOwned({
+                  recordId: `${item.operationId}:configuration:failed`,
+                  agentSessionId: this.ownerAgentSessionId,
+                  agentConversationId: this.agentConversationId,
+                  kind: "configuration",
+                  timestamp: new Date().toISOString(),
+                  operationId: item.operationId,
+                  operation: "set",
+                  configId: item.configId,
+                  value: toPersistenceJsonValue(item.value),
+                  status: "failed",
+                  error: String(err),
+                }).catch((persistenceError) => this.log.warn("configuration_failure_persistence_failed", {
+                  error: String(persistenceError),
+                }));
+              }
+              this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
+              item.reject(err);
             }
-            this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
-            item.reject(err);
           }
         } else if (item.kind === "resolve_config") {
           try {
@@ -2806,15 +2814,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
   /**
    * A selection that changes nothing is not applied or recorded: the harness already reports the
    * value, and (with a transcript) it is already the explicit restoration target. Consumers that
-   * re-apply settings on every start would otherwise record a change each time. Any doubt,
-   * including a failed connection, returns false so the normal path runs and reports it.
+   * re-apply settings on every start would otherwise record a change each time. Any doubt returns
+   * false so the normal path runs and reports it. The caller connects first.
    */
-  private async isUnchangedSelection(item: ConfigQueueItem): Promise<boolean> {
-    try {
-      await this.ensureProvider();
-    } catch {
-      return false;
-    }
+  private isUnchangedSelection(item: ConfigQueueItem): boolean {
     const option = this.controller.configOptions.get(item.configId);
     if (!option || !sameJsonValue(item.value, option.currentValue as JsonValue)) return false;
     if (!this.v2Transcript || this.persistence === false) return true;

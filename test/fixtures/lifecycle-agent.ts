@@ -10,9 +10,9 @@
  * Faults: `LIFECYCLE_HANG_CONTROL` never answers that one method, `LIFECYCLE_FAIL_CONTROL` answers it
  * with an error; `LIFECYCLE_FAIL_LOAD=1` reports
  * every session missing; while the file `LIFECYCLE_FAIL_LOAD_FILE` exists, loads fail with an internal
- * error although the session exists.
+ * error although the session exists, and each failed load appends a line to it.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 const file = process.env.LIFECYCLE_STATE;
@@ -78,6 +78,7 @@ function handle(m: any): void {
       }
       // A failure that is not "session missing": the request fails while the session still exists.
       if (process.env.LIFECYCLE_FAIL_LOAD_FILE && existsSync(process.env.LIFECYCLE_FAIL_LOAD_FILE)) {
+        appendFileSync(process.env.LIFECYCLE_FAIL_LOAD_FILE, "load\n");
         send({ id: m.id, error: { code: -32603, message: "internal error" } });
         return;
       }
