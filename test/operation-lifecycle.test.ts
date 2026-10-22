@@ -568,3 +568,43 @@ test("a JSONL transcript records the cancellation of a turn", async () => {
     [result.operationId, "resolved", "interrupt", "acknowledged"],
   ]);
 }, 20_000);
+
+test("a JSONL transcript records a stalled internal prompt's cancellation and stays writable", async () => {
+  const root = await tempDir("acp-lifecycle-internal-cancellation-jsonl-");
+  const session = await AgentSession.create({
+    adapter: { command, cancelGraceMs: 80 },
+    adapterId: "mock",
+    agentSessionId: "internal-cancellation-jsonl",
+    creationId: "internal-cancellation-jsonl-create",
+    env: { LIFECYCLE_STATE: join(root, "sessions.json") },
+    metering: { pricing: false },
+    operationLifecycle: { internalInference: { firstOutputMs: 30, nextOutputMs: 30 } },
+    persistence: { root, transcript: { preset: "activity" } },
+  });
+  cleanups.push(() => session.stop());
+  const error = await session.handoff({
+    continuation: { kind: "none" },
+    target: { adapterId: "other", adapter: { command, cancelGraceMs: 30 } },
+    targetPrompt: "[lifecycle:silent]",
+  }).catch((error) => error);
+  expect(error.cause?.code).toBe("stalled");
+  // The transcript must still accept writes: a sequence collision would have failed it.
+  expect((await session.prompt("after the stall")).status).toBe("completed");
+  await session.stop();
+
+  const records = (await Bun.file(session.transcriptPath!).text()).trim().split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(records.map((record) => record.seq)).toEqual(records.map((_, index) => index + 1));
+  const cancellations = records.filter((record) => record.t === "cancellation");
+  expect(cancellations.map((record) => [record.event, record.reason])).toEqual([
+    ["requested", "stalled"],
+    ["resolved", "stalled"],
+  ]);
+  const target = cancellations[0]!.operationId as string;
+  expect(target.endsWith(":target")).toBe(true);
+  // The cancellation is written before the inference's reply and its settle.
+  const resolved = records.indexOf(cancellations[1]!);
+  const settled = records.findIndex((record) =>
+    record.t === "operation" && record.operationId === target && record.event !== "started");
+  expect(resolved).toBeLessThan(settled);
+}, 20_000);

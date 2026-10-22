@@ -104,6 +104,11 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     started: TranscriptOperationRecord;
   } | null = null;
   private failure: Error | null = null;
+  /**
+   * Writes run one at a time: each picks its sequence number from the writer when it runs, so two
+   * overlapping callers would otherwise claim the same number and the second would fail the transcript.
+   */
+  private serial: Promise<unknown> = Promise.resolve();
   private closed = false;
   private checkpointPublisher: ((
     checkpoint: AgentSessionCheckpoint,
@@ -256,7 +261,11 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     this.checkpointPublisher = publisher;
   }
 
-  async beginOperation(operationId: string, kind: OperationKind, ts = Date.now()): Promise<void> {
+  beginOperation(operationId: string, kind: OperationKind, ts = Date.now()): Promise<void> {
+    return this.exclusive(() => this.beginOperationNow(operationId, kind, ts));
+  }
+
+  private async beginOperationNow(operationId: string, kind: OperationKind, ts = Date.now()): Promise<void> {
     this.assertUsable();
     if (this._recovery.kind !== "clean") throw new TranscriptRuntimeStateError("uncertain transcript recovery must be resolved before dispatch");
     if (this.activeOperation) throw new TranscriptRuntimeStateError("another transcript operation is already active");
@@ -278,12 +287,16 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     } catch (error) {
       // Registry publication is part of the managed pre-dispatch boundary. Close the
       // transcript operation truthfully before reporting failure to the caller.
-      await this.abortOperation("pre_dispatch_persistence_failure").catch(() => undefined);
+      await this.abortOperationNow("pre_dispatch_persistence_failure").catch(() => undefined);
       throw error;
     }
   }
 
-  async appendEvent(event: NormalizedPersistenceEvent, ts = Date.now()): Promise<boolean> {
+  appendEvent(event: NormalizedPersistenceEvent, ts = Date.now()): Promise<boolean> {
+    return this.exclusive(() => this.appendEventNow(event, ts));
+  }
+
+  private async appendEventNow(event: NormalizedPersistenceEvent, ts = Date.now()): Promise<boolean> {
     this.assertUsable();
     if (event.kind === "transition") {
       throw new TranscriptRuntimeStateError("transitions require the dedicated transition boundary API");
@@ -306,7 +319,14 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     }
   }
 
-  async appendPresentationEvent(
+  appendPresentationEvent(
+    event: PresentationPersistenceEvent,
+    ts = Date.now(),
+  ): Promise<TranscriptPresentationRecord | null> {
+    return this.exclusive(() => this.appendPresentationEventNow(event, ts));
+  }
+
+  private async appendPresentationEventNow(
     event: PresentationPersistenceEvent,
     ts = Date.now(),
   ): Promise<TranscriptPresentationRecord | null> {
@@ -352,7 +372,14 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     }
   }
 
-  async appendTransitionEvent(
+  appendTransitionEvent(
+    event: NonActivationTransitionEvent,
+    options: { readonly durable?: boolean; readonly ts?: number } = {},
+  ): Promise<void> {
+    return this.exclusive(() => this.appendTransitionEventNow(event, options));
+  }
+
+  private async appendTransitionEventNow(
     event: NonActivationTransitionEvent,
     options: { readonly durable?: boolean; readonly ts?: number } = {},
   ): Promise<void> {
@@ -376,7 +403,14 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
   }
 
   /** Publish resumable non-routing state when no provider operation is active. */
-  async publishCheckpoint(
+  publishCheckpoint(
+    changes: TranscriptTerminalCheckpointChanges,
+    ts = Date.now(),
+  ): Promise<AgentSessionCheckpoint> {
+    return this.exclusive(() => this.publishCheckpointNow(changes, ts));
+  }
+
+  private async publishCheckpointNow(
     changes: TranscriptTerminalCheckpointChanges,
     ts = Date.now(),
   ): Promise<AgentSessionCheckpoint> {
@@ -411,7 +445,14 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     }
   }
 
-  async activateTransition(
+  activateTransition(
+    event: TargetActivationEvent,
+    ts = Date.now(),
+  ): Promise<AgentSessionCheckpoint> {
+    return this.exclusive(() => this.activateTransitionNow(event, ts));
+  }
+
+  private async activateTransitionNow(
     event: TargetActivationEvent,
     ts = Date.now(),
   ): Promise<AgentSessionCheckpoint> {
@@ -450,13 +491,26 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
   }
 
   /** Flush policy-projected input appended after beginOperation before provider dispatch. */
-  async syncBeforeDispatch(): Promise<void> {
+  syncBeforeDispatch(): Promise<void> {
+    return this.exclusive(() => this.syncBeforeDispatchNow());
+  }
+
+  private async syncBeforeDispatchNow(): Promise<void> {
     this.assertUsable();
     this.requireActive();
     await this.writer.sync();
   }
 
-  async finishOperation(
+  finishOperation(
+    event: "settled" | "failed" | "cancelled" | "interrupted",
+    changes: TranscriptTerminalCheckpointChanges = {},
+    errorCode?: PersistedMachineCode,
+    ts = Date.now(),
+  ): Promise<AgentSessionCheckpoint> {
+    return this.exclusive(() => this.finishOperationNow(event, changes, errorCode, ts));
+  }
+
+  private async finishOperationNow(
     event: "settled" | "failed" | "cancelled" | "interrupted",
     changes: TranscriptTerminalCheckpointChanges = {},
     errorCode?: PersistedMachineCode,
@@ -512,7 +566,14 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     }
   }
 
-  async abortOperation(
+  abortOperation(
+    reason: OperationAbortReason,
+    ts = Date.now(),
+  ): Promise<AgentSessionCheckpoint> {
+    return this.exclusive(() => this.abortOperationNow(reason, ts));
+  }
+
+  private async abortOperationNow(
     reason: OperationAbortReason,
     ts = Date.now(),
   ): Promise<AgentSessionCheckpoint> {
@@ -558,7 +619,11 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
    * already durable, only its missing checkpoint is materialized. The canonical reducer
    * validates the complete opening tail before the runtime exposes clean state.
    */
-  async acceptHarnessRecovery(ts = Date.now()): Promise<AgentSessionCheckpoint> {
+  acceptHarnessRecovery(ts = Date.now()): Promise<AgentSessionCheckpoint> {
+    return this.exclusive(() => this.acceptHarnessRecoveryNow(ts));
+  }
+
+  private async acceptHarnessRecoveryNow(ts = Date.now()): Promise<AgentSessionCheckpoint> {
     this.assertUsable();
     if (this.activeOperation) throw new TranscriptRuntimeStateError("cannot resolve recovery during an active operation");
     if (this._recovery.kind !== "uncertain") {
@@ -607,7 +672,7 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
       this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery, reduced.internalSessionHistory);
       this.openingStructuralTail = [];
       await this.publishManagedCheckpoint();
-      await this.appendEvent({
+      await this.appendEventNow({
         kind: "lifecycle",
         event: "recovery_resolved",
         detail: {
@@ -625,8 +690,17 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
 
   async close(): Promise<void> {
     if (this.closed) return;
+    // Writes already requested still land; anything requested after this is refused.
+    await this.serial;
+    if (this.closed) return;
     this.closed = true;
     await this.writer.close();
+  }
+
+  private exclusive<T>(write: () => Promise<T>): Promise<T> {
+    const run = this.serial.then(write);
+    this.serial = run.catch(() => undefined);
+    return run;
   }
 
   private installCheckpoint(

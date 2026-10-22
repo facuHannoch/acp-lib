@@ -4090,6 +4090,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       closed = true;
       await this.ownerLifecycle?.meteringRecorded?.(record);
       if (this.v2Transcript) {
+        // A cancellation record queued during the prompt belongs before the reply and the settle.
+        await this.presentation.drain();
         await this.v2Transcript.appendEvent({
           kind: "message",
           operationId,
@@ -4113,6 +4115,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       if (this.v2Transcript && !transcriptClosed) {
         const record = records[records.length - 1]!;
+        await this.presentation.drain().catch(() => undefined);
         await this.v2Transcript.appendEvent({
           kind: "message",
           operationId,

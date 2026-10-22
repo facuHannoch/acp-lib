@@ -18,6 +18,7 @@ export interface AuditLogIdentity {
 
 export class AuditPersistenceRuntime {
   private failed = false;
+  private serial: Promise<unknown> = Promise.resolve();
 
   private constructor(
     private readonly writer: FileSessionLogWriter<"audit">,
@@ -68,7 +69,14 @@ export class AuditPersistenceRuntime {
 
   get healthy(): boolean { return !this.failed; }
 
-  async append(event: NormalizedPersistenceEvent, durable = false, ts = Date.now()): Promise<boolean> {
+  /** One write at a time: each takes its sequence number from the writer when it runs. */
+  append(event: NormalizedPersistenceEvent, durable = false, ts = Date.now()): Promise<boolean> {
+    const run = this.serial.then(() => this.appendNow(event, durable, ts));
+    this.serial = run.catch(() => undefined);
+    return run;
+  }
+
+  private async appendNow(event: NormalizedPersistenceEvent, durable: boolean, ts: number): Promise<boolean> {
     const record = projectAuditEvent(event, {
       auditLogId: this.identity.auditLogId,
       generation: this.identity.generation,
@@ -88,7 +96,7 @@ export class AuditPersistenceRuntime {
   }
 
   async sync(): Promise<void> { await this.writer.sync(); }
-  async close(): Promise<void> { await this.writer.close(); }
+  async close(): Promise<void> { await this.serial; await this.writer.close(); }
 }
 
 /** Apply one normalized event stream to continuation state and its separate audit sink. */
