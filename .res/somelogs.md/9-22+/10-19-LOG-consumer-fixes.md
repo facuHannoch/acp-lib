@@ -180,3 +180,25 @@ PASS.
 - The "no record outside an operation" check held on both: kinds seen were message, metering,
   thinking, tool_call, all attributed. Item 12 is closed; the check stays as strict as it is.
   Not covered: the graceful-recovery opening (skipped), and Claude (not an adapter of this test).
+
+## TODO (2026-10-23): tool output is lost for some harnesses
+
+Seen in a consumer webapp: a Codex shell step shows its input but an empty output box. The stored
+Codex tool records (smoke-tests/test11-steerTurn) hold only `rawOutput: { exit_code }` and a
+`{ type: "terminal", terminalId }` reference.
+
+A tool's output can reach the client three ways. From reading the installed adapters:
+
+| Channel | Who uses it (for a client like ours) | Library today |
+|---|---|---|
+| `content` / `rawOutput` on the tool update | OpenCode (confirmed in records), Claude (because we don't declare `_meta.terminal_output`), Pi (no side channel in its code) | stored |
+| `_meta.terminal_output_delta` / `terminal_output` chunks (Zed convention) | Codex | dropped: no `_meta` handling in `src` |
+| the client's own terminal (`terminal/create`, `terminal/output`) | Kimi, whenever the client advertises `terminal: true` (our default) | output lives in our terminal, never linked to the tool record (unconfirmed by a run) |
+
+To do:
+- Assemble the output whatever the channel: collect `_meta` chunks per tool call; on completion
+  attach the referenced terminal's output; store it as the tool's output text (size cap).
+- Before building: one short run per harness (Codex, Kimi, Claude, Pi), one command each, protocol
+  capture with bodies, to see exactly what arrives. Needs authorization (tokens).
+- Presets: add Grok Build (`grok agent stdio`, ACP, early beta, SuperGrok Heavy) as unverified,
+  like `gemini` / `copilot`.
