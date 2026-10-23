@@ -266,3 +266,6 @@ step expanded with `records.get`). Full suite: 1060 pass.
   assistant message records (first revision per logical message). A few milliseconds even at
   thousands of messages, but it grows with the conversation. If it ever shows up, a small index
   (e.g. on the first revision of each logical message) fixes it.
+- Real-harness run (OpenCode, `opencode-go/deepseek-v4.1-flash` for the run only, recovery step
+  skipped): all PASS, exit 0. `PASS history pages agentMessages=2 pages=4 records=83 items=58`,
+  with tool calls and thinking in the turns, so the summary check on tool steps ran.
