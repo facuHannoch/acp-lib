@@ -200,6 +200,38 @@ const older = first.olderCursor
 if (older) items = reconcileConversationTimeline(items, older.records);
 ```
 
+Paging by records cuts turns anywhere: a tool call is several records, so a page can start
+mid-turn. To page by what the conversation shows, count agent messages instead:
+
+```ts
+const page = await agent.persistence.records.listRecent!(conversation.id, {
+  agentMessages: 50,  // each page: 50 agent messages and the activity that led to each
+  fold: true,         // timeline items instead of records
+  detail: "summary",  // tool calls without input and output
+});
+let items = page.items;
+// Expanding a step: its full record merges into the summary item.
+const full = await agent.persistence.records.get(step.current.recordId);
+items = reconcileConversationTimeline(items, [full!]);
+```
+
+- The cut goes right after an agent message (out-of-band appends count), so a page usually
+  begins with a turn's user message, and activity after the newest message (a running turn)
+  stays on the newest page.
+- A record goes to the page where its item's first revision falls. A page holds every revision
+  of its items, including later ones up to the snapshot, and none of another page's: a message
+  that completed after the next tool started is not split across pages.
+- `limit` caps the page (records, or items when folded; default 2000). A page that reaches it
+  ends at a whole item with `truncated: true`, and `olderCursor` continues from there.
+- `fold: true` returns `ConversationTimelineItem`s; live records still merge with
+  `reconcileConversationTimeline(items, records)`. With `detail: "summary"` an item keeps two
+  revisions, its first (its start) and its merged current (under its latest revision's id),
+  so it reconciles like any other item.
+- `detail: "summary"` also works on records. The step title is the harness's `name`, which
+  varies by harness; `records.get` returns the input and output.
+- Without `agentMessages`, `fold` or `detail`, `listRecent` is unchanged. A cursor is bound to
+  its unit: a record-paging cursor is refused when paging by agent messages, and the reverse.
+
 Every physical record has a stable `recordId` and a conversation-local `sequence`.
 `operationId` says which library operation wrote it: a turn (`result.operationId`), an
 internal inference or recap, a setting change, a mode change, a handoff, or an appended
@@ -273,7 +305,8 @@ Preview paging follows conversation `updatedAt` order; that list may
 reorder as conversations advance, so consumers should refresh it rather than treat
 offset cursors as a frozen snapshot. `messages.list()` returns the latest visible
 revision per logical message; `records.list()` and `records.listRecent()` retain all
-physical revisions for timeline reconstruction and audit. `listRecent` and `listPreviews` are SQLite
+physical revisions for timeline reconstruction and audit (except `listRecent` with `fold: true`
+and `detail: "summary"`, which keeps two per item). `listRecent` and `listPreviews` are SQLite
 capabilities; custom persistence backends may not implement them.
 
 ### Live committed-record events

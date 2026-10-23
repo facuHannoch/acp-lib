@@ -154,6 +154,44 @@ describe("Agent consumer transcript workflow", () => {
     ]);
   }, 20_000);
 
+  test("pages history by agent messages as folded summaries that merge with the full step", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-paging-"));
+    directories.push(directory);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE] } },
+      defaultAdapterId: "fixture",
+      capture: { tool_call: "content" },
+    });
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("first turn");
+    await conversation.prompt("second turn");
+
+    // Two agent messages: the second turn, beginning with its prompt.
+    const page = await agent.persistence.records.listRecent!(conversation.id, {
+      agentMessages: 2, fold: true, detail: "summary", kinds: ["message", "tool_call"],
+    });
+    expect(page.items.map((item) => item.current.kind === "message" ? item.current.content : item.current.kind))
+      .toEqual(["second turn", "A before tool", "tool_call", "B after tool"]);
+    const message = page.items[1]!;
+    expect(message.revisions.length).toBe(2);
+    expect(message.current).toMatchObject({ status: "completed" });
+    const step = page.items[2]!;
+    expect(step.current).toMatchObject({ kind: "tool_call", state: "completed" });
+    expect("input" in step.current || "output" in step.current).toBe(false);
+    const [expanded] = reconcileConversationTimeline([step], [(await agent.persistence.records.get(step.current.recordId))!]);
+    expect(expanded!.current).toMatchObject({ input: { path: "a.txt" } });
+    expect(JSON.stringify((expanded!.current as { output?: unknown }).output)).toContain("contents of a.txt");
+
+    const older = await agent.persistence.records.listRecent!(conversation.id, {
+      agentMessages: 2, fold: true, detail: "summary", kinds: ["message", "tool_call"], olderCursor: page.olderCursor,
+    });
+    expect(older.items.map((item) => item.current.kind === "message" ? item.current.content : item.current.kind))
+      .toEqual(["first turn", "A before tool", "tool_call", "B after tool"]);
+    expect(older.olderCursor).toBeUndefined();
+  }, 20_000);
+
   test("round-trips sender metadata, recent history, live catch-up, and previews", async () => {
     const directory = await mkdtemp(join(tmpdir(), "acp-consumer-read-"));
     directories.push(directory);

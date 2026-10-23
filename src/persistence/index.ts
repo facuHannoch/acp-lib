@@ -91,6 +91,8 @@ export type {
   ProviderSessionRecord,
   RecordCaptureLevel,
   RecordListOptions,
+  RecentItemPage,
+  RecentItemPageOptions,
   RecentRecordPage,
   RecentRecordPageOptions,
   SearchMatch,

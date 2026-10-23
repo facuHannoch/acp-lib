@@ -4,6 +4,7 @@ import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 import type { ConversationRecoveryCheckpointRepository } from "../checkpointing/contracts.ts";
+import type { ConversationTimelineItem } from "./timeline-reconcile.ts";
 
 export type PersistenceJsonPrimitive = string | number | boolean | null;
 export type PersistenceJsonValue =
@@ -364,14 +365,47 @@ export interface ConversationRecordPage {
 /** Newest matching records at a fixed conversation-sequence snapshot, oldest-first within each page. */
 export interface RecentRecordPageOptions {
   readonly kinds?: readonly ConversationRecordKind[];
+  /**
+   * Without `agentMessages`, the records per page (default 50, at most 500). With it, the most a
+   * page holds (records, or items when folded; default 2000, at most 10000): a page that reaches it
+   * ends early with `truncated`.
+   */
   readonly limit?: number;
   readonly olderCursor?: string;
+  /**
+   * Page by agent messages: each page holds this many agent messages and the activity that led to
+   * each. A record goes to the page where its item's first revision falls, so a page holds every
+   * revision of its items and none of another page's.
+   */
+  readonly agentMessages?: number;
+  /** `summary` leaves out tool calls' input and output; `records.get(recordId)` returns them. */
+  readonly detail?: "full" | "summary";
+  /** `true` returns timeline items instead of records. */
+  readonly fold?: false;
+}
+
+export interface RecentItemPageOptions extends Omit<RecentRecordPageOptions, "fold"> {
+  readonly fold: true;
 }
 
 export interface RecentRecordPage {
   readonly records: readonly ConversationRecord[];
   readonly snapshotSequence: number;
   readonly olderCursor?: string;
+  /** The page reached `limit` before its last agent message; the next page continues from there. */
+  readonly truncated?: true;
+}
+
+/**
+ * Recent history as timeline items, merged as `reconcileConversationTimeline` does. With
+ * `detail: "summary"` an item keeps two revisions, its first and its merged current, so it still
+ * reconciles with later records.
+ */
+export interface RecentItemPage {
+  readonly items: readonly ConversationTimelineItem[];
+  readonly snapshotSequence: number;
+  readonly olderCursor?: string;
+  readonly truncated?: true;
 }
 
 export interface MessageListOptions {
@@ -554,6 +588,10 @@ export interface ConversationRecordPersistence {
    */
   deleteForConversation?(agentConversationId: AgentConversationId): Promise<number>;
   /** Optional efficient newest-first history API. Use list(afterSequence) for live catch-up. */
+  listRecent?(
+    agentConversationId: AgentConversationId,
+    options: RecentItemPageOptions,
+  ): Promise<RecentItemPage>;
   listRecent?(
     agentConversationId: AgentConversationId,
     options?: RecentRecordPageOptions,

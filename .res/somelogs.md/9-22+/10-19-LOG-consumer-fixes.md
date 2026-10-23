@@ -236,8 +236,10 @@ run of activity, and "load older" brings the other half.
   `reconcileConversationTimeline(items, records)`.
 - `detail: "summary"` leaves out a tool call's input and output (the bulk of a page: ~100 bytes
   for the step against KBs for one file read). The consumer fetches the full record on expand with
-  `records.get(recordId)` (indexed by its unique id). Folded summary items carry no `revisions`
-  (empty), since those would bring the weight back. Input stays out for now; the step title is
+  `records.get(recordId)` (indexed by its unique id). Folded summary items keep two revisions, the
+  first and the merged current (under the latest revision's id), not all of them. (Planned as no
+  revisions; changed while implementing: the reconcile rebuilds an item from its revisions, so an
+  empty list would drop the item at its next merge with live records.) Input stays out for now; the step title is
   the harness's `name`, which varies by harness (Codex: the command; Claude: `Read file '…'`).
 - `limit` is the cap in this mode (records, or items when folded; default 2000). A page that
   reaches it ends at an item instead of an agent message and says `truncated: true`; the next page
@@ -246,3 +248,12 @@ run of activity, and "load older" brings the other half.
   The return type follows `fold` through overloads. The cursor stays a sequence bound to the
   snapshot and the filters, and records which unit it was made for; a cursor of one mode is
   refused by the other. SQLite only (JSONL has no paged reader).
+
+Implemented: `SqliteAgentPersistence.listRecent` (`recentAgentMessagePage`). The page's agent
+messages come from one `GROUP BY` over the conversation's assistant message records (first revision
+per logical message); the records of the range and of the operations it touches are read, assigned
+to items by `conversationTimelineItemId`, and kept when the item began in the range. Tests: a
+backend test over a hand-laid turn (spread revisions, an out-of-band append mid-turn, the cap, a
+cursor of the other unit), and an agent test over the fixture (two turns, folded summaries, the
+step expanded with `records.get`). Full suite: 1060 pass.
+

@@ -130,6 +130,8 @@ export type {
   ConversationErrorRecoverability,
   ConversationErrorSource,
   ErrorRecord,
+  RecentItemPage,
+  RecentItemPageOptions,
   RecentRecordPage,
   RecentRecordPageOptions,
   IdentityMemoryObservation,

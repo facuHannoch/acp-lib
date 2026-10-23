@@ -68,11 +68,13 @@ function handle(message: any): void {
         title: "Read",
         kind: "read",
         status: "pending",
+        rawInput: { path: "a.txt" },
       });
       update({
         sessionUpdate: "tool_call_update",
         toolCallId: "tool-1",
         status: "completed",
+        rawOutput: { output: "contents of a.txt" },
       });
       update({
         sessionUpdate: "agent_message_chunk",
