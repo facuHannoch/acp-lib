@@ -169,3 +169,14 @@ Not changed, kept on the list:
 
 Full suite: 1058 pass. End-to-end smoke test (`ACP_TEST8_ADAPTER=test`, recovery skipped): all
 PASS.
+
+## 2026-10-23, real-harness end-to-end run (review item 12)
+
+- `smoke-tests/end-to-end` against Codex (default model) and OpenCode
+  (`opencode-go/deepseek-v4.1-flash`, set for the run only), throwaway data directories, the
+  provider-session deletion step answered `skip`.
+- Both PASS, exit 0: initial (4 turns, 2 other operations), reopened (6 turns, recall answer "3"),
+  checkpoint, metering, audit (Codex 203 entries, OpenCode 304).
+- The "no record outside an operation" check held on both: kinds seen were message, metering,
+  thinking, tool_call, all attributed. Item 12 is closed; the check stays as strict as it is.
+  Not covered: the graceful-recovery opening (skipped), and Claude (not an adapter of this test).
