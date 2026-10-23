@@ -257,3 +257,8 @@ backend test over a hand-laid turn (spread revisions, an out-of-band append mid-
 cursor of the other unit), and an agent test over the fixture (two turns, folded summaries, the
 step expanded with `records.get`). Full suite: 1060 pass.
 
+- `smoke-tests/end-to-end`: after the reopen, `assertHistoryPages` walks the history two agent
+  messages per page: every record on exactly one page, at most two agent messages per page, folded
+  summary items never on two pages and tool steps without input or output. One line in the main
+  flow, `PASS history pages ...`. Test adapter: 4 pages, 47 records, 41 items. The test adapter
+  makes no tool calls, so the summary check on tool steps only bites on a real harness.

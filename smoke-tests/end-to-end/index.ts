@@ -210,6 +210,7 @@ try {
   );
   assertSqliteHistory(conversationId, expectedMessages);
   await assertSqliteOperations(reopenedAgent, conversationId, turnOperationIds, outOfBand);
+  await assertHistoryPages(reopenedAgent, conversationId);
   console.log(
     `PASS reopened agent=${reopenedAgent.id} conversation=${conversationId} answer=${JSON.stringify(reopenedAnswer)} messages=${persistedAfterRecall.messages.length}`,
   );
@@ -668,6 +669,52 @@ async function assertSqliteOperations(
   } finally {
     database.close();
   }
+}
+
+/**
+ * Paging by agent messages, two per page, walks the whole history: every record lands on exactly
+ * one page, no page holds more than two agent messages, and folded summary pages never repeat an
+ * item or carry a tool step's input or output.
+ */
+async function assertHistoryPages(agent: Agent, conversationId: AgentConversationId): Promise<void> {
+  const records = agent.persistence.records;
+  const all = await records.list(conversationId, { limit: 1_000 });
+  const seen = new Map<string, number>();
+  let pages = 0;
+  let olderCursor: string | undefined;
+  do {
+    const page = await records.listRecent!(conversationId, { agentMessages: 2, ...(olderCursor ? { olderCursor } : {}) });
+    const agentMessages = new Set(page.records.flatMap((record) =>
+      record.kind === "message" && record.role === "assistant" ? [record.logicalMessageId ?? record.recordId] : []));
+    assert.ok(agentMessages.size <= 2, `page ${pages + 1} holds ${agentMessages.size} agent messages`);
+    for (const record of page.records) seen.set(record.recordId, (seen.get(record.recordId) ?? 0) + 1);
+    olderCursor = page.olderCursor;
+    pages++;
+  } while (olderCursor);
+  assert.deepEqual(
+    all.records.map((record) => record.recordId).filter((id) => seen.get(id) !== 1),
+    [],
+    "paging by agent messages lost a record or put one on two pages",
+  );
+
+  const itemPages = new Map<string, number>();
+  let items = 0;
+  olderCursor = undefined;
+  do {
+    const page = await records.listRecent!(conversationId, {
+      agentMessages: 2, fold: true, detail: "summary", ...(olderCursor ? { olderCursor } : {}),
+    });
+    for (const item of page.items) {
+      assert.ok(!itemPages.has(item.id), `item ${item.id} is on two pages`);
+      itemPages.set(item.id, 1);
+      if (item.current.kind === "tool_call") {
+        assert.ok(!("input" in item.current) && !("output" in item.current), "a summary tool step carries its input or output");
+      }
+    }
+    items += page.items.length;
+    olderCursor = page.olderCursor;
+  } while (olderCursor);
+  console.log(`PASS history pages agentMessages=2 pages=${pages} records=${all.records.length} items=${items}`);
 }
 
 function assertSqliteProtocolPolicy(conversationId: AgentConversationId): void {
