@@ -270,7 +270,7 @@ step expanded with `records.get`). Full suite: 1060 pass.
   skipped): all PASS, exit 0. `PASS history pages agentMessages=2 pages=4 records=83 items=58`,
   with tool calls and thinking in the turns, so the summary check on tool steps ran.
 
-## 2026-10-23, messages made of parts (requirements 6, 7, 8, 10): design in progress
+## 2026-10-23, messages made of parts (requirements 6, 7, 8, 10): design
 
 **Problem.** A message is a string. Sending: every attachment goes out as ACP `image`, whatever its
 mimeType (`client.ts` `runPrompt`), with no check against the agent's `promptCapabilities`, and
@@ -315,13 +315,63 @@ Codex: `input_image` with a data URL. OpenCode: a generic `file` part (`mime`, d
 - Not yet run: how each harness's sandbox treats a read/edit outside the workspace, directly and
   through a symlink.
 
-**Open.**
-- Where kept copies live: a pluggable store (`put`/`get`/`delete`, SQLite blob table by default,
-  kept out of message rows) lets the library show and resend them (handoff, recovery); a
-  consumer-owned copy (`keep: false` plus its own id in metadata) is simplest but cannot be resent.
-- Naming of the API (`copy`/`pointer`, `keep`, `record`), and the default for unchosen parts
-  (size threshold, agent capabilities). A large upload has no original to point to, so a pointer
-  by default only works if the kept copy sits where the agent can see it.
-- `prompt({ text, attachments })`: becomes text plus copies with `keep: false` (today's behavior).
-- Out-of-band messages (8): replay or not, and their operation and place when sent during a turn.
-- Size limits; search over parts (10).
+**Decided in the second pass.**
+- Where kept copies live: a `MediaStore` interface (`put(bytes, info) → ref`, `get(ref)`,
+  `delete(ref)`). The default implementation is a SQLite blob table in the agent's database, kept
+  out of the message rows; a consumer can plug its own (S3, the webapp's storage). The rest of the
+  library only sees refs. The agent names its stores, with a default; a part names one only to
+  use another.
+- Three choices, for copies only: record it (`record: false`: sent, nothing recorded), keep the
+  bytes (`keep: false`: recorded as name, type, size and hash, no bytes), and where
+  (`keep: true` for the default store, `keep: "<store>"` for another). `record: false` with
+  `keep` is refused.
+- Names: `copy` and `link`, the same key in input and in history, rather than `ref`/`uri` (they
+  name fields, not the meaning, and a kept copy has a ref too). They match ACP's embedded
+  resource and `resource_link`.
+  ```ts
+  { kind: "image", copy: { data }, keep: true }        // input
+  { kind: "image", copy: { ref: "media-123" } }        // input (resend a kept copy) or history
+  { kind: "image", copy: {} }                          // history: sent, not kept
+  { kind: "image", link: { uri: "file:///work/plot.png" } }
+  ```
+- Links record only the pointer: uri, kind, name and mimeType when known. Nothing is fetched or
+  kept, so history shows whatever is there today (changed or broken). Later, size and mtime at
+  sending could let a UI say "changed since". A link can be `record: false` too.
+- A link is sent as an ACP `resource_link` with the absolute path as a `file://` uri (a relative
+  path is resolved against the conversation's working directory), plus name, mimeType and size.
+- Duplicates: none detected; every copy is new. Copies belong to their conversation and are
+  deleted with it, so nothing is shared. Resending a kept ref in the same conversation reuses it;
+  in another conversation it is copied. Each copy records its SHA-256, so deduplication can come
+  later without a migration.
+- Agent level, through the existing persistence settings: a `media` key in `capture`
+  (`none` = `record: false`, `metadata` = `keep: false`, `content` = `keep: true`; default
+  `content`), overridable per conversation by the resolver. It decides for the media the agent
+  sends and is the default for the consumer's parts; a part's own `record`/`keep` wins. `metadata`
+  is allowed with checkpointing on (checkpoints summarize text).
+- Copy or link when the part does not say: by size, with a default threshold per kind,
+  configurable on the agent; never forced when the part says. Defaults: `file` 100 KB, `image`
+  and `audio` 5 MB. Why: tokens depend on the kind. Text costs about 4 bytes a token, so 1 MB of
+  text is about 250k tokens (a whole context window) and 100 KB about 25k. An image costs by its
+  pixels, not its bytes (on Claude about width × height / 750, around 1.6k tokens at the most
+  after resizing), and the providers' own per-image upload limits are around 5 MB. Bytes with no
+  file behind them (an upload) cannot become a link: over the threshold they are sent as a copy
+  and may fail (a filesystem store could later give them a path to link to).
+- The Claude adapter ignores embedded blob resources, so a binary `file` copy may not reach it
+  whatever its size; the per-harness runs will say.
+- No size limits of our own: we are harness agnostic, any number is wrong for most harnesses. Any
+  size goes through and a harness error surfaces as it is.
+- Unsupported kinds (no `image`/`audio`/`embeddedContext` in `promptCapabilities`): the prompt is
+  refused with an error, nothing is silently dropped.
+- `prompt({ text, attachments })`: text plus copies with `keep: false` (today's behavior).
+- Out-of-band messages (8): they can carry media parts, sent with the next turn's block as copies
+  or links like any part, the block saying which message they belong to. Delivered once, not
+  replayed on handoff or recovery. Appended during a running turn: a standalone record (no
+  operation) at its sequence, so it stays interleaved where the user saw it, delivered at the next
+  turn. Paging already counts it as an agent message.
+- Search (10): message search stays over text and pasted text. A separate "files shared" listing
+  and search over name, kind, mimeType and size, filterable by conversation; usable later by the
+  agent through a tool.
+
+**Implementation order.** The part type and its ACP mapping; persistence and the `MediaStore`
+(SQLite default); the `media` capture key; receiving agent media chunks; the capabilities check;
+out-of-band media; the files search.
