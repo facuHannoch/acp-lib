@@ -269,3 +269,59 @@ step expanded with `records.get`). Full suite: 1060 pass.
 - Real-harness run (OpenCode, `opencode-go/deepseek-v4.1-flash` for the run only, recovery step
   skipped): all PASS, exit 0. `PASS history pages agentMessages=2 pages=4 records=83 items=58`,
   with tool calls and thinking in the turns, so the summary check on tool steps ran.
+
+## 2026-10-23, messages made of parts (requirements 6, 7, 8, 10): design in progress
+
+**Problem.** A message is a string. Sending: every attachment goes out as ACP `image`, whatever its
+mimeType (`client.ts` `runPrompt`), with no check against the agent's `promptCapabilities`, and
+what is sent always equals what is stored. Receiving: an agent's non-text `agent_message_chunk`
+(image, resource, link) is dropped (`extractResponseChunk` keeps text only); the Claude adapter
+does send image chunks (assistant and user, on history replay). Persistence: user messages keep
+their text only, out-of-band messages are text only, though `content_json` already accepts blocks.
+Loading and search: text only.
+
+How harnesses keep images (checked here): all three inline in their own transcript. Claude Code:
+an Anthropic `image` block with base64 (plus a copy on disk whose path the model is given).
+Codex: `input_image` with a data URL. OpenCode: a generic `file` part (`mime`, data `url`,
+`filename`).
+
+**Decided so far.**
+- Our own part type, close to ACP, mapped per controller (helps the non-ACP controller).
+- One model for user input, agent output and out-of-band messages.
+- Kinds: `text`, `pasted` (a named paste, sent as text), `image`, `audio`, `file` (anything else).
+  Separate media kinds because the agent's capabilities (`image`, `audio`, `embeddedContext`) and
+  the rendering are per kind. A `link` kind was dropped: image, audio and file can each be a link.
+- The axis for media is **copy or pointer**, not "stored or not":
+  - a copy: the agent receives the content in the prompt. `keep` says whether the bytes are kept
+    (`keep: false` records that it was sent, with name, type and size, and nothing else; fine
+    for feeding an agent files that may go with compaction);
+  - a pointer: the agent receives a reference to the original and opens it with its own tools;
+    edits and deletions affect the original.
+  A copy is never sent as a link (a copy the agent did not see would make the record lie).
+- `record: false` on a part: sent, not recorded at all (a call-mode wrapper). The library's own
+  provider-only text (identity preamble, out-of-band block) can use the same mechanism. Replay on
+  handoff/recovery sends recorded parts only.
+- An agent's `image`/`audio` chunk becomes a copy; a `resource_link` becomes a pointer part of the
+  kind its mimeType says (`file` when unknown).
+- Pointers, first version ("point 2"): the library does not limit them. It passes the pointer and
+  the agent's own permission flow decides; the consumer can declare directories for the
+  conversation, passed as ACP `additionalDirectories` (the Claude adapter honors it, the Codex
+  adapter parses it, our low-level client already sends it). Documented limit: an agent that
+  cannot see the file (another machine, an unshared container) needs a mount, a copy, or later
+  tools. Revisit after real use.
+- Set aside for now: a library directory of symlinks (`~/.cache/acp-lib/links/<conversation>/`):
+  careful sandboxes resolve a symlink's real target, so it helps only a narrow band; media tools
+  over MCP (works anywhere, but not "just works" for the agent); ACP client fs methods (text only).
+- Not yet run: how each harness's sandbox treats a read/edit outside the workspace, directly and
+  through a symlink.
+
+**Open.**
+- Where kept copies live: a pluggable store (`put`/`get`/`delete`, SQLite blob table by default,
+  kept out of message rows) lets the library show and resend them (handoff, recovery); a
+  consumer-owned copy (`keep: false` plus its own id in metadata) is simplest but cannot be resent.
+- Naming of the API (`copy`/`pointer`, `keep`, `record`), and the default for unchosen parts
+  (size threshold, agent capabilities). A large upload has no original to point to, so a pointer
+  by default only works if the kept copy sits where the agent can see it.
+- `prompt({ text, attachments })`: becomes text plus copies with `keep: false` (today's behavior).
+- Out-of-band messages (8): replay or not, and their operation and place when sent during a turn.
+- Size limits; search over parts (10).
