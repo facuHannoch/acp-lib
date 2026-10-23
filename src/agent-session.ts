@@ -519,8 +519,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private activeSupervisor: OperationSupervisor | null = null;
   /** The queued operation now running, so records written during it (protocol lines) carry its id. */
   private runningOperationId: string | null = null;
-  /** The operation that announced each open tool call: its later updates keep that id. */
-  private readonly toolCallOperations = new Map<string, string>();
   /**
    * The last consumer turn whose provider request itself failed (stalled, crashed, errored). Only
    * such a turn holds the queue.
@@ -769,20 +767,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
         turnId,
         record,
       );
-      if (runtimeRecord) this.queueOwnedRecord({ ...runtimeRecord, operationId: this.recordOperation(runtimeRecord, turnId) });
+      if (runtimeRecord) this.queueOwnedRecord({ ...runtimeRecord, operationId: turnId });
     }
-  }
-
-  /**
-   * The operation a runtime record belongs to: the running turn, except for a tool call, which keeps
-   * the operation that announced it even when its updates arrive during a later turn.
-   */
-  private recordOperation(record: NewConversationRecord, turnId: string): string {
-    if (record.kind !== "tool_call") return turnId;
-    const operationId = this.toolCallOperations.get(record.toolCallId) ?? turnId;
-    if (record.state === "completed" || record.state === "failed") this.toolCallOperations.delete(record.toolCallId);
-    else this.toolCallOperations.set(record.toolCallId, operationId);
-    return operationId;
   }
 
   private async recordNativeAction(
@@ -3498,7 +3484,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "permission",
             timestamp: new Date().toISOString(),
-            operationId: this.toolCallOperations.get(request.toolCallId) ?? item.turnId,
+            operationId: item.turnId,
             permissionId: request.toolCallId,
             state: "requested",
             request: toPersistenceJsonValue({
@@ -3519,7 +3505,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "permission",
             timestamp: new Date().toISOString(),
-            operationId: this.toolCallOperations.get(request.toolCallId) ?? item.turnId,
+            operationId: item.turnId,
             permissionId: request.toolCallId,
             state: "resolved",
             outcome: permissionRecordOutcome(request, outcome),

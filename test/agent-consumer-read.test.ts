@@ -109,6 +109,31 @@ describe("Agent consumer transcript workflow", () => {
     ]);
   }, 20_000);
 
+  test("a tool still running when its turn ends is recorded failed there; its next-turn update belongs to that turn", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-late-tool-"));
+    directories.push(directory);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE, "late-tool"] } },
+      defaultAdapterId: "fixture",
+    });
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    const first = await conversation.prompt("start the build");
+    const second = await conversation.prompt("is it done?");
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 100 })).records;
+    const tools = records.filter((record) => record.kind === "tool_call")
+      .map((record) => [record.operationId, record.kind === "tool_call" ? record.state : null]);
+    expect(tools).toEqual([
+      [first.operationId, "announced"],
+      [first.operationId, "failed"],
+      [second.operationId, "completed"],
+    ]);
+    const items = reconcileConversationTimeline([], records).filter((item) => item.kind === "tool_call");
+    expect(items.map((item) => item.current.kind === "tool_call" ? item.current.state : null)).toEqual(["failed", "completed"]);
+  }, 20_000);
+
   test("round-trips sender metadata, recent history, live catch-up, and previews", async () => {
     const directory = await mkdtemp(join(tmpdir(), "acp-consumer-read-"));
     directories.push(directory);

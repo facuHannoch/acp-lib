@@ -69,12 +69,22 @@ export function conversationTimelineItemId(record: ConversationRecord): string {
   }
 }
 
+/**
+ * The operation an item's provider-local id (a tool call id, a permission id) is unique within, so
+ * two turns that reuse an id stay two items. The metadata's operation id comes first: items whose
+ * records carried it there keep the ids they had before records carried `operationId`.
+ */
 function operationScope(record: ConversationRecord): string {
-  if (!record.metadata) return "";
+  const operationId = metadataOperationId(record.metadata) ?? record.operationId;
+  return operationId ? `${operationId}:` : "";
+}
+
+function metadataOperationId(metadata: string | undefined): string | undefined {
+  if (!metadata) return undefined;
   try {
-    const parsed = JSON.parse(record.metadata) as { operationId?: unknown };
-    return typeof parsed.operationId === "string" ? `${parsed.operationId}:` : "";
+    const parsed = JSON.parse(metadata) as { operationId?: unknown };
+    return typeof parsed.operationId === "string" ? parsed.operationId : undefined;
   } catch {
-    return "";
+    return undefined;
   }
 }

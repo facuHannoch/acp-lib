@@ -205,11 +205,13 @@ Every physical record has a stable `recordId` and a conversation-local `sequence
 internal inference or recap, a setting change, a mode change, a handoff, or an appended
 out-of-band message (its own one-record operation, `append-…`). Every record of one
 operation shares it, so a turn's messages, tool calls, permissions and thinking can be grouped
-without inferring turns from their position; `sequence` gives the order. A tool call keeps the
-operation that announced it, even when its updates arrive during a later turn. Records written
+without inferring turns from their position; `sequence` gives the order. A tool call still
+running when its turn ends is recorded `failed` in that turn; if the harness reports it later, that
+update is recorded under the turn it arrived in, as a separate timeline item. Records written
 outside any operation (protocol lines while connecting) have none. Operations can interleave:
-a message appended during a turn, or a tool update arriving in a later turn, sits inside
-another operation's sequence range, so group by `operationId`, not by range.
+a message appended during a turn sits inside the turn's sequence range, so group by
+`operationId`, not by range. Timeline items for tool calls, permissions, thinking and activity are
+keyed within their operation, so a provider id reused by a later turn is a new item.
 A cancelled operation records why and how in a `cancellation` record (two revisions under one
 `cancellationId`, carrying the cancelled operation's `operationId`): `requested` with its
 `reason` (`steer`: a message sent mid-turn; `interrupt`: Stop; `stalled`: the stale policy;

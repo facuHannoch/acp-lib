@@ -16,13 +16,22 @@
 - **Every record carries its operation.** Records have a typed `operationId`: the library
   operation that wrote them (turn, internal inference or recap, setting change, mode change,
   handoff, appended out-of-band message). Tool calls, permissions, thinking, activity, configuration, mode changes and protocol
-  lines now carry it as messages already did; a tool call keeps the operation that announced it.
-  Records outside an operation have none. `records.list(id, { operationId })` filters by it.
+  lines now carry it as messages already did. A tool call still running when its turn ends is
+  recorded `failed` in that turn; an update for it in a later turn is recorded under the later
+  turn. Records outside an operation have none. `records.list(id, { operationId })` filters by it.
   SQLite agent schema 15 recovers it on older records from their record ids.
 - **Cancellations are recorded.** A new record kind, `cancellation` (SQLite and JSONL), with
   `requested` (reason: `steer`, `interrupt`, `stalled`, `stop`, `abort`) and `resolved`
   (outcome: `acknowledged`, `forced`, `too_late`, `failed`) revisions under the cancelled
   operation's id. After a reload a turn can still be shown as stopped or redirected. Stopping a
-  conversation mid-turn now reports reason `stop` instead of `interrupt`. SQLite schema 15
+  conversation mid-turn records reason `stop`. SQLite schema 15
   rebuilds `conversation_records` to admit the kind. Audit capture key `cancellation`
   (default `metadata`).
+- **Timeline items are scoped by operation.** `reconcileConversationTimeline` keys tool call,
+  permission, thinking and activity items by the record's `operationId`, so two turns that reuse a
+  provider id stay two items. Items whose records carried `operationId` in their metadata keep their
+  ids; the others (tool calls, for example) get new ids, so a consumer that stored timeline item ids
+  sees them change once.
+- **Transcript writes are serialized.** A JSONL transcript and its audit log run their writes one at
+  a time. Before, a cancellation record written while an internal prompt finished could claim the
+  same sequence as the prompt's reply and leave the transcript refusing every later write.
