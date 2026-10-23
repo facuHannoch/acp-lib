@@ -517,7 +517,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private reconnecting = false;
   private detachControllerConnection: (() => void) | null = null;
   private activeSupervisor: OperationSupervisor | null = null;
-  /** The queued operation now running, so records written during it (protocol lines) carry its id. */
+  /**
+   * The operation now running, so records written during it (protocol lines) carry its id: the
+   * queued item, or an internal prompt while it runs. Internal prompts run inside a queued item or
+   * while the conversation opens, never beside a queued item, so one field is enough.
+   */
   private runningOperationId: string | null = null;
   /**
    * The last consumer turn whose provider request itself failed (stalled, crashed, errored). Only
@@ -4065,6 +4069,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
     let closed = false;
     let transcriptClosed = false;
+    const enclosingOperationId = this.runningOperationId;
+    this.runningOperationId = operationId;
     try {
       const kind = operationKind === "conversation_checkpoint" ? "recap" : "internal_inference";
       const result = await this.supervisedPrompt(controller, operationId, kind, () => controller.prompt(text));
@@ -4119,6 +4125,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
         );
       }
       throw err;
+    } finally {
+      this.runningOperationId = enclosingOperationId;
     }
   }
 

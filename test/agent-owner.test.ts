@@ -686,6 +686,27 @@ describe("Agent owner", () => {
     expect(metering.at(-1)?.usage.status).toBe("metered");
   });
 
+  test("protocol lines sent by a handoff's seed carry the seed's operation, the rest the handoff's", async () => {
+    const directory = await makeDirectory();
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: operationsAdapters(),
+      defaultAdapterId: "operations",
+      capture: { protocol: { level: "metadata", excludeMethods: ["session/update"] } },
+    }));
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("before the handoff");
+    const result = await conversation.handoff({
+      continuation: { kind: "provided", content: "portable continuation context" },
+    });
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 1_000 })).records;
+    const sent = records.filter((record) => record.kind === "protocol" && record.direction === "out")
+      .map((record) => [record.kind === "protocol" ? record.method : null, record.operationId]);
+    expect(sent).toContainEqual(["session/new", result.handoffId]);
+    expect(sent).toContainEqual(["session/prompt", `${result.handoffId}:seed`]);
+  });
+
   test("mode changes defer and retain provider mappings around a degraded stretch", async () => {
     const directory = await makeDirectory();
     const agent = await track(Agent.open({

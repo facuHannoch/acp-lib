@@ -207,8 +207,11 @@ out-of-band message (its own one-record operation, `append-…`). Every record o
 operation shares it, so a turn's messages, tool calls, permissions and thinking can be grouped
 without inferring turns from their position; `sequence` gives the order. A tool call still
 running when its turn ends is recorded `failed` in that turn; if the harness reports it later, that
-update is recorded under the turn it arrived in, as a separate timeline item. Records written
-outside any operation (protocol lines while connecting) have none. Operations can interleave:
+update is recorded under the turn it arrived in, as a separate timeline item. Protocol lines
+carry the operation that sent them: a handoff's own lines its id, the lines of its summary, seed
+or target prompt that prompt's id (`<handoffId>:summary`, `:seed`, `:target`); a recap's or a
+recovery seed's lines theirs. Records written outside any operation (protocol lines while
+connecting) have none. Operations can interleave:
 a message appended during a turn sits inside the turn's sequence range, so group by
 `operationId`, not by range. Timeline items for tool calls, permissions, thinking and activity are
 keyed within their operation, so a provider id reused by a later turn is a new item.
