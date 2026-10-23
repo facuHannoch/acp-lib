@@ -99,3 +99,73 @@ Each proposal was re-checked against its original problem:
   transcript; migration from a real version 14 table.
 - Pre-existing flakiness under load (`session-manager-restoration` "replacement generations",
   config-persistence `accept_effective`): fails about 1 in 6 on the previous commit too.
+
+## 2026-10-23, review of the branch and its fixes
+
+The branch was reviewed (no edits), each finding was weighed with options, and these were decided
+with the user. In the order fixed:
+
+1. **JSONL sequence collision** (`b95d8de`). A cancellation queued while an internal prompt ran,
+   then the prompt wrote its reply directly; both read the writer's next sequence before either
+   landed, the second write failed, and the transcript refused every later write. The cause is
+   older than the branch: any two overlapping writes collided. Options: drain before every direct
+   write (whack-a-mole), write the cancellation synchronously (the supervisor's cancel is sync),
+   or number records inside a serialized write. Chosen: the transcript runtime and the audit
+   runtime run their writes one at a time (`exclusive`), so the number is taken when the write
+   runs; an internal prompt also drains queued records before its reply, so the cancellation is
+   written before the reply and the settle. Test: a stalled handoff target prompt on JSONL
+   (failed before the fix).
+2. **`error` result after a cancel** (`c49519b`). Was labelled `too_late`; now `failed`, which
+   already meant "ended in an error". Storing the raw stop reason as well was set aside.
+3. **Two connection attempts per `setConfig`** (`08f5897`). The no-op check connected, and on
+   failure the normal path connected again. Not connecting in the check would defeat it (its case
+   is settings re-applied right after start); remembering the error was awkward. Chosen: the
+   branch connects once, compares, and otherwise runs; a connection failure is reported through
+   `configuration_started` / `configuration_failed`. Test counts load attempts (fixture appends
+   a line per failed load).
+4. **`stop` vs `endedBy: "interrupt"`** (`9572a1f`). Planned: add `"stop"` to `PromptEndedBy`.
+   Found: `stop()` closes the connection, so the turn always rejects and `endedBy` is never seen
+   for a stop. The public type was left unchanged (widening it for an unreachable value would
+   only break exhaustive switches); the stored reason `stop` is what consumers see. Test.
+6. **`toolCallOperations`** (`23784f3`). Planned: a tool announcement takes the current turn.
+   Found: at turn end every unfinished tool is flushed as `failed`, which removed it from the map,
+   so the map never outlived a turn; neither the reuse risk nor the "late update keeps its
+   announcing operation" behaviour existed. The map is removed; a tool still running at turn end
+   is recorded failed there, and a later update is recorded under the turn it arrives in. Docs
+   corrected. Test with a fixture mode (`late-tool`) that settles the tool in the next turn.
+7. **Timeline scope** (same commit). `operationScope` read only `metadata.operationId`, which tool
+   records lack, so a tool id reused by a later turn merged into one item. Now the metadata's id,
+   then the record's `operationId`. Items whose metadata had it keep their ids; tool call items
+   (and others without it) get new ids once. Noted in the changelog.
+8. **JSONL audit dropped cancellations** (`1c5ebf6`). Now written (`AuditLogCancellationRecord`),
+   as the SQLite agent audit already did.
+9. **Reason and outcome lists in three places** (same commit). `CANCEL_REASONS` /
+   `CANCEL_OUTCOMES` in `operations/contracts.ts`; the types and JSONL validation derive from
+   them. The SQLite CHECK stays literal (migration SQL must not change after it ships); a test
+   compares it to the lists.
+10. **Presentation `startedAt` map** (`7116510`). Planned: move it into the runtime's per-item
+    table and rebuild that table on reopen. Found: an item's id names its operation and the
+    runtime refuses a revision from another operation, so an item never continues after a reopen;
+    the remaining issue was growth. The start time now lives in the runtime's table next to the
+    position, and an operation's entries are dropped when it ends (turns drain queued writes
+    before finishing). Test.
+5. **Protocol lines of internal prompts** (`98f0d61`). A handoff's summary/seed/target lines
+   carried the handoff's id while their records carried `<handoffId>:summary` etc.; recap and
+   recovery seeding lines carried none. Checked first: internal prompts run inside a queued item
+   (handoff, reconnect during a turn or setting) or while the conversation opens (adoption recap,
+   recovery seed), never beside a queued item. So the running id is swapped for the prompt and
+   restored after it. Test (failed before the fix).
+13. **Missing test** (`b8c3bf1`): a turn that fails after message A ended keeps A `completed`
+    (fixture mode `fails`). The other two missing tests came with 1 and 6.
+
+Not changed, kept on the list:
+- 11: every database older than schema 15 copies `conversation_records` on upgrade. Accepted;
+  dropping the base `kind` CHECK (so a new kind needs no rebuild) to be raised next time a kind
+  is added.
+- 12: the end-to-end "no record outside an operation" check may be too strict on a real harness
+  (errors written while opening). Needs a real-harness run (authorization) before deciding
+  between giving those records the opening's id or exempting them.
+- 14: steers act only at tool boundaries; a text-only turn is not redirected. Design list.
+
+Full suite: 1058 pass. End-to-end smoke test (`ACP_TEST8_ADAPTER=test`, recovery skipped): all
+PASS.
