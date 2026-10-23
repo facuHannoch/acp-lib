@@ -262,3 +262,7 @@ step expanded with `records.get`). Full suite: 1060 pass.
   summary items never on two pages and tool steps without input or output. One line in the main
   flow, `PASS history pages ...`. Test adapter: 4 pages, 47 records, 41 items. The test adapter
   makes no tool calls, so the summary check on tool steps only bites on a real harness.
+- Note (cost): each page counts agent messages with a `GROUP BY` over the conversation's
+  assistant message records (first revision per logical message). A few milliseconds even at
+  thousands of messages, but it grows with the conversation. If it ever shows up, a small index
+  (e.g. on the first revision of each logical message) fixes it.
