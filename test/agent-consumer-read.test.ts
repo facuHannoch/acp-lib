@@ -134,6 +134,26 @@ describe("Agent consumer transcript workflow", () => {
     expect(items.map((item) => item.current.kind === "tool_call" ? item.current.state : null)).toEqual(["failed", "completed"]);
   }, 20_000);
 
+  test("a turn that fails keeps the message that ended before the failure completed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-fails-"));
+    directories.push(directory);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE, "fails"] } },
+      defaultAdapterId: "fixture",
+    });
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    await expect(conversation.prompt("show the order")).rejects.toThrow("model overloaded");
+
+    const messages = (await agent.persistence.messages.list(conversation.id)).messages;
+    expect(messages.map((message) => [message.content, message.status])).toEqual([
+      ["show the order", "completed"],
+      ["A before tool", "completed"],
+      ["B after tool", "failed"],
+    ]);
+  }, 20_000);
+
   test("round-trips sender metadata, recent history, live catch-up, and previews", async () => {
     const directory = await mkdtemp(join(tmpdir(), "acp-consumer-read-"));
     directories.push(directory);

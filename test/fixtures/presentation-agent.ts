@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 // One turn: message A, a tool call, message B. With the argument `no-ids` the chunks carry no
 // message ids, so only the tool call separates the two messages. With `late-tool`, the first turn
-// announces tool-1 and ends without settling it; the next turn settles it, then answers.
+// announces tool-1 and ends without settling it; the next turn settles it, then answers. With
+// `fails`, the turn fails with an error after message B.
 
 const withIds = process.argv[2] !== "no-ids";
 const lateTool = process.argv[2] === "late-tool";
+const fails = process.argv[2] === "fails";
 let prompts = 0;
 const decoder = new TextDecoder();
 let buffer = "";
@@ -77,6 +79,7 @@ function handle(message: any): void {
         ...(withIds ? { messageId: "assistant-b" } : {}),
         content: { type: "text", text: "B after tool" },
       });
+      if (fails) return send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "model overloaded" } });
       return send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
     }
     default:
