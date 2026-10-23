@@ -202,3 +202,47 @@ To do:
   capture with bodies, to see exactly what arrives. Needs authorization (tokens).
 - Presets: add Grok Build (`grok agent stdio`, ACP, early beta, SuperGrok Heavy) as unverified,
   like `gemini` / `copilot`.
+
+## 2026-10-23, paging history by agent messages (requirement 2)
+
+**Problem.** `records.listRecent({ limit })` pages by raw records. A tool call is several records
+(one per revision), so a page cuts a turn anywhere: it starts without the user message, splits a
+run of activity, and "load older" brings the other half.
+
+**Weighed and set aside.**
+- An operations table (kind, times, outcome per operation): paging doesn't need it; how a turn
+  ended is already in cancellation and metering records; a crash marker can be a smaller field.
+  Worth it only if consumers come to query operations themselves.
+- Paging by operation (N operations per page): every operation counts the same (a setting change
+  takes a slot), the per-page `GROUP BY` grows with the conversation, and interleaved records
+  have to be pulled back to their operation.
+- Paging by turn (user messages): the right size for nobody here; the consumer wants many agent
+  messages per page.
+- Paging by timeline items: still cuts turns.
+
+**Decided.**
+- The page unit is agent messages (`agentMessages: N`), counted as logical messages (by
+  `logicalMessageId`, falling back to the record id), out-of-band appends included. The cut goes
+  right after an agent message: a page holds N agent messages and the activity that led to each;
+  activity after the newest message (a running turn) stays on the newest page; a page usually
+  begins with the turn's user message.
+- Records are assigned to the item they belong to, and an item to the page where its first
+  revision falls. Revisions are spread through a turn (a message is completed when the next tool
+  starts, and again at turn end), so a plain sequence range would leave lone revisions on the
+  wrong page. All revisions of an item lie in one operation, so a page reads the rest from the
+  operations it touches. A page in this mode is a range of item starts, not of sequences.
+- `fold: true` returns timeline items (the reconcile's `ConversationTimelineItem`) instead of
+  records. The consumer gets what it renders; live revisions still merge with
+  `reconcileConversationTimeline(items, records)`.
+- `detail: "summary"` leaves out a tool call's input and output (the bulk of a page: ~100 bytes
+  for the step against KBs for one file read). The consumer fetches the full record on expand with
+  `records.get(recordId)` (indexed by its unique id). Folded summary items carry no `revisions`
+  (empty), since those would bring the weight back. Input stays out for now; the step title is
+  the harness's `name`, which varies by harness (Codex: the command; Claude: `Read file '…'`).
+- `limit` is the cap in this mode (records, or items when folded; default 2000). A page that
+  reaches it ends at an item instead of an agent message and says `truncated: true`; the next page
+  continues from there.
+- All three options are independent and off by default: without them `listRecent` is unchanged.
+  The return type follows `fold` through overloads. The cursor stays a sequence bound to the
+  snapshot and the filters, and records which unit it was made for; a cursor of one mode is
+  refused by the other. SQLite only (JSONL has no paged reader).
