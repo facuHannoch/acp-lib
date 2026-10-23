@@ -26,7 +26,7 @@
   operation's id. After a reload a turn can still be shown as stopped or redirected. Stopping a
   conversation mid-turn records reason `stop`. SQLite schema 15
   rebuilds `conversation_records` to admit the kind. Audit capture key `cancellation`
-  (default `metadata`).
+  (default `metadata`); JSONL audit logs write it too (`t: "cancellation"`).
 - **Timeline items are scoped by operation.** `reconcileConversationTimeline` keys tool call,
   permission, thinking and activity items by the record's `operationId`, so two turns that reuse a
   provider id stay two items. Items whose records carried `operationId` in their metadata keep their

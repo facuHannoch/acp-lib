@@ -219,7 +219,8 @@ A cancelled operation records why and how in a `cancellation` record (two revisi
 `forced` when the process had to be killed, `too_late` when the turn finished first, or
 `failed`). So after a reload a client can still show a turn as "Stopped" or "Redirected"; for
 a steer, the redirecting message is the next turn's. It describes the cancellation, not the
-mechanism (ACP `session/cancel`). JSONL transcripts write the same record (`t: "cancellation"`).
+mechanism (ACP `session/cancel`). JSONL transcripts and audit logs write the same record
+(`t: "cancellation"`).
 Databases from before schema 15 recover it for tool call, thinking, activity, permission,
 configuration and mode-change records; `records.list(id, { operationId })` filters by it.
 The reconciliation helper keeps distinct messages separate and groups revisions of an

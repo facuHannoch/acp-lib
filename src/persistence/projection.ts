@@ -272,8 +272,13 @@ export function projectAuditEvent(
     case "message":
     case "protocol_metadata":
     case "raw_protocol":
-    case "cancellation":
       return null;
+    case "cancellation":
+      return {
+        ...base, t: "cancellation", operationId: event.operationId, cancellationId: event.cancellationId,
+        event: event.event, reason: event.reason,
+        ...(event.outcome === undefined ? {} : { outcome: event.outcome }),
+      };
     case "reasoning":
       if (context.policy.reasoning === "none") return null;
       return { ...base, t: "reasoning", reasoningId: event.reasoningId, reasoningRevision: event.reasoningRevision, operationId: event.operationId, text: event.text, status: event.status };

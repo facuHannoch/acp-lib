@@ -21,6 +21,12 @@ import {
   type TransitionKind,
 } from "./checkpoint.ts";
 import {
+  CANCEL_OUTCOMES,
+  CANCEL_REASONS,
+  type CancelOutcome,
+  type CancelReason,
+} from "../operations/contracts.ts";
+import {
   canonicalizeJson,
   isPersistedMachineCode,
   type PersistedMachineCode,
@@ -227,8 +233,8 @@ export interface TranscriptCancellationRecord extends TranscriptEnvelope {
   readonly operationId: string;
   readonly cancellationId: string;
   readonly event: "requested" | "resolved";
-  readonly reason: "interrupt" | "steer" | "stalled" | "stop" | "abort";
-  readonly outcome?: "acknowledged" | "forced" | "too_late" | "failed";
+  readonly reason: CancelReason;
+  readonly outcome?: CancelOutcome;
 }
 
 export interface TranscriptTransitionRecord extends TranscriptEnvelope {
@@ -324,7 +330,8 @@ export type AuditLogRecordType =
   | "permission"
   | "transition"
   | "metering_reference"
-  | "lifecycle";
+  | "lifecycle"
+  | "cancellation";
 
 export interface AuditLogEnvelope {
   readonly v: 1;
@@ -423,6 +430,16 @@ export interface AuditLogLifecycleRecord extends AuditLogEnvelope {
   readonly detail?: JsonValue;
 }
 
+/** The audit copy of a transcript cancellation record. */
+export interface AuditLogCancellationRecord extends AuditLogEnvelope {
+  readonly t: "cancellation";
+  readonly operationId: string;
+  readonly cancellationId: string;
+  readonly event: "requested" | "resolved";
+  readonly reason: CancelReason;
+  readonly outcome?: CancelOutcome;
+}
+
 export type KnownAuditLogRecord =
   | AuditLogHeaderRecord
   | AuditLogOperationRecord
@@ -432,7 +449,8 @@ export type KnownAuditLogRecord =
   | AuditLogPermissionRecord
   | AuditLogTransitionRecord
   | AuditLogMeteringReferenceRecord
-  | AuditLogLifecycleRecord;
+  | AuditLogLifecycleRecord
+  | AuditLogCancellationRecord;
 
 export interface UnknownAuditLogRecord {
   readonly v: number;
@@ -487,7 +505,7 @@ const TRANSCRIPT_TYPES = new Set<string>([
 ]);
 const AUDIT_TYPES = new Set<string>([
   "header", "operation", "reasoning", "activity", "configuration", "permission",
-  "transition", "metering_reference", "lifecycle",
+  "transition", "metering_reference", "lifecycle", "cancellation",
 ]);
 
 function validateEnvelope(
@@ -593,9 +611,9 @@ function validateRecognizedRecord(
       requiredOperationId(record);
       nonblank(record.cancellationId, "cancellationId");
       oneOf(record.event, ["requested", "resolved"], "cancellation.event");
-      oneOf(record.reason, ["interrupt", "steer", "stalled", "stop", "abort"], "cancellation.reason");
+      oneOf(record.reason, CANCEL_REASONS, "cancellation.reason");
       if (record.outcome !== undefined) {
-        oneOf(record.outcome, ["acknowledged", "forced", "too_late", "failed"], "cancellation.outcome");
+        oneOf(record.outcome, CANCEL_OUTCOMES, "cancellation.outcome");
       }
       return;
     case "metering_reference":

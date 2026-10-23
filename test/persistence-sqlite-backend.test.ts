@@ -21,6 +21,7 @@ import {
   type PersistenceExtension,
 } from "../src/persistence/index.ts";
 import { createConversationRecoveryCheckpointId } from "../src/checkpointing/ids.ts";
+import { CANCEL_OUTCOMES, CANCEL_REASONS } from "../src/operations/contracts.ts";
 import { createInternalInferenceId } from "../src/internal-inference/ids.ts";
 import { emptyMeteringState } from "../src/metering/state.ts";
 import type { OperationMeteringRecord } from "../src/metering/record.ts";
@@ -281,6 +282,24 @@ describe("SQLite agent persistence", () => {
       }
     } finally {
       inspection.close();
+    }
+  });
+
+  test("the cancellation table admits exactly the library's cancel reasons and outcomes", async () => {
+    const { backend, path } = await openBackend();
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+    const database = new Database(path, { readonly: true });
+    try {
+      const { sql } = database.query("SELECT sql FROM sqlite_master WHERE name = 'conversation_cancellation_events'")
+        .get() as { sql: string };
+      // The CHECK lists are migration SQL and stay literal; this keeps them equal to the shared lists.
+      const listed = (column: string) => /IN \(([^)]*)\)/.exec(sql.slice(sql.indexOf(`${column} TEXT`)))![1]!
+        .split(",").map((value) => value.trim().replace(/'/g, ""));
+      expect(listed("reason")).toEqual([...CANCEL_REASONS]);
+      expect(listed("outcome")).toEqual([...CANCEL_OUTCOMES]);
+    } finally {
+      database.close();
     }
   });
 

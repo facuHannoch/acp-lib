@@ -19,14 +19,20 @@ export type OperationStage = "waiting" | "streaming" | "tool_running" | "awaitin
 
 export type SupervisedOperationKind = "turn" | "internal_inference" | "recap";
 
-export type CancelReason = "interrupt" | "steer" | "stalled" | "stop" | "abort";
+/**
+ * Why a cancel was requested. The persisted copies (JSONL validation, SQLite CHECK) derive from or
+ * are tested against these lists.
+ */
+export const CANCEL_REASONS = ["interrupt", "steer", "stalled", "stop", "abort"] as const;
+export type CancelReason = typeof CANCEL_REASONS[number];
 
 /**
  * How a requested cancel ended: the provider stopped (`acknowledged`), the process was killed
  * (`forced`), the operation finished on its own first (`too_late`), or it ended in an error, thrown or
  * reported as an `error` result (`failed`).
  */
-export type CancelOutcome = "acknowledged" | "forced" | "too_late" | "failed";
+export const CANCEL_OUTCOMES = ["acknowledged", "forced", "too_late", "failed"] as const;
+export type CancelOutcome = typeof CANCEL_OUTCOMES[number];
 
 /** The readable state of one running operation. Contains no content. */
 export interface OperationActivity {
