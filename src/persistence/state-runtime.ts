@@ -29,6 +29,8 @@ export interface PersistenceStateRuntime {
     event: PresentationPersistenceEvent,
     ts?: number,
   ): Promise<TranscriptPresentationRecord | null>;
+  /** When a presentation item of the running operation was first written; forgotten when it ends. */
+  presentationStartedAt?(presentationId: string): number | undefined;
   appendTransitionEvent(event: Omit<TransitionEvent, "event"> & { readonly event: Exclude<TransitionEvent["event"], "target_activated"> }, options?: { readonly durable?: boolean; readonly ts?: number }): Promise<void>;
   publishCheckpoint(changes: TranscriptTerminalCheckpointChanges, ts?: number): Promise<AgentSessionCheckpoint>;
   activateTransition(event: Omit<TransitionEvent, "event"> & { readonly event: "target_activated" }, ts?: number): Promise<AgentSessionCheckpoint>;

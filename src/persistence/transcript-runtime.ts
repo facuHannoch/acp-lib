@@ -114,8 +114,14 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     checkpoint: AgentSessionCheckpoint,
     history: readonly InternalSessionHistoryEntry[],
   ) => Promise<void>) | null = null;
+  /**
+   * Each presentation item's first position and time. An item's id names its operation and a
+   * revision from another operation is refused, so an item never outlives its operation: entries
+   * are dropped when it ends.
+   */
   private readonly presentationStates = new Map<string, {
     readonly position: number;
+    readonly startedAt: number;
     readonly revision: number;
     readonly kind: PresentationPersistenceEvent["kind"];
     readonly operationId: string;
@@ -361,6 +367,7 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
       await this.writer.append(record);
       this.presentationStates.set(event.presentation.id, {
         position,
+        startedAt: existing?.startedAt ?? ts,
         revision: event.presentation.revision,
         kind: event.kind,
         operationId: presentationOperationId(event),
@@ -558,6 +565,7 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
       );
       this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery);
       this.activeOperation = null;
+      this.forgetPresentation(active.operationId);
       await this.publishManagedCheckpoint();
       return this.checkpoint;
     } catch (error) {
@@ -604,6 +612,7 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
       );
       this.installCheckpoint(physical, reduced.checkpoint, reduced.recovery);
       this.activeOperation = null;
+      this.forgetPresentation(active.operationId);
       await this.publishManagedCheckpoint();
       return this.checkpoint;
     } catch (error) {
@@ -695,6 +704,16 @@ export class TranscriptPersistenceRuntime implements PersistenceStateRuntime {
     if (this.closed) return;
     this.closed = true;
     await this.writer.close();
+  }
+
+  presentationStartedAt(presentationId: string): number | undefined {
+    return this.presentationStates.get(presentationId)?.startedAt;
+  }
+
+  private forgetPresentation(operationId: string): void {
+    for (const [id, state] of this.presentationStates) {
+      if (state.operationId === operationId) this.presentationStates.delete(id);
+    }
   }
 
   private exclusive<T>(write: () => Promise<T>): Promise<T> {

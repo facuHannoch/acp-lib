@@ -142,6 +142,10 @@ export class AuditedPersistenceRuntime implements PersistenceStateRuntime {
     return primary;
   }
 
+  presentationStartedAt(presentationId: string): number | undefined {
+    return this.primary.presentationStartedAt?.(presentationId);
+  }
+
   async appendTransitionEvent(event: Omit<TransitionEvent, "event"> & { readonly event: Exclude<TransitionEvent["event"], "target_activated"> }, options: { readonly durable?: boolean; readonly ts?: number } = {}): Promise<void> {
     const ts = options.ts ?? Date.now();
     await this.primary.appendTransitionEvent(event, options);

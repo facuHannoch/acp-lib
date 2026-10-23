@@ -35,6 +35,10 @@ describe("AgentSession presentation persistence", () => {
         { messageId: "assistant-a", text: "A before tool" },
         { messageId: "assistant-b", text: "B after tool" },
       ]);
+      // An item never outlives its operation, so the runtime forgets the turn's items when it ends.
+      const runtime = (session as unknown as { v2Transcript: { presentationStartedAt(id: string): number | undefined } }).v2Transcript;
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(recorded.map((item) => runtime.presentationStartedAt(item.id)).filter((value) => value !== undefined)).toEqual([]);
     } finally {
       await session.stop();
     }
