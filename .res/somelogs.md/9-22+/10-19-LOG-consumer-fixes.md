@@ -299,8 +299,7 @@ Codex: `input_image` with a data URL. OpenCode: a generic `file` part (`mime`, d
     edits and deletions affect the original.
   A copy is never sent as a link (a copy the agent did not see would make the record lie).
 - `record: false` on a part: sent, not recorded at all (a call-mode wrapper). The library's own
-  provider-only text (identity preamble, out-of-band block) can use the same mechanism. Replay on
-  handoff/recovery sends recorded parts only.
+  provider-only text (identity preamble, out-of-band block) can use the same mechanism.
 - An agent's `image`/`audio` chunk becomes a copy; a `resource_link` becomes a pointer part of the
   kind its mimeType says (`file` when unknown).
 - Pointers, first version ("point 2"): the library does not limit them. It passes the pointer and
@@ -315,63 +314,101 @@ Codex: `input_image` with a data URL. OpenCode: a generic `file` part (`mime`, d
 - Not yet run: how each harness's sandbox treats a read/edit outside the workspace, directly and
   through a symlink.
 
-**Decided in the second pass.**
-- Where kept copies live: a `MediaStore` interface (`put(bytes, info) → ref`, `get(ref)`,
-  `delete(ref)`). The default implementation is a SQLite blob table in the agent's database, kept
-  out of the message rows; a consumer can plug its own (S3, the webapp's storage). The rest of the
-  library only sees refs. The agent names its stores, with a default; a part names one only to
-  use another.
-- Three choices, for copies only: record it (`record: false`: sent, nothing recorded), keep the
-  bytes (`keep: false`: recorded as name, type, size and hash, no bytes), and where
-  (`keep: true` for the default store, `keep: "<store>"` for another). `record: false` with
-  `keep` is refused.
-- Names: `copy` and `link`, the same key in input and in history, rather than `ref`/`uri` (they
-  name fields, not the meaning, and a kept copy has a ref too). They match ACP's embedded
-  resource and `resource_link`.
-  ```ts
-  { kind: "image", copy: { data }, keep: true }        // input
-  { kind: "image", copy: { ref: "media-123" } }        // input (resend a kept copy) or history
-  { kind: "image", copy: {} }                          // history: sent, not kept
-  { kind: "image", link: { uri: "file:///work/plot.png" } }
-  ```
-- Links record only the pointer: uri, kind, name and mimeType when known. Nothing is fetched or
-  kept, so history shows whatever is there today (changed or broken). Later, size and mtime at
-  sending could let a UI say "changed since". A link can be `record: false` too.
-- A link is sent as an ACP `resource_link` with the absolute path as a `file://` uri (a relative
-  path is resolved against the conversation's working directory), plus name, mimeType and size.
-- Duplicates: none detected; every copy is new. Copies belong to their conversation and are
-  deleted with it, so nothing is shared. Resending a kept ref in the same conversation reuses it;
-  in another conversation it is copied. Each copy records its SHA-256, so deduplication can come
-  later without a migration.
-- Agent level, through the existing persistence settings: a `media` key in `capture`
-  (`none` = `record: false`, `metadata` = `keep: false`, `content` = `keep: true`; default
-  `content`), overridable per conversation by the resolver. It decides for the media the agent
-  sends and is the default for the consumer's parts; a part's own `record`/`keep` wins. `metadata`
-  is allowed with checkpointing on (checkpoints summarize text).
-- Copy or link when the part does not say: by size, with a default threshold per kind,
-  configurable on the agent; never forced when the part says. Defaults: `file` 100 KB, `image`
-  and `audio` 5 MB. Why: tokens depend on the kind. Text costs about 4 bytes a token, so 1 MB of
-  text is about 250k tokens (a whole context window) and 100 KB about 25k. An image costs by its
-  pixels, not its bytes (on Claude about width × height / 750, around 1.6k tokens at the most
-  after resizing), and the providers' own per-image upload limits are around 5 MB. Bytes with no
-  file behind them (an upload) cannot become a link: over the threshold they are sent as a copy
-  and may fail (a filesystem store could later give them a path to link to).
+**Decided (second and third pass; this supersedes earlier wording).**
+
+The part, as input:
+```ts
+type Part =
+  | { kind: "text";   text: string;                record?: false }
+  | { kind: "pasted"; text: string; name?: string; record?: false }
+  | MediaPart;
+type MediaPart = {
+  kind: "image" | "audio" | "file";
+  mimeType?: string; name?: string;
+  mode?: "copy" | "link";       // unset: chosen by size
+  keep?: boolean;               // copies only
+  record?: false;
+} & ({ data: Uint8Array } | { path: string });   // path: a file path or a file:// uri
+```
+- `mode` says what the part is, and with it what the agent receives, what the record can hold and
+  which other fields are valid. (`delivery` was set aside: the field does more than deliver.)
+  - `copy`: the agent receives the content in the prompt. With `path` the library reads the file.
+    `keep` decides whether the bytes are kept.
+  - `link`: the agent receives an ACP `resource_link` to the original, an absolute `file://`
+    path (a relative path is resolved against the conversation's working directory), plus name,
+    mimeType and size, and opens it with its own tools; edits and deletions affect the original.
+    Requires `path`: `data` with `link` is refused (nothing to point to). `keep` with `link` is
+    refused. The record holds the pointer only (uri, kind, name, mimeType): nothing is fetched or
+    kept, so history shows what is there today, changed or broken. Later, size and mtime at
+    sending could let a UI say "changed since".
+  - `record: false` with `keep` is refused.
+- In history a media part carries its `mode` plus, for a copy, the store's `ref` (kept) or
+  nothing (not kept: name, type, size and SHA-256 only), and for a link the `uri`. A kept `ref`
+  can be sent again as input (`{ ref }` as a source) without uploading it again.
+- `mode` unset: by size, with a threshold per kind, configurable on the agent. Defaults: `file`
+  100 KB, `image` 3.75 MB, `audio` 5 MB. Why: tokens depend on the kind. Text costs about 4 bytes
+  a token, so 1 MB of text is about 250k tokens (a whole context window) and 100 KB about 25k. An
+  image costs by its pixels, not its bytes (on Claude about width × height / 750, around 1.6k
+  tokens at the most after resizing); the providers' per-image limits are around 5 MB, likely on
+  the base64 form, a third larger than the file, hence 3.75 MB. `data` over the threshold has no
+  file to link to: it is sent as a copy and may fail.
+- Kinds: SVG (`image/svg+xml`) is a `file`: it is XML text, and the providers' image inputs take
+  PNG, JPEG, GIF and WebP. Sent as text the model reads the markup; the mimeType stays, so a UI can
+  still show it as an image (sanitized: an SVG can carry scripts). Rasterizing it is a later option.
+- Where kept copies live: the agent's media store, an object, not a name on the part:
+  `media: { store }`, any object implementing `MediaStore` (`put(bytes, info) → ref`, `get`,
+  `delete`, `list(owner)`); the default is `SqliteMediaStore`, a blob table in the agent's
+  database kept out of the message rows. A consumer wanting several places routes inside its own
+  store (`put` receives the kind, size and conversation). The rest of the library only sees refs.
+  A failed `put` fails the prompt before sending; `list(owner)` lets a cleanup pass find bytes
+  whose delete failed.
+- Agent level: a `media` key in the V2 `capture` settings (`none` = not recorded, `metadata` =
+  not kept, `content` = kept; default `content`), overridable per conversation by the resolver. It
+  decides for the media the agent sends and is the default for the consumer's parts; a part's own
+  `record`/`keep` wins. Independent of `message` capture, like tools: an image recorded without
+  its text is odd but valid. Allowed with checkpointing on (checkpoints summarize text). The older
+  transcript settings (`capture.messages: "none" | "text"`) stay text only.
+- Duplicates: none detected; every copy is new and belongs to its conversation. A kept ref sent
+  again in the same conversation is reused; in another conversation it is copied. Each copy
+  records its SHA-256, so deduplication can come later without a migration.
+- Deleting: `deleteMedia(ref)` (and per conversation) removes the bytes only; the record keeps its
+  metadata and a dangling ref, shown as removed. Deleting records deletes their media; today that
+  is `records.deleteForConversation` only (no single-record delete). Soft-deleting a conversation
+  (`deletedAt`) does not touch media: hiding is not a media question.
+- Agent output: an `image`/`audio` chunk becomes a copy; a `resource_link` becomes a link of the
+  kind its mimeType says (`file` when unknown); an embedded `resource` (a file's content inline,
+  text or blob) becomes a `file` copy, shown like `pasted` when it is text. Media chunks replayed by
+  `session/load` (the Claude adapter sends user and assistant images) are skipped like replayed
+  text, so loading does not duplicate them.
+- Unsupported kinds (no `image`/`audio`/`embeddedContext` in `promptCapabilities`): an explicit
+  `copy` is refused with an error, nothing silently dropped; a part with `mode` unset and a `path`
+  goes as a link instead.
 - The Claude adapter ignores embedded blob resources, so a binary `file` copy may not reach it
   whatever its size; the per-harness runs will say.
 - No size limits of our own: we are harness agnostic, any number is wrong for most harnesses. Any
   size goes through and a harness error surfaces as it is.
-- Unsupported kinds (no `image`/`audio`/`embeddedContext` in `promptCapabilities`): the prompt is
-  refused with an error, nothing is silently dropped.
+- Handoff and recovery: they send one text (the handoff summary, the recovery seed), not messages,
+  so they carry text parts only; media is not mentioned.
+- Audit log (JSONL): never bytes; refs or uris plus metadata.
+- Degraded (pty) mode refuses non-text parts for now.
 - `prompt({ text, attachments })`: text plus copies with `keep: false` (today's behavior).
-- Out-of-band messages (8): they can carry media parts, sent with the next turn's block as copies
-  or links like any part, the block saying which message they belong to. Delivered once, not
-  replayed on handoff or recovery. Appended during a running turn: a standalone record (no
-  operation) at its sequence, so it stays interleaved where the user saw it, delivered at the next
-  turn. Paging already counts it as an agent message.
+- Out-of-band messages (8): they can carry media parts, sent with the next turn's block like any
+  part, the block saying which message they belong to. The block delivers them once; after that
+  they are ordinary history (the recovery seed includes them as text). Appended during a running
+  turn: a standalone record (no operation) at its sequence, interleaved where the user saw it,
+  delivered at the next turn. Paging already counts it as an agent message.
 - Search (10): message search stays over text and pasted text. A separate "files shared" listing
   and search over name, kind, mimeType and size, filterable by conversation; usable later by the
   agent through a tool.
 
-**Implementation order.** The part type and its ACP mapping; persistence and the `MediaStore`
-(SQLite default); the `media` capture key; receiving agent media chunks; the capabilities check;
-out-of-band media; the files search.
+**Implementation order.**
+1. The part type, its ACP mapping and the capabilities check (fixes today's "everything goes as
+   `image`").
+2. The `MediaStore`, `SqliteMediaStore` and persistence of parts; `deleteMedia`.
+3. The `media` capture key.
+4. Receiving the agent's media chunks.
+5. Out-of-band media.
+6. The files listing and search.
+7. Docs (`CONSUMER_GUIDE`, changelog) and the media step in the end-to-end smoke test.
+8. Real-harness runs (need authorization): which media each harness accepts, whether Claude reads
+   blobs, how sandboxes treat paths outside the workspace.
