@@ -1,6 +1,7 @@
+import { loadPendingParts, deletePendingParts } from "../media/pending.ts";
 import { resolveParts } from "../media/store.ts";
 import { attachmentParts } from "../media/acp.ts";
-import { persistParts } from "../media/content.ts";
+import { contentParts, persistParts } from "../media/content.ts";
 import { providerParts, type ResolvedPart } from "../media/parts.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import type { OperationStalledError } from "../operations/errors.ts";
@@ -28,6 +29,7 @@ import type {
 import { OwnedPromptPostCommitError } from "../agent-conversation-owner.ts";
 import {
   composeProviderPrompt,
+  composeProviderMessageParts,
   pendingOutOfBandMessages,
 } from "../out-of-band-messages.ts";
 import type {
@@ -47,6 +49,7 @@ import type { Agent } from "../agent.ts";
 
 export class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle {
   private readonly outputMedia = new WeakMap<object, string>();
+  private readonly deliveredMessages = new Map<string, { ids: readonly string[]; throughSequence: number }>();
   constructor(
     private readonly agent: Agent,
     private readonly conversationId: AgentConversationId,
@@ -120,20 +123,22 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     if (this.settings.auditLog) this.agent.audit?.notifyPending();
     await this.updateIdentity(records);
     // Read after the user record commits so a concurrent append falls in this turn or the next.
-    const outOfBand = records[0]
-      ? await pendingOutOfBandMessages(
-          this.agent.persistence,
-          this.conversationId,
-          input.targetProviderContextId,
-          records[0].sequence,
-        )
-      : [];
+    const currentUserSequence = records[0]?.sequence
+      ?? ((await this.agent.persistence.conversations.get(this.conversationId))!.latestSequence + 1);
+    const outOfBand = await pendingOutOfBandMessages(this.agent.persistence, this.conversationId,
+      input.targetProviderContextId, currentUserSequence);
     const text = composeProviderPrompt(input.text, identity.promptPreamble, outOfBand);
     const ordered: ResolvedPart[] = resolved.flatMap((parts, index) => [
       ...(index ? [{ kind: "text" as const, text: "\n\n" }] : []), ...parts,
     ]);
+    this.deliveredMessages.set(input.operationId, { ids: outOfBand.map((message) => message.recordId), throughSequence: currentUserSequence - 1 });
     return Object.freeze({
-      providerParts: providerParts(text, input.text, ordered),
+      providerParts: await composeProviderMessageParts(ordered, identity.promptPreamble, outOfBand, async (message) => {
+        const store = this.agent.media.store ?? this.agent.persistence.media;
+        return this.agent.pendingMessageParts.get(message.recordId)?.parts
+          ?? await loadPendingParts(store, this.conversationId, message.recordId)
+          ?? await contentParts(message.content, store);
+      }),
       providerText: text,
       participant,
       participants: Object.freeze(participants),
@@ -171,6 +176,13 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
           this.agent.media.store ?? persistence.media, this.settings.capture.media, { cache: this.outputMedia, pending }) } : record;
       }));
       await this.persistObservationsInTransaction(persistence, prepared, true, persisted);
+      if (status === "completed") await deletePendingParts(this.agent.media.store ?? persistence.media,
+        this.conversationId, this.deliveredMessages.get(input.operationId)?.ids ?? []);
+      if (status === "completed" && this.deliveredMessages.get(input.operationId)) {
+        await persistence.outOfBandDelivery?.advance(this.conversationId,
+          input.providerAttachment.kind === "absent" ? input.targetProviderContextId ?? "" : input.providerAttachment.descriptor.internalSessionId,
+          this.deliveredMessages.get(input.operationId)!.throughSequence);
+      }
       if (status === "completed" && input.providerAttachment.kind === "runtime_only") {
         const descriptor = input.providerAttachment.descriptor;
         const providerSessionRecordId = `provider-${randomUUID()}`;
@@ -194,6 +206,8 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         });
       }
     });
+    if (status === "completed") for (const id of this.deliveredMessages.get(input.operationId)?.ids ?? []) this.agent.pendingMessageParts.delete(id);
+    this.deliveredMessages.delete(input.operationId);
     for (const [part, ref] of pending) this.outputMedia.set(part, ref);
     this.agent.publishCommittedRecords(persisted);
     if (this.settings.auditLog) this.agent.audit?.notifyPending();
@@ -215,6 +229,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
   }
 
   async promptFailed(input: OwnedPromptFailed): Promise<void> {
+    this.deliveredMessages.delete(input.operationId);
     const timestamp = new Date().toISOString();
     const ends = input.messageEnds ?? [];
     const records = input.messages.map((message, index): NewConversationRecord => ({

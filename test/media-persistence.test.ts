@@ -120,3 +120,38 @@ test("partial media survives a failed provider turn", async () => {
   expect(messages.some((m) => m.role === "assistant" && m.status === "failed" && Array.isArray(m.content) && m.content.some((b) => b.type === "media"))).toBe(true);
   expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(4);
 });
+
+test("out-of-band media delivers once, retries failures, and removes temporary no-keep bytes", async () => {
+  const { agent } = await setup();
+  const conversation = await agent.conversations.create();
+  const record = await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([1]), mimeType: "image/png", keep: false }] });
+  expect(record.operationId).toBeUndefined();
+  expect(record.content).toMatchObject([{ type: "media", mode: "copy" }]);
+  expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(1); // pending transport only
+  await expect(conversation.prompt("FAIL_TURN")).rejects.toThrow();
+  const delivered = JSON.parse((await conversation.prompt("after")).text);
+  expect(delivered.blocks.some((b: { type: string }) => b.type === "image")).toBe(true);
+  expect(delivered.prompt).toContain(record.recordId);
+  expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(0);
+  expect(JSON.parse((await conversation.prompt("later")).text).blocks.some((b: { type: string }) => b.type === "image")).toBe(false);
+});
+
+test("pending no-keep out-of-band media survives Agent restart", async () => {
+  const { agent, root } = await setup();
+  const conversation = await agent.conversations.create();
+  await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([7]), mimeType: "image/png", keep: false }] });
+  await agent.close();
+  const reopened = await Agent.open({ persistence: { kind: "sqlite", path: join(root, "agent.sqlite") }, adapters: { fixture: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts")] } }, defaultAdapterId: "fixture", conversationDefaults: { metering: { pricing: false } } }); agents.push(reopened);
+  const result = await reopened.conversations.open(conversation.id);
+  const delivered = await result.conversation.prompt("after restart");
+  expect(JSON.parse(delivered.text).blocks).toContainEqual({ type: "image", data: "Bw==", mimeType: "image/png" });
+  expect(await reopened.persistence.media!.list(conversation.id)).toHaveLength(0);
+});
+
+test("out-of-band delivery advances even when message text capture is disabled", async () => {
+  const { agent } = await setup(undefined, { capture: { message: "none" } });
+  const conversation = await agent.conversations.create();
+  await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([8]), mimeType: "image/png" }] });
+  expect(JSON.parse((await conversation.prompt("first")).text).blocks.some((b: { type: string }) => b.type === "image")).toBe(true);
+  expect(JSON.parse((await conversation.prompt("second")).text).blocks.some((b: { type: string }) => b.type === "image")).toBe(false);
+});

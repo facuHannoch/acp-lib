@@ -1,3 +1,7 @@
+import { stagePendingParts } from "../media/pending.ts";
+import { resolveParts } from "../media/store.ts";
+import { persistParts } from "../media/content.ts";
+import { promptParts, partsText } from "../media/parts.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -42,6 +46,7 @@ import type { ManagerSettings } from "./manager-settings.ts";
 import {
   updateConversationIdentity,
   persistConversationObservations,
+  persistObservationsInTransaction,
   normalizeParticipants,
   internalInferenceMeteringKind,
   appendCanonicalRecord,
@@ -665,35 +670,49 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     id: AgentConversationId,
     input: AppendAssistantMessageInput,
   ): Promise<MessageRecord> {
-    if (typeof input.text !== "string" || !input.text.trim()) {
+    const parts = promptParts(input) ?? [{ kind: "text" as const, text: input.text ?? "" }];
+    const hasMedia = parts.some((part) => part.kind !== "text" && part.kind !== "pasted");
+    if (!partsText(parts).trim() && !hasMedia) {
       throw new Error("assistant message text cannot be blank");
     }
     const summary = await this.agent.persistence.conversations.get(id);
     if (!summary || summary.deletedAt) throw new Error(`unknown active conversation: ${id}`);
     const settings = this.writeSettings(summary);
     const level = settings.capture.message;
-    if (level !== "content" && level !== "raw") {
+    if (!hasMedia && level !== "content" && level !== "raw") {
       throw new Error(
         `appending an assistant message requires message capture "content" or "raw", not "${level}"`,
       );
     }
+    const resolved = await resolveParts(parts, { cwd: this.live.get(id)?.cwd ?? this.settings.defaults.cwd ?? process.cwd(),
+      capabilities: { image: true, audio: true, embeddedContext: true }, thresholds: this.agent.media.thresholds,
+      owner: id, store: this.agent.media.store ?? this.agent.persistence.media });
     const appendId = `append-${randomUUID()}`;
-    const [record] = await persistConversationObservations(this.agent, settings, [{
+    const persisted: ConversationRecord[] = [];
+    const recordId = `${appendId}:assistant`;
+    await this.agent.persistence.transaction(async (scope) => {
+      const content = await persistParts(resolved, id, this.agent.media.store ?? scope.media, settings.capture.media);
+      await persistObservationsInTransaction(settings, scope, [{
       recordId: `${appendId}:assistant`,
       agentSessionId: this.agent.id,
       agentConversationId: id,
       kind: "message",
       timestamp: new Date().toISOString(),
-      // The append is its own one-record operation in the timeline, not part of any turn.
-      operationId: appendId,
+      // A standalone message at its observed sequence, without a provider operation.
       role: "assistant",
       logicalMessageId: `message:${appendId}:assistant`,
       ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
-      content: input.text,
+      content,
       status: "completed",
       metadata: JSON.stringify({ origin: OUT_OF_BAND_MESSAGE_ORIGIN, appendId }),
-    }]);
+      }], true, persisted);
+      if (persisted[0]) await stagePendingParts(this.agent.media.store ?? scope.media, id, recordId, resolved, content, settings.capture.media);
+    });
+    const record = persisted[0];
     if (record?.kind !== "message") throw new Error("assistant message was not persisted");
+    if (!(this.agent.media.store ?? this.agent.persistence.media)) this.agent.pendingMessageParts.set(recordId, { owner: id, parts: resolved });
+    this.agent.publishCommittedRecords(persisted);
+    if (settings.auditLog) this.agent.audit?.notifyPending();
     await updateConversationIdentity(this.agent, settings, id, [record]);
     return record;
   }

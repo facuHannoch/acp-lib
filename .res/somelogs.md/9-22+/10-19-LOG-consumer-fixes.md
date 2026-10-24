@@ -545,3 +545,24 @@ and untracked files are preserved and excluded from implementation commits.
   **1082 pass, 0 fail**.
 - Testing gaps: media bytes are tiny fixture payloads, not decodable pictures/audio. No renderer
   is supplied by this library; embedded text-file rendering requires reading its stored ref.
+
+### Step 5 — out-of-band parts
+
+- `appendAssistantMessage` accepts parts, including media-only messages, and writes a standalone
+  record without an operation id. Next-turn blocks preserve part order and identify each media
+  message. Existing mid-turn sequence fences, bounded text selection and retry rules remain.
+- Added temporary pending-delivery envelopes in the media store: no-keep and record-suppressed
+  parts remain available until successful delivery, including across SQLite restart. Envelopes
+  reference kept copies rather than duplicating them; deleted copies cannot be recovered from
+  a stale in-memory cache. Envelopes are not message/audit payloads and are deleted on completion.
+- Added a provider-context delivery cursor so delivery does not depend on capturing user or
+  assistant text. It commits with the successful turn. Raw resolved parts also get capability
+  validation. Updated the end-to-end operation assertion for standalone appended messages.
+- Review: checked failure/retry, restart, deletion, text-disabled capture and bounded delivery.
+  Intentional compatibility change: appended messages no longer have their own operation id,
+  as required by this design. No known regression beyond that documented API change.
+- Tests: typecheck; 21 focused Agent/OOB tests; full suite **1085 pass, 0 fail**.
+- Testing gaps/limits: custom stores must preserve `MediaInfo.pendingFor` to restore temporary
+  envelopes. Without a store, pending suppressed/unkept parts are process-local. Custom backends
+  wanting delivery independent of captured text implement optional `outOfBandDelivery`; SQLite
+  supplies it. Cleanup of temporary objects in an external store cannot share SQLite rollback.

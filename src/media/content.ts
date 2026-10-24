@@ -46,3 +46,19 @@ export async function persistParts(parts: readonly ResolvedPart[], owner: string
   return blocks.every((block) => block.type === "text")
     ? blocks.map((block) => block.type === "text" ? block.text : "").join("") : blocks;
 }
+
+/** Restore a recorded copy for delivery; links are never opened by the library. */
+export async function contentParts(content: PersistedContent, store?: MediaStore): Promise<readonly ResolvedPart[]> {
+  if (typeof content === "string") return content ? [{ kind: "text", text: content }] : [];
+  const parts: ResolvedPart[] = [];
+  for (const block of content) {
+    if (block.type === "text" || block.type === "pasted") { parts.push({ kind: block.type, text: block.text, ...(block.type === "pasted" && block.name ? { name: block.name } : {}) }); continue; }
+    if (block.type !== "media") { const text = contentText([block]); if (text) parts.push({ kind: "text", text }); continue; }
+    if (block.mode === "link") { parts.push({ kind: block.kind, mode: "link", uri: block.uri!, mimeType: block.mimeType, name: block.name, size: block.size }); continue; }
+    const stored = block.ref ? await store?.get(block.ref) : undefined;
+    if (!stored) throw new Error(`media bytes are unavailable for delivery: ${block.name ?? block.ref ?? block.kind}`);
+    parts.push({ kind: block.kind, mode: "copy", data: stored.data, ref: stored.ref, mimeType: block.mimeType,
+      name: block.name, size: block.size, sha256: block.sha256 });
+  }
+  return parts;
+}

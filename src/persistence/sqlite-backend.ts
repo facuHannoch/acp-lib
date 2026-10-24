@@ -50,6 +50,7 @@ import {
   type MeteringRecordListOptions,
   type MeteringRecordPage,
   type NewConversationRecord,
+  type OutOfBandDeliveryPersistence,
   type NewAuditOutboxItem,
   type NewIdentityMemoryObservation,
   type ParticipantRef,
@@ -150,6 +151,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly capabilities: PersistenceCapabilities;
 
   readonly media: MediaStore;
+  readonly outOfBandDelivery: OutOfBandDeliveryPersistence;
   readonly conversations: ConversationPersistence;
   readonly records: ConversationRecordPersistence;
   readonly messages: ConversationMessagePersistence;
@@ -190,6 +192,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     });
     const scope = this.createScope((work) => this.autoWrite(work), (records) => this.notifyRecordsCommitted(records));
     this.media = scope.media!;
+    this.outOfBandDelivery = scope.outOfBandDelivery!;
     this.conversations = scope.conversations;
     this.records = scope.records;
     this.messages = scope.messages;
@@ -309,6 +312,14 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   ): PersistenceScope {
     return Object.freeze({
       media: new SqliteMediaStore(this.database, runWrite),
+      outOfBandDelivery: {
+        get: async (owner: AgentConversationId, context: string) => Number(this.database.query<{ through_sequence: number }, [string, string]>(
+          "SELECT through_sequence FROM out_of_band_delivery WHERE owner = ? AND provider_context = ?").get(owner, context)?.through_sequence ?? 0),
+        advance: async (owner: AgentConversationId, context: string, sequence: number) => {
+          await runWrite(() => { this.database.query(`INSERT INTO out_of_band_delivery(owner, provider_context, through_sequence) VALUES (?, ?, ?)
+            ON CONFLICT(owner, provider_context) DO UPDATE SET through_sequence = MAX(through_sequence, excluded.through_sequence)`).run(owner, context, sequence); });
+        },
+      },
       conversations: new SqliteConversationPersistence(this.database, this.identityRecord.agentSessionId, runWrite),
       records: new SqliteConversationRecordPersistence(
         this.database,
@@ -651,6 +662,7 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
       ).get(agentConversationId)?.n ?? 0;
       this.database.query("DELETE FROM conversation_records WHERE agent_conversation_id = ?").run(agentConversationId);
       this.database.query("DELETE FROM conversation_media WHERE owner = ?").run(agentConversationId);
+      this.database.query("DELETE FROM out_of_band_delivery WHERE owner = ?").run(agentConversationId);
       return Number(count);
     });
   }

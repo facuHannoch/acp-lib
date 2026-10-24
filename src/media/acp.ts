@@ -43,3 +43,10 @@ export function acpToPart(block: ContentBlock): ResolvedPart | undefined {
 }
 
 function hashBytes(data: Uint8Array): string { return createHash("sha256").update(data).digest("hex"); }
+
+export function assertPartCapabilities(parts: readonly ResolvedPart[], capabilities?: { image?: boolean; audio?: boolean; embeddedContext?: boolean }): void {
+  for (const part of parts) {
+    if (part.kind === "text" || part.kind === "pasted" || part.mode === "link") continue;
+    if (!capabilities?.[part.kind === "file" ? "embeddedContext" : part.kind]) throw new Error(`agent does not support ${part.kind} copies`);
+  }
+}

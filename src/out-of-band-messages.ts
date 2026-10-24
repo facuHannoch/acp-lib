@@ -1,3 +1,5 @@
+import { contentText } from "./media/content.ts";
+import type { MessagePart, ResolvedPart } from "./media/parts.ts";
 import type { AgentConversationId } from "./agent-ids.ts";
 import type {
   ConversationRecord,
@@ -8,7 +10,8 @@ import type {
 
 /** Input for an assistant message a consumer appends without running a provider turn. */
 export interface AppendAssistantMessageInput {
-  readonly text: string;
+  readonly text?: string;
+  readonly parts?: readonly MessagePart[];
   /** Opaque JSON stored on the record for the consumer's own use. */
   readonly consumerMetadata?: PersistenceJsonValue;
 }
@@ -42,6 +45,7 @@ export async function pendingOutOfBandMessages(
 ): Promise<readonly MessageRecord[]> {
   const watermark = Math.max(
     await recoveredThroughSequence(persistence, conversationId, targetProviderContextId),
+    await persistence.outOfBandDelivery?.get(conversationId, targetProviderContextId ?? "") ?? 0,
     await lastCompletedTurnUserSequence(persistence, conversationId, currentUserSequence),
   );
   if (watermark >= currentUserSequence - 1) return [];
@@ -55,7 +59,7 @@ export async function pendingOutOfBandMessages(
       ...(cursor ? { cursor } : {}),
     });
     for (const message of page.messages) {
-      if (message.role === "assistant" && isOutOfBandMessage(message) && textOf(message)) {
+      if (message.role === "assistant" && isOutOfBandMessage(message)) {
         pending.push(message);
       }
     }
@@ -81,23 +85,59 @@ export function composeProviderPrompt(
 
 function formatOutOfBandBlock(messages: readonly MessageRecord[]): string | undefined {
   if (messages.length === 0) return undefined;
-  const header = "Messages you sent in this conversation through another channel since your last turn."
-    + " The user has seen them; you have not.";
-  const entries = messages.map((message) => `[${message.timestamp}] ${textOf(message)}`);
-  let budget = OUT_OF_BAND_PROMPT_MAX_CHARS - header.length;
-  let kept = 0;
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const cost = entries[index]!.length + 1;
-    if (cost > budget && kept > 0) break;
-    budget -= cost;
-    kept += 1;
-  }
-  const omitted = entries.length - kept;
+  const { header, entries, omitted } = selectOutOfBandMessages(messages);
   const body = [
     ...(omitted > 0 ? [`(${omitted} earlier message${omitted === 1 ? "" : "s"} omitted)`] : []),
     ...entries.slice(omitted),
   ];
   return `<messages-you-sent>\n${header}\n${body.join("\n")}\n</messages-you-sent>`;
+}
+
+const OUT_OF_BAND_HEADER = "Messages you sent in this conversation through another channel since your last turn."
+  + " The user has seen them; you have not.";
+
+export function selectOutOfBandMessages(messages: readonly MessageRecord[]) {
+  const header = OUT_OF_BAND_HEADER;
+  const entries = messages.map((message) => `[${message.timestamp}] ${textOf(message)}`);
+  let budget = OUT_OF_BAND_PROMPT_MAX_CHARS - header.length;
+  let kept = 0;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const cost = entries[index]!.length + 1;
+    if (cost > budget && kept > 0) break;
+    budget -= cost;
+    kept++;
+  }
+  return { header, entries, omitted: entries.length - kept, selected: messages.slice(messages.length - kept) };
+}
+
+export async function composeProviderMessageParts(
+  current: readonly ResolvedPart[], preamble: string | undefined, messages: readonly MessageRecord[],
+  load: (message: MessageRecord) => Promise<readonly ResolvedPart[]>,
+): Promise<readonly ResolvedPart[]> {
+  if (!preamble?.trim() && messages.length === 0) return current;
+  const result: ResolvedPart[] = [];
+  const text = (value: string) => result.push({ kind: "text", text: value, record: false });
+  if (preamble?.trim()) text(`${preamble.trim()}\n\n`);
+  if (messages.length) {
+    const { selected, omitted, header } = selectOutOfBandMessages(messages);
+    text(`<messages-you-sent>\n${header}\n`);
+    if (omitted) text(`(${omitted} earlier message${omitted === 1 ? "" : "s"} omitted)\n`);
+    for (const [index, message] of selected.entries()) {
+      // The record id ties every following media block to its original message.
+      const parts = await load(message);
+      const media = parts.some((part) => part.kind !== "text" && part.kind !== "pasted");
+      if (media) text(`<message id="${message.recordId}">\n`);
+      text(`[${message.timestamp}] `);
+      result.push(...parts);
+      if (media) text("\n</message>");
+      if (index < selected.length - 1) text("\n");
+    }
+    text("\n</messages-you-sent>\n\n");
+  }
+  text("<current-message>\n");
+  result.push(...current);
+  text("\n</current-message>");
+  return result;
 }
 
 async function recoveredThroughSequence(
@@ -169,11 +209,7 @@ async function completedTurnUserSequence(
 }
 
 function textOf(message: MessageRecord): string {
-  if (typeof message.content === "string") return message.content.trim();
-  return message.content
-    .map((block) => block.type === "text" ? block.text : "")
-    .join("")
-    .trim();
+  return contentText(message.content).trim();
 }
 
 function parseMetadata(metadata: string | undefined): Record<string, unknown> {

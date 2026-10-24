@@ -3,6 +3,13 @@ import type { Database } from "bun:sqlite";
 export const SQLITE_AGENT_SCHEMA_VERSION = 16;
 
 const BASE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS out_of_band_delivery (
+  owner TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  provider_context TEXT NOT NULL,
+  through_sequence INTEGER NOT NULL,
+  PRIMARY KEY(owner, provider_context)
+);
+
 CREATE TABLE IF NOT EXISTS conversation_media (
   ref TEXT PRIMARY KEY,
   owner TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
@@ -11,6 +18,7 @@ CREATE TABLE IF NOT EXISTS conversation_media (
   name TEXT,
   size INTEGER NOT NULL CHECK (size >= 0),
   sha256 TEXT NOT NULL,
+  pending_for TEXT,
   data BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS conversation_media_owner_idx ON conversation_media(owner);

@@ -770,7 +770,13 @@ export interface PersistenceCapabilities {
   readonly metering: boolean;
 }
 
+export interface OutOfBandDeliveryPersistence {
+  get(owner: AgentConversationId, providerContext: string): Promise<number>;
+  advance(owner: AgentConversationId, providerContext: string, throughSequence: number): Promise<void>;
+}
+
 export interface PersistenceScope {
+  readonly outOfBandDelivery?: OutOfBandDeliveryPersistence;
   readonly media?: MediaStore;
   readonly conversations: ConversationPersistence;
   readonly records: ConversationRecordPersistence;

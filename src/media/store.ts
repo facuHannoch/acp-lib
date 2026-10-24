@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 import { DEFAULT_MEDIA_THRESHOLDS, normalizeParts, type MessagePart, type MediaPart, type MediaThresholds, type ResolvedPart, type MediaKind, type ResolvedMediaPart } from "./parts.ts";
 
 export interface MediaInfo {
+  /** @internal Temporary out-of-band transport envelope, deleted after delivery. */
+  readonly pendingFor?: string;
   readonly owner: string;
   readonly kind: MediaKind;
   readonly mimeType: string;

@@ -1,6 +1,6 @@
 import { promptParts } from "./media/parts.ts";
 import { resolveParts } from "./media/store.ts";
-import { attachmentParts, partsToAcp } from "./media/acp.ts";
+import { assertPartCapabilities, attachmentParts, partsToAcp } from "./media/acp.ts";
 import { redactMedia } from "./media/redact.ts";
 import type { ClientPrompt } from "./agent-client.ts";
 // AcpClient — the core deliverable. Implements the AgentClient output contract and
@@ -771,6 +771,7 @@ export class AcpClient implements AgentClient {
       ...(item.parts ?? (item.text ? [{ kind: "text" as const, text: item.text }] : [])),
       ...attachmentParts(item.attachments),
     ], { cwd: this.config.cwd ?? process.cwd(), capabilities: this._capabilities?.agent.promptCapabilities });
+    assertPartCapabilities(parts, this._capabilities?.agent.promptCapabilities);
     const contentBlocks = partsToAcp(parts);
     if (contentBlocks.length === 0) contentBlocks.push({ type: "text", text: "" });
 

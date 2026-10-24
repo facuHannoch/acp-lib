@@ -1,9 +1,9 @@
 import type { Database } from "bun:sqlite";
 import type { MediaInfo, MediaStore, StoredMedia } from "../media/store.ts";
 
-interface Row { ref: string; owner: string; kind: MediaInfo["kind"]; mime_type: string; name: string | null; size: number; sha256: string; data?: Uint8Array; }
+interface Row { pending_for: string | null; ref: string; owner: string; kind: MediaInfo["kind"]; mime_type: string; name: string | null; size: number; sha256: string; data?: Uint8Array; }
 function entry(row: Row): StoredMedia {
-  return { ref: row.ref, info: { owner: row.owner, kind: row.kind, mimeType: row.mime_type,
+  return { ref: row.ref, info: { ...(row.pending_for ? { pendingFor: row.pending_for } : {}), owner: row.owner, kind: row.kind, mimeType: row.mime_type,
     ...(row.name === null ? {} : { name: row.name }), size: row.size, sha256: row.sha256 } };
 }
 
@@ -13,8 +13,8 @@ export class SqliteMediaStore implements MediaStore {
   async put(bytes: Uint8Array, info: MediaInfo): Promise<string> {
     return this.write(() => {
       const ref = `media-${crypto.randomUUID()}`;
-      this.database.query("INSERT INTO conversation_media(ref, owner, kind, mime_type, name, size, sha256, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(ref, info.owner, info.kind, info.mimeType, info.name ?? null, info.size, info.sha256, bytes);
+      this.database.query("INSERT INTO conversation_media(ref, owner, kind, mime_type, name, size, sha256, pending_for, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(ref, info.owner, info.kind, info.mimeType, info.name ?? null, info.size, info.sha256, info.pendingFor ?? null, bytes);
       return ref;
     });
   }
@@ -26,6 +26,6 @@ export class SqliteMediaStore implements MediaStore {
     await this.write(() => { this.database.query("DELETE FROM conversation_media WHERE ref = ?").run(ref); });
   }
   async list(owner: string): Promise<readonly StoredMedia[]> {
-    return this.database.query<Row, [string]>("SELECT ref, owner, kind, mime_type, name, size, sha256 FROM conversation_media WHERE owner = ? ORDER BY rowid").all(owner).map(entry);
+    return this.database.query<Row, [string]>("SELECT ref, owner, kind, mime_type, name, size, sha256, pending_for FROM conversation_media WHERE owner = ? ORDER BY rowid").all(owner).map(entry);
   }
 }

@@ -1,3 +1,4 @@
+import type { ResolvedPart } from "./media/parts.ts";
 import type { AgentConversationId } from "./agent-ids.ts";
 import type { MediaConfig } from "./media/store.ts";
 import { randomUUID } from "node:crypto";
@@ -92,6 +93,8 @@ export type {
 /** Durable owner of one agent identity, its adapters, identity runtime, and conversations. */
 export class Agent {
   readonly media: MediaConfig;
+  /** @internal Pending parts for backends without a durable media store. */
+  readonly pendingMessageParts = new Map<string, { owner: AgentConversationId; parts: readonly ResolvedPart[] }>();
   readonly id: AgentSessionId;
   readonly persistence: PersistenceBackend;
   readonly identity: AgentIdentityRuntime;
@@ -116,6 +119,7 @@ export class Agent {
   }
 
   async deleteMediaForConversation(owner: AgentConversationId): Promise<void> {
+    for (const [id, pending] of this.pendingMessageParts) if (pending.owner === owner) this.pendingMessageParts.delete(id);
     const store = this.media.store ?? this.persistence.media;
     if (store) for (const media of await store.list(owner)) await store.delete(media.ref);
   }

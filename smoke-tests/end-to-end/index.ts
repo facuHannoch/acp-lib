@@ -646,10 +646,9 @@ async function assertSqliteOperations(
     for (const turn of turns) {
       assert.ok(turn.kinds.split(",").includes("message"), `turn ${turn.operationId} has no message records`);
     }
-    const appended = operations.find((operation) => operation.operationId === outOfBand.operationId);
-    assert.ok(outOfBand.operationId && appended?.records === 1, "the out-of-band message is not an operation of its own");
+    assert.equal(outOfBand.operationId, undefined, "out-of-band messages must be standalone records");
     assert.deepEqual(
-      listStoredUnattributedRecords(database, conversationId),
+      listStoredUnattributedRecords(database, conversationId).filter((record) => record.recordId !== outOfBand.recordId),
       [],
       "SQLite holds records outside any operation",
     );
