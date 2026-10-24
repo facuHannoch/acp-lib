@@ -328,7 +328,7 @@ type MediaPart = {
   mode?: "copy" | "link";       // unset: chosen by size
   keep?: boolean;               // copies only
   record?: false;
-} & ({ data: Uint8Array } | { path: string });   // path: a file path or a file:// uri
+} & ({ data: Uint8Array } | { path: string } | { ref: string });  // path: a file path or file:// uri; ref: a kept copy
 ```
 - `mode` says what the part is, and with it what the agent receives, what the record can hold and
   which other fields are valid. (`delivery` was set aside: the field does more than deliver.)
