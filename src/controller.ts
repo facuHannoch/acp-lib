@@ -57,6 +57,7 @@ export interface AgentControllerConfig {
   /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
   cwd?: string;
+  additionalDirectories?: string[];
   /** Session id to load on start(). */
   sessionId?: string;
   /** Policy when sessionId cannot be loaded. Default "new" for compatibility. */
@@ -380,9 +381,10 @@ export class AgentController implements AgentClient {
   }
 
   /** Force a fresh session (e.g. after /login). mcpServers defaults to config.mcpServers. */
-  newSession(options: { mcpServers?: schema.McpServer[] } = {}): Promise<ConnectResult> {
+  newSession(options: { mcpServers?: schema.McpServer[]; additionalDirectories?: string[] } = {}): Promise<ConnectResult> {
     return this.requireAcp().newSession({
       mcpServers: options.mcpServers ?? this.config.mcpServers,
+      additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
     });
   }
 
@@ -394,6 +396,7 @@ export class AgentController implements AgentClient {
     return this.requireAcp().loadSession(sessionId, {
       ...options,
       mcpServers: options.mcpServers ?? this.config.mcpServers,
+      additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
     });
   }
 
@@ -401,6 +404,7 @@ export class AgentController implements AgentClient {
     return this.requireAcp().resumeSession(sessionId, {
       ...options,
       mcpServers: options.mcpServers ?? this.config.mcpServers,
+      additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
     });
   }
 
@@ -408,6 +412,7 @@ export class AgentController implements AgentClient {
     return this.requireAcp().forkSession(sessionId, {
       ...options,
       mcpServers: options.mcpServers ?? this.config.mcpServers,
+      additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
     });
   }
 
@@ -574,6 +579,7 @@ export class AgentController implements AgentClient {
       execPrefix: this.config.execPrefix,
       env: this.config.env,
       cwd: this.config.cwd,
+      additionalDirectories: this.config.additionalDirectories,
       sessionId,
       sessionLoadFailure: loadFailure,
       defaultPermission: this.config.defaultPermission,
@@ -597,6 +603,7 @@ export class AgentController implements AgentClient {
     try {
       result = await client.startSession({
         mcpServers: this.config.mcpServers,
+        additionalDirectories: this.config.additionalDirectories,
         loadFailure: loadFailure,
         ...(this.config.onSessionReplay ? { onReplayUpdate: this.config.onSessionReplay } : {}),
       });

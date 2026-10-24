@@ -131,6 +131,93 @@ not interpret its fields. The separate envelope `metadata` field still carries o
 library-owned operation correlation. A raw audit capture includes consumer metadata;
 content/metadata audit capture omits it.
 
+### Messages made of parts
+
+`prompt({ parts })` accepts ordered `MessagePart` values. An optional `text` is a leading text
+part; `pasted` retains its optional name and is sent as text. The text-only `result.text` view
+and positional calls remain available. A response containing media also has ordered
+`result.messages[i].parts`; streaming `onResponseChunk` exposes each non-text `part`.
+
+```ts
+await conversation.prompt({
+  parts: [
+    { kind: "text", text: "Review this plot and these notes." },
+    { kind: "image", path: "plot.png" },
+    { kind: "pasted", name: "notes", text: "The red line is the baseline." },
+    { kind: "file", path: "/shared/report.pdf", mode: "link" },
+  ],
+});
+```
+
+Media kinds are `image`, `audio`, and `file`. Each input has exactly one source: `data:
+Uint8Array`, `path` (relative to the conversation's working directory, absolute, or a `file://`
+URI), or `ref` (a previously kept copy). SVG is a `file` and is embedded as markup, retaining
+its MIME type. Text files are ACP embedded text resources; other files use blob resources.
+A UI rendering SVG must sanitize it.
+
+`mode: "copy"` sends the actual content. `keep: false` records name, MIME type, size and SHA-256
+without retaining bytes; the default keeps bytes when a store is available. `mode: "link"`
+requires a path and sends an absolute `file://` resource link. It records a pointer, so later
+edits/deletion of the original affect what history can display. `keep` is invalid on links.
+`record: false` sends a part without recording it and cannot be combined with `keep`.
+
+With no mode, path sources use copies up to 100,000 bytes for files, 3,750,000 for images and
+5,000,000 for audio; larger paths use links. Configure these byte thresholds on the Agent with
+`media: { thresholds: { file, image, audio } }`. Byte-array and ref sources remain copies.
+There is no library size ceiling. Provider errors surface to the caller. Unsupported explicit
+copies are refused using the agent's prompt capabilities; an automatic path source falls back
+to a link. PTY mode refuses media parts.
+
+Declare shared directories with `conversationDefaults: { additionalDirectories: ["/shared"] }`
+or a conversation's `runtime.additionalDirectories`. They reach ACP session creation/load;
+the harness applies its own permissions. The library does not restrict pointers. A harness on
+another machine or in an isolated container needs a shared mount or a copy.
+
+SQLite schema 16 stores kept blobs separately from message rows in the same database and
+transaction. History and audit records contain refs/URIs and metadata. Ordinary text messages
+remain strings; mixed messages use `PersistedContentBlock[]`, including `media` and `pasted`.
+Old inline image/resource blocks can still be read. Raw canonical protocol capture and debug
+prompt logs redact inline media; a consumer's explicitly requested `wire` callback is verbatim.
+
+```ts
+const agent = await Agent.open({
+  // ...persistence, adapters, and other settings...
+  capture: { message: "content", media: "metadata" },
+  // media: { store: yourMediaStore }, // optional MediaStore override
+});
+
+const store = agent.media.store ?? agent.persistence.media;
+const saved = await store?.get(ref); // { ref, info, data } or null when removed
+await conversation.prompt({ parts: [{ kind: "image", ref }] });
+await agent.deleteMedia(ref); // removes bytes; history retains the dangling ref
+await agent.deleteMediaForConversation(conversation.id);
+
+const files = await agent.persistence.files?.search({
+  text: "plot", agentConversationId: conversation.id, kind: "image", minSize: 1,
+});
+```
+
+`capture.media` is `none`, `metadata`, or `content` (default), independently of message text.
+The conversation persistence resolver can override it, and a part's own `record`/`keep` wins.
+Checkpointing still summarizes text. A backend without `media` and no override defaults to
+metadata; explicit `keep: true` is refused. The older SessionManager/AgentSession JSONL
+transcript records text and descriptive part lines, with no media store.
+
+A `MediaStore` implements async `put(bytes, info) -> ref`, `get(ref)`, `delete(ref)` and
+`list(owner)`. `get` returns `{ ref, info, data }` or null; `list` returns `{ ref, info }`
+entries. Preserve all `MediaInfo` fields, including optional `pendingFor` for temporary
+out-of-band delivery envelopes. Separate stores cannot share the record transaction: failed
+writes stop dispatch, and `list(owner)` supports orphan cleanup. Reusing a kept ref within
+its conversation reuses bytes; another conversation gets a new copy. Copies record SHA-256
+but are not deduplicated. Clearing records deletes SQLite media; the Agent clear API also
+cleans an overridden store. Soft deletion retains media.
+
+`files.list` and `files.search` browse media metadata, including unkept/deleted copies and
+links, with optional conversation, name, kind, MIME type and size filters. They accept `limit`
+and `cursor`; response revisions are folded. Message search covers text and pasted text,
+without indexing media names, refs or bytes. Offset file cursors can shift under concurrent
+inserts. Custom backends can supply the optional `files` repository.
+
 SQLite keeps ordering and type-specific content separate. `conversation_records` is a
 narrow canonical envelope containing the conversation-local sequence, kind, timestamp,
 operation correlation, and optional metadata. Every envelope has exactly one typed detail
@@ -234,8 +321,8 @@ items = reconcileConversationTimeline(items, [full!]);
 
 Every physical record has a stable `recordId` and a conversation-local `sequence`.
 `operationId` says which library operation wrote it: a turn (`result.operationId`), an
-internal inference or recap, a setting change, a mode change, a handoff, or an appended
-out-of-band message (its own one-record operation, `append-…`). Every record of one
+internal inference or recap, a setting change, a mode change, or a handoff. Appended out-of-band messages are standalone records
+without an operation id. Every record of one
 operation shares it, so a turn's messages, tool calls, permissions and thinking can be grouped
 without inferring turns from their position; `sequence` gives the order. A tool call still
 running when its turn ends is recorded `failed` in that turn; if the harness reports it later, that
@@ -434,16 +521,21 @@ turn, in a `<messages-you-sent>` block between any identity preamble and
 - A recovery seed covers messages through `recoveredThroughSequence`, so they are not
   repeated after recovery. A loaded provider session is treated like one that never
   closed.
-- A turn that completes without an assistant message does not advance delivery, so its
-  pending messages are repeated once more.
+- SQLite commits a delivery cursor with a successful turn, including turns whose message
+  text is not captured.
 - The block is capped at `OUT_OF_BAND_PROMPT_MAX_CHARS`; the oldest messages are dropped
   first with an omission note. The transcript always keeps all of them.
 
 Other conversations of the same agent see the message through identity like any other
-canonical message. Appending requires `capture.message` of `"content"` or `"raw"`, since
-the provider could not be told otherwise; it rejects blank text and unknown or deleted
-conversations. Backends without `records.listRecent` scan the conversation's messages
-forward to find the last completed turn.
+canonical message. Text-only appends require `capture.message` of `"content"` or `"raw"`;
+media-only appends are supported under the independent media capture policy. An append rejects
+empty input and unknown or deleted conversations. `appendAssistantMessage(id, { parts })` uses
+the same part/store rules. SQLite temporarily stages unsent parts, including `keep: false`,
+until successful delivery, so pending bytes survive restart and are removed after delivery.
+A failed turn retains them for retry. Custom stores preserve `MediaInfo.pendingFor`; without
+a store, unkept/suppressed pending parts survive only within the current Agent process.
+Custom backends can supply `outOfBandDelivery` to track completion independently of captured
+text; otherwise delivery uses visible completed messages, scanning forward without `listRecent`.
 
 ### Agent audit log
 

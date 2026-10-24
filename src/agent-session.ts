@@ -332,6 +332,8 @@ export interface AgentSessionConfig {
   /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
   cwd?: string;
+  /** Additional absolute directories declared to the provider. */
+  additionalDirectories?: string[];
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
   mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
@@ -659,6 +661,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       execPrefix: config.execPrefix,
       env: config.env,
       cwd: config.cwd,
+      additionalDirectories: config.additionalDirectories,
       mcpServers: config.mcpServers,
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,

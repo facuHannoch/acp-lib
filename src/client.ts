@@ -58,6 +58,8 @@ export interface AcpClientConfig {
   env?: Record<string, string>;
   /** Workspace visible to the ACP target and sent in session requests. */
   cwd?: string;
+  /** Additional workspace roots passed to ACP session creation and loading. */
+  additionalDirectories?: string[];
   /** Resume this session id when startSession() is called. */
   sessionId?: string;
   /** Policy when config.sessionId cannot be loaded. Default "new" for compatibility. */
@@ -134,6 +136,7 @@ function resolveClientHandlers(
 }
 
 export interface StartSessionOptions {
+  additionalDirectories?: string[];
   /** Resume this session. Defaults to config.sessionId. */
   sessionId?: string;
   /** What to do when the requested session cannot be loaded. Default config policy, then "new". */
@@ -449,6 +452,7 @@ export class AcpClient implements AgentClient {
       try {
         const result = await this.loadSessionInternal(transport, resumeId, {
           mcpServers,
+          additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
           ...(options.onReplayUpdate ? { onUpdate: options.onReplayUpdate } : {}),
         });
         sessionId = result.sessionId;
@@ -456,12 +460,12 @@ export class AcpClient implements AgentClient {
       } catch (err) {
         this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
         if (loadFailure === "error") throw err;
-        sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
+        sessionId = await this.newSessionInternal(transport, cwd, mcpServers, options.additionalDirectories ?? this.config.additionalDirectories);
       }
     } else if (resumeId && loadFailure === "error") {
       throw new Error("agent does not advertise session/load for the requested internal session");
     } else {
-      sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
+      sessionId = await this.newSessionInternal(transport, cwd, mcpServers, options.additionalDirectories ?? this.config.additionalDirectories);
     }
 
     return { sessionId, resumed };
@@ -492,7 +496,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories,
+        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
       } as schema.LoadSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -529,7 +533,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories,
+        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
       } as schema.ResumeSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -578,7 +582,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories,
+        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
       } as schema.ForkSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -652,10 +656,10 @@ export class AcpClient implements AgentClient {
   }
 
   /** Force a brand-new session, ignoring config.sessionId. Useful after authenticating. */
-  async newSession(options: { mcpServers?: schema.McpServer[] } = {}): Promise<ConnectResult> {
+  async newSession(options: { mcpServers?: schema.McpServer[]; additionalDirectories?: string[] } = {}): Promise<ConnectResult> {
     const transport = this.requireTransport();
     const cwd = this.config.cwd ?? process.cwd();
-    const sessionId = await this.newSessionInternal(transport, cwd, options.mcpServers ?? []);
+    const sessionId = await this.newSessionInternal(transport, cwd, options.mcpServers ?? [], options.additionalDirectories ?? this.config.additionalDirectories);
     return { sessionId, resumed: false };
   }
 
@@ -663,11 +667,12 @@ export class AcpClient implements AgentClient {
     transport: AcpTransport,
     cwd: string,
     mcpServers: schema.McpServer[],
+    additionalDirectories?: string[],
   ): Promise<string> {
     this.beginCommandTransition();
     let res: schema.NewSessionResponse;
     try {
-      res = await transport.newSession({ cwd, mcpServers } as schema.NewSessionRequest);
+      res = await transport.newSession({ cwd, mcpServers, ...(additionalDirectories ? { additionalDirectories } : {}) } as schema.NewSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
       throw err;

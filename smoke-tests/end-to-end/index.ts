@@ -55,6 +55,7 @@ assert.ok(Number.isSafeInteger(auditMaxBytes) && auditMaxBytes > 0,
 
 const adapters: Record<string, Adapter> = {
   codex: ADAPTERS.codex,
+  media: { command: ["bun", join(here, "../../test/fixtures/media-agent.ts")] },
   opencode: ADAPTERS.opencode,
   test: {
     command: ["bun", fixture, "test8"],
@@ -338,6 +339,8 @@ try {
   console.log(
     `PASS metering agent=${meteringAgent.id} conversation=${meteringConversation.id} operation=${metered.operationId}`,
   );
+
+  await assertMediaWorkflow(meteringAgent);
 
   assert.equal(
     (await meteringAgent.audit?.flush({ timeoutMs: 10_000 }))?.status,
@@ -747,4 +750,44 @@ function checkSemanticRecall(stage: string, answer: string): string {
     `WARN ${stage} semantic recall returned ${JSON.stringify(answer)}; provider session continuity assertions still passed`,
   );
   return answer;
+}
+
+
+async function assertMediaWorkflow(agent: Agent): Promise<void> {
+  const sent: any[] = [];
+  const conversation = await agent.conversations.create({ adapterId: "media", runtime: {
+    wire: (entry) => { if (entry.dir === "out") { const frame = JSON.parse(entry.line); if (frame.method === "session/prompt") sent.push(frame.params.prompt); } },
+  } });
+  const result = await conversation.prompt({ parts: [
+    { kind: "text", text: "MEDIA_OUTPUT" },
+    { kind: "pasted", name: "notes", text: "smokepastemarker" },
+    { kind: "image", name: "media-smoke.png", data: new Uint8Array([1, 2]), mimeType: "image/png" },
+  ] });
+  assert.deepEqual(result.messages[0]?.parts?.map((part) => part.kind), ["image", "text", "audio", "file", "file", "file"]);
+  const files = await agent.persistence.files!.search({ text: "media-smoke", agentConversationId: conversation.id });
+  assert.equal(files.files.length, 1);
+  const ref = files.files[0]!.ref!;
+  assert.deepEqual((await agent.persistence.media!.get(ref))!.data, new Uint8Array([1, 2]));
+  assert.ok((await agent.persistence.search!.search({ text: "smokepastemarker", conversationIds: [conversation.id], kinds: ["message"] })).length);
+  const appended = await agent.conversations.appendAssistantMessage(conversation.id, { parts: [
+    { kind: "text", text: "sent externally" },
+    { kind: "image", data: new Uint8Array([3]), mimeType: "image/png", keep: false },
+  ] });
+  assert.equal(appended.operationId, undefined);
+  await conversation.prompt("MEDIA_OUTPUT");
+  assert.ok(sent.at(-1).some((block: any) => block.type === "image" && block.data === "Aw=="));
+  assert.ok(sent.at(-1).some((block: any) => block.type === "text" && block.text.includes(appended.recordId)));
+  assert.ok((await agent.persistence.media!.list(conversation.id)).every((entry) => !entry.info.pendingFor));
+  const count = (await agent.persistence.media!.list(conversation.id)).length;
+  await conversation.stop();
+  const reopened = await agent.conversations.open(conversation.id);
+  assert.equal((await agent.persistence.media!.list(conversation.id)).length, count, "load duplicated media");
+  await agent.deleteMedia(ref);
+  assert.equal(await agent.persistence.media!.get(ref), null);
+  assert.equal((await agent.persistence.files!.search({ text: "media-smoke", agentConversationId: conversation.id })).files[0]?.ref, ref);
+  await reopened.conversation.stop();
+  await agent.conversations.clearTranscript(conversation.id, { checkpoints: true });
+  assert.equal((await agent.persistence.media!.list(conversation.id)).length, 0);
+  assert.equal((await agent.persistence.files!.list({ agentConversationId: conversation.id })).files.length, 0);
+  console.log("PASS media send/receive/store/search/out-of-band/reopen/delete/clear");
 }

@@ -32,3 +32,17 @@ test("media responses preserve order, text view and stream parts", async () => {
     expect(result.messages[0]!.parts?.[3]).toMatchObject({ mode: "link", uri: "file:///tmp/original.pdf" });
   } finally { await client.stop(); }
 });
+
+test("additional workspace roots reach new and loaded sessions", async () => {
+  const sent: any[] = [];
+  const client = new AcpClient({ adapter: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts")] }, additionalDirectories: ["/tmp/shared-media"],
+    wire: (entry) => { if (entry.dir === "out") sent.push(JSON.parse(entry.line)); },
+  });
+  try {
+    await client.connect();
+    const { sessionId } = await client.startSession();
+    await client.loadSession(sessionId);
+    expect(sent.find((frame) => frame.method === "session/new").params.additionalDirectories).toEqual(["/tmp/shared-media"]);
+    expect(sent.find((frame) => frame.method === "session/load").params.additionalDirectories).toEqual(["/tmp/shared-media"]);
+  } finally { await client.stop(); }
+});

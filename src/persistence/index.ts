@@ -73,6 +73,8 @@ export type {
   ParticipantRef,
   PersistedContent,
   PersistedContentBlock,
+  PersistedMediaBlock,
+  OutOfBandDeliveryPersistence,
   PersistedIdentitySnapshot,
   PersistedAgentMeteringState,
   PersistedConversationMeteringState,

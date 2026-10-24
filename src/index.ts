@@ -157,6 +157,8 @@ export type {
   ParticipantRef,
   PersistedContent,
   PersistedContentBlock,
+  PersistedMediaBlock,
+  OutOfBandDeliveryPersistence,
   PersistedIdentitySnapshot,
   PersistedAgentMeteringState,
   PersistedConversationMeteringState,
@@ -739,7 +741,7 @@ export type {
 
 export * from "./operations/index.ts";
 
-export type { MessagePart, MediaPart, MediaKind, MediaThresholds } from "./media/parts.ts";
+export type { MessagePart, MediaPart, MediaKind, MediaThresholds, ResolvedPart, ResolvedMediaPart } from "./media/parts.ts";
 
 export type { MediaStore, MediaInfo, StoredMedia, MediaConfig } from "./media/store.ts";
 

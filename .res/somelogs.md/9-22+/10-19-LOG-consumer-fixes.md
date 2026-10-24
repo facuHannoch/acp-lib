@@ -581,3 +581,20 @@ and untracked files are preserved and excluded from implementation commits.
 - Testing gaps/limits: metadata search uses SQLite JSON/LIKE rather than a dedicated large-scale
   metadata index. Offset pagination is intended for browsing stable history; concurrent inserts
   can move page boundaries. Custom backends may implement the optional repository.
+
+### Step 7 — documentation and end-to-end smoke
+
+- Documented parts, modes, thresholds, stores, refs/deletion, independent capture, files search,
+  normalized response parts, pending delivery and custom-backend limitations in the consumer
+  guide and changelog. Updated out-of-band operation/delivery wording to match the design.
+- Added a deterministic media phase to the existing lifecycle smoke: send/receive, pasted-text
+  search, media metadata search, store reads, out-of-band no-keep delivery, replay, byte deletion
+  and clearing. Added directory-root tests and public support-type exports.
+- Review found an earlier acceptance gap: conversation-level `additionalDirectories` was not
+  wired through creation. Completed its propagation through AgentConversation/controller/client
+  creation and load/resume/fork defaults, and verified new/load frames. No known regression.
+- Tests: typecheck; 14 focused integration tests; full suite **1087 pass, 0 fail**; existing
+  end-to-end smoke with `ACP_TEST8_ADAPTER=test` passed lifecycle, paging, checkpoints, metering,
+  media and audit (231 logical/physical entries).
+- Testing gaps: deterministic semantic recall is intentionally unavailable; deliberate provider
+  session deletion/recovery was skipped in that smoke. Real-media/provider behavior is step 8.

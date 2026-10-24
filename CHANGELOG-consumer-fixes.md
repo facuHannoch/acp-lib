@@ -1,5 +1,14 @@
 # Consumer fixes (from the 2026-10-13 agents-core requirements)
 
+- **Messages made of parts.** Ordered text, named paste, image, audio and file inputs; copy/link
+  modes, capability checks and configurable automatic thresholds. Structured media output,
+  out-of-band media, independent `capture.media`, SQLite schema 16 blob storage, reusable refs,
+  byte deletion, and separate shared-file metadata listing/search. Canonical protocol/debug
+  capture redacts inline bytes. Legacy positional attachments remain no-keep copies, mapped
+  by MIME type; legacy JSONL stores descriptive media lines. Shared directories reach ACP
+  session creation/loading. See the consumer guide for store and pending-delivery contracts.
+
+
 - **Message boundaries.** A new tool call now ends the assistant message before it, also when the
   agent sends no message ids (before, message → tool → message was one message). Tool updates
   do not split. Applies to the live `result.messages` and to stored messages.
@@ -15,7 +24,7 @@
   nothing.
 - **Every record carries its operation.** Records have a typed `operationId`: the library
   operation that wrote them (turn, internal inference or recap, setting change, mode change,
-  handoff, appended out-of-band message). Tool calls, permissions, thinking, activity, configuration, mode changes and protocol
+  handoff). Appended out-of-band messages are standalone records without an operation id. Tool calls, permissions, thinking, activity, configuration, mode changes and protocol
   lines now carry it as messages already did. A tool call still running when its turn ends is
   recorded `failed` in that turn; an update for it in a later turn is recorded under the later
   turn. Records outside an operation have none. `records.list(id, { operationId })` filters by it.
