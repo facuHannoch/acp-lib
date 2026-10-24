@@ -7,9 +7,9 @@ import type { PersistedMediaBlock } from "../src/persistence/backend.ts";
 const roots: string[] = [];
 const agents: Agent[] = [];
 afterEach(async () => { await Promise.all(agents.splice(0).map((a) => a.close())); await Promise.all(roots.splice(0).map((p) => rm(p, { recursive: true, force: true }))); });
-async function setup(store?: import("../src/media/store.ts").MediaStore) {
+async function setup(store?: import("../src/media/store.ts").MediaStore, extras: Pick<import("../src/agent/config.ts").AgentConfig, "capture" | "conversationPersistence"> = {}) {
   const root = await mkdtemp(join(tmpdir(), "media-agent-")); roots.push(root);
-  const agent = await Agent.open({ persistence: { kind: "sqlite", path: join(root, "agent.sqlite") }, adapters: { fixture: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts")] } }, defaultAdapterId: "fixture", ...(store ? { media: { store } } : {}), conversationDefaults: { metering: { pricing: false } } }); agents.push(agent);
+  const agent = await Agent.open({ persistence: { kind: "sqlite", path: join(root, "agent.sqlite") }, adapters: { fixture: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts")] } }, defaultAdapterId: "fixture", ...extras, ...(store ? { media: { store } } : {}), conversationDefaults: { metering: { pricing: false } } }); agents.push(agent);
   return { agent, root };
 }
 test("Agent stores user media atomically, reuses refs and deletes only bytes", async () => {
@@ -73,4 +73,25 @@ test("a custom store failure refuses the prompt before writing user history or s
   await expect(conversation.prompt({ parts: [{ kind: "image", data: new Uint8Array([1]), mimeType: "image/png" }] })).rejects.toThrow("store unavailable");
   expect((await agent.persistence.messages.list(conversation.id)).messages).toHaveLength(0);
   expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(0);
+});
+
+
+test("media capture defaults, overrides and text independence apply on the Agent path", async () => {
+  const { agent } = await setup(undefined, { capture: { message: "none", media: "metadata" },
+    conversationPersistence: ({ title }) => title === "hidden" ? { capture: { media: "none" } } : undefined });
+  const normal = await agent.conversations.create();
+  await normal.prompt({ parts: [
+    { kind: "text", text: "not recorded" },
+    { kind: "image", data: new Uint8Array([1]), mimeType: "image/png" },
+    { kind: "image", data: new Uint8Array([2]), mimeType: "image/png", keep: true },
+    { kind: "image", data: new Uint8Array([3]), mimeType: "image/png", record: false },
+  ] });
+  const user = (await agent.persistence.messages.list(normal.id)).messages.find((m) => m.role === "user")!;
+  expect(user.content).toMatchObject([{ type: "media" }, { type: "media", ref: expect.any(String) }]);
+  expect(JSON.stringify(user.content)).not.toContain("not recorded");
+  expect(await agent.persistence.media!.list(normal.id)).toHaveLength(1);
+  const hidden = await agent.conversations.create({ title: "hidden" });
+  await hidden.prompt({ parts: [{ kind: "image", data: new Uint8Array([1]), mimeType: "image/png" }] });
+  expect(await agent.persistence.media!.list(hidden.id)).toHaveLength(0);
+  expect((await agent.persistence.messages.list(hidden.id)).messages).toHaveLength(0);
 });

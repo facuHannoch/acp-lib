@@ -1,3 +1,4 @@
+import { captureMessageContent, type MediaCaptureLevel } from "../media/capture.ts";
 import { randomUUID } from "node:crypto";
 import {
   type AgentConversationId,
@@ -72,6 +73,7 @@ export async function persistConversationObservations(
 ): Promise<readonly ConversationRecord[]> {
   if (records.length === 0) return Object.freeze([]);
   if ((!audit || !settings.auditLog) && records.every((record) => {
+    if (record.kind === "message") return settings.capture.message === "none" && settings.capture.media === "none" && typeof record.content === "string";
     if (record.kind !== "protocol") return settings.capture[record.kind] === "none";
     return settings.capture.protocol.level === "none"
       || !shouldCaptureProtocolMethod(settings.capture.protocol, record.method);
@@ -96,12 +98,15 @@ export async function persistObservationsInTransaction(
     const level = record.kind === "protocol"
       ? settings.capture.protocol.level
       : settings.capture[record.kind];
-    const canonicalAccepted = level !== "none" && (
+    const captured = captureRuntimeRecord(record, level, settings.capture.media);
+    const hasMedia = captured.kind === "message" && Array.isArray(captured.content)
+      && captured.content.some((block) => block.type === "media");
+    const canonicalAccepted = (level !== "none" || hasMedia) && (
       record.kind !== "protocol"
       || shouldCaptureProtocolMethod(settings.capture.protocol, record.method)
     );
     if (canonicalAccepted) {
-      persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
+      persisted.push(await persistence.records.append(captured));
     }
     if (audit && settings.auditLog) {
       await enqueueAuditObservation(persistence, {
@@ -138,7 +143,11 @@ export function internalInferenceMeteringKind(purpose: string): MeteredOperation
 export function captureRuntimeRecord(
   record: NewConversationRecord,
   level: RecordCaptureLevel,
+  media: MediaCaptureLevel = "content",
 ): NewConversationRecord {
+  if (record.kind === "message") {
+    return { ...record, content: captureMessageContent(record.content, level === "content" || level === "raw", media) };
+  }
   if (record.kind === "error") {
     // `metadata` omits the display message and details; `content` keeps the message but
     // still omits details; `raw` retains the allow-listed details.
@@ -150,8 +159,6 @@ export function captureRuntimeRecord(
   }
   if (level !== "metadata") return record;
   switch (record.kind) {
-    case "message":
-      return { ...record, content: "" };
     case "tool_call":
       return {
         recordId: record.recordId,

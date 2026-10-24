@@ -1,3 +1,4 @@
+import type { MediaCaptureLevel } from "../media/capture.ts";
 import type { MediaStore } from "../media/store.ts";
 import type { MediaKind } from "../media/parts.ts";
 import { contentText } from "../media/content.ts";
@@ -264,6 +265,7 @@ type NonProtocolRecordKind = Exclude<ConversationRecordKind, "protocol">;
 export type ConversationRecordCaptureConfig = Readonly<
   Partial<Record<NonProtocolRecordKind, RecordCaptureLevel>> & {
     readonly protocol?: ProtocolRecordCapture;
+    readonly media?: MediaCaptureLevel;
   }
 >;
 export type ResolvedProtocolRecordCapturePolicy = Readonly<{
@@ -274,6 +276,7 @@ export type ResolvedProtocolRecordCapturePolicy = Readonly<{
 export type ConversationRecordCapturePolicy = Readonly<
   Record<NonProtocolRecordKind, RecordCaptureLevel> & {
     readonly protocol: ResolvedProtocolRecordCapturePolicy;
+    readonly media: MediaCaptureLevel;
   }
 >;
 
@@ -285,6 +288,7 @@ const DEFAULT_PROTOCOL_RECORD_CAPTURE: ResolvedProtocolRecordCapturePolicy = Obj
 
 export const DEFAULT_CONVERSATION_RECORD_CAPTURE: ConversationRecordCapturePolicy = Object.freeze({
   message: "content",
+  media: "content",
   tool_call: "metadata",
   permission: "metadata",
   configuration: "metadata",
@@ -869,6 +873,11 @@ export function resolveConversationRecordCapture(
 ): ConversationRecordCapturePolicy {
   const resolved: Record<string, unknown> = { ...DEFAULT_CONVERSATION_RECORD_CAPTURE };
   for (const [kind, value] of Object.entries(override)) {
+    if (kind === "media") {
+      if (!["none", "metadata", "content"].includes(String(value))) throw new Error(`invalid media capture level: ${String(value)}`);
+      resolved.media = value;
+      continue;
+    }
     if (!isConversationRecordKind(kind)) throw new Error(`unknown record capture kind: ${kind}`);
     if (kind === "protocol") {
       resolved.protocol = resolveProtocolRecordCapture(value as ProtocolRecordCapture);

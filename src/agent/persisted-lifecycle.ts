@@ -98,7 +98,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     });
     const records: ConversationRecord[] = [];
     await this.agent.persistence.transaction(async (scope) => {
-      const contents = await Promise.all(resolved.map((parts) => persistParts(parts, this.conversationId, this.agent.media.store ?? scope.media)));
+      const contents = await Promise.all(resolved.map((parts) => persistParts(parts, this.conversationId, this.agent.media.store ?? scope.media, this.settings.capture.media)));
       const userRecords = parts.map((part, index): NewConversationRecord => ({
         recordId: index === 0 ? `${input.operationId}:user` : `${input.operationId}:user:${index + 1}`,
         agentSessionId: this.agent.id,

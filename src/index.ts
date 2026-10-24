@@ -742,3 +742,5 @@ export * from "./operations/index.ts";
 export type { MessagePart, MediaPart, MediaKind, MediaThresholds } from "./media/parts.ts";
 
 export type { MediaStore, MediaInfo, StoredMedia, MediaConfig } from "./media/store.ts";
+
+export type { MediaCaptureLevel } from "./media/capture.ts";

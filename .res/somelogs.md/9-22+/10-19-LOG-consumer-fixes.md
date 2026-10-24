@@ -514,3 +514,17 @@ and untracked files are preserved and excluded from implementation commits.
   cleanup of orphaned writes. Directly calling an unrelated backend's record repository cannot
   clean a consumer's external store; use the Agent clear API or clean that store explicitly.
   Media-specific capture and agent output are implemented in subsequent steps.
+
+### Step 3 — media capture
+
+- Added `capture.media` (`none`, `metadata`, `content`, default `content`) to Agent settings and
+  the existing per-conversation resolver. Part `keep`/`record` overrides apply before storage;
+  `captureRuntimeRecord` independently captures text and media. A non-enumerable internal
+  marker carries already-applied part overrides through that choke point and never enters JSON.
+- Review: verified media can be stored with `message: none`, without weakening the checkpoint
+  text requirements; media `none` does not leave default copies behind. No known regression.
+- Tests: typecheck; policy validation/choke-point unit tests; Agent tests for metadata defaults,
+  explicit keep, record suppression, text suppression and per-conversation disabling. Full suite:
+  **1075 pass, 0 fail**.
+- Testing gaps: agent-generated media follows this policy starting in step 4. Checkpoint tests
+  cover existing text rules; these changes do not make checkpoints include media.
