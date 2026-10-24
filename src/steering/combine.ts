@@ -1,5 +1,5 @@
 import type { PromptHandlers } from "../types.ts";
-import type { PromptPart, SteeringPrompt } from "./contracts.ts";
+import type { CombinedMessage, SteeringPrompt } from "./contracts.ts";
 
 /** Text of a combined prompt: the messages in order, separated by a blank line. Nothing is added. */
 export const COMBINED_TEXT_SEPARATOR = "\n\n";
@@ -24,7 +24,7 @@ export function mergeHandlers(list: readonly (PromptHandlers | undefined)[]): Pr
   return merged;
 }
 
-function partOf(prompt: SteeringPrompt): PromptPart {
+function partOf(prompt: SteeringPrompt): CombinedMessage {
   return {
     id: prompt.turnId,
     text: prompt.text,

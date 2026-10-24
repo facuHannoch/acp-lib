@@ -34,12 +34,16 @@ export interface Bridgeable {
   bridge(options?: BridgeOptions): Promise<void>;
 }
 
+export interface ClientPrompt {
+  text: string;
+  handlers?: PromptHandlers;
+  attachments?: Attachment[];
+}
+
 export interface AgentClient {
   /** Send a prompt and resolve with the turn result. The main entry point. */
   prompt(
-    text: string,
-    handlers?: PromptHandlers,
-    attachments?: Attachment[],
+    input: ClientPrompt,
   ): Promise<PromptResult>;
 
   /** Cancel the in-flight prompt; the pending prompt() resolves with status "cancelled". */

@@ -1,3 +1,4 @@
+import type { ClientPrompt } from "./agent-client.ts";
 // AcpClient — the core deliverable. Implements the AgentClient output contract and
 // adds the rich ACP input surface (capabilities, configOptions, sessions, auth).
 //
@@ -726,10 +727,15 @@ export class AcpClient implements AgentClient {
   // --- prompting ----------------------------------------------------------------
 
   prompt(
-    text: string,
+    input: string | ClientPrompt,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
+    const text = typeof input === "string" ? input : input.text;
+    if (typeof input !== "string") {
+      handlers = input.handlers;
+      attachments = input.attachments;
+    }
     return new Promise<PromptResult>((resolve, reject) => {
       this.queue.push({ text, handlers, attachments, resolve, reject });
       void this.pump();

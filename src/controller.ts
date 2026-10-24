@@ -1,3 +1,4 @@
+import type { ClientPrompt } from "./agent-client.ts";
 import { ForcedStopError } from "./operations/errors.ts";
 import type { OperationLifecycleConfig, OutputListener } from "./operations/contracts.ts";
 import {
@@ -272,17 +273,19 @@ export class AgentController implements AgentClient {
   }
 
   prompt(
-    text: string,
+    input: string | ClientPrompt,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
+    const text = typeof input === "string" ? input : input.text;
+    if (typeof input !== "string") { handlers = input.handlers; attachments = input.attachments; }
     const current = this.requireCurrent();
     let forced!: () => void;
     const interrupted = new Promise<never>((_resolve, reject) => {
       forced = () => reject(new ForcedStopError());
       this.forceStopListeners.add(forced);
     });
-    return Promise.race([current.prompt(text, handlers, attachments), interrupted])
+    return Promise.race([current.prompt({ text, handlers, attachments }), interrupted])
       .finally(() => this.forceStopListeners.delete(forced));
   }
 

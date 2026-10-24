@@ -9,6 +9,7 @@ export type {
   PromptDelivery,
   PromptEndedBy,
   PromptHandle,
+  CombinedMessage,
   PromptPart,
   SteeringPrompt,
 } from "./contracts.ts";

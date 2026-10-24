@@ -461,3 +461,21 @@ reports the prompt blocks it receives, and a new mode sends `image`, `resource_l
 7. Docs (`CONSUMER_GUIDE`, changelog) and the media step in the end-to-end smoke test.
 8. Real-harness runs (need authorization): which media each harness accepts, whether Claude reads
    blobs, how sandboxes treat paths outside the workspace.
+
+## 2026-10-24, message parts implementation (`message-parts`)
+
+Branch starts at `b930539` (current HEAD, per the corrected request). Existing consumer edits
+and untracked files are preserved and excluded from implementation commits.
+
+### Step 0 — preparation
+
+- Consolidated structured message text projection in `media/content.ts`; SQLite and backend
+  search now share it. Renamed combined prompt originals to `CombinedMessage`, retaining the
+  deprecated `PromptPart` alias. Shared client input is an object; concrete clients retain
+  positional compatibility.
+- Review: checked call sites and public exports, and checked the implementation diff for
+  whitespace errors. No known regression. Structured SQLite search intentionally stops
+  indexing image base64, matching the backend projection.
+- Tests: typecheck; 35 targeted persistence/content tests; full suite **1061 pass, 0 fail**.
+- Testing gaps: sandboxed child-process fixtures disconnect (baseline also failed); the full
+  suite ran successfully with sandbox escalation. Real providers have not been exercised.

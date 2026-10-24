@@ -60,12 +60,15 @@ export type MessageEvent =
   | { readonly kind: "message_withdrawn"; readonly id: PendingMessageId };
 
 /** One original message of a combined prompt. */
-export interface PromptPart {
+export interface CombinedMessage {
   readonly id: PendingMessageId;
   readonly text: string;
   readonly participantId?: string;
   readonly consumerMetadata?: PersistenceJsonValue;
 }
+
+/** @deprecated Use CombinedMessage. */
+export type PromptPart = CombinedMessage;
 
 /** The fields of a queued prompt that steering reads and writes. */
 export interface SteeringPrompt {
@@ -81,7 +84,7 @@ export interface SteeringPrompt {
   handlers?: PromptHandlers;
   attachments?: Attachment[];
   /** Present only on a combined prompt: the original messages, in order. */
-  parts?: readonly PromptPart[];
+  parts?: readonly CombinedMessage[];
   resolve: (result: AgentSessionPromptResult) => void;
   reject: (error: unknown) => void;
 }

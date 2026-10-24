@@ -308,7 +308,7 @@ export async function runRepl(
     busy = true;
     try {
       const handlers: PromptHandlers = { onChunk, onActivity };
-      const result = await (execute ? execute(handlers) : client.prompt(text, handlers));
+      const result = await (execute ? execute(handlers) : client.prompt({ text, handlers }));
       spinner?.stop();
 
       if (wroteLabel) {

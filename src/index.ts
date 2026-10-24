@@ -279,6 +279,7 @@ export type {
   PromptDelivery,
   PromptEndedBy,
   PromptHandle,
+  CombinedMessage,
   PromptPart,
 } from "./steering/index.ts";
 

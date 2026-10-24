@@ -1,3 +1,4 @@
+import { contentText } from "../media/content.ts";
 import type { Database } from "bun:sqlite";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { CancelOutcome } from "../operations/contracts.ts";
@@ -456,7 +457,7 @@ function decodeJson(value: unknown): PersistenceJsonValue {
 }
 
 function searchableContent(content: PersistedContent): string {
-  return typeof content === "string" ? content : searchableJson(content);
+  return contentText(content);
 }
 
 function searchableJson(value: PersistenceJsonValue | undefined): string {
