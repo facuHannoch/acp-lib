@@ -355,13 +355,20 @@ type MediaPart = {
 - Kinds: SVG (`image/svg+xml`) is a `file`: it is XML text, and the providers' image inputs take
   PNG, JPEG, GIF and WebP. Sent as text the model reads the markup; the mimeType stays, so a UI can
   still show it as an image (sanitized: an SVG can carry scripts). Rasterizing it is a later option.
-- Where kept copies live: the agent's media store, an object, not a name on the part:
-  `media: { store }`, any object implementing `MediaStore` (`put(bytes, info) → ref`, `get`,
-  `delete`, `list(owner)`); the default is `SqliteMediaStore`, a blob table in the agent's
-  database kept out of the message rows. A consumer wanting several places routes inside its own
-  store (`put` receives the kind, size and conversation). The rest of the library only sees refs.
-  A failed `put` fails the prompt before sending; `list(owner)` lets a cleanup pass find bytes
-  whose delete failed.
+- Where kept copies live: a store, not a name on the part. By default the persistence backend's
+  optional `media` repository (next to `search?`, `identity?` on `PersistenceScope`): the SQLite
+  backend keeps the bytes in a blob table of the same database, out of the message rows, written
+  in the same transaction as the record, so neither can exist without the other. The consumer
+  overrides it on the agent with `media: { store }`, any object implementing `MediaStore`
+  (`put(bytes, info) → ref`, `get`, `delete`, `list(owner)`). A consumer wanting several places
+  routes inside its own store (`put` receives the kind, size and conversation). The rest of the
+  library only sees refs. A separate store cannot share the transaction: a failed `put` fails the
+  prompt before sending, and `list(owner)` lets a cleanup pass find bytes left behind. A custom
+  backend without `media` and no store: nothing can be kept; an explicit `keep: true` is refused
+  and the default drops to metadata.
+- Media is recorded on the `Agent` path only (SQLite records). The older `SessionManager` /
+  `AgentSession` JSONL transcript can send parts (the ACP mapping is shared) but records the text
+  plus one line per part (`[image plot.png]`), with no store.
 - Agent level: a `media` key in the V2 `capture` settings (`none` = not recorded, `metadata` =
   not kept, `content` = kept; default `content`), overridable per conversation by the resolver. It
   decides for the media the agent sends and is the default for the consumer's parts; a part's own
@@ -401,13 +408,53 @@ type MediaPart = {
   and search over name, kind, mimeType and size, filterable by conversation; usable later by the
   agent through a tool.
 
-**Implementation order.**
-1. The part type, its ACP mapping and the capabilities check (fixes today's "everything goes as
-   `image`").
-2. The `MediaStore`, `SqliteMediaStore` and persistence of parts; `deleteMedia`.
-3. The `media` capture key.
-4. Receiving the agent's media chunks.
-5. Out-of-band media.
+**Code review against the plan (2026-10-24).**
+- Name clash: `PromptPart` (`steering/contracts.ts`, public) is one original message of a
+  combined prompt, and the user-record step takes `parts`. It is renamed `CombinedMessage`, with
+  `PromptPart` kept as a deprecated alias; ours is `MessagePart`.
+- `combinePrompts` joins the texts and pools all attachments, losing whose media is whose. Each
+  original message keeps its parts, in its record and in the prompt's order.
+- `PersistedContentBlock` (public) already has `image` (with inline base64 `data`) and `resource`,
+  and `content_json` already stores blocks: no message table change. A `media` block is added
+  (`kind`, `mode`, `ref?`, `uri?`, `name`, `mimeType`, `size`, `sha256`); inline `data` is no
+  longer written, old blocks are still read. Text-only messages stay a string.
+- Assistant messages are text only (`current.text += chunk.text`; `ResponseChunk` and
+  `ResponseMessage` have `text` only). A chunk gains an optional part, a message a parts list;
+  `text` stays the text-only view.
+- Bytes that could leak: the `prompt_request` debug log writes the whole prompt (today, with
+  attachments) and protocol capture at `raw` would store it; both replace `data` with its size.
+  Search: `searchableJson` (SQLite) indexes every JSON value, base64 and refs included, and
+  `contentText` (`backend.ts`) has another rule; they become one helper that skips bytes and refs.
+  The audit log gets the record before capture (`record-capture.ts`), so bytes go to the store
+  before the record is built and records hold refs only.
+- `appendAssistantMessage` refuses blank text: it takes parts too. `AgentClient.prompt` is shared
+  by the ACP client and the degraded `PtyClient`; the pty client refuses non-text parts.
+  `AcpClient.prompt(..., attachments)` stays, attachments becoming copies.
+- The `media` capture level goes in the existing choke point, `captureRuntimeRecord`.
+
+**Structure.** `agent-session.ts` (about 5k lines) only calls; the logic lives in pure functions:
+| file | holds |
+|---|---|
+| `media/parts.ts` | `MessagePart` types, `normalizeParts` (source, `mode` by threshold, refusals) |
+| `media/acp.ts` | part ↔ ACP block both ways, the capabilities check |
+| `media/content.ts` | part ↔ `PersistedContentBlock`, the one `contentText` |
+| `media/store.ts` | `MediaStore`, `resolveParts` (reads paths, calls `put`) |
+| `media/redact.ts` | strips `data` from logs and protocol records |
+| `persistence/sqlite-media-store.ts` | the blob table (schema v16), `deleteMedia`, `list(owner)` |
+Unit tests per file, no I/O (an in-memory store). Integration through the fixture agent: it
+reports the prompt blocks it receives, and a new mode sends `image`, `resource_link` and
+`resource` chunks.
+
+**Implementation order** (one commit per step, each with its tests, the suite green after each).
+0. Preparation, no behavior change: one `contentText`; `CombinedMessage` with the alias;
+   `AgentClient.prompt` takes an object.
+1. Sending: types, ACP mapping, capabilities check, redaction. Attachments go out as their real
+   kind, not always `image`; combined prompts keep each message's media.
+2. Storing: the `media` block, the backend `media` repository and its SQLite table, the agent
+   `media: { store }` override, user records with parts, `deleteMedia`.
+3. The `media` capture key, in the resolver and `captureRuntimeRecord`.
+4. Receiving: agent chunks become parts, assistant records get blocks, replayed media skipped.
+5. Out-of-band messages with parts.
 6. The files listing and search.
 7. Docs (`CONSUMER_GUIDE`, changelog) and the media step in the end-to-end smoke test.
 8. Real-harness runs (need authorization): which media each harness accepts, whether Claude reads
