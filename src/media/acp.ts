@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import type { Attachment } from "../types.ts";
 import { mediaKind, type MessagePart, type ResolvedPart } from "./parts.ts";
@@ -20,3 +21,25 @@ export function partsToAcp(parts: readonly ResolvedPart[]): ContentBlock[] {
     return { type: "resource", resource: { uri, mimeType: part.mimeType, blob: data } };
   });
 }
+
+/** Normalize an agent content chunk without fetching resource links. */
+export function acpToPart(block: ContentBlock): ResolvedPart | undefined {
+  if (block.type === "text") return { kind: "text", text: block.text };
+  if (block.type === "resource_link") return { kind: mediaKind(block.mimeType ?? undefined), mode: "link",
+    uri: block.uri, name: block.name, mimeType: block.mimeType ?? "application/octet-stream", size: block.size ?? 0 };
+  if (block.type === "image" || block.type === "audio") {
+    const data = new Uint8Array(Buffer.from(block.data, "base64"));
+    return { kind: block.type === "image" && block.mimeType === "image/svg+xml" ? "file" : block.type, mode: "copy", data, mimeType: block.mimeType,
+      size: data.byteLength, sha256: hashBytes(data) };
+  }
+  if (block.type === "resource") {
+    const resource = block.resource;
+    const data = "text" in resource ? new TextEncoder().encode(resource.text) : new Uint8Array(Buffer.from(resource.blob, "base64"));
+    const name = resource.uri.split("/").at(-1) || undefined;
+    return { kind: "file", mode: "copy", data, mimeType: resource.mimeType ?? ("text" in resource ? "text/plain" : "application/octet-stream"),
+      ...(name ? { name } : {}), size: data.byteLength, sha256: hashBytes(data) };
+  }
+  return undefined;
+}
+
+function hashBytes(data: Uint8Array): string { return createHash("sha256").update(data).digest("hex"); }

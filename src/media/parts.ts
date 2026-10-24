@@ -65,7 +65,7 @@ export function providerParts<T extends MessagePart | ResolvedPart>(providerText
 }
 
 /** Compact text-only view for the older JSONL transcript, which has no media store. */
-export function transcriptParts(parts: readonly MessagePart[]): string {
+export function transcriptParts(parts: readonly (MessagePart | ResolvedPart)[]): string {
   return parts.filter((part) => part.record !== false).map((part) =>
     part.kind === "text" || part.kind === "pasted" ? part.text : `[${part.kind}${part.name ? ` ${part.name}` : ""}]`,
   ).join("\n");

@@ -594,3 +594,7 @@ describe("adopting a session that was adopted before", () => {
     expect(stored.map((record) => String(record.content))).toEqual(["Read a.txt", "Reading it.", "It says kiwi."]);
   });
 });
+
+test("replayed media does not mint empty imported assistant messages", () => {
+  expect(turnsFromReplay([{ update: { sessionUpdate: "agent_message_chunk", content: { type: "image", mimeType: "image/png", data: "AQ==" } } }])).toEqual([]);
+});

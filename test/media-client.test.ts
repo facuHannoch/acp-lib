@@ -17,3 +17,18 @@ test("fixture receives ordered parts and compatibility attachment MIME kinds", a
     ]);
   } finally { await client.stop(); }
 });
+
+test("media responses preserve order, text view and stream parts", async () => {
+  const client = new AcpClient({ adapter: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts")] } });
+  try {
+    await client.connect();
+    const chunks: unknown[] = [];
+    const result = await client.prompt("MEDIA_OUTPUT", { onResponseChunk: (chunk) => chunks.push(chunk) });
+    expect(result.messages).toHaveLength(1);
+    expect(result.text).toBe("after image");
+    expect(result.messages[0]!.parts?.map((part) => part.kind)).toEqual(["image", "text", "audio", "file", "file", "file"]);
+    expect(chunks).toHaveLength(6);
+    expect(result.messages[0]!.parts?.[0]).toMatchObject({ kind: "image", mode: "copy", size: 2, data: new Uint8Array([1, 2]) });
+    expect(result.messages[0]!.parts?.[3]).toMatchObject({ mode: "link", uri: "file:///tmp/original.pdf" });
+  } finally { await client.stop(); }
+});

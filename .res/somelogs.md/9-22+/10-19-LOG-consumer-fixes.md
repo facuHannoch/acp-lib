@@ -528,3 +528,20 @@ and untracked files are preserved and excluded from implementation commits.
   **1075 pass, 0 fail**.
 - Testing gaps: agent-generated media follows this policy starting in step 4. Checkpoint tests
   cover existing text rules; these changes do not make checkpoints include media.
+
+### Step 4 — receiving
+
+- Agent image/audio/resource-link/embedded-resource chunks now become normalized response
+  parts. Text views and boundaries remain compatible. Assistant snapshots/finals store refs
+  and metadata, with a commit-aware weak ref cache avoiding duplicate blobs across revisions.
+  Partial media survives provider failure. Replay media is skipped on load and adoption.
+- Legacy success and failure transcripts retain descriptions without bytes. Embedded resource
+  text is also removed from canonical raw protocol capture. Handoff transcript messages stay text.
+- Review caught two less obvious paths: adoption's response extractor could import empty media
+  messages, and failed legacy turns could serialize their response parts. Both are corrected.
+  No known regression.
+- Tests: typecheck; response ordering/boundaries; mixed-media fixture streaming, final history,
+  failed turns, no duplicate copies, reload replay; legacy transcript byte checks. Full suite:
+  **1082 pass, 0 fail**.
+- Testing gaps: media bytes are tiny fixture payloads, not decodable pictures/audio. No renderer
+  is supplied by this library; embedded text-file rendering requires reading its stored ref.

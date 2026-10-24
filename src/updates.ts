@@ -1,3 +1,4 @@
+import { acpToPart } from "./media/acp.ts";
 // Maps raw session/update notifications into our output-contract types.
 // `agent_message_chunk` → response text; everything else → ActivityEvent.
 // See SPEC.md "Protocol facts": all agent→client events are session/update,
@@ -29,10 +30,9 @@ export function extractResponseChunk(
   if (u.sessionUpdate !== "agent_message_chunk") return null;
   const content = u.content;
   const text = content?.type === "text" ? (content.text ?? "") : "";
-  if (!text) return null;
-  return u.messageId == null
-    ? { text }
-    : { text, messageId: String(u.messageId) };
+  const part = content && content.type !== "text" ? acpToPart(content as schema.ContentBlock) : undefined;
+  if (!text && !part) return null;
+  return { text, ...(part ? { part } : {}), ...(u.messageId == null ? {} : { messageId: String(u.messageId) }) };
 }
 
 /** @deprecated Prefer `extractResponseChunk` when message boundaries matter. */

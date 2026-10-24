@@ -46,6 +46,7 @@ import {
 import type { Agent } from "../agent.ts";
 
 export class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle {
+  private readonly outputMedia = new WeakMap<object, string>();
   constructor(
     private readonly agent: Agent,
     private readonly conversationId: AgentConversationId,
@@ -161,9 +162,15 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
       }),
     }));
     const persisted: ConversationRecord[] = [];
+    const pending: Array<readonly [object, string]> = [];
     let providerAttachment: ProviderAttachmentCommitAcknowledgement | undefined;
     await this.agent.persistence.transaction(async (persistence) => {
-      await this.persistObservationsInTransaction(persistence, records, true, persisted);
+      const prepared = await Promise.all(records.map(async (record, index) => {
+        const parts = input.result.messages[index]?.parts;
+        return parts && record.kind === "message" ? { ...record, content: await persistParts(parts, this.conversationId,
+          this.agent.media.store ?? persistence.media, this.settings.capture.media, { cache: this.outputMedia, pending }) } : record;
+      }));
+      await this.persistObservationsInTransaction(persistence, prepared, true, persisted);
       if (status === "completed" && input.providerAttachment.kind === "runtime_only") {
         const descriptor = input.providerAttachment.descriptor;
         const providerSessionRecordId = `provider-${randomUUID()}`;
@@ -187,6 +194,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         });
       }
     });
+    for (const [part, ref] of pending) this.outputMedia.set(part, ref);
     this.agent.publishCommittedRecords(persisted);
     if (this.settings.auditLog) this.agent.audit?.notifyPending();
     const commit: OwnedPromptCommitResult = Object.freeze({
@@ -226,7 +234,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         ...(message.messageId ? { providerMessageId: message.messageId } : {}),
       }),
     }));
-    await this.updateIdentity(await this.appendMessages(records));
+    await this.updateIdentity(await this.persistMessagesWithParts(records, input.messages.map((message) => message.parts)));
   }
 
   resolveAdapter(adapterId: string) {
@@ -261,13 +269,30 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     return await this.resolveParticipant();
   }
 
-  async record(record: NewConversationRecord): Promise<void> {
+  async record(record: NewConversationRecord, parts?: readonly ResolvedPart[]): Promise<void> {
     const streamingSnapshot = record.kind === "message" && record.status === "in_progress";
-    const persisted = await this.persistObservations([record], !streamingSnapshot);
-    // A streaming snapshot is a display revision, not a second completed response.
-    if (!streamingSnapshot) {
-      await this.updateIdentity(persisted);
-    }
+    const persisted = parts
+      ? await this.persistMessagesWithParts([record], [parts], !streamingSnapshot)
+      : await this.persistObservations([record], !streamingSnapshot);
+    if (!streamingSnapshot) await this.updateIdentity(persisted);
+  }
+
+  private async persistMessagesWithParts(records: readonly NewConversationRecord[], parts: readonly (readonly ResolvedPart[] | undefined)[], audit = true): Promise<readonly ConversationRecord[]> {
+    const persisted: ConversationRecord[] = [];
+    const pending: Array<readonly [object, string]> = [];
+    await this.agent.persistence.transaction(async (scope) => {
+      const prepared = await Promise.all(records.map(async (record, index) => {
+        const messageParts = parts[index];
+        return messageParts && record.kind === "message" ? { ...record, content: await persistParts(messageParts,
+          this.conversationId, this.agent.media.store ?? scope.media, this.settings.capture.media,
+          { cache: this.outputMedia, pending }) } : record;
+      }));
+      await this.persistObservationsInTransaction(scope, prepared, audit, persisted);
+    });
+    for (const [part, ref] of pending) this.outputMedia.set(part, ref);
+    this.agent.publishCommittedRecords(persisted);
+    if (audit && this.settings.auditLog) this.agent.audit?.notifyPending();
+    return persisted;
   }
 
   async meteringRecorded(record: OperationMeteringRecord): Promise<void> {

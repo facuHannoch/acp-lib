@@ -1,3 +1,4 @@
+import type { ResolvedPart } from "./media/parts.ts";
 // Core shared types — the OUTPUT contract.
 // These are what every client (AcpClient, and later PtyClient) produces, so callers
 // render against these regardless of which mode is active. See SPEC.md.
@@ -79,6 +80,8 @@ export interface PromptResult {
 
 /** One boundary-aware delta from an ACP `agent_message_chunk`. */
 export interface ResponseChunk {
+  /** Non-text delta; text remains the compatibility projection. */
+  part?: ResolvedPart;
   text: string;
   messageId?: string;
   /** True when this chunk begins a new assistant message. */
@@ -87,6 +90,8 @@ export interface ResponseChunk {
 
 /** One assistant message assembled from consecutive ACP response chunks. */
 export interface ResponseMessage {
+  /** Ordered normalized parts, present for messages containing media. */
+  parts?: readonly ResolvedPart[];
   messageId?: string;
   text: string;
 }

@@ -1,6 +1,8 @@
+import type { ResolvedPart } from "./media/parts.ts";
 import type { ResponseChunk, ResponseMessage } from "./types.ts";
 
 export interface IncomingResponseChunk {
+  part?: ResolvedPart;
   text: string;
   messageId?: string;
   /** Supplied when an upstream client already resolved the boundary. */
@@ -38,7 +40,7 @@ export function joinResponseMessages(messages: readonly ResponseMessage[]): stri
  * it). Otherwise missing ids remain part of the current message: no boundary can be inferred.
  */
 export class ResponseAccumulator {
-  private readonly entries: Array<{ messageId?: string; text: string }> = [];
+  private readonly entries: Array<{ messageId?: string; text: string; parts?: ResolvedPart[] }> = [];
   private closed = false;
 
   /** End the current message: the next chunk starts a new one, whatever its id. */
@@ -71,9 +73,18 @@ export class ResponseAccumulator {
       entry.text += chunk.text;
     }
 
+    const entry = this.entries.at(-1)!;
+    if (chunk.part) {
+      if (!entry.parts) entry.parts = entry.text && !startsMessage ? [{ kind: "text", text: entry.text.slice(0, entry.text.length - chunk.text.length) }] : [];
+      entry.parts.push(chunk.part);
+    } else if (entry.parts && chunk.text) {
+      const last = entry.parts.at(-1);
+      if (last?.kind === "text") entry.parts[entry.parts.length - 1] = { ...last, text: last.text + chunk.text };
+      else entry.parts.push({ kind: "text", text: chunk.text });
+    }
     return chunk.messageId === undefined
-      ? { text: chunk.text, startsMessage }
-      : { text: chunk.text, messageId: chunk.messageId, startsMessage };
+      ? { text: chunk.text, startsMessage, ...(chunk.part ? { part: chunk.part } : {}) }
+      : { text: chunk.text, messageId: chunk.messageId, startsMessage, ...(chunk.part ? { part: chunk.part } : {}) };
   }
 
   /** @deprecated Prefer `snapshot()` and preserve the distinct response messages. */
@@ -83,7 +94,7 @@ export class ResponseAccumulator {
 
   snapshot(): readonly ResponseMessage[] {
     return Object.freeze(
-      this.entries.map((entry) => Object.freeze({ ...entry })),
+      this.entries.map((entry) => Object.freeze({ ...entry, ...(entry.parts ? { parts: Object.freeze([...entry.parts]) } : {}) })),
     );
   }
 }

@@ -49,3 +49,9 @@ test("attachments retain copy/no-keep semantics and redaction never mutates wire
   expect(redactMedia(value)).toEqual({ prompt: [{ type: "image", data: { byteLength: 2 } }, { type: "resource", resource: { blob: { byteLength: 2 } } }] });
   expect(value.prompt[0]!.data).toBe("AQI=");
 });
+
+test("embedded text resources are redacted before protocol capture", () => {
+  const input = { type: "resource", resource: { uri: "file:///notes.txt", text: "private" } };
+  expect(redactMedia(input)).toEqual({ type: "resource", resource: { uri: "file:///notes.txt", text: { byteLength: 7 } } });
+  expect(input.resource.text).toBe("private");
+});

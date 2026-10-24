@@ -95,3 +95,28 @@ test("media capture defaults, overrides and text independence apply on the Agent
   expect(await agent.persistence.media!.list(hidden.id)).toHaveLength(0);
   expect((await agent.persistence.messages.list(hidden.id)).messages).toHaveLength(0);
 });
+
+test("Agent stores media output once across snapshots, final records and session reload", async () => {
+  const { agent } = await setup();
+  const conversation = await agent.conversations.create();
+  const result = await conversation.prompt("MEDIA_OUTPUT");
+  expect(result.messages[0]!.parts?.map((p) => p.kind)).toEqual(["image", "text", "audio", "file", "file", "file"]);
+  expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(4);
+  const assistants = (await agent.persistence.messages.list(conversation.id)).messages.filter((m) => m.role === "assistant");
+  const final = assistants.at(-1)!;
+  expect(final.content).toMatchObject([{ type: "media", kind: "image", ref: expect.any(String) }, { type: "text", text: "after image" }, { type: "media", kind: "audio" }, { type: "media", mode: "link" }, { type: "media", kind: "file" }, { type: "media", kind: "file" }]);
+  expect(JSON.stringify(final.content)).not.toContain('"data"');
+  await conversation.stop();
+  const reopened = await agent.conversations.open(conversation.id);
+  expect(reopened).toBeDefined();
+  expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(4);
+});
+
+test("partial media survives a failed provider turn", async () => {
+  const { agent } = await setup();
+  const conversation = await agent.conversations.create();
+  await expect(conversation.prompt("MEDIA_OUTPUT FAIL_AFTER_MEDIA")).rejects.toThrow("failed after media");
+  const messages = (await agent.persistence.messages.list(conversation.id)).messages;
+  expect(messages.some((m) => m.role === "assistant" && m.status === "failed" && Array.isArray(m.content) && m.content.some((b) => b.type === "media"))).toBe(true);
+  expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(4);
+});

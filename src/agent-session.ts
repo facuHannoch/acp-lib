@@ -1,5 +1,5 @@
 import { attachmentParts } from "./media/acp.ts";
-import { promptParts, transcriptParts, providerParts, partsText, type MessagePart } from "./media/parts.ts";
+import { promptParts, transcriptParts, providerParts, partsText, type ResolvedPart, type MessagePart } from "./media/parts.ts";
 import { redactMedia } from "./media/redact.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
 // face. Existing consumers still import this constructor as `AgentSession`; both names
@@ -717,10 +717,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
-  private queueOwnedRecord(record: NewConversationRecord): void {
+  private queueOwnedRecord(record: NewConversationRecord, parts?: readonly ResolvedPart[]): void {
     if (!this.ownerLifecycle?.record) return;
     this.ownerRecordWrite = this.ownerRecordWrite
-      .then(() => this.ownerLifecycle!.record!(record))
+      .then(() => this.ownerLifecycle!.record!(record, parts))
       .catch((error) => {
         this.markManagedPersistenceUnhealthy();
         throw error;
@@ -3381,6 +3381,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       readonly id: string;
       providerMessageId?: string;
       text: string;
+      parts?: readonly ResolvedPart[];
       revision: number;
       dirty: boolean;
     } | null = null;
@@ -3426,13 +3427,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
           status: ended ? "completed" : "in_progress",
           metadata: JSON.stringify({ operationId: item.turnId,
             ...(message.providerMessageId ? { providerMessageId: message.providerMessageId } : {}) }),
-        });
+        }, message.parts);
       }
       if (this.v2Transcript) this.presentation.queuePresentation({
         kind: "message",
         operationId: item.turnId,
         role: "assistant",
-        text: message.text,
+        text: message.parts ? transcriptParts(message.parts) : message.text,
         ...(message.providerMessageId === undefined ? {} : { providerMessageId: message.providerMessageId }),
         structured: {
           version: 1,
@@ -3477,6 +3478,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             current.providerMessageId = chunk.messageId;
           }
           current.text += chunk.text;
+          current.parts = response.snapshot().at(-1)?.parts;
           current.dirty = true;
           // Persist the first usable snapshot. Later token chunks remain in memory until
           // an interleaving item, a new message, or the operation boundary.
@@ -3616,8 +3618,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
           v: 1,
           t: "msg",
           role: "assistant",
-          text: res.text,
-          messages: res.messages,
+          text: res.messages.some((message) => message.parts)
+            ? res.messages.map((message) => message.parts ? transcriptParts(message.parts) : message.text).join("\n\n") : res.text,
+          messages: res.messages.map((message) => ({
+            ...(message.messageId ? { messageId: message.messageId } : {}),
+            text: message.parts ? transcriptParts(message.parts) : message.text,
+          })),
           ts: Date.now(),
           usage: res.usage,
           stopReason: res.stopReason,
@@ -3717,8 +3723,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
           v: 1,
           t: "msg",
           role: "assistant",
-          text,
-          messages,
+          text: messages.some((message) => message.parts)
+            ? messages.map((message) => message.parts ? transcriptParts(message.parts) : message.text).join("\n\n") : text,
+          messages: messages.map((message) => ({
+            ...(message.messageId ? { messageId: message.messageId } : {}),
+            text: message.parts ? transcriptParts(message.parts) : message.text,
+          })),
           ts: Date.now(),
           stopReason: "error",
           status: "error",
@@ -4111,7 +4121,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           operationId,
           role: "assistant",
           text: formatResponseMessages(result.messages, "\n\n"),
-          structured: { version: 1, messages: result.messages },
+          structured: { version: 1, messages: result.messages.map(({ messageId, text }) => ({ ...(messageId ? { messageId } : {}), text })) },
           stopReason: result.stopReason,
           status: result.status,
         });

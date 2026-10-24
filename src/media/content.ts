@@ -21,7 +21,7 @@ function jsonText(value: PersistenceJsonValue | undefined): string {
 }
 
 /** Build byte-free record blocks; call inside the record transaction for a backend store. */
-export async function persistParts(parts: readonly ResolvedPart[], owner: string, store?: MediaStore, capture: MediaCaptureLevel = "content"): Promise<PersistedContent> {
+export async function persistParts(parts: readonly ResolvedPart[], owner: string, store?: MediaStore, capture: MediaCaptureLevel = "content", reuse?: { cache: WeakMap<object, string>; pending: Array<readonly [object, string]> }): Promise<PersistedContent> {
   const blocks: PersistedContentBlock[] = [];
   for (const part of parts) {
     if (part.record === false) continue;
@@ -33,9 +33,10 @@ export async function persistParts(parts: readonly ResolvedPart[], owner: string
     let ref: string | undefined;
     if (part.mode === "copy" && (part.keep ?? (capture === "content" && Boolean(store)))) {
       if (!store) throw new Error("keep: true requires a media store");
-      ref = part.ref ?? await store.put(part.data!, { owner, kind: part.kind, mimeType: part.mimeType,
+      ref = part.ref ?? reuse?.cache.get(part) ?? await store.put(part.data!, { owner, kind: part.kind, mimeType: part.mimeType,
         ...(part.name ? { name: part.name } : {}), size: part.size, sha256: part.sha256! });
     }
+    if (ref && reuse) reuse.pending.push([part, ref]);
     blocks.push(markCapturedMedia({ type: "media", kind: part.kind, mode: part.mode, mimeType: part.mimeType,
       ...(part.name ? { name: part.name } : {}), size: part.size,
       ...(part.sha256 ? { sha256: part.sha256 } : {}), ...(ref ? { ref } : {}),

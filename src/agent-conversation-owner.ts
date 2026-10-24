@@ -102,5 +102,5 @@ export interface AgentConversationOwnerLifecycle {
     readonly activatedAt: string;
   }): Promise<void>;
   /** Append a typed non-message runtime observation under the owner's capture policy. */
-  record?(record: NewConversationRecord): Promise<void>;
+  record?(record: NewConversationRecord, parts?: readonly ResolvedPart[]): Promise<void>;
 }

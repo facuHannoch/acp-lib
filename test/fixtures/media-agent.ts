@@ -33,12 +33,32 @@ async function handle(message: any): Promise<void> {
       send({ jsonrpc: "2.0", id: message.id, result: { sessionId, configOptions: [] } });
       return;
     case "session/load":
+      for (const role of ["user_message_chunk", "agent_message_chunk"]) send({ jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: message.params.sessionId, update: { sessionUpdate: role, content: { type: "image", data: "AQ==", mimeType: "image/png" } },
+      } });
       send({ jsonrpc: "2.0", id: message.id, result: { configOptions: [] } });
       return;
     case "session/prompt": {
       const text = Array.isArray(message.params?.prompt)
         ? message.params.prompt.filter((block: any) => block?.type === "text").map((block: any) => block.text).join("")
         : "";
+      if (text.includes("MEDIA_OUTPUT")) {
+        const contents = [
+          { type: "image", data: "AQI=", mimeType: "image/png" },
+          { type: "text", text: "after image" },
+          { type: "audio", data: "Aw==", mimeType: "audio/wav" },
+          { type: "resource_link", uri: "file:///tmp/original.pdf", name: "original.pdf", mimeType: "application/pdf" },
+          { type: "resource", resource: { uri: "file:///notes.txt", mimeType: "text/plain", text: "embedded notes" } },
+          { type: "resource", resource: { uri: "file:///binary.pdf", mimeType: "application/pdf", blob: "BA==" } },
+        ];
+        for (const content of contents) send({ jsonrpc: "2.0", method: "session/update", params: {
+          sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", messageId: "media-message", content },
+        } });
+        if (text.includes("FAIL_AFTER_MEDIA")) {
+          send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "failed after media" } });
+        } else send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+        return;
+      }
       if (text.includes("FAIL_TURN")) {
         send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "intentional echo fixture failure" } });
         return;

@@ -34,6 +34,7 @@ export function turnsFromReplay(notifications: readonly unknown[]): ImportedTurn
     if (!update || typeof update.sessionUpdate !== "string") continue;
 
     const response = extractResponseChunk(update as never);
+    if (response?.part) continue; // Loaded media is already history; do not import duplicate copies.
     if (response) {
       if (!current) {
         current = { items: [] };

@@ -47,3 +47,13 @@ describe("response text projection", () => {
     expect(() => formatResponseMessages(messages, null as never)).toThrow(TypeError);
   });
 });
+
+test("media deltas preserve text on both sides and a later message boundary", () => {
+  const response = new ResponseAccumulator();
+  response.append({ text: "before", messageId: "a" });
+  response.append({ text: "", messageId: "a", part: { kind: "image", mode: "copy", mimeType: "image/png", size: 1, data: new Uint8Array([1]) } });
+  response.append({ text: "after", messageId: "a" });
+  response.append({ text: "done", messageId: "b" });
+  expect(response.snapshot()[0]).toMatchObject({ text: "beforeafter", parts: [{ kind: "text", text: "before" }, { kind: "image" }, { kind: "text", text: "after" }] });
+  expect(response.snapshot()[1]).toEqual({ text: "done", messageId: "b" });
+});
