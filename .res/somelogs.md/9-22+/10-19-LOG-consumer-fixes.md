@@ -598,3 +598,27 @@ and untracked files are preserved and excluded from implementation commits.
   media and audit (231 logical/physical entries).
 - Testing gaps: deterministic semantic recall is intentionally unavailable; deliberate provider
   session deletion/recovery was skipped in that smoke. Real-media/provider behavior is step 8.
+
+### Step 8 — real-harness runs
+
+- Added a repeatable synthetic-media/path probe and checked in small measurement reports and
+  a compatibility README. Ran Claude ACP 0.85.0, Codex ACP 2.1.1 and OpenCode 1.18.34, with
+  external paths both under `/tmp` and outside it, directly and through symlinks, with/without
+  declared directories. Permission approvals were limited to generated test roots.
+- Codex and OpenCode Go accepted image, embedded text, PDF blob and file-link inputs. Claude
+  accepted image/text/link inputs but returned `UNAVAILABLE` for the blob despite advertising
+  embedded context. This is the already identified adapter limitation, not a library regression;
+  it cannot be repaired in this harness-agnostic library without changing the agreed semantics.
+  All three advertise no audio, so audio copies were not submitted.
+- OpenCode's default account failed with an expired API key. Its already configured OpenCode Go
+  provider (`gpt-6-luna`) completed the probes; no account/global settings were changed.
+- External reads succeeded. Codex/OpenCode modified every tested target. Claude left one
+  undeclared symlink target unchanged on the first external run; a focused repeat modified it
+  and preserved the symlink. Both results remain in the reports. Model completion alone is not
+  treated as evidence that a file was edited. Read/write permission behavior is in the README.
+- Review: inspected semantic marker checks and actual file changes, removed unrelated model
+  prose from path reports, and checked probe types separately. Full suite **1087 pass, 0 fail**.
+- Testing gaps: no successful real audio path (unadvertised), large/remote media, strict sandbox
+  variants or model-generated image/audio output. Results are tied to the installed versions,
+  accounts and permission modes; fixture tests cover receiving and persistence. No known new
+  library regression was introduced by this probe-only step.

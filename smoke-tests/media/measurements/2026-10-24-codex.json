@@ -1,0 +1,104 @@
+{
+  "adapterId": "codex",
+  "timestamp": "2026-10-24T22:54:00.449Z",
+  "cases": [
+    {
+      "name": "image-copy",
+      "status": "completed",
+      "text": "Red",
+      "elapsedMs": 4198,
+      "semanticMatch": true
+    },
+    {
+      "name": "audio-copy",
+      "unsupported": true
+    },
+    {
+      "name": "text-file-copy",
+      "status": "completed",
+      "text": "ACPMEDIA_TEXT_CHECK",
+      "elapsedMs": 1770,
+      "semanticMatch": true
+    },
+    {
+      "name": "binary-file-copy",
+      "status": "completed",
+      "text": "ACPMEDIA_BLOB_CHECK",
+      "elapsedMs": 2471,
+      "semanticMatch": true
+    },
+    {
+      "name": "file-link",
+      "status": "completed",
+      "text": "I\u2019ll read the file and return its marker.\n\nACPMEDIA_POINTER_CHECK",
+      "elapsedMs": 4242,
+      "semanticMatch": true
+    },
+    {
+      "name": "undeclared-direct",
+      "status": "completed",
+      "elapsedMs": 10718,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": false
+    },
+    {
+      "name": "undeclared-symlink",
+      "status": "completed",
+      "elapsedMs": 4157,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": true
+    },
+    {
+      "name": "declared-direct",
+      "status": "completed",
+      "elapsedMs": 9515,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": false
+    },
+    {
+      "name": "declared-symlink",
+      "status": "completed",
+      "elapsedMs": 4836,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": true
+    }
+  ],
+  "syntheticFilesOnly": true,
+  "capabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": false
+    },
+    "auth": {
+      "logout": true
+    },
+    "sessionCapabilities": {
+      "list": true,
+      "delete": true,
+      "close": true,
+      "fork": true,
+      "resume": true,
+      "additionalDirectories": true
+    }
+  },
+  "agentInfo": {
+    "name": "@agentclientprotocol/codex-acp",
+    "title": "Codex",
+    "version": "2.1.1"
+  },
+  "permissions": []
+}

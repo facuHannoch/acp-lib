@@ -1,0 +1,135 @@
+{
+  "adapterId": "claude",
+  "timestamp": "2026-10-24T22:53:59.141Z",
+  "cases": [
+    {
+      "name": "image-copy",
+      "status": "completed",
+      "text": "Red",
+      "elapsedMs": 3778,
+      "semanticMatch": true
+    },
+    {
+      "name": "audio-copy",
+      "unsupported": true
+    },
+    {
+      "name": "text-file-copy",
+      "status": "completed",
+      "text": "ACPMEDIA_TEXT_CHECK",
+      "elapsedMs": 1469,
+      "semanticMatch": true
+    },
+    {
+      "name": "binary-file-copy",
+      "status": "completed",
+      "text": "UNAVAILABLE",
+      "elapsedMs": 1328,
+      "semanticMatch": false
+    },
+    {
+      "name": "file-link",
+      "status": "completed",
+      "text": "ACPMEDIA_POINTER_CHECK",
+      "elapsedMs": 2683,
+      "semanticMatch": true
+    },
+    {
+      "name": "undeclared-direct",
+      "status": "completed",
+      "elapsedMs": 9761,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": false
+    },
+    {
+      "name": "undeclared-symlink",
+      "status": "completed",
+      "elapsedMs": 9057,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": true
+    },
+    {
+      "name": "declared-direct",
+      "status": "completed",
+      "elapsedMs": 9581,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": false
+    },
+    {
+      "name": "declared-symlink",
+      "status": "completed",
+      "elapsedMs": 10984,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": true
+    }
+  ],
+  "syntheticFilesOnly": true,
+  "capabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "auth": {
+      "logout": true
+    },
+    "sessionCapabilities": {
+      "list": true,
+      "delete": true,
+      "close": true,
+      "fork": true,
+      "resume": true,
+      "additionalDirectories": true
+    }
+  },
+  "agentInfo": {
+    "name": "@agentclientprotocol/claude-agent-acp",
+    "title": "Claude Agent",
+    "version": "0.85.0"
+  },
+  "permissions": [
+    {
+      "title": "Read /tmp/acp-media-real-claude-9iBIqz/outside/undeclared-direct.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "printf 'EDIT_undeclared-direct\\n' >> /tmp/acp-media-real-claude-9iBIqz/outside/undeclared-direct.txt && cat /tmp/acp-media-real-claude-9iBIqz/outside/undeclared-direct.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "Read undeclared-symlink.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "printf 'EDIT_undeclared-symlink\\n' >> /tmp/acp-media-real-claude-9iBIqz/workspace/undeclared-symlink.txt && cat /tmp/acp-media-real-claude-9iBIqz/workspace/undeclared-symlink.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "printf 'EDIT_declared-direct\\n' >> /tmp/acp-media-real-claude-9iBIqz/outside/declared-direct.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "printf 'EDIT_declared-symlink\\n' >> /tmp/acp-media-real-claude-9iBIqz/workspace/declared-symlink.txt",
+      "scoped": true,
+      "granted": true
+    }
+  ]
+}

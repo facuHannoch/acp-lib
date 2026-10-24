@@ -1,0 +1,37 @@
+{
+  "adapterId": "claude",
+  "timestamp": "2026-10-24T22:59:59.360Z",
+  "cases": [
+    {
+      "name": "undeclared-symlink",
+      "status": "completed",
+      "elapsedMs": 13869,
+      "semanticMatch": true,
+      "modified": true,
+      "pointerModified": true,
+      "symlinkPreserved": true,
+      "declared": false,
+      "symlink": true
+    }
+  ],
+  "syntheticFilesOnly": true,
+  "outsideTemporaryDirectory": true,
+  "model": "opus",
+  "permissions": [
+    {
+      "title": "ls -l /tmp/acp-media-real-claude-fpo9Hv/workspace/undeclared-symlink.txt; readlink -f /tmp/acp-media-real-claude-fpo9Hv/workspace/undeclared-symlink.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "Read undeclared-symlink.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "printf 'EDIT_undeclared-symlink\\n' >> /tmp/acp-media-real-claude-fpo9Hv/workspace/undeclared-symlink.txt && cat /tmp/acp-media-real-claude-fpo9Hv/workspace/undeclared-symlink.txt",
+      "scoped": true,
+      "granted": true
+    }
+  ]
+}

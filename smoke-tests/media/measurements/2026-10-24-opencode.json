@@ -1,0 +1,89 @@
+{
+  "adapterId": "opencode",
+  "timestamp": "2026-10-24T22:53:59.496Z",
+  "cases": [
+    {
+      "name": "image-copy",
+      "error": "RequestError: Internal error: This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.",
+      "elapsedMs": 2461
+    },
+    {
+      "name": "audio-copy",
+      "unsupported": true
+    },
+    {
+      "name": "text-file-copy",
+      "error": "RequestError: Internal error: This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.",
+      "elapsedMs": 403
+    },
+    {
+      "name": "binary-file-copy",
+      "error": "RequestError: Internal error: This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.",
+      "elapsedMs": 355
+    },
+    {
+      "name": "file-link",
+      "error": "RequestError: Internal error: This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.",
+      "elapsedMs": 377
+    },
+    {
+      "name": "undeclared-direct",
+      "error": "RequestError: Internal error: This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.",
+      "elapsedMs": 2163,
+      "modified": false,
+      "declared": false,
+      "symlink": false
+    },
+    {
+      "name": "undeclared-symlink",
+      "error": "RequestError: Internal error: This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.",
+      "elapsedMs": 484,
+      "modified": false,
+      "declared": false,
+      "symlink": true
+    },
+    {
+      "name": "declared-direct",
+      "error": "RequestError: Internal error: This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.",
+      "elapsedMs": 1942,
+      "modified": false,
+      "declared": true,
+      "symlink": false
+    },
+    {
+      "name": "declared-symlink",
+      "error": "RequestError: Internal error: This API key has expired. Create a new API key in OpenCode Console and replace it in your client or secret store. Signing in again will not renew this key.",
+      "elapsedMs": 448,
+      "modified": false,
+      "declared": true,
+      "symlink": true
+    }
+  ],
+  "syntheticFilesOnly": true,
+  "capabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "auth": null,
+    "sessionCapabilities": {
+      "list": true,
+      "delete": false,
+      "close": true,
+      "fork": true,
+      "resume": true,
+      "additionalDirectories": false
+    }
+  },
+  "agentInfo": {
+    "name": "OpenCode",
+    "version": "1.18.34"
+  },
+  "permissions": []
+}

@@ -1,0 +1,102 @@
+{
+  "adapterId": "opencode",
+  "timestamp": "2026-10-24T22:57:20.253Z",
+  "cases": [
+    {
+      "name": "image-copy",
+      "status": "completed",
+      "text": "Red",
+      "elapsedMs": 2161,
+      "semanticMatch": true
+    },
+    {
+      "name": "audio-copy",
+      "unsupported": true
+    },
+    {
+      "name": "text-file-copy",
+      "status": "completed",
+      "text": "ACPMEDIA_TEXT_CHECK",
+      "elapsedMs": 1632,
+      "semanticMatch": true
+    },
+    {
+      "name": "binary-file-copy",
+      "status": "completed",
+      "text": "ACPMEDIA_BLOB_CHECK",
+      "elapsedMs": 1965,
+      "semanticMatch": true
+    },
+    {
+      "name": "file-link",
+      "status": "completed",
+      "text": "ACPMEDIA_POINTER_CHECK",
+      "elapsedMs": 1693,
+      "semanticMatch": true
+    },
+    {
+      "name": "undeclared-direct",
+      "status": "completed",
+      "elapsedMs": 3755,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": false
+    },
+    {
+      "name": "undeclared-symlink",
+      "status": "completed",
+      "elapsedMs": 3978,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": true
+    },
+    {
+      "name": "declared-direct",
+      "status": "completed",
+      "elapsedMs": 4960,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": false
+    },
+    {
+      "name": "declared-symlink",
+      "status": "completed",
+      "elapsedMs": 3412,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": true
+    }
+  ],
+  "syntheticFilesOnly": true,
+  "model": "opencode-go/gpt-6-luna",
+  "capabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "auth": null,
+    "sessionCapabilities": {
+      "list": true,
+      "delete": false,
+      "close": true,
+      "fork": true,
+      "resume": true,
+      "additionalDirectories": false
+    }
+  },
+  "agentInfo": {
+    "name": "OpenCode",
+    "version": "1.18.34"
+  },
+  "permissions": []
+}
