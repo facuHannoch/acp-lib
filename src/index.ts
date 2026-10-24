@@ -246,6 +246,7 @@ export type {
 
 export type {
   AgentClient,
+  ClientPrompt,
   InterruptOptions,
   Bridgeable,
   BridgeOptions,

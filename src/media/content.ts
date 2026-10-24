@@ -1,6 +1,6 @@
 import { markCapturedMedia, type MediaCaptureLevel } from "./capture.ts";
 import type { MediaStore } from "./store.ts";
-import type { ResolvedPart, ResolvedMediaPart } from "./parts.ts";
+import type { ResolvedPart } from "./parts.ts";
 import type { PersistedContent, PersistedContentBlock, PersistenceJsonValue } from "../persistence/backend.ts";
 
 export function contentText(content: PersistedContent | undefined): string {
@@ -9,7 +9,7 @@ export function contentText(content: PersistedContent | undefined): string {
   return content.map((block) => {
     if (block.type === "text" || block.type === "pasted") return block.text;
     if (block.type === "image") return block.alt ?? "";
-    if (block.type === "resource") return [block.title, block.text, block.uri].filter(Boolean).join("\n");
+    if (block.type === "resource") return [block.title, block.text].filter(Boolean).join("\n");
     if (block.type === "media") return "";
     return jsonText(block.value);
   }).filter(Boolean).join("\n");
@@ -17,7 +17,9 @@ export function contentText(content: PersistedContent | undefined): string {
 
 
 function jsonText(value: PersistenceJsonValue | undefined): string {
-  return value === undefined ? "" : JSON.stringify(value);
+  return value === undefined ? "" : JSON.stringify(value, (key, child) =>
+    ["data", "blob", "bytes", "ref", "refs", "sha256"].includes(key) ? undefined : child,
+  );
 }
 
 /** Build byte-free record blocks; call inside the record transaction for a backend store. */

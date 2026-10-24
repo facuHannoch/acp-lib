@@ -48,9 +48,16 @@ test("schema 15 upgrades to media storage while retaining text history", async (
   const conversation = await agent.conversations.create();
   await conversation.prompt("retained text");
   const id = conversation.id;
+  await agent.persistence.records.append({ recordId: "legacy-media", agentSessionId: agent.id,
+    agentConversationId: id, kind: "message", timestamp: new Date().toISOString(), role: "user",
+    content: [{ type: "image", mimeType: "image/png", data: "legacybase64marker" },
+      { type: "json", value: { text: "visiblelegacytext", ref: "legacyrefmarker" } }] });
   await agent.close();
   const { Database } = await import("bun:sqlite");
   const db = new Database(join(root, "agent.sqlite"));
+  db.exec("UPDATE conversation_messages SET search_text = 'legacybase64marker legacyrefmarker visiblelegacytext' WHERE content_json IS NOT NULL");
+  db.exec("INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild')");
+  expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM conversation_messages_fts WHERE conversation_messages_fts MATCH 'legacybase64marker'").get()!.n).toBe(1);
   db.exec("DROP TABLE conversation_media; DELETE FROM schema_migrations WHERE version >= 16; INSERT INTO schema_migrations(version, applied_at) VALUES (15, '2026-10-24T00:00:00.000Z')");
   db.close();
   const { SqliteAgentPersistence } = await import("../src/persistence/sqlite-backend.ts");
@@ -58,6 +65,10 @@ test("schema 15 upgrades to media storage while retaining text history", async (
   try {
     expect((await backend.messages.list(id)).messages.some((m) => m.content === "retained text")).toBe(true);
     expect(await backend.media.list(id)).toHaveLength(0);
+    expect(await backend.search!.search({ text: "legacybase64marker" })).toHaveLength(0);
+    expect(await backend.search!.search({ text: "legacyrefmarker" })).toHaveLength(0);
+    expect(await backend.search!.search({ text: "visiblelegacytext" })).toHaveLength(1);
+    expect(await backend.records.get("legacy-media")).toMatchObject({ content: [{ type: "image", data: "legacybase64marker" }, { type: "json" }] });
     const ref = await backend.media.put(new Uint8Array([3]), { owner: id, kind: "file", mimeType: "application/pdf", size: 1, sha256: "hash" });
     expect((await backend.media.get(ref))?.data).toEqual(new Uint8Array([3]));
   } finally { await backend.close(); }
@@ -179,4 +190,44 @@ test("files listing folds response revisions and searches only metadata with con
   await agent.deleteMedia(copy.ref!);
   expect((await files.list()).files).toHaveLength(6); // history metadata remains
   await expect(files.list({ cursor: "bad" })).rejects.toThrow("cursor");
+});
+
+
+test("external pending bytes survive a failed local turn commit", async () => {
+  const values = new Map<string, import("../src/media/store.ts").StoredMedia & { data: Uint8Array }>();
+  const store: import("../src/media/store.ts").MediaStore = {
+    async put(data, info) { const ref = crypto.randomUUID(); values.set(ref, { ref, info, data: new Uint8Array(data) }); return ref; },
+    async get(ref) { return values.get(ref) ?? null; }, async delete(ref) { values.delete(ref); },
+    async list(owner) { return [...values.values()].filter((value) => value.info.owner === owner); },
+  };
+  const { agent } = await setup(store);
+  const conversation = await agent.conversations.create();
+  await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([9]), mimeType: "image/png", keep: false }] });
+  const transaction = agent.persistence.transaction.bind(agent.persistence);
+  let fail = true;
+  (agent.persistence as any).transaction = (work: any) => transaction((scope) => work({ ...scope,
+    providerSessions: new Proxy(scope.providerSessions, { get(target, property) {
+      if (property === "append") return async (...args: Parameters<typeof target.append>) => {
+        if (fail) { fail = false; throw new Error("local turn commit failed"); }
+        return target.append(...args);
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    } }),
+  }));
+  await expect(conversation.prompt("first attempt")).rejects.toThrow("local turn commit failed");
+  expect(await store.list(conversation.id)).toHaveLength(1);
+  const retried = JSON.parse((await conversation.prompt("retry")).text);
+  expect(retried.blocks).toContainEqual({ type: "image", data: "CQ==", mimeType: "image/png" });
+  expect(await store.list(conversation.id)).toHaveLength(0);
+});
+
+test("deleting a kept out-of-band copy does not resurrect bytes from its pending envelope", async () => {
+  const { agent } = await setup();
+  const conversation = await agent.conversations.create();
+  const record = await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([1]), mimeType: "image/png" }] });
+  const ref = (record.content as readonly PersistedMediaBlock[])[0]!.ref!;
+  await agent.deleteMedia(ref);
+  await expect(conversation.prompt("after deletion")).rejects.toThrow("unavailable for delivery");
+  expect(await agent.persistence.media!.get(ref)).toBeNull();
 });

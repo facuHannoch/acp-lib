@@ -5,7 +5,7 @@ import type { Adapter } from "./adapters.ts";
 import type { AgentMode } from "./controller.ts";
 import type { NewConversationRecord, ParticipantRef, PersistenceJsonValue } from "./persistence/backend.ts";
 import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts";
-import type { PromptPart } from "./steering/contracts.ts";
+import type { CombinedMessage } from "./steering/contracts.ts";
 import type { ResponseMessage } from "./types.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
@@ -24,7 +24,7 @@ export interface OwnedPromptInput {
   readonly participantId?: string;
   readonly consumerMetadata?: PersistenceJsonValue;
   /** Present when several messages were combined into this one prompt: each is recorded as sent. */
-  readonly parts?: readonly PromptPart[];
+  readonly parts?: readonly CombinedMessage[];
   readonly text: string;
   readonly messageParts?: readonly MessagePart[];
   readonly attachments?: readonly Attachment[];

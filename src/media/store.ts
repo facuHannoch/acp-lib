@@ -32,6 +32,11 @@ export interface ResolvePartsOptions {
 }
 
 export async function resolveParts(parts: readonly MessagePart[], options: ResolvePartsOptions): Promise<readonly ResolvedPart[]> {
+  for (const [kind, threshold] of Object.entries(options.thresholds ?? {})) {
+    if (!["image", "audio", "file"].includes(kind) || !Number.isSafeInteger(threshold) || threshold < 0) {
+      throw new Error(`invalid media threshold for ${kind}`);
+    }
+  }
   const result: ResolvedPart[] = [];
   for (const part of normalizeParts(parts)) {
     if (part.kind === "text" || part.kind === "pasted") { result.push(part); continue; }
@@ -61,7 +66,7 @@ export async function resolveParts(parts: readonly MessagePart[], options: Resol
     if (mode === "link" && media.keep !== undefined) throw new Error("keep is only valid for copies");
     const data = mode === "copy" ? (path ? new Uint8Array(await readFile(path)) : new Uint8Array(media.data!)) : undefined;
     result.push({ kind, mode, mimeType,
-      name: media.name ?? (path ? basename(path) : undefined), size,
+      name: media.name ?? (path ? basename(path) : undefined), size: data?.byteLength ?? size,
       ...(data ? { data, sha256: createHash("sha256").update(data).digest("hex") } : { uri: pathToFileURL(path!).href }),
       ...(media.record === false ? { record: false as const } : {}), ...(media.keep === undefined ? {} : { keep: media.keep }),
     });

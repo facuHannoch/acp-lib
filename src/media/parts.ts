@@ -39,6 +39,11 @@ export function normalizeParts(parts: readonly MessagePart[]): readonly MessageP
     if ([media.data !== undefined, media.path !== undefined, media.ref !== undefined].filter(Boolean).length !== 1) {
       throw new Error("media requires exactly one of data, path, or ref");
     }
+    if (media.mode !== undefined && media.mode !== "copy" && media.mode !== "link") throw new Error("media mode must be copy or link");
+    if (media.data !== undefined && !(media.data instanceof Uint8Array)) throw new Error("media data must be a Uint8Array");
+    if (media.path !== undefined && (typeof media.path !== "string" || !media.path.trim())) throw new Error("media path cannot be blank");
+    if (media.ref !== undefined && (typeof media.ref !== "string" || !media.ref.trim())) throw new Error("media ref cannot be blank");
+    if (media.keep !== undefined && typeof media.keep !== "boolean") throw new Error("media keep must be boolean");
     if (media.mode === "link" && !media.path) throw new Error("link media requires path");
     if (media.mode === "link" && media.keep !== undefined) throw new Error("keep is only valid for copies");
     if (media.record === false && media.keep !== undefined) throw new Error("record: false cannot specify keep");

@@ -55,3 +55,11 @@ test("embedded text resources are redacted before protocol capture", () => {
   expect(redactMedia(input)).toEqual({ type: "resource", resource: { uri: "file:///notes.txt", text: { byteLength: 7 } } });
   expect(input.resource.text).toBe("private");
 });
+
+
+test("invalid source values and thresholds fail explicitly", async () => {
+  expect(() => normalizeParts([{ kind: "image", ref: "" }])).toThrow("ref cannot be blank");
+  expect(() => normalizeParts([{ kind: "file", path: " " }])).toThrow("path cannot be blank");
+  expect(() => normalizeParts([{ kind: "image", data: new ArrayBuffer(1) } as never])).toThrow("Uint8Array");
+  await expect(resolveParts([], { cwd: ".", thresholds: { image: -1 } })).rejects.toThrow("threshold");
+});

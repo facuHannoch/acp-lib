@@ -1,3 +1,5 @@
+import { contentText } from "../media/content.ts";
+import type { PersistedContent } from "./backend.ts";
 import type { Database } from "bun:sqlite";
 
 export const SQLITE_AGENT_SCHEMA_VERSION = 16;
@@ -670,6 +672,18 @@ export function migrateSqliteAgentSchema(database: Database): void {
         }
       }
       if (version > 0 && version < 15) backfillRecordOperationIds(database);
+      if (version < 16) {
+        // Old structured search rows could contain inline base64 and media refs. Updating the
+        // source search text requires rebuilding an existing append-only FTS index as well.
+        const structured = database.query<{ record_row_id: number; content_json: string }, []>(
+          "SELECT record_row_id, content_json FROM conversation_messages WHERE content_json IS NOT NULL",
+        ).iterate();
+        const update = database.query("UPDATE conversation_messages SET search_text = ? WHERE record_row_id = ?");
+        for (const row of structured) update.run(contentText(JSON.parse(row.content_json) as PersistedContent), row.record_row_id);
+        if (database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_messages_fts'").get()) {
+          database.exec("INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild')");
+        }
+      }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

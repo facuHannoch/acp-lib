@@ -151,7 +151,8 @@ await conversation.prompt({
 
 Media kinds are `image`, `audio`, and `file`. Each input has exactly one source: `data:
 Uint8Array`, `path` (relative to the conversation's working directory, absolute, or a `file://`
-URI), or `ref` (a previously kept copy). SVG is a `file` and is embedded as markup, retaining
+URI), or `ref` (a previously kept copy). MIME types are inferred from file paths; supply the
+MIME type for byte-array inputs when known. SVG is a `file` and is embedded as markup, retaining
 its MIME type. Text files are ACP embedded text resources; other files use blob resources.
 A UI rendering SVG must sanitize it.
 
@@ -176,7 +177,8 @@ another machine or in an isolated container needs a shared mount or a copy.
 SQLite schema 16 stores kept blobs separately from message rows in the same database and
 transaction. History and audit records contain refs/URIs and metadata. Ordinary text messages
 remain strings; mixed messages use `PersistedContentBlock[]`, including `media` and `pasted`.
-Old inline image/resource blocks can still be read. Raw canonical protocol capture and debug
+Old inline image/resource blocks can still be read; migration rebuilds structured message
+search text and its FTS index without old inline bytes or refs. Raw canonical protocol capture and debug
 prompt logs redact inline media; a consumer's explicitly requested `wire` callback is verbatim.
 
 ```ts

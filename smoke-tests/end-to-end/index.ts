@@ -703,7 +703,7 @@ async function assertHistoryPages(agent: Agent, conversationId: AgentConversatio
   let items = 0;
   olderCursor = undefined;
   do {
-    const page = await records.listRecent!(conversationId, {
+    const page: import("../../src/persistence/backend.ts").RecentItemPage = await records.listRecent!(conversationId, {
       agentMessages: 2, fold: true, detail: "summary", ...(olderCursor ? { olderCursor } : {}),
     });
     for (const item of page.items) {

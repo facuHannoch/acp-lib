@@ -2,7 +2,7 @@ import { loadPendingParts, deletePendingParts } from "../media/pending.ts";
 import { resolveParts } from "../media/store.ts";
 import { attachmentParts } from "../media/acp.ts";
 import { contentParts, persistParts } from "../media/content.ts";
-import { providerParts, type ResolvedPart } from "../media/parts.ts";
+import { type ResolvedPart } from "../media/parts.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import type { OperationStalledError } from "../operations/errors.ts";
 import { randomUUID } from "node:crypto";
@@ -176,7 +176,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
           this.agent.media.store ?? persistence.media, this.settings.capture.media, { cache: this.outputMedia, pending }) } : record;
       }));
       await this.persistObservationsInTransaction(persistence, prepared, true, persisted);
-      if (status === "completed") await deletePendingParts(this.agent.media.store ?? persistence.media,
+      if (status === "completed" && !this.agent.media.store) await deletePendingParts(persistence.media,
         this.conversationId, this.deliveredMessages.get(input.operationId)?.ids ?? []);
       if (status === "completed" && this.deliveredMessages.get(input.operationId)) {
         await persistence.outOfBandDelivery?.advance(this.conversationId,
@@ -206,7 +206,8 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         });
       }
     });
-    if (status === "completed") for (const id of this.deliveredMessages.get(input.operationId)?.ids ?? []) this.agent.pendingMessageParts.delete(id);
+    const deliveredIds = this.deliveredMessages.get(input.operationId)?.ids ?? [];
+    if (status === "completed") for (const id of deliveredIds) this.agent.pendingMessageParts.delete(id);
     this.deliveredMessages.delete(input.operationId);
     for (const [part, ref] of pending) this.outputMedia.set(part, ref);
     this.agent.publishCommittedRecords(persisted);
@@ -215,6 +216,8 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
       ...(providerAttachment ? { providerAttachment } : {}),
     });
     try {
+      if (status === "completed" && this.agent.media.store) await deletePendingParts(this.agent.media.store,
+        this.conversationId, deliveredIds);
       await this.updateIdentity(Object.freeze(persisted));
       if (status === "completed" && input.identityDeliveryReceipt) {
         await this.agent.identity.delivered?.(input.identityDeliveryReceipt);

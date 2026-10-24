@@ -622,3 +622,29 @@ and untracked files are preserved and excluded from implementation commits.
   variants or model-generated image/audio output. Results are tied to the installed versions,
   accounts and permission modes; fixture tests cover receiving and persistence. No known new
   library regression was introduced by this probe-only step.
+
+### Final self-review and automated review
+
+- Rechecked the implementation against every decided design area and traced both Agent and
+  legacy paths, success/failure serialization, external-store effects and migrations.
+- **Regressions found and fixed:** step 2's leading-text convenience could duplicate text on
+  legacy structured prompts (the Agent's already-resolved path was unaffected). The internal
+  call now supplies its prepared parts without repeating the leading text. Step 5 deleted
+  external pending envelopes before the local successful-turn transaction committed; a local
+  rollback could then lose no-keep bytes needed by a retry. External cleanup now happens after
+  commit, while SQLite cleanup remains transactional. Both have focused regression tests.
+- Closed a planned privacy gap: historical structured FTS rows could still contain old inline
+  bytes/refs. Schema-16 migration now projects search text and rebuilds the existing message FTS
+  index, iterating source rows; legacy content remains readable. JSON projection skips known
+  byte/ref keys and legacy resource URIs. Added source/threshold validation and recorded copy
+  size from actual bytes rather than an earlier stat. These are intentional search/privacy
+  corrections, not loss of stored message data.
+- Exported `ClientPrompt`, removed the internal deprecated-type use, and fixed an existing
+  implicit-type error found when separately checking the smoke programs (normal typecheck
+  includes only `src`).
+- Gates: source typecheck; separate end-to-end/probe typecheck; 50 focused tests; full suite
+  **1091 pass, 0 fail, 4305 assertions**; branch implementation diff passes `git diff --check`;
+  package dry run succeeds (185 files, including the media modules).
+- No unresolved implementation regression found. Known external-store/custom-backend and
+  real-harness limits remain recorded above. The final manual end-to-end pass follows this
+  review; no broad retesting beyond these gates is needed unless it exposes a new problem.

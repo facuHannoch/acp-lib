@@ -3548,7 +3548,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const dispatchedAt = new Date().toISOString();
     try {
       let res = await this.supervisedPrompt(this.controller, item.turnId, "turn",
-        () => this.controller.prompt({ text: providerText, handlers: wrappedHandlers,
+        () => this.controller.prompt({ text: item.messageParts ? "" : providerText, handlers: wrappedHandlers,
           ...(owned?.providerParts ? { resolvedParts: owned.providerParts, attachments: undefined }
             : { attachments: item.attachments, ...(item.messageParts ? { parts: providerParts(providerText, item.text, item.messageParts) } : {}) }),
         }));
