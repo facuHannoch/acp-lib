@@ -648,3 +648,29 @@ and untracked files are preserved and excluded from implementation commits.
 - No unresolved implementation regression found. Known external-store/custom-backend and
   real-harness limits remain recorded above. The final manual end-to-end pass follows this
   review; no broad retesting beyond these gates is needed unless it exposes a new problem.
+
+### Final manual end-to-end validation
+
+Run after the final automated review and corrective commit `1b9ba87`.
+
+- Drove a one-off consumer API script against a fresh temporary SQLite Agent with **raw**
+  canonical protocol and audit capture. Sent text, named paste, a relative image path, unkept
+  audio/file bytes and an external file pointer; inspected outgoing block order, normalized
+  responses, saved refs, message/file search and history. Verified the leading text arrived once.
+- Changed the pointed-to file after sending and read its current contents through the recorded
+  URI. Appended no-keep out-of-band media, closed/reopened the Agent, checked replay did not
+  duplicate bytes, then delivered it on exactly the next successful turn. Temporary payloads
+  disappeared. Deleted a kept copy and verified metadata remained, then deleted all conversation
+  media and cleared history.
+- Inspected canonical records and **91 raw audit entries**: neither the unique input image's
+  base64 nor private embedded file text nor output image data leaked. Pasted text remained
+  captured/searchable. All three manual workflow checkpoints passed.
+- Ran the complete existing lifecycle smoke again with `ACP_TEST8_ADAPTER=test`: operation
+  grouping, reopen, two-agent-message paging, checkpoints, metering, the media phase and audit
+  all passed (**231 logical and physical audit entries**).
+- Gaps: the deterministic fixture does not reason about image/audio contents; real image/file
+  semantics are covered by step 8. Deliberate deletion of a provider session was skipped in the
+  manual lifecycle smoke; recovery remains covered by the full automated suite. Real audio is
+  unadvertised by the installed harnesses. The Claude blob limitation remains documented.
+- No regression or additional code change was required by the manual pass. Final working-tree
+  review found only the original consumer edits/untracked files; implementation work is committed.
