@@ -348,11 +348,13 @@ describe("steering building blocks", () => {
     expect(combinePrompts([only]).parts).toBeUndefined();
   });
 
-  test("combinePrompts concatenates attachments", () => {
-    const one = { type: "image", data: "1" } as never;
-    const two = { type: "image", data: "2" } as never;
+  test("combinePrompts keeps attachments with their original messages and in prompt order", () => {
+    const one = { mimeType: "image/png", data: new Uint8Array([1]).buffer };
+    const two = { mimeType: "image/png", data: new Uint8Array([2]).buffer };
     const combined = combinePrompts([prompt("a", "x", { attachments: [one] }), prompt("b", "y", { attachments: [two] })]);
-    expect(combined.attachments).toEqual([one, two]);
+    expect(combined.attachments).toBeUndefined();
+    expect(combined.parts?.map((message) => message.attachments)).toEqual([[one], [two]]);
+    expect(combined.messageParts?.map((part) => part.kind)).toEqual(["text", "image", "text", "text", "image"]);
   });
 
   test("mergeHandlers calls every handler and lets the first permission handler decide", () => {

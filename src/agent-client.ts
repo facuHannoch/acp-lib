@@ -1,3 +1,4 @@
+import type { MessagePart, ResolvedPart } from "./media/parts.ts";
 // AgentClient — the shared OUTPUT contract. This interface IS the "same output
 // contract" from SPEC.md made structural: both AcpClient (core) and PtyClient
 // (degraded, deferred) implement it, so a caller's rendering code targets this and
@@ -36,6 +37,9 @@ export interface Bridgeable {
 
 export interface ClientPrompt {
   text: string;
+  parts?: readonly MessagePart[];
+  /** @internal Already resolved by the owning conversation. */
+  resolvedParts?: readonly ResolvedPart[];
   handlers?: PromptHandlers;
   attachments?: Attachment[];
 }

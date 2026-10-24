@@ -738,3 +738,5 @@ export type {
 } from "./types.ts";
 
 export * from "./operations/index.ts";
+
+export type { MessagePart, MediaPart, MediaKind, MediaThresholds } from "./media/parts.ts";

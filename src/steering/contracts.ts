@@ -1,3 +1,4 @@
+import type { MessagePart } from "../media/parts.ts";
 import type { AgentSessionPromptResult } from "../agent-conversation-contracts.ts";
 import type { PersistenceJsonValue } from "../persistence/backend.ts";
 import type { Attachment, PromptHandlers } from "../types.ts";
@@ -61,6 +62,8 @@ export type MessageEvent =
 
 /** One original message of a combined prompt. */
 export interface CombinedMessage {
+  readonly messageParts?: readonly MessagePart[];
+  readonly attachments?: readonly Attachment[];
   readonly id: PendingMessageId;
   readonly text: string;
   readonly participantId?: string;
@@ -83,6 +86,7 @@ export interface SteeringPrompt {
   consumerMetadata?: PersistenceJsonValue;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
+  messageParts?: readonly MessagePart[];
   /** Present only on a combined prompt: the original messages, in order. */
   parts?: readonly CombinedMessage[];
   resolve: (result: AgentSessionPromptResult) => void;

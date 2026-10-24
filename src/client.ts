@@ -1,3 +1,6 @@
+import { resolveParts } from "./media/store.ts";
+import { attachmentParts, partsToAcp } from "./media/acp.ts";
+import { redactMedia } from "./media/redact.ts";
 import type { ClientPrompt } from "./agent-client.ts";
 // AcpClient — the core deliverable. Implements the AgentClient output contract and
 // adds the rich ACP input surface (capabilities, configOptions, sessions, auth).
@@ -167,7 +170,7 @@ export interface SwitchSessionOptions {
   onUpdate?: (notification: unknown) => void;
 }
 
-interface QueueItem {
+interface QueueItem extends ClientPrompt {
   text: string;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
@@ -737,7 +740,7 @@ export class AcpClient implements AgentClient {
       attachments = input.attachments;
     }
     return new Promise<PromptResult>((resolve, reject) => {
-      this.queue.push({ text, handlers, attachments, resolve, reject });
+      this.queue.push({ ...(typeof input === "string" ? {} : input), text, handlers, attachments, resolve, reject });
       void this.pump();
     });
   }
@@ -763,15 +766,11 @@ export class AcpClient implements AgentClient {
     if (!this.transport) throw new NotConnectedError();
     await this.ensureSession(); // lazily create a session on first prompt
 
-    const contentBlocks: schema.ContentBlock[] = [];
-    if (item.text) contentBlocks.push({ type: "text", text: item.text });
-    for (const att of item.attachments ?? []) {
-      contentBlocks.push({
-        type: "image",
-        data: Buffer.from(att.data).toString("base64"),
-        mimeType: att.mimeType,
-      } as schema.ContentBlock);
-    }
+    const parts = item.resolvedParts ?? await resolveParts([
+      ...(item.parts ?? (item.text ? [{ kind: "text" as const, text: item.text }] : [])),
+      ...attachmentParts(item.attachments),
+    ], { cwd: this.config.cwd ?? process.cwd(), capabilities: this._capabilities?.agent.promptCapabilities });
+    const contentBlocks = partsToAcp(parts);
     if (contentBlocks.length === 0) contentBlocks.push({ type: "text", text: "" });
 
     this.active = {
@@ -781,7 +780,7 @@ export class AcpClient implements AgentClient {
     };
     const t0 = Date.now();
     this.log.debug("prompt_start", { chars: item.text.length });
-    this.log.debug("prompt_request", { sessionId: this._sessionId, prompt: contentBlocks });
+    this.log.debug("prompt_request", { sessionId: this._sessionId, prompt: redactMedia(contentBlocks) });
     try {
       const res = await this.transport.prompt({
         sessionId: this._sessionId,

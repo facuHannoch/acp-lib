@@ -479,3 +479,20 @@ and untracked files are preserved and excluded from implementation commits.
 - Tests: typecheck; 35 targeted persistence/content tests; full suite **1061 pass, 0 fail**.
 - Testing gaps: sandboxed child-process fixtures disconnect (baseline also failed); the full
   suite ran successfully with sandbox escalation. Real providers have not been exercised.
+
+### Step 1 — sending
+
+- Added public message/media part types, normalization, path resolution, kind-specific automatic
+  copy thresholds, ACP mapping and capability checks. SVG goes as a file; compatibility
+  attachments are MIME-aware copies with `keep: false`. PTY refuses media.
+- Combined messages retain their original media and send it in message order. Provider-only
+  identity/out-of-band wrappers surround the ordered parts. Debug prompt data and canonical
+  raw protocol media bytes are replaced with byte counts; the wire itself stays intact.
+- Review corrected provider-wrapper handling and replaced the old pooled-attachments test with
+  ownership/order assertions. This intentionally changes the internal combined attachments
+  shape; public positional attachment calls remain supported. No known regression.
+- Tests: typecheck; normalization/mapping/redaction unit tests; fixture transport test; steering
+  integration tests. Final full suite: **1066 pass, 0 fail**.
+- Testing gaps: real provider acceptance, storage and output parts are later steps. Unit tests
+  use small files and byte arrays; they verify threshold behavior with configured small limits,
+  without allocating provider-sized media. `wire` callbacks remain deliberately unredacted.

@@ -285,7 +285,7 @@ export class AgentController implements AgentClient {
       forced = () => reject(new ForcedStopError());
       this.forceStopListeners.add(forced);
     });
-    return Promise.race([current.prompt({ text, handlers, attachments }), interrupted])
+    return Promise.race([current.prompt({ ...(typeof input === "string" ? {} : input), text, handlers, attachments }), interrupted])
       .finally(() => this.forceStopListeners.delete(forced));
   }
 

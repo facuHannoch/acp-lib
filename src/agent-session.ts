@@ -1,3 +1,5 @@
+import { providerParts, partsText, type MessagePart } from "./media/parts.ts";
+import { redactMedia } from "./media/redact.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
 // face. Existing consumers still import this constructor as `AgentSession`; both names
 // refer to the same class while the new agent-level owner is introduced.
@@ -239,7 +241,8 @@ interface PromptQueueItem extends SteeringPrompt {
 
 /** Object-form prompt input for per-message consumer metadata on Agent-owned conversations. */
 export interface AgentConversationPromptInput {
-  readonly text: string;
+  readonly text?: string;
+  readonly parts?: readonly MessagePart[];
   readonly consumerMetadata?: PersistenceJsonValue;
   readonly handlers?: PromptHandlers;
   readonly attachments?: Attachment[];
@@ -745,7 +748,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (!this.ownerAgentSessionId || !this.ownerLifecycle?.record) return;
     let message: PersistenceJsonValue;
     try {
-      message = JSON.parse(entry.line) as PersistenceJsonValue;
+      message = redactMedia(JSON.parse(entry.line)) as PersistenceJsonValue;
     } catch {
       message = entry.line;
     }
@@ -1872,8 +1875,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return typeof input === "string"
       ? this.enqueuePrompt(input, "prompt", handlers, attachments)
       : this.enqueuePrompt(
-          input.text, "prompt", input.handlers, input.attachments,
-          undefined, input.consumerMetadata, input.delivery,
+          input.text ?? partsText(input.parts ?? []), "prompt", input.handlers, input.attachments,
+          undefined, input.consumerMetadata, input.delivery, input.parts,
         );
   }
 
@@ -1904,8 +1907,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (typeof input !== "string") {
       if (!input.participantId.trim()) return this.rejectedPrompt(new Error("participant id cannot be blank"));
       return this.enqueuePrompt(
-        input.text, "prompt", input.handlers, input.attachments,
-        input.participantId.trim(), input.consumerMetadata, input.delivery,
+        input.text ?? partsText(input.parts ?? []), "prompt", input.handlers, input.attachments,
+        input.participantId.trim(), input.consumerMetadata, input.delivery, input.parts,
       );
     }
     const participantId = input;
@@ -1927,6 +1930,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     participantId?: string,
     consumerMetadata?: PersistenceJsonValue,
     delivery?: PromptDelivery,
+    messageParts?: readonly MessagePart[],
   ): PromptHandle {
     const id = this.mintTurnId();
     const promise = new Promise<AgentSessionPromptResult>((resolve, reject) => {
@@ -1962,6 +1966,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ...(stableConsumerMetadata !== undefined ? { consumerMetadata: stableConsumerMetadata } : {}),
         handlers,
         attachments,
+        messageParts,
         resolve,
         reject,
       };
@@ -3527,7 +3532,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const dispatchedAt = new Date().toISOString();
     try {
       let res = await this.supervisedPrompt(this.controller, item.turnId, "turn",
-        () => this.controller.prompt(providerText, wrappedHandlers, item.attachments));
+        () => this.controller.prompt({ text: providerText, handlers: wrappedHandlers, attachments: item.attachments,
+          ...(item.messageParts ? { parts: providerParts(providerText, item.text, item.messageParts) } : {}),
+        }));
       if (res.cancel === "forced") {
         const messages = response.snapshot();
         res = { ...res, messages, text: response.text || chunks.join("") };
