@@ -1,4 +1,5 @@
-import { providerParts, partsText, type MessagePart } from "./media/parts.ts";
+import { attachmentParts } from "./media/acp.ts";
+import { promptParts, transcriptParts, providerParts, partsText, type MessagePart } from "./media/parts.ts";
 import { redactMedia } from "./media/redact.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
 // face. Existing consumers still import this constructor as `AgentSession`; both names
@@ -1875,8 +1876,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return typeof input === "string"
       ? this.enqueuePrompt(input, "prompt", handlers, attachments)
       : this.enqueuePrompt(
-          input.text ?? partsText(input.parts ?? []), "prompt", input.handlers, input.attachments,
-          undefined, input.consumerMetadata, input.delivery, input.parts,
+          partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]), "prompt", input.handlers, input.attachments,
+          undefined, input.consumerMetadata, input.delivery, promptParts(input),
         );
   }
 
@@ -1907,8 +1908,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (typeof input !== "string") {
       if (!input.participantId.trim()) return this.rejectedPrompt(new Error("participant id cannot be blank"));
       return this.enqueuePrompt(
-        input.text ?? partsText(input.parts ?? []), "prompt", input.handlers, input.attachments,
-        input.participantId.trim(), input.consumerMetadata, input.delivery, input.parts,
+        partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]), "prompt", input.handlers, input.attachments,
+        input.participantId.trim(), input.consumerMetadata, input.delivery, promptParts(input),
       );
     }
     const participantId = input;
@@ -3310,6 +3311,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
           ...(item.consumerMetadata !== undefined ? { consumerMetadata: item.consumerMetadata } : {}),
           ...(item.parts ? { parts: item.parts } : {}),
           text: item.text,
+          messageParts: item.messageParts,
+          attachments: item.attachments,
+          mediaContext: { cwd: this.controllerDefaults.cwd ?? process.cwd(),
+            capabilities: this.controller.isDegraded ? undefined : this.controller.capabilities.agent.promptCapabilities,
+            degraded: this.controller.isDegraded },
         })
       : undefined;
     for (const participant of owned?.participants ?? (owned?.participant ? [owned.participant] : [])) {
@@ -3329,7 +3335,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
         await this.v2Transcript.beginOperation(item.turnId, persistenceOperationKind(item.operationKind));
         transcriptStarted = true;
         // A combined prompt shows each original message, as it was sent.
-        const userTexts = item.parts ? item.parts.map((part) => part.text) : [item.text];
+        const legacyText = (text: string, parts?: readonly MessagePart[], attachments?: readonly Attachment[]) =>
+          parts || attachments?.length ? transcriptParts([...(parts ?? [{ kind: "text", text }]), ...attachmentParts(attachments)]) : text;
+        const userTexts = item.parts
+          ? item.parts.map((part) => legacyText(part.text, part.messageParts, part.attachments))
+          : [legacyText(item.text, item.messageParts, item.attachments)];
         const userRecords = [];
         for (const [index, text] of userTexts.entries()) {
           userRecords.push(await this.v2Transcript.appendPresentationEvent({
@@ -3357,7 +3367,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
         v: 1,
         t: "msg",
         role: "user",
-        text: item.text,
+        text: item.messageParts || item.attachments?.length
+          ? transcriptParts([...(item.messageParts ?? [{ kind: "text", text: item.text }]), ...attachmentParts(item.attachments)]) : item.text,
         ts: Date.now(),
       });
       operation = await this.openMeteredOperation(item);
@@ -3532,8 +3543,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const dispatchedAt = new Date().toISOString();
     try {
       let res = await this.supervisedPrompt(this.controller, item.turnId, "turn",
-        () => this.controller.prompt({ text: providerText, handlers: wrappedHandlers, attachments: item.attachments,
-          ...(item.messageParts ? { parts: providerParts(providerText, item.text, item.messageParts) } : {}),
+        () => this.controller.prompt({ text: providerText, handlers: wrappedHandlers,
+          ...(owned?.providerParts ? { resolvedParts: owned.providerParts, attachments: undefined }
+            : { attachments: item.attachments, ...(item.messageParts ? { parts: providerParts(providerText, item.text, item.messageParts) } : {}) }),
         }));
       if (res.cancel === "forced") {
         const messages = response.snapshot();

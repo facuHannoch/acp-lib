@@ -1,3 +1,5 @@
+import { SqliteMediaStore } from "./sqlite-media-store.ts";
+import type { MediaStore } from "../media/store.ts";
 import { Database, type Changes } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
@@ -147,6 +149,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly identityRecord: AgentPersistenceIdentity;
   readonly capabilities: PersistenceCapabilities;
 
+  readonly media: MediaStore;
   readonly conversations: ConversationPersistence;
   readonly records: ConversationRecordPersistence;
   readonly messages: ConversationMessagePersistence;
@@ -186,6 +189,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       metering: true,
     });
     const scope = this.createScope((work) => this.autoWrite(work), (records) => this.notifyRecordsCommitted(records));
+    this.media = scope.media!;
     this.conversations = scope.conversations;
     this.records = scope.records;
     this.messages = scope.messages;
@@ -304,6 +308,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     onAppended: (records: readonly ConversationRecord[]) => void | Promise<void>,
   ): PersistenceScope {
     return Object.freeze({
+      media: new SqliteMediaStore(this.database, runWrite),
       conversations: new SqliteConversationPersistence(this.database, this.identityRecord.agentSessionId, runWrite),
       records: new SqliteConversationRecordPersistence(
         this.database,
@@ -645,6 +650,7 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
         "SELECT COUNT(*) AS n FROM conversation_records WHERE agent_conversation_id = ?",
       ).get(agentConversationId)?.n ?? 0;
       this.database.query("DELETE FROM conversation_records WHERE agent_conversation_id = ?").run(agentConversationId);
+      this.database.query("DELETE FROM conversation_media WHERE owner = ?").run(agentConversationId);
       return Number(count);
     });
   }

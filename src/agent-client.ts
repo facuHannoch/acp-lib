@@ -36,7 +36,7 @@ export interface Bridgeable {
 }
 
 export interface ClientPrompt {
-  text: string;
+  text?: string;
   parts?: readonly MessagePart[];
   /** @internal Already resolved by the owning conversation. */
   resolvedParts?: readonly ResolvedPart[];

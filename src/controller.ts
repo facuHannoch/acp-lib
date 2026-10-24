@@ -277,7 +277,7 @@ export class AgentController implements AgentClient {
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
-    const text = typeof input === "string" ? input : input.text;
+    const text = typeof input === "string" ? input : input.text ?? "";
     if (typeof input !== "string") { handlers = input.handlers; attachments = input.attachments; }
     const current = this.requireCurrent();
     let forced!: () => void;

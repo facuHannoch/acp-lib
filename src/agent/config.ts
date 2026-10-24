@@ -1,3 +1,4 @@
+import type { MediaConfig } from "../media/store.ts";
 import type { OperationLifecycleConfig } from "../operations/contracts.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
@@ -61,6 +62,7 @@ export type AgentConversationRuntimeDefaults = Omit<
 >;
 
 export interface AgentConfig {
+  readonly media?: MediaConfig;
   readonly operationLifecycle?: OperationLifecycleConfig;
   readonly id?: AgentSessionId;
   readonly persistence: AgentPersistenceConfig;

@@ -1,8 +1,20 @@
 import type { Database } from "bun:sqlite";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 15;
+export const SQLITE_AGENT_SCHEMA_VERSION = 16;
 
 const BASE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS conversation_media (
+  ref TEXT PRIMARY KEY,
+  owner TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  kind TEXT NOT NULL CHECK (kind IN ('image', 'audio', 'file')),
+  mime_type TEXT NOT NULL,
+  name TEXT,
+  size INTEGER NOT NULL CHECK (size >= 0),
+  sha256 TEXT NOT NULL,
+  data BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversation_media_owner_idx ON conversation_media(owner);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL
@@ -591,7 +603,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );

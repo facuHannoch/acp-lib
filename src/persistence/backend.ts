@@ -1,3 +1,5 @@
+import type { MediaStore } from "../media/store.ts";
+import type { MediaKind } from "../media/parts.ts";
 import { contentText } from "../media/content.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { CancelOutcome, CancelReason } from "../operations/contracts.ts";
@@ -61,7 +63,21 @@ export interface ConversationRecordEnvelope<K extends ConversationRecordKind = C
   readonly metadata?: string;
 }
 
+export interface PersistedMediaBlock {
+  readonly type: "media";
+  readonly kind: MediaKind;
+  readonly mode: "copy" | "link";
+  readonly ref?: string;
+  readonly uri?: string;
+  readonly name?: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly sha256?: string;
+}
+
 export type PersistedContentBlock =
+  | PersistedMediaBlock
+  | { readonly type: "pasted"; readonly text: string; readonly name?: string }
   | { readonly type: "text"; readonly text: string }
   | {
       readonly type: "image";
@@ -751,6 +767,7 @@ export interface PersistenceCapabilities {
 }
 
 export interface PersistenceScope {
+  readonly media?: MediaStore;
   readonly conversations: ConversationPersistence;
   readonly records: ConversationRecordPersistence;
   readonly messages: ConversationMessagePersistence;

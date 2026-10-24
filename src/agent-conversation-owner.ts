@@ -1,3 +1,5 @@
+import type { MessagePart, ResolvedPart } from "./media/parts.ts";
+import type { Attachment } from "./types.ts";
 import type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 import type { Adapter } from "./adapters.ts";
 import type { AgentMode } from "./controller.ts";
@@ -24,6 +26,9 @@ export interface OwnedPromptInput {
   /** Present when several messages were combined into this one prompt: each is recorded as sent. */
   readonly parts?: readonly PromptPart[];
   readonly text: string;
+  readonly messageParts?: readonly MessagePart[];
+  readonly attachments?: readonly Attachment[];
+  readonly mediaContext?: { cwd: string; capabilities?: { image?: boolean; audio?: boolean; embeddedContext?: boolean }; degraded?: boolean };
 }
 
 /** How a turn's assistant messages ended, for its commit. */
@@ -37,6 +42,7 @@ interface OwnedPromptMessageEnds {
 }
 
 export interface OwnedPromptPreparation {
+  readonly providerParts?: readonly ResolvedPart[];
   readonly providerText?: string;
   readonly participant?: ParticipantRef;
   /** Every participant of a combined prompt, in order. `participant` is the first. */

@@ -63,3 +63,16 @@ export function providerParts<T extends MessagePart | ResolvedPart>(providerText
     { kind: "text", text: providerText.slice(index + text.length), record: false },
   ];
 }
+
+/** Compact text-only view for the older JSONL transcript, which has no media store. */
+export function transcriptParts(parts: readonly MessagePart[]): string {
+  return parts.filter((part) => part.record !== false).map((part) =>
+    part.kind === "text" || part.kind === "pasted" ? part.text : `[${part.kind}${part.name ? ` ${part.name}` : ""}]`,
+  ).join("\n");
+}
+
+/** Object-form text is an optional leading part when structured parts are supplied. */
+export function promptParts(input: { readonly text?: string; readonly parts?: readonly MessagePart[] }): readonly MessagePart[] | undefined {
+  if (!input.parts) return undefined;
+  return [...(input.text ? [{ kind: "text" as const, text: input.text }] : []), ...input.parts];
+}

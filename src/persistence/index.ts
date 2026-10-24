@@ -113,3 +113,5 @@ export {
 } from "./sqlite-backend.ts";
 export type { SqliteAgentPersistenceConfig } from "./sqlite-backend.ts";
 export { SQLITE_AGENT_SCHEMA_VERSION } from "./sqlite-schema.ts";
+
+export type { MediaStore, MediaInfo, StoredMedia } from "../media/store.ts";

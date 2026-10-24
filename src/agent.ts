@@ -1,3 +1,5 @@
+import type { AgentConversationId } from "./agent-ids.ts";
+import type { MediaConfig } from "./media/store.ts";
 import { randomUUID } from "node:crypto";
 import {
   type AgentSessionId,
@@ -89,6 +91,7 @@ export type {
 
 /** Durable owner of one agent identity, its adapters, identity runtime, and conversations. */
 export class Agent {
+  readonly media: MediaConfig;
   readonly id: AgentSessionId;
   readonly persistence: PersistenceBackend;
   readonly identity: AgentIdentityRuntime;
@@ -107,6 +110,16 @@ export class Agent {
   private detachInternalInferenceAudit?: () => void;
   private closed = false;
 
+  /** Remove bytes while retaining message metadata and refs. */
+  async deleteMedia(ref: string): Promise<void> {
+    await (this.media.store ?? this.persistence.media)?.delete(ref);
+  }
+
+  async deleteMediaForConversation(owner: AgentConversationId): Promise<void> {
+    const store = this.media.store ?? this.persistence.media;
+    if (store) for (const media of await store.list(owner)) await store.delete(media.ref);
+  }
+
   private constructor(
     id: AgentSessionId,
     persistence: PersistenceBackend,
@@ -116,6 +129,7 @@ export class Agent {
     private readonly auditLog: ResolvedAgentAuditLogConfig | null,
     audit: AgentAuditRuntime | undefined,
   ) {
+    this.media = config.media ?? {};
     this.id = id;
     this.persistence = persistence;
     this.adapters = adapters;

@@ -650,13 +650,15 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     if (!this.agent.persistence.records.deleteForConversation) {
       throw new Error("this persistence backend cannot clear a transcript");
     }
-    return await this.agent.persistence.transaction(async (persistence) => {
+    const result = await this.agent.persistence.transaction(async (persistence) => {
       const recordsDeleted = await persistence.records.deleteForConversation!(id);
       const checkpointsDeleted = options.checkpoints
         ? (await persistence.recoveryCheckpoints?.deleteForConversation?.(id)) ?? 0
         : 0;
       return Object.freeze({ recordsDeleted, checkpointsDeleted });
     });
+    if (this.agent.media.store) await this.agent.deleteMediaForConversation(id);
+    return result;
   }
 
   async appendAssistantMessage(

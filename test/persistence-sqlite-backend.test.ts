@@ -809,9 +809,9 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(15);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(16);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 15; recreate the database",
+      "SQLite agent schema 7 is incompatible with 16; recreate the database",
     );
   });
 

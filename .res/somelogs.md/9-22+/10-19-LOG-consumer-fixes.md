@@ -496,3 +496,21 @@ and untracked files are preserved and excluded from implementation commits.
 - Testing gaps: real provider acceptance, storage and output parts are later steps. Unit tests
   use small files and byte arrays; they verify threshold behavior with configured small limits,
   without allocating provider-sized media. `wire` callbacks remain deliberately unredacted.
+
+### Step 2 — storing
+
+- Added byte-free `media` and named `pasted` content blocks, `MediaStore`, Agent store/threshold
+  configuration, reusable refs, and byte deletion by ref or conversation. SQLite schema 16
+  keeps blobs outside message rows; user media and records commit in the same transaction.
+  Clearing SQLite records deletes their conversation's media; the Agent clear API also cleans
+  an overridden store. Soft deletion retains bytes. Legacy JSONL gets descriptive part lines.
+- Review caught and fixed version-15 migration admission. Ref reuse is owner-scoped; cross-owner
+  use copies bytes. Explicit `keep: true` without a store is refused. Object input now also
+  permits parts alone or leading text plus parts. No known regression.
+- Tests: typecheck; store policy/ref unit tests; Agent persistence/rollback/deletion integration;
+  schema-15 upgrade with retained text history; custom-store failure before dispatch. Full suite:
+  **1072 pass, 0 fail**. Existing migration and persistence tests also pass.
+- Testing gaps/limits: a separate store cannot roll back with SQLite; `list(owner)` supports
+  cleanup of orphaned writes. Directly calling an unrelated backend's record repository cannot
+  clean a consumer's external store; use the Agent clear API or clean that store explicitly.
+  Media-specific capture and agent output are implemented in subsequent steps.

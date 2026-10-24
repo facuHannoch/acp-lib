@@ -1,3 +1,7 @@
+import { resolveParts } from "../media/store.ts";
+import { attachmentParts } from "../media/acp.ts";
+import { persistParts } from "../media/content.ts";
+import { providerParts, type ResolvedPart } from "../media/parts.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import type { OperationStalledError } from "../operations/errors.ts";
 import { randomUUID } from "node:crypto";
@@ -64,9 +68,20 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     const parts = input.parts ?? [{
       id: input.operationId,
       text: input.text,
+      messageParts: input.messageParts,
+      attachments: input.attachments,
       ...(input.participantId ? { participantId: input.participantId } : {}),
       ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
     }];
+    const resolved = await Promise.all(parts.map((message) => resolveParts([
+      ...(message.messageParts ?? [{ kind: "text" as const, text: message.text }]),
+      ...attachmentParts(message.attachments),
+    ], { cwd: input.mediaContext?.cwd ?? process.cwd(), capabilities: input.mediaContext?.capabilities,
+      thresholds: this.agent.media.thresholds, owner: this.conversationId,
+      store: this.agent.media.store ?? this.agent.persistence.media })));
+    if (input.mediaContext?.degraded && resolved.some((parts) => parts.some((part) => part.kind !== "text" && part.kind !== "pasted"))) {
+      throw new Error("PTY mode does not support non-text parts");
+    }
     const participants: ParticipantRef[] = [];
     for (const part of parts) participants.push(await this.resolveParticipant(part.participantId));
     const participant = participants[0]!;
@@ -81,20 +96,27 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         ? { timeoutMs: this.settings.identityTimeoutMs }
         : {}),
     });
-    const records = await this.appendMessages(parts.map((part, index): NewConversationRecord => ({
-      recordId: index === 0 ? `${input.operationId}:user` : `${input.operationId}:user:${index + 1}`,
-      agentSessionId: this.agent.id,
-      agentConversationId: this.conversationId,
-      kind: "message",
-      timestamp: new Date().toISOString(),
-      operationId: input.operationId,
-      role: "user",
-      participantId: participants[index]!.id,
-      ...(part.consumerMetadata !== undefined ? { consumerMetadata: part.consumerMetadata } : {}),
-      content: part.text,
-      status: "completed",
-      metadata: JSON.stringify({ operationId: input.operationId }),
-    })));
+    const records: ConversationRecord[] = [];
+    await this.agent.persistence.transaction(async (scope) => {
+      const contents = await Promise.all(resolved.map((parts) => persistParts(parts, this.conversationId, this.agent.media.store ?? scope.media)));
+      const userRecords = parts.map((part, index): NewConversationRecord => ({
+        recordId: index === 0 ? `${input.operationId}:user` : `${input.operationId}:user:${index + 1}`,
+        agentSessionId: this.agent.id,
+        agentConversationId: this.conversationId,
+        kind: "message",
+        timestamp: new Date().toISOString(),
+        operationId: input.operationId,
+        role: "user",
+        participantId: participants[index]!.id,
+        ...(part.consumerMetadata !== undefined ? { consumerMetadata: part.consumerMetadata } : {}),
+        content: contents[index]!,
+        status: "completed",
+        metadata: JSON.stringify({ operationId: input.operationId }),
+      }));
+      await this.persistObservationsInTransaction(scope, userRecords, true, records);
+    });
+    this.agent.publishCommittedRecords(records);
+    if (this.settings.auditLog) this.agent.audit?.notifyPending();
     await this.updateIdentity(records);
     // Read after the user record commits so a concurrent append falls in this turn or the next.
     const outOfBand = records[0]
@@ -105,8 +127,13 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
           records[0].sequence,
         )
       : [];
+    const text = composeProviderPrompt(input.text, identity.promptPreamble, outOfBand);
+    const ordered: ResolvedPart[] = resolved.flatMap((parts, index) => [
+      ...(index ? [{ kind: "text" as const, text: "\n\n" }] : []), ...parts,
+    ]);
     return Object.freeze({
-      providerText: composeProviderPrompt(input.text, identity.promptPreamble, outOfBand),
+      providerParts: providerParts(text, input.text, ordered),
+      providerText: text,
       participant,
       participants: Object.freeze(participants),
       ...(identity.deliveryReceipt ? { identityDeliveryReceipt: identity.deliveryReceipt } : {}),

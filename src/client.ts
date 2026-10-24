@@ -1,3 +1,4 @@
+import { promptParts } from "./media/parts.ts";
 import { resolveParts } from "./media/store.ts";
 import { attachmentParts, partsToAcp } from "./media/acp.ts";
 import { redactMedia } from "./media/redact.ts";
@@ -734,13 +735,13 @@ export class AcpClient implements AgentClient {
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
-    const text = typeof input === "string" ? input : input.text;
+    const text = typeof input === "string" ? input : input.text ?? "";
     if (typeof input !== "string") {
       handlers = input.handlers;
       attachments = input.attachments;
     }
     return new Promise<PromptResult>((resolve, reject) => {
-      this.queue.push({ ...(typeof input === "string" ? {} : input), text, handlers, attachments, resolve, reject });
+      this.queue.push({ ...(typeof input === "string" ? {} : { ...input, parts: promptParts(input) }), text, handlers, attachments, resolve, reject });
       void this.pump();
     });
   }
