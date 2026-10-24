@@ -433,6 +433,7 @@ type MediaPart = {
 - The `media` capture level goes in the existing choke point, `captureRuntimeRecord`.
 
 **Structure.** `agent-session.ts` (about 5k lines) only calls; the logic lives in pure functions:
+
 | file | holds |
 |---|---|
 | `media/parts.ts` | `MessagePart` types, `normalizeParts` (source, `mode` by threshold, refusals) |
@@ -441,6 +442,7 @@ type MediaPart = {
 | `media/store.ts` | `MediaStore`, `resolveParts` (reads paths, calls `put`) |
 | `media/redact.ts` | strips `data` from logs and protocol records |
 | `persistence/sqlite-media-store.ts` | the blob table (schema v16), `deleteMedia`, `list(owner)` |
+
 Unit tests per file, no I/O (an in-memory store). Integration through the fixture agent: it
 reports the prompt blocks it receives, and a new mode sends `image`, `resource_link` and
 `resource` chunks.
