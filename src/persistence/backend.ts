@@ -1,3 +1,4 @@
+import type { SharedFilesPersistence } from "../media/files.ts";
 import type { MediaCaptureLevel } from "../media/capture.ts";
 import type { MediaStore } from "../media/store.ts";
 import type { MediaKind } from "../media/parts.ts";
@@ -776,6 +777,7 @@ export interface OutOfBandDeliveryPersistence {
 }
 
 export interface PersistenceScope {
+  readonly files?: SharedFilesPersistence;
   readonly outOfBandDelivery?: OutOfBandDeliveryPersistence;
   readonly media?: MediaStore;
   readonly conversations: ConversationPersistence;

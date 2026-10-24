@@ -155,3 +155,28 @@ test("out-of-band delivery advances even when message text capture is disabled",
   expect(JSON.parse((await conversation.prompt("first")).text).blocks.some((b: { type: string }) => b.type === "image")).toBe(true);
   expect(JSON.parse((await conversation.prompt("second")).text).blocks.some((b: { type: string }) => b.type === "image")).toBe(false);
 });
+
+test("files listing folds response revisions and searches only metadata with conversation filters", async () => {
+  const { agent } = await setup();
+  const one = await agent.conversations.create();
+  const two = await agent.conversations.create();
+  await one.prompt({ parts: [{ kind: "text", text: "searchable-paste" }, { kind: "image", data: new Uint8Array([1, 2]), name: "unique-chart.png", mimeType: "image/png" }] });
+  await two.prompt("MEDIA_OUTPUT");
+  const files = agent.persistence.files!;
+  expect((await files.list()).files).toHaveLength(6); // one user image; five assistant media parts
+  expect((await files.list({ agentConversationId: one.id })).files).toHaveLength(1);
+  expect((await files.search({ text: "unique-chart" })).files).toHaveLength(1);
+  expect((await files.search({ text: "application/pdf" })).files).toHaveLength(2);
+  expect((await files.list({ kind: "audio" })).files).toHaveLength(1);
+  expect((await files.list({ mimeType: "image/png", minSize: 2, maxSize: 2 })).files).toHaveLength(2);
+  expect((await files.list({ name: "%" })).files).toHaveLength(0); // literal, not a SQL wildcard
+  const paged = [];
+  let cursor: string | undefined;
+  do { const page = await files.list({ limit: 2, cursor }); paged.push(...page.files); cursor = page.nextCursor; } while (cursor);
+  expect(new Set(paged.map((file) => `${file.recordId}:${file.partIndex}`)).size).toBe(6);
+  expect((await agent.persistence.search!.search({ text: '"unique-chart"', conversationIds: [one.id], kinds: ["message"] }))).toHaveLength(0);
+  const copy = paged.find((file) => file.ref)!;
+  await agent.deleteMedia(copy.ref!);
+  expect((await files.list()).files).toHaveLength(6); // history metadata remains
+  await expect(files.list({ cursor: "bad" })).rejects.toThrow("cursor");
+});

@@ -1,3 +1,5 @@
+import { SqliteSharedFiles } from "./sqlite-files.ts";
+import type { SharedFilesPersistence } from "../media/files.ts";
 import { SqliteMediaStore } from "./sqlite-media-store.ts";
 import type { MediaStore } from "../media/store.ts";
 import { Database, type Changes } from "bun:sqlite";
@@ -151,6 +153,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly capabilities: PersistenceCapabilities;
 
   readonly media: MediaStore;
+  readonly files: SharedFilesPersistence;
   readonly outOfBandDelivery: OutOfBandDeliveryPersistence;
   readonly conversations: ConversationPersistence;
   readonly records: ConversationRecordPersistence;
@@ -192,6 +195,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     });
     const scope = this.createScope((work) => this.autoWrite(work), (records) => this.notifyRecordsCommitted(records));
     this.media = scope.media!;
+    this.files = scope.files!;
     this.outOfBandDelivery = scope.outOfBandDelivery!;
     this.conversations = scope.conversations;
     this.records = scope.records;
@@ -312,6 +316,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   ): PersistenceScope {
     return Object.freeze({
       media: new SqliteMediaStore(this.database, runWrite),
+      files: new SqliteSharedFiles(this.database),
       outOfBandDelivery: {
         get: async (owner: AgentConversationId, context: string) => Number(this.database.query<{ through_sequence: number }, [string, string]>(
           "SELECT through_sequence FROM out_of_band_delivery WHERE owner = ? AND provider_context = ?").get(owner, context)?.through_sequence ?? 0),

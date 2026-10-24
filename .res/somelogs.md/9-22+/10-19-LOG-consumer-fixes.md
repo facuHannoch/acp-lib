@@ -566,3 +566,18 @@ and untracked files are preserved and excluded from implementation commits.
   envelopes. Without a store, pending suppressed/unkept parts are process-local. Custom backends
   wanting delivery independent of captured text implement optional `outOfBandDelivery`; SQLite
   supplies it. Cleanup of temporary objects in an external store cannot share SQLite rollback.
+
+### Step 6 — files listing and metadata search
+
+- Added optional backend `files.list` / `files.search`, with conversation, name, kind, MIME type
+  and size filters plus pagination. SQLite reads message media metadata, folds logical-message
+  revisions, and excludes private pending transport objects. Deleted/unkept copies remain
+  discoverable from history; message search continues to exclude media names, refs and bytes.
+- Review: verified wildcard escaping, stable ordering, cursor validation and no snapshot
+  duplicates. No known regression. The existing message search accepts FTS syntax; its test
+  quotes a hyphenated query accordingly, while file-name search treats it as literal text.
+- Tests: typecheck; Agent integration across two conversations, five output media parts, filters,
+  paging, text-search separation and deleted-byte metadata. Full suite **1086 pass, 0 fail**.
+- Testing gaps/limits: metadata search uses SQLite JSON/LIKE rather than a dedicated large-scale
+  metadata index. Offset pagination is intended for browsing stable history; concurrent inserts
+  can move page boundaries. Custom backends may implement the optional repository.

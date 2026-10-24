@@ -744,3 +744,5 @@ export type { MessagePart, MediaPart, MediaKind, MediaThresholds } from "./media
 export type { MediaStore, MediaInfo, StoredMedia, MediaConfig } from "./media/store.ts";
 
 export type { MediaCaptureLevel } from "./media/capture.ts";
+
+export type { SharedFile, SharedFilePage, SharedFileQuery, SharedFilesPersistence } from "./media/files.ts";
