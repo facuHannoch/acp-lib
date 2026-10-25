@@ -203,6 +203,18 @@ To do:
 - Presets: add Grok Build (`grok agent stdio`, ACP, early beta, SuperGrok Heavy) as unverified,
   like `gemini` / `copilot`.
 
+Related harness-specific gaps, added 2026-10-25 (the same per-harness runs can cover them):
+- **Claude ignores binary embedded files.** The media probe (step 8 of message parts) got
+  `UNAVAILABLE` for a PDF blob, although the adapter advertises `embeddedContext`; text files work.
+  Options: send binary files to Claude as links, or document it. Check whether a newer adapter reads
+  blobs.
+- **Requirement 11: Claude thinking is rarely persisted.** Compare a live Claude turn's wire
+  messages with what is stored; the fix is likely small unless Claude just does not send it.
+- **Requirement 12: Codex steer handover delayed.** Not investigated. (The "review item 12" run of
+  2026-10-23 is a different item: the operation-id check on real harnesses.) To find which await
+  between the Hub's reservation and `prompt()` blocked: agents-core's admission, or the library
+  reporting a busy Codex session as disconnected. Details: `10-5-steer-delivery-delay-codex.md`.
+
 ## 2026-10-23, paging history by agent messages (requirement 2)
 
 **Problem.** `records.listRecent({ limit })` pages by raw records. A tool call is several records

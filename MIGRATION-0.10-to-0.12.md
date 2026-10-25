@@ -167,7 +167,7 @@ No separate event: a message's record turns `completed` when the next message or
 | 2 | paging by operations | done by agent messages instead (above) |
 | 9 | persist agent capabilities | not stored: they come from `initialize`, so start the session to read them |
 | 11 | Claude thinking rarely persisted | not investigated yet |
-| 12 | Codex steer handover delay | the real-harness run showed no delay in the library; still open on the agents-core side |
+| 12 | Codex steer handover delay | not investigated yet; it may be in agents-core rather than the library |
 | 13 | live completion event | done through the completed record, no event |
 
 ## Also new since 0.10.2, not breaking

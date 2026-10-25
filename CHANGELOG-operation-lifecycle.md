@@ -1,5 +1,7 @@
 # Operation lifecycle
 
+Released in 0.11.2.
+
 Provider turns, internal inference and adoption recaps now expose their current operation stage and
 last output time. Silent inference requests fail with `OperationStalledError` (`code: stalled`), carrying
 the silence phase, captured messages, operation ID and metering record. Agent-owned conversations
