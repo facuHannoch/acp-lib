@@ -1,13 +1,12 @@
-# Migrating from 0.10.2 to the next release (proposed 0.12.0)
+# Migrating from 0.10.2 to 0.12.0
 
 For agents-core and the webapp, which pin `@qlairoslabs/acp-client` `0.10.2`. This covers everything
 since: `0.11.0`, the operation lifecycle (`0.11.2`), and the work done for the 2026-10-13
 requirements list. `CONSUMER_GUIDE.md` is the full reference; this file says what changed and what to do
 about it.
 
-**Status.** The requirements work is on unreleased branches (`consumer-small-fixes`, `message-parts`),
-not yet merged into `beta` or published. Until it is, point agents-core at a local checkout of the
-library to try it.
+**Status.** 0.12.0 is on the library's `beta` branch, not yet pushed or published. Until it is,
+point agents-core at a local checkout of the library to try it.
 
 ## Before you upgrade
 
@@ -35,7 +34,7 @@ Each item says what changed and what agents-core has to do.
 | 8 | **New record kind `cancellation`** (SQLite and JSONL; audit key `cancellation`). It has `requested` (reason: `steer`, `interrupt`, `stalled`, `stop`, `abort`) and `resolved` (outcome: `acknowledged`, `forced`, `too_late`, `failed`) revisions, under the cancelled operation. | `projectSqliteChatRecord` maps unknown kinds to activities, so these show up as `cancellation` activity items. Decide whether to show them (a turn shown as stopped or redirected after reload) or skip them. |
 | 9 | **Timeline item ids for tool calls, permissions, thinking and activity change once**: items are now keyed by operation, so two turns reusing a provider id stay two items. Message ids don't change. | If agents-core stores timeline item ids (from `conversationTimelineItemId`), expect them to change once for those kinds. |
 | 10 | **Message content can be blocks, not just a string.** A message with media or a named paste stores `PersistedContentBlock[]`: `text`, `pasted`, `media`. Plain text messages stay strings. | `projectSqliteChatRecord` keeps only `type: "text"` blocks, so a pasted block's text disappears. Include `pasted`, and render `media` blocks (below). Note that it joins text blocks with `"\n"`, while the library joins a message's text parts with nothing (separators are their own parts). |
-| 11 | **Attachments go out as their real kind.** `prompt(text, handlers, attachments)` used to send every attachment as an ACP `image`. Now an image is an `image`, audio is `audio`, and anything else is an embedded file, which needs the agent's `embeddedContext`. An agent that can't take the kind refuses the prompt with `agent does not support <kind> copies`. | Expect that error for non-image attachments to agents without that support. Claude's adapter advertises embedded context but ignores binary files (PDFs); text files work. |
+| 11 | **Attachments go out as their real kind.** `prompt(text, handlers, attachments)` used to send every attachment as an ACP `image`. Now an image is an `image`, audio is `audio`, and anything else is an embedded file, which needs the agent's `embeddedContext`. An agent that can't take the kind refuses the prompt with `agent does not support <kind> copies`. | Expect that error for non-image attachments to agents without that support. Claude's adapter advertises embedded context but silently drops binary files (PDFs), so send those to Claude as links (`mode: "link"`); text files work. |
 | 12 | **Attachments are recorded** on Agent-owned conversations, as media blocks with name, type, size and hash (`keep: false`, no bytes). The user message's `content` becomes blocks when it has attachments (see 10). | Nothing required; it's the start of dropping the `chat-attachments` side store (below). |
 | 13 | **Presentation items' `timestamp` is deprecated**, an alias of the new `updatedAt`. Timeline items gain `startedAt` and `updatedAt`. | Show a message's time with `startedAt`. |
 | 14 | **`AgentConversation.listSessions()` is deprecated** and now throws when the harness listing fails, instead of silently returning the catalog half. | Use `agent.conversations.list()` for conversations and `agent.conversations.listProviderSessions()` for harness sessions. |
@@ -185,4 +184,6 @@ No separate event: a message's record turns `completed` when the next message or
 - The media probes on real harnesses ran before the last fix to embedded copies' uri, and need a rerun.
 - Codex's tool output (sent through `_meta` terminal chunks) is not captured yet: its tool calls show
   empty output.
-- Claude's adapter ignores binary embedded files (PDFs).
+- Claude's adapter silently drops binary embedded files (PDFs): its `promptToClaude` has no branch for
+  blobs. Send them as links (`mode: "link"`); Claude's Read tool opens PDFs. A fix belongs upstream
+  (map a PDF blob to an Anthropic `document` block).

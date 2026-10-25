@@ -157,6 +157,12 @@ its MIME type. Text files are ACP embedded text resources; other files use blob 
 An embedded copy's uri is `attachment:///<name>`: it names the copy, not a file the agent could
 open. A UI rendering SVG must sanitize it.
 
+Some adapters drop kinds they advertise. Claude's (`claude-agent-acp`, checked at 0.85.0) keeps
+embedded text files but silently drops binary ones (PDFs, any blob), although it advertises
+`embeddedContext`, so the model never sees them and nothing fails. Send binary files to Claude as
+links (`mode: "link"`, a file it can reach): its Read tool opens PDFs. Whether a model reads a
+kind also depends on the model: OpenCode on DeepSeek V4.1 Flash has no PDF input.
+
 `mode: "copy"` sends the actual content. `keep: false` records name, MIME type, size and SHA-256
 without retaining bytes; the default keeps bytes when a store is available. `mode: "link"`
 requires a path and sends an absolute `file://` resource link. It records a pointer, so later

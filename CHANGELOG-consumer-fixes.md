@@ -1,6 +1,6 @@
 # Consumer fixes (from the 2026-10-13 agents-core requirements)
 
-Unreleased, planned for 0.12.0. Upgrading from 0.10.x: see `MIGRATION-0.10-to-0.12.md`.
+Released in 0.12.0. Upgrading from 0.10.x: see `MIGRATION-0.10-to-0.12.md`.
 
 - **Messages made of parts.** Ordered text, named paste, image, audio and file inputs; copy/link
   modes, capability checks and configurable automatic thresholds. Structured media output,

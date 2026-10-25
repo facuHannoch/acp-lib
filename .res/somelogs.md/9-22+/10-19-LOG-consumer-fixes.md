@@ -206,8 +206,10 @@ To do:
 Related harness-specific gaps, added 2026-10-25 (the same per-harness runs can cover them):
 - **Claude ignores binary embedded files.** The media probe (step 8 of message parts) got
   `UNAVAILABLE` for a PDF blob, although the adapter advertises `embeddedContext`; text files work.
-  Options: send binary files to Claude as links, or document it. Check whether a newer adapter reads
-  blobs.
+  Cause (2026-10-25): `claude-agent-acp` 0.85.0, `promptToClaude` in `dist/acp-agent.js`, handles a
+  `resource` only when it has `text` ("Ignore blob resources (unsupported)"); audio is dropped too.
+  Documented: send binary files to Claude as links (its Read tool opens PDFs). Possible upstream fix:
+  map a PDF blob to an Anthropic `document` block. Recheck on adapter upgrades.
 - **Requirement 11: Claude thinking is rarely persisted.** Compare a live Claude turn's wire
   messages with what is stored; the fix is likely small unless Claude just does not send it.
 - **Requirement 12: Codex steer handover delayed.** Not investigated. (The "review item 12" run of
