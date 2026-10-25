@@ -1,5 +1,3 @@
-import type { MessagePart, ResolvedPart } from "./media/parts.ts";
-import type { Attachment } from "./types.ts";
 import type { AgentConversationId, AgentSessionId } from "./agent-ids.ts";
 import type { Adapter } from "./adapters.ts";
 import type { AgentMode } from "./controller.ts";
@@ -15,6 +13,9 @@ import type {
   ProviderAttachmentCommitAcknowledgement,
   ProviderAttachmentState,
 } from "./persistence/provider-attachment.ts";
+import type { MediaCapabilities } from "./media/acp.ts";
+import type { MessagePart, ResolvedPart } from "./media/parts.ts";
+import type { Attachment } from "./types.ts";
 
 export interface OwnedPromptInput {
   readonly operationId: string;
@@ -28,7 +29,12 @@ export interface OwnedPromptInput {
   readonly text: string;
   readonly messageParts?: readonly MessagePart[];
   readonly attachments?: readonly Attachment[];
-  readonly mediaContext?: { cwd: string; capabilities?: { image?: boolean; audio?: boolean; embeddedContext?: boolean }; degraded?: boolean };
+  /** What the parts are resolved against: the working directory, and what the agent accepts. */
+  readonly mediaContext?: {
+    readonly cwd: string;
+    readonly capabilities?: MediaCapabilities;
+    readonly degraded?: boolean;
+  };
 }
 
 /** How a turn's assistant messages ended, for its commit. */
@@ -42,8 +48,8 @@ interface OwnedPromptMessageEnds {
 }
 
 export interface OwnedPromptPreparation {
+  /** The parts to send: the user's, wrapped with the provider-only text (identity, out-of-band). */
   readonly providerParts?: readonly ResolvedPart[];
-  readonly providerText?: string;
   readonly participant?: ParticipantRef;
   /** Every participant of a combined prompt, in order. `participant` is the first. */
   readonly participants?: readonly ParticipantRef[];

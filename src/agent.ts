@@ -1,6 +1,3 @@
-import type { ResolvedPart } from "./media/parts.ts";
-import type { AgentConversationId } from "./agent-ids.ts";
-import type { MediaConfig } from "./media/store.ts";
 import { randomUUID } from "node:crypto";
 import {
   type AgentSessionId,
@@ -61,6 +58,9 @@ import type {
   AgentConfig,
   AgentConversationManager,
 } from "./agent/config.ts";
+import { forgetPendingParts } from "./media/pending.ts";
+import type { AgentConversationId } from "./agent-ids.ts";
+import type { MediaConfig } from "./media/store.ts";
 
 export type {
   AdoptProviderSessionConfig,
@@ -93,8 +93,6 @@ export type {
 /** Durable owner of one agent identity, its adapters, identity runtime, and conversations. */
 export class Agent {
   readonly media: MediaConfig;
-  /** @internal Pending parts for backends without a durable media store. */
-  readonly pendingMessageParts = new Map<string, { owner: AgentConversationId; parts: readonly ResolvedPart[] }>();
   readonly id: AgentSessionId;
   readonly persistence: PersistenceBackend;
   readonly identity: AgentIdentityRuntime;
@@ -113,13 +111,14 @@ export class Agent {
   private detachInternalInferenceAudit?: () => void;
   private closed = false;
 
-  /** Remove bytes while retaining message metadata and refs. */
+  /** Remove a kept copy's bytes. Records keep its metadata and a ref that now resolves to nothing. */
   async deleteMedia(ref: string): Promise<void> {
     await (this.media.store ?? this.persistence.media)?.delete(ref);
   }
 
+  /** Remove the bytes of every copy one conversation kept, and its waiting out-of-band parts. */
   async deleteMediaForConversation(owner: AgentConversationId): Promise<void> {
-    for (const [id, pending] of this.pendingMessageParts) if (pending.owner === owner) this.pendingMessageParts.delete(id);
+    forgetPendingParts(this, owner);
     const store = this.media.store ?? this.persistence.media;
     if (store) for (const media of await store.list(owner)) await store.delete(media.ref);
   }

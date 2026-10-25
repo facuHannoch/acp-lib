@@ -777,7 +777,6 @@ async function assertMediaWorkflow(agent: Agent): Promise<void> {
   await conversation.prompt("MEDIA_OUTPUT");
   assert.ok(sent.at(-1).some((block: any) => block.type === "image" && block.data === "Aw=="));
   assert.ok(sent.at(-1).some((block: any) => block.type === "text" && block.text.includes(appended.recordId)));
-  assert.ok((await agent.persistence.media!.list(conversation.id)).every((entry) => !entry.info.pendingFor));
   const count = (await agent.persistence.media!.list(conversation.id)).length;
   await conversation.stop();
   const reopened = await agent.conversations.open(conversation.id);

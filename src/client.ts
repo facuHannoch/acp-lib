@@ -1,8 +1,3 @@
-import { promptParts } from "./media/parts.ts";
-import { resolveParts } from "./media/store.ts";
-import { assertPartCapabilities, attachmentParts, partsToAcp } from "./media/acp.ts";
-import { redactMedia } from "./media/redact.ts";
-import type { ClientPrompt } from "./agent-client.ts";
 // AcpClient — the core deliverable. Implements the AgentClient output contract and
 // adds the rich ACP input surface (capabilities, configOptions, sessions, auth).
 //
@@ -43,6 +38,11 @@ import type {
   ToolContent,
   WireEntry,
 } from "./types.ts";
+import { promptParts } from "./media/parts.ts";
+import { resolveParts } from "./media/store.ts";
+import { assertPartCapabilities, attachmentParts, partsToAcp } from "./media/acp.ts";
+import { redactMedia } from "./media/redact.ts";
+import type { ClientPrompt } from "./agent-client.ts";
 
 export interface AcpClientConfig {
   /** How to launch the agent binary. */
@@ -441,6 +441,7 @@ export class AcpClient implements AgentClient {
   async startSession(options: StartSessionOptions = {}): Promise<ConnectResult> {
     const transport = this.requireTransport();
     const mcpServers = options.mcpServers ?? [];
+    const additionalDirectories = options.additionalDirectories ?? this.config.additionalDirectories;
     const cwd = this.config.cwd ?? process.cwd();
     const resumeId = options.sessionId ?? this.config.sessionId;
     const loadFailure = options.loadFailure ?? this.config.sessionLoadFailure ?? "new";
@@ -452,7 +453,7 @@ export class AcpClient implements AgentClient {
       try {
         const result = await this.loadSessionInternal(transport, resumeId, {
           mcpServers,
-          additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
+          additionalDirectories,
           ...(options.onReplayUpdate ? { onUpdate: options.onReplayUpdate } : {}),
         });
         sessionId = result.sessionId;
@@ -460,12 +461,12 @@ export class AcpClient implements AgentClient {
       } catch (err) {
         this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
         if (loadFailure === "error") throw err;
-        sessionId = await this.newSessionInternal(transport, cwd, mcpServers, options.additionalDirectories ?? this.config.additionalDirectories);
+        sessionId = await this.newSessionInternal(transport, cwd, mcpServers, additionalDirectories);
       }
     } else if (resumeId && loadFailure === "error") {
       throw new Error("agent does not advertise session/load for the requested internal session");
     } else {
-      sessionId = await this.newSessionInternal(transport, cwd, mcpServers, options.additionalDirectories ?? this.config.additionalDirectories);
+      sessionId = await this.newSessionInternal(transport, cwd, mcpServers, additionalDirectories);
     }
 
     return { sessionId, resumed };
@@ -656,10 +657,13 @@ export class AcpClient implements AgentClient {
   }
 
   /** Force a brand-new session, ignoring config.sessionId. Useful after authenticating. */
-  async newSession(options: { mcpServers?: schema.McpServer[]; additionalDirectories?: string[] } = {}): Promise<ConnectResult> {
+  async newSession(
+    options: { mcpServers?: schema.McpServer[]; additionalDirectories?: string[] } = {},
+  ): Promise<ConnectResult> {
     const transport = this.requireTransport();
     const cwd = this.config.cwd ?? process.cwd();
-    const sessionId = await this.newSessionInternal(transport, cwd, options.mcpServers ?? [], options.additionalDirectories ?? this.config.additionalDirectories);
+    const additionalDirectories = options.additionalDirectories ?? this.config.additionalDirectories;
+    const sessionId = await this.newSessionInternal(transport, cwd, options.mcpServers ?? [], additionalDirectories);
     return { sessionId, resumed: false };
   }
 
@@ -672,7 +676,11 @@ export class AcpClient implements AgentClient {
     this.beginCommandTransition();
     let res: schema.NewSessionResponse;
     try {
-      res = await transport.newSession({ cwd, mcpServers, ...(additionalDirectories ? { additionalDirectories } : {}) } as schema.NewSessionRequest);
+      res = await transport.newSession({
+        cwd,
+        mcpServers,
+        ...(additionalDirectories ? { additionalDirectories } : {}),
+      } as schema.NewSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -740,13 +748,12 @@ export class AcpClient implements AgentClient {
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
-    const text = typeof input === "string" ? input : input.text ?? "";
-    if (typeof input !== "string") {
-      handlers = input.handlers;
-      attachments = input.attachments;
-    }
+    // The positional form is the compatibility signature; the object form can carry parts.
+    const prompt: ClientPrompt = typeof input === "string"
+      ? { text: input, handlers, attachments }
+      : { ...input, parts: promptParts(input) };
     return new Promise<PromptResult>((resolve, reject) => {
-      this.queue.push({ ...(typeof input === "string" ? {} : { ...input, parts: promptParts(input) }), text, handlers, attachments, resolve, reject });
+      this.queue.push({ ...prompt, text: prompt.text ?? "", resolve, reject });
       void this.pump();
     });
   }
@@ -772,11 +779,12 @@ export class AcpClient implements AgentClient {
     if (!this.transport) throw new NotConnectedError();
     await this.ensureSession(); // lazily create a session on first prompt
 
-    const parts = item.resolvedParts ?? await resolveParts([
+    const capabilities = this._capabilities?.agent.promptCapabilities;
+    const parts = await resolveParts([
       ...(item.parts ?? (item.text ? [{ kind: "text" as const, text: item.text }] : [])),
       ...attachmentParts(item.attachments),
-    ], { cwd: this.config.cwd ?? process.cwd(), capabilities: this._capabilities?.agent.promptCapabilities });
-    assertPartCapabilities(parts, this._capabilities?.agent.promptCapabilities);
+    ], { cwd: this.config.cwd ?? process.cwd(), capabilities });
+    assertPartCapabilities(parts, capabilities);
     const contentBlocks = partsToAcp(parts);
     if (contentBlocks.length === 0) contentBlocks.push({ type: "text", text: "" });
 

@@ -1,4 +1,3 @@
-import { captureMessageContent, type MediaCaptureLevel } from "../media/capture.ts";
 import { randomUUID } from "node:crypto";
 import {
   type AgentConversationId,
@@ -30,6 +29,7 @@ import {
   type ResolvedAgentAuditLogConfig,
 } from "../audit/index.ts";
 import { conversationErrorDetailsFromError } from "../persistence/error-records.ts";
+import { captureMessageContent } from "../media/capture.ts";
 
 
 import type { Agent } from "../agent.ts";
@@ -73,7 +73,10 @@ export async function persistConversationObservations(
 ): Promise<readonly ConversationRecord[]> {
   if (records.length === 0) return Object.freeze([]);
   if ((!audit || !settings.auditLog) && records.every((record) => {
-    if (record.kind === "message") return settings.capture.message === "none" && settings.capture.media === "none" && typeof record.content === "string";
+    if (record.kind === "message") {
+      // Media blocks are recorded under the media level, whatever the message level.
+      return settings.capture.message === "none" && settings.capture.media === "none" && typeof record.content === "string";
+    }
     if (record.kind !== "protocol") return settings.capture[record.kind] === "none";
     return settings.capture.protocol.level === "none"
       || !shouldCaptureProtocolMethod(settings.capture.protocol, record.method);
@@ -98,7 +101,7 @@ export async function persistObservationsInTransaction(
     const level = record.kind === "protocol"
       ? settings.capture.protocol.level
       : settings.capture[record.kind];
-    const captured = captureRuntimeRecord(record, level, settings.capture.media);
+    const captured = captureRuntimeRecord(record, level);
     const hasMedia = captured.kind === "message" && Array.isArray(captured.content)
       && captured.content.some((block) => block.type === "media");
     const canonicalAccepted = (level !== "none" || hasMedia) && (
@@ -143,10 +146,9 @@ export function internalInferenceMeteringKind(purpose: string): MeteredOperation
 export function captureRuntimeRecord(
   record: NewConversationRecord,
   level: RecordCaptureLevel,
-  media: MediaCaptureLevel = "content",
 ): NewConversationRecord {
   if (record.kind === "message") {
-    return { ...record, content: captureMessageContent(record.content, level === "content" || level === "raw", media) };
+    return { ...record, content: captureMessageContent(record.content, level === "content" || level === "raw") };
   }
   if (record.kind === "error") {
     // `metadata` omits the display message and details; `content` keeps the message but

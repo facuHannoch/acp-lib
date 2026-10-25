@@ -1,8 +1,3 @@
-import type { SharedFilesPersistence } from "../media/files.ts";
-import type { MediaCaptureLevel } from "../media/capture.ts";
-import type { MediaStore } from "../media/store.ts";
-import type { MediaKind } from "../media/parts.ts";
-import { contentText } from "../media/content.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { CancelOutcome, CancelReason } from "../operations/contracts.ts";
 import type { OperationMeteringRecord } from "../metering/record.ts";
@@ -10,6 +5,11 @@ import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 import type { ConversationRecoveryCheckpointRepository } from "../checkpointing/contracts.ts";
 import type { ConversationTimelineItem } from "./timeline-reconcile.ts";
+import type { SharedFilesPersistence } from "../media/files.ts";
+import type { MediaCaptureLevel } from "../media/capture.ts";
+import type { MediaStore } from "../media/store.ts";
+import type { MediaKind } from "../media/parts.ts";
+import { contentText } from "../media/content.ts";
 
 export type PersistenceJsonPrimitive = string | number | boolean | null;
 export type PersistenceJsonValue =
@@ -73,7 +73,7 @@ export interface PersistedMediaBlock {
   readonly uri?: string;
   readonly name?: string;
   readonly mimeType: string;
-  readonly size: number;
+  readonly size?: number;
   readonly sha256?: string;
 }
 
@@ -882,7 +882,9 @@ export function resolveConversationRecordCapture(
   const resolved: Record<string, unknown> = { ...DEFAULT_CONVERSATION_RECORD_CAPTURE };
   for (const [kind, value] of Object.entries(override)) {
     if (kind === "media") {
-      if (!["none", "metadata", "content"].includes(String(value))) throw new Error(`invalid media capture level: ${String(value)}`);
+      if (!["none", "metadata", "content"].includes(String(value))) {
+        throw new Error(`invalid media capture level: ${String(value)}`);
+      }
       resolved.media = value;
       continue;
     }

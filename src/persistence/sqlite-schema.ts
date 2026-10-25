@@ -1,6 +1,6 @@
+import type { Database } from "bun:sqlite";
 import { contentText } from "../media/content.ts";
 import type { PersistedContent } from "./backend.ts";
-import type { Database } from "bun:sqlite";
 
 export const SQLITE_AGENT_SCHEMA_VERSION = 16;
 
@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS conversation_media (
   name TEXT,
   size INTEGER NOT NULL CHECK (size >= 0),
   sha256 TEXT NOT NULL,
-  pending_for TEXT,
   data BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS conversation_media_owner_idx ON conversation_media(owner);
@@ -679,8 +678,13 @@ export function migrateSqliteAgentSchema(database: Database): void {
           "SELECT record_row_id, content_json FROM conversation_messages WHERE content_json IS NOT NULL",
         ).iterate();
         const update = database.query("UPDATE conversation_messages SET search_text = ? WHERE record_row_id = ?");
-        for (const row of structured) update.run(contentText(JSON.parse(row.content_json) as PersistedContent), row.record_row_id);
-        if (database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_messages_fts'").get()) {
+        for (const row of structured) {
+          update.run(contentText(JSON.parse(row.content_json) as PersistedContent), row.record_row_id);
+        }
+        const fts = database.query(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_messages_fts'",
+        ).get();
+        if (fts) {
           database.exec("INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild')");
         }
       }

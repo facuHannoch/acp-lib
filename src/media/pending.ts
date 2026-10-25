@@ -1,43 +1,51 @@
-import type { PersistedContent } from "../persistence/backend.ts";
-import type { MediaCaptureLevel } from "./capture.ts";
-import { createHash } from "node:crypto";
-import type { MediaStore } from "./store.ts";
-import type { ResolvedPart } from "./parts.ts";
+import type { AgentConversationId } from "../agent-ids.ts";
+import { supportsCopy, type MediaCapabilities } from "./acp.ts";
+import { isMediaPart, mediaMention, type ResolvedPart } from "./parts.ts";
 
-/** Pending delivery bytes are temporary transport state, never message/audit content. */
-export async function stagePendingParts(store: MediaStore | undefined, owner: string, recordId: string, parts: readonly ResolvedPart[], content: PersistedContent, capture: MediaCaptureLevel): Promise<void> {
-  if (!store || !parts.some((part) => part.kind !== "text" || part.record === false)) return;
-  const media = typeof content === "string" ? [] : content.filter((block) => block.type === "media");
-  let index = 0;
-  const serialized = parts.map((part) => {
-    if (part.kind === "text" || part.kind === "pasted") return part;
-    const block = part.record !== false && (capture !== "none" || part.keep !== undefined) ? media[index++] : undefined;
-    if (block?.ref) { const { data: _data, ...rest } = part; return { ...rest, ref: block.ref }; }
-    return part.data ? { ...part, data: Buffer.from(part.data).toString("base64") } : part;
-  });
-  const data = new TextEncoder().encode(JSON.stringify(serialized));
-  await store.put(data, { owner, kind: "file", mimeType: "application/vnd.acp-lib.pending-parts+json",
-    size: data.byteLength, sha256: createHash("sha256").update(data).digest("hex"), pendingFor: recordId });
-}
-export async function loadPendingParts(store: MediaStore | undefined, owner: string, recordId: string): Promise<readonly ResolvedPart[] | undefined> {
-  const pending = (await store?.list(owner))?.find((entry) => entry.info.pendingFor === recordId);
-  if (!pending) return undefined;
-  const value = await store!.get(pending.ref);
-  if (!value) throw new Error(`pending media was removed: ${recordId}`);
-  const parts = JSON.parse(new TextDecoder().decode(value.data)) as Array<Record<string, unknown>>;
-  return Promise.all(parts.map(async (part) => {
-    if (typeof part.data === "string") return { ...part, data: new Uint8Array(Buffer.from(part.data, "base64")) };
-    if (part.mode === "copy" && typeof part.ref === "string") {
-      const original = await store!.get(part.ref);
-      if (!original) throw new Error(`media bytes are unavailable for delivery: ${part.ref}`);
-      return { ...part, data: original.data };
-    }
-    return part;
-  })) as Promise<ResolvedPart[]>;
-}
-export async function deletePendingParts(store: MediaStore | undefined, owner: string, recordIds: readonly string[]): Promise<void> {
-  const ids = new Set(recordIds);
-  for (const entry of await store?.list(owner) ?? []) {
-    if (entry.info.pendingFor && ids.has(entry.info.pendingFor)) await store!.delete(entry.ref);
+/**
+ * Out-of-band parts waiting for the next turn, as they were appended, keyed by record id. They live
+ * in memory only: parts that are not kept (`keep: false`, `record: false`) are never written
+ * anywhere. After a restart a waiting message is delivered from its record, and a copy whose bytes
+ * were not kept is named instead of sent.
+ */
+export type PendingOutOfBandParts = Map<string, {
+  readonly owner: AgentConversationId;
+  readonly parts: readonly ResolvedPart[];
+}>;
+
+const pendingByAgent = new WeakMap<object, PendingOutOfBandParts>();
+
+/** The waiting parts of one Agent. */
+export function pendingOutOfBandParts(agent: object): PendingOutOfBandParts {
+  let pending = pendingByAgent.get(agent);
+  if (!pending) {
+    pending = new Map();
+    pendingByAgent.set(agent, pending);
   }
+  return pending;
+}
+
+/** Drop the waiting parts of one conversation. */
+export function forgetPendingParts(agent: object, owner: AgentConversationId): void {
+  const pending = pendingOutOfBandParts(agent);
+  for (const [recordId, entry] of pending) if (entry.owner === owner) pending.delete(recordId);
+}
+
+/**
+ * What an out-of-band message can deliver to this agent. Its parts were accepted when it was appended,
+ * whatever agent would read them, so a copy the agent cannot take is named instead of refusing the
+ * turn: a refused turn would never deliver it, and every later turn would fail the same way. A pty
+ * agent takes text only.
+ */
+export function deliverableParts(
+  parts: readonly ResolvedPart[],
+  capabilities: MediaCapabilities | undefined,
+  degraded = false,
+): readonly ResolvedPart[] {
+  return parts.map((part): ResolvedPart => {
+    if (!isMediaPart(part)) return part;
+    if (degraded) return { kind: "text", text: mediaMention(part) };
+    if (part.mode === "link" || supportsCopy(part.kind, capabilities)) return part;
+    return { kind: "text", text: mediaMention(part, "not supported by this agent") };
+  });
 }

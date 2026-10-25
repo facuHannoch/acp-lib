@@ -1,5 +1,3 @@
-import { promptParts, partsText } from "../media/parts.ts";
-import type { ClientPrompt } from "../agent-client.ts";
 // PtyClient — degraded-mode AgentClient. Drives an agent's INTERACTIVE CLI inside a pty
 // (via PtyTransport) and scrapes the screen back into the same prompt()/onChunk contract
 // AcpClient exposes, so the REPL and controller work against it unchanged.
@@ -23,6 +21,8 @@ import { NotConnectedError } from "../errors.ts";
 import { PtyTransport } from "./pty-transport.ts";
 import { EmulatorScreen, compactLines } from "./emulator.ts";
 import { extractReply } from "./extract.ts";
+import { promptParts, partsText } from "../media/parts.ts";
+import type { ClientPrompt } from "../agent-client.ts";
 
 const ETX = "\x03"; // Ctrl-C
 const ESC = "\x1b";
@@ -133,7 +133,7 @@ export class PtyClient implements AgentClient, Bridgeable {
       handlers = input.handlers;
       _attachments = input.attachments;
     }
-    const parts = typeof input === "string" ? undefined : input.resolvedParts ?? promptParts(input);
+    const parts = typeof input === "string" ? undefined : promptParts(input);
     if (_attachments?.length || parts?.some((part) => part.kind !== "text" && part.kind !== "pasted")) {
       return Promise.reject(new Error("PTY mode does not support non-text parts"));
     }

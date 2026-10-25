@@ -1,4 +1,3 @@
-import { acpToPart } from "./media/acp.ts";
 // Maps raw session/update notifications into our output-contract types.
 // `agent_message_chunk` → response text; everything else → ActivityEvent.
 // See SPEC.md "Protocol facts": all agent→client events are session/update,
@@ -21,6 +20,7 @@ import type {
   ToolUpdateActivity,
   ResponseChunk,
 } from "./types.ts";
+import { acpToPart } from "./media/acp.ts";
 
 /** A response delta preserving its ACP message id, or null for any other update. */
 export function extractResponseChunk(

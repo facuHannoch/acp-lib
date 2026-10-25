@@ -1,4 +1,3 @@
-import type { ClientPrompt } from "./agent-client.ts";
 import { ForcedStopError } from "./operations/errors.ts";
 import type { OperationLifecycleConfig, OutputListener } from "./operations/contracts.ts";
 import {
@@ -25,6 +24,7 @@ import type {
   WireEntry,
 } from "./types.ts";
 import { NotConnectedError } from "./errors.ts";
+import type { ClientPrompt } from "./agent-client.ts";
 
 const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([]);
 
@@ -278,15 +278,14 @@ export class AgentController implements AgentClient {
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
-    const text = typeof input === "string" ? input : input.text ?? "";
-    if (typeof input !== "string") { handlers = input.handlers; attachments = input.attachments; }
+    const prompt: ClientPrompt = typeof input === "string" ? { text: input, handlers, attachments } : input;
     const current = this.requireCurrent();
     let forced!: () => void;
     const interrupted = new Promise<never>((_resolve, reject) => {
       forced = () => reject(new ForcedStopError());
       this.forceStopListeners.add(forced);
     });
-    return Promise.race([current.prompt({ ...(typeof input === "string" ? {} : input), text, handlers, attachments }), interrupted])
+    return Promise.race([current.prompt(prompt), interrupted])
       .finally(() => this.forceStopListeners.delete(forced));
   }
 
@@ -381,7 +380,9 @@ export class AgentController implements AgentClient {
   }
 
   /** Force a fresh session (e.g. after /login). mcpServers defaults to config.mcpServers. */
-  newSession(options: { mcpServers?: schema.McpServer[]; additionalDirectories?: string[] } = {}): Promise<ConnectResult> {
+  newSession(
+    options: { mcpServers?: schema.McpServer[]; additionalDirectories?: string[] } = {},
+  ): Promise<ConnectResult> {
     return this.requireAcp().newSession({
       mcpServers: options.mcpServers ?? this.config.mcpServers,
       additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,

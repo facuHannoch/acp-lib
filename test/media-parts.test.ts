@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { normalizeParts } from "../src/media/parts.ts";
 import { resolveParts } from "../src/media/store.ts";
-import { attachmentParts, partsToAcp } from "../src/media/acp.ts";
+import { acpToPart, attachmentParts, partsToAcp } from "../src/media/acp.ts";
 import { redactMedia } from "../src/media/redact.ts";
 
 const caps = { image: true, audio: true, embeddedContext: true };
@@ -62,4 +62,15 @@ test("invalid source values and thresholds fail explicitly", async () => {
   expect(() => normalizeParts([{ kind: "file", path: " " }])).toThrow("path cannot be blank");
   expect(() => normalizeParts([{ kind: "image", data: new ArrayBuffer(1) } as never])).toThrow("Uint8Array");
   await expect(resolveParts([], { cwd: ".", thresholds: { image: -1 } })).rejects.toThrow("threshold");
+});
+
+test("embedded copies name the copy, not a file path, and unknown link sizes stay unknown", async () => {
+  const [embedded] = partsToAcp([{ kind: "file", mode: "copy", mimeType: "text/plain", name: "notes.txt", size: 2, data: new Uint8Array([104, 105]) }]);
+  expect(embedded).toMatchObject({ type: "resource", resource: { uri: "attachment:///notes.txt", text: "hi" } });
+  const link = acpToPart({ type: "resource_link", uri: "file:///tmp/a.pdf", name: "a.pdf", mimeType: "application/pdf" });
+  expect(link).not.toHaveProperty("size");
+  expect(partsToAcp([link!])[0]).not.toHaveProperty("size");
+  const [missing] = await resolveParts([{ kind: "file", path: "/nonexistent/acp-lib-link.pdf", mode: "link" }], { cwd: "/" });
+  expect(missing).toMatchObject({ mode: "link", uri: "file:///nonexistent/acp-lib-link.pdf" });
+  expect(missing).not.toHaveProperty("size");
 });

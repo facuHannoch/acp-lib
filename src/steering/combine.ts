@@ -1,6 +1,6 @@
-import { attachmentParts } from "../media/acp.ts";
 import type { PromptHandlers } from "../types.ts";
 import type { CombinedMessage, SteeringPrompt } from "./contracts.ts";
+import { attachmentParts } from "../media/acp.ts";
 
 /** Text of a combined prompt: the messages in order, separated by a blank line. Nothing is added. */
 export const COMBINED_TEXT_SEPARATOR = "\n\n";

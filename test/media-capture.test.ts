@@ -19,8 +19,7 @@ test("message text and media capture are independent and explicit keep overrides
   const content = await persistParts(parts, "owner", undefined, "none");
   expect(content).toMatchObject([{ type: "text" }, { type: "media", size: 1 }]);
   const record = { kind: "message", content, role: "user" } as never;
-  expect(captureRuntimeRecord(record, "none", "none")).toMatchObject({ content: [{ type: "media", size: 1 }] });
-  const raw = { kind: "message", content: [{ type: "text", text: "text" }, { type: "media", kind: "image", mode: "copy", ref: "ref", size: 1, mimeType: "image/png" }], role: "user" } as never;
-  expect(captureRuntimeRecord(raw, "content", "none")).toMatchObject({ content: [{ type: "text", text: "text" }] });
-  expect(JSON.stringify(captureRuntimeRecord(raw, "none", "metadata"))).not.toContain('"ref"');
+  // Message capture drops only the text: media capture was applied when the parts were persisted.
+  expect(captureRuntimeRecord(record, "none")).toMatchObject({ content: [{ type: "media", size: 1 }] });
+  expect(captureRuntimeRecord(record, "content")).toMatchObject({ content: [{ type: "text" }, { type: "media" }] });
 });

@@ -1,7 +1,3 @@
-import { SqliteSharedFiles } from "./sqlite-files.ts";
-import type { SharedFilesPersistence } from "../media/files.ts";
-import { SqliteMediaStore } from "./sqlite-media-store.ts";
-import type { MediaStore } from "../media/store.ts";
 import { Database, type Changes } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
@@ -100,6 +96,10 @@ import {
   reconcileConversationTimeline,
   type ConversationTimelineItem,
 } from "./timeline-reconcile.ts";
+import { SqliteSharedFiles } from "./sqlite-files.ts";
+import type { SharedFilesPersistence } from "../media/files.ts";
+import { SqliteMediaStore } from "./sqlite-media-store.ts";
+import type { MediaStore } from "../media/store.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 type WriteRunner = <T>(work: () => T) => Promise<T>;
@@ -310,6 +310,24 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     }
   }
 
+  /** How far out-of-band messages were delivered, per conversation and provider context. */
+  private createOutOfBandDelivery(runWrite: <T>(work: () => T) => Promise<T>): OutOfBandDeliveryPersistence {
+    return {
+      get: async (owner, providerContext) => Number(this.database.query<{ through_sequence: number }, [string, string]>(
+        "SELECT through_sequence FROM out_of_band_delivery WHERE owner = ? AND provider_context = ?",
+      ).get(owner, providerContext)?.through_sequence ?? 0),
+      advance: async (owner, providerContext, throughSequence) => {
+        await runWrite(() => {
+          this.database.query(
+            `INSERT INTO out_of_band_delivery(owner, provider_context, through_sequence) VALUES (?, ?, ?)
+             ON CONFLICT(owner, provider_context)
+             DO UPDATE SET through_sequence = MAX(through_sequence, excluded.through_sequence)`,
+          ).run(owner, providerContext, throughSequence);
+        });
+      },
+    };
+  }
+
   private createScope(
     runWrite: WriteRunner,
     onAppended: (records: readonly ConversationRecord[]) => void | Promise<void>,
@@ -317,14 +335,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     return Object.freeze({
       media: new SqliteMediaStore(this.database, runWrite),
       files: new SqliteSharedFiles(this.database),
-      outOfBandDelivery: {
-        get: async (owner: AgentConversationId, context: string) => Number(this.database.query<{ through_sequence: number }, [string, string]>(
-          "SELECT through_sequence FROM out_of_band_delivery WHERE owner = ? AND provider_context = ?").get(owner, context)?.through_sequence ?? 0),
-        advance: async (owner: AgentConversationId, context: string, sequence: number) => {
-          await runWrite(() => { this.database.query(`INSERT INTO out_of_band_delivery(owner, provider_context, through_sequence) VALUES (?, ?, ?)
-            ON CONFLICT(owner, provider_context) DO UPDATE SET through_sequence = MAX(through_sequence, excluded.through_sequence)`).run(owner, context, sequence); });
-        },
-      },
+      outOfBandDelivery: this.createOutOfBandDelivery(runWrite),
       conversations: new SqliteConversationPersistence(this.database, this.identityRecord.agentSessionId, runWrite),
       records: new SqliteConversationRecordPersistence(
         this.database,

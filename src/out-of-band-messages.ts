@@ -1,5 +1,3 @@
-import { contentText } from "./media/content.ts";
-import type { MessagePart, ResolvedPart } from "./media/parts.ts";
 import type { AgentConversationId } from "./agent-ids.ts";
 import type {
   ConversationRecord,
@@ -7,6 +5,8 @@ import type {
   PersistenceBackend,
   PersistenceJsonValue,
 } from "./persistence/backend.ts";
+import { contentText } from "./media/content.ts";
+import { isMediaPart, type MessagePart, type ResolvedPart } from "./media/parts.ts";
 
 /** Input for an assistant message a consumer appends without running a provider turn. */
 export interface AppendAssistantMessageInput {
@@ -68,68 +68,49 @@ export async function pendingOutOfBandMessages(
   return pending;
 }
 
-/**
- * Provider text for one turn: identity preamble, then out-of-band messages, then the user's
- * own text. Only the user's text is persisted; everything else reaches the provider alone.
- */
-export function composeProviderPrompt(
-  prompt: string,
-  identityPreamble: string | undefined,
-  outOfBand: readonly MessageRecord[],
-): string {
-  const sections = [identityPreamble?.trim(), formatOutOfBandBlock(outOfBand)]
-    .filter((section): section is string => Boolean(section));
-  if (sections.length === 0) return prompt;
-  return `${sections.join("\n\n")}\n\n<current-message>\n${prompt}\n</current-message>`;
-}
-
-function formatOutOfBandBlock(messages: readonly MessageRecord[]): string | undefined {
-  if (messages.length === 0) return undefined;
-  const { header, entries, omitted } = selectOutOfBandMessages(messages);
-  const body = [
-    ...(omitted > 0 ? [`(${omitted} earlier message${omitted === 1 ? "" : "s"} omitted)`] : []),
-    ...entries.slice(omitted),
-  ];
-  return `<messages-you-sent>\n${header}\n${body.join("\n")}\n</messages-you-sent>`;
-}
-
 const OUT_OF_BAND_HEADER = "Messages you sent in this conversation through another channel since your last turn."
   + " The user has seen them; you have not.";
 
-export function selectOutOfBandMessages(messages: readonly MessageRecord[]) {
-  const header = OUT_OF_BAND_HEADER;
+/** The newest messages that fit the block's text budget, in order, and how many older ones were left out. */
+function selectOutOfBandMessages(messages: readonly MessageRecord[]) {
   const entries = messages.map((message) => `[${message.timestamp}] ${textOf(message)}`);
-  let budget = OUT_OF_BAND_PROMPT_MAX_CHARS - header.length;
+  let budget = OUT_OF_BAND_PROMPT_MAX_CHARS - OUT_OF_BAND_HEADER.length;
   let kept = 0;
-  for (let index = entries.length - 1; index >= 0; index--) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
     const cost = entries[index]!.length + 1;
     if (cost > budget && kept > 0) break;
     budget -= cost;
-    kept++;
+    kept += 1;
   }
-  return { header, entries, omitted: entries.length - kept, selected: messages.slice(messages.length - kept) };
+  return { omitted: entries.length - kept, selected: messages.slice(messages.length - kept) };
 }
 
-export async function composeProviderMessageParts(
-  current: readonly ResolvedPart[], preamble: string | undefined, messages: readonly MessageRecord[],
+/**
+ * The parts sent for one turn: identity preamble, then out-of-band messages, then the user's own
+ * parts. Everything but the user's parts is provider-only (`record: false`). An out-of-band message
+ * with media is wrapped in `<message id>`, so its media blocks are tied to it.
+ */
+export async function composeProviderParts(
+  current: readonly ResolvedPart[],
+  identityPreamble: string | undefined,
+  outOfBand: readonly MessageRecord[],
   load: (message: MessageRecord) => Promise<readonly ResolvedPart[]>,
 ): Promise<readonly ResolvedPart[]> {
-  if (!preamble?.trim() && messages.length === 0) return current;
+  if (!identityPreamble?.trim() && outOfBand.length === 0) return current;
   const result: ResolvedPart[] = [];
   const text = (value: string) => result.push({ kind: "text", text: value, record: false });
-  if (preamble?.trim()) text(`${preamble.trim()}\n\n`);
-  if (messages.length) {
-    const { selected, omitted, header } = selectOutOfBandMessages(messages);
-    text(`<messages-you-sent>\n${header}\n`);
-    if (omitted) text(`(${omitted} earlier message${omitted === 1 ? "" : "s"} omitted)\n`);
+  if (identityPreamble?.trim()) text(`${identityPreamble.trim()}\n\n`);
+  if (outOfBand.length > 0) {
+    const { selected, omitted } = selectOutOfBandMessages(outOfBand);
+    text(`<messages-you-sent>\n${OUT_OF_BAND_HEADER}\n`);
+    if (omitted > 0) text(`(${omitted} earlier message${omitted === 1 ? "" : "s"} omitted)\n`);
     for (const [index, message] of selected.entries()) {
-      // The record id ties every following media block to its original message.
       const parts = await load(message);
-      const media = parts.some((part) => part.kind !== "text" && part.kind !== "pasted");
-      if (media) text(`<message id="${message.recordId}">\n`);
+      const hasMedia = parts.some(isMediaPart);
+      if (hasMedia) text(`<message id="${message.recordId}">\n`);
       text(`[${message.timestamp}] `);
       result.push(...parts);
-      if (media) text("\n</message>");
+      if (hasMedia) text("\n</message>");
       if (index < selected.length - 1) text("\n");
     }
     text("\n</messages-you-sent>\n\n");

@@ -1,6 +1,3 @@
-import { attachmentParts } from "./media/acp.ts";
-import { promptParts, transcriptParts, providerParts, partsText, type ResolvedPart, type MessagePart } from "./media/parts.ts";
-import { redactMedia } from "./media/redact.ts";
 // AgentConversation — one durable conversation and the library's compatibility front
 // face. Existing consumers still import this constructor as `AgentSession`; both names
 // refer to the same class while the new agent-level owner is introduced.
@@ -189,6 +186,43 @@ import {
   normalizeContinuationStrategies,
   stageOpeningContinuation,
 } from "./agent-conversation-continuation.ts";
+import { attachmentParts } from "./media/acp.ts";
+import {
+  partsText,
+  promptParts,
+  transcriptParts,
+  unresolvedParts,
+  type MessagePart,
+  type ResolvedPart,
+} from "./media/parts.ts";
+import { redactMedia } from "./media/redact.ts";
+
+/** The text of an object-form prompt: its leading text plus its text parts. */
+function promptInputText(input: { readonly text?: string; readonly parts?: readonly MessagePart[] }): string {
+  return partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]);
+}
+
+/** The older JSONL transcript has no media store: a message with parts keeps a line per part. */
+function legacyTranscriptText(
+  text: string,
+  parts?: readonly MessagePart[],
+  attachments?: readonly Attachment[],
+): string {
+  if (!parts && !attachments?.length) return text;
+  return transcriptParts([...(parts ?? [{ kind: "text", text }]), ...attachmentParts(attachments)]);
+}
+
+/** The older JSONL transcript's view of response messages, with a line per media part. */
+function legacyTranscriptMessages(messages: readonly ResponseMessage[], text: string) {
+  const messageText = (message: ResponseMessage) => (message.parts ? transcriptParts(message.parts) : message.text);
+  return {
+    text: messages.some((message) => message.parts) ? messages.map(messageText).join("\n\n") : text,
+    messages: messages.map((message) => ({
+      ...(message.messageId ? { messageId: message.messageId } : {}),
+      text: messageText(message),
+    })),
+  };
+}
 
 export {
   AdapterMismatchError,
@@ -1879,7 +1913,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return typeof input === "string"
       ? this.enqueuePrompt(input, "prompt", handlers, attachments)
       : this.enqueuePrompt(
-          partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]), "prompt", input.handlers, input.attachments,
+          promptInputText(input), "prompt", input.handlers, input.attachments,
           undefined, input.consumerMetadata, input.delivery, promptParts(input),
         );
   }
@@ -1911,7 +1945,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (typeof input !== "string") {
       if (!input.participantId.trim()) return this.rejectedPrompt(new Error("participant id cannot be blank"));
       return this.enqueuePrompt(
-        partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]), "prompt", input.handlers, input.attachments,
+        promptInputText(input), "prompt", input.handlers, input.attachments,
         input.participantId.trim(), input.consumerMetadata, input.delivery, promptParts(input),
       );
     }
@@ -3316,9 +3350,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
           text: item.text,
           messageParts: item.messageParts,
           attachments: item.attachments,
-          mediaContext: { cwd: this.controllerDefaults.cwd ?? process.cwd(),
-            capabilities: this.controller.isDegraded ? undefined : this.controller.capabilities.agent.promptCapabilities,
-            degraded: this.controller.isDegraded },
+          mediaContext: {
+            cwd: this.controllerDefaults.cwd ?? process.cwd(),
+            ...(this.controller.isDegraded
+              ? { degraded: true }
+              : { capabilities: this.controller.capabilities.agent.promptCapabilities }),
+          },
         })
       : undefined;
     for (const participant of owned?.participants ?? (owned?.participant ? [owned.participant] : [])) {
@@ -3326,7 +3363,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this._participants = [...this._participants, Object.freeze({ ...participant })];
       }
     }
-    const providerText = owned?.providerText ?? item.text;
     this.beginTurn(item.turnId);
     let operation: OpenOperation;
     if (this.v2Transcript) {
@@ -3338,11 +3374,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
         await this.v2Transcript.beginOperation(item.turnId, persistenceOperationKind(item.operationKind));
         transcriptStarted = true;
         // A combined prompt shows each original message, as it was sent.
-        const legacyText = (text: string, parts?: readonly MessagePart[], attachments?: readonly Attachment[]) =>
-          parts || attachments?.length ? transcriptParts([...(parts ?? [{ kind: "text", text }]), ...attachmentParts(attachments)]) : text;
         const userTexts = item.parts
-          ? item.parts.map((part) => legacyText(part.text, part.messageParts, part.attachments))
-          : [legacyText(item.text, item.messageParts, item.attachments)];
+          ? item.parts.map((part) => legacyTranscriptText(part.text, part.messageParts, part.attachments))
+          : [legacyTranscriptText(item.text, item.messageParts, item.attachments)];
         const userRecords = [];
         for (const [index, text] of userTexts.entries()) {
           userRecords.push(await this.v2Transcript.appendPresentationEvent({
@@ -3370,8 +3404,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         v: 1,
         t: "msg",
         role: "user",
-        text: item.messageParts || item.attachments?.length
-          ? transcriptParts([...(item.messageParts ?? [{ kind: "text", text: item.text }]), ...attachmentParts(item.attachments)]) : item.text,
+        text: legacyTranscriptText(item.text, item.messageParts, item.attachments),
         ts: Date.now(),
       });
       operation = await this.openMeteredOperation(item);
@@ -3481,7 +3514,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             current.providerMessageId = chunk.messageId;
           }
           current.text += chunk.text;
-          current.parts = response.snapshot().at(-1)?.parts;
+          current.parts = response.currentParts();
           current.dirty = true;
           // Persist the first usable snapshot. Later token chunks remain in memory until
           // an interleaving item, a new message, or the operation boundary.
@@ -3548,10 +3581,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const dispatchedAt = new Date().toISOString();
     try {
       let res = await this.supervisedPrompt(this.controller, item.turnId, "turn",
-        () => this.controller.prompt({ text: item.messageParts ? "" : providerText, handlers: wrappedHandlers,
-          ...(owned?.providerParts ? { resolvedParts: owned.providerParts, attachments: undefined }
-            : { attachments: item.attachments, ...(item.messageParts ? { parts: providerParts(providerText, item.text, item.messageParts) } : {}) }),
-        }));
+        // An owned conversation already resolved the parts and wrapped them with the provider-only
+        // text (identity, out-of-band messages); otherwise the client resolves them.
+        () => this.controller.prompt(owned?.providerParts
+          ? { parts: unresolvedParts(owned.providerParts), handlers: wrappedHandlers }
+          : item.messageParts
+            ? { parts: item.messageParts, attachments: item.attachments, handlers: wrappedHandlers }
+            : { text: item.text, attachments: item.attachments, handlers: wrappedHandlers }));
       if (res.cancel === "forced") {
         const messages = response.snapshot();
         res = { ...res, messages, text: response.text || chunks.join("") };
@@ -3621,12 +3657,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           v: 1,
           t: "msg",
           role: "assistant",
-          text: res.messages.some((message) => message.parts)
-            ? res.messages.map((message) => message.parts ? transcriptParts(message.parts) : message.text).join("\n\n") : res.text,
-          messages: res.messages.map((message) => ({
-            ...(message.messageId ? { messageId: message.messageId } : {}),
-            text: message.parts ? transcriptParts(message.parts) : message.text,
-          })),
+          ...legacyTranscriptMessages(res.messages, res.text),
           ts: Date.now(),
           usage: res.usage,
           stopReason: res.stopReason,
@@ -3726,12 +3757,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           v: 1,
           t: "msg",
           role: "assistant",
-          text: messages.some((message) => message.parts)
-            ? messages.map((message) => message.parts ? transcriptParts(message.parts) : message.text).join("\n\n") : text,
-          messages: messages.map((message) => ({
-            ...(message.messageId ? { messageId: message.messageId } : {}),
-            text: message.parts ? transcriptParts(message.parts) : message.text,
-          })),
+          ...legacyTranscriptMessages(messages, text),
           ts: Date.now(),
           stopReason: "error",
           status: "error",
@@ -4124,7 +4150,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
           operationId,
           role: "assistant",
           text: formatResponseMessages(result.messages, "\n\n"),
-          structured: { version: 1, messages: result.messages.map(({ messageId, text }) => ({ ...(messageId ? { messageId } : {}), text })) },
+          // Handoff transcripts stay text: the parts are not carried over.
+          structured: {
+            version: 1,
+            messages: result.messages.map(({ messageId, text }) => ({ ...(messageId ? { messageId } : {}), text })),
+          },
           stopReason: result.stopReason,
           status: result.status,
         });

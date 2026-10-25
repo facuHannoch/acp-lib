@@ -4,14 +4,66 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent } from "../src/agent.ts";
 import type { PersistedMediaBlock } from "../src/persistence/backend.ts";
+import type { AgentConfig } from "../src/agent/config.ts";
+import type { MediaStore, StoredMedia } from "../src/media/store.ts";
+
 const roots: string[] = [];
 const agents: Agent[] = [];
-afterEach(async () => { await Promise.all(agents.splice(0).map((a) => a.close())); await Promise.all(roots.splice(0).map((p) => rm(p, { recursive: true, force: true }))); });
-async function setup(store?: import("../src/media/store.ts").MediaStore, extras: Pick<import("../src/agent/config.ts").AgentConfig, "capture" | "conversationPersistence"> = {}) {
-  const root = await mkdtemp(join(tmpdir(), "media-agent-")); roots.push(root);
-  const agent = await Agent.open({ persistence: { kind: "sqlite", path: join(root, "agent.sqlite") }, adapters: { fixture: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts")] } }, defaultAdapterId: "fixture", ...extras, ...(store ? { media: { store } } : {}), conversationDefaults: { metering: { pricing: false } } }); agents.push(agent);
+
+afterEach(async () => {
+  await Promise.all(agents.splice(0).map((agent) => agent.close()));
+  await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+function agentConfig(
+  root: string,
+  store?: MediaStore,
+  extras: Pick<AgentConfig, "capture" | "conversationPersistence"> = {},
+  fixtureArgs: readonly string[] = [],
+): AgentConfig {
+  return {
+    persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+    adapters: { fixture: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts"), ...fixtureArgs] } },
+    defaultAdapterId: "fixture",
+    ...extras,
+    ...(store ? { media: { store } } : {}),
+    conversationDefaults: { metering: { pricing: false } },
+  };
+}
+
+async function setup(
+  store?: MediaStore,
+  extras: Pick<AgentConfig, "capture" | "conversationPersistence"> = {},
+  fixtureArgs: readonly string[] = [],
+) {
+  const root = await mkdtemp(join(tmpdir(), "media-agent-"));
+  roots.push(root);
+  const agent = await Agent.open(agentConfig(root, store, extras, fixtureArgs));
+  agents.push(agent);
   return { agent, root };
 }
+
+/** A consumer store kept in memory. */
+function memoryStore(): MediaStore {
+  const values = new Map<string, StoredMedia & { data: Uint8Array }>();
+  return {
+    async put(data, info) {
+      const ref = crypto.randomUUID();
+      values.set(ref, { ref, info, data: new Uint8Array(data) });
+      return ref;
+    },
+    async get(ref) {
+      return values.get(ref) ?? null;
+    },
+    async delete(ref) {
+      values.delete(ref);
+    },
+    async list(owner) {
+      return [...values.values()].filter((value) => value.info.owner === owner);
+    },
+  };
+}
+
 test("Agent stores user media atomically, reuses refs and deletes only bytes", async () => {
   const { agent } = await setup();
   const conversation = await agent.conversations.create();
@@ -132,13 +184,13 @@ test("partial media survives a failed provider turn", async () => {
   expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(4);
 });
 
-test("out-of-band media delivers once, retries failures, and removes temporary no-keep bytes", async () => {
+test("out-of-band media delivers once, retries failures, and never writes unkept bytes", async () => {
   const { agent } = await setup();
   const conversation = await agent.conversations.create();
   const record = await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([1]), mimeType: "image/png", keep: false }] });
   expect(record.operationId).toBeUndefined();
   expect(record.content).toMatchObject([{ type: "media", mode: "copy" }]);
-  expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(1); // pending transport only
+  expect(await agent.persistence.media!.list(conversation.id)).toHaveLength(0); // waits in memory
   await expect(conversation.prompt("FAIL_TURN")).rejects.toThrow();
   const delivered = JSON.parse((await conversation.prompt("after")).text);
   expect(delivered.blocks.some((b: { type: string }) => b.type === "image")).toBe(true);
@@ -147,15 +199,17 @@ test("out-of-band media delivers once, retries failures, and removes temporary n
   expect(JSON.parse((await conversation.prompt("later")).text).blocks.some((b: { type: string }) => b.type === "image")).toBe(false);
 });
 
-test("pending no-keep out-of-band media survives Agent restart", async () => {
+test("after a restart, unkept out-of-band media is named instead of sent", async () => {
   const { agent, root } = await setup();
   const conversation = await agent.conversations.create();
   await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([7]), mimeType: "image/png", keep: false }] });
   await agent.close();
-  const reopened = await Agent.open({ persistence: { kind: "sqlite", path: join(root, "agent.sqlite") }, adapters: { fixture: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts")] } }, defaultAdapterId: "fixture", conversationDefaults: { metering: { pricing: false } } }); agents.push(reopened);
+  const reopened = await Agent.open(agentConfig(root));
+  agents.push(reopened);
   const result = await reopened.conversations.open(conversation.id);
-  const delivered = await result.conversation.prompt("after restart");
-  expect(JSON.parse(delivered.text).blocks).toContainEqual({ type: "image", data: "Bw==", mimeType: "image/png" });
+  const delivered = JSON.parse((await result.conversation.prompt("after restart")).text);
+  expect(delivered.blocks.some((block: { type: string }) => block.type === "image")).toBe(false);
+  expect(delivered.prompt).toContain("[image: not available]");
   expect(await reopened.persistence.media!.list(conversation.id)).toHaveLength(0);
 });
 
@@ -193,13 +247,8 @@ test("files listing folds response revisions and searches only metadata with con
 });
 
 
-test("external pending bytes survive a failed local turn commit", async () => {
-  const values = new Map<string, import("../src/media/store.ts").StoredMedia & { data: Uint8Array }>();
-  const store: import("../src/media/store.ts").MediaStore = {
-    async put(data, info) { const ref = crypto.randomUUID(); values.set(ref, { ref, info, data: new Uint8Array(data) }); return ref; },
-    async get(ref) { return values.get(ref) ?? null; }, async delete(ref) { values.delete(ref); },
-    async list(owner) { return [...values.values()].filter((value) => value.info.owner === owner); },
-  };
+test("waiting out-of-band bytes survive a failed local turn commit and never reach the store", async () => {
+  const store = memoryStore();
   const { agent } = await setup(store);
   const conversation = await agent.conversations.create();
   await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([9]), mimeType: "image/png", keep: false }] });
@@ -216,18 +265,34 @@ test("external pending bytes survive a failed local turn commit", async () => {
     } }),
   }));
   await expect(conversation.prompt("first attempt")).rejects.toThrow("local turn commit failed");
-  expect(await store.list(conversation.id)).toHaveLength(1);
+  expect(await store.list(conversation.id)).toHaveLength(0);
   const retried = JSON.parse((await conversation.prompt("retry")).text);
   expect(retried.blocks).toContainEqual({ type: "image", data: "CQ==", mimeType: "image/png" });
   expect(await store.list(conversation.id)).toHaveLength(0);
 });
 
-test("deleting a kept out-of-band copy does not resurrect bytes from its pending envelope", async () => {
+test("a deleted out-of-band copy is named, not sent, and the turn still runs", async () => {
   const { agent } = await setup();
   const conversation = await agent.conversations.create();
   const record = await agent.conversations.appendAssistantMessage(conversation.id, { parts: [{ kind: "image", data: new Uint8Array([1]), mimeType: "image/png" }] });
   const ref = (record.content as readonly PersistedMediaBlock[])[0]!.ref!;
   await agent.deleteMedia(ref);
-  await expect(conversation.prompt("after deletion")).rejects.toThrow("unavailable for delivery");
+  const delivered = JSON.parse((await conversation.prompt("after deletion")).text);
+  expect(delivered.blocks.some((block: { type: string }) => block.type === "image")).toBe(false);
+  expect(delivered.prompt).toContain("[image: not available]");
   expect(await agent.persistence.media!.get(ref)).toBeNull();
+});
+
+test("out-of-band media an agent cannot take is named, delivered once, and does not block later turns", async () => {
+  const { agent } = await setup(undefined, {}, ["no-media"]);
+  const conversation = await agent.conversations.create();
+  await agent.conversations.appendAssistantMessage(conversation.id, { parts: [
+    { kind: "text", text: "sent elsewhere" },
+    { kind: "image", data: new Uint8Array([1]), mimeType: "image/png", name: "plot.png" },
+  ] });
+  const first = JSON.parse((await conversation.prompt("one")).text);
+  expect(first.blocks.every((block: { type: string }) => block.type === "text")).toBe(true);
+  expect(first.prompt).toContain("[image plot.png: not supported by this agent]");
+  const second = JSON.parse((await conversation.prompt("two")).text);
+  expect(second.prompt).not.toContain("plot.png");
 });

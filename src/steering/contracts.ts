@@ -1,7 +1,7 @@
-import type { MessagePart } from "../media/parts.ts";
 import type { AgentSessionPromptResult } from "../agent-conversation-contracts.ts";
 import type { PersistenceJsonValue } from "../persistence/backend.ts";
 import type { Attachment, PromptHandlers } from "../types.ts";
+import type { MessagePart } from "../media/parts.ts";
 
 /**
  * How a prompt sent while a turn is running waits.

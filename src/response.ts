@@ -1,5 +1,5 @@
-import type { ResolvedPart } from "./media/parts.ts";
 import type { ResponseChunk, ResponseMessage } from "./types.ts";
+import type { ResolvedPart } from "./media/parts.ts";
 
 export interface IncomingResponseChunk {
   part?: ResolvedPart;
@@ -73,9 +73,14 @@ export class ResponseAccumulator {
       entry.text += chunk.text;
     }
 
+    // A message keeps parts once it has media: its text before the first media part becomes the first
+    // text part, and later text extends the last text part.
     const entry = this.entries.at(-1)!;
     if (chunk.part) {
-      if (!entry.parts) entry.parts = entry.text && !startsMessage ? [{ kind: "text", text: entry.text.slice(0, entry.text.length - chunk.text.length) }] : [];
+      if (!entry.parts) {
+        const earlier = entry.text.slice(0, entry.text.length - chunk.text.length);
+        entry.parts = earlier && !startsMessage ? [{ kind: "text", text: earlier }] : [];
+      }
       entry.parts.push(chunk.part);
     } else if (entry.parts && chunk.text) {
       const last = entry.parts.at(-1);
@@ -92,9 +97,18 @@ export class ResponseAccumulator {
     return joinResponseMessages(this.entries);
   }
 
+  /** The parts of the message being received, when it has any media. */
+  currentParts(): readonly ResolvedPart[] | undefined {
+    const parts = this.entries.at(-1)?.parts;
+    return parts ? Object.freeze([...parts]) : undefined;
+  }
+
   snapshot(): readonly ResponseMessage[] {
     return Object.freeze(
-      this.entries.map((entry) => Object.freeze({ ...entry, ...(entry.parts ? { parts: Object.freeze([...entry.parts]) } : {}) })),
+      this.entries.map((entry) => Object.freeze({
+        ...entry,
+        ...(entry.parts ? { parts: Object.freeze([...entry.parts]) } : {}),
+      })),
     );
   }
 }
