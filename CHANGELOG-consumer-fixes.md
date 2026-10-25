@@ -6,7 +6,9 @@
   byte deletion, and separate shared-file metadata listing/search. Canonical protocol/debug
   capture redacts inline bytes. Legacy positional attachments remain no-keep copies, mapped
   by MIME type; legacy JSONL stores descriptive media lines. Shared directories reach ACP
-  session creation/loading. See the consumer guide for store and pending-delivery contracts.
+  session creation/loading. Out-of-band media waits in memory until delivered (unkept bytes are
+  never written), and media an agent cannot take, or whose bytes are gone, is named instead of
+  failing the turn. See the consumer guide for store and out-of-band delivery contracts.
 
 
 - **Message boundaries.** A new tool call now ends the assistant message before it, also when the

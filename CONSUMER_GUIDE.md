@@ -154,12 +154,15 @@ Uint8Array`, `path` (relative to the conversation's working directory, absolute,
 URI), or `ref` (a previously kept copy). MIME types are inferred from file paths; supply the
 MIME type for byte-array inputs when known. SVG is a `file` and is embedded as markup, retaining
 its MIME type. Text files are ACP embedded text resources; other files use blob resources.
-A UI rendering SVG must sanitize it.
+An embedded copy's uri is `attachment:///<name>`: it names the copy, not a file the agent could
+open. A UI rendering SVG must sanitize it.
 
 `mode: "copy"` sends the actual content. `keep: false` records name, MIME type, size and SHA-256
 without retaining bytes; the default keeps bytes when a store is available. `mode: "link"`
 requires a path and sends an absolute `file://` resource link. It records a pointer, so later
-edits/deletion of the original affect what history can display. `keep` is invalid on links.
+edits/deletion of the original affect what history can display. The library does not open a
+link: one whose file cannot be read is still sent, with no size. `keep` is invalid on links.
+A link the agent sends without a size is recorded without one.
 `record: false` sends a part without recording it and cannot be combined with `keep`.
 
 With no mode, path sources use copies up to 100,000 bytes for files, 3,750,000 for images and
@@ -207,8 +210,7 @@ transcript records text and descriptive part lines, with no media store.
 
 A `MediaStore` implements async `put(bytes, info) -> ref`, `get(ref)`, `delete(ref)` and
 `list(owner)`. `get` returns `{ ref, info, data }` or null; `list` returns `{ ref, info }`
-entries. Preserve all `MediaInfo` fields, including optional `pendingFor` for temporary
-out-of-band delivery envelopes. Separate stores cannot share the record transaction: failed
+entries. Preserve all `MediaInfo` fields. Separate stores cannot share the record transaction: failed
 writes stop dispatch, and `list(owner)` supports orphan cleanup. Reusing a kept ref within
 its conversation reuses bytes; another conversation gets a new copy. Copies record SHA-256
 but are not deduplicated. Clearing records deletes SQLite media; the Agent clear API also
@@ -532,10 +534,16 @@ Other conversations of the same agent see the message through identity like any 
 canonical message. Text-only appends require `capture.message` of `"content"` or `"raw"`;
 media-only appends are supported under the independent media capture policy. An append rejects
 empty input and unknown or deleted conversations. `appendAssistantMessage(id, { parts })` uses
-the same part/store rules. SQLite temporarily stages unsent parts, including `keep: false`,
-until successful delivery, so pending bytes survive restart and are removed after delivery.
-A failed turn retains them for retry. Custom stores preserve `MediaInfo.pendingFor`; without
-a store, unkept/suppressed pending parts survive only within the current Agent process.
+the same part/store rules. Parts are accepted whatever the next turn's agent supports.
+
+A message waits for the next successful turn. When its record can restore it (text captured,
+every copy kept, no `record: false` part), it is delivered from the record. Otherwise its parts
+wait in memory: unkept bytes are never written anywhere, and a failed turn keeps them for the
+retry. After a restart such a message is delivered from its record, and a copy whose bytes were
+not kept (or were deleted) is named instead, as `[image plot.png: not available]`; an unrecorded
+part is gone. A copy the agent cannot take is named too (`[image plot.png: not supported by this
+agent]`), so an out-of-band message never makes a turn fail. A PTY agent receives every media
+part as such a line.
 Custom backends can supply `outOfBandDelivery` to track completion independently of captured
 text; otherwise delivery uses visible completed messages, scanning forward without `listRecent`.
 
