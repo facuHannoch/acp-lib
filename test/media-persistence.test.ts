@@ -296,3 +296,29 @@ test("out-of-band media an agent cannot take is named, delivered once, and does 
   const second = JSON.parse((await conversation.prompt("two")).text);
   expect(second.prompt).not.toContain("plot.png");
 });
+
+test("an out-of-band link left out by media capture is still delivered", async () => {
+  const { agent, root } = await setup(undefined, { capture: { media: "none" } });
+  const conversation = await agent.conversations.create();
+  const path = join(root, "notes.txt");
+  await Bun.write(path, "notes");
+  await agent.conversations.appendAssistantMessage(conversation.id, { parts: [
+    { kind: "text", text: "see the notes" },
+    { kind: "file", path, mode: "link" },
+  ] });
+  const delivered = JSON.parse((await conversation.prompt("next")).text);
+  expect(delivered.blocks).toContainEqual(expect.objectContaining({ type: "resource_link", uri: `file://${path}` }));
+});
+
+test("deleting a conversation forgets its waiting out-of-band parts", async () => {
+  const { agent } = await setup();
+  const conversation = await agent.conversations.create();
+  await agent.conversations.appendAssistantMessage(conversation.id, { parts: [
+    { kind: "image", data: new Uint8Array([1]), mimeType: "image/png", keep: false },
+  ] });
+  const { pendingOutOfBandParts } = await import("../src/media/pending.ts");
+  expect(pendingOutOfBandParts(agent).size).toBe(1);
+  await conversation.stop();
+  await agent.conversations.delete(conversation.id);
+  expect(pendingOutOfBandParts(agent).size).toBe(0);
+});

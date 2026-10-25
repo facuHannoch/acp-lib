@@ -631,6 +631,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       ? (await this.agent.persistence.recoveryCheckpoints?.deleteForConversation?.(id)) ?? 0
       : 0;
     await this.agent.persistence.conversations.delete(id, deletedAt);
+    // A deleted conversation runs no next turn, so its waiting out-of-band parts would never leave.
+    forgetPendingParts(this.agent, id);
     let providerDeleted: boolean | "unsupported" = false;
     if (active) {
       providerDeleted = await deleteProviderSession({
@@ -718,13 +720,15 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     const record = persisted[0];
     if (record?.kind !== "message") throw new Error("assistant message was not persisted");
     // The next turn delivers the message from its record. When the record cannot restore it (a part
-    // not recorded, a copy not kept, text not captured), its parts wait in memory instead.
-    const keptCopies = Array.isArray(record.content)
-      ? record.content.filter((block) => block.type === "media" && block.ref).length
-      : 0;
-    const copies = resolved.filter((part) => isMediaPart(part) && part.mode === "copy").length;
-    const restorable = (level === "content" || level === "raw") && copies === keptCopies
-      && resolved.every((part) => part.record !== false);
+    // not recorded, media left out by capture, a copy not kept, text not captured), its parts wait in
+    // memory instead.
+    const blocks = Array.isArray(record.content) ? record.content : [];
+    const media = resolved.filter(isMediaPart);
+    const restorable = (level === "content" || level === "raw")
+      && resolved.every((part) => part.record !== false)
+      && blocks.filter((block) => block.type === "media").length === media.length
+      && blocks.filter((block) => block.type === "media" && block.ref).length
+        === media.filter((part) => part.mode === "copy").length;
     if (!restorable) pendingOutOfBandParts(this.agent).set(recordId, { owner: id, parts: resolved });
     this.agent.publishCommittedRecords(persisted);
     if (settings.auditLog) this.agent.audit?.notifyPending();
