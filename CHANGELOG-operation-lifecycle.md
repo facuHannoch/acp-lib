@@ -1,6 +1,6 @@
 # Operation lifecycle
 
-Released in 0.11.2.
+On `beta`, package version 0.11.2 (the version was set before this work landed). Ships in 0.12.0.
 
 Provider turns, internal inference and adoption recaps now expose their current operation stage and
 last output time. Silent inference requests fail with `OperationStalledError` (`code: stalled`), carrying
