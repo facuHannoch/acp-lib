@@ -35,6 +35,10 @@ describe("AgentSession presentation persistence", () => {
         { messageId: "assistant-a", text: "A before tool" },
         { messageId: "assistant-b", text: "B after tool" },
       ]);
+      // An item never outlives its operation, so the runtime forgets the turn's items when it ends.
+      const runtime = (session as unknown as { v2Transcript: { presentationStartedAt(id: string): number | undefined } }).v2Transcript;
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(recorded.map((item) => runtime.presentationStartedAt(item.id)).filter((value) => value !== undefined)).toEqual([]);
     } finally {
       await session.stop();
     }
@@ -53,6 +57,12 @@ describe("AgentSession presentation persistence", () => {
 
     const finalLive = new Map(recorded.map((item) => [item.id, item]));
     expect(page.items.map((item) => finalLive.get(item.id))).toEqual(page.items);
+    // Every revision reports when its item began: the first revision's time, live and on reload.
+    for (const item of page.items) {
+      expect(item.startedAt).toBe(recorded.find((live) => live.id === item.id)!.timestamp);
+      expect(item.startedAt).toBeLessThanOrEqual(item.updatedAt);
+      expect(item.timestamp).toBe(item.updatedAt);
+    }
     const tool = page.items.find((item) => item.kind === "activity");
     expect(tool).toMatchObject({ revision: expect.any(Number), status: "completed" });
     expect(tool!.position).toBeLessThan(tool!.recordSequence);

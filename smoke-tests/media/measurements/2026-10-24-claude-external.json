@@ -1,0 +1,72 @@
+{
+  "adapterId": "claude",
+  "timestamp": "2026-10-24T22:58:37.314Z",
+  "cases": [
+    {
+      "name": "undeclared-direct",
+      "status": "completed",
+      "elapsedMs": 10285,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": false
+    },
+    {
+      "name": "undeclared-symlink",
+      "status": "completed",
+      "elapsedMs": 15861,
+      "semanticMatch": true,
+      "modified": false,
+      "declared": false,
+      "symlink": true
+    },
+    {
+      "name": "declared-direct",
+      "status": "completed",
+      "elapsedMs": 12112,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": false
+    },
+    {
+      "name": "declared-symlink",
+      "status": "completed",
+      "elapsedMs": 10448,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": true
+    }
+  ],
+  "syntheticFilesOnly": true,
+  "outsideTemporaryDirectory": true,
+  "model": "opus",
+  "permissions": [
+    {
+      "title": "Read /home/ffacu/q/apps/libs/acp-lib/smoke-tests/media/.sandbox-probes/acp-media-claude-x3TJVA/undeclared-direct.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "Edit /home/ffacu/q/apps/libs/acp-lib/smoke-tests/media/.sandbox-probes/acp-media-claude-x3TJVA/undeclared-direct.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "Read undeclared-symlink.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "printf 'EDIT_declared-direct\\n' >> /home/ffacu/q/apps/libs/acp-lib/smoke-tests/media/.sandbox-probes/acp-media-claude-x3TJVA/declared-direct.txt",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "printf 'EDIT_declared-symlink\\n' >> /tmp/acp-media-real-claude-NS2rHA/workspace/declared-symlink.txt",
+      "scoped": true,
+      "granted": true
+    }
+  ]
+}

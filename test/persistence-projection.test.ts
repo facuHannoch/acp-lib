@@ -50,6 +50,21 @@ describe("session-log capture projection", () => {
     expect(projectAuditEvent(reasoning, auditContext({ ...DEFAULT_AUDIT_LOG_CAPTURE, reasoning: "text" }))?.t).toBe("reasoning");
   });
 
+  test("a cancellation is written to the transcript and the audit log alike", () => {
+    const event: NormalizedPersistenceEvent = {
+      kind: "cancellation", operationId: "op-1", cancellationId: "op-1:cancellation",
+      event: "resolved", reason: "interrupt", outcome: "acknowledged",
+    };
+    const transcript = projectTranscriptEvent(event, transcriptContext(TRANSCRIPT_PRESETS.conversation));
+    const audit = projectAuditEvent(event, auditContext(DEFAULT_AUDIT_LOG_CAPTURE));
+    validateTranscriptRecord(transcript);
+    validateAuditLogRecord(audit);
+    const fields = { t: "cancellation", operationId: "op-1", cancellationId: "op-1:cancellation", event: "resolved", reason: "interrupt", outcome: "acknowledged" };
+    expect(transcript).toMatchObject(fields);
+    expect(audit).toMatchObject(fields);
+    expect(() => validateAuditLogRecord({ ...audit, reason: "other" })).toThrow("cancellation.reason is invalid");
+  });
+
   test("presentation identity stays transcript-only", () => {
     const event: NormalizedPersistenceEvent = {
       kind: "activity",

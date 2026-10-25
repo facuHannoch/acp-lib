@@ -14,6 +14,7 @@ import {
   type Adapter,
   type AgentAuditEntryV2,
   type AgentConversationId,
+  type MessageRecord,
   type OperationMeteringRecord,
 } from "@qlairoslabs/acp-client";
 import {
@@ -24,6 +25,8 @@ import {
   inspectStoredAuditOutbox,
   inspectStoredProtocolCapture,
   listStoredMessages,
+  listStoredOperations,
+  listStoredUnattributedRecords,
 } from "./queries.ts";
 
 // Full drive of agent
@@ -52,6 +55,7 @@ assert.ok(Number.isSafeInteger(auditMaxBytes) && auditMaxBytes > 0,
 
 const adapters: Record<string, Adapter> = {
   codex: ADAPTERS.codex,
+  media: { command: ["bun", join(here, "../../test/fixtures/media-agent.ts")] },
   opencode: ADAPTERS.opencode,
   test: {
     command: ["bun", fixture, "test8"],
@@ -68,6 +72,7 @@ const prompts = [
   "The answer to PWEAS is 3",
   "We need to work on adding the internal tools to the agent",
 ] as const;
+const outOfBandText = "I also sent you the release notes by email.";
 
 type ExpectedMessage = {
   readonly role: "assistant" | "user";
@@ -85,10 +90,12 @@ try {
   const conversation = await firstAgent.conversations.create();
   const conversationId = conversation.id;
   const expectedMessages: ExpectedMessage[] = [];
+  const turnOperationIds: string[] = [];
 
   for (const prompt of prompts) {
     const result = await conversation.prompt(prompt);
     assert.equal(result.status, "completed", `prompt failed: ${prompt}`);
+    turnOperationIds.push(result.operationId);
     expectedMessages.push(
       { role: "user", content: prompt },
       ...result.messages.map((message) => ({
@@ -97,6 +104,10 @@ try {
       })),
     );
   }
+
+  // An assistant message sent through another channel: stored without a turn.
+  const outOfBand = await firstAgent.conversations.appendAssistantMessage(conversationId, { text: outOfBandText });
+  expectedMessages.push({ role: "assistant", content: outOfBandText });
 
   // Exercise one agent-wide order under writes from separate conversations.
   const concurrentLeft = await firstAgent.conversations.create({ adapterId: "test", title: "audit-left" });
@@ -112,6 +123,7 @@ try {
   );
   assertSqliteHistory(conversationId, expectedMessages);
   assertSqliteProtocolPolicy(conversationId);
+  await assertSqliteOperations(firstAgent, conversationId, turnOperationIds, outOfBand);
   const originalInternalSessionId = conversation.internalSessionId;
   assert.ok(originalInternalSessionId, "initial conversation has no internal session id");
   console.log(
@@ -129,6 +141,7 @@ try {
   const interruptedPrompt = "Audit delivery should recover after this message";
   const interrupted = await conversation.prompt(interruptedPrompt);
   assert.equal(interrupted.status, "completed", "canonical prompt was blocked by audit delivery failure");
+  turnOperationIds.push(interrupted.operationId);
   expectedMessages.push(
     { role: "user", content: interruptedPrompt },
     ...interrupted.messages.map((message) => ({ role: "assistant" as const, content: message.text })),
@@ -174,6 +187,7 @@ try {
   const recallPrompt = "What is the answer to pweas? respond with just the answer or with 'DN' if you don't know";
   const result = await conversationAfterReopening.prompt(recallPrompt);
   assert.equal(result.status, "completed", "reopened conversation recall prompt failed");
+  turnOperationIds.push(result.operationId);
   const reopenedAnswer = checkSemanticRecall(
     "reopened provider thread",
     result.messages.map((message) => message.text).join("").trim(),
@@ -196,6 +210,8 @@ try {
     "recall turn was not appended to the reopened conversation history",
   );
   assertSqliteHistory(conversationId, expectedMessages);
+  await assertSqliteOperations(reopenedAgent, conversationId, turnOperationIds, outOfBand);
+  await assertHistoryPages(reopenedAgent, conversationId);
   console.log(
     `PASS reopened agent=${reopenedAgent.id} conversation=${conversationId} answer=${JSON.stringify(reopenedAnswer)} messages=${persistedAfterRecall.messages.length}`,
   );
@@ -323,6 +339,8 @@ try {
   console.log(
     `PASS metering agent=${meteringAgent.id} conversation=${meteringConversation.id} operation=${metered.operationId}`,
   );
+
+  await assertMediaWorkflow(meteringAgent);
 
   assert.equal(
     (await meteringAgent.audit?.flush({ timeoutMs: 10_000 }))?.status,
@@ -608,6 +626,99 @@ function assertSqliteHistory(
   }
 }
 
+/**
+ * Every record of a turn names that turn's operation, and the turns appear in the order they
+ * ran. The out-of-band message is an operation of its own, and nothing but protocol lines
+ * belongs to no operation. Other operations (checkpoints, recoveries) may sit between the turns.
+ */
+async function assertSqliteOperations(
+  agent: Agent,
+  conversationId: AgentConversationId,
+  turnOperationIds: readonly string[],
+  outOfBand: MessageRecord,
+): Promise<void> {
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    const operations = listStoredOperations(database, conversationId);
+    const turns = operations.filter((operation) => turnOperationIds.includes(operation.operationId));
+    assert.deepEqual(
+      turns.map((operation) => operation.operationId),
+      turnOperationIds,
+      "SQLite does not hold every turn as an operation, in the order the turns ran",
+    );
+    for (const turn of turns) {
+      assert.ok(turn.kinds.split(",").includes("message"), `turn ${turn.operationId} has no message records`);
+    }
+    assert.equal(outOfBand.operationId, undefined, "out-of-band messages must be standalone records");
+    assert.deepEqual(
+      listStoredUnattributedRecords(database, conversationId).filter((record) => record.recordId !== outOfBand.recordId),
+      [],
+      "SQLite holds records outside any operation",
+    );
+
+    // The library's own filter returns exactly what the raw query grouped.
+    const last = turns.at(-1)!;
+    const filtered = await agent.persistence.records.list(conversationId, { operationId: last.operationId, limit: 1_000 });
+    assert.equal(
+      filtered.records.filter((record) => record.kind !== "protocol").length,
+      last.records,
+      "records.list({ operationId }) disagrees with SQLite",
+    );
+    const kinds = new Set(turns.flatMap((turn) => turn.kinds.split(",")));
+    console.log(
+      `PASS operations turns=${turns.length} others=${operations.length - turns.length} kinds=${[...kinds].sort().join(",")}`,
+    );
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Paging by agent messages, two per page, walks the whole history: every record lands on exactly
+ * one page, no page holds more than two agent messages, and folded summary pages never repeat an
+ * item or carry a tool step's input or output.
+ */
+async function assertHistoryPages(agent: Agent, conversationId: AgentConversationId): Promise<void> {
+  const records = agent.persistence.records;
+  const all = await records.list(conversationId, { limit: 1_000 });
+  const seen = new Map<string, number>();
+  let pages = 0;
+  let olderCursor: string | undefined;
+  do {
+    const page = await records.listRecent!(conversationId, { agentMessages: 2, ...(olderCursor ? { olderCursor } : {}) });
+    const agentMessages = new Set(page.records.flatMap((record) =>
+      record.kind === "message" && record.role === "assistant" ? [record.logicalMessageId ?? record.recordId] : []));
+    assert.ok(agentMessages.size <= 2, `page ${pages + 1} holds ${agentMessages.size} agent messages`);
+    for (const record of page.records) seen.set(record.recordId, (seen.get(record.recordId) ?? 0) + 1);
+    olderCursor = page.olderCursor;
+    pages++;
+  } while (olderCursor);
+  assert.deepEqual(
+    all.records.map((record) => record.recordId).filter((id) => seen.get(id) !== 1),
+    [],
+    "paging by agent messages lost a record or put one on two pages",
+  );
+
+  const itemPages = new Map<string, number>();
+  let items = 0;
+  olderCursor = undefined;
+  do {
+    const page: import("../../src/persistence/backend.ts").RecentItemPage = await records.listRecent!(conversationId, {
+      agentMessages: 2, fold: true, detail: "summary", ...(olderCursor ? { olderCursor } : {}),
+    });
+    for (const item of page.items) {
+      assert.ok(!itemPages.has(item.id), `item ${item.id} is on two pages`);
+      itemPages.set(item.id, 1);
+      if (item.current.kind === "tool_call") {
+        assert.ok(!("input" in item.current) && !("output" in item.current), "a summary tool step carries its input or output");
+      }
+    }
+    items += page.items.length;
+    olderCursor = page.olderCursor;
+  } while (olderCursor);
+  console.log(`PASS history pages agentMessages=2 pages=${pages} records=${all.records.length} items=${items}`);
+}
+
 function assertSqliteProtocolPolicy(conversationId: AgentConversationId): void {
   const database = new Database(databasePath, { readonly: true });
   try {
@@ -639,4 +750,43 @@ function checkSemanticRecall(stage: string, answer: string): string {
     `WARN ${stage} semantic recall returned ${JSON.stringify(answer)}; provider session continuity assertions still passed`,
   );
   return answer;
+}
+
+
+async function assertMediaWorkflow(agent: Agent): Promise<void> {
+  const sent: any[] = [];
+  const conversation = await agent.conversations.create({ adapterId: "media", runtime: {
+    wire: (entry) => { if (entry.dir === "out") { const frame = JSON.parse(entry.line); if (frame.method === "session/prompt") sent.push(frame.params.prompt); } },
+  } });
+  const result = await conversation.prompt({ parts: [
+    { kind: "text", text: "MEDIA_OUTPUT" },
+    { kind: "pasted", name: "notes", text: "smokepastemarker" },
+    { kind: "image", name: "media-smoke.png", data: new Uint8Array([1, 2]), mimeType: "image/png" },
+  ] });
+  assert.deepEqual(result.messages[0]?.parts?.map((part) => part.kind), ["image", "text", "audio", "file", "file", "file"]);
+  const files = await agent.persistence.files!.search({ text: "media-smoke", agentConversationId: conversation.id });
+  assert.equal(files.files.length, 1);
+  const ref = files.files[0]!.ref!;
+  assert.deepEqual((await agent.persistence.media!.get(ref))!.data, new Uint8Array([1, 2]));
+  assert.ok((await agent.persistence.search!.search({ text: "smokepastemarker", conversationIds: [conversation.id], kinds: ["message"] })).length);
+  const appended = await agent.conversations.appendAssistantMessage(conversation.id, { parts: [
+    { kind: "text", text: "sent externally" },
+    { kind: "image", data: new Uint8Array([3]), mimeType: "image/png", keep: false },
+  ] });
+  assert.equal(appended.operationId, undefined);
+  await conversation.prompt("MEDIA_OUTPUT");
+  assert.ok(sent.at(-1).some((block: any) => block.type === "image" && block.data === "Aw=="));
+  assert.ok(sent.at(-1).some((block: any) => block.type === "text" && block.text.includes(appended.recordId)));
+  const count = (await agent.persistence.media!.list(conversation.id)).length;
+  await conversation.stop();
+  const reopened = await agent.conversations.open(conversation.id);
+  assert.equal((await agent.persistence.media!.list(conversation.id)).length, count, "load duplicated media");
+  await agent.deleteMedia(ref);
+  assert.equal(await agent.persistence.media!.get(ref), null);
+  assert.equal((await agent.persistence.files!.search({ text: "media-smoke", agentConversationId: conversation.id })).files[0]?.ref, ref);
+  await reopened.conversation.stop();
+  await agent.conversations.clearTranscript(conversation.id, { checkpoints: true });
+  assert.equal((await agent.persistence.media!.list(conversation.id)).length, 0);
+  assert.equal((await agent.persistence.files!.list({ agentConversationId: conversation.id })).files.length, 0);
+  console.log("PASS media send/receive/store/search/out-of-band/reopen/delete/clear");
 }

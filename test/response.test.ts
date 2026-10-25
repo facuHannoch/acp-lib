@@ -23,6 +23,18 @@ describe("response text projection", () => {
     expect(response.text).toBe("first message\n\nsecond");
   });
 
+  test("a closed message ends even without message ids; closing before any text does nothing", () => {
+    const response = new ResponseAccumulator();
+    response.closeMessage();
+    expect(response.append({ text: "before" }).startsMessage).toBe(true);
+    response.append({ text: " tool" });
+    response.closeMessage();
+    expect(response.append({ text: "after" }).startsMessage).toBe(true);
+    expect(response.append({ text: " tool" }).startsMessage).toBe(false);
+
+    expect(response.snapshot()).toEqual([{ text: "before tool" }, { text: "after tool" }]);
+  });
+
   test("empty entries participate in the documented literal join", () => {
     expect(joinResponseMessages([{ text: "first" }, { text: "" }, { text: "third" }]))
       .toBe("first\n\n\n\nthird");
@@ -34,4 +46,14 @@ describe("response text projection", () => {
     expect(formatResponseMessages(messages, "")).toBe("firstsecond");
     expect(() => formatResponseMessages(messages, null as never)).toThrow(TypeError);
   });
+});
+
+test("media deltas preserve text on both sides and a later message boundary", () => {
+  const response = new ResponseAccumulator();
+  response.append({ text: "before", messageId: "a" });
+  response.append({ text: "", messageId: "a", part: { kind: "image", mode: "copy", mimeType: "image/png", size: 1, data: new Uint8Array([1]) } });
+  response.append({ text: "after", messageId: "a" });
+  response.append({ text: "done", messageId: "b" });
+  expect(response.snapshot()[0]).toMatchObject({ text: "beforeafter", parts: [{ kind: "text", text: "before" }, { kind: "image" }, { kind: "text", text: "after" }] });
+  expect(response.snapshot()[1]).toEqual({ text: "done", messageId: "b" });
 });

@@ -29,6 +29,7 @@ import {
   type ResolvedAgentAuditLogConfig,
 } from "../audit/index.ts";
 import { conversationErrorDetailsFromError } from "../persistence/error-records.ts";
+import { captureMessageContent } from "../media/capture.ts";
 
 
 import type { Agent } from "../agent.ts";
@@ -72,6 +73,10 @@ export async function persistConversationObservations(
 ): Promise<readonly ConversationRecord[]> {
   if (records.length === 0) return Object.freeze([]);
   if ((!audit || !settings.auditLog) && records.every((record) => {
+    if (record.kind === "message") {
+      // Media blocks are recorded under the media level, whatever the message level.
+      return settings.capture.message === "none" && settings.capture.media === "none" && typeof record.content === "string";
+    }
     if (record.kind !== "protocol") return settings.capture[record.kind] === "none";
     return settings.capture.protocol.level === "none"
       || !shouldCaptureProtocolMethod(settings.capture.protocol, record.method);
@@ -96,12 +101,15 @@ export async function persistObservationsInTransaction(
     const level = record.kind === "protocol"
       ? settings.capture.protocol.level
       : settings.capture[record.kind];
-    const canonicalAccepted = level !== "none" && (
+    const captured = captureRuntimeRecord(record, level);
+    const hasMedia = captured.kind === "message" && Array.isArray(captured.content)
+      && captured.content.some((block) => block.type === "media");
+    const canonicalAccepted = (level !== "none" || hasMedia) && (
       record.kind !== "protocol"
       || shouldCaptureProtocolMethod(settings.capture.protocol, record.method)
     );
     if (canonicalAccepted) {
-      persisted.push(await persistence.records.append(captureRuntimeRecord(record, level)));
+      persisted.push(await persistence.records.append(captured));
     }
     if (audit && settings.auditLog) {
       await enqueueAuditObservation(persistence, {
@@ -139,6 +147,9 @@ export function captureRuntimeRecord(
   record: NewConversationRecord,
   level: RecordCaptureLevel,
 ): NewConversationRecord {
+  if (record.kind === "message") {
+    return { ...record, content: captureMessageContent(record.content, level === "content" || level === "raw") };
+  }
   if (record.kind === "error") {
     // `metadata` omits the display message and details; `content` keeps the message but
     // still omits details; `raw` retains the allow-listed details.
@@ -150,8 +161,6 @@ export function captureRuntimeRecord(
   }
   if (level !== "metadata") return record;
   switch (record.kind) {
-    case "message":
-      return { ...record, content: "" };
     case "tool_call":
       return {
         recordId: record.recordId,
@@ -159,6 +168,7 @@ export function captureRuntimeRecord(
         agentConversationId: record.agentConversationId,
         kind: record.kind,
         timestamp: record.timestamp,
+        ...(record.operationId ? { operationId: record.operationId } : {}),
         ...(record.metadata ? { metadata: record.metadata } : {}),
         toolCallId: record.toolCallId,
         state: record.state,
@@ -171,6 +181,7 @@ export function captureRuntimeRecord(
         agentConversationId: record.agentConversationId,
         kind: record.kind,
         timestamp: record.timestamp,
+        ...(record.operationId ? { operationId: record.operationId } : {}),
         ...(record.metadata ? { metadata: record.metadata } : {}),
         permissionId: record.permissionId,
         state: record.state,
@@ -188,6 +199,7 @@ export function captureRuntimeRecord(
     case "activity":
       return { ...record, content: undefined, data: undefined };
     case "metering":
+    case "cancellation":
       return record;
   }
 }

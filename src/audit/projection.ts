@@ -101,6 +101,9 @@ function projectRecordPayload(
         ...(level !== "metadata" && record.message ? { message: record.message } : {}),
         ...(level === "raw" && record.details ? { details: json(record.details) } : {}),
       };
+    case "cancellation":
+      return { ...base, cancellationId: record.cancellationId, state: record.state, reason: record.reason,
+        ...(record.outcome ? { outcome: record.outcome } : {}) };
     case "metering": {
       const metering = observation.meteringRecord;
       if (level === "raw" && metering) return json(metering);

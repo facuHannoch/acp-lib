@@ -16,11 +16,13 @@ import {
   SqliteAgentPersistence,
   SQLITE_AGENT_SCHEMA_VERSION,
   hasSafeConcurrentWal,
+  reconcileConversationTimeline,
   requireSqliteSearch,
   type NewConversationRecord,
   type PersistenceExtension,
 } from "../src/persistence/index.ts";
 import { createConversationRecoveryCheckpointId } from "../src/checkpointing/ids.ts";
+import { CANCEL_OUTCOMES, CANCEL_REASONS } from "../src/operations/contracts.ts";
 import { createInternalInferenceId } from "../src/internal-inference/ids.ts";
 import { emptyMeteringState } from "../src/metering/state.ts";
 import type { OperationMeteringRecord } from "../src/metering/record.ts";
@@ -145,6 +147,78 @@ describe("SQLite agent persistence", () => {
     await expect(backend.records.listRecent!(conversationId, {
       kinds: ["message"], olderCursor: first.olderCursor,
     })).rejects.toThrow("invalid or mismatched recent-record cursor");
+  });
+
+  test("pages recent history by agent messages, each item on the page where it began", async () => {
+    const { backend, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    const base = { agentSessionId, agentConversationId: conversationId, timestamp: now() };
+    const say = (recordId: string, operationId: string, role: "assistant" | "user", content: string, logical?: string,
+      status: "in_progress" | "completed" = "completed"): NewConversationRecord => ({
+      ...base, recordId, operationId, kind: "message", role, content, status,
+      ...(logical ? { logicalMessageId: logical } : {}),
+    });
+    const tool = (recordId: string, operationId: string, toolCallId: string, state: "announced" | "completed"): NewConversationRecord => ({
+      ...base, recordId, operationId, kind: "tool_call", toolCallId, state, name: "read",
+      ...(state === "completed" ? { input: { path: "a.txt" }, output: [{ type: "text", text: "contents" }] } : {}),
+    });
+    // Revisions spread as a turn writes them: a message completes when the next tool starts.
+    await backend.records.appendMany([
+      say("one:user", "one", "user", "one"),                                   // 1
+      say("one:a:1", "one", "assistant", "A", "one:a", "in_progress"),          // 2
+      tool("one:t:1", "one", "t1", "announced"),                                // 3
+      say("one:a:2", "one", "assistant", "A1", "one:a"),                        // 4
+      tool("one:t:2", "one", "t1", "completed"),                                // 5
+      say("one:b:1", "one", "assistant", "B", "one:b", "in_progress"),          // 6
+      say("one:b:2", "one", "assistant", "B1", "one:b"),                        // 7
+      say("two:user", "two", "user", "two"),                                   // 8
+      say("two:a:1", "two", "assistant", "A", "two:a", "in_progress"),          // 9
+      say("append-x:assistant", "append-x", "assistant", "by email", "append-x"), // 10, appended mid-turn
+      tool("two:t:1", "two", "t2", "announced"),                                // 11
+      say("two:a:2", "two", "assistant", "A2", "two:a"),                        // 12
+      tool("two:t:2", "two", "t2", "completed"),                                // 13
+      say("two:b:1", "two", "assistant", "B2", "two:b"),                        // 14
+    ]);
+    const sequences = (page: { records: readonly { sequence: number }[] }) => page.records.map((record) => record.sequence);
+
+    // Two agent messages per page; the cut goes right after the third one down.
+    const first = await backend.records.listRecent!(conversationId, { agentMessages: 2 });
+    expect(sequences(first)).toEqual([10, 11, 13, 14]);
+    const second = await backend.records.listRecent!(conversationId, { agentMessages: 2, olderCursor: first.olderCursor });
+    expect(sequences(second)).toEqual([3, 5, 6, 7, 8, 9, 12]);
+    const third = await backend.records.listRecent!(conversationId, { agentMessages: 2, olderCursor: second.olderCursor });
+    expect(sequences(third)).toEqual([1, 2, 4]);
+    expect(third.olderCursor).toBeUndefined();
+    expect(third.truncated).toBeUndefined();
+
+    // Folded summaries: one item per tool call or message, tool calls without input or output.
+    const folded = await backend.records.listRecent!(conversationId, { agentMessages: 2, fold: true, detail: "summary" });
+    expect(folded.items.map((item) => [item.kind, item.firstSequence, item.lastSequence])).toEqual([
+      ["message", 10, 10], ["tool_call", 11, 13], ["message", 14, 14],
+    ]);
+    const step = folded.items[1]!;
+    expect(step.current).toMatchObject({ kind: "tool_call", state: "completed", name: "read" });
+    expect("input" in step.current || "output" in step.current).toBe(false);
+    // Expanding the step: the full record merges into the summary item.
+    const full = await backend.records.get(step.current.recordId);
+    const [expanded] = reconcileConversationTimeline([step], [full!]);
+    expect(expanded!.current).toMatchObject({ input: { path: "a.txt" }, output: [{ type: "text", text: "contents" }] });
+    expect(expanded!.firstSequence).toBe(11);
+
+    // The limit ends a page early at a whole item, and the next page continues below it.
+    const capped = await backend.records.listRecent!(conversationId, { agentMessages: 5, limit: 4, fold: true });
+    expect(capped.items.map((item) => item.firstSequence)).toEqual([9, 10, 11, 14]);
+    expect(capped.truncated).toBe(true);
+    const rest = await backend.records.listRecent!(conversationId, {
+      agentMessages: 5, limit: 4, fold: true, olderCursor: capped.olderCursor,
+    });
+    expect(rest.items.map((item) => item.firstSequence)).toEqual([2, 3, 6, 8]);
+    expect(rest.items[0]!.revisions.map((record) => record.sequence)).toEqual([2, 4]);
+
+    // A cursor belongs to its unit.
+    await expect(backend.records.listRecent!(conversationId, { olderCursor: first.olderCursor }))
+      .rejects.toThrow("invalid or mismatched recent-record cursor");
   });
 
   test("reads batched previews without treating an agent prompt as a human message", async () => {
@@ -281,6 +355,24 @@ describe("SQLite agent persistence", () => {
       }
     } finally {
       inspection.close();
+    }
+  });
+
+  test("the cancellation table admits exactly the library's cancel reasons and outcomes", async () => {
+    const { backend, path } = await openBackend();
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+    const database = new Database(path, { readonly: true });
+    try {
+      const { sql } = database.query("SELECT sql FROM sqlite_master WHERE name = 'conversation_cancellation_events'")
+        .get() as { sql: string };
+      // The CHECK lists are migration SQL and stay literal; this keeps them equal to the shared lists.
+      const listed = (column: string) => /IN \(([^)]*)\)/.exec(sql.slice(sql.indexOf(`${column} TEXT`)))![1]!
+        .split(",").map((value) => value.trim().replace(/'/g, ""));
+      expect(listed("reason")).toEqual([...CANCEL_REASONS]);
+      expect(listed("outcome")).toEqual([...CANCEL_OUTCOMES]);
+    } finally {
+      database.close();
     }
   });
 
@@ -717,9 +809,9 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(14);
+    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(16);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 14; recreate the database",
+      "SQLite agent schema 7 is incompatible with 16; recreate the database",
     );
   });
 
@@ -758,7 +850,7 @@ describe("SQLite agent persistence", () => {
     }]);
     expect((await migrated.identityDelivery.get(targetConversationId, "provider-1", conversationId))?.deliveredThroughSequence).toBe(1);
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM identity_delivery_cursors").get()?.count).toBe(1);
     inspection.close();
   });
@@ -829,10 +921,73 @@ describe("SQLite agent persistence", () => {
     expect(baseline).toMatchObject({ source: "adoption_baseline", summary: "" });
     expect(baseline.generatorInternalInferenceId).toBeUndefined();
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
     expect(inspection.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(inspection.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()?.integrity_check).toBe("ok");
     inspection.close();
+  });
+
+  test("migrates version 14 by recovering the operation id of records written without one", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: conversationId });
+    const envelope = { agentSessionId, agentConversationId: conversationId, timestamp: now() };
+    // Written as before version 15: the operation only in the record id (or the transition id).
+    for (const record of [
+      { ...envelope, recordId: "turn-1:runtime:tool-a:1", kind: "tool_call", toolCallId: "tool-a", state: "announced" },
+      { ...envelope, recordId: "turn-1:permission:tool-a:requested", kind: "permission", permissionId: "tool-a", state: "requested" },
+      { ...envelope, recordId: "config-2:configuration:started", kind: "configuration", operation: "set", status: "started" },
+      { ...envelope, recordId: "mode-3:native:started", kind: "native_action", action: "mode_change", transitionId: "mode-3", state: "started" },
+      { ...envelope, recordId: "protocol-4", kind: "protocol", direction: "in" },
+    ] as NewConversationRecord[]) await backend.records.append(record);
+    await backend.close();
+    opened.splice(opened.indexOf(backend), 1);
+
+    // The version 14 records table: its kind CHECK has no `cancellation`.
+    const old = new Database(path, { readwrite: true });
+    old.exec("PRAGMA foreign_keys = OFF");
+    old.exec(`
+      CREATE TABLE records_v14 AS SELECT * FROM conversation_records;
+      DROP TABLE conversation_records;
+      CREATE TABLE conversation_records (
+        row_id INTEGER PRIMARY KEY,
+        record_id TEXT NOT NULL UNIQUE,
+        agent_session_id TEXT NOT NULL,
+        agent_conversation_id TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+        sequence INTEGER NOT NULL CHECK (sequence > 0),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'tool_call', 'permission', 'configuration', 'protocol',
+          'native_action', 'agent_action', 'thinking', 'activity', 'metering', 'error')),
+        timestamp TEXT NOT NULL,
+        operation_id TEXT,
+        metadata TEXT,
+        UNIQUE (agent_conversation_id, sequence)
+      );
+      INSERT INTO conversation_records SELECT * FROM records_v14;
+      DROP TABLE records_v14;
+      UPDATE conversation_records SET operation_id = NULL;
+      DELETE FROM schema_migrations WHERE version >= 15;
+      INSERT INTO schema_migrations(version, applied_at) VALUES (14, '2026-10-18T00:00:00.000Z');
+    `);
+    old.close();
+
+    const migrated = await track(SqliteAgentPersistence.open({ path, agentSessionId }));
+    const records = (await migrated.records.list(conversationId, { limit: 10 })).records;
+    expect(records.map((record) => [record.recordId, record.operationId])).toEqual([
+      ["turn-1:runtime:tool-a:1", "turn-1"],
+      ["turn-1:permission:tool-a:requested", "turn-1"],
+      ["config-2:configuration:started", "config-2"],
+      ["mode-3:native:started", "mode-3"],
+      ["protocol-4", undefined],
+    ]);
+
+    // Version 15 also admits the cancellation kind, which the version 14 table refused.
+    await migrated.records.append({
+      ...envelope, recordId: "turn-5:cancellation:requested", kind: "cancellation", operationId: "turn-5",
+      cancellationId: "turn-5:cancellation", state: "requested", reason: "steer",
+    });
+    expect((await migrated.records.list(conversationId, { operationId: "turn-5" })).records).toMatchObject([
+      { kind: "cancellation", cancellationId: "turn-5:cancellation", state: "requested", reason: "steer" },
+    ]);
   });
 
   test("migrates version 9 to message consumer metadata without changing existing records", async () => {
@@ -975,7 +1130,7 @@ describe("SQLite agent persistence", () => {
       operationId: "op-load-1",
     });
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(14);
+    expect(inspection.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(SQLITE_AGENT_SCHEMA_VERSION);
     expect(inspection.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM conversation_records").get()?.count).toBe(2);
     inspection.close();
   });

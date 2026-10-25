@@ -19,7 +19,11 @@ interface TranscriptPresentationItemBase {
   readonly revision: number;
   /** Physical transcript sequence containing this revision. */
   readonly recordSequence: number;
-  /** Unix epoch milliseconds from the persisted record envelope. */
+  /** Unix epoch milliseconds when the item's first revision was written: when it began. */
+  readonly startedAt: number;
+  /** Unix epoch milliseconds when this revision, the item's latest, was written. */
+  readonly updatedAt: number;
+  /** @deprecated The same value as `updatedAt`; show `startedAt` as the item's time. */
   readonly timestamp: number;
   readonly operationId: string;
   readonly transcriptId: string;
@@ -56,8 +60,10 @@ export type TranscriptPresentationItem =
   | TranscriptPresentationReasoning
   | TranscriptPresentationActivity;
 
+/** `startedAt` is the first revision's time; it defaults to this record's, right for a first revision. */
 export function presentationItemFromRecord(
   record: TranscriptPresentationRecord,
+  startedAt: number = record.ts,
 ): TranscriptPresentationItem | null {
   const presentation = record.presentation;
   if (!presentation) return null;
@@ -66,6 +72,8 @@ export function presentationItemFromRecord(
     position: presentation.position,
     revision: presentation.revision,
     recordSequence: record.seq,
+    startedAt,
+    updatedAt: record.ts,
     timestamp: record.ts,
     operationId: record.operationId,
     transcriptId: record.transcriptId,

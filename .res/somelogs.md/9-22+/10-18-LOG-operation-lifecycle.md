@@ -342,3 +342,21 @@ the s6 change). Changelog updated. Full suite 1044 passed.
 The lifecycle section of `CONSUMER_GUIDE.md` now notes two observed harness behaviours: OpenCode completes the
 interrupted turn before answering the next prompt after a reload, and Codex archives a deleted session (treated as
 missing). An issue for OpenCode was drafted for the user to review and post; it was not posted.
+
+## 2026-10-19: test13 s1 covered on OpenCode
+
+s1 (interrupt while the permission handler never answers) had never run on a real harness: none asked for
+permission. OpenCode asks when given `"permission":{"bash":"ask","edit":"ask"}` in `OPENCODE_CONFIG_CONTENT` (for the
+run only, with `"model":"opencode-go/deepseek-v4.1-flash"`). The real s1 prompt was reworded to tell the model to call
+the bash tool without asking first (the old wording invited a chat question); the mock path is unchanged and passes.
+One real run: s1 passed (AbortSignal fired, prompt `cancelled`, `cancel: "acknowledged"`, next prompt completed).
+No library change. Results in `measurements/2026-10-19-opencode-s1.json`.
+
+## 2026-10-19 — compaction silence on OpenCode (test7)
+
+Added an opt-in `--record-updates <file>` to `smoke-tests/test7-compaction/compaction-smoke.ts` (raw
+`session/update` lines with timing). One stress run on OpenCode 1.18.34 with DeepSeek V4.1 Flash, 12k
+window: 40 compactions in ~175s. The summary streams as `agent_message_chunk` (3,005) and
+`agent_thought_chunk` (525); no `tool_call`. First update after a compaction starts ≤ 1.3s, longest gap
+4.4s: no stall risk at 120/180s. Compactions lasted 2–6s; a long compaction on a large context is not
+measured. Noted in the test7 README. The throwaway OpenCode sessions were deleted.

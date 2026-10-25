@@ -1,6 +1,8 @@
 import type { ResponseChunk, ResponseMessage } from "./types.ts";
+import type { ResolvedPart } from "./media/parts.ts";
 
 export interface IncomingResponseChunk {
+  part?: ResolvedPart;
   text: string;
   messageId?: string;
   /** Supplied when an upstream client already resolved the boundary. */
@@ -33,12 +35,18 @@ export function joinResponseMessages(messages: readonly ResponseMessage[]): stri
 }
 
 /**
- * Fold response deltas without inventing separators. Only a change between two explicit
- * ACP message ids proves that a new assistant message started; missing ids remain part of
- * the current message because no boundary can be inferred safely.
+ * Fold response deltas without inventing separators. A new assistant message starts when the
+ * explicit ACP message id changes, or after `closeMessage()` (a tool call ended the text before
+ * it). Otherwise missing ids remain part of the current message: no boundary can be inferred.
  */
 export class ResponseAccumulator {
-  private readonly entries: Array<{ messageId?: string; text: string }> = [];
+  private readonly entries: Array<{ messageId?: string; text: string; parts?: ResolvedPart[] }> = [];
+  private closed = false;
+
+  /** End the current message: the next chunk starts a new one, whatever its id. */
+  closeMessage(): void {
+    if (this.entries.length > 0) this.closed = true;
+  }
 
   append(chunk: IncomingResponseChunk): ResponseChunk {
     let current = this.entries.at(-1);
@@ -49,7 +57,8 @@ export class ResponseAccumulator {
         chunk.messageId !== current.messageId);
     // The first observed chunk necessarily starts our first entry, even if a malformed
     // upstream callback says otherwise.
-    const startsMessage = !current || (chunk.startsMessage ?? inferredStart);
+    const startsMessage = !current || this.closed || (chunk.startsMessage ?? inferredStart);
+    this.closed = false;
 
     if (startsMessage) {
       current = chunk.messageId === undefined
@@ -64,9 +73,23 @@ export class ResponseAccumulator {
       entry.text += chunk.text;
     }
 
+    // A message keeps parts once it has media: its text before the first media part becomes the first
+    // text part, and later text extends the last text part.
+    const entry = this.entries.at(-1)!;
+    if (chunk.part) {
+      if (!entry.parts) {
+        const earlier = entry.text.slice(0, entry.text.length - chunk.text.length);
+        entry.parts = earlier && !startsMessage ? [{ kind: "text", text: earlier }] : [];
+      }
+      entry.parts.push(chunk.part);
+    } else if (entry.parts && chunk.text) {
+      const last = entry.parts.at(-1);
+      if (last?.kind === "text") entry.parts[entry.parts.length - 1] = { ...last, text: last.text + chunk.text };
+      else entry.parts.push({ kind: "text", text: chunk.text });
+    }
     return chunk.messageId === undefined
-      ? { text: chunk.text, startsMessage }
-      : { text: chunk.text, messageId: chunk.messageId, startsMessage };
+      ? { text: chunk.text, startsMessage, ...(chunk.part ? { part: chunk.part } : {}) }
+      : { text: chunk.text, messageId: chunk.messageId, startsMessage, ...(chunk.part ? { part: chunk.part } : {}) };
   }
 
   /** @deprecated Prefer `snapshot()` and preserve the distinct response messages. */
@@ -74,9 +97,18 @@ export class ResponseAccumulator {
     return joinResponseMessages(this.entries);
   }
 
+  /** The parts of the message being received, when it has any media. */
+  currentParts(): readonly ResolvedPart[] | undefined {
+    const parts = this.entries.at(-1)?.parts;
+    return parts ? Object.freeze([...parts]) : undefined;
+  }
+
   snapshot(): readonly ResponseMessage[] {
     return Object.freeze(
-      this.entries.map((entry) => Object.freeze({ ...entry })),
+      this.entries.map((entry) => Object.freeze({
+        ...entry,
+        ...(entry.parts ? { parts: Object.freeze([...entry.parts]) } : {}),
+      })),
     );
   }
 }

@@ -1,8 +1,15 @@
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
+import type { CancelOutcome, CancelReason } from "../operations/contracts.ts";
 import type { OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 import type { ConversationRecoveryCheckpointRepository } from "../checkpointing/contracts.ts";
+import type { ConversationTimelineItem } from "./timeline-reconcile.ts";
+import type { SharedFilesPersistence } from "../media/files.ts";
+import type { MediaCaptureLevel } from "../media/capture.ts";
+import type { MediaStore } from "../media/store.ts";
+import type { MediaKind } from "../media/parts.ts";
+import { contentText } from "../media/content.ts";
 
 export type PersistenceJsonPrimitive = string | number | boolean | null;
 export type PersistenceJsonValue =
@@ -34,6 +41,7 @@ export const CONVERSATION_RECORD_KINDS = [
   "activity",
   "metering",
   "error",
+  "cancellation",
 ] as const;
 
 export type ConversationRecordKind = (typeof CONVERSATION_RECORD_KINDS)[number];
@@ -47,11 +55,31 @@ export interface ConversationRecordEnvelope<K extends ConversationRecordKind = C
   readonly kind: K;
   /** ISO-8601 instant supplied by the producer and preserved verbatim. */
   readonly timestamp: string;
-  /** Legacy envelope metadata; Agent-created records use it for internal operation correlation. */
+  /**
+   * The library operation the record was written in: a turn, an internal inference or recap, a
+   * setting change, a mode change, a handoff. Every record of one operation shares it. Absent on
+   * records written outside an operation (for example protocol lines while connecting).
+   */
+  readonly operationId?: string;
+  /** Legacy envelope metadata. Older records carried the operation id here (`{"operationId": …}`). */
   readonly metadata?: string;
 }
 
+export interface PersistedMediaBlock {
+  readonly type: "media";
+  readonly kind: MediaKind;
+  readonly mode: "copy" | "link";
+  readonly ref?: string;
+  readonly uri?: string;
+  readonly name?: string;
+  readonly mimeType: string;
+  readonly size?: number;
+  readonly sha256?: string;
+}
+
 export type PersistedContentBlock =
+  | PersistedMediaBlock
+  | { readonly type: "pasted"; readonly text: string; readonly name?: string }
   | { readonly type: "text"; readonly text: string }
   | {
       readonly type: "image";
@@ -192,6 +220,21 @@ export interface ErrorRecord extends ConversationRecordEnvelope<"error"> {
   readonly details?: ConversationErrorDetails;
 }
 
+/**
+ * A running operation was cancelled, whatever the mechanism (an ACP `session/cancel`, killing a
+ * screen-scraped harness). One cancellation has two revisions under its `cancellationId`:
+ * `requested` (when, and why) and `resolved` (how it ended). Its `operationId` is the cancelled
+ * operation's.
+ */
+export interface CancellationRecord extends ConversationRecordEnvelope<"cancellation"> {
+  readonly cancellationId: string;
+  readonly state: "requested" | "resolved";
+  /** `steer`: a message sent mid-turn; `interrupt`: Stop; `stalled`: the stale policy; `stop`: shutdown. */
+  readonly reason: CancelReason;
+  /** On `resolved` only. `too_late`: the operation finished on its own before the cancel took effect. */
+  readonly outcome?: CancelOutcome;
+}
+
 export type ConversationRecord =
   | MessageRecord
   | ToolCallRecord
@@ -203,7 +246,8 @@ export type ConversationRecord =
   | ThinkingRecord
   | ActivityRecord
   | MeteringReferenceRecord
-  | ErrorRecord;
+  | ErrorRecord
+  | CancellationRecord;
 
 type WithoutSequence<T> = T extends ConversationRecord ? Omit<T, "sequence"> : never;
 export type NewConversationRecord = WithoutSequence<ConversationRecord>;
@@ -222,6 +266,7 @@ type NonProtocolRecordKind = Exclude<ConversationRecordKind, "protocol">;
 export type ConversationRecordCaptureConfig = Readonly<
   Partial<Record<NonProtocolRecordKind, RecordCaptureLevel>> & {
     readonly protocol?: ProtocolRecordCapture;
+    readonly media?: MediaCaptureLevel;
   }
 >;
 export type ResolvedProtocolRecordCapturePolicy = Readonly<{
@@ -232,6 +277,7 @@ export type ResolvedProtocolRecordCapturePolicy = Readonly<{
 export type ConversationRecordCapturePolicy = Readonly<
   Record<NonProtocolRecordKind, RecordCaptureLevel> & {
     readonly protocol: ResolvedProtocolRecordCapturePolicy;
+    readonly media: MediaCaptureLevel;
   }
 >;
 
@@ -243,6 +289,7 @@ const DEFAULT_PROTOCOL_RECORD_CAPTURE: ResolvedProtocolRecordCapturePolicy = Obj
 
 export const DEFAULT_CONVERSATION_RECORD_CAPTURE: ConversationRecordCapturePolicy = Object.freeze({
   message: "content",
+  media: "content",
   tool_call: "metadata",
   permission: "metadata",
   configuration: "metadata",
@@ -253,6 +300,7 @@ export const DEFAULT_CONVERSATION_RECORD_CAPTURE: ConversationRecordCapturePolic
   activity: "metadata",
   metering: "metadata",
   error: "content",
+  cancellation: "metadata",
 });
 
 export interface AgentPersistenceIdentity {
@@ -323,6 +371,8 @@ export interface ConversationPreviewPage {
 
 export interface RecordListOptions {
   readonly kinds?: readonly ConversationRecordKind[];
+  /** Only the records of this operation (a turn's `operationId`, for example). */
+  readonly operationId?: string;
   readonly afterSequence?: number;
   readonly throughSequence?: number;
   readonly limit?: number;
@@ -337,14 +387,47 @@ export interface ConversationRecordPage {
 /** Newest matching records at a fixed conversation-sequence snapshot, oldest-first within each page. */
 export interface RecentRecordPageOptions {
   readonly kinds?: readonly ConversationRecordKind[];
+  /**
+   * Without `agentMessages`, the records per page (default 50, at most 500). With it, the most a
+   * page holds (records, or items when folded; default 2000, at most 10000): a page that reaches it
+   * ends early with `truncated`.
+   */
   readonly limit?: number;
   readonly olderCursor?: string;
+  /**
+   * Page by agent messages: each page holds this many agent messages and the activity that led to
+   * each. A record goes to the page where its item's first revision falls, so a page holds every
+   * revision of its items and none of another page's.
+   */
+  readonly agentMessages?: number;
+  /** `summary` leaves out tool calls' input and output; `records.get(recordId)` returns them. */
+  readonly detail?: "full" | "summary";
+  /** `true` returns timeline items instead of records. */
+  readonly fold?: false;
+}
+
+export interface RecentItemPageOptions extends Omit<RecentRecordPageOptions, "fold"> {
+  readonly fold: true;
 }
 
 export interface RecentRecordPage {
   readonly records: readonly ConversationRecord[];
   readonly snapshotSequence: number;
   readonly olderCursor?: string;
+  /** The page reached `limit` before its last agent message; the next page continues from there. */
+  readonly truncated?: true;
+}
+
+/**
+ * Recent history as timeline items, merged as `reconcileConversationTimeline` does. With
+ * `detail: "summary"` an item keeps two revisions, its first and its merged current, so it still
+ * reconciles with later records.
+ */
+export interface RecentItemPage {
+  readonly items: readonly ConversationTimelineItem[];
+  readonly snapshotSequence: number;
+  readonly olderCursor?: string;
+  readonly truncated?: true;
 }
 
 export interface MessageListOptions {
@@ -529,6 +612,10 @@ export interface ConversationRecordPersistence {
   /** Optional efficient newest-first history API. Use list(afterSequence) for live catch-up. */
   listRecent?(
     agentConversationId: AgentConversationId,
+    options: RecentItemPageOptions,
+  ): Promise<RecentItemPage>;
+  listRecent?(
+    agentConversationId: AgentConversationId,
     options?: RecentRecordPageOptions,
   ): Promise<RecentRecordPage>;
 }
@@ -684,7 +771,15 @@ export interface PersistenceCapabilities {
   readonly metering: boolean;
 }
 
+export interface OutOfBandDeliveryPersistence {
+  get(owner: AgentConversationId, providerContext: string): Promise<number>;
+  advance(owner: AgentConversationId, providerContext: string, throughSequence: number): Promise<void>;
+}
+
 export interface PersistenceScope {
+  readonly files?: SharedFilesPersistence;
+  readonly outOfBandDelivery?: OutOfBandDeliveryPersistence;
+  readonly media?: MediaStore;
   readonly conversations: ConversationPersistence;
   readonly records: ConversationRecordPersistence;
   readonly messages: ConversationMessagePersistence;
@@ -786,6 +881,13 @@ export function resolveConversationRecordCapture(
 ): ConversationRecordCapturePolicy {
   const resolved: Record<string, unknown> = { ...DEFAULT_CONVERSATION_RECORD_CAPTURE };
   for (const [kind, value] of Object.entries(override)) {
+    if (kind === "media") {
+      if (!["none", "metadata", "content"].includes(String(value))) {
+        throw new Error(`invalid media capture level: ${String(value)}`);
+      }
+      resolved.media = value;
+      continue;
+    }
     if (!isConversationRecordKind(kind)) throw new Error(`unknown record capture kind: ${kind}`);
     if (kind === "protocol") {
       resolved.protocol = resolveProtocolRecordCapture(value as ProtocolRecordCapture);
@@ -886,20 +988,11 @@ export function searchableText(record: ConversationRecord): string {
     case "error":
       // Errors are operational history, not searchable conversation content; v1 keeps them
       // out of full-text search.
+    case "cancellation":
       return "";
   }
 }
 
-function contentText(content: PersistedContent | undefined): string {
-  if (typeof content === "string") return content;
-  if (!content) return "";
-  return content.map((block) => {
-    if (block.type === "text") return block.text;
-    if (block.type === "image") return block.alt ?? "";
-    if (block.type === "resource") return [block.title, block.text, block.uri].filter(Boolean).join("\n");
-    return jsonText(block.value);
-  }).filter(Boolean).join("\n");
-}
 
 function jsonText(value: PersistenceJsonValue | undefined): string {
   return value === undefined ? "" : JSON.stringify(value);

@@ -182,7 +182,7 @@ async function s1(): Promise<void> {
   console.log(`${adapterId} s1: waiting for an open permission`);
   const conversation = await newConversation();
   let signal: AbortSignal | undefined;
-  const pending = conversation.prompt(ask("[lifecycle:permission]", "Use a terminal tool to run pwd; request permission before running it."), {
+  const pending = conversation.prompt(ask("[lifecycle:permission]", "Run the shell command `pwd` now with your bash/terminal tool and reply with its output. Do not ask me anything first; just call the tool."), {
     onPermissionRequest: (_request, abort) => {
       signal = abort;
       return new Promise(() => {});

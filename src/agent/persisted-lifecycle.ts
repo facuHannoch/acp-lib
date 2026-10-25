@@ -23,7 +23,7 @@ import type {
 } from "../agent-conversation-owner.ts";
 import { OwnedPromptPostCommitError } from "../agent-conversation-owner.ts";
 import {
-  composeProviderPrompt,
+  composeProviderParts,
   pendingOutOfBandMessages,
 } from "../out-of-band-messages.ts";
 import type {
@@ -40,8 +40,16 @@ import {
 } from "./record-capture.ts";
 
 import type { Agent } from "../agent.ts";
+import { deliverableParts, pendingOutOfBandParts } from "../media/pending.ts";
+import { resolveParts } from "../media/store.ts";
+import { attachmentParts } from "../media/acp.ts";
+import { contentParts, persistParts } from "../media/content.ts";
+import { isMediaPart, type ResolvedPart } from "../media/parts.ts";
+import type { MediaStore } from "../media/store.ts";
 
 export class PersistedConversationLifecycle implements AgentConversationOwnerLifecycle {
+  private readonly outputMedia = new WeakMap<object, string>();
+  private readonly deliveredMessages = new Map<string, { ids: readonly string[]; throughSequence: number }>();
   constructor(
     private readonly agent: Agent,
     private readonly conversationId: AgentConversationId,
@@ -64,9 +72,24 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     const parts = input.parts ?? [{
       id: input.operationId,
       text: input.text,
+      messageParts: input.messageParts,
+      attachments: input.attachments,
       ...(input.participantId ? { participantId: input.participantId } : {}),
       ...(input.consumerMetadata !== undefined ? { consumerMetadata: input.consumerMetadata } : {}),
     }];
+    const resolved = await Promise.all(parts.map((message) => resolveParts([
+      ...(message.messageParts ?? [{ kind: "text" as const, text: message.text }]),
+      ...attachmentParts(message.attachments),
+    ], {
+      cwd: input.mediaContext?.cwd ?? process.cwd(),
+      capabilities: input.mediaContext?.capabilities,
+      thresholds: this.agent.media.thresholds,
+      owner: this.conversationId,
+      store: this.mediaStore(),
+    })));
+    if (input.mediaContext?.degraded && resolved.some((message) => message.some(isMediaPart))) {
+      throw new Error("PTY mode does not support non-text parts");
+    }
     const participants: ParticipantRef[] = [];
     for (const part of parts) participants.push(await this.resolveParticipant(part.participantId));
     const participant = participants[0]!;
@@ -81,31 +104,51 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         ? { timeoutMs: this.settings.identityTimeoutMs }
         : {}),
     });
-    const records = await this.appendMessages(parts.map((part, index): NewConversationRecord => ({
-      recordId: index === 0 ? `${input.operationId}:user` : `${input.operationId}:user:${index + 1}`,
-      agentSessionId: this.agent.id,
-      agentConversationId: this.conversationId,
-      kind: "message",
-      timestamp: new Date().toISOString(),
-      role: "user",
-      participantId: participants[index]!.id,
-      ...(part.consumerMetadata !== undefined ? { consumerMetadata: part.consumerMetadata } : {}),
-      content: part.text,
-      status: "completed",
-      metadata: JSON.stringify({ operationId: input.operationId }),
-    })));
+    const records: ConversationRecord[] = [];
+    await this.agent.persistence.transaction(async (scope) => {
+      const contents = await Promise.all(resolved.map((message) =>
+        persistParts(message, this.conversationId, this.mediaStore(scope), this.settings.capture.media)));
+      const userRecords = parts.map((part, index): NewConversationRecord => ({
+        recordId: index === 0 ? `${input.operationId}:user` : `${input.operationId}:user:${index + 1}`,
+        agentSessionId: this.agent.id,
+        agentConversationId: this.conversationId,
+        kind: "message",
+        timestamp: new Date().toISOString(),
+        operationId: input.operationId,
+        role: "user",
+        participantId: participants[index]!.id,
+        ...(part.consumerMetadata !== undefined ? { consumerMetadata: part.consumerMetadata } : {}),
+        content: contents[index]!,
+        status: "completed",
+        metadata: JSON.stringify({ operationId: input.operationId }),
+      }));
+      await this.persistObservationsInTransaction(scope, userRecords, true, records);
+    });
+    this.agent.publishCommittedRecords(records);
+    if (this.settings.auditLog) this.agent.audit?.notifyPending();
     await this.updateIdentity(records);
     // Read after the user record commits so a concurrent append falls in this turn or the next.
-    const outOfBand = records[0]
-      ? await pendingOutOfBandMessages(
-          this.agent.persistence,
-          this.conversationId,
-          input.targetProviderContextId,
-          records[0].sequence,
-        )
-      : [];
+    const currentUserSequence = records[0]?.sequence
+      ?? ((await this.agent.persistence.conversations.get(this.conversationId))!.latestSequence + 1);
+    const outOfBand = await pendingOutOfBandMessages(this.agent.persistence, this.conversationId,
+      input.targetProviderContextId, currentUserSequence);
+    const ordered: ResolvedPart[] = resolved.flatMap((parts, index) => [
+      ...(index ? [{ kind: "text" as const, text: "\n\n" }] : []), ...parts,
+    ]);
+    this.deliveredMessages.set(input.operationId, {
+      ids: outOfBand.map((message) => message.recordId),
+      throughSequence: currentUserSequence - 1,
+    });
+    const store = this.mediaStore();
+    const pending = pendingOutOfBandParts(this.agent);
+    const providerParts = await composeProviderParts(ordered, identity.promptPreamble, outOfBand, async (message) =>
+      deliverableParts(
+        pending.get(message.recordId)?.parts ?? await contentParts(message.content, store),
+        input.mediaContext?.capabilities,
+        input.mediaContext?.degraded,
+      ));
     return Object.freeze({
-      providerText: composeProviderPrompt(input.text, identity.promptPreamble, outOfBand),
+      providerParts,
       participant,
       participants: Object.freeze(participants),
       ...(identity.deliveryReceipt ? { identityDeliveryReceipt: identity.deliveryReceipt } : {}),
@@ -115,25 +158,38 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
   async afterPrompt(input: OwnedPromptCompleted): Promise<OwnedPromptCommitResult> {
     const timestamp = new Date().toISOString();
     const status = input.result.status === "error" ? "failed" : input.result.status;
+    const ends = input.messageEnds ?? [];
     const records = input.result.messages.map((message, index): NewConversationRecord => ({
       recordId: `${input.operationId}:assistant:${index + 1}`,
       agentSessionId: this.agent.id,
       agentConversationId: this.conversationId,
       kind: "message",
-      timestamp,
+      timestamp: ends[index] ?? timestamp,
+      operationId: input.operationId,
       role: "assistant",
       logicalMessageId: `message:${input.operationId}:assistant:${index + 1}`,
       content: message.text,
-      status,
+      status: ends[index] ? "completed" : status,
       metadata: JSON.stringify({
         operationId: input.operationId,
         ...(message.messageId ? { providerMessageId: message.messageId } : {}),
       }),
     }));
     const persisted: ConversationRecord[] = [];
+    const pending: Array<readonly [object, string]> = [];
     let providerAttachment: ProviderAttachmentCommitAcknowledgement | undefined;
     await this.agent.persistence.transaction(async (persistence) => {
-      await this.persistObservationsInTransaction(persistence, records, true, persisted);
+      const prepared = await this.withStoredParts(
+        persistence, records, input.result.messages.map((message) => message.parts), pending);
+      await this.persistObservationsInTransaction(persistence, prepared, true, persisted);
+      // Delivery is tracked per provider context, so it holds when no user or assistant text is captured.
+      const delivered = this.deliveredMessages.get(input.operationId);
+      if (status === "completed" && delivered) {
+        const providerContext = input.providerAttachment.kind === "absent"
+          ? input.targetProviderContextId ?? ""
+          : input.providerAttachment.descriptor.internalSessionId;
+        await persistence.outOfBandDelivery?.advance(this.conversationId, providerContext, delivered.throughSequence);
+      }
       if (status === "completed" && input.providerAttachment.kind === "runtime_only") {
         const descriptor = input.providerAttachment.descriptor;
         const providerSessionRecordId = `provider-${randomUUID()}`;
@@ -157,6 +213,10 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         });
       }
     });
+    const deliveredIds = this.deliveredMessages.get(input.operationId)?.ids ?? [];
+    if (status === "completed") for (const id of deliveredIds) pendingOutOfBandParts(this.agent).delete(id);
+    this.deliveredMessages.delete(input.operationId);
+    for (const [part, ref] of pending) this.outputMedia.set(part, ref);
     this.agent.publishCommittedRecords(persisted);
     if (this.settings.auditLog) this.agent.audit?.notifyPending();
     const commit: OwnedPromptCommitResult = Object.freeze({
@@ -177,23 +237,28 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
   }
 
   async promptFailed(input: OwnedPromptFailed): Promise<void> {
+    this.deliveredMessages.delete(input.operationId);
     const timestamp = new Date().toISOString();
+    const ends = input.messageEnds ?? [];
     const records = input.messages.map((message, index): NewConversationRecord => ({
       recordId: `${input.operationId}:assistant:${index + 1}`,
       agentSessionId: this.agent.id,
       agentConversationId: this.conversationId,
       kind: "message",
-      timestamp,
+      timestamp: ends[index] ?? timestamp,
+      operationId: input.operationId,
       role: "assistant",
       logicalMessageId: `message:${input.operationId}:assistant:${index + 1}`,
       content: message.text,
-      status: "failed",
+      // A message that ended before the failure was complete; only the one cut off failed.
+      status: ends[index] ? "completed" : "failed",
       metadata: JSON.stringify({
         operationId: input.operationId,
         ...(message.messageId ? { providerMessageId: message.messageId } : {}),
       }),
     }));
-    await this.updateIdentity(await this.appendMessages(records));
+    const parts = input.messages.map((message) => message.parts);
+    await this.updateIdentity(await this.persistMessagesWithParts(records, parts));
   }
 
   resolveAdapter(adapterId: string) {
@@ -228,13 +293,53 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     return await this.resolveParticipant();
   }
 
-  async record(record: NewConversationRecord): Promise<void> {
+  async record(record: NewConversationRecord, parts?: readonly ResolvedPart[]): Promise<void> {
     const streamingSnapshot = record.kind === "message" && record.status === "in_progress";
-    const persisted = await this.persistObservations([record], !streamingSnapshot);
-    // A streaming snapshot is a display revision, not a second completed response.
-    if (!streamingSnapshot) {
-      await this.updateIdentity(persisted);
-    }
+    const persisted = parts
+      ? await this.persistMessagesWithParts([record], [parts], !streamingSnapshot)
+      : await this.persistObservations([record], !streamingSnapshot);
+    if (!streamingSnapshot) await this.updateIdentity(persisted);
+  }
+
+  /** The consumer's store when the Agent has one, otherwise the persistence backend's. */
+  private mediaStore(scope: PersistenceScope = this.agent.persistence): MediaStore | undefined {
+    return this.agent.media.store ?? scope.media;
+  }
+
+  /**
+   * Message records whose content is their parts, with the kept copies stored. A copy stored by an
+   * earlier revision of the same message keeps its ref, so a streamed message stores it once.
+   */
+  private async withStoredParts(
+    scope: PersistenceScope,
+    records: readonly NewConversationRecord[],
+    parts: readonly (readonly ResolvedPart[] | undefined)[],
+    pending: Array<readonly [object, string]>,
+  ): Promise<NewConversationRecord[]> {
+    return await Promise.all(records.map(async (record, index) => {
+      const messageParts = parts[index];
+      if (!messageParts || record.kind !== "message") return record;
+      const content = await persistParts(messageParts, this.conversationId, this.mediaStore(scope),
+        this.settings.capture.media, { cache: this.outputMedia, pending });
+      return { ...record, content };
+    }));
+  }
+
+  private async persistMessagesWithParts(
+    records: readonly NewConversationRecord[],
+    parts: readonly (readonly ResolvedPart[] | undefined)[],
+    audit = true,
+  ): Promise<readonly ConversationRecord[]> {
+    const persisted: ConversationRecord[] = [];
+    const pending: Array<readonly [object, string]> = [];
+    await this.agent.persistence.transaction(async (scope) => {
+      const prepared = await this.withStoredParts(scope, records, parts, pending);
+      await this.persistObservationsInTransaction(scope, prepared, audit, persisted);
+    });
+    for (const [part, ref] of pending) this.outputMedia.set(part, ref);
+    this.agent.publishCommittedRecords(persisted);
+    if (audit && this.settings.auditLog) this.agent.audit?.notifyPending();
+    return persisted;
   }
 
   async meteringRecorded(record: OperationMeteringRecord): Promise<void> {

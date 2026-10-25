@@ -29,6 +29,7 @@ import type {
 import type { AppendAssistantMessageInput } from "../out-of-band-messages.ts";
 import type { ConversationPersistenceResolver } from "./persistence-policy/index.ts";
 import type { AdoptProviderSessionConfig, ListProviderSessionsOptions, ProviderSessionSummary } from "./adoption/index.ts";
+import type { MediaConfig } from "../media/store.ts";
 
 export type AgentPersistenceConfig =
   | {
@@ -61,6 +62,7 @@ export type AgentConversationRuntimeDefaults = Omit<
 >;
 
 export interface AgentConfig {
+  readonly media?: MediaConfig;
   readonly operationLifecycle?: OperationLifecycleConfig;
   readonly id?: AgentSessionId;
   readonly persistence: AgentPersistenceConfig;

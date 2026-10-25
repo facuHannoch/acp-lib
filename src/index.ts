@@ -130,6 +130,8 @@ export type {
   ConversationErrorRecoverability,
   ConversationErrorSource,
   ErrorRecord,
+  RecentItemPage,
+  RecentItemPageOptions,
   RecentRecordPage,
   RecentRecordPageOptions,
   IdentityMemoryObservation,
@@ -155,6 +157,8 @@ export type {
   ParticipantRef,
   PersistedContent,
   PersistedContentBlock,
+  PersistedMediaBlock,
+  OutOfBandDeliveryPersistence,
   PersistedIdentitySnapshot,
   PersistedAgentMeteringState,
   PersistedConversationMeteringState,
@@ -242,6 +246,7 @@ export type {
 
 export type {
   AgentClient,
+  ClientPrompt,
   InterruptOptions,
   Bridgeable,
   BridgeOptions,
@@ -277,6 +282,7 @@ export type {
   PromptDelivery,
   PromptEndedBy,
   PromptHandle,
+  CombinedMessage,
   PromptPart,
 } from "./steering/index.ts";
 
@@ -735,3 +741,11 @@ export type {
 } from "./types.ts";
 
 export * from "./operations/index.ts";
+
+export type { MessagePart, MediaPart, MediaKind, MediaThresholds, ResolvedPart, ResolvedMediaPart } from "./media/parts.ts";
+
+export type { MediaStore, MediaInfo, StoredMedia, MediaConfig } from "./media/store.ts";
+
+export type { MediaCaptureLevel } from "./media/capture.ts";
+
+export type { SharedFile, SharedFilePage, SharedFileQuery, SharedFilesPersistence } from "./media/files.ts";

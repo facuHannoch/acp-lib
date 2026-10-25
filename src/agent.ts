@@ -58,6 +58,9 @@ import type {
   AgentConfig,
   AgentConversationManager,
 } from "./agent/config.ts";
+import { forgetPendingParts } from "./media/pending.ts";
+import type { AgentConversationId } from "./agent-ids.ts";
+import type { MediaConfig } from "./media/store.ts";
 
 export type {
   AdoptProviderSessionConfig,
@@ -89,6 +92,7 @@ export type {
 
 /** Durable owner of one agent identity, its adapters, identity runtime, and conversations. */
 export class Agent {
+  readonly media: MediaConfig;
   readonly id: AgentSessionId;
   readonly persistence: PersistenceBackend;
   readonly identity: AgentIdentityRuntime;
@@ -107,6 +111,18 @@ export class Agent {
   private detachInternalInferenceAudit?: () => void;
   private closed = false;
 
+  /** Remove a kept copy's bytes. Records keep its metadata and a ref that now resolves to nothing. */
+  async deleteMedia(ref: string): Promise<void> {
+    await (this.media.store ?? this.persistence.media)?.delete(ref);
+  }
+
+  /** Remove the bytes of every copy one conversation kept, and its waiting out-of-band parts. */
+  async deleteMediaForConversation(owner: AgentConversationId): Promise<void> {
+    forgetPendingParts(this, owner);
+    const store = this.media.store ?? this.persistence.media;
+    if (store) for (const media of await store.list(owner)) await store.delete(media.ref);
+  }
+
   private constructor(
     id: AgentSessionId,
     persistence: PersistenceBackend,
@@ -116,6 +132,7 @@ export class Agent {
     private readonly auditLog: ResolvedAgentAuditLogConfig | null,
     audit: AgentAuditRuntime | undefined,
   ) {
+    this.media = config.media ?? {};
     this.id = id;
     this.persistence = persistence;
     this.adapters = adapters;

@@ -48,6 +48,7 @@ import {
   type MeteringRecordListOptions,
   type MeteringRecordPage,
   type NewConversationRecord,
+  type OutOfBandDeliveryPersistence,
   type NewAuditOutboxItem,
   type NewIdentityMemoryObservation,
   type ParticipantRef,
@@ -65,6 +66,8 @@ import {
   type ProviderSessionPersistence,
   type ProviderSessionRecord,
   type RecordListOptions,
+  type RecentItemPage,
+  type RecentItemPageOptions,
   type RecentRecordPage,
   type RecentRecordPageOptions,
   type SearchMatch,
@@ -88,6 +91,15 @@ import {
 } from "./sqlite-conversation-records.ts";
 import { SqliteOwnerLock, SqliteOwnerLockConflictError } from "./sqlite-owner-lock.ts";
 import { canonicalizeJson } from "./integrity.ts";
+import {
+  conversationTimelineItemId,
+  reconcileConversationTimeline,
+  type ConversationTimelineItem,
+} from "./timeline-reconcile.ts";
+import { SqliteSharedFiles } from "./sqlite-files.ts";
+import type { SharedFilesPersistence } from "../media/files.ts";
+import { SqliteMediaStore } from "./sqlite-media-store.ts";
+import type { MediaStore } from "../media/store.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 type WriteRunner = <T>(work: () => T) => Promise<T>;
@@ -140,6 +152,9 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly identityRecord: AgentPersistenceIdentity;
   readonly capabilities: PersistenceCapabilities;
 
+  readonly media: MediaStore;
+  readonly files: SharedFilesPersistence;
+  readonly outOfBandDelivery: OutOfBandDeliveryPersistence;
   readonly conversations: ConversationPersistence;
   readonly records: ConversationRecordPersistence;
   readonly messages: ConversationMessagePersistence;
@@ -179,6 +194,9 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       metering: true,
     });
     const scope = this.createScope((work) => this.autoWrite(work), (records) => this.notifyRecordsCommitted(records));
+    this.media = scope.media!;
+    this.files = scope.files!;
+    this.outOfBandDelivery = scope.outOfBandDelivery!;
     this.conversations = scope.conversations;
     this.records = scope.records;
     this.messages = scope.messages;
@@ -292,11 +310,32 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     }
   }
 
+  /** How far out-of-band messages were delivered, per conversation and provider context. */
+  private createOutOfBandDelivery(runWrite: <T>(work: () => T) => Promise<T>): OutOfBandDeliveryPersistence {
+    return {
+      get: async (owner, providerContext) => Number(this.database.query<{ through_sequence: number }, [string, string]>(
+        "SELECT through_sequence FROM out_of_band_delivery WHERE owner = ? AND provider_context = ?",
+      ).get(owner, providerContext)?.through_sequence ?? 0),
+      advance: async (owner, providerContext, throughSequence) => {
+        await runWrite(() => {
+          this.database.query(
+            `INSERT INTO out_of_band_delivery(owner, provider_context, through_sequence) VALUES (?, ?, ?)
+             ON CONFLICT(owner, provider_context)
+             DO UPDATE SET through_sequence = MAX(through_sequence, excluded.through_sequence)`,
+          ).run(owner, providerContext, throughSequence);
+        });
+      },
+    };
+  }
+
   private createScope(
     runWrite: WriteRunner,
     onAppended: (records: readonly ConversationRecord[]) => void | Promise<void>,
   ): PersistenceScope {
     return Object.freeze({
+      media: new SqliteMediaStore(this.database, runWrite),
+      files: new SqliteSharedFiles(this.database),
+      outOfBandDelivery: this.createOutOfBandDelivery(runWrite),
       conversations: new SqliteConversationPersistence(this.database, this.identityRecord.agentSessionId, runWrite),
       records: new SqliteConversationRecordPersistence(
         this.database,
@@ -638,6 +677,8 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
         "SELECT COUNT(*) AS n FROM conversation_records WHERE agent_conversation_id = ?",
       ).get(agentConversationId)?.n ?? 0;
       this.database.query("DELETE FROM conversation_records WHERE agent_conversation_id = ?").run(agentConversationId);
+      this.database.query("DELETE FROM conversation_media WHERE owner = ?").run(agentConversationId);
+      this.database.query("DELETE FROM out_of_band_delivery WHERE owner = ?").run(agentConversationId);
       return Number(count);
     });
   }
@@ -673,6 +714,10 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
       where.push(`kind IN (${options.kinds.map(() => "?").join(", ")})`);
       parameters.push(...options.kinds);
     }
+    if (options.operationId !== undefined) {
+      where.push("operation_id = ?");
+      parameters.push(nonblank(options.operationId, "operationId"));
+    }
     parameters.push(limit + 1, offset);
     const rows = this.database.query<ConversationRecordRow, SqlValue[]>(
       `SELECT * FROM conversation_records
@@ -689,19 +734,66 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
 
   async listRecent(
     agentConversationId: AgentConversationId,
-    options: RecentRecordPageOptions = {},
-  ): Promise<RecentRecordPage> {
+    options: RecentItemPageOptions,
+  ): Promise<RecentItemPage>;
+  async listRecent(
+    agentConversationId: AgentConversationId,
+    options?: RecentRecordPageOptions,
+  ): Promise<RecentRecordPage>;
+  async listRecent(
+    agentConversationId: AgentConversationId,
+    options: RecentRecordPageOptions | RecentItemPageOptions = {},
+  ): Promise<RecentRecordPage | RecentItemPage> {
     const conversation = requireConversation(this.database, agentConversationId);
-    const limit = boundedInteger(options.limit ?? 50, 1, 500, "recent record limit");
     const kinds = [...new Set(options.kinds ?? [])].sort();
     for (const kind of kinds) {
       if (!isConversationRecordKind(kind)) throw new Error(`unknown record kind: ${kind}`);
     }
+    const detail = options.detail ?? "full";
+    if (detail !== "full" && detail !== "summary") throw new Error(`unknown record detail: ${String(detail)}`);
+    const fold = options.fold === true;
+    const unit = options.agentMessages === undefined ? "records" : "agentMessages";
     const cursor = options.olderCursor
-      ? decodeRecentCursor(options.olderCursor, agentConversationId, kinds)
+      ? decodeRecentCursor(options.olderCursor, agentConversationId, kinds, unit)
       : null;
     const snapshotSequence = cursor?.snapshotSequence ?? Number(conversation.latest_sequence);
     const beforeSequence = cursor?.beforeSequence ?? snapshotSequence + 1;
+    const page = unit === "records"
+      ? this.recentRecordRange(agentConversationId, kinds, snapshotSequence, beforeSequence,
+        boundedInteger(options.limit ?? 50, 1, 500, "recent record limit"))
+      : this.recentAgentMessagePage(agentConversationId, kinds, snapshotSequence, beforeSequence,
+        boundedInteger(options.agentMessages!, 1, 10_000, "agentMessages"),
+        boundedInteger(options.limit ?? 2_000, 1, 10_000, "recent page limit"), fold);
+    const records = detail === "summary" ? page.records.map(summarizeRecord) : page.records;
+    const rest = {
+      snapshotSequence,
+      ...(page.olderBefore !== undefined
+        ? { olderCursor: encodeRecentCursor({
+            conversationId: agentConversationId,
+            snapshotSequence,
+            beforeSequence: page.olderBefore,
+            kinds,
+            unit,
+          }) }
+        : {}),
+      ...(page.truncated ? { truncated: true as const } : {}),
+    };
+    if (!fold) return Object.freeze({ records: Object.freeze(records), ...rest });
+    const items = reconcileConversationTimeline([], records);
+    return Object.freeze({
+      items: detail === "summary" ? Object.freeze(items.map(summarizeItem)) : items,
+      ...rest,
+    });
+  }
+
+  /** The newest `limit` matching records below `beforeSequence`. */
+  private recentRecordRange(
+    agentConversationId: AgentConversationId,
+    kinds: readonly string[],
+    snapshotSequence: number,
+    beforeSequence: number,
+    limit: number,
+  ): RecentPageSlice {
     const where = ["agent_conversation_id = ?", "sequence <= ?", "sequence < ?"];
     const parameters: SqlValue[] = [agentConversationId, snapshotSequence, beforeSequence];
     if (kinds.length) {
@@ -715,18 +807,89 @@ class SqliteConversationRecordPersistence implements ConversationRecordPersisten
     ).all(...parameters);
     const selected = rows.slice(0, limit);
     const oldest = selected.at(-1);
-    return Object.freeze({
+    return {
       records: hydrateConversationRecords(this.database, selected.reverse()),
-      snapshotSequence,
-      ...(rows.length > limit && oldest
-        ? { olderCursor: encodeRecentCursor({
-            conversationId: agentConversationId,
-            snapshotSequence,
-            beforeSequence: Number(oldest.sequence),
-            kinds,
-          }) }
-        : {}),
+      ...(rows.length > limit && oldest ? { olderBefore: Number(oldest.sequence) } : {}),
+    };
+  }
+
+  /**
+   * The items that began after the agent message `count + 1` places below `beforeSequence`, with
+   * every revision they have up to the snapshot. An item's revisions all lie in its operation, so
+   * the records of the operations the range touches are enough to find where each item began.
+   */
+  private recentAgentMessagePage(
+    agentConversationId: AgentConversationId,
+    kinds: readonly string[],
+    snapshotSequence: number,
+    beforeSequence: number,
+    count: number,
+    limit: number,
+    fold: boolean,
+  ): RecentPageSlice {
+    const boundaries = this.database.query<{ first: number }, [string, number, number, number]>(`
+      SELECT MIN(r.sequence) AS first
+      FROM conversation_records r
+      JOIN conversation_messages m ON m.record_row_id = r.row_id
+      WHERE r.agent_conversation_id = ? AND r.kind = 'message' AND m.role = 'assistant' AND r.sequence <= ?
+      GROUP BY COALESCE(m.logical_message_id, r.record_id)
+      HAVING first < ?
+      ORDER BY first DESC
+      LIMIT ?
+    `).all(agentConversationId, snapshotSequence, beforeSequence, count + 1);
+    const lowest = boundaries.length > count ? Number(boundaries[count]!.first) : 0;
+
+    const inRange = this.database.query<ConversationRecordRow, [string, number, number, number]>(`
+      SELECT * FROM conversation_records
+      WHERE agent_conversation_id = ? AND sequence > ? AND sequence < ? AND sequence <= ?
+      ORDER BY sequence
+    `).all(agentConversationId, lowest, beforeSequence, snapshotSequence);
+    const operations = [...new Set(inRange.flatMap((row) => row.operation_id === null ? [] : [row.operation_id]))];
+    const outside: ConversationRecordRow[] = [];
+    for (let index = 0; index < operations.length; index += 500) {
+      const chunk = operations.slice(index, index + 500);
+      outside.push(...this.database.query<ConversationRecordRow, SqlValue[]>(`
+        SELECT * FROM conversation_records
+        WHERE agent_conversation_id = ? AND operation_id IN (${chunk.map(() => "?").join(", ")})
+          AND sequence <= ? AND (sequence <= ? OR sequence >= ?)
+      `).all(agentConversationId, ...chunk, snapshotSequence, lowest, beforeSequence));
+    }
+    const all = hydrateConversationRecords(this.database,
+      [...inRange, ...outside].sort((left, right) => Number(left.sequence) - Number(right.sequence)));
+
+    const firstOf = new Map<string, number>();
+    for (const record of all) {
+      const id = conversationTimelineItemId(record);
+      if (!firstOf.has(id)) firstOf.set(id, record.sequence);
+    }
+    const startOf = (record: ConversationRecord) => firstOf.get(conversationTimelineItemId(record))!;
+    const kept = all.filter((record) => {
+      const start = startOf(record);
+      return start > lowest && start < beforeSequence && (kinds.length === 0 || kinds.includes(record.kind));
     });
+
+    // Over the limit: keep the newest whole items, and let the next page begin below them.
+    const starts = [...new Set(kept.map(startOf))].sort((left, right) => right - left);
+    const sizes = new Map<number, number>();
+    for (const record of kept) sizes.set(startOf(record), (sizes.get(startOf(record)) ?? 0) + 1);
+    let used = 0;
+    let oldestKept: number | undefined;
+    for (const start of starts) {
+      const size = fold ? 1 : sizes.get(start)!;
+      if (oldestKept !== undefined && used + size > limit) {
+        return {
+          records: kept.filter((record) => startOf(record) >= oldestKept!),
+          olderBefore: oldestKept,
+          truncated: true,
+        };
+      }
+      used += size;
+      oldestKept = start;
+    }
+    return {
+      records: kept,
+      ...(lowest > 0 ? { olderBefore: lowest + 1 } : {}),
+    };
   }
 
   private appendDirect(input: NewConversationRecord): ConversationRecord {
@@ -2132,16 +2295,29 @@ interface RecentCursor {
   readonly snapshotSequence: number;
   readonly beforeSequence: number;
   readonly kinds: readonly string[];
+  /** What the page counts. A cursor of one unit is refused by the other: their pages split differently. */
+  readonly unit: "records" | "agentMessages";
+}
+
+/** One page of `listRecent` before detail and folding: `olderBefore` is the next page's `beforeSequence`. */
+interface RecentPageSlice {
+  readonly records: readonly ConversationRecord[];
+  readonly olderBefore?: number;
+  readonly truncated?: true;
 }
 
 function encodeRecentCursor(cursor: RecentCursor): string {
-  return Buffer.from(JSON.stringify({ v: 1, ...cursor }), "utf8").toString("base64url");
+  const { unit, ...rest } = cursor;
+  // Record cursors keep their earlier encoding.
+  return Buffer.from(JSON.stringify({ v: 1, ...rest, ...(unit === "records" ? {} : { unit }) }), "utf8")
+    .toString("base64url");
 }
 
 function decodeRecentCursor(
   encoded: string,
   conversationId: AgentConversationId,
   kinds: readonly string[],
+  unit: RecentCursor["unit"],
 ): RecentCursor {
   try {
     if (encoded.length > 4_096) throw new Error();
@@ -2150,16 +2326,31 @@ function decodeRecentCursor(
       || !Number.isSafeInteger(value.snapshotSequence) || Number(value.snapshotSequence) < 0
       || !Number.isSafeInteger(value.beforeSequence) || Number(value.beforeSequence) < 1
       || Number(value.beforeSequence) > Number(value.snapshotSequence) + 1
-      || JSON.stringify(value.kinds) !== JSON.stringify(kinds)) throw new Error();
+      || JSON.stringify(value.kinds) !== JSON.stringify(kinds)
+      || (value.unit ?? "records") !== unit) throw new Error();
     return {
       conversationId,
       snapshotSequence: Number(value.snapshotSequence),
       beforeSequence: Number(value.beforeSequence),
       kinds,
+      unit,
     };
   } catch {
     throw new Error("invalid or mismatched recent-record cursor");
   }
+}
+
+/** A tool call without its input and output, the bulk of a history page. */
+function summarizeRecord(record: ConversationRecord): ConversationRecord {
+  if (record.kind !== "tool_call" || (record.input === undefined && record.output === undefined)) return record;
+  const { input: _input, output: _output, ...rest } = record;
+  return Object.freeze(rest);
+}
+
+/** An item reduced to its first revision and its merged current, filed under the latest revision's id. */
+function summarizeItem(item: ConversationTimelineItem): ConversationTimelineItem {
+  if (item.revisions.length <= 2) return item;
+  return Object.freeze({ ...item, revisions: Object.freeze([item.revisions[0]!, item.current]) });
 }
 
 async function canonicalSqlitePath(input: string): Promise<string> {

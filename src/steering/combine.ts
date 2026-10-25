@@ -1,5 +1,6 @@
 import type { PromptHandlers } from "../types.ts";
-import type { PromptPart, SteeringPrompt } from "./contracts.ts";
+import type { CombinedMessage, SteeringPrompt } from "./contracts.ts";
+import { attachmentParts } from "../media/acp.ts";
 
 /** Text of a combined prompt: the messages in order, separated by a blank line. Nothing is added. */
 export const COMBINED_TEXT_SEPARATOR = "\n\n";
@@ -24,10 +25,12 @@ export function mergeHandlers(list: readonly (PromptHandlers | undefined)[]): Pr
   return merged;
 }
 
-function partOf(prompt: SteeringPrompt): PromptPart {
+function partOf(prompt: SteeringPrompt): CombinedMessage {
   return {
     id: prompt.turnId,
     text: prompt.text,
+    messageParts: prompt.messageParts,
+    attachments: prompt.attachments,
     ...(prompt.participantId ? { participantId: prompt.participantId } : {}),
     ...(prompt.consumerMetadata !== undefined ? { consumerMetadata: prompt.consumerMetadata } : {}),
   };
@@ -42,13 +45,17 @@ export function combinePrompts<T extends SteeringPrompt>(run: readonly T[]): T {
   const [head] = run;
   if (!head) throw new Error("cannot combine an empty run of prompts");
   if (run.length === 1) return head;
-  const attachments = run.flatMap((prompt) => prompt.attachments ?? []);
   const handlers = mergeHandlers(run.map((prompt) => prompt.handlers));
   return {
     ...head,
     text: run.map((prompt) => prompt.text).join(COMBINED_TEXT_SEPARATOR),
     parts: run.map(partOf),
-    ...(attachments.length > 0 ? { attachments } : { attachments: undefined }),
+    messageParts: run.flatMap((prompt, index) => [
+      ...(index ? [{ kind: "text" as const, text: COMBINED_TEXT_SEPARATOR }] : []),
+      ...(prompt.messageParts ?? [{ kind: "text" as const, text: prompt.text }]),
+      ...attachmentParts(prompt.attachments),
+    ]),
+    attachments: undefined,
     ...(handlers ? { handlers } : { handlers: undefined }),
     resolve: (result) => run.forEach((prompt) => prompt.resolve(result)),
     reject: (error) => run.forEach((prompt) => prompt.reject(error)),

@@ -21,6 +21,8 @@ import { NotConnectedError } from "../errors.ts";
 import { PtyTransport } from "./pty-transport.ts";
 import { EmulatorScreen, compactLines } from "./emulator.ts";
 import { extractReply } from "./extract.ts";
+import { promptParts, partsText } from "../media/parts.ts";
+import type { ClientPrompt } from "../agent-client.ts";
 
 const ETX = "\x03"; // Ctrl-C
 const ESC = "\x1b";
@@ -122,10 +124,20 @@ export class PtyClient implements AgentClient, Bridgeable {
   }
 
   prompt(
-    text: string,
+    input: string | ClientPrompt,
     handlers?: PromptHandlers,
     _attachments?: Attachment[],
   ): Promise<PromptResult> {
+    let text = typeof input === "string" ? input : input.text ?? "";
+    if (typeof input !== "string") {
+      handlers = input.handlers;
+      _attachments = input.attachments;
+    }
+    const parts = typeof input === "string" ? undefined : promptParts(input);
+    if (_attachments?.length || parts?.some((part) => part.kind !== "text" && part.kind !== "pasted")) {
+      return Promise.reject(new Error("PTY mode does not support non-text parts"));
+    }
+    if (parts) text = partsText(parts);
     if (!this.transport || !this.screen) throw new NotConnectedError("PtyClient is not started");
     if (this.turn) throw new Error("PtyClient is busy with another turn");
 

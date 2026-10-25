@@ -6,6 +6,7 @@ import {
 } from "./activity.ts";
 import type { Logger } from "./logger.ts";
 import { persistenceEventFromActivity } from "./persistence/activity-projection.ts";
+import type { NormalizedPersistenceEvent } from "./persistence/projection.ts";
 import {
   presentationItemFromRecord,
   type TranscriptPresentationItem,
@@ -111,11 +112,21 @@ export class AgentConversationPresentation {
     });
   }
 
+  /** Append a non-presentation event in the same order as the presentation writes. */
+  queueEvent(event: NormalizedPersistenceEvent): void {
+    this.#presentationWrite = this.#presentationWrite.then(async () => {
+      await this.#persistence()?.appendEvent(event);
+    });
+  }
+
   emitPersistedRecord(
     record: Awaited<ReturnType<PersistenceStateRuntime["appendPresentationEvent"]>>,
   ): void {
     if (!record) return;
-    const item = presentationItemFromRecord(record);
+    const id = record.presentation?.id;
+    // Later revisions report when the item began; the runtime keeps that while its operation runs.
+    const startedAt = id === undefined ? undefined : this.#persistence()?.presentationStartedAt?.(id);
+    const item = presentationItemFromRecord(record, startedAt);
     if (item) this.#onPresentation(item);
   }
 

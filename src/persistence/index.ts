@@ -73,6 +73,8 @@ export type {
   ParticipantRef,
   PersistedContent,
   PersistedContentBlock,
+  PersistedMediaBlock,
+  OutOfBandDeliveryPersistence,
   PersistedIdentitySnapshot,
   PersistedAgentMeteringState,
   PersistedConversationMeteringState,
@@ -91,6 +93,8 @@ export type {
   ProviderSessionRecord,
   RecordCaptureLevel,
   RecordListOptions,
+  RecentItemPage,
+  RecentItemPageOptions,
   RecentRecordPage,
   RecentRecordPageOptions,
   SearchMatch,
@@ -111,3 +115,7 @@ export {
 } from "./sqlite-backend.ts";
 export type { SqliteAgentPersistenceConfig } from "./sqlite-backend.ts";
 export { SQLITE_AGENT_SCHEMA_VERSION } from "./sqlite-schema.ts";
+
+export type { MediaStore, MediaInfo, StoredMedia } from "../media/store.ts";
+
+export type { SharedFile, SharedFilePage, SharedFileQuery, SharedFilesPersistence } from "../media/files.ts";

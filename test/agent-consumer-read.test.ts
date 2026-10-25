@@ -41,6 +41,14 @@ describe("Agent consumer transcript workflow", () => {
     const reopened = await Agent.open(configuration);
     agents.push(reopened);
     const records = (await reopened.persistence.records.list(conversation.id, { limit: 100 })).records;
+    // Every record of the turn, its tool call included, says which operation it belongs to.
+    const turnRecords = records.filter((record) => ["message", "tool_call", "thinking"].includes(record.kind));
+    expect(turnRecords.length).toBeGreaterThan(3);
+    expect(new Set(turnRecords.map((record) => record.operationId))).toEqual(new Set([result.operationId]));
+    const byOperation = (await reopened.persistence.records.list(conversation.id, { operationId: result.operationId })).records;
+    expect(byOperation.map((record) => record.recordId)).toEqual(
+      records.filter((record) => record.operationId === result.operationId).map((record) => record.recordId),
+    );
     const items = reconcileConversationTimeline([], records)
       .filter((item) => item.kind === "message" || item.kind === "tool_call");
     expect(items.map((item) => item.kind === "message"
@@ -53,7 +61,17 @@ describe("Agent consumer transcript workflow", () => {
     ]);
     expect(items[1]?.revisions.length).toBeGreaterThan(1);
     expect(items[1]?.firstSequence).toBeLessThan(items[2]!.firstSequence);
-    expect(items[1]?.current).toMatchObject({ status: "completed" });
+    expect(items[1]?.current).toMatchObject({ status: "completed", logicalMessageId: `message:${result.operationId}:assistant:1` });
+    // A message's time is when it began; its last revision's time is kept separately.
+    expect(items[1]).toMatchObject({
+      startedAt: items[1]!.revisions[0]!.timestamp,
+      updatedAt: items[1]!.revisions.at(-1)!.timestamp,
+    });
+    expect(items[1]!.current.timestamp).toBe(items[1]!.updatedAt);
+    // A is recorded completed when the tool call begins, not when the turn ends.
+    const aCompleted = items[1]!.revisions.find((revision) => revision.kind === "message" && revision.status === "completed")!;
+    expect(aCompleted.sequence).toBeLessThan(items[2]!.firstSequence);
+    expect(items[1]!.updatedAt <= items[3]!.startedAt).toBe(true);
     const firstAssistantSequence = items[1]!.firstSequence;
     expect((await reopened.persistence.messages.list(conversation.id, {
       throughSequence: firstAssistantSequence,
@@ -63,6 +81,115 @@ describe("Agent consumer transcript workflow", () => {
     })).messages.map((message) => message.content)).toEqual(["A before tool", "B after tool"]);
     expect((await reopened.persistence.messages.list(conversation.id)).messages.map((message) => message.content))
       .toEqual(["show the order", "A before tool", "B after tool"]);
+  }, 20_000);
+
+  test("a tool call ends the message before it when the agent sends no message ids", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-no-ids-"));
+    directories.push(directory);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE, "no-ids"] } },
+      defaultAdapterId: "fixture",
+    });
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    const result = await conversation.prompt("show the order");
+    expect(result.messages.map((message) => message.text)).toEqual(["A before tool", "B after tool"]);
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 100 })).records;
+    const items = reconcileConversationTimeline([], records)
+      .filter((item) => item.kind === "message" || item.kind === "tool_call");
+    expect(items.map((item) => item.kind === "message"
+      ? [item.kind, item.current.content, item.current.status]
+      : [item.kind, item.current.toolCallId])).toEqual([
+      ["message", "show the order", "completed"],
+      ["message", "A before tool", "completed"],
+      ["tool_call", "tool-1"],
+      ["message", "B after tool", "completed"],
+    ]);
+  }, 20_000);
+
+  test("a tool still running when its turn ends is recorded failed there; its next-turn update belongs to that turn", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-late-tool-"));
+    directories.push(directory);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE, "late-tool"] } },
+      defaultAdapterId: "fixture",
+    });
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    const first = await conversation.prompt("start the build");
+    const second = await conversation.prompt("is it done?");
+
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 100 })).records;
+    const tools = records.filter((record) => record.kind === "tool_call")
+      .map((record) => [record.operationId, record.kind === "tool_call" ? record.state : null]);
+    expect(tools).toEqual([
+      [first.operationId, "announced"],
+      [first.operationId, "failed"],
+      [second.operationId, "completed"],
+    ]);
+    const items = reconcileConversationTimeline([], records).filter((item) => item.kind === "tool_call");
+    expect(items.map((item) => item.current.kind === "tool_call" ? item.current.state : null)).toEqual(["failed", "completed"]);
+  }, 20_000);
+
+  test("a turn that fails keeps the message that ended before the failure completed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-fails-"));
+    directories.push(directory);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE, "fails"] } },
+      defaultAdapterId: "fixture",
+    });
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    await expect(conversation.prompt("show the order")).rejects.toThrow("model overloaded");
+
+    const messages = (await agent.persistence.messages.list(conversation.id)).messages;
+    expect(messages.map((message) => [message.content, message.status])).toEqual([
+      ["show the order", "completed"],
+      ["A before tool", "completed"],
+      ["B after tool", "failed"],
+    ]);
+  }, 20_000);
+
+  test("pages history by agent messages as folded summaries that merge with the full step", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-consumer-paging-"));
+    directories.push(directory);
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", PRESENTATION_FIXTURE] } },
+      defaultAdapterId: "fixture",
+      capture: { tool_call: "content" },
+    });
+    agents.push(agent);
+    const conversation = await agent.conversations.create();
+    await conversation.prompt("first turn");
+    await conversation.prompt("second turn");
+
+    // Two agent messages: the second turn, beginning with its prompt.
+    const page = await agent.persistence.records.listRecent!(conversation.id, {
+      agentMessages: 2, fold: true, detail: "summary", kinds: ["message", "tool_call"],
+    });
+    expect(page.items.map((item) => item.current.kind === "message" ? item.current.content : item.current.kind))
+      .toEqual(["second turn", "A before tool", "tool_call", "B after tool"]);
+    const message = page.items[1]!;
+    expect(message.revisions.length).toBe(2);
+    expect(message.current).toMatchObject({ status: "completed" });
+    const step = page.items[2]!;
+    expect(step.current).toMatchObject({ kind: "tool_call", state: "completed" });
+    expect("input" in step.current || "output" in step.current).toBe(false);
+    const [expanded] = reconcileConversationTimeline([step], [(await agent.persistence.records.get(step.current.recordId))!]);
+    expect(expanded!.current).toMatchObject({ input: { path: "a.txt" } });
+    expect(JSON.stringify((expanded!.current as { output?: unknown }).output)).toContain("contents of a.txt");
+
+    const older = await agent.persistence.records.listRecent!(conversation.id, {
+      agentMessages: 2, fold: true, detail: "summary", kinds: ["message", "tool_call"], olderCursor: page.olderCursor,
+    });
+    expect(older.items.map((item) => item.current.kind === "message" ? item.current.content : item.current.kind))
+      .toEqual(["first turn", "A before tool", "tool_call", "B after tool"]);
+    expect(older.olderCursor).toBeUndefined();
   }, 20_000);
 
   test("round-trips sender metadata, recent history, live catch-up, and previews", async () => {

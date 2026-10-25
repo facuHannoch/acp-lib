@@ -18,6 +18,7 @@ import {
   type TranscriptMessageRecord,
   type TranscriptMeteringReferenceRecord,
   type TranscriptPermissionRecord,
+  type TranscriptCancellationRecord,
   type TranscriptProtocolMetadataRecord,
   type TranscriptReasoningRecord,
   type TranscriptRecordType,
@@ -41,12 +42,12 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const RECORD_TYPE_ORDER: readonly TranscriptRecordType[] = Object.freeze([
   "header", "checkpoint", "operation", "message", "reasoning", "activity",
   "configuration", "permission", "transition", "metering_reference", "lifecycle",
-  "protocol", "raw",
+  "protocol", "raw", "cancellation",
 ]);
 const RECORD_TYPES = new Set(RECORD_TYPE_ORDER);
 const TIMELINE_TYPES = new Set<TranscriptRecordType>([
   "message", "reasoning", "activity", "configuration", "permission", "transition",
-  "metering_reference", "lifecycle", "protocol",
+  "metering_reference", "lifecycle", "protocol", "cancellation",
 ]);
 
 export type TranscriptView = "conversation" | "timeline" | "records";
@@ -92,6 +93,7 @@ export type TranscriptTimelineItem =
   | TranscriptActivityRecord
   | TranscriptConfigurationRecord
   | TranscriptPermissionRecord
+  | TranscriptCancellationRecord
   | TranscriptTransitionRecord
   | TranscriptMeteringReferenceRecord
   | TranscriptLifecycleRecord
@@ -309,6 +311,7 @@ export class TranscriptReader {
       // position === physical seq, so candidates can be selected while scanning and
       // later revisions can update only the bounded candidate set.
       const latest = new Map<string, TranscriptPresentationRecord>();
+      const startedAt = new Map<string, number>();
       const candidateIds: string[] = [];
       let boundaryFound = navigation === null;
       let expectedSequence = 1;
@@ -350,13 +353,17 @@ export class TranscriptReader {
             : metadata.position > navigation.boundaryPosition);
         if (!eligible) continue;
         latest.set(metadata.id, record);
+        startedAt.set(metadata.id, record.ts);
         candidateIds.push(metadata.id);
         if (candidateIds.length > limit + 1) {
           const removeIndex = navigation?.direction === "newer"
             ? candidateIds.length - 1
             : 0;
           const [removed] = candidateIds.splice(removeIndex, 1);
-          if (removed) latest.delete(removed);
+          if (removed) {
+            latest.delete(removed);
+            startedAt.delete(removed);
+          }
         }
       }
       if (!boundaryFound) {
@@ -367,7 +374,7 @@ export class TranscriptReader {
       const pageIds = navigation?.direction === "newer"
         ? candidateIds.slice(0, limit)
         : candidateIds.slice(Math.max(0, candidateIds.length - limit));
-      const selected = pageIds.map((id) => presentationItemFromRecord(latest.get(id)!)!);
+      const selected = pageIds.map((id) => presentationItemFromRecord(latest.get(id)!, startedAt.get(id))!);
       const hasOlder = navigation?.direction === "newer" ? true : hasExtra;
       const hasNewer = navigation?.direction === "older" ? true : navigation?.direction === "newer" ? hasExtra : false;
       const first = selected[0];

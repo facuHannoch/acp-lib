@@ -20,6 +20,7 @@ import type {
   ToolUpdateActivity,
   ResponseChunk,
 } from "./types.ts";
+import { acpToPart } from "./media/acp.ts";
 
 /** A response delta preserving its ACP message id, or null for any other update. */
 export function extractResponseChunk(
@@ -29,10 +30,9 @@ export function extractResponseChunk(
   if (u.sessionUpdate !== "agent_message_chunk") return null;
   const content = u.content;
   const text = content?.type === "text" ? (content.text ?? "") : "";
-  if (!text) return null;
-  return u.messageId == null
-    ? { text }
-    : { text, messageId: String(u.messageId) };
+  const part = content && content.type !== "text" ? acpToPart(content as schema.ContentBlock) : undefined;
+  if (!text && !part) return null;
+  return { text, ...(part ? { part } : {}), ...(u.messageId == null ? {} : { messageId: String(u.messageId) }) };
 }
 
 /** @deprecated Prefer `extractResponseChunk` when message boundaries matter. */

@@ -36,10 +36,12 @@
 // The cost is bounded by prompt caching: after the first read, re-reads bill at the
 // cache-read rate, which is a fraction of input.
 
+import { appendFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ADAPTERS, AgentSession, createOpencodeMetering, soleAmount } from "../../src/index.ts";
+import type { WireEntry } from "../../src/types.ts";
 import { meteringPluginPath } from "../../src/metering/opencode/index.ts";
 import type { ProviderInference } from "../../src/metering/opencode/index.ts";
 
@@ -51,7 +53,7 @@ const has = (name: string) => process.argv.includes(`--${name}`);
 
 // Guard first: every other path in this file spends money, and an unrecognised flag
 // falling through to a live run is an expensive way to learn about a typo.
-const KNOWN = new Set(["--model", "--fill-kb", "--context-limit", "--turns", "--timeout-ms", "--stress-compaction"]);
+const KNOWN = new Set(["--model", "--fill-kb", "--context-limit", "--turns", "--timeout-ms", "--stress-compaction", "--record-updates"]);
 const unknown = process.argv.slice(2).filter(
   (arg, index, all) => arg.startsWith("--") && !KNOWN.has(arg) && all[index] === arg,
 );
@@ -69,7 +71,10 @@ if (has("help") || has("h") || unknown.length > 0) {
       "  --stress-compaction <reserved>\n" +
       "                     force a compaction loop to generate compaction inferences.\n" +
       "                     Pathological: turns stall and attribution fails by design.\n" +
-      "                     Only the capture checks are meaningful. Try 200000.\n",
+      "                     Only the capture checks are meaningful. Try 200000.\n" +
+      "  --record-updates <file>\n" +
+      "                     write one JSONL line per session/update received, with its\n" +
+      "                     timing, to line up against compaction in `opencode export`.\n",
   );
   process.exit(unknown.length > 0 ? 1 : 0);
 }
@@ -98,6 +103,41 @@ const STRESS = flag("stress-compaction");
 const TURNS = Number(flag("turns") ?? 8);
 /** A stalled turn is a result, not a reason to hang. */
 const TURN_TIMEOUT_MS = Number(flag("timeout-ms") ?? 120_000);
+/**
+ * Where to record every `session/update`, one JSONL line each. Off by default.
+ *
+ * Taken from the raw wire rather than the library's output stream, so the timing is what
+ * the agent sent — not what survived the library's own handling of it. `at` is wall-clock
+ * so the lines can be set against the `time.created`/`time.completed` of the export.
+ */
+const RECORD_UPDATES = flag("record-updates");
+const STARTED_AT = Date.now();
+
+/** Append one line per `session/update` in a wire entry; ignore everything else. */
+function recordUpdate(file: string, entry: WireEntry): void {
+  if (entry.dir !== "in") return;
+  let message: Record<string, any>;
+  try {
+    message = JSON.parse(entry.line);
+  } catch {
+    return;
+  }
+  if (message?.method !== "session/update") return;
+  const update = (message.params?.update ?? {}) as Record<string, any>;
+  const text = update.content?.type === "text" ? update.content.text : undefined;
+  appendFileSync(
+    file,
+    JSON.stringify({
+      t: entry.ts - STARTED_AT,
+      at: entry.ts,
+      sessionUpdate: update.sessionUpdate ?? null,
+      ...(typeof text === "string" ? { textLength: text.length } : {}),
+      ...(update.toolCallId ? { toolCallId: update.toolCallId } : {}),
+      ...(update.title ? { title: update.title } : {}),
+      ...(update.status ? { status: update.status } : {}),
+    }) + "\n",
+  );
+}
 
 interface Check {
   name: string;
@@ -214,6 +254,7 @@ async function main(): Promise<number> {
     "utf8",
   );
 
+  if (RECORD_UPDATES) writeFileSync(RECORD_UPDATES, "");
   const session = await AgentSession.create({
     adapter: ADAPTERS.opencode,
     adapterId: "opencode",
@@ -221,6 +262,7 @@ async function main(): Promise<number> {
     cwd: root,
     env: { ...metering.env, OPENCODE_CONFIG: configPath },
     metering: { enforcement: "billing_required", inferenceSource: metering.inferenceSource },
+    ...(RECORD_UPDATES ? { wire: (entry: WireEntry) => recordUpdate(RECORD_UPDATES, entry) } : {}),
   });
 
   const ready = await metering.waitForPlugin();
@@ -232,6 +274,7 @@ async function main(): Promise<number> {
     `model ${session.advertisedModel}  window ${CONTEXT_LIMIT.toLocaleString()} tokens  ` +
       `fill ${FILL_KB}KB/turn  up to ${TURNS} turns` +
       (STRESS ? `  STRESS reserved=${STRESS} (turns will stall by design)` : "") +
+      (RECORD_UPDATES ? `\nrecording updates to ${RECORD_UPDATES}  session ${session.internalSessionId}` : "") +
       `\n`,
   );
 

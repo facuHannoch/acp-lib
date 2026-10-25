@@ -1,8 +1,29 @@
 import type { Database } from "bun:sqlite";
+import { contentText } from "../media/content.ts";
+import type { PersistedContent } from "./backend.ts";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 14;
+export const SQLITE_AGENT_SCHEMA_VERSION = 16;
 
 const BASE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS out_of_band_delivery (
+  owner TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  provider_context TEXT NOT NULL,
+  through_sequence INTEGER NOT NULL,
+  PRIMARY KEY(owner, provider_context)
+);
+
+CREATE TABLE IF NOT EXISTS conversation_media (
+  ref TEXT PRIMARY KEY,
+  owner TEXT NOT NULL REFERENCES conversations(agent_conversation_id),
+  kind TEXT NOT NULL CHECK (kind IN ('image', 'audio', 'file')),
+  mime_type TEXT NOT NULL,
+  name TEXT,
+  size INTEGER NOT NULL CHECK (size >= 0),
+  sha256 TEXT NOT NULL,
+  data BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversation_media_owner_idx ON conversation_media(owner);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL
@@ -68,7 +89,8 @@ CREATE TABLE IF NOT EXISTS conversation_records (
     'thinking',
     'activity',
     'metering',
-    'error'
+    'error',
+    'cancellation'
   )),
   timestamp TEXT NOT NULL,
   operation_id TEXT,
@@ -230,6 +252,14 @@ CREATE TABLE IF NOT EXISTS conversation_error_records (
 
 CREATE INDEX IF NOT EXISTS conversation_error_source_code_idx
   ON conversation_error_records(source, code, record_row_id);
+
+CREATE TABLE IF NOT EXISTS conversation_cancellation_events (
+  record_row_id INTEGER PRIMARY KEY REFERENCES conversation_records(row_id) ON DELETE CASCADE,
+  cancellation_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('requested', 'resolved')),
+  reason TEXT NOT NULL CHECK (reason IN ('interrupt', 'steer', 'stalled', 'stop', 'abort')),
+  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('acknowledged', 'forced', 'too_late', 'failed'))
+);
 
 CREATE TABLE IF NOT EXISTS conversation_checkpoints (
   agent_conversation_id TEXT PRIMARY KEY REFERENCES conversations(agent_conversation_id),
@@ -548,6 +578,31 @@ AFTER DELETE ON conversation_activity_events BEGIN
 END;
 `;
 
+/**
+ * Version 15: records written before every write site passed its operation id recover it where it
+ * is still known. Runtime, permission and configuration record ids begin with it; native actions
+ * keep it as their transition id. Anything else stays without one.
+ */
+function backfillRecordOperationIds(database: Database): void {
+  for (const [separator, kinds] of [
+    [":runtime:", "'tool_call', 'thinking', 'activity'"],
+    [":permission:", "'permission'"],
+    [":configuration:", "'configuration'"],
+  ] as const) {
+    database.query<unknown, [string, string]>(
+      `UPDATE conversation_records SET operation_id = substr(record_id, 1, instr(record_id, ?) - 1)
+       WHERE operation_id IS NULL AND kind IN (${kinds}) AND instr(record_id, ?) > 1`,
+    ).run(separator, separator);
+  }
+  database.exec(`UPDATE conversation_records SET operation_id = (
+      SELECT n.transition_id FROM conversation_native_action_events n WHERE n.record_row_id = conversation_records.row_id
+    )
+    WHERE operation_id IS NULL AND kind = 'native_action' AND EXISTS (
+      SELECT 1 FROM conversation_native_action_events n
+      WHERE n.record_row_id = conversation_records.row_id AND n.transition_id IS NOT NULL
+    )`);
+}
+
 export function migrateSqliteAgentSchema(database: Database): void {
   const hasMigrations = database.query<{ present: number }, []>(
     "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
@@ -557,15 +612,15 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
   }
-  // Admitting the `error` kind means rebuilding conversation_records: its kind CHECK is a
+  // Admitting a new record kind means rebuilding conversation_records: its kind CHECK is a
   // closed list SQLite cannot alter in place. Foreign keys must be off for that drop, or
   // the implicit delete would cascade into every detail table.
-  const rebuildRecords = existing > 0 && existing < 14;
+  const rebuildRecords = existing > 0 && existing < 15;
   if (rebuildRecords) database.exec("PRAGMA foreign_keys = OFF");
   try {
     database.exec("BEGIN IMMEDIATE");
@@ -594,11 +649,12 @@ export function migrateSqliteAgentSchema(database: Database): void {
       database.exec(`CREATE INDEX IF NOT EXISTS conversation_messages_logical_idx
         ON conversation_messages(logical_message_id, record_row_id)
         WHERE logical_message_id IS NOT NULL`);
-      if (version > 0 && version < 12) {
-        rebuildConversationRecordsForErrorKind(database);
+      if (version > 0 && version < 15) {
+        // Version 12 admitted `error`, version 15 `cancellation`: one rebuild admits every kind.
+        rebuildConversationRecordsForKinds(database);
         const violations = database.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all();
         if (violations.length > 0) {
-          throw new Error("SQLite schema migration to version 12 left foreign key violations");
+          throw new Error("SQLite schema migration to version 15 left foreign key violations");
         }
       }
       if (version > 0 && version < 13) {
@@ -612,6 +668,24 @@ export function migrateSqliteAgentSchema(database: Database): void {
         const violations = database.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all();
         if (violations.length > 0) {
           throw new Error("SQLite schema migration to version 14 left foreign key violations");
+        }
+      }
+      if (version > 0 && version < 15) backfillRecordOperationIds(database);
+      if (version < 16) {
+        // Old structured search rows could contain inline base64 and media refs. Updating the
+        // source search text requires rebuilding an existing append-only FTS index as well.
+        const structured = database.query<{ record_row_id: number; content_json: string }, []>(
+          "SELECT record_row_id, content_json FROM conversation_messages WHERE content_json IS NOT NULL",
+        ).iterate();
+        const update = database.query("UPDATE conversation_messages SET search_text = ? WHERE record_row_id = ?");
+        for (const row of structured) {
+          update.run(contentText(JSON.parse(row.content_json) as PersistedContent), row.record_row_id);
+        }
+        const fts = database.query(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_messages_fts'",
+        ).get();
+        if (fts) {
+          database.exec("INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild')");
         }
       }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
@@ -678,7 +752,8 @@ CREATE TABLE conversation_recovery_checkpoints (
  * the swap. The caller runs this with foreign keys disabled and verifies with
  * `PRAGMA foreign_key_check` afterward.
  */
-function rebuildConversationRecordsForErrorKind(database: Database): void {
+/** Recreate conversation_records with the current kind CHECK, keeping every row and its row id. */
+function rebuildConversationRecordsForKinds(database: Database): void {
   database.exec(`CREATE TABLE conversation_records_v12 (
     row_id INTEGER PRIMARY KEY,
     record_id TEXT NOT NULL UNIQUE,
@@ -696,7 +771,8 @@ function rebuildConversationRecordsForErrorKind(database: Database): void {
       'thinking',
       'activity',
       'metering',
-      'error'
+      'error',
+      'cancellation'
     )),
     timestamp TEXT NOT NULL,
     operation_id TEXT,

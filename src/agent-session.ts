@@ -10,7 +10,7 @@
 // supplies the adapter registry used by cross-adapter conversation transitions.
 
 import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
-import type { CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
+import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor } from "./operations/supervisor.ts";
 import {
@@ -186,6 +186,43 @@ import {
   normalizeContinuationStrategies,
   stageOpeningContinuation,
 } from "./agent-conversation-continuation.ts";
+import { attachmentParts } from "./media/acp.ts";
+import {
+  partsText,
+  promptParts,
+  transcriptParts,
+  unresolvedParts,
+  type MessagePart,
+  type ResolvedPart,
+} from "./media/parts.ts";
+import { redactMedia } from "./media/redact.ts";
+
+/** The text of an object-form prompt: its leading text plus its text parts. */
+function promptInputText(input: { readonly text?: string; readonly parts?: readonly MessagePart[] }): string {
+  return partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]);
+}
+
+/** The older JSONL transcript has no media store: a message with parts keeps a line per part. */
+function legacyTranscriptText(
+  text: string,
+  parts?: readonly MessagePart[],
+  attachments?: readonly Attachment[],
+): string {
+  if (!parts && !attachments?.length) return text;
+  return transcriptParts([...(parts ?? [{ kind: "text", text }]), ...attachmentParts(attachments)]);
+}
+
+/** The older JSONL transcript's view of response messages, with a line per media part. */
+function legacyTranscriptMessages(messages: readonly ResponseMessage[], text: string) {
+  const messageText = (message: ResponseMessage) => (message.parts ? transcriptParts(message.parts) : message.text);
+  return {
+    text: messages.some((message) => message.parts) ? messages.map(messageText).join("\n\n") : text,
+    messages: messages.map((message) => ({
+      ...(message.messageId ? { messageId: message.messageId } : {}),
+      text: messageText(message),
+    })),
+  };
+}
 
 export {
   AdapterMismatchError,
@@ -239,7 +276,8 @@ interface PromptQueueItem extends SteeringPrompt {
 
 /** Object-form prompt input for per-message consumer metadata on Agent-owned conversations. */
 export interface AgentConversationPromptInput {
-  readonly text: string;
+  readonly text?: string;
+  readonly parts?: readonly MessagePart[];
   readonly consumerMetadata?: PersistenceJsonValue;
   readonly handlers?: PromptHandlers;
   readonly attachments?: Attachment[];
@@ -328,6 +366,8 @@ export interface AgentSessionConfig {
   /** @deprecated Use launcher and its exact spawnEnv. */
   env?: Record<string, string>;
   cwd?: string;
+  /** Additional absolute directories declared to the provider. */
+  additionalDirectories?: string[];
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
   mcpServers?: schema.McpServer[];
   defaultPermission?: "approve" | "cancel";
@@ -518,6 +558,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private detachControllerConnection: (() => void) | null = null;
   private activeSupervisor: OperationSupervisor | null = null;
   /**
+   * The operation now running, so records written during it (protocol lines) carry its id: the
+   * queued item, or an internal prompt while it runs. Internal prompts run inside a queued item or
+   * while the conversation opens, never beside a queued item, so one field is enough.
+   */
+  private runningOperationId: string | null = null;
+  /**
    * The last consumer turn whose provider request itself failed (stalled, crashed, errored). Only
    * such a turn holds the queue.
    */
@@ -649,6 +695,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       execPrefix: config.execPrefix,
       env: config.env,
       cwd: config.cwd,
+      additionalDirectories: config.additionalDirectories,
       mcpServers: config.mcpServers,
       defaultPermission: config.defaultPermission,
       clientInfo: config.clientInfo,
@@ -707,10 +754,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
-  private queueOwnedRecord(record: NewConversationRecord): void {
+  private queueOwnedRecord(record: NewConversationRecord, parts?: readonly ResolvedPart[]): void {
     if (!this.ownerLifecycle?.record) return;
     this.ownerRecordWrite = this.ownerRecordWrite
-      .then(() => this.ownerLifecycle!.record!(record))
+      .then(() => this.ownerLifecycle!.record!(record, parts))
       .catch((error) => {
         this.markManagedPersistenceUnhealthy();
         throw error;
@@ -739,7 +786,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (!this.ownerAgentSessionId || !this.ownerLifecycle?.record) return;
     let message: PersistenceJsonValue;
     try {
-      message = JSON.parse(entry.line) as PersistenceJsonValue;
+      message = redactMedia(JSON.parse(entry.line)) as PersistenceJsonValue;
     } catch {
       message = entry.line;
     }
@@ -749,6 +796,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       agentConversationId: this.agentConversationId,
       kind: "protocol",
       timestamp: new Date(entry.ts).toISOString(),
+      ...(this.runningOperationId ? { operationId: this.runningOperationId } : {}),
       direction: entry.dir === "err" ? "error" : entry.dir,
       ...(protocolMethod(message) ? { method: protocolMethod(message)! } : {}),
       message,
@@ -764,7 +812,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         turnId,
         record,
       );
-      if (runtimeRecord) this.queueOwnedRecord(runtimeRecord);
+      if (runtimeRecord) this.queueOwnedRecord({ ...runtimeRecord, operationId: turnId });
     }
   }
 
@@ -781,6 +829,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       agentConversationId: this.agentConversationId,
       kind: "native_action",
       timestamp: new Date().toISOString(),
+      operationId: transitionId,
       action,
       transitionId,
       state,
@@ -1864,8 +1913,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return typeof input === "string"
       ? this.enqueuePrompt(input, "prompt", handlers, attachments)
       : this.enqueuePrompt(
-          input.text, "prompt", input.handlers, input.attachments,
-          undefined, input.consumerMetadata, input.delivery,
+          promptInputText(input), "prompt", input.handlers, input.attachments,
+          undefined, input.consumerMetadata, input.delivery, promptParts(input),
         );
   }
 
@@ -1896,8 +1945,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (typeof input !== "string") {
       if (!input.participantId.trim()) return this.rejectedPrompt(new Error("participant id cannot be blank"));
       return this.enqueuePrompt(
-        input.text, "prompt", input.handlers, input.attachments,
-        input.participantId.trim(), input.consumerMetadata, input.delivery,
+        promptInputText(input), "prompt", input.handlers, input.attachments,
+        input.participantId.trim(), input.consumerMetadata, input.delivery, promptParts(input),
       );
     }
     const participantId = input;
@@ -1919,6 +1968,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     participantId?: string,
     consumerMetadata?: PersistenceJsonValue,
     delivery?: PromptDelivery,
+    messageParts?: readonly MessagePart[],
   ): PromptHandle {
     const id = this.mintTurnId();
     const promise = new Promise<AgentSessionPromptResult>((resolve, reject) => {
@@ -1954,6 +2004,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ...(stableConsumerMetadata !== undefined ? { consumerMetadata: stableConsumerMetadata } : {}),
         handlers,
         attachments,
+        messageParts,
         resolve,
         reject,
       };
@@ -2074,6 +2125,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "message",
             timestamp: new Date().toISOString(),
+            operationId: turnId,
             role: "user",
             ...(user ? { participantId: user.id } : {}),
             content: item.text,
@@ -2088,6 +2140,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "message",
             timestamp: new Date().toISOString(),
+            operationId: turnId,
             role: "assistant",
             logicalMessageId: `message:${turnId}:assistant:${assistants}`,
             content: item.text,
@@ -2138,6 +2191,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       agentConversationId: this.agentConversationId,
       kind: "message",
       timestamp: new Date().toISOString(),
+      operationId: recapId,
       role: "assistant",
       logicalMessageId: `message:${recapId}:assistant:1`,
       content: summary,
@@ -2210,12 +2264,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
                 ? "recovering"
               : "switching_mode";
         this.emitStateIfChanged();
+        this.runningOperationId = item.kind === "prompt" ? item.turnId
+          : item.kind === "handoff" ? item.handoffId
+          : item.kind === "set_config" ? item.operationId
+          : item.kind === "set_mode" ? item.transitionId
+          : null;
         if (item.kind === "prompt") {
           // A run of steer messages at the head of the queue goes out as one prompt.
           let reportDelivery: (() => void) | undefined;
           const prompt = this.steering.prepareRun(item, (event) => {
             reportDelivery = () => this.emit(event);
           }) as PromptQueueItem;
+          this.runningOperationId = prompt.turnId;
           this.steering.turnStarted(prompt);
           this.emit({ kind: "turn_started", turnId: prompt.turnId });
           let stopReason: string | undefined;
@@ -2253,56 +2313,69 @@ export class AgentConversation implements AgentClient, Bridgeable {
             item.reject(err);
           }
         } else if (item.kind === "set_config") {
-          this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
-          try {
-            if (this.ownerAgentSessionId) {
-              await this.recordOwned({
-                recordId: `${item.operationId}:configuration:started`,
-                agentSessionId: this.ownerAgentSessionId,
-                agentConversationId: this.agentConversationId,
-                kind: "configuration",
-                timestamp: new Date().toISOString(),
-                operation: "set",
-                configId: item.configId,
-                value: toPersistenceJsonValue(item.value),
-                status: "started",
-              });
-            }
-            await this.runSetConfig(item);
-            if (this.ownerAgentSessionId) {
-              await this.recordOwned({
-                recordId: `${item.operationId}:configuration:completed`,
-                agentSessionId: this.ownerAgentSessionId,
-                agentConversationId: this.agentConversationId,
-                kind: "configuration",
-                timestamp: new Date().toISOString(),
-                operation: "set",
-                configId: item.configId,
-                value: toPersistenceJsonValue(item.value),
-                status: "completed",
-              });
-            }
-            this.emit({ kind: "configuration_completed", operationId: item.operationId, configId: item.configId });
+          // One connection attempt: a failure is reported by the normal path below, not retried by it.
+          const connectError = await this.ensureProvider().then(
+            () => null,
+            (error: unknown) => error ?? new Error("provider connection failed"),
+          );
+          if (connectError === null && this.isUnchangedSelection(item)) {
             item.resolve();
-          } catch (err) {
-            if (this.ownerAgentSessionId) {
-              await this.recordOwned({
-                recordId: `${item.operationId}:configuration:failed`,
-                agentSessionId: this.ownerAgentSessionId,
-                agentConversationId: this.agentConversationId,
-                kind: "configuration",
-                timestamp: new Date().toISOString(),
-                operation: "set",
-                configId: item.configId,
-                value: toPersistenceJsonValue(item.value),
-                status: "failed",
-                error: String(err),
-              }).catch((persistenceError) => this.log.warn("configuration_failure_persistence_failed", {
-                error: String(persistenceError),
-              }));
+          } else {
+            this.emit({ kind: "configuration_started", operationId: item.operationId, configId: item.configId });
+            try {
+              if (this.ownerAgentSessionId) {
+                await this.recordOwned({
+                  recordId: `${item.operationId}:configuration:started`,
+                  agentSessionId: this.ownerAgentSessionId,
+                  agentConversationId: this.agentConversationId,
+                  kind: "configuration",
+                  timestamp: new Date().toISOString(),
+                  operationId: item.operationId,
+                  operation: "set",
+                  configId: item.configId,
+                  value: toPersistenceJsonValue(item.value),
+                  status: "started",
+                });
+              }
+              if (connectError !== null) throw connectError;
+              await this.runSetConfig(item);
+              if (this.ownerAgentSessionId) {
+                await this.recordOwned({
+                  recordId: `${item.operationId}:configuration:completed`,
+                  agentSessionId: this.ownerAgentSessionId,
+                  agentConversationId: this.agentConversationId,
+                  kind: "configuration",
+                  timestamp: new Date().toISOString(),
+                  operationId: item.operationId,
+                  operation: "set",
+                  configId: item.configId,
+                  value: toPersistenceJsonValue(item.value),
+                  status: "completed",
+                });
+              }
+              this.emit({ kind: "configuration_completed", operationId: item.operationId, configId: item.configId });
+              item.resolve();
+            } catch (err) {
+              if (this.ownerAgentSessionId) {
+                await this.recordOwned({
+                  recordId: `${item.operationId}:configuration:failed`,
+                  agentSessionId: this.ownerAgentSessionId,
+                  agentConversationId: this.agentConversationId,
+                  kind: "configuration",
+                  timestamp: new Date().toISOString(),
+                  operationId: item.operationId,
+                  operation: "set",
+                  configId: item.configId,
+                  value: toPersistenceJsonValue(item.value),
+                  status: "failed",
+                  error: String(err),
+                }).catch((persistenceError) => this.log.warn("configuration_failure_persistence_failed", {
+                  error: String(persistenceError),
+                }));
+              }
+              this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
+              item.reject(err);
             }
-            this.emit({ kind: "configuration_failed", operationId: item.operationId, configId: item.configId, error: String(err) });
-            item.reject(err);
           }
         } else if (item.kind === "resolve_config") {
           try {
@@ -2343,6 +2416,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             item.reject(err);
           }
         }
+        this.runningOperationId = null;
         // Promise consumers must observe the settled public state. The old in-class
         // loop reached its `finally` synchronously after resolving the last item;
         // crossing the extracted queue's async callback adds a microtask boundary.
@@ -2351,6 +2425,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this.settleIdleIfDrained();
       }, () => this.steering.takeNext());
     } finally {
+      this.runningOperationId = null;
       if (this.phase !== "stopped") this.phase = "idle";
       this.emitStateIfChanged();
     }
@@ -2767,6 +2842,22 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ...(targetResult ? { targetResult } : {}),
       });
     }
+  }
+
+  /**
+   * A selection that changes nothing is not applied or recorded: the harness already reports the
+   * value, and (with a transcript) it is already the explicit restoration target. Consumers that
+   * re-apply settings on every start would otherwise record a change each time. Any doubt returns
+   * false so the normal path runs and reports it. The caller connects first.
+   */
+  private isUnchangedSelection(item: ConfigQueueItem): boolean {
+    const option = this.controller.configOptions.get(item.configId);
+    if (!option || !sameJsonValue(item.value, option.currentValue as JsonValue)) return false;
+    if (!this.v2Transcript || this.persistence === false) return true;
+    return this.v2Transcript.checkpoint.sessionConfiguration.restorationTargets.some((target) =>
+      target.configId === item.configId
+      && target.source === "explicit_selection"
+      && sameJsonValue(item.value, target.value));
   }
 
   private async runSetConfig(item: ConfigQueueItem): Promise<void> {
@@ -3257,6 +3348,14 @@ export class AgentConversation implements AgentClient, Bridgeable {
           ...(item.consumerMetadata !== undefined ? { consumerMetadata: item.consumerMetadata } : {}),
           ...(item.parts ? { parts: item.parts } : {}),
           text: item.text,
+          messageParts: item.messageParts,
+          attachments: item.attachments,
+          mediaContext: {
+            cwd: this.controllerDefaults.cwd ?? process.cwd(),
+            ...(this.controller.isDegraded
+              ? { degraded: true }
+              : { capabilities: this.controller.capabilities.agent.promptCapabilities }),
+          },
         })
       : undefined;
     for (const participant of owned?.participants ?? (owned?.participant ? [owned.participant] : [])) {
@@ -3264,7 +3363,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this._participants = [...this._participants, Object.freeze({ ...participant })];
       }
     }
-    const providerText = owned?.providerText ?? item.text;
     this.beginTurn(item.turnId);
     let operation: OpenOperation;
     if (this.v2Transcript) {
@@ -3276,7 +3374,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
         await this.v2Transcript.beginOperation(item.turnId, persistenceOperationKind(item.operationKind));
         transcriptStarted = true;
         // A combined prompt shows each original message, as it was sent.
-        const userTexts = item.parts ? item.parts.map((part) => part.text) : [item.text];
+        const userTexts = item.parts
+          ? item.parts.map((part) => legacyTranscriptText(part.text, part.messageParts, part.attachments))
+          : [legacyTranscriptText(item.text, item.messageParts, item.attachments)];
         const userRecords = [];
         for (const [index, text] of userTexts.entries()) {
           userRecords.push(await this.v2Transcript.appendPresentationEvent({
@@ -3304,7 +3404,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         v: 1,
         t: "msg",
         role: "user",
-        text: item.text,
+        text: legacyTranscriptText(item.text, item.messageParts, item.attachments),
         ts: Date.now(),
       });
       operation = await this.openMeteredOperation(item);
@@ -3317,6 +3417,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       readonly id: string;
       providerMessageId?: string;
       text: string;
+      parts?: readonly ResolvedPart[];
       revision: number;
       dirty: boolean;
     } | null = null;
@@ -3331,36 +3432,44 @@ export class AgentConversation implements AgentClient, Bridgeable {
       };
       return assistantMessage;
     };
+    // When each message that ended before the turn did received its last text, in order. The
+    // turn's commit records those messages as completed at these times; only the last message
+    // takes the turn's own outcome.
+    const messageEnds: string[] = [];
     const flushAssistantMessage = (
       status: "in_progress" | "completed" | "cancelled" | "error",
       stopReason?: string,
       force = false,
+      ended = false,
     ) => {
       if ((!this.v2Transcript && !this.ownerLifecycle) || !assistantMessage
         || (!assistantMessage.dirty && !force)) return;
       assistantMessage.revision++;
       assistantMessage.dirty = false;
       const message = assistantMessage;
-      if (this.ownerAgentSessionId && status === "in_progress") {
+      const timestamp = new Date().toISOString();
+      if (ended) messageEnds.push(timestamp);
+      if (this.ownerAgentSessionId && (status === "in_progress" || ended)) {
         this.queueOwnedRecord({
           recordId: `${message.id}:snapshot:${message.revision}`,
           agentSessionId: this.ownerAgentSessionId,
           agentConversationId: this.agentConversationId,
           kind: "message",
-          timestamp: new Date().toISOString(),
+          timestamp,
+          operationId: item.turnId,
           role: "assistant",
           logicalMessageId: message.id,
           content: message.text,
-          status,
+          status: ended ? "completed" : "in_progress",
           metadata: JSON.stringify({ operationId: item.turnId,
             ...(message.providerMessageId ? { providerMessageId: message.providerMessageId } : {}) }),
-        });
+        }, message.parts);
       }
       if (this.v2Transcript) this.presentation.queuePresentation({
         kind: "message",
         operationId: item.turnId,
         role: "assistant",
-        text: message.text,
+        text: message.parts ? transcriptParts(message.parts) : message.text,
         ...(message.providerMessageId === undefined ? {} : { providerMessageId: message.providerMessageId }),
         structured: {
           version: 1,
@@ -3372,6 +3481,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ...(stopReason === undefined ? {} : { stopReason }),
         presentation: { id: message.id, revision: message.revision },
       });
+    };
+    // A message receives no more text once the next message or a tool call begins. Record it
+    // completed then, rather than leaving it open until the turn ends.
+    const endAssistantMessage = () => {
+      flushAssistantMessage("completed", undefined, true, true);
+      assistantMessage = null;
     };
     const wrappedHandlers: PromptHandlers = {
       ...item.handlers,
@@ -3391,7 +3506,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         response.append(chunk);
         if (this.v2Transcript || this.ownerLifecycle) {
           if (chunk.startsMessage) {
-            flushAssistantMessage("completed", undefined, assistantMessage !== null);
+            endAssistantMessage();
             beginAssistantMessage(chunk.messageId);
           }
           const current = assistantMessage ?? beginAssistantMessage(chunk.messageId);
@@ -3399,6 +3514,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             current.providerMessageId = chunk.messageId;
           }
           current.text += chunk.text;
+          current.parts = response.currentParts();
           current.dirty = true;
           // Persist the first usable snapshot. Later token chunks remain in memory until
           // an interleaving item, a new message, or the operation boundary.
@@ -3409,7 +3525,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       onActivity: (event) => {
         // The message snapshot must enter the shared queue before an activity first seen
         // after it. Later activity revisions keep their original presentation position.
-        flushAssistantMessage("in_progress");
+        if (event.kind === "tool") endAssistantMessage();
+        else flushAssistantMessage("in_progress");
         if (!this.activeSupervisor) this.steering.observeActivity(item.turnId, event);
         const result = this.presentation.applyActivity(event);
         this.queueActivityRecords(item.turnId, result.emitted);
@@ -3425,6 +3542,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "permission",
             timestamp: new Date().toISOString(),
+            operationId: item.turnId,
             permissionId: request.toolCallId,
             state: "requested",
             request: toPersistenceJsonValue({
@@ -3445,6 +3563,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             agentConversationId: this.agentConversationId,
             kind: "permission",
             timestamp: new Date().toISOString(),
+            operationId: item.turnId,
             permissionId: request.toolCallId,
             state: "resolved",
             outcome: permissionRecordOutcome(request, outcome),
@@ -3462,7 +3581,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const dispatchedAt = new Date().toISOString();
     try {
       let res = await this.supervisedPrompt(this.controller, item.turnId, "turn",
-        () => this.controller.prompt(providerText, wrappedHandlers, item.attachments));
+        // An owned conversation already resolved the parts and wrapped them with the provider-only
+        // text (identity, out-of-band messages); otherwise the client resolves them.
+        () => this.controller.prompt(owned?.providerParts
+          ? { parts: unresolvedParts(owned.providerParts), handlers: wrappedHandlers }
+          : item.messageParts
+            ? { parts: item.messageParts, attachments: item.attachments, handlers: wrappedHandlers }
+            : { text: item.text, attachments: item.attachments, handlers: wrappedHandlers }));
       if (res.cancel === "forced") {
         const messages = response.snapshot();
         res = { ...res, messages, text: response.text || chunks.join("") };
@@ -3532,8 +3657,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           v: 1,
           t: "msg",
           role: "assistant",
-          text: res.text,
-          messages: res.messages,
+          ...legacyTranscriptMessages(res.messages, res.text),
           ts: Date.now(),
           usage: res.usage,
           stopReason: res.stopReason,
@@ -3559,6 +3683,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           ...(item.participantId ? { participantId: item.participantId } : {}),
           text: item.text,
           result,
+          messageEnds,
           providerAttachment: this.providerAttachment,
         };
         try {
@@ -3606,6 +3731,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           ...(item.participantId ? { participantId: item.participantId } : {}),
           text: item.text,
           messages,
+          messageEnds,
           error: err,
         }).catch((persistenceError) => {
           this.log.warn("owned_prompt_failure_persistence_failed", { error: String(persistenceError) });
@@ -3631,8 +3757,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           v: 1,
           t: "msg",
           role: "assistant",
-          text,
-          messages,
+          ...legacyTranscriptMessages(messages, text),
           ts: Date.now(),
           stopReason: "error",
           status: "error",
@@ -3875,6 +4000,38 @@ export class AgentConversation implements AgentClient, Bridgeable {
     else this.controller.cancel();
   }
 
+  /** A supervised operation is cancelled at most once, so its cancellation is named after it. */
+  private recordCancellation(
+    operationId: string,
+    state: "requested" | "resolved",
+    reason: CancelReason,
+    outcome?: CancelOutcome,
+  ): void {
+    if (this.v2Transcript) {
+      this.presentation.queueEvent({
+        kind: "cancellation",
+        operationId,
+        cancellationId: `${operationId}:cancellation`,
+        event: state,
+        reason,
+        ...(outcome ? { outcome } : {}),
+      });
+    }
+    if (!this.ownerAgentSessionId) return;
+    this.queueOwnedRecord({
+      recordId: `${operationId}:cancellation:${state}`,
+      agentSessionId: this.ownerAgentSessionId,
+      agentConversationId: this.agentConversationId,
+      kind: "cancellation",
+      timestamp: new Date().toISOString(),
+      operationId,
+      cancellationId: `${operationId}:cancellation`,
+      state,
+      reason,
+      ...(outcome ? { outcome } : {}),
+    });
+  }
+
   /** Run one provider request under its own supervisor: stage, stale conditions, cancel escalation. */
   private async supervisedPrompt(
     controller: AgentController,
@@ -3902,6 +4059,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
         this.emitStateIfChanged();
       },
       onToolBoundary: () => this.steering.toolBoundary(operationId),
+      onCancelRequested: (reason) => this.recordCancellation(operationId, "requested", reason),
+      onCancelResolved: (reason, outcome) => this.recordCancellation(operationId, "resolved", reason, outcome),
     });
     this.activeSupervisor = supervisor;
     try {
@@ -3968,6 +4127,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
     let closed = false;
     let transcriptClosed = false;
+    const enclosingOperationId = this.runningOperationId;
+    this.runningOperationId = operationId;
     try {
       const kind = operationKind === "conversation_checkpoint" ? "recap" : "internal_inference";
       const result = await this.supervisedPrompt(controller, operationId, kind, () => controller.prompt(text));
@@ -3982,12 +4143,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
       closed = true;
       await this.ownerLifecycle?.meteringRecorded?.(record);
       if (this.v2Transcript) {
+        // A cancellation record queued during the prompt belongs before the reply and the settle.
+        await this.presentation.drain();
         await this.v2Transcript.appendEvent({
           kind: "message",
           operationId,
           role: "assistant",
           text: formatResponseMessages(result.messages, "\n\n"),
-          structured: { version: 1, messages: result.messages },
+          // Handoff transcripts stay text: the parts are not carried over.
+          structured: {
+            version: 1,
+            messages: result.messages.map(({ messageId, text }) => ({ ...(messageId ? { messageId } : {}), text })),
+          },
           stopReason: result.stopReason,
           status: result.status,
         });
@@ -4005,6 +4172,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       if (this.v2Transcript && !transcriptClosed) {
         const record = records[records.length - 1]!;
+        await this.presentation.drain().catch(() => undefined);
         await this.v2Transcript.appendEvent({
           kind: "message",
           operationId,
@@ -4019,6 +4187,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
         );
       }
       throw err;
+    } finally {
+      this.runningOperationId = enclosingOperationId;
     }
   }
 
@@ -4126,6 +4296,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   interrupt(options?: InterruptOptions): void {
+    this.cancelRunning("interrupt", options);
+  }
+
+  /** Stop the running operation, and with `clearQueue` everything queued behind it. */
+  private cancelRunning(reason: "interrupt" | "stop", options?: InterruptOptions): void {
+    // A stop closes the connection, so its turn fails and `endedBy` is never reported for it.
     this.steering.interrupted();
     if (options?.clearQueue) {
       const dropped = this.operations.clear();
@@ -4145,7 +4321,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       this.emitStateIfChanged();
     }
-    this.cancelOperation("interrupt");
+    this.cancelOperation(reason);
   }
 
   stop(): Promise<void> {
@@ -4193,7 +4369,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
     this.stopPromise = completion;
     try {
-      this.interrupt({ clearQueue: true });
+      this.cancelRunning("stop", { clearQueue: true });
     } catch (error) {
       failures.push(error);
     }

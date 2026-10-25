@@ -131,6 +131,103 @@ not interpret its fields. The separate envelope `metadata` field still carries o
 library-owned operation correlation. A raw audit capture includes consumer metadata;
 content/metadata audit capture omits it.
 
+### Messages made of parts
+
+`prompt({ parts })` accepts ordered `MessagePart` values. An optional `text` is a leading text
+part; `pasted` retains its optional name and is sent as text. The text-only `result.text` view
+and positional calls remain available. A response containing media also has ordered
+`result.messages[i].parts`; streaming `onResponseChunk` exposes each non-text `part`.
+
+```ts
+await conversation.prompt({
+  parts: [
+    { kind: "text", text: "Review this plot and these notes." },
+    { kind: "image", path: "plot.png" },
+    { kind: "pasted", name: "notes", text: "The red line is the baseline." },
+    { kind: "file", path: "/shared/report.pdf", mode: "link" },
+  ],
+});
+```
+
+Media kinds are `image`, `audio`, and `file`. Each input has exactly one source: `data:
+Uint8Array`, `path` (relative to the conversation's working directory, absolute, or a `file://`
+URI), or `ref` (a previously kept copy). MIME types are inferred from file paths; supply the
+MIME type for byte-array inputs when known. SVG is a `file` and is embedded as markup, retaining
+its MIME type. Text files are ACP embedded text resources; other files use blob resources.
+An embedded copy's uri is `attachment:///<name>`: it names the copy, not a file the agent could
+open. A UI rendering SVG must sanitize it.
+
+Some adapters drop kinds they advertise. Claude's (`claude-agent-acp`, checked at 0.85.0) keeps
+embedded text files but silently drops binary ones (PDFs, any blob), although it advertises
+`embeddedContext`, so the model never sees them and nothing fails. Send binary files to Claude as
+links (`mode: "link"`, a file it can reach): its Read tool opens PDFs. Whether a model reads a
+kind also depends on the model: OpenCode on DeepSeek V4.1 Flash has no PDF input.
+
+`mode: "copy"` sends the actual content. `keep: false` records name, MIME type, size and SHA-256
+without retaining bytes; the default keeps bytes when a store is available. `mode: "link"`
+requires a path and sends an absolute `file://` resource link. It records a pointer, so later
+edits/deletion of the original affect what history can display. The library does not open a
+link: one whose file cannot be read is still sent, with no size. `keep` is invalid on links.
+A link the agent sends without a size is recorded without one.
+`record: false` sends a part without recording it and cannot be combined with `keep`.
+
+With no mode, path sources use copies up to 100,000 bytes for files, 3,750,000 for images and
+5,000,000 for audio; larger paths use links. Configure these byte thresholds on the Agent with
+`media: { thresholds: { file, image, audio } }`. Byte-array and ref sources remain copies.
+There is no library size ceiling. Provider errors surface to the caller. Unsupported explicit
+copies are refused using the agent's prompt capabilities; an automatic path source falls back
+to a link. PTY mode refuses media parts.
+
+Declare shared directories with `conversationDefaults: { additionalDirectories: ["/shared"] }`
+or a conversation's `runtime.additionalDirectories`. They reach ACP session creation/load;
+the harness applies its own permissions. The library does not restrict pointers. A harness on
+another machine or in an isolated container needs a shared mount or a copy.
+
+SQLite schema 16 stores kept blobs separately from message rows in the same database and
+transaction. History and audit records contain refs/URIs and metadata. Ordinary text messages
+remain strings; mixed messages use `PersistedContentBlock[]`, including `media` and `pasted`.
+Old inline image/resource blocks can still be read; migration rebuilds structured message
+search text and its FTS index without old inline bytes or refs. Raw canonical protocol capture and debug
+prompt logs redact inline media; a consumer's explicitly requested `wire` callback is verbatim.
+
+```ts
+const agent = await Agent.open({
+  // ...persistence, adapters, and other settings...
+  capture: { message: "content", media: "metadata" },
+  // media: { store: yourMediaStore }, // optional MediaStore override
+});
+
+const store = agent.media.store ?? agent.persistence.media;
+const saved = await store?.get(ref); // { ref, info, data } or null when removed
+await conversation.prompt({ parts: [{ kind: "image", ref }] });
+await agent.deleteMedia(ref); // removes bytes; history retains the dangling ref
+await agent.deleteMediaForConversation(conversation.id);
+
+const files = await agent.persistence.files?.search({
+  text: "plot", agentConversationId: conversation.id, kind: "image", minSize: 1,
+});
+```
+
+`capture.media` is `none`, `metadata`, or `content` (default), independently of message text.
+The conversation persistence resolver can override it, and a part's own `record`/`keep` wins.
+Checkpointing still summarizes text. A backend without `media` and no override defaults to
+metadata; explicit `keep: true` is refused. The older SessionManager/AgentSession JSONL
+transcript records text and descriptive part lines, with no media store.
+
+A `MediaStore` implements async `put(bytes, info) -> ref`, `get(ref)`, `delete(ref)` and
+`list(owner)`. `get` returns `{ ref, info, data }` or null; `list` returns `{ ref, info }`
+entries. Preserve all `MediaInfo` fields. Separate stores cannot share the record transaction: failed
+writes stop dispatch, and `list(owner)` supports orphan cleanup. Reusing a kept ref within
+its conversation reuses bytes; another conversation gets a new copy. Copies record SHA-256
+but are not deduplicated. Clearing records deletes SQLite media; the Agent clear API also
+cleans an overridden store. Soft deletion retains media.
+
+`files.list` and `files.search` browse media metadata, including unkept/deleted copies and
+links, with optional conversation, name, kind, MIME type and size filters. They accept `limit`
+and `cursor`; response revisions are folded. Message search covers text and pasted text,
+without indexing media names, refs or bytes. Offset file cursors can shift under concurrent
+inserts. Custom backends can supply the optional `files` repository.
+
 SQLite keeps ordering and type-specific content separate. `conversation_records` is a
 narrow canonical envelope containing the conversation-local sequence, kind, timestamp,
 operation correlation, and optional metadata. Every envelope has exactly one typed detail
@@ -200,7 +297,64 @@ const older = first.olderCursor
 if (older) items = reconcileConversationTimeline(items, older.records);
 ```
 
+Paging by records cuts turns anywhere: a tool call is several records, so a page can start
+mid-turn. To page by what the conversation shows, count agent messages instead:
+
+```ts
+const page = await agent.persistence.records.listRecent!(conversation.id, {
+  agentMessages: 50,  // each page: 50 agent messages and the activity that led to each
+  fold: true,         // timeline items instead of records
+  detail: "summary",  // tool calls without input and output
+});
+let items = page.items;
+// Expanding a step: its full record merges into the summary item.
+const full = await agent.persistence.records.get(step.current.recordId);
+items = reconcileConversationTimeline(items, [full!]);
+```
+
+- The cut goes right after an agent message (out-of-band appends count), so a page usually
+  begins with a turn's user message, and activity after the newest message (a running turn)
+  stays on the newest page.
+- A record goes to the page where its item's first revision falls. A page holds every revision
+  of its items, including later ones up to the snapshot, and none of another page's: a message
+  that completed after the next tool started is not split across pages.
+- `limit` caps the page (records, or items when folded; default 2000). A page that reaches it
+  ends at a whole item with `truncated: true`, and `olderCursor` continues from there.
+- `fold: true` returns `ConversationTimelineItem`s; live records still merge with
+  `reconcileConversationTimeline(items, records)`. With `detail: "summary"` an item keeps two
+  revisions, its first (its start) and its merged current (under its latest revision's id),
+  so it reconciles like any other item.
+- `detail: "summary"` also works on records. The step title is the harness's `name`, which
+  varies by harness; `records.get` returns the input and output.
+- Without `agentMessages`, `fold` or `detail`, `listRecent` is unchanged. A cursor is bound to
+  its unit: a record-paging cursor is refused when paging by agent messages, and the reverse.
+
 Every physical record has a stable `recordId` and a conversation-local `sequence`.
+`operationId` says which library operation wrote it: a turn (`result.operationId`), an
+internal inference or recap, a setting change, a mode change, or a handoff. Appended out-of-band messages are standalone records
+without an operation id. Every record of one
+operation shares it, so a turn's messages, tool calls, permissions and thinking can be grouped
+without inferring turns from their position; `sequence` gives the order. A tool call still
+running when its turn ends is recorded `failed` in that turn; if the harness reports it later, that
+update is recorded under the turn it arrived in, as a separate timeline item. Protocol lines
+carry the operation that sent them: a handoff's own lines its id, the lines of its summary, seed
+or target prompt that prompt's id (`<handoffId>:summary`, `:seed`, `:target`); a recap's or a
+recovery seed's lines theirs. Records written outside any operation (protocol lines while
+connecting) have none. Operations can interleave:
+a message appended during a turn sits inside the turn's sequence range, so group by
+`operationId`, not by range. Timeline items for tool calls, permissions, thinking and activity are
+keyed within their operation, so a provider id reused by a later turn is a new item.
+A cancelled operation records why and how in a `cancellation` record (two revisions under one
+`cancellationId`, carrying the cancelled operation's `operationId`): `requested` with its
+`reason` (`steer`: a message sent mid-turn; `interrupt`: Stop; `stalled`: the stale policy;
+`stop`: the conversation was stopped), then `resolved` with its `outcome` (`acknowledged`,
+`forced` when the process had to be killed, `too_late` when the turn finished first, or
+`failed`). So after a reload a client can still show a turn as "Stopped" or "Redirected"; for
+a steer, the redirecting message is the next turn's. It describes the cancellation, not the
+mechanism (ACP `session/cancel`). JSONL transcripts and audit logs write the same record
+(`t: "cancellation"`).
+Databases from before schema 15 recover it for tool call, thinking, activity, permission,
+configuration and mode-change records; `records.list(id, { operationId })` filters by it.
 The reconciliation helper keeps distinct messages separate and groups revisions of an
 assistant message, tool call, permission, thinking block, activity, or transition by its
 logical ID. Assistant snapshots take their position from the first streamed text; the
@@ -208,8 +362,17 @@ completed revision supplies their final content and status. Providers that expos
 message only in the final prompt result cannot supply an earlier position. Records
 written before schema version 11 have no such boundaries to reconstruct. The helper's
 items retain every revision, carry the latest merged fields in `current`, and sort by
-the earliest loaded sequence. Loading an older page may move an item to its true
-earlier position when its first revision arrives. Configuration, protocol, agent
+the earliest loaded sequence. `startedAt` is when the item's first revision was written
+(when a message began) and `updatedAt` when its latest was (also `current.timestamp`).
+Loading an older page may move an item to its true
+earlier position when its first revision arrives.
+
+ACP has no "message finished" signal, so an assistant message ends when the next one begins:
+a chunk with a different message id, or a new tool call (with or without ids; tool *updates*
+do not split a message). That message is recorded `completed` at that moment, so a client
+sees it finish as soon as the next text or tool appears. The turn's last message ends with
+the turn and takes its outcome (`completed`, `cancelled` or `failed`); messages that ended
+before a failure stay `completed`. The live `result.messages` uses the same boundaries. Configuration, protocol, agent
 actions, and metering references remain individual records unless they have an
 explicit logical identity; metering details are read from `persistence.metering`.
 
@@ -239,7 +402,8 @@ Preview paging follows conversation `updatedAt` order; that list may
 reorder as conversations advance, so consumers should refresh it rather than treat
 offset cursors as a frozen snapshot. `messages.list()` returns the latest visible
 revision per logical message; `records.list()` and `records.listRecent()` retain all
-physical revisions for timeline reconstruction and audit. `listRecent` and `listPreviews` are SQLite
+physical revisions for timeline reconstruction and audit (except `listRecent` with `fold: true`
+and `detail: "summary"`, which keeps two per item). `listRecent` and `listPreviews` are SQLite
 capabilities; custom persistence backends may not implement them.
 
 ### Live committed-record events
@@ -367,16 +531,27 @@ turn, in a `<messages-you-sent>` block between any identity preamble and
 - A recovery seed covers messages through `recoveredThroughSequence`, so they are not
   repeated after recovery. A loaded provider session is treated like one that never
   closed.
-- A turn that completes without an assistant message does not advance delivery, so its
-  pending messages are repeated once more.
+- SQLite commits a delivery cursor with a successful turn, including turns whose message
+  text is not captured.
 - The block is capped at `OUT_OF_BAND_PROMPT_MAX_CHARS`; the oldest messages are dropped
   first with an omission note. The transcript always keeps all of them.
 
 Other conversations of the same agent see the message through identity like any other
-canonical message. Appending requires `capture.message` of `"content"` or `"raw"`, since
-the provider could not be told otherwise; it rejects blank text and unknown or deleted
-conversations. Backends without `records.listRecent` scan the conversation's messages
-forward to find the last completed turn.
+canonical message. Text-only appends require `capture.message` of `"content"` or `"raw"`;
+media-only appends are supported under the independent media capture policy. An append rejects
+empty input and unknown or deleted conversations. `appendAssistantMessage(id, { parts })` uses
+the same part/store rules. Parts are accepted whatever the next turn's agent supports.
+
+A message waits for the next successful turn. When its record can restore it (text captured,
+every copy kept, no `record: false` part), it is delivered from the record. Otherwise its parts
+wait in memory: unkept bytes are never written anywhere, and a failed turn keeps them for the
+retry. After a restart such a message is delivered from its record, and a copy whose bytes were
+not kept (or were deleted) is named instead, as `[image plot.png: not available]`; an unrecorded
+part is gone. A copy the agent cannot take is named too (`[image plot.png: not supported by this
+agent]`), so an out-of-band message never makes a turn fail. A PTY agent receives every media
+part as such a line.
+Custom backends can supply `outOfBandDelivery` to track completion independently of captured
+text; otherwise delivery uses visible completed messages, scanning forward without `listRecent`.
 
 ### Agent audit log
 
@@ -1237,7 +1412,9 @@ const unsubscribe = session.subscribe((notification: AgentSessionNotification) =
 `presentation_recorded` notification means the displayed item revision has been appended
 to the V2 transcript. Its ID, first position, revision, record sequence, and operation ID
 are exactly the values the presentation reader returns after a restart. Upsert by `id`
-and ignore revisions older than the one already rendered.
+and ignore revisions older than the one already rendered. `startedAt` is when the item's
+first revision was written and `updatedAt` when this one was; `timestamp` is a deprecated
+alias of `updatedAt`.
 
 Useful live properties include:
 
@@ -1501,7 +1678,12 @@ await session.authenticate(methodId, { onOutput: showAuthOutput });
 ```
 
 Configuration selected through `AgentSession` is checkpointed according to the configured
-`sessionConfiguration` persistence policy and reapplied during loading.
+`sessionConfiguration` persistence policy and reapplied during loading. Selecting the value an
+option already has (the harness reports it, and with a transcript it is already the explicit
+restoration target) is a no-op: nothing is sent, recorded or emitted, so re-applying
+settings on every start does not fill the history with repeated changes. Agent-owned
+conversations do not restore their settings when reopened; a consumer that wants them pinned
+re-applies them, and only real changes are recorded.
 
 Harness slash commands are discovered as metadata:
 

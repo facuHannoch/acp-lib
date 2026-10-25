@@ -8,6 +8,7 @@
 // exist in degraded mode.
 
 import type { PromptResult, PromptHandlers, Attachment } from "./types.ts";
+import type { MessagePart } from "./media/parts.ts";
 
 export interface InterruptOptions {
   /** Also drop any queued prompts, not just the in-flight one. */
@@ -34,12 +35,17 @@ export interface Bridgeable {
   bridge(options?: BridgeOptions): Promise<void>;
 }
 
+export interface ClientPrompt {
+  text?: string;
+  parts?: readonly MessagePart[];
+  handlers?: PromptHandlers;
+  attachments?: Attachment[];
+}
+
 export interface AgentClient {
   /** Send a prompt and resolve with the turn result. The main entry point. */
   prompt(
-    text: string,
-    handlers?: PromptHandlers,
-    attachments?: Attachment[],
+    input: ClientPrompt,
   ): Promise<PromptResult>;
 
   /** Cancel the in-flight prompt; the pending prompt() resolves with status "cancelled". */

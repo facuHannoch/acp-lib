@@ -20,6 +20,7 @@ export interface AgentAuditCaptureConfig {
   readonly thinking?: RecordCaptureLevel;
   readonly activity?: RecordCaptureLevel;
   readonly error?: RecordCaptureLevel;
+  readonly cancellation?: RecordCaptureLevel;
   readonly metering?: "none" | "metadata" | "summary" | "raw";
   readonly agent_lifecycle?: RecordCaptureLevel;
   readonly identity?: RecordCaptureLevel;
@@ -56,6 +57,7 @@ export interface ResolvedAgentAuditCapturePolicy {
   readonly thinking: RecordCaptureLevel;
   readonly activity: RecordCaptureLevel;
   readonly error: RecordCaptureLevel;
+  readonly cancellation: RecordCaptureLevel;
   readonly metering: "none" | "metadata" | "summary" | "raw";
   readonly agent_lifecycle: RecordCaptureLevel;
   readonly identity: RecordCaptureLevel;
@@ -83,6 +85,7 @@ export const DEFAULT_AGENT_AUDIT_CAPTURE: ResolvedAgentAuditCapturePolicy = Obje
   thinking: "none",
   activity: "metadata",
   error: "content",
+  cancellation: "metadata",
   metering: "summary",
   agent_lifecycle: "metadata",
   identity: "metadata",
@@ -170,6 +173,7 @@ export function resolveAgentAuditCapture(
     thinking: general("thinking"),
     activity: general("activity"),
     error: general("error"),
+    cancellation: general("cancellation"),
     metering: specialized("metering", ["none", "metadata", "summary", "raw"]),
     agent_lifecycle: general("agent_lifecycle"),
     identity: general("identity"),

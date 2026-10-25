@@ -7,6 +7,7 @@ import { stalePolicy, validateStaleLimits, type StallPhase } from "./stale-polic
 import { OperationStalledError } from "./errors.ts";
 import type { PromptResult } from "../types.ts";
 import type {
+  CancelOutcome,
   CancelReason,
   OperationActivity,
   OutputListener,
@@ -37,6 +38,10 @@ export interface SupervisorOptions {
   readonly onStageChanged?: (activity: OperationActivity) => void;
   /** The last running tool settled. */
   readonly onToolBoundary?: () => void;
+  /** A cancel was requested, once per operation. */
+  readonly onCancelRequested?: (reason: CancelReason) => void;
+  /** The operation ended after a cancel was requested, and how. */
+  readonly onCancelResolved?: (reason: CancelReason, outcome: CancelOutcome) => void;
 }
 
 const forcedResult = (): PromptResult => ({
@@ -91,6 +96,7 @@ export class OperationSupervisor {
     if (this.finished || this.cancellation) return;
     this.timers.clearTimeout(this.staleHandle);
     this.cancellation = { reason, requestedAt: this.timers.now() };
+    this.options.onCancelRequested?.(reason);
     this.publishStage();
     this.sendCancel();
     const grace = this.options.cancelGraceMs ?? 30_000;
@@ -112,9 +118,14 @@ export class OperationSupervisor {
     const detach = this.provider.subscribeOutput((output) => this.observe(output));
     this.options.onStageChanged?.(this.activity);
     this.armStaleTimer();
+    // How a requested cancel ended; a stall is a cancel the provider either honoured or not.
+    let outcome: CancelOutcome = "failed";
     try {
       const forced = new Promise<PromptResult>((resolve) => { this.finishForced = resolve; });
       const result = await Promise.race([Promise.resolve().then(() => this.provider.prompt()), forced]);
+      outcome = this.forced ? "forced"
+        : result.status === "cancelled" ? "acknowledged"
+          : result.status === "error" ? "failed" : "too_late";
       // A cancel can lose the race with a normal ending: the turn is then complete, even when the
       // stall policy asked for the cancel.
       if (this.stallPhase && result.status === "cancelled") throw this.stalled();
@@ -123,11 +134,19 @@ export class OperationSupervisor {
       }
       return result;
     } catch (error) {
-      if (this.stallPhase) throw error instanceof OperationStalledError ? this.markCancel(error) : this.stalled();
-      if (this.forced) return forcedResult();
+      if (this.stallPhase) {
+        const stalled = error instanceof OperationStalledError ? this.markCancel(error) : this.stalled();
+        outcome = stalled.cancel ?? outcome;
+        throw stalled;
+      }
+      if (this.forced) {
+        outcome = "forced";
+        return forcedResult();
+      }
       throw error;
     } finally {
       this.finished = true;
+      if (this.cancellation) this.options.onCancelResolved?.(this.cancellation.reason, outcome);
       this.timers.clearTimeout(this.staleHandle);
       detach();
       for (const handle of this.handles) this.timers.clearTimeout(handle);

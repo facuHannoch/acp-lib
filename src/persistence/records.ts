@@ -21,6 +21,12 @@ import {
   type TransitionKind,
 } from "./checkpoint.ts";
 import {
+  CANCEL_OUTCOMES,
+  CANCEL_REASONS,
+  type CancelOutcome,
+  type CancelReason,
+} from "../operations/contracts.ts";
+import {
   canonicalizeJson,
   isPersistedMachineCode,
   type PersistedMachineCode,
@@ -107,7 +113,8 @@ export type TranscriptRecordType =
   | "metering_reference"
   | "lifecycle"
   | "protocol"
-  | "raw";
+  | "raw"
+  | "cancellation";
 
 export interface TranscriptEnvelope {
   readonly v: 2;
@@ -220,6 +227,16 @@ export interface TranscriptPermissionRecord extends TranscriptEnvelope {
   readonly details?: JsonValue;
 }
 
+/** A running operation was cancelled: `requested` (why), then `resolved` (how it ended). */
+export interface TranscriptCancellationRecord extends TranscriptEnvelope {
+  readonly t: "cancellation";
+  readonly operationId: string;
+  readonly cancellationId: string;
+  readonly event: "requested" | "resolved";
+  readonly reason: CancelReason;
+  readonly outcome?: CancelOutcome;
+}
+
 export interface TranscriptTransitionRecord extends TranscriptEnvelope {
   readonly t: "transition";
   readonly transitionId: string;
@@ -290,7 +307,8 @@ export type KnownTranscriptRecord =
   | TranscriptMeteringReferenceRecord
   | TranscriptLifecycleRecord
   | TranscriptProtocolMetadataRecord
-  | TranscriptRawRecord;
+  | TranscriptRawRecord
+  | TranscriptCancellationRecord;
 
 export interface UnknownTranscriptRecord {
   readonly v: number;
@@ -312,7 +330,8 @@ export type AuditLogRecordType =
   | "permission"
   | "transition"
   | "metering_reference"
-  | "lifecycle";
+  | "lifecycle"
+  | "cancellation";
 
 export interface AuditLogEnvelope {
   readonly v: 1;
@@ -411,6 +430,16 @@ export interface AuditLogLifecycleRecord extends AuditLogEnvelope {
   readonly detail?: JsonValue;
 }
 
+/** The audit copy of a transcript cancellation record. */
+export interface AuditLogCancellationRecord extends AuditLogEnvelope {
+  readonly t: "cancellation";
+  readonly operationId: string;
+  readonly cancellationId: string;
+  readonly event: "requested" | "resolved";
+  readonly reason: CancelReason;
+  readonly outcome?: CancelOutcome;
+}
+
 export type KnownAuditLogRecord =
   | AuditLogHeaderRecord
   | AuditLogOperationRecord
@@ -420,7 +449,8 @@ export type KnownAuditLogRecord =
   | AuditLogPermissionRecord
   | AuditLogTransitionRecord
   | AuditLogMeteringReferenceRecord
-  | AuditLogLifecycleRecord;
+  | AuditLogLifecycleRecord
+  | AuditLogCancellationRecord;
 
 export interface UnknownAuditLogRecord {
   readonly v: number;
@@ -471,11 +501,11 @@ export function validateAuditLogRecord(
 const TRANSCRIPT_TYPES = new Set<string>([
   "header", "checkpoint", "operation", "message", "reasoning", "activity",
   "configuration", "permission", "transition", "metering_reference", "lifecycle",
-  "protocol", "raw",
+  "protocol", "raw", "cancellation",
 ]);
 const AUDIT_TYPES = new Set<string>([
   "header", "operation", "reasoning", "activity", "configuration", "permission",
-  "transition", "metering_reference", "lifecycle",
+  "transition", "metering_reference", "lifecycle", "cancellation",
 ]);
 
 function validateEnvelope(
@@ -576,6 +606,15 @@ function validateRecognizedRecord(
       return;
     case "transition":
       validateTransition(record, sink);
+      return;
+    case "cancellation":
+      requiredOperationId(record);
+      nonblank(record.cancellationId, "cancellationId");
+      oneOf(record.event, ["requested", "resolved"], "cancellation.event");
+      oneOf(record.reason, CANCEL_REASONS, "cancellation.reason");
+      if (record.outcome !== undefined) {
+        oneOf(record.outcome, CANCEL_OUTCOMES, "cancellation.outcome");
+      }
       return;
     case "metering_reference":
       requiredOperationId(record);

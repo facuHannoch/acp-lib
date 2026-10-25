@@ -1,6 +1,6 @@
 {
   "name": "@qlairoslabs/acp-client",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "description": "Embeddable Agent Client Protocol (ACP) client library with degraded PTY fallback.",
   "type": "module",
   "module": "src/index.ts",
@@ -35,7 +35,10 @@
     "src",
     "CONSUMER_GUIDE.md",
     "CHANGELOG-audit.md",
-    "CHANGELOG-metering.md"
+    "CHANGELOG-metering.md",
+    "CHANGELOG-operation-lifecycle.md",
+    "CHANGELOG-consumer-fixes.md",
+    "MIGRATION-0.10-to-0.12.md"
   ],
   "exports": {
     ".": "./src/index.ts",

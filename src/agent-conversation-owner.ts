@@ -3,7 +3,7 @@ import type { Adapter } from "./adapters.ts";
 import type { AgentMode } from "./controller.ts";
 import type { NewConversationRecord, ParticipantRef, PersistenceJsonValue } from "./persistence/backend.ts";
 import type { AgentSessionPromptResult } from "./agent-conversation-contracts.ts";
-import type { PromptPart } from "./steering/contracts.ts";
+import type { CombinedMessage } from "./steering/contracts.ts";
 import type { ResponseMessage } from "./types.ts";
 import type { OperationMeteringRecord } from "./metering/record.ts";
 import type { AgentSessionMeteringState } from "./metering/state.ts";
@@ -13,6 +13,9 @@ import type {
   ProviderAttachmentCommitAcknowledgement,
   ProviderAttachmentState,
 } from "./persistence/provider-attachment.ts";
+import type { MediaCapabilities } from "./media/acp.ts";
+import type { MessagePart, ResolvedPart } from "./media/parts.ts";
+import type { Attachment } from "./types.ts";
 
 export interface OwnedPromptInput {
   readonly operationId: string;
@@ -22,19 +25,38 @@ export interface OwnedPromptInput {
   readonly participantId?: string;
   readonly consumerMetadata?: PersistenceJsonValue;
   /** Present when several messages were combined into this one prompt: each is recorded as sent. */
-  readonly parts?: readonly PromptPart[];
+  readonly parts?: readonly CombinedMessage[];
   readonly text: string;
+  readonly messageParts?: readonly MessagePart[];
+  readonly attachments?: readonly Attachment[];
+  /** What the parts are resolved against: the working directory, and what the agent accepts. */
+  readonly mediaContext?: {
+    readonly cwd: string;
+    readonly capabilities?: MediaCapabilities;
+    readonly degraded?: boolean;
+  };
+}
+
+/** How a turn's assistant messages ended, for its commit. */
+interface OwnedPromptMessageEnds {
+  /**
+   * When each message that ended before the turn did (the next message or a tool call began)
+   * received its last text, in order. Those messages are completed at these times; the rest take
+   * the turn's outcome.
+   */
+  readonly messageEnds?: readonly string[];
 }
 
 export interface OwnedPromptPreparation {
-  readonly providerText?: string;
+  /** The parts to send: the user's, wrapped with the provider-only text (identity, out-of-band). */
+  readonly providerParts?: readonly ResolvedPart[];
   readonly participant?: ParticipantRef;
   /** Every participant of a combined prompt, in order. `participant` is the first. */
   readonly participants?: readonly ParticipantRef[];
   readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
 }
 
-export interface OwnedPromptCompleted extends OwnedPromptInput {
+export interface OwnedPromptCompleted extends OwnedPromptInput, OwnedPromptMessageEnds {
   readonly result: AgentSessionPromptResult;
   readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
   readonly providerAttachment: ProviderAttachmentState;
@@ -55,7 +77,7 @@ export class OwnedPromptPostCommitError extends Error {
   }
 }
 
-export interface OwnedPromptFailed extends OwnedPromptInput {
+export interface OwnedPromptFailed extends OwnedPromptInput, OwnedPromptMessageEnds {
   readonly messages: readonly ResponseMessage[];
   readonly error: unknown;
 }
@@ -86,5 +108,5 @@ export interface AgentConversationOwnerLifecycle {
     readonly activatedAt: string;
   }): Promise<void>;
   /** Append a typed non-message runtime observation under the owner's capture policy. */
-  record?(record: NewConversationRecord): Promise<void>;
+  record?(record: NewConversationRecord, parts?: readonly ResolvedPart[]): Promise<void>;
 }

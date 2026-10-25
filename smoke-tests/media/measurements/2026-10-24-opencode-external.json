@@ -1,0 +1,62 @@
+{
+  "adapterId": "opencode",
+  "timestamp": "2026-10-24T22:58:37.163Z",
+  "cases": [
+    {
+      "name": "undeclared-direct",
+      "status": "completed",
+      "elapsedMs": 5221,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": false
+    },
+    {
+      "name": "undeclared-symlink",
+      "status": "completed",
+      "elapsedMs": 3161,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": true
+    },
+    {
+      "name": "declared-direct",
+      "status": "completed",
+      "elapsedMs": 7346,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": false
+    },
+    {
+      "name": "declared-symlink",
+      "status": "completed",
+      "elapsedMs": 2926,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": true
+    }
+  ],
+  "syntheticFilesOnly": true,
+  "outsideTemporaryDirectory": true,
+  "model": "opencode-go/gpt-6-luna",
+  "permissions": [
+    {
+      "title": "/home/ffacu/q/apps/libs/acp-lib/smoke-tests/media/.sandbox-probes/acp-media-opencode-jYQY52",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "/home/ffacu/q/apps/libs/acp-lib/smoke-tests/media/.sandbox-probes/acp-media-opencode-jYQY52",
+      "scoped": true,
+      "granted": true
+    },
+    {
+      "title": "/home/ffacu/q/apps/libs/acp-lib/smoke-tests/media/.sandbox-probes/acp-media-opencode-jYQY52",
+      "scoped": true,
+      "granted": true
+    }
+  ]
+}

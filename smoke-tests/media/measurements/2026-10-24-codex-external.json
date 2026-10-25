@@ -1,0 +1,46 @@
+{
+  "adapterId": "codex",
+  "timestamp": "2026-10-24T22:58:36.237Z",
+  "cases": [
+    {
+      "name": "undeclared-direct",
+      "status": "completed",
+      "elapsedMs": 11842,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": false
+    },
+    {
+      "name": "undeclared-symlink",
+      "status": "completed",
+      "elapsedMs": 11008,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": false,
+      "symlink": true
+    },
+    {
+      "name": "declared-direct",
+      "status": "completed",
+      "elapsedMs": 9211,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": false
+    },
+    {
+      "name": "declared-symlink",
+      "status": "completed",
+      "elapsedMs": 3852,
+      "semanticMatch": true,
+      "modified": true,
+      "declared": true,
+      "symlink": true
+    }
+  ],
+  "syntheticFilesOnly": true,
+  "outsideTemporaryDirectory": true,
+  "model": "gpt-6.1-sol",
+  "permissions": []
+}

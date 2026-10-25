@@ -1,6 +1,7 @@
 import type { AgentSessionPromptResult } from "../agent-conversation-contracts.ts";
 import type { PersistenceJsonValue } from "../persistence/backend.ts";
 import type { Attachment, PromptHandlers } from "../types.ts";
+import type { MessagePart } from "../media/parts.ts";
 
 /**
  * How a prompt sent while a turn is running waits.
@@ -60,12 +61,17 @@ export type MessageEvent =
   | { readonly kind: "message_withdrawn"; readonly id: PendingMessageId };
 
 /** One original message of a combined prompt. */
-export interface PromptPart {
+export interface CombinedMessage {
+  readonly messageParts?: readonly MessagePart[];
+  readonly attachments?: readonly Attachment[];
   readonly id: PendingMessageId;
   readonly text: string;
   readonly participantId?: string;
   readonly consumerMetadata?: PersistenceJsonValue;
 }
+
+/** @deprecated Use CombinedMessage. */
+export type PromptPart = CombinedMessage;
 
 /** The fields of a queued prompt that steering reads and writes. */
 export interface SteeringPrompt {
@@ -80,8 +86,9 @@ export interface SteeringPrompt {
   consumerMetadata?: PersistenceJsonValue;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
+  messageParts?: readonly MessagePart[];
   /** Present only on a combined prompt: the original messages, in order. */
-  parts?: readonly PromptPart[];
+  parts?: readonly CombinedMessage[];
   resolve: (result: AgentSessionPromptResult) => void;
   reject: (error: unknown) => void;
 }

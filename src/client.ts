@@ -38,6 +38,11 @@ import type {
   ToolContent,
   WireEntry,
 } from "./types.ts";
+import { promptParts } from "./media/parts.ts";
+import { resolveParts } from "./media/store.ts";
+import { assertPartCapabilities, attachmentParts, partsToAcp } from "./media/acp.ts";
+import { redactMedia } from "./media/redact.ts";
+import type { ClientPrompt } from "./agent-client.ts";
 
 export interface AcpClientConfig {
   /** How to launch the agent binary. */
@@ -53,6 +58,8 @@ export interface AcpClientConfig {
   env?: Record<string, string>;
   /** Workspace visible to the ACP target and sent in session requests. */
   cwd?: string;
+  /** Additional workspace roots passed to ACP session creation and loading. */
+  additionalDirectories?: string[];
   /** Resume this session id when startSession() is called. */
   sessionId?: string;
   /** Policy when config.sessionId cannot be loaded. Default "new" for compatibility. */
@@ -129,6 +136,7 @@ function resolveClientHandlers(
 }
 
 export interface StartSessionOptions {
+  additionalDirectories?: string[];
   /** Resume this session. Defaults to config.sessionId. */
   sessionId?: string;
   /** What to do when the requested session cannot be loaded. Default config policy, then "new". */
@@ -166,7 +174,7 @@ export interface SwitchSessionOptions {
   onUpdate?: (notification: unknown) => void;
 }
 
-interface QueueItem {
+interface QueueItem extends ClientPrompt {
   text: string;
   handlers?: PromptHandlers;
   attachments?: Attachment[];
@@ -433,6 +441,7 @@ export class AcpClient implements AgentClient {
   async startSession(options: StartSessionOptions = {}): Promise<ConnectResult> {
     const transport = this.requireTransport();
     const mcpServers = options.mcpServers ?? [];
+    const additionalDirectories = options.additionalDirectories ?? this.config.additionalDirectories;
     const cwd = this.config.cwd ?? process.cwd();
     const resumeId = options.sessionId ?? this.config.sessionId;
     const loadFailure = options.loadFailure ?? this.config.sessionLoadFailure ?? "new";
@@ -444,6 +453,7 @@ export class AcpClient implements AgentClient {
       try {
         const result = await this.loadSessionInternal(transport, resumeId, {
           mcpServers,
+          additionalDirectories,
           ...(options.onReplayUpdate ? { onUpdate: options.onReplayUpdate } : {}),
         });
         sessionId = result.sessionId;
@@ -451,12 +461,12 @@ export class AcpClient implements AgentClient {
       } catch (err) {
         this.log.warn("session_load_failed", { sessionId: resumeId, error: String(err) });
         if (loadFailure === "error") throw err;
-        sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
+        sessionId = await this.newSessionInternal(transport, cwd, mcpServers, additionalDirectories);
       }
     } else if (resumeId && loadFailure === "error") {
       throw new Error("agent does not advertise session/load for the requested internal session");
     } else {
-      sessionId = await this.newSessionInternal(transport, cwd, mcpServers);
+      sessionId = await this.newSessionInternal(transport, cwd, mcpServers, additionalDirectories);
     }
 
     return { sessionId, resumed };
@@ -487,7 +497,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories,
+        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
       } as schema.LoadSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -524,7 +534,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories,
+        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
       } as schema.ResumeSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -573,7 +583,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories,
+        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
       } as schema.ForkSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -647,10 +657,13 @@ export class AcpClient implements AgentClient {
   }
 
   /** Force a brand-new session, ignoring config.sessionId. Useful after authenticating. */
-  async newSession(options: { mcpServers?: schema.McpServer[] } = {}): Promise<ConnectResult> {
+  async newSession(
+    options: { mcpServers?: schema.McpServer[]; additionalDirectories?: string[] } = {},
+  ): Promise<ConnectResult> {
     const transport = this.requireTransport();
     const cwd = this.config.cwd ?? process.cwd();
-    const sessionId = await this.newSessionInternal(transport, cwd, options.mcpServers ?? []);
+    const additionalDirectories = options.additionalDirectories ?? this.config.additionalDirectories;
+    const sessionId = await this.newSessionInternal(transport, cwd, options.mcpServers ?? [], additionalDirectories);
     return { sessionId, resumed: false };
   }
 
@@ -658,11 +671,16 @@ export class AcpClient implements AgentClient {
     transport: AcpTransport,
     cwd: string,
     mcpServers: schema.McpServer[],
+    additionalDirectories?: string[],
   ): Promise<string> {
     this.beginCommandTransition();
     let res: schema.NewSessionResponse;
     try {
-      res = await transport.newSession({ cwd, mcpServers } as schema.NewSessionRequest);
+      res = await transport.newSession({
+        cwd,
+        mcpServers,
+        ...(additionalDirectories ? { additionalDirectories } : {}),
+      } as schema.NewSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
       throw err;
@@ -726,12 +744,16 @@ export class AcpClient implements AgentClient {
   // --- prompting ----------------------------------------------------------------
 
   prompt(
-    text: string,
+    input: string | ClientPrompt,
     handlers?: PromptHandlers,
     attachments?: Attachment[],
   ): Promise<PromptResult> {
+    // The positional form is the compatibility signature; the object form can carry parts.
+    const prompt: ClientPrompt = typeof input === "string"
+      ? { text: input, handlers, attachments }
+      : { ...input, parts: promptParts(input) };
     return new Promise<PromptResult>((resolve, reject) => {
-      this.queue.push({ text, handlers, attachments, resolve, reject });
+      this.queue.push({ ...prompt, text: prompt.text ?? "", resolve, reject });
       void this.pump();
     });
   }
@@ -757,15 +779,13 @@ export class AcpClient implements AgentClient {
     if (!this.transport) throw new NotConnectedError();
     await this.ensureSession(); // lazily create a session on first prompt
 
-    const contentBlocks: schema.ContentBlock[] = [];
-    if (item.text) contentBlocks.push({ type: "text", text: item.text });
-    for (const att of item.attachments ?? []) {
-      contentBlocks.push({
-        type: "image",
-        data: Buffer.from(att.data).toString("base64"),
-        mimeType: att.mimeType,
-      } as schema.ContentBlock);
-    }
+    const capabilities = this._capabilities?.agent.promptCapabilities;
+    const parts = await resolveParts([
+      ...(item.parts ?? (item.text ? [{ kind: "text" as const, text: item.text }] : [])),
+      ...attachmentParts(item.attachments),
+    ], { cwd: this.config.cwd ?? process.cwd(), capabilities });
+    assertPartCapabilities(parts, capabilities);
+    const contentBlocks = partsToAcp(parts);
     if (contentBlocks.length === 0) contentBlocks.push({ type: "text", text: "" });
 
     this.active = {
@@ -775,7 +795,7 @@ export class AcpClient implements AgentClient {
     };
     const t0 = Date.now();
     this.log.debug("prompt_start", { chars: item.text.length });
-    this.log.debug("prompt_request", { sessionId: this._sessionId, prompt: contentBlocks });
+    this.log.debug("prompt_request", { sessionId: this._sessionId, prompt: redactMedia(contentBlocks) });
     try {
       const res = await this.transport.prompt({
         sessionId: this._sessionId,
@@ -907,6 +927,9 @@ export class AcpClient implements AgentClient {
       this.active.handlers?.onChunk?.(chunk.text);
     }
     const activity = toActivityEvent(update);
+    // Text after a new tool call is a new message, even when the agent sends no message ids.
+    // Tool updates do not split: a running tool's output can arrive while the agent writes.
+    if (activity?.kind === "tool") this.active.response.closeMessage();
     if (activity) this.active.handlers?.onActivity?.(this.enrich(activity));
   }
 
