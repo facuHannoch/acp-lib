@@ -58,3 +58,18 @@ file changes are recorded. Symlinks do not establish a portable permission bound
 These are small acceptance probes. They do not cover large-file/provider limits, all audio
 models, strict sandbox variants, remote mounts, image/audio output from real models, or every
 MIME type. Deterministic fixture tests cover output parts, replay and storage separately.
+
+## 2026-10-25 rerun: embedded copies with the `attachment:///` uri
+
+Embedded copies now carry `attachment:///<name>` instead of `file:///<name>`. Text-file and PDF copies
+only, one throwaway session per harness, deleted afterwards:
+
+| Harness | Embedded text file | PDF blob copy |
+|---|---|---|
+| Claude (default model) | marker read | `UNAVAILABLE` (as before) |
+| Codex (default model) | marker read | marker read |
+| OpenCode, `opencode-go/deepseek-v4.1-flash` | marker read | `UNAVAILABLE`: "this model does not support PDF input" |
+
+OpenCode's PDF result is the model's, not the uri's: the same run with the old `file:///` uri gave
+the same answer. The 2026-10-24 OpenCode PDF read used `gpt-6-luna`.
+

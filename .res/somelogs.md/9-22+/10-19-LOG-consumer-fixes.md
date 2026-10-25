@@ -768,3 +768,19 @@ Agent per run (scratch SQLite and cwd), conversation deleted afterwards (OpenCod
 Stale means the provider neither sends output nor ends the turn within the limits; a turn that ends
 with no reply completes. A turn without an agent message has no assistant record, so with
 `listRecent({ agentMessages })` its records go on the page of the next agent message.
+
+## 2026-10-25, release checks
+
+- Package: `files` now ships every changelog and the migration guide; the consumer-fixes changelog is
+  marked unreleased (planned 0.12.0); the lifecycle one notes it is on `beta` at 0.11.2.
+- Correction: requirement 12 (Codex steer delay) was never investigated. The 2026-10-23 "item 12"
+  run was review item 12. Fixed in the TODO and the migration guide.
+- Review of `7da45ff` (the fixes to the message-parts implementation): one gap fixed in `304f2dd`.
+  With `capture.media: "none"` an out-of-band link was not recorded, yet the message counted as
+  restorable from its record, so the link was lost at delivery; the rule now also compares recorded
+  media blocks with the message's media parts. Deleting a conversation now forgets its waiting
+  parts. Both tests fail without the fix. Suite: 1095 pass.
+- Embedded-copy uri rerun on real harnesses: see `smoke-tests/media/README.md`. No harness rejects
+  `attachment:///`. Claude still ignores PDFs; OpenCode's DeepSeek model has no PDF input (same with
+  the old uri). Sessions deleted (OpenCode with `opencode session delete`).
+
