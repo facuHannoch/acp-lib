@@ -730,3 +730,14 @@ disk (ignored by git).
 
 **Checks.** Typecheck clean; full suite **1093 pass, 0 fail**; end-to-end smoke on the test
 adapter passed every phase, including media (scratch data directory, provider deletion skipped).
+
+## 2026-10-25, migration guide for agents-core
+
+`MIGRATION-0.10-to-0.12.md`: agents-core pins `0.10.2`, so the guide covers `0.11.0`, the operation
+lifecycle and the requirements work. Written against agents-core's actual use (read only): its
+`listRecent({ limit })` paging, the `chat-attachments` side store joined by operation id,
+`projectSqliteChatRecord` (keeps only `text` blocks, so `pasted` text would disappear; unknown kinds
+become activities, so `cancellation` records show up), and its `delivery: "steer"` prompts. Breaking
+items found while writing it: attachments now go as their real kind (a non-image attachment to an agent
+without `embeddedContext` is refused; before, everything went as `image`), and the 120/180 s stall limits
+fail silent turns. Version `0.12.0` is a proposal; nothing is merged or published.
