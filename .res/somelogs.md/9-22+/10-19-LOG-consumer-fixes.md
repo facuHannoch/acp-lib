@@ -674,3 +674,59 @@ Run after the final automated review and corrective commit `1b9ba87`.
   unadvertised by the installed harnesses. The Claude blob limitation remains documented.
 - No regression or additional code change was required by the manual pass. Final working-tree
   review found only the original consumer edits/untracked files; implementation work is committed.
+
+## 2026-10-25, review of the message-parts implementation, and fixes
+
+Reviewed the 11 commits above against the design and the code. Suite and typecheck were green;
+the findings below were fixed in `7da45ff` (code) and `2008ae4` (docs).
+
+**Bugs fixed.**
+- Out-of-band media blocked the conversation: an image appended for an agent without image
+  support was attached to the next turn, the capability check refused the whole prompt, delivery
+  never advanced, and every later turn failed (confirmed with a scratch test, two turns in a row).
+  Now delivery checks each out-of-band part against the agent: a copy it cannot take becomes a
+  line `[image plot.png: not supported by this agent]`; a PTY agent gets every media part as a line.
+  The user's own explicit copies are still refused. Test: `no-media` fixture mode.
+- Embedded copies were sent with `file:///<name>`, a root path that does not exist. They now use
+  `attachment:///<name>` (`EMBEDDED_URI_SCHEME`). Not yet re-run on real harnesses: the step 8
+  probes used the old uri.
+- A link from the agent without a size was recorded as 0 bytes. `size` is optional on resolved
+  parts and media blocks. An explicit link to a file that cannot be read is sent without a size
+  (the library does not open links); a part with no mode still needs the file. The files search
+  coalesces a missing size.
+
+**Design change, decided (design changes 5 and 6 of the review).**
+- No pending envelopes in the media store. The agent's version wrote `keep: false` and
+  `record: false` out-of-band bytes into the store (SQLite, or the consumer's) until delivery,
+  contradicting "not kept" / "not recorded", leaving them forever if never delivered, putting
+  library JSON in consumer stores, and listing the whole conversation's media per message per
+  turn. Now a message is delivered from its record when the record can restore it (text captured,
+  every copy kept, no unrecorded part); otherwise its parts wait in memory (`media/pending.ts`,
+  per Agent). After a restart, a copy without bytes is named (`[image: not available]`) and an
+  unrecorded part is gone. Missing bytes (deleted copy) are named the same way instead of failing
+  the turn. `MediaInfo.pendingFor` and the `pending_for` column are removed (schema 16 is not
+  released).
+- The `outOfBandDelivery` cursor stays: delivery must not depend on captured text.
+
+**Maintainability.**
+- One composer, `composeProviderParts`; `composeProviderPrompt` and `providerParts` (which cut the
+  composed string back apart at `<current-message>`) are removed, and so is `providerText`.
+- Media capture is applied only in `persistParts`, the only place media blocks are built;
+  `captureRuntimeRecord` handles message text only. The hidden Symbol marker is gone.
+- Off the public types: `ClientPrompt.resolvedParts` (owned conversations send their resolved
+  parts back in input form, `unresolvedParts`) and `Agent.pendingMessageParts`.
+- `ResponseAccumulator.currentParts()` replaces a full `snapshot()` per chunk.
+- Formatting of the media modules and integration code to the codebase's style; imports moved
+  below file headers; named helpers in the lifecycle (`mediaStore`, `withStoredParts`) and the
+  session (`legacyTranscriptText`, `legacyTranscriptMessages`, `promptInputText`). Long assertion
+  lines in the media tests remain; the test setup and the in-memory store were restructured.
+- Kept as is: `partsText` joins text parts with nothing, because text parts are segments of one
+  text (separators are their own parts); `contentText` joins blocks with newlines for search.
+
+**Noted, not changed.** The OpenCode probe ran on the configured OpenCode Go model (`gpt-6-luna`)
+because the default account's key had expired, not on DeepSeek V4.1 Flash. Measurement JSONs
+include absolute paths under the home directory; `smoke-tests/media/.sandbox-probes/` is left on
+disk (ignored by git).
+
+**Checks.** Typecheck clean; full suite **1093 pass, 0 fail**; end-to-end smoke on the test
+adapter passed every phase, including media (scratch data directory, provider deletion skipped).
