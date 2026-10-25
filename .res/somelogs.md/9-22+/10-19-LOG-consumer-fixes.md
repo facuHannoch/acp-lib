@@ -741,3 +741,18 @@ become activities, so `cancellation` records show up), and its `delivery: "steer
 items found while writing it: attachments now go as their real kind (a non-image attachment to an agent
 without `embeddedContext` is refused; before, everything went as `image`), and the 120/180 s stall limits
 fail silent turns. Version `0.12.0` is a proposal; nothing is merged or published.
+
+## 2026-10-25, a prompt that asks for no reply
+
+Prompt: "the answer to p is 4, just read and understand that, do not respond anything". Throwaway
+Agent per run (scratch SQLite and cwd), conversation deleted afterwards (OpenCode's session with
+`opencode session delete`, it has no ACP delete).
+- Fixture ending the turn with no update: `completed`, empty text, no assistant record, 20 ms.
+- Fixture never answering (`firstOutputMs: 3000`): `OperationStalledError` (`no_response`) after
+  3 s plus the 30 s cancel grace; records `cancellation` requested/resolved and `error`.
+- Claude (default model): `completed` in 5.9 s, replied "Noted.".
+- Codex (default model): `completed` in 4.2 s, empty text, no assistant message recorded.
+- OpenCode (DeepSeek V4.1 Flash via `OPENCODE_CONFIG_CONTENT`): `completed` in 3.5 s, "Noted.".
+Stale means the provider neither sends output nor ends the turn within the limits; a turn that ends
+with no reply completes. A turn without an agent message has no assistant record, so with
+`listRecent({ agentMessages })` its records go on the page of the next agent message.
