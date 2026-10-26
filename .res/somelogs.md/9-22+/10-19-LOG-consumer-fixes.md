@@ -845,3 +845,26 @@ link fails the same way as a copy; the error reaches us as a failed prompt. None
 watches video. What worked anywhere was an agent extracting frames with its own tools (Codex; DeepSeek
 once). Practical route: the consumer extracts frames (ffmpeg) and sends them as images, which every
 candidate but GLM 5.3 reads.
+
+## 2026-10-26, video: Codex on Luna, OpenCode on Sol, Grok
+
+Same clip and probe; model set for the session only (`setConfig("model")` on Codex,
+`OPENCODE_CONFIG_CONTENT` on OpenCode). The earlier Codex run used the configured `gpt-6.1-sol`.
+- **Codex, `gpt-6-luna`.** Copy: "CANNOT_VIEW_VIDEO" after trying. Link: read correctly (green,
+  `VIDEO7731`) by extracting frames with its tools. codex-acp pastes a non-image blob into the prompt
+  as base64 text (`<context ... encoding="base64">`), so a copy only works if the model decodes it
+  itself (Sol did, Luna did not), and a real-size video would be millions of tokens.
+- **OpenCode, `opencode/gpt-6.1-sol`.** Not run: the OpenCode (Zen) API key has expired ("Create a new
+  API key in OpenCode Console"); OpenCode Go has no Sol.
+- **Grok** (`grok agent stdio`, Grok 1.0.70, its own `grok-4.7`). Speaks ACP; advertises image and
+  embedded context. It saves an embedded copy to a file of its own
+  (`/tmp/grok-test-sessions-*/attachments/`), so copy and link both reach its tools. Both turns
+  extracted frames with ffprobe/ffmpeg, but its image viewing failed, so it tried pixel OCR in Python;
+  both turns ended `cancelled` when a permission request was refused (Grok ends the turn on a denied
+  permission). First run: every command refused by the probe (no path match). Second run: a looser
+  probe filter allowed ffmpeg-related commands. That filter wrongly approved one command containing
+  `sudo apt-get install tesseract-ocr`; it did nothing (sudo needs a password; nothing installed,
+  apt log unchanged). Removed Grok's leftovers: `/tmp/video-frames`, `/tmp/marker-frames`,
+  `/tmp/grok-test-sessions-*` (only the clip and frames) and the five session folders under
+  `~/.grok/sessions/` for the throwaway working directories. Grok has no ACP `session/delete`.
+- Lesson for probes: approve by exact command, never by substring.
