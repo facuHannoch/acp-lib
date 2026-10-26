@@ -59,7 +59,8 @@ export const ADAPTERS = {
   pi: { command: ["pi-acp"], ptyCommand: ["pi"], displayName: "Pi" },
   // verified — xAI's Grok Build (`grok` CLI, 1.0.70). ACP over `grok agent stdio`; xAI advises
   // `--no-auto-update` for ACP in automated use, so a session does not start a background update.
-  // No `session/delete`: its sessions live in folders under ~/.grok/sessions/.
+  // No `session/delete`: its sessions live in folders under ~/.grok/sessions/. Only the ACP command
+  // is verified; the pty command (its interactive TUI) has not been run in degraded mode.
   grok: { command: ["grok", "--no-auto-update", "agent", "stdio"], ptyCommand: ["grok"], displayName: "Grok Build" },
   // Below: from each project's docs, not spawned here. Correct at time of writing, unverified.
   gemini: { command: ["gemini", "--acp", "--stdio"], ptyCommand: ["gemini"], displayName: "Gemini" },
