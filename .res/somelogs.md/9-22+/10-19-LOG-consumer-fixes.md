@@ -826,3 +826,22 @@ three turns (dominated by OpenCode's ~13k-token system prompt, mostly cached; no
 | kimi-k2.7-code | ok, 7.0 s | ok | ok | yes | $0.0202 | ×12 |
 
 All report usage with cache counts and a cost through ACP, so metering works for each.
+
+## 2026-10-26, video on the candidate models (OpenCode Go)
+
+Same clip and probe as the video run above; each case in a fresh session (deleted after), copy runs
+with no file on disk.
+
+| Model | Copy | Link |
+|---|---|---|
+| gpt-6-luna | "does not support video input" | "cannot view" (did not try tools) |
+| deepseek-v4.1-flash | "cannot read video input" | "cannot view" (the earlier run extracted frames with tools and read it: model behaviour varies) |
+| glm-5.3-flash | turn **fails**: `'file part media type video/mp4' functionality not supported` | same failure |
+| glm-5.3 | "does not support video input" | "cannot view" |
+| kimi-k2.7-code | turn **fails**, same error | same failure |
+
+OpenCode turns a `video/*` resource link into a file attachment too, so for models without video the
+link fails the same way as a copy; the error reaches us as a failed prompt. None of the candidates
+watches video. What worked anywhere was an agent extracting frames with its own tools (Codex; DeepSeek
+once). Practical route: the consumer extracts frames (ffmpeg) and sends them as images, which every
+candidate but GLM 5.3 reads.
