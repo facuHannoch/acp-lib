@@ -808,3 +808,21 @@ preset points at the deprecated Gemini CLI, which is not installed; to revisit.
 
 So video works as a link with harnesses whose tools can extract frames (and permission to run
 them), and as a copy only where the harness turns the blob into something the model can use (Codex).
+
+## 2026-10-26, candidate models through OpenCode Go
+
+No OpenRouter key on this machine (OpenCode has only OpenCode and OpenCode Go credentials), so the
+five candidates ran through OpenCode Go, model set per run with `OPENCODE_CONFIG_CONTENT`. One
+throwaway session each (deleted after), three turns: read a file with a tool and return its marker,
+recall it, name the color of a red PNG copy. Cost is OpenCode's reported session total after the
+three turns (dominated by OpenCode's ~13k-token system prompt, mostly cached; not a real workload).
+
+| Model | Tool | Recall | Image | Thinking reported | Session cost | vs Luna |
+|---|---|---|---|---|---|---|
+| gpt-6-luna | ok, 4.3 s | ok | ok | no | $0.0017 | ×1 |
+| deepseek-v4.1-flash | ok, 6.0 s | ok | ok | no | $0.0040 | ×2.3 |
+| glm-5.3-flash | ok, 3.8 s | ok | ok | yes | $0.0032 | ×1.9 |
+| glm-5.3 | ok, 4.8 s | ok | **no**: "no image attached" (text only) | yes | $0.0296 | ×17 |
+| kimi-k2.7-code | ok, 7.0 s | ok | ok | yes | $0.0202 | ×12 |
+
+All report usage with cache counts and a cost through ACP, so metering works for each.
