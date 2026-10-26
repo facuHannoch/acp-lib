@@ -326,9 +326,12 @@ const session = await AgentSession.create({
 
 await session.prompt("Start working on the auth module.");
 
-// later. List everything we know about, catalog ∪ the agent's live list
-for (const s of await session.listSessions()) {
-  console.log(s.source, s.agentSessionId, s.title); // source: "catalog" | "agent" | "both"
+// later. List the two separately through an Agent (`Agent.open`, see the consumer guide);
+// the merged `session.listSessions()` is deprecated
+const { conversations } = await agent.conversations.list(); // our catalog
+for (const c of conversations) console.log(c.agentConversationId, c.agentSessionId, c.title);
+for (const s of await agent.conversations.listProviderSessions()) { // the harness's own sessions
+  console.log(s.providerSessionId, s.title, s.adoptedBy); // adoptedBy: the conversation that owns it, if any
 }
 
 await session.stop();
@@ -575,6 +578,3 @@ bun test              # unit tests
 bun run check         # typecheck + test
 ```
 
-## License
-
-[MIT](./LICENSE) © Facundo Hannoch

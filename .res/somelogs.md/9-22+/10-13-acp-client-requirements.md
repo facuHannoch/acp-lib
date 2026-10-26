@@ -203,3 +203,120 @@ side can do this from records), or emit a `message_completed` event live.
 Consumer-side follow-ups after a release: bump agents-core; read record
 operation ids; page by turns; show turn end and setting changes; media parts;
 `share` as messages; call-mode wrapper.
+
+
+
+
+
+---
+
+
+
+Agreed: there's no need to copy the JSONL model.
+
+## What SQLite has per agent and per conversation
+
+One database belongs to one agent (`agent_identity` holds a single row). Inside it:
+
+| Scope                 | Tables                                                                                                                                                                                                                                                        |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent                 | `agent_identity`, `agent_metering_state`, `agent_metering_records`, `identity_state` / `identity_memories` / `identity_snapshots`, the audit tables                                                                                                           |
+| Conversation          | `conversations` (one row per conversation), `conversation_records` plus its detail tables, `provider_sessions`, `conversation_metering_state`, `conversation_recovery_checkpoints`, `conversation_checkpoints` (the unused one: a JSON blob per conversation) |
+| Between conversations | `identity_delivery_cursors`: how far one conversation's history has been delivered into another conversation's harness session. You're right that this is a different thing                                                                                   |
+
+## How I'd store settings on SQLite
+
+Settings belong to the conversation, and also to its harness: a `model` value only means something for the adapter it was chosen on. So I'd use a small dedicated table rather than the JSON blob:
+
+```
+conversation_settings(
+  agent_conversation_id, adapter_id, config_id,   -- key
+  value_json, ordinal, chosen_at
+)
+```
+
+- **Current state next to a log.** It follows the pattern metering already uses: `metering_records` is the log and `conversation_metering_state` is the current state. Here the `configuration` records are the log, and this table is the current state.
+- **Updated in place.** `setConfig` upserts one row in the same transaction as its record, with no revision or covered-sequence bookkeeping.
+- **Restore on reopen.** Select the rows for the conversation's current adapter, in `ordinal` order, and re-apply each value the harness doesn't already have.
+- **Adapter changes.** After a handoff to another harness, the old adapter's rows simply don't apply. That's correct, since those values may mean nothing to the new harness.
+- **Queryable.** "Which conversations use model X" is a plain query, which isn't possible with a JSON blob.
+
+The crash marker, if we confirm it's missing, is a separate question. It would most likely be a column on `conversations` or on the active `provider_sessions` row, not part of this table.
+
+## Identity with JSONL
+
+You're right that it isn't allowed, but by API, not by accident:
+- Identity, memories and delivery cursors only exist on `Agent`.
+- `Agent.open` only accepts SQLite or a custom backend (`src/agent/config.ts:35`).
+- `SessionManager` and `AgentSession` with JSONL have no identity option at all.
+
+So nothing breaks, because it can't be configured. On the limit: JSONL isn't strictly one conversation, since a `SessionManager` root keeps one file per conversation and can manage many. But each file stands alone. Anything that spans conversations (identity, delivering one conversation's history into another, search across conversations) needs the shared database.
+
+Do you want me to add "settings restore for SQLite conversations (a `conversation_settings` table)" to the list in the "needs some thought" group?
+
+
+
+
+
+
+
+
+
+
+
+
+# recap
+
+## Branches (nothing pushed)
+
+| Branch                                                                 | State                                                                                                                                  |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `beta`                                                                 | Has the lifecycle merge (`edcddd0`). 81 commits ahead of `origin/beta`                                                                 |
+| `session-loading`                                                      | Has the lifecycle merge (`6033269`)                                                                                                    |
+| `operation-lifecycle`                                                  | 2 commits newer than the merge: s1 covered on OpenCode (`62a48e0`), and the test7 compaction note with its update recorder (`1cd5f86`) |
+| `consumer-small-fixes` (checked out, taken from `operation-lifecycle`) | 6 commits, below. All 1047 tests pass; the end-to-end smoke test passes on the deterministic adapter                                   |
+
+## Done on `consumer-small-fixes`
+
+- **4. Settings re-applied with the same value** are no longer recorded.
+- **5 / 13. Message completion.**
+  - each message is stored as completed when the next message or a tool call begins, with its real time;
+  - only the last message takes the turn's outcome;
+  - items have `startedAt` / `updatedAt`, and `timestamp` is deprecated.
+- **A tool call ends the message before it**, even when the agent sends no message ids.
+- **1. Every record carries the operation that wrote it**, including the cases that needed extra handling:
+  - a typed `operationId` on records, and the `records.list({ operationId })` filter;
+  - a tool call keeps the operation that announced it;
+  - checkpoint records and appended messages carry their own operation ids;
+  - schema 15 recovers the id on older databases;
+  - the end-to-end smoke test checks it.
+- **9. Capabilities:** no change needed, since they come from `initialize`.
+
+**Not covered by tests:**
+- a turn that fails after an earlier message ended, which should leave that message `completed`;
+- a tool update arriving during a later turn;
+- a real-harness run of the updated end-to-end test.
+
+## Open, from the list
+
+**Contained:**
+- **3.** Store how a turn ended (`endedBy`, `followedBy`).
+- **11.** Claude conversations store almost no thinking; investigate first.
+- **12.** Codex steers delayed by about 5 minutes; investigate first.
+- **OpenCode's compaction summary** shows up as reply text.
+- **Crash marker on SQLite:** after a restart, does the conversation know the last turn was cut off?
+
+**Needs design:**
+- **2.** Paging by turns. Item 1 now makes it possible. To settle: storing each operation's kind, and how to handle operations that interleave.
+- **6 / 7 / 8 / 10.** Messages made of parts.
+- **Automatic rotation** for long sessions.
+- **Settings restore for SQLite conversations** (low priority).
+
+## Waiting on you
+
+- **Review and merge `consumer-small-fixes`.** Then push the branches.
+- **Your README:** the `listSessions()` example is changed but uncommitted.
+- **OpenCode issue draft:** `/tmp/claude-1000/-home-ffacu-q-apps-libs-acp-lib/c1661365-5cbb-4d34-80ae-fb4cc55875f9/scratchpad/opencode-issue-draft.md`, not posted.
+- **`10-13-acp-client-requirements.md`** has an edit that isn't mine. I left it uncommitted.
+
+The natural next step is item 2, since item 1 was its foundation, or item 3, which is small and also feeds paging.
