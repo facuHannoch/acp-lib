@@ -786,3 +786,25 @@ with no reply completes. A turn without an agent message has no assistant record
   `attachment:///`. Claude still ignores PDFs; OpenCode's DeepSeek model has no PDF input (same with
   the old uri). Sessions deleted (OpenCode with `opencode session delete`).
 
+
+## 2026-10-26, video
+
+ACP has no video block (content blocks: text, image, audio, resource_link, resource). The library
+treats `video/*` as a `file`: a copy is an embedded blob (needs `embeddedContext`), or a link.
+
+Probe: a 3-second 320x240 H.264 clip made with ffmpeg (green background, white text `VIDEO7731`),
+6.5 KB. Each case in a fresh throwaway session (deleted after); copy runs had no file on disk, so the
+agent could not open it with its tools.
+
+| Harness | Copy (embedded `video/mp4` blob) | Link |
+|---|---|---|
+| Claude (default model) | not seen: the adapter drops blobs | path only; its Read tool cannot open video; it tried ffmpeg for a frame, but our test's permission handler cancelled the command |
+| Codex (default model) | read correctly (12 s, it inspected a frame) | read correctly (with tools) |
+| OpenCode, DeepSeek V4.1 Flash | "this model does not support video input" | read correctly (extracted frames with tools) |
+
+`agy` (Antigravity CLI 1.4.7, the Gemini CLI replacement) has no ACP mode, so the library cannot
+drive it; in its own print mode it read the clip (green, text read as `VIDEO07731`). The `gemini`
+preset points at the deprecated Gemini CLI, which is not installed; to revisit.
+
+So video works as a link with harnesses whose tools can extract frames (and permission to run
+them), and as a copy only where the harness turns the blob into something the model can use (Codex).
