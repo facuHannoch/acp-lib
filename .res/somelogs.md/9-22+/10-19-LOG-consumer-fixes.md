@@ -200,7 +200,8 @@ To do:
   attach the referenced terminal's output; store it as the tool's output text (size cap).
 - Before building: one short run per harness (Codex, Kimi, Claude, Pi), one command each, protocol
   capture with bodies, to see exactly what arrives. Needs authorization (tokens).
-- Presets: add Grok Build (`grok agent stdio`, ACP, early beta, SuperGrok Heavy) as unverified,
+- Presets: add Grok Build (`grok agent stdio`, ACP, early beta, SuperGrok Heavy) as unverified (done
+  2026-10-26 as `grok`, verified; see that entry),
   like `gemini` / `copilot`.
 
 Related harness-specific gaps, added 2026-10-25 (the same per-harness runs can cover them):
@@ -868,3 +869,23 @@ Same clip and probe; model set for the session only (`setConfig("model")` on Cod
   `/tmp/grok-test-sessions-*` (only the clip and frames) and the five session folders under
   `~/.grok/sessions/` for the throwaway working directories. Grok has no ACP `session/delete`.
 - Lesson for probes: approve by exact command, never by substring.
+
+## 2026-10-26, Grok Build preset
+
+`ADAPTERS.grok`: `["grok", "--no-auto-update", "agent", "stdio"]`, pty `["grok"]`, display name
+"Grok Build" (xAI's and the Zed ACP registry's name; not "Grok Builder CLI"). `--no-auto-update` is
+xAI's advice for ACP in automated use; checked that 1.0.70 accepts it before `agent stdio`.
+- Measured without a model call: protocol 1; `loadSession`, image and embedded context (no audio),
+  MCP over http and sse; session list, resume and close, no delete, no fork, no
+  `additionalDirectories`. Auth: `cached_token` (~/.grok/auth.json) or Grok sign-in.
+- A `session/load` of an unknown id fails with code -32603, `Path not found.`,
+  `data.code: "FS_NOT_FOUND"`. Not recognised before, so a lost Grok session would not have fallen
+  back to checkpoint recovery. Matched exactly in `isMissingProviderSessionError` (message and
+  `FS_NOT_FOUND`), with tests for it and for a different `data.code`. A missing working directory
+  fails earlier, at spawn, so it cannot be mistaken for this.
+- From the video run: Grok saves an embedded copy to a file of its own, and ends the turn
+  (`cancelled`) when a permission request is refused.
+- Not added: a metering provider mapping (`xai`). Usage reporting and model ids against models.dev
+  are unverified, and a SuperGrok subscription is not billed at API prices.
+- README's preset list (line 64) needs `grok`; README has the user's uncommitted edits, left to them.
+

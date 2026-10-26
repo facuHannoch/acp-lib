@@ -41,6 +41,17 @@ describe("checkpoint recovery", () => {
       message: "Internal error",
       data: { details: "session 01a1 is archived. Run `codex unarchive 01a1` to unarchive it first." },
     })).toBeTrue();
+    // Grok Build, `session/load` of an id it has no file for (measured on grok 1.0.70).
+    expect(isMissingProviderSessionError({
+      code: -32603,
+      message: "Path not found.",
+      data: { detail: "No such file or directory (os error 2)", code: "FS_NOT_FOUND" },
+    })).toBeTrue();
+    expect(isMissingProviderSessionError({
+      code: -32603,
+      message: "Path not found.",
+      data: { code: "FS_PERMISSION_DENIED" },
+    })).toBeFalse();
     expect(isMissingProviderSessionError({ code: -32603, message: "Internal error" })).toBeFalse();
     expect(isMissingProviderSessionError(new Error("authentication failed"))).toBeFalse();
   });

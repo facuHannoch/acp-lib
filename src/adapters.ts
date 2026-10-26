@@ -57,6 +57,10 @@ export const ADAPTERS = {
   // @automatalabs/pi-acp embeds Pi through its SDK and publishes the `pi-acp` binary.
   // Pi itself remains the interactive PTY command for bridge/degraded mode.
   pi: { command: ["pi-acp"], ptyCommand: ["pi"], displayName: "Pi" },
+  // verified — xAI's Grok Build (`grok` CLI, 1.0.70). ACP over `grok agent stdio`; xAI advises
+  // `--no-auto-update` for ACP in automated use, so a session does not start a background update.
+  // No `session/delete`: its sessions live in folders under ~/.grok/sessions/.
+  grok: { command: ["grok", "--no-auto-update", "agent", "stdio"], ptyCommand: ["grok"], displayName: "Grok Build" },
   // Below: from each project's docs, not spawned here. Correct at time of writing, unverified.
   gemini: { command: ["gemini", "--acp", "--stdio"], ptyCommand: ["gemini"], displayName: "Gemini" },
   copilot: { command: ["copilot", "--acp", "--stdio"], ptyCommand: ["copilot"], displayName: "Copilot" },

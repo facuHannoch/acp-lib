@@ -13,6 +13,9 @@ Released in 0.12.0. Upgrading from 0.10.x: see `MIGRATION-0.10-to-0.12.md`.
   failing the turn. See the consumer guide for store and out-of-band delivery contracts.
 
 
+- **Grok Build preset.** `ADAPTERS.grok` launches xAI's Grok Build over ACP
+  (`grok --no-auto-update agent stdio`). A Grok session that no longer exists is recognised as
+  missing, so checkpoint recovery applies to it.
 - **Message boundaries.** A new tool call now ends the assistant message before it, also when the
   agent sends no message ids (before, message → tool → message was one message). Tool updates
   do not split. Applies to the live `result.messages` and to stored messages.

@@ -35,6 +35,13 @@ export function isMissingProviderSessionError(
     && message.toLowerCase() === "internal error: opencode service failure"
     && data?.service === "session"
   ) return true;
+  // Grok Build reports a session file it cannot find as a generic internal error; its error code
+  // `FS_NOT_FOUND` is the machine-readable signal, so match it exactly, with the message.
+  if (
+    value?.code === -32603
+    && message === "Path not found."
+    && data?.code === "FS_NOT_FOUND"
+  ) return true;
   // ACP's standard "resource not found". This classifier only sees `session/load` failures, so the
   // resource is the session (Claude reports a missing session this way).
   if (value?.code === -32002) return true;
