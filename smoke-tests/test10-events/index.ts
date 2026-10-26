@@ -23,6 +23,7 @@ const databasePath = join(directory, "agent.sqlite");
 const adapters: Record<string, Adapter> = {
   codex: ADAPTERS.codex,
   opencode: ADAPTERS.opencode,
+  grok: ADAPTERS.grok,
 };
 const adapterId = process.env.ACP_TEST10_ADAPTER?.trim() || "codex";
 assert.ok(adapters[adapterId], `unknown ACP_TEST10_ADAPTER: ${adapterId}`);

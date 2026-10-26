@@ -8,6 +8,7 @@ A turn is cancelled after 45 seconds and bounded at 55 seconds.
 bun run smoke-tests/media/real-harness.ts claude
 bun run smoke-tests/media/real-harness.ts codex
 bun run smoke-tests/media/real-harness.ts opencode
+bun run smoke-tests/media/real-harness.ts grok
 ```
 
 Options are environment variables:
@@ -72,4 +73,15 @@ only, one throwaway session per harness, deleted afterwards:
 
 OpenCode's PDF result is the model's, not the uri's: the same run with the old `file:///` uri gave
 the same answer. The 2026-10-24 OpenCode PDF read used `gpt-6-luna`.
+
+## 2026-10-26: Grok Build (grok 1.0.70, `grok-4.7`)
+
+| Image copy | Embedded text file | PDF blob copy | Audio | File link |
+|---|---|---|---|---|
+| not seen: "too small to view" (the probe's 16x16 PNG; a 256x256 red PNG was read) | marker read | `UNAVAILABLE` | unadvertised | marker read |
+
+Paths: the undeclared direct and symlink targets were read and modified (symlink preserved). The
+declared run first failed with `Invalid params`: Grok does not advertise additional directories and
+refused the session request that carried them. The client now leaves them out when unadvertised, and
+the declared direct case then completed. Grok saves an embedded copy to a file of its own.
 

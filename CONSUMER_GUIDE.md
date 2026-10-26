@@ -179,7 +179,8 @@ copies are refused using the agent's prompt capabilities; an automatic path sour
 to a link. PTY mode refuses media parts.
 
 Declare shared directories with `conversationDefaults: { additionalDirectories: ["/shared"] }`
-or a conversation's `runtime.additionalDirectories`. They reach ACP session creation/load;
+or a conversation's `runtime.additionalDirectories`. They are sent only to an agent that advertises
+`sessionCapabilities.additionalDirectories` (otherwise left out, with a warning). They reach ACP session creation/load;
 the harness applies its own permissions. The library does not restrict pointers. A harness on
 another machine or in an isolated container needs a shared mount or a copy.
 

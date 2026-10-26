@@ -2,7 +2,9 @@
 // Operation lifecycle smoke test: freezes, kills and cancels a real (or mock) harness and checks that
 // every request ends visibly and the conversation keeps working. Scenarios and variables: README.md.
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent, ADAPTERS, AcpClient, type Adapter } from "../../src/index.ts";
 import { ToolTracker } from "../../src/operations/activity-tracker.ts";
@@ -210,7 +212,8 @@ async function s1(): Promise<void> {
 
 /**
  * Delete a session in the harness, as if the harness had lost it: through `session/delete`, or for
- * OpenCode, which does not offer it over ACP, through its CLI. Only sessions this run created.
+ * OpenCode, which does not offer it over ACP, through its CLI, and for Grok by removing its session
+ * folder. Only sessions this run created.
  */
 async function deleteInHarness(internalSessionId: string): Promise<void> {
   const client = new AcpClient({ adapter, ...harnessEnv });
@@ -222,6 +225,14 @@ async function deleteInHarness(internalSessionId: string): Promise<void> {
     }
   } finally {
     await client.stop();
+  }
+  if (adapterId === "grok") {
+    // Grok keeps each session as a folder named by its id, under a folder per working directory.
+    const root = join(homedir(), ".grok", "sessions");
+    const owners = (await readdir(root)).filter((owner) => existsSync(join(root, owner, internalSessionId)));
+    if (owners.length !== 1) throw new Error(`s6: grok session ${internalSessionId} found ${owners.length} times`);
+    await rm(join(root, owners[0]!, internalSessionId), { recursive: true });
+    return;
   }
   if (adapterId !== "opencode") throw new Error(`s6: ${adapterId} cannot delete a session`);
   const cli = Bun.spawn(["opencode", "session", "delete", internalSessionId], { stdout: "ignore", stderr: "pipe" });

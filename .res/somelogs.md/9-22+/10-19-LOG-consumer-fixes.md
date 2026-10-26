@@ -889,3 +889,40 @@ xAI's advice for ACP in automated use; checked that 1.0.70 accepts it before `ag
   are unverified, and a SuperGrok subscription is not billed at API prices.
 - README's preset list (line 64) needs `grok`; README has the user's uncommitted edits, left to them.
 
+## 2026-10-26, Grok Build end-to-end
+
+Every real-harness smoke test that can take an adapter, on `ADAPTERS.grok` (grok 1.0.70, its own
+`grok-4.7`), throwaway data directories. Grok added to the adapter choices of end-to-end, test8
+internal inference, test9, test10 and the media probe; test13's lost-session scenario deletes a Grok
+session by removing its folder (Grok has no `session/delete`).
+
+| Test | Result |
+|---|---|
+| end-to-end | all PASS: turns, reopen with recall, paging (5 pages, 273 records), checkpoint, metering, media, audit (667 entries) |
+| test13 lifecycle | s2, s3, s4, s5 PASS. s6 (lost session) PASS with the default 120/180 s limits; with the run's 15 s limits the checkpoint seed was cancelled (it took 14 s on the rerun). s1 not exercised: Grok runs `pwd` without asking permission |
+| test4 permissions | builtin, shell, mcp PASS (standard option kinds; approved tools ran). mcp-json FAIL: Grok does not load a project `.mcp.json` in an untrusted folder (its folder-trust rule) |
+| test10 events | all PASS |
+| test9 identity | PASS: cross-conversation recall, new-conversation awareness |
+| test8 internal inference | PASS, metered |
+| test11 steering | all behaviour checks PASS (steer, combined steers, interrupt after streaming, interrupt during a tool); the two metering checks FAIL: Grok reports no usage |
+| test12 adoption | all PASS, on the end-to-end run's own session |
+| media probe | text file and link read; PDF blob not seen; the 16x16 image "too small" (256x256 read); declared directories failed, see below |
+
+Found and fixed: the client sent `additionalDirectories` to agents that do not advertise them
+(the default added in step 7 of message parts reaches new, load, resume and fork). ACP gates the
+field on `sessionCapabilities.additionalDirectories`; Grok answered `Invalid params` and refused the
+session. Now left out when unadvertised, with a warning log; tests for both cases (the media fixture
+advertises it; `no-directories` does not). The declared case then passed on Grok. Suite: 1096 pass.
+
+Grok facts: no usage reports (metering `usage_unavailable`); ends a turn when a permission is
+refused; asks the client to read its own memory files (`fs/read_text_file` under
+`~/.grok/memory-v2`); each process start sends JSON-RPC responses for an unknown `skills-reload`
+request, which the ACP SDK logs to stderr; folder trust gates project MCP servers; it keeps
+per-workspace memory of conversations.
+
+Cleanup: the permission test approves everything, and Grok used that to read strings from its own
+binary; nothing outside the throwaway folders was written (`~/.grok/config.toml` unchanged). Removed
+the 52 session entries created under `~/.grok/sessions/` (back to the pre-run snapshot), the workspace
+memory Grok created from the test prompts (`memory-v2/workspaces/acp-lib-8a320bb9`, created during
+the runs), and the test work folders and attachment copies in `/tmp`.
+

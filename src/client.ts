@@ -497,7 +497,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
+        ...this.additionalDirectoriesParam(options.additionalDirectories ?? this.config.additionalDirectories),
       } as schema.LoadSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -534,7 +534,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
+        ...this.additionalDirectoriesParam(options.additionalDirectories ?? this.config.additionalDirectories),
       } as schema.ResumeSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -583,7 +583,7 @@ export class AcpClient implements AgentClient {
         sessionId,
         cwd: this.config.cwd ?? process.cwd(),
         mcpServers: options.mcpServers ?? [],
-        additionalDirectories: options.additionalDirectories ?? this.config.additionalDirectories,
+        ...this.additionalDirectoriesParam(options.additionalDirectories ?? this.config.additionalDirectories),
       } as schema.ForkSessionRequest);
     } catch (err) {
       this.abortCommandTransition();
@@ -667,6 +667,18 @@ export class AcpClient implements AgentClient {
     return { sessionId, resumed: false };
   }
 
+  /**
+   * ACP only allows `additionalDirectories` when the agent advertises it. Sending it anyway can make the
+   * agent refuse the whole session request (Grok answers "Invalid params"), so unadvertised directories
+   * are left out, with a warning: the agent then sees only its working directory.
+   */
+  private additionalDirectoriesParam(directories: string[] | undefined): { additionalDirectories?: string[] } {
+    if (!directories?.length) return {};
+    if (this._capabilities?.agent.sessionCapabilities.additionalDirectories) return { additionalDirectories: directories };
+    this.log.warn("additional_directories_unsupported", { directories: directories.length });
+    return {};
+  }
+
   private async newSessionInternal(
     transport: AcpTransport,
     cwd: string,
@@ -679,7 +691,7 @@ export class AcpClient implements AgentClient {
       res = await transport.newSession({
         cwd,
         mcpServers,
-        ...(additionalDirectories ? { additionalDirectories } : {}),
+        ...this.additionalDirectoriesParam(additionalDirectories),
       } as schema.NewSessionRequest);
     } catch (err) {
       this.abortCommandTransition();

@@ -10,7 +10,7 @@ import type { ClientPrompt } from "../../src/agent-client.ts";
 import type { PromptHandlers } from "../../src/types.ts";
 
 const adapterId = process.argv[2] ?? "claude";
-if (!["claude", "codex", "opencode"].includes(adapterId)) throw new Error("choose claude, codex, or opencode");
+if (!["claude", "codex", "opencode", "grok"].includes(adapterId)) throw new Error("choose claude, codex, opencode, or grok");
 const root = await mkdtemp(join(tmpdir(), `acp-media-real-${adapterId}-`));
 const cwd = join(root, "workspace");
 const outsideBase = process.env.ACP_MEDIA_OUTSIDE_ROOT;
@@ -39,7 +39,7 @@ async function runTurn(client: AcpClient, name: string, input: ClientPrompt, exp
   } finally { clearTimeout(timer); clearTimeout(hard); }
 }
 function client(directories = false) {
-  return new AcpClient({ adapter: ADAPTERS[adapterId as "claude" | "codex" | "opencode"], cwd,
+  return new AcpClient({ adapter: ADAPTERS[adapterId as "claude" | "codex" | "opencode" | "grok"], cwd,
     ...(directories ? { additionalDirectories: [outside] } : {}), defaultPermission: "cancel" });
 }
 async function initialize(client: AcpClient) {

@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 // Replies with the exact provider text it received, so tests can assert prompt composition.
 // `FAIL_TURN` fails the prompt; `SLOW_TURN` waits before replying. With the argument `no-media` it
-// advertises no image, audio or embedded-context support.
+// advertises no image, audio or embedded-context support. With `no-directories` it does not advertise
+// additional directories.
 
 const sessionId = `echo-fixture-${crypto.randomUUID()}`;
 const promptCapabilities = process.argv.includes("no-media") ? {} : { image: true, audio: true, embeddedContext: true };
+const sessionCapabilities = process.argv.includes("no-directories") ? {} : { additionalDirectories: {} };
 let buffer = "";
 
 process.stdin.setEncoding("utf8");
@@ -26,7 +28,7 @@ async function handle(message: any): Promise<void> {
         jsonrpc: "2.0", id: message.id,
         result: {
           protocolVersion: message.params?.protocolVersion ?? 1,
-          agentCapabilities: { loadSession: true, promptCapabilities, mcpCapabilities: {}, sessionCapabilities: {} },
+          agentCapabilities: { loadSession: true, promptCapabilities, mcpCapabilities: {}, sessionCapabilities },
           agentInfo: { name: "echo-prompt-fixture" },
         },
       });

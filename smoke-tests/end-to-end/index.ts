@@ -57,6 +57,7 @@ const adapters: Record<string, Adapter> = {
   codex: ADAPTERS.codex,
   media: { command: ["bun", join(here, "../../test/fixtures/media-agent.ts")] },
   opencode: ADAPTERS.opencode,
+  grok: ADAPTERS.grok,
   test: {
     command: ["bun", fixture, "test8"],
     displayName: "Deterministic test agent",

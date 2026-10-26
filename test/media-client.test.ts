@@ -46,3 +46,19 @@ test("additional workspace roots reach new and loaded sessions", async () => {
     expect(sent.find((frame) => frame.method === "session/load").params.additionalDirectories).toEqual(["/tmp/shared-media"]);
   } finally { await client.stop(); }
 });
+
+test("additional directories are left out when the agent does not advertise them", async () => {
+  const sent: any[] = [];
+  const client = new AcpClient({
+    adapter: { command: ["bun", resolve(import.meta.dir, "fixtures/media-agent.ts"), "no-directories"] },
+    additionalDirectories: ["/tmp/shared-media"],
+    wire: (entry) => { if (entry.dir === "out") sent.push(JSON.parse(entry.line)); },
+  });
+  try {
+    await client.connect();
+    const { sessionId } = await client.startSession();
+    await client.loadSession(sessionId);
+    expect(sent.find((frame) => frame.method === "session/new").params).not.toHaveProperty("additionalDirectories");
+    expect(sent.find((frame) => frame.method === "session/load").params).not.toHaveProperty("additionalDirectories");
+  } finally { await client.stop(); }
+});
