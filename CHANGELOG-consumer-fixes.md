@@ -1,6 +1,22 @@
 # Consumer fixes (from the 2026-10-13 agents-core requirements)
 
-Released in 0.12.0. Upgrading from 0.10.x: see `MIGRATION-0.10-to-0.12.md`.
+0.12.0 and 0.12.1. Upgrading from 0.10.x: see `MIGRATION-0.10-to-0.12.md`.
+
+## 0.12.1
+
+- **Longer stale limits by default.** A turn, internal inference or recap now counts as stalled
+  after 600 s (10 minutes) with no output at all, or 900 s (15 minutes) after its last output,
+  instead of 120 s and 180 s: slow but working agents were being cancelled. Set
+  `operationLifecycle` to choose other limits.
+- **Grok Build preset.** `ADAPTERS.grok` launches xAI's Grok Build over ACP
+  (`grok --no-auto-update agent stdio`). A Grok session that no longer exists is recognised as
+  missing, so checkpoint recovery applies to it.
+- **Additional directories only when advertised.** The client sends `additionalDirectories` only to an
+  agent that advertises `sessionCapabilities.additionalDirectories`, as ACP requires; otherwise they
+  are left out with a warning (`additional_directories_unsupported`). Grok refused session requests
+  that carried them.
+
+## 0.12.0
 
 - **Messages made of parts.** Ordered text, named paste, image, audio and file inputs; copy/link
   modes, capability checks and configurable automatic thresholds. Structured media output,
@@ -11,15 +27,6 @@ Released in 0.12.0. Upgrading from 0.10.x: see `MIGRATION-0.10-to-0.12.md`.
   session creation/loading. Out-of-band media waits in memory until delivered (unkept bytes are
   never written), and media an agent cannot take, or whose bytes are gone, is named instead of
   failing the turn. See the consumer guide for store and out-of-band delivery contracts.
-
-
-- **Grok Build preset.** `ADAPTERS.grok` launches xAI's Grok Build over ACP
-  (`grok --no-auto-update agent stdio`). A Grok session that no longer exists is recognised as
-  missing, so checkpoint recovery applies to it.
-- **Additional directories only when advertised.** The client sends `additionalDirectories` only to an
-  agent that advertises `sessionCapabilities.additionalDirectories`, as ACP requires; otherwise they
-  are left out with a warning (`additional_directories_unsupported`). Grok refused session requests
-  that carried them.
 - **Message boundaries.** A new tool call now ends the assistant message before it, also when the
   agent sends no message ids (before, message → tool → message was one message). Tool updates
   do not split. Applies to the live `result.messages` and to stored messages.

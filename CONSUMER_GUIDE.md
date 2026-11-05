@@ -2116,9 +2116,9 @@ Set `operationLifecycle` on `Agent.open()` or a detached conversation:
 
 ```ts
 operationLifecycle: {
-  turns: { firstOutputMs: 120_000, nextOutputMs: 180_000 },
-  internalInference: { firstOutputMs: 120_000 },
-  recap: { nextOutputMs: 180_000 },
+  turns: { firstOutputMs: 600_000, nextOutputMs: 900_000 },
+  internalInference: { firstOutputMs: 600_000 },
+  recap: { nextOutputMs: 900_000 },
 }
 ```
 

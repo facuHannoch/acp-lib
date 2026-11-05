@@ -47,9 +47,9 @@ export interface OperationActivity {
 
 /** When an operation counts as stale. `false` disables a condition. */
 export interface StaleLimits {
-  /** No output at all since the request was sent. Default 120 000. */
+  /** No output at all since the request was sent. Default 600 000 (10 minutes). */
   readonly firstOutputMs?: number | false;
-  /** No output since the last one, with no tool or permission explaining it. Default 180 000. */
+  /** No output since the last one, with no tool or permission explaining it. Default 900 000 (15 minutes). */
   readonly nextOutputMs?: number | false;
   /** One tool running longer than this. Off by default. */
   readonly toolMs?: number | false;

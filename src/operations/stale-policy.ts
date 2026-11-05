@@ -3,7 +3,7 @@ import type { OperationActivity, StaleLimits } from "./contracts.ts";
 /** Whether anything had arrived when the operation went stale. */
 export type StallPhase = "no_response" | "incomplete_response";
 
-export const DEFAULT_STALE_LIMITS = Object.freeze({ firstOutputMs: 120_000, nextOutputMs: 180_000 });
+export const DEFAULT_STALE_LIMITS = Object.freeze({ firstOutputMs: 600_000, nextOutputMs: 900_000 });
 
 export interface StaleDecision {
   readonly deadline: number;
