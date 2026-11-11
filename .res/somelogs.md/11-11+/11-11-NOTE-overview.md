@@ -18,12 +18,12 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 │                                                                                    │
 │  AgentConversation ── NativeController ──► NativeHarness (its own package)         │
 │        │                                     kernel · context · tools · policies   │
-│        │                                     timeline · watches · model client     │
+│        │                                     timeline · shared state · model client │
 │        │                                          │ delegation backend contract    │
 │        │                                          ▼                                │
 │        │                                     orchestrator ──► pool ──► workers     │
-│        │                                                       (ACP or native      │
-│  AgentConversation ── AgentController ──► Codex / Claude / OpenCode / Grok (ACP)   │
+│        │                                                       (ACP or native)     │
+│  AgentConversation ── HarnessController ─► Codex / Claude / OpenCode / Grok (ACP)  │
 │        └── IdentitySource (injects what the harness says a member should know)     │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -66,7 +66,9 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
    both hold data for one capability, the harness defines a source contract and the host plugs in sources.
 5. **Responsibility rule.** Judgment goes to inference, policy goes to code. The library never speaks in the agent's
    voice; there is no rigid task model.
-6. **One `AgentConversation`;** the adapter's kind chooses the controller. Requires the controller interface (spec
+6. **One `AgentConversation`;** the adapter's kind chooses the controller: `HarnessController` (today's
+   `AgentController`, renamed; it drives an external harness, ACP being the means) or `NativeController`, both behind
+   the `ConversationController` interface. Requires the controller interface (spec
    above). Rejected: a separate conversation type.
 7. **Delegation through tools,** starting with `delegate`, `check`, `stop`; `message_participant` (deliver, no model
    call) and `trigger_response` (wake the target conversation) reach other conversations, several recipients each.
@@ -89,7 +91,7 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     memory as projections, delivery as a digest of the slice since a position. Conversation summaries are
     acp-client's, reported into the timeline. acp-client only injects (`IdentitySource`); ACP conversations join as
     member sessions; the checkpoint-backed identity is deprecated.
-15. **Phase 1 memory** is a simple shared state on the timeline; watches match structurally and by the agent noticing.
+15. **Phase 1 memory** is a simple shared state on the timeline. Watches are deferred (`harness/todos/11-11-TODO-watches.md`).
 16. **Internal inference** gets an `http` runtime that imports the harness's model client; the ACP-session runtime
     stays as the fallback.
 17. **MCP** is an optional extension for ACP-backed controllers, not the channel between conversations; the harness
@@ -149,7 +151,7 @@ Lines of work, with what each needs first. L = library, H = harness, X = cross-c
 | H0 | Repo layout and the harness package | owner decision |
 | H1 | Contracts, conformance skeletons | H0 |
 | H2 | Kernel with the scripted client, in-memory store, golden requests | H1 |
-| H3–H9 | Workstreams: provider client, context pipeline, compaction, tools and MCP client, config and policy engine, timeline v1 and storage, watches | H2 |
+| H3–H9 | Workstreams: provider client, context pipeline, compaction, tools and MCP client, config and policy engine, timeline v1 and storage | H2 |
 | H10 | `harness` CLI | H3, H7 |
 | L5 | `NativeController`, native steering, `native` adapter kind | L1, L4, H2–H5 |
 | L6 | Orchestrator as delegation backend; records as history source; functions | L2, L5 |
@@ -158,4 +160,4 @@ Lines of work, with what each needs first. L = library, H = harness, X = cross-c
 | X1 | Smoke test (duration-parser fixture) and the basic-promise checks | L6, a key |
 | X2 | Evals and the prompt-injection suite | X1 |
 | L9 | CLI on `Agent` | L5 (REPL value exists earlier for ACP-only) |
-| P2 | Phase 2: long-term memory, MCP server and member sessions, background watch evaluator, skills, deferred tools, worker kinds, removal of checkpoint identity | phase 1 |
+| P2 | Phase 2: long-term memory, MCP server and member sessions, watches, skills, deferred tools, worker kinds, removal of checkpoint identity | phase 1 |

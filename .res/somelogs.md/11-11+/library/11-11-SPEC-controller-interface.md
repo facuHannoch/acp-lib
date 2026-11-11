@@ -27,8 +27,10 @@ conversations.
 | Generalize | `configOptions`, `setConfig` (27 and 5 uses), `subscribeUsageUpdate`, `currentSessionId`, `availableCommands`, `subscribeAvailableCommands` | Its own settings in the same `ConfigOption` shape (model, reasoning, temperature); usage from every response; no commands at first. |
 | Optional, behind capabilities | `isDegraded`, `currentMode`, `setMode`, `reconnect`, `listSessions`, `bridge`, `authenticate`; `session/load` with replay, `session/delete` | Absent; callers check capabilities. |
 
-- **Name:** `ConversationController` (working name), in its own file next to `AgentClient`. `AgentController`
-  implements it unchanged.
+- **Names.** The interface is `ConversationController`: what a conversation needs from whatever backs it. Its two
+  implementations are the `HarnessController` (today's `AgentController`, renamed: it drives an external harness;
+  ACP, or PTY in degraded mode, is how it works, not what it is) and the `NativeController`. `AgentController` stays
+  exported as a deprecated alias of `HarnessController` until a breaking release.
 - **Optional members are capabilities, not stubs.** A backend reports what it supports; `AgentSession` checks before
   calling, rather than catching "not supported".
 - **The operation-lifecycle primitives stay as they are:** each controller supplies `cancel` and `forceStop`; the
@@ -92,9 +94,10 @@ context epoch. Delivery positions move to the harness timeline (integration spec
 
 ## Steps
 
-1. Introduce `ConversationController` and `ConversationCapabilities`; `AgentController` implements both. No behaviour
+1. Introduce `ConversationController` and `ConversationCapabilities`; rename `AgentController` to `HarnessController`
+   (alias kept); it implements both. No behaviour
    change; existing tests cover it.
-2. Replace direct `AgentController` uses in `AgentSession` with the interface; gate optional members by capability.
+2. Replace direct `HarnessController` uses in `AgentSession` with the interface; gate optional members by capability.
 3. Generalize `provider_sessions` and the permission request; add the model-call record.
 4. A fake controller in the test helpers implements only the core, and a test suite runs a conversation on it
    (prompt, steer, interrupt, stale policy, usage). That suite becomes the conformance check for the
@@ -105,4 +108,4 @@ context epoch. Delivery positions move to the harness timeline (integration spec
 - The full existing test suite passes with no behaviour change for ACP conversations.
 - A conversation runs on the fake core-only controller: prompt, queue and steer delivery, interrupt, force stop,
   stale detection, usage recording, records written.
-- No `instanceof AgentController` and no ACP type in `AgentSession` outside capability-gated paths.
+- No `instanceof HarnessController` and no ACP type in `AgentSession` outside capability-gated paths.

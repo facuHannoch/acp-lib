@@ -88,7 +88,7 @@ packages/native-harness/
     guards/                 call-limit.ts, unattended-turns.ts
     events/                 event sources (reminders later)
     config/                 schema, loading, versions
-    identity/               timeline, positions, digests, shared-state projection, watches
+    identity/               timeline, positions, digests, shared-state projection
     delegation/             native subagents
     history/                own-sessions source
     storage/                SQLite for the identity core, JSONL snapshots
@@ -186,7 +186,7 @@ Enforced by tooling (dependency-cruiser or eslint-plugin-boundaries):
 | Safety | `permissions/`, `guards/` | Gate with ask and timeout; call limit; unattended turns |
 | Config and CLI | `config/`, `cli/` | Schema, versions, `harness chat` |
 | Policy | `policy/` | Capabilities, tool patterns, presets, most-restrictive resolution |
-| Identity | `identity/`, `storage/` | Timeline, positions, stitched digests, shared state, watches, SQLite |
+| Identity | `identity/`, `storage/` | Timeline, positions, stitched digests, shared state, SQLite |
 | Delegation | `delegation/` | Backend contract; native subagents |
 | Member sessions (phase 2) | `mcp-server/` | Scoped endpoints, delivery handshake |
 

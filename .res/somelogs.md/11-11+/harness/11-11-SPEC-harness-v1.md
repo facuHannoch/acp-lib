@@ -7,11 +7,11 @@ The why is `11-11-SPEC-harness-design.md`; folders, rules and build order are `1
 
 In: the kernel and turn state machine; the contracts; JSON configuration and policies; configured tools and the MCP
 client; the delegation and messaging tools; an OpenAI-compatible model client; the context pipeline with tool
-placement and basic compaction; the timeline v1 (positions, digests from host summaries, shared state as a projection,
-structural and agent-noticed watches); storage; the public API; the `harness` CLI.
+placement and basic compaction; the timeline v1 (positions, digests from host summaries, shared state as a projection);
+storage; the public API; the `harness` CLI.
 
 Out (phase 2): long-term memory and consolidation; digests at several granularities; the MCP server and member
-sessions; the background watch evaluator; reminders; skills; deferred tool loading; file and shell capabilities;
+sessions; watches (`todos/11-11-TODO-watches.md`); reminders; skills; deferred tool loading; file and shell capabilities;
 model profiles.
 
 ## The kernel
@@ -81,7 +81,7 @@ type Part = { type: "text"; text: string } | { type: "media"; ref: string; mime:
 type SenderRef = { id: string; label?: string; note?: string; kind?: "person" | "agent" | "worker" | "harness" | "host" };
 
 interface InboxItem {
-  kind: "user_message" | "worker_reply" | "permission_request" | "watch_match" | "timeline_digest" | string;
+  kind: "user_message" | "worker_reply" | "permission_request" | "timeline_digest" | string;
   sender: SenderRef;
   content: Part[];
   policy?: string;              // asserted by the host; a turn takes the most restrictive
@@ -224,7 +224,7 @@ Ordered pure stages from the session view to the neutral request:
 2. **History:** entries since the last compaction marker.
 3. **Inbox rendering:** each drained item through its renderer as tagged blocks
    (`<message from="Bob" policy="trusted">…</message>`, `<worker_reply from="w1">…</worker_reply>`,
-   `<since_last_turn>` digests, watch matches as standing requests).
+   `<since_last_turn>` digests).
 4. **Sender tags** on user messages; the per-turn tool hint last.
 5. **Cache order:** nothing before the end changes between calls; deltas are appended once and become prefix.
 
@@ -237,7 +237,7 @@ detail and breaks the cache.
 ```
 timeline      append-only events: { seq, at, kind, conversation, from, policy, scope, content }
 positions     per session and provider context: the seq its context has been brought up to
-projections   shared state (facts, commitments) · "told" events · watches
+projections   shared state (facts, commitments) · "told" events
 delivery      digest(position..now, the turn's policy) → appended to the session → position advances
 ```
 
@@ -252,16 +252,13 @@ delivery      digest(position..now, the turn's policy) → appended to the sessi
   sent.
 - **Shared state** is a projection: `state_write` appends a fact or commitment event with provenance;
   `state_read` returns current facts the policy can see.
-- **Watches:** `watch_create(condition, expiry?)` stores one; the structural matcher checks event kinds and tags on
-  append; active watches are rendered to the owner's conversation so the agent can act (agent-noticed). A match is a
-  `watch_match` inbox item.
 - **Member delivery** (`prepare` / `delivered`) is in the contract; its implementation lands with member sessions.
 
 ## Storage
 
 | Data | v1 |
 | --- | --- |
-| Identity core: config, timeline, positions, watches, shared-state projection | Required. SQLite through `bun:sqlite` in `<root>/identity.sqlite` |
+| Identity core: config, timeline, positions, shared-state projection | Required. SQLite through `bun:sqlite` in `<root>/identity.sqlite` |
 | Working contexts | In memory; optional JSONL snapshots (`<root>/sessions/<id>.jsonl`) |
 | Transcripts | Not kept; hosts supply them as history sources |
 

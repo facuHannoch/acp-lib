@@ -33,7 +33,7 @@ So we split the agent in two:
 - **It is not a coding harness.** It does no file editing, shell or search at first; it may grow into them, and
   policies already name `files` and `shell` as future capabilities.
 - **It is an agent, not a chatbot.** It wakes on more than user input: worker replies, permission requests, reminders,
-  watch matches, events the host pushes.
+  events the host pushes.
 
 ## What it is not
 
@@ -132,13 +132,10 @@ of it) holds a **position**: how far its context has been brought up to date.
 - **Complete only as far as hosts report.** Native sessions append automatically; hosts report their conversations
   (messages, and summaries when they checkpoint).
 
-### Watches
+### Watches (deferred)
 
-"Notify me when something important happens" is a standing request on the timeline (owner, condition, created,
-expiry). Matchers, cheapest first: structural (event kinds or tags), agent-noticed (active watches are rendered into
-conversations and the agent acts when it sees something relevant), a background evaluator (a cheap model call per
-batch of events; later). A match is an inbox item in the owner's conversation. A watcher only matches what its policy
-can see.
+"Notify me when something important happens" as a standing request on the timeline came up but was never defined
+enough; it is parked with its context in `todos/11-11-TODO-watches.md`.
 
 ### Member sessions
 
@@ -214,10 +211,9 @@ honesty. Per run: pass rate, cost, latency, model calls.
 ## Phases
 
 - **Phase 1: the entity talks and delegates.** Kernel, model client, context, tools and MCP client, policies, timeline
-  basics (positions, digests stitched from host summaries), shared state as a projection, structural and
-  agent-noticed watches, delegation, storage, CLI. Judged on the basic promise.
+  basics (positions, digests stitched from host summaries), shared state as a projection, delegation, storage, CLI. Judged on the basic promise.
 - **Phase 2: memory and reach.** Long-term memory, digests at several granularities, the MCP server and member
-  sessions, the background watch evaluator, skills, deferred tool loading, reminders.
+  sessions, watches, skills, deferred tool loading, reminders.
 
 ## Open
 

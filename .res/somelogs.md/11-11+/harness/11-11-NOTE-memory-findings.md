@@ -109,6 +109,6 @@ would be a position paper.
 | --- | --- |
 | Long-term memory and consolidation | needs the timeline running to know what is worth keeping |
 | Digests at several granularities | stitched host summaries are enough to judge the basic promise |
-| Background watch evaluator | structural and agent-noticed cover phase 1; one extra call per batch otherwise |
+| Watches ("notify me when...") | never defined enough; see `todos/11-11-TODO-watches.md` |
 | Member-session tools (MCP server) | ACP members are crude anyway; native sessions prove the model first |
 | Memory files (markdown, one fact per file) | a storage choice for consolidated memory; decide with it |

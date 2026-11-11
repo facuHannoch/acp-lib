@@ -78,7 +78,7 @@ them to the existing metering ledger, one reading per model call.
 ## The inbox and native steering
 
 Each conversation has an **inbox**: anything that should reach the agent is an item with a kind (user message, worker
-reply, permission request, reminder, watch match, consumer event), a sender, content, a policy and a delivery mode
+reply, permission request, reminder, consumer event), a sender, content, a policy and a delivery mode
 (wake, or quiet: only on the next turn).
 
 - **It is the `agc`'s existing queue** (the steering controller; pending messages already carry `participantId`,
