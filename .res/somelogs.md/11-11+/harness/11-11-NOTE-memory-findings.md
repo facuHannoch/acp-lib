@@ -42,7 +42,7 @@ The cost: a slice over a long span is large, so it must be digested, and digests
 
 | Kind | Holds | In this design |
 | --- | --- | --- |
-| Working | the current context | each session's context; compaction |
+| Working | the current context | each channel's context; compaction |
 | Episodic | what happened | the timeline itself, with digests per span |
 | Semantic | facts learned | shared state (current facts, commitments) now; consolidated memory later |
 | Procedural | how to do things | the system prompt; skills later |
@@ -50,7 +50,7 @@ The cost: a slice over a long span is large, so it must be digested, and digests
 
 ## Write and read paths
 
-- **Write:** native sessions append automatically; the agent records facts with `state_write` (judgment, in
+- **Write:** native channels append automatically; the agent records facts with `state_write` (judgment, in
   inference); hosts report messages and summaries; background extraction ("dreaming") later.
 - **Read:** a digest of the slice since the position, rendered each turn (always delivered, budgeted); `state_read`,
   `timeline_since` and `timeline_search` on demand. Automatic similarity retrieval (RAG) is not planned: it fetches by
@@ -110,5 +110,5 @@ would be a position paper.
 | Long-term memory and consolidation | needs the timeline running to know what is worth keeping |
 | Digests at several granularities | stitched host summaries are enough to judge the basic promise |
 | Watches ("notify me when...") | never defined enough; see `todos/11-11-TODO-watches.md` |
-| Member-session tools (MCP server) | ACP members are crude anyway; native sessions prove the model first |
+| Member-channel tools (MCP server) | ACP members are crude anyway; native channels prove the model first |
 | Memory files (markdown, one fact per file) | a storage choice for consolidated memory; decide with it |

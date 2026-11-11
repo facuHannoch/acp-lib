@@ -17,8 +17,8 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 ┌──────────────────────── Agent (acp-client process) ────────────────────────┐
 │                                                                             │
 │  AgentConversation ── NativeController ─┐                                   │
-│  AgentConversation ── NativeController ─┤ NativeHarnessHost (one per Agent) │
-│                                         │ HarnessClient ═══ stdio ══════════╪══► harness serve
+│  AgentConversation ── NativeController ─┤ NativeHarnessHost: the Agent's    │
+│  (each one a channel of the session)    │ session; HarnessClient ═══ stdio ═╪══► harness serve --session S
 │                                         │ serves callbacks: functions,      │    (agent's environment:
 │                                         │ delegation, history               │     loop, tools, MCP, model
 │                                         ▼                                   │     calls, timeline, storage)
@@ -30,7 +30,7 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **The native harness is the agent entity.** It talks to many parties at once (owner chats, trusted agents, guests,
+- **A native harness session is the agent entity.** It talks to many parties at once (owner chats, trusted agents, guests,
   a public channel) while staying one identity, and does no environment work itself.
 - **Workers do the environment work.** They are ordinary conversations (usually ACP harnesses) that the library's
   orchestrator runs in a pool; the agent reaches them through delegation tools.
@@ -100,14 +100,14 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     memory as projections, delivery as a digest of the slice since a position. Conversation summaries are
     acp-client's, reported into the timeline. acp-client only injects, through the existing `AgentIdentityRuntime`
     (`load`, `update`, `delivered`) implemented over the harness; ACP conversations join as
-    member sessions; the checkpoint-backed identity is deprecated.
+    member channels; the checkpoint-backed identity is deprecated.
 15. **Phase 1 memory** is a simple shared state on the timeline. Watches are deferred (`harness/todos/11-11-TODO-watches.md`).
 16. **Internal inference** gets an `http` runtime that imports the harness's model client; the ACP-session runtime
     stays as the fallback.
 17. **MCP** is an optional extension for ACP-backed controllers, not the channel between conversations; the harness
     is an MCP client from phase 1.
 18. **The internal event model** stays as it is; the `NativeController` translates into it.
-19. **Harness architecture:** microkernel with ports and adapters, one actor per session, an explicit turn state
+19. **Harness architecture:** microkernel with ports and adapters, one actor per channel, an explicit turn state
     machine, a functional core for the context, middleware for model and tool calls, an event-sourced store.
 20. **Surfaces:** the API, and a CLI on `Agent` that owns no logic; the harness has its own `harness` CLI.
 21. **First version:** the full skeleton with simple implementations, judged on the basic promise (harness design
@@ -127,6 +127,21 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
 27. **Watches are deferred** to `harness/todos/11-11-TODO-watches.md`.
 28. **New library code lives in new modules** (`src/conversation-controller/`, `src/orchestrator/`, `src/native/`);
     `agent-session.ts` does not grow; only `src/native/` imports the harness package.
+29. **A harness session is the entity; channels are lines into it.** One session has its own config, timeline,
+    shared state and memory; two sessions are two agents. A harness home (`~/.harness/` by default) stores many
+    sessions; one process serves one session, locked while open. Each conversation is a channel (the host's
+    conversation id passed through), with its own context and participants. In acp-client one `Agent` is one session
+    (configured once on the `Agent`, `AgentConfig.harness`); every native conversation's `internal_session_id` is
+    that session's id. Native adapters differ only in channel defaults.
+30. **Config belongs to the session:** stored in it standalone; owned by the host while hosted.
+31. **Where a session lives:** acp-client's data location by default when not isolated; inside the agent's
+    environment when isolated, with acp-client keeping the durable copy by state sync (import on start, timeline
+    events as appended, channel snapshots).
+32. **Usage by purpose.** Every harness model call carries a purpose; the host files it by where it happened (inside
+    a turn: that turn; otherwise entity-level metering). The session keeps its own ledger. acp-client's conversation
+    summaries stay acp-client's internal inference.
+33. **No native subagents** in the first or second pass; a standalone session has no delegation tools.
+
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations
 talk into; building on top of an existing harness; the custom harness as an in-process ACP agent; an HTTP controller
@@ -199,4 +214,4 @@ Lines of work, with what each needs first. L = library, H = harness, X = cross-c
 | X1 | Smoke test (duration-parser fixture) and the basic-promise checks | L6, a key |
 | X2 | Evals and the prompt-injection suite | X1 |
 | L9 | CLI on `Agent` | L5 (REPL value exists earlier for ACP-only) |
-| P2 | Phase 2: long-term memory, MCP server and member sessions, watches, skills, deferred tools, worker kinds, removal of checkpoint identity | phase 1 |
+| P2 | Phase 2: long-term memory, MCP server and member channels, watches, skills, deferred tools, worker kinds, removal of checkpoint identity | phase 1 |

@@ -12,36 +12,50 @@ storage; the public API; **server mode** (`harness serve --stdio`, the protocol 
 port, because the harness must run isolated in the agent's environment from v1; the `harness` CLI.
 
 Out (phase 2): long-term memory and consolidation; digests at several granularities; the MCP server and member
-sessions; watches (`todos/11-11-TODO-watches.md`); reminders; skills; deferred tool loading; file and shell capabilities;
+channels; native subagents (not in the first or second pass); watches (`todos/11-11-TODO-watches.md`); reminders; skills; deferred tool loading; file and shell capabilities;
 model profiles.
+
+## Sessions and channels
+
+- **A session is one entity:** its config (system prompt, policies, tools, model), its timeline, shared state and
+  memory, and its channels. Two sessions are two different agents. A harness home (`~/.harness/` by default) stores
+  many sessions, as other harnesses store theirs; opening one wakes that entity.
+- **A channel is one line into the entity,** like a phone number into one person: its own model context, the
+  participants talking on it, and a position on the session's timeline. A host's conversations are channels of one
+  session (acp-client: every native conversation of an `Agent` is a channel of that `Agent`'s session).
+- **Channel ids are supplied by the host** (opaque strings; acp-client passes its `agc-…` conversation ids) and
+  generated only when the host gives none (the CLI).
+- **Participants** are who talks on a channel. Each message carries its sender and policy; who someone is to the
+  agent is learned from the timeline, not from a registry. A group chat is one channel with several senders.
+- **One session is open in one process at a time,** locked while open. Several hosts on one session may come later.
 
 ## The kernel
 
-The kernel owns sessions and the turn loop. A session is one conversation's context plus its turn state; the harness
-instance holds the shared parts and serves many sessions at once.
+The kernel owns the session's channels and the turn loop. A channel's turn state and context live in its actor; the
+session holds the shared parts (config, model client, tools, timeline).
 
-- **One actor per session:** a mailbox (the inbox) processed one item at a time; sessions run in parallel. A
-  sequential queue per session, no framework.
+- **One actor per channel:** a mailbox (the inbox) processed one item at a time; channels run in parallel. A
+  sequential queue per channel, no framework.
 - **An explicit turn state machine:** `idle → building → calling → running_tools → building → … → idle`, plus
   `interrupting`. A pure function `(state, event) → (state, actions)`; a separate runner executes the actions through
   the extension points.
-- **Steering** is an item arriving while the session isn't idle: it waits in the mailbox and is drained at the next
+- **Steering** is an item arriving while the channel isn't idle: it waits in the mailbox and is drained at the next
   `building`. It waits only for what is in flight: a streaming model call or a running tool (the item goes in right
   after its result).
 
 ```ts
-async function runTurn(session, trigger) {
-  emit("turn.start", { session, trigger });
+async function runTurn(channel, trigger) {
+  emit("turn.start", { channel, trigger });
   while (true) {
-    if (session.aborted) return end("interrupted");
-    session.append(await sources.drain(session));             // inbox items: steering, wakes
-    const request = await pipeline.build(session);            // context pipeline, incl. compaction
-    if (!guards.allowCall(session)) return end("limit");
-    const answer = await modelChain.call(request, session.signal);
-    session.append(answer);
+    if (channel.aborted) return end("interrupted");
+    channel.append(await sources.drain(channel));             // inbox items: steering, wakes
+    const request = await pipeline.build(channel);            // context pipeline, incl. compaction
+    if (!guards.allowCall(channel)) return end("limit");
+    const answer = await modelChain.call(request, channel.signal);
+    channel.append(answer);
     if (answer.toolCalls.length === 0) return end(answer.stopReason);
-    for (const call of answer.toolCalls) session.append(await toolChain.run(call, session));
-    await store.save(session);
+    for (const call of answer.toolCalls) channel.append(await toolChain.run(call, channel));
+    await store.save(channel);
   }
 }
 ```
@@ -55,18 +69,19 @@ specific tool, permission rules, retry logic, knowledge of policies, workers or 
 
 | Call | Meaning |
 | --- | --- |
-| `createHarness({ root, config })` | Open an instance over a root directory and a config (path or object) |
-| `harness.createSession(options)` / `loadSession(id)` | Open a session with its id and session-level settings (default policy) |
-| `session.push(item)` | Add an inbox item: starts a turn if idle, injected at the next call if busy |
-| `session.interrupt()` / `session.close()` | Abort the running turn / close |
-| `session.events` | Lifecycle and streaming events: text deltas, tool calls, usage, model-call log, turn end |
-| `harness.prompt({ conversation, from, policy?, content })` | Host shorthand: resolve the session, push a user message with sender and policy |
-| `harness.report({ conversation, from, policy, kind, ... })` | Host reports a conversation it runs elsewhere: `message` or `summary` |
-| `harness.registerFunction(name, fn)` | Implement a config tool with `run.type: "function"` |
-| `harness.setDelegationBackend(backend)` / `addHistorySource(source)` | Host-provided contracts |
-| `harness.config.get()` / `update(patch)` | Read and change the JSON config (versioned) |
-
-`export()` / `importSession(bundle)` (portable sessions) are in the contract and can be stubbed in v1.
+| `createSession({ home?, config })` / `loadSession({ home?, id })` | Create an entity with its config / wake an existing one; locks it |
+| `session.channel(id, { defaultPolicy? })` | Open or resume a channel (created on first use) |
+| `channel.push(item)` | Add an inbox item: starts a turn if idle, injected at the next call if busy |
+| `channel.interrupt()` / `channel.close()` | Abort the running turn / close the channel's context |
+| `channel.events` | Lifecycle and streaming events: text deltas, tool calls, usage, model-call log, turn end |
+| `session.prompt({ channel, from, policy?, content })` | Host shorthand: push a user message with sender and policy |
+| `session.report({ channel, from, policy, kind, ... })` | A host reports a conversation it runs elsewhere: `message` or `summary` |
+| `session.registerFunction(name, fn)` | Implement a config tool with `run.type: "function"` |
+| `session.setDelegationBackend(backend)` / `addHistorySource(source)` | Host-provided contracts |
+| `session.config.get()` / `update(patch)` | Read and change the session's config (versioned) |
+| `session.usage()` | The session's own usage ledger |
+| `session.export()` / `importSession(bundle)` | Move or back up the whole entity |
+| `session.close()` | Finish running turns as interrupted, release the lock |
 
 **The API is serializable.** Every call takes and returns JSON-shaped data (items, events, config, receipts), so the
 same API is served over the protocol unchanged. The only things that can't cross a process boundary as values, a
@@ -111,8 +126,13 @@ type ModelEvent =
 
 ## Configuration
 
-One JSON document, `config.json` in the root, changed through the API or the CLI; each prompt reads the current
-version (cached by version). Code adds only what JSON can't hold: function handlers and backends.
+Each session has one JSON config, given when the session is created and changed through the session's API or the
+CLI. There is no config shared across sessions. Each prompt reads the current version (cached by version). Code adds
+only what JSON can't hold: function handlers and backends.
+
+- **Standalone,** the stored config (`<home>/sessions/<id>/config.json`) is the source of truth.
+- **Hosted,** the host is: it creates the session with its config and saves changes made through the API; with an
+  isolated, ephemeral home the host re-injects the session on start (Running as a process, State sync).
 
 ```json
 {
@@ -120,7 +140,6 @@ version (cached by version). Code adds only what JSON can't hold: function handl
   "model": { "protocol": "openai-compatible", "baseUrl": "https://openrouter.ai/api/v1",
              "apiKeyEnv": "OPENROUTER_API_KEY", "model": "...", "reasoning": "low" },
   "system": "You are ...",
-  "storage": { "root": "~/.native-harness" },
   "tools": [
     { "name": "lookup_order", "description": "...", "input": { "type": "object" },
       "run": { "type": "http", "url": "https://api.example.com/orders", "method": "POST" } },
@@ -169,7 +188,7 @@ version (cached by version). Code adds only what JSON can't hold: function handl
   policy.
 - **Presets** ship as named examples: `readOnly`, `guest`, `trusted`, `owner`. With no policies configured a
   permissive single-user default applies; once policies exist, `defaultPolicy` is required.
-- **Resolution per turn:** the policy of each triggering item (item → session default → `defaultPolicy`); several
+- **Resolution per turn:** the policy of each triggering item (item → channel default → `defaultPolicy`); several
   items → the most restrictive, capability by capability.
 - **Read-only** writes no memory and gets no tool that carries content into other conversations, or a guest's words
   reach the agent through the back door.
@@ -180,7 +199,7 @@ version (cached by version). Code adds only what JSON can't hold: function handl
 
 ## Tools
 
-- **Registry and providers.** Providers list definitions for a session under the turn's policy and execute calls:
+- **Registry and providers.** Providers list definitions for a channel under the turn's policy and execute calls:
   `configured/` (http, command, function), `mcp/`, and the harness's own (`delegate`, `check`, `stop`,
   `message_participant`, `trigger_response`, `state_read`, `state_write`, `timeline_since`, `timeline_search`).
 - **The tool chain** wraps every execution: schema validation (errors go back as tool results so the model fixes the
@@ -189,8 +208,9 @@ version (cached by version). Code adds only what JSON can't hold: function handl
   delegated agent can"); errors that say how to fix the call ("`to` must be an id returned by `delegate`; open ones:
   w1, w2").
 - **Delegation tools** call the delegation backend; with none registered they are absent. The built-in backend runs
-  native subagents (another session of the same harness, with a worker policy). Workers belong to the entity, not to
-  a conversation, so the tools see every worker the turn's policy allows:
+  no built-in backend in v1 (native subagents are not in the first or second pass): a standalone session has no
+  delegation tools. Workers belong to the entity, not to a channel, so the tools see every worker the turn's policy
+  allows:
   - `delegate(text, about?, to?)`: no `to` opens a worker; with `to` sends to it. `about` is a short description the
     agent writes ("debugging the 403 on /path"), kept for `check`, `list` and the busy answer.
   - Sending to a worker busy with work given from another conversation returns `busy` with that work's `about`,
@@ -208,10 +228,10 @@ Tool definitions sit at the start of the request, so changing them breaks the ca
 
 | Strategy | How | Cache |
 | --- | --- | --- |
-| `superset-hint` (default) | The union of the session's tools; a per-turn note of what this sender may use, appended | Kept |
+| `superset-hint` (default) | The union of the channel's tools; a per-turn note of what this sender may use, appended | Kept |
 | `provider-subset` | Full list plus a per-call restriction where the client advertises it (OpenAI's allowed-tools option, to verify) | Kept |
 | `deferred` | Names or a search tool; full definitions fetched on demand (phase 2) | Kept |
-| `rebuild` | Exactly this turn's tools; for single-policy sessions | Breaks on change |
+| `rebuild` | Exactly this turn's tools; for single-policy channels | Breaks on change |
 
 The gate enforces the turn's policy at call time in every strategy: placement guides the model and keeps costs down;
 the gate guarantees.
@@ -233,7 +253,7 @@ the gate guarantees.
 
 ## Context pipeline
 
-Ordered pure stages from the session view to the neutral request:
+Ordered pure stages from the channel view to the neutral request:
 
 1. **Layers:** the system prompt verbatim; tool definitions by the placement strategy.
 2. **History:** entries since the last compaction marker.
@@ -244,40 +264,58 @@ Ordered pure stages from the session view to the neutral request:
 5. **Cache order:** nothing before the end changes between calls; deltas are appended once and become prefix.
 
 **Compaction** at `compaction.at` of the window: first clear old tool results, then summarize old turns into a
-`compaction` entry; the session's timeline position is rebased (current state plus a digest). Rare and good: it loses
+`compaction` entry; the channel's timeline position is rebased (current state plus a digest). Rare and good: it loses
 detail and breaks the cache.
 
 ## Timeline v1
 
 ```
 timeline      append-only events: { seq, at, kind, conversation, from, policy, scope, content }
-positions     per session and provider context: the seq its context has been brought up to
+positions     per channel: the seq its context has been brought up to
 projections   shared state (facts, commitments) · "told" events
-delivery      digest(position..now, the turn's policy) → appended to the session → position advances
+delivery      digest(position..now, the turn's policy) → appended to the channel → position advances
 ```
 
-- **What appends:** native sessions automatically (each user message, assistant answer, delegation fact, messaging
+- **What appends:** native channels automatically (each user message, assistant answer, delegation fact, messaging
   call); hosts through `report` (messages; summaries when they checkpoint).
 - **Scope** on every event, from the policy it was written under; slices are filtered by the receiving turn's policy.
   A guest's words carry guest scope and never become owner facts.
 - **Digests in v1** are stitched: host summaries for spans they cover, raw events (truncated) for the rest, newest
   last, under a size budget. Several granularities are phase 2.
-- **Delivery to native sessions:** on each turn the pipeline renders the digest of the slice since the session's
+- **Delivery to native channels:** on each turn the pipeline renders the digest of the slice since the channel's
   position, filtered by the turn's policy, as a `<since_last_turn>` block; the position advances once the request is
   sent.
 - **Shared state** is a projection: `state_write` appends a fact or commitment event with provenance;
   `state_read` returns current facts the policy can see.
-- **Member delivery** (`prepare` / `delivered`) is in the contract; its implementation lands with member sessions.
+- **Member delivery** (`prepare` / `delivered`) is in the contract; its implementation lands with member channels.
 
 ## Storage
 
 | Data | v1 |
 | --- | --- |
-| Identity core: config, timeline, positions, shared-state projection | Required. SQLite through `bun:sqlite` in `<root>/identity.sqlite` |
-| Working contexts | In memory; optional JSONL snapshots (`<root>/sessions/<id>.jsonl`) |
+| Identity core: config, timeline, positions, shared-state projection, usage ledger | Required. SQLite through `bun:sqlite` |
+| Channel contexts | In memory; optional JSONL snapshots |
 | Transcripts | Not kept; hosts supply them as history sources |
 
-The store is event-sourced: a session is an append-only log, the context a projection, compaction an event.
+```
+<home>/                       ~/.harness/ by default; HARNESS_HOME or --home overrides; a host may choose
+  sessions/<session-id>/
+    config.json
+    session.sqlite            timeline, positions, shared state, usage ledger
+    channels/<channel-id>.jsonl   optional context snapshots
+    lock
+```
+
+The store is event-sourced: a channel's context is an append-only log with the context as a projection; compaction
+is an event.
+
+## Usage
+
+Every model call the harness makes reports usage with a **purpose** (`turn`, `compaction`, later `digest` and
+others), the channel it served if any, and the turn that was running if any. The session keeps its own ledger (counts
+per purpose, model and day; `session.usage()`, `harness usage`), so it works standalone. A host files each call by
+where it happened, not by its purpose: inside a turn it is part of that turn; with no turn running it is entity-level
+usage. A new kind of call needs only a new purpose name.
 
 ## Guards
 
@@ -289,12 +327,13 @@ input, which stops agent–worker and agent–agent ping-pong); a cost budget la
 The harness must run isolated in the agent's environment, as external harnesses do today: its loop, credentials,
 tools, MCP servers and storage live there, while the host (acp-client) may run elsewhere.
 
-- **`harness serve --stdio`** serves the public API as JSON-RPC 2.0 over stdio, one process per entity, all sessions
-  multiplexed. The protocol is the harness's, versioned (`protocol.version` in an `initialize` exchange).
-- **Host → harness:** `initialize`, `session/create`, `session/load`, `session/push`, `session/interrupt`,
-  `session/close`, `prompt`, `report`, `config/get`, `config/update`, `member/prepare`, `member/delivered` (phase 2
-  for members).
-- **Harness → host notifications:** `session/event` (text deltas, tool calls, usage, model-call log, turn end).
+- **`harness serve --stdio`** serves the public API as JSON-RPC 2.0 over stdio, one process per session (entity), all
+  its channels multiplexed. The protocol is the harness's, versioned (`protocol.version` in an `initialize` exchange).
+- **Host → harness:** `initialize`, `session/create`, `session/load`, `session/export`, `session/import`,
+  `channel/push`, `channel/interrupt`, `channel/close`, `prompt`, `report`, `config/get`, `config/update`,
+  `usage/get`, `member/prepare`, `member/delivered` (phase 2 for members).
+- **Harness → host notifications:** `channel/event` (text deltas, tool calls, usage, model-call log, turn end);
+  `state/appended` (new timeline events, for hosts that keep the durable copy).
 - **Harness → host requests (callbacks):** `functions/call`, `delegation/open|send|check|stop|list|answerPermission`,
   `history/search|read`. Declared by the host in `initialize`; a callback the host didn't declare makes the matching
   tools unavailable, not broken.
@@ -303,6 +342,18 @@ tools, MCP servers and storage live there, while the host (acp-client) may run e
 - **Lifecycle:** the host starts the process (through its own launcher), the harness opens its root and answers
   `initialize`; on stdin close it finishes running turns as interrupted and exits. A crash is the host's to restart.
 - **Contract tests** run the same scenarios through both transports.
+
+### State sync for isolated sessions
+
+The harness reads and writes its session directly, so when it is isolated the session lives in its environment,
+which may be ephemeral. The host then keeps the durable copy:
+
+- **Not isolated:** the session lives in the home the host chose; nothing to sync.
+- **Isolated:** on start the host injects the last saved state (`session/import`); while running the harness sends
+  new timeline events as they are appended (`state/appended`), and channel context snapshots on idle and on close;
+  the host stores them where the consumer chose. A crash loses at most what was in flight.
+- What needs syncing is small: transcripts are the host's records, the config is the host's; the timeline, shared
+  state, positions, usage and (optionally) channel contexts are the harness's.
 
 ## Execution port
 
@@ -320,9 +371,10 @@ container). A config entry (`execution.prefix`) covers simple cases standalone. 
 
 ## CLI
 
-`harness chat [--root DIR] [--config FILE] [--as ID] [--policy NAME]` opens or resumes a session and prints text,
-tool calls and wakes; `--log` shows the model-call log. `harness config get|set|validate`. `harness serve --stdio`
-for hosts. It drives the public API only.
+`harness new [--config FILE]` creates a session; `harness sessions` lists them; `harness chat --session S [--channel C]
+[--as ID] [--policy NAME]` talks on a channel and prints text, tool calls and wakes, with `--log` for the model-call
+log; `harness config get|set|validate --session S`; `harness usage --session S`; `harness serve --stdio --session S`
+for hosts. `--home` everywhere. It drives the public API only.
 
 ## v1 code plan
 
@@ -331,7 +383,7 @@ How v1 fills the layout of `11-11-SPEC-harness-project.md`. Folders not listed a
 | v1 part | Folders and files | v1 contents | Left for later |
 | --- | --- | --- | --- |
 | Contracts | `contracts/` all files | every type and interface, doc-commented | `memory`, member types beyond the receipt |
-| Kernel | `kernel/harness.ts`, `session.ts`, `turn-machine.ts`, `turn-runner.ts`, `lifecycle.ts` | full | — |
+| Kernel | `kernel/session.ts` (entity, lock), `channel.ts` (actor), `turn-machine.ts`, `turn-runner.ts`, `lifecycle.ts` | full | — |
 | Config | `config/schema.ts`, `load.ts`, `versions.ts` | schema, validation with paths, versions, overlay | migrations between versions |
 | Policy | `policy/engine.ts`, `resolve.ts`, `presets.ts` | capabilities, tool patterns, most-restrictive resolution, presets | `files`, `shell` |
 | Model | `model/clients/openai-compatible/{render,parse,client}.ts`, `model/chain/{retry,call-log}.ts` | one client, retries, call log | profiles, native Anthropic client |
@@ -343,8 +395,9 @@ How v1 fills the layout of `11-11-SPEC-harness-project.md`. Folders not listed a
 | Safety | `permissions/allow-all.ts`, `guards/{call-limit,unattended-turns}.ts` | gate via the policy engine; two guards | cost budget |
 | Identity | `identity/{timeline,positions,digest,shared-state,delivery}.ts` | append, positions, stitched digests, projection, native delivery | member delivery, digests at several granularities |
 | Storage | `storage/sqlite.ts`, `storage/schema.ts` | identity core in `bun:sqlite` | — |
-| Delegation | `delegation/native-subagents.ts`, `delegation/remote.ts` | built-in backend; the backend that forwards to host callbacks | — |
-| History | `history/own-sessions.ts`, `history/remote.ts` | own sessions; host callback source | — |
+| Delegation | `delegation/remote.ts` | the backend that forwards to host callbacks | native subagents |
+| History | `history/own-channels.ts`, `history/remote.ts` | own channels; host callback source | — |
+| Usage | `usage/ledger.ts` | purposes, ledger, `usage()` | — |
 | Execution | `execution/local.ts`, `execution/prefix.ts` | local spawn, prefix | — |
 | Protocol | `protocol/{messages,server,client,transport-stdio,transport-inproc}.ts` | server mode, client, both transports | — |
 | CLI | `cli/{chat,config,serve}.ts` | three commands | TUI |
@@ -357,8 +410,8 @@ How v1 fills the layout of `11-11-SPEC-harness-project.md`. Folders not listed a
 3. Kernel with in-memory store and empty pipeline. Check: a scripted tool loop, steering mid-turn, interrupt, limit.
 4. In parallel: model client (conformance + golden provider JSON); context pipeline and renderers (golden requests);
    compaction (scenario over budget); tools and MCP (validation errors fed back; an MCP stdio server in a test);
-   config and policy (policy tests without a model); identity and storage (two sessions share a fact; a guest slice
-   excludes owner events); delegation (native subagent round trip); execution (a `command` tool through a prefix).
+   config and policy (policy tests without a model); identity and storage (two channels share a fact; a guest slice
+   excludes owner events); delegation (a round trip through a fake host backend); execution (a `command` tool through a prefix).
 5. Protocol: server and client, both transports. Check: the kernel scenarios pass through the process transport.
 6. CLI. Check: `harness chat` against a real endpoint when a key exists; `harness serve` driven by the client in a
    test.
@@ -371,8 +424,9 @@ The build order is in the project spec. Acceptance per step is its conformance s
   compaction, limits.
 - Policy tests (no model): the gate refuses by capability and tool pattern; the most restrictive policy wins on
   combined turns; a guest slice never contains owner-scoped events.
-- Two sessions of one harness: a fact written in one is delivered to the other; `message_participant` and
-  `trigger_response` reach the other session.
+- Two channels of one session: a fact told in one is delivered to the other; `message_participant` and
+  `trigger_response` reach the other channel.
+- Two sessions are two entities: nothing told in one reaches the other.
 - The same scenarios pass in process and through `harness serve --stdio`.
 - `harness chat` works against a real OpenAI-compatible endpoint (when a key exists).
 

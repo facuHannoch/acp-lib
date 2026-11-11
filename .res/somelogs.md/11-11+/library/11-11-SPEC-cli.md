@@ -18,7 +18,7 @@ Two binaries, not three:
 | Binary | Owner | What it drives |
 | --- | --- | --- |
 | `acp-client` | the library | `chat`: `AgentController` (adapter bring-up, `--wire`, degraded mode). `create` / `open`: managed sessions. New `agent ...`: `Agent` and its conversations |
-| `harness` | the harness package | `harness chat`, `harness config` against a root directory, standalone; `harness serve --stdio`, which hosts such as acp-client launch (`../harness/11-11-SPEC-harness-v1.md`) |
+| `harness` | the harness package | `harness new`, `harness sessions`, `harness chat --session S [--channel C]`, `harness config`, `harness usage` against a harness home (`~/.harness/` by default), standalone; `harness serve --stdio --session S`, which hosts such as acp-client launch (`../harness/11-11-SPEC-harness-v1.md`) |
 
 - **Decoupled on purpose.** The harness must be usable without acp-client, so its CLI ships with it. `acp-client agent`
   hosts the harness through `Agent` and adds what only the library has: ACP conversations, workers, the shared
@@ -43,7 +43,7 @@ Order:
 2. **A TUI** once events are complete. It is the most demanding consumer of events (streaming text, tool calls,
    permission prompts, worker states, wakes), so events that drive a TUI drive any consumer's UI.
 
-- Native conversations take the harness root and config file; overrides (`--model`, `--base-url`, `--system-prompt
+- Native conversations use the `Agent`'s harness session (its home and config); overrides (`--model`, `--base-url`, `--system-prompt
   FILE`) write a config overlay, not new library options. The API key comes from the environment.
 - ACP-only commands (`/bridge`, `/commands`) are hidden by controller capability
   (`11-11-SPEC-controller-interface.md`).

@@ -26,13 +26,16 @@ So we split the agent in two:
 
 ## What it is
 
-- **A harness instance is the agent entity.** One instance serves many sessions (conversations) at once and keeps
-  what makes them one agent: configuration and system prompt, policies, the timeline, shared state, memory.
+- **A harness session is the agent entity.** One session has its own configuration and system prompt, policies,
+  timeline, shared state and memory, and talks on many **channels** at once: one line into the entity per
+  conversation, like phone numbers into one person, each with its own context and the participants talking on it.
+  Two sessions are two agents. A harness home (`~/.harness/` by default) stores many sessions; opening one wakes that
+  entity.
 - **It is self-sufficient.** Its own storage, model client, JSON configuration, policies and CLI. It runs standalone
   (`harness chat`); acp-client is one host among others.
 - **It runs isolated.** Like external harnesses today, it runs as its own process in the agent's environment (a
   container, say): loop, credentials, tools, MCP servers and storage live there, while a host such as acp-client may
-  run elsewhere and talks to it over the harness's own protocol (`harness serve --stdio`). One process per entity.
+  run elsewhere and talks to it over the harness's own protocol (`harness serve --stdio`). One process per session, locked while open.
 - **It is not a coding harness.** It does no file editing, shell or search at first; it may grow into them, and
   policies already name `files` and `shell` as future capabilities.
 - **It is an agent, not a chatbot.** It wakes on more than user input: worker replies, permission requests, reminders,
@@ -74,7 +77,7 @@ library may still sit behind our `ModelClient` contract; that is a v1 implementa
    through gates and guards, never left to the model. This is how all current harnesses split it, and it is the only
    defence against prompt injection that holds every time.
 2. **No rigid model.** No task lifecycle, structured brief or "done" decided by code. The harness gives the agent
-   primitives (sessions, inbox items, tools) and good descriptions.
+   primitives (channels, inbox items, tools) and good descriptions.
 3. **Stay in distribution.** Models are trained on direct assistant messages and tool calls. Plain text answers the
    current conversation; tools reach elsewhere. (Letta deprecated its `send_message`-for-everything loop for this
    reason; see memory findings.)
@@ -85,7 +88,7 @@ library may still sit behind our `ModelClient` contract; that is a v1 implementa
 
 - **The inner loop** (one turn): call the model, run the tools it asks for, append results, call again until it
   answers without a tool. Turns here are short: understand, delegate, answer.
-- **The outer loop** (between turns): each session's inbox. An item wakes an idle session or is injected into a busy
+- **The outer loop** (between turns): each channel's inbox. An item wakes an idle channel or is injected into a busy
   one at its next model call (steering without interrupting). This is the agent's main mode.
 
 Staying engaged doesn't need staying alive: "tell me when it's done" is a commitment in the context, and the next
@@ -132,7 +135,7 @@ of it) holds a **position**: how far its context has been brought up to date.
   memory consolidated from long spans.
 - **Digested, not copied:** coarse digests for old spans, raw events only for the recent part.
 - **What a person was told** is a separate "told" event, distinct from the agent's position.
-- **Complete only as far as hosts report.** Native sessions append automatically; hosts report their conversations
+- **Complete only as far as hosts report.** Native channels append automatically; hosts report their conversations
   (messages, and summaries when they checkpoint).
 
 ### Watches (deferred)
@@ -140,14 +143,14 @@ of it) holds a **position**: how far its context has been brought up to date.
 "Notify me when something important happens" as a standing request on the timeline came up but was never defined
 enough; it is parked with its context in `todos/11-11-TODO-watches.md`.
 
-### Member sessions
+### Member channels
 
-Other harnesses can join the entity's identity without running in it: a **member session** is a session with an id
+Other harnesses can join the entity's identity without running in it: a **member channel** is a channel with an id
 and a policy but no loop. Managed members (a host like acp-client injects what the harness returns before each
 prompt, through a `prepare` / `delivered` handshake) or unmanaged ones (any MCP client with a scoped token, pulling
 only). They read and write through the harness's MCP server (`timeline_since`, `timeline_search`, `state_read`,
 `state_write`, `state_share`, messaging where the policy allows). Members decide on their own when to record, less
-reliably than native sessions. Phase 2.
+reliably than native channels. Phase 2.
 
 ## Delegation
 
@@ -171,8 +174,8 @@ internal defaults.
   into it.
 - **The way back** is wake events (a reply ends the worker's turn), the agent's `check`, and later report tools for
   workers. No plan-based events, no `notify` option, no third model filtering messages.
-- The backend is a contract; acp-client's orchestrator implements it, and native subagents (another session of the
-  same harness) are the built-in implementation.
+- The backend is a contract; acp-client's orchestrator implements it. There is no built-in backend in the first or
+  second pass (native subagents later), so a standalone session has no delegation tools.
 
 ## Evaluation: the basic promise
 
@@ -223,10 +226,10 @@ honesty. Per run: pass rate, cost, latency, model calls.
 - **Phase 1: the entity talks and delegates.** Kernel, model client, context, tools and MCP client, policies, timeline
   basics (positions, digests stitched from host summaries), shared state as a projection, delegation, storage, CLI. Judged on the basic promise.
 - **Phase 2: memory and reach.** Long-term memory, digests at several granularities, the MCP server and member
-  sessions, watches, skills, deferred tool loading, reminders.
+  channels, watches, skills, deferred tool loading, reminders.
 
 ## Open
 
-- [ ] Member-session tokens: format, lifetime, cleanup of members whose host is gone.
+- [ ] Member-channel tokens: format, lifetime, cleanup of members whose host is gone.
 - [ ] Whether "told" events need event references in every messaging tool, or only when the agent cites entries.
 - [ ] The harness's name (overview).

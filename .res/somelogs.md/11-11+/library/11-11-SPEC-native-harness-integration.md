@@ -33,8 +33,8 @@ Today an ACP conversation's whole harness runs as its own process started throug
 performs live in the agent's environment (a container, say), while acp-client may run elsewhere. The native harness
 gives the same guarantee, from v1:
 
-- **One harness process per `Agent`,** not per conversation: all the entity's native conversations are multiplexed
-  over one connection.
+- **One `Agent` is one harness session** (one entity), served by one process: every native conversation of the
+  `Agent` is a channel of that session, multiplexed over one connection (Sessions and channels, below).
 - **Started through the launcher,** generalized from `AcpLauncher` to a `ProcessLauncher` (same `prepare` shape; the
   `kind` gains `"native-harness"`), so `docker exec`, cwd and env work unchanged; the default is the one conversations
   already use (`conversationDefaults.launcher`, `src/agent.ts:229`). `AcpLauncher` stays as an alias.
@@ -42,7 +42,7 @@ gives the same guarantee, from v1:
   serializable: JSON-RPC over stdio, defined and versioned by the harness, with the client exported by the harness
   package (`./client`). acp-client doesn't write protocol code; it launches the process and uses the client.
 - **Everything the agent does runs there:** model calls (API keys in that environment), `http` and `command` tools,
-  MCP servers, storage (the harness root, a volume in container setups).
+  MCP servers, the session's files.
 - **Callbacks from the harness to the host,** like ACP's fs and terminal requests to the client: function tools, the
   delegation backend (the orchestrator stays in acp-client), history sources, and identity delivery for members.
 - **In-process transport** exists too (same client interface), for tests and the standalone CLI; with acp-client the
@@ -60,6 +60,35 @@ AgentConversation ── AgentSession ── NativeController ── HarnessClie
                                              serves callbacks (functions, delegation, history)
 ```
 
+### Sessions and channels in acp-client
+
+A harness session is the entity; a channel is one line into it (`../harness/11-11-SPEC-harness-v1.md`, Sessions and
+channels). In acp-client:
+
+| acp-client | Harness |
+| --- | --- |
+| an `Agent` with a native harness configured | one session, created on the `Agent`'s first start and loaded afterwards; acp-client keeps its id in the `Agent`'s own persistence |
+| a native `AgentConversation` (`agc-…`) | a channel of that session; the channel id is the conversation id, passed through |
+| the conversation's provider-session row (`provider_sessions`) | `internal_session_id` = the harness session id (the same for every native conversation of the `Agent`; the index on it isn't unique); the channel id in the row's metadata |
+| a cleared transcript or a handoff into native | a fresh context on the same channel (`channel.close()` then reopen), the old row deactivated, a new one active |
+| deleting the conversation | closing the channel; its timeline events stay (they are the entity's history) |
+| participants on the conversation (`ParticipantRef`) | senders on the channel's messages |
+| the conversation's default policy | the channel's default policy |
+
+**Where the session lives:**
+
+- **Not isolated** (no launcher for the harness): in a harness home inside acp-client's own data location by default
+  (`<persistence root>/harness/`), or a home the consumer sets. The harness's own default, standalone, is
+  `~/.harness/`.
+- **Isolated** (a launcher puts the harness elsewhere): the session lives in the harness's environment, possibly
+  ephemeral. acp-client keeps the durable copy: it injects the last saved state on start (`session/import`), appends
+  timeline events as the harness sends them (`state/appended`) and stores channel snapshots on idle and close, in its
+  own location. A crash loses at most what was in flight. Transcripts (acp-client's records) and the config (from
+  the `Agent` config) need no sync.
+- **The config** belongs to the session. acp-client creates the session with the config from the `Agent` config and
+  is its source of truth while hosting: a change through the API is saved by acp-client and re-injected on start.
+- **The session is locked** while acp-client has it open; another host (the standalone CLI) can't open it meanwhile.
+
 ### Adapters
 
 `Adapter` stays what it is: the `HarnessController`'s adapter, an external harness command
@@ -68,17 +97,23 @@ AgentConversation ── AgentSession ── NativeController ── HarnessClie
 
 ```ts
 interface NativeAdapter {
-  kind: "native";
-  harness: {
-    root: string;                         // inside the agent's environment
-    config: string | NativeHarnessConfig; // path or the JSON object
-    command?: string[];                   // how to start `harness serve --stdio`; defaults to the package bin
-  };
-  launcher?: ProcessLauncher;             // else conversationDefaults.launcher
+  kind: "native";            // a conversation on this adapter is a channel of the Agent's harness session
+  defaultPolicy?: string;    // the channel default; a prompt may assert another
   displayName?: string;
 }
 type AgentAdapter = Adapter | NativeAdapter;   // what Agent configs take
+
+interface AgentHarnessConfig {                 // AgentConfig.harness: one per Agent, because one Agent is one entity
+  config: string | NativeHarnessConfig;        // path or the JSON object; seeds the session on first start
+  home?: string;                               // where the session lives when not isolated
+  command?: string[];                          // how to start `harness serve --stdio`; defaults to the package bin
+  launcher?: ProcessLauncher;                  // set → isolated (state sync on); else conversationDefaults.launcher
+  backup?: string;                             // where acp-client keeps the durable copy when isolated
+}
 ```
+
+The harness itself is configured on the `Agent`, not on the adapter: two native adapters with different harness
+configs would be two entities in one `Agent`. Native adapters differ only in channel defaults.
 
 `AgentConfig.adapters` takes `AgentAdapter`; the registry stores either and validates each with its own rules. A
 conversation's controller is chosen by the adapter's type. Existing code passing `Adapter` keeps working unchanged.
@@ -89,9 +124,9 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 
 | Controller member | Native |
 | --- | --- |
-| `start` / `startFresh` | `loadSession` / `createSession` on the shared host; nothing to launch per conversation |
-| `prompt` | push a user-message item with sender and policy; resolves on turn end |
-| `cancel` / `forceStop` | `session.interrupt()`; force stop abandons the turn if the process doesn't answer |
+| `start` / `startFresh` | open the conversation's channel on the shared session / open it with a fresh context; nothing to launch |
+| `prompt` | push a user-message item with sender and policy on the channel; resolves on turn end |
+| `cancel` / `forceStop` | `channel.interrupt()`; force stop abandons the turn if the process doesn't answer |
 | `subscribeOutput` | harness events translated into the update model the `agc` consumes |
 | `configOptions` / `setConfig` | model, reasoning, temperature as `ConfigOption`s; written as a config overlay |
 | `subscribeUsageUpdate` | usage events, one per model call |
@@ -118,7 +153,17 @@ recovery and adoption are gated off by capability).
 ## Usage
 
 Exact: each model call reports input, output and cached tokens (cost where the provider reports it), normalized by the
-harness's model client. The `NativeController` writes them to the existing metering ledger.
+harness's model client, with a **purpose** (`turn`, `compaction`, later others), the channel and the running turn if
+any. acp-client files each call by where it happened, not by its purpose:
+
+- **inside a turn:** part of that turn's operation metering on the conversation, tagged with its purpose (compaction
+  mid-turn is part of the turn's cost);
+- **no turn running** (background work): an entity-level record in `agent_metering_records` (already used for
+  internal inference without a conversation, `beginInternalInferenceMetering`), with the purpose as its kind.
+
+A new kind of harness call needs only a new purpose name. The session also keeps its own usage ledger, for standalone
+use. acp-client's own conversation summaries (checkpoints) stay acp-client's internal inference, now able to run on
+the `http` runtime.
 
 ## The inbox
 
@@ -131,15 +176,15 @@ mechanisms, and the inbox is both, not a new store:
 | Persisted items | out-of-band messages: records with `origin: out_of_band` plus `out_of_band_delivery` (`src/out-of-band-messages.ts`) | items that must survive a restart: worker replies, failures, redirects, interrupted |
 | Live items | the conversation's in-memory queue (`AgentConversationQueue`) and the steering controller (`src/steering/controller.ts`) | prompts and steering while the process runs |
 
-- **Native delivery:** an item is persisted first, then pushed into the harness session: it starts a turn if the
-  session is idle, or goes into the context at the next model call. Consumption marks it delivered (the existing
+- **Native delivery:** an item is persisted first, then pushed onto the conversation's channel: it starts a turn if
+  the channel is idle, or goes into the context at the next model call. Consumption marks it delivered (the existing
   `out_of_band_delivery` cursor), so a restart re-pushes only what wasn't consumed.
 - **ACP delivery:** an out-of-band message, delivered into the next prompt, as today. ACP harnesses can't be woken by
   an item; a wake needs a prompt the consumer allows (later).
 - **Item shape:** out-of-band records gain a kind and a sender in their metadata (`worker_reply`, `worker_failed`,
   `worker_redirected`, `permission_request`, `worker_interrupted`, consumer kinds). The harness renders each kind.
 - **Native steering:** the steering controller cancels a running turn through `SteeringHost.cancelProviderTurn`. With
-  `nativeSteering`, the native host pushes the steer item into the session instead; nothing is cancelled and
+  `nativeSteering`, the native host pushes the steer item onto the channel instead; nothing is cancelled and
   `endedBy: "steer"` doesn't occur for native turns. Interrupt stays a separate action.
 - **What comes out of a wake:** a turn the agent takes on its own produces events and records like any turn; it
   reaches a user only if the host delivers it.
@@ -188,11 +233,12 @@ tools by exact server and tool name.
 ```ts
 new Agent({
   adapters: {
-    main:   { kind: "native", harness: { root: "/data/harness", config: "./harness.json" } },
+    main:   { kind: "native", defaultPolicy: "owner" },
     codex:  { command: ["codex-acp"] },                 // an Adapter, as today (or ADAPTERS.codex)
     claude: ADAPTERS.claude,
   },
   defaultAdapterId: "main",
+  harness: { config: "./harness.json" },               // the entity; isolated if harness.launcher is set
   conversationDefaults: { launcher, cwd },             // as today; also starts the native harness
   persistence: { ... },
   functions: { crm_search: async (input) => { ... } }, // served to the harness for run.type "function" tools
@@ -205,8 +251,8 @@ What the library provides to the harness, all through its protocol:
 
 | The library | Through |
 | --- | --- |
-| Where the harness writes | `harness.root` |
-| The configuration | the path or object from the adapter |
+| Where the session lives | `harness.home`, or the isolated environment with state sync to `harness.backup` |
+| The configuration | `harness.config`, when the session is created |
 | Function tools | callback `functions/call` for each name in `functions` |
 | Workers for delegation | callback `delegation/*`, served by the orchestrator |
 | ACP transcripts for history tools | callback `history/*` over its records |
@@ -230,8 +276,9 @@ Checkpoints, summaries and recovery seeds are one prompt and one answer, today r
 
 ```
 src/native/
-  adapter.ts             NativeAdapter, validation, AgentAdapter union helpers
-  host.ts                NativeHarnessHost: one per Agent; launches `harness serve`, holds the client,
+  adapter.ts             NativeAdapter, AgentHarnessConfig, validation, AgentAdapter union helpers
+  sync.ts                state sync for isolated sessions: import on start, append timeline events, snapshots
+  host.ts                NativeHarnessHost: one per Agent = one session; launches `harness serve`, holds the client,
                          restarts on crash, serves callbacks
   callbacks.ts           functions, delegation (→ orchestrator), history (→ records)
   native-controller.ts   ConversationController over the client
@@ -260,7 +307,8 @@ src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "nat
    delivery).
 2. `NativeAdapter` and the registry change; the `NativeHarnessHost` with the in-process transport; the
    `NativeController` passes the controller conformance suite on the harness's scripted client.
-3. The process transport: launch through the launcher, crash and restart, a test with a real `harness serve` process.
+3. The process transport: launch through the launcher, crash and restart, a test with a real `harness serve` process;
+   state sync for isolated sessions (import on start, appended events, snapshots).
 4. Native steering behind `nativeSteering`.
 5. Callbacks: functions, delegation backend over the orchestrator, history over records.
 6. The `http` internal-inference runtime.
@@ -271,6 +319,9 @@ src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "nat
 - A native conversation runs end to end against `harness serve` started through a launcher (locally, and in one
   container test): prompt, tool loop, steer injected without cancel, interrupt, usage in metering, records written.
 - Killing the harness process ends running turns with an error and the next prompt works after the restart.
+- An isolated session on an ephemeral home survives a restart of its environment: the entity, its timeline and shared
+  state come back from acp-client's copy.
+- Two native conversations of one `Agent` are channels of one session: a fact told in one is known in the other.
 - A native conversation delegates to a fake worker and wakes on its reply, also after an acp-client restart.
 - An ACP conversation with a harness configured receives a preamble from `load`, and its position advances only after
   `delivered`.

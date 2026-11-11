@@ -29,12 +29,12 @@ contract, from the first commit.
 A **microkernel with ports and adapters**: the kernel coordinates, every feature plugs in through a contract, and
 providers, storage and hosts sit behind adapters. Inside it:
 
-- **One actor per session:** a mailbox processed one item at a time; sessions in parallel.
+- **A session is the entity; one actor per channel:** a mailbox processed one item at a time; channels in parallel.
 - **An explicit turn state machine:** a pure transition function and a separate runner.
 - **A functional core for the context:** stages, renderers and compactors are pure; only stores, clients, providers
   and the runner do I/O.
 - **Middleware chains only for model calls and tool calls;** **registries** for tools, renderers, providers.
-- **An event-sourced store:** a session is an append-only log; the context a projection; compaction an event.
+- **An event-sourced store:** a channel's context is an append-only log; the context a projection; compaction an event.
 
 ## Extension points
 
@@ -42,26 +42,26 @@ providers, storage and hosts sit behind adapters. Inside it:
 | --- | --- | --- | --- |
 | `ModelClient` | Interface | Neutral request in, neutral events out; abortable | Scripted fake; OpenAI-compatible |
 | Model profiles | Data + adapters | Per-family adjustments inside the client | None |
-| Context pipeline | Ordered stages | Session view in, next view out; the last produces the request | Layers, inbox rendering, sender tags, placement, cache order |
+| Context pipeline | Ordered stages | Channel view in, next view out; the last produces the request | Layers, inbox rendering, sender tags, placement, cache order |
 | Renderers | Registry by item kind | Inbox item → neutral messages | Tagged blocks |
-| Compactors | Strategy | Session over budget → smaller session + marker | Clear tool results; summarize turns |
+| Compactors | Strategy | Channel context over budget → smaller context + marker | Clear tool results; summarize turns |
 | `ContextStore` | Interface | Load, append, replace after compaction, export, import; versioned | In-memory; JSONL |
 | Tool providers | Registry | List definitions under the turn's policy; execute; may change | Configured; MCP; delegation and messaging |
 | Tool chain | Middleware | Validation, permission gate, timeout, truncation, usage | All five |
 | Model chain | Middleware | Retries, rate limits, logging | Retries; call log |
 | Permission gate | Interface | Allow, deny or ask under the policy of the turn's triggering items; timeout | Allow-all; policy engine |
-| Event sources | Interface | Feed inbox items into sessions | Host pushes |
+| Event sources | Interface | Feed inbox items into channels | Host pushes |
 | Guards | Interface | Veto a call or a turn | Call limit; unattended turns |
 | Lifecycle events | Event bus | Before and after turn, call, tool, compaction; deltas | Console; CLI call log |
 | Function registry | Registry by name | Implements `run.type: "function"` tools | `registerFunction` |
 | Delegation backend | Interface | Open, message, check, stop delegated agents | Native subagents; the library's orchestrator |
-| History sources | Registry | Search and read past conversations | Own sessions; the library's records |
+| History sources | Registry | Search and read past conversations | Own channels; the library's records |
 
 Rules for every extension point:
 
 - **One folder, one contract file, one conformance suite.** An implementation is accepted when it passes the suite.
 - **Composable, not exclusive.** Chains and pipelines take several implementations in order; registries take many.
-- **Session-aware, not session-owning.** No hidden per-session state outside the store.
+- **Channel-aware, not channel-owning.** No hidden per-channel state outside the store.
 - **Failures are values.** Typed errors the kernel turns into tool results or outcomes; exceptions are bugs.
 
 ## Layout
@@ -79,7 +79,7 @@ packages/native-harness/
   src/
     contracts/              imports nothing: entries, inbox, model, context, tools, permissions, guards,
                             events, config, policy, timeline, delegation, history, errors
-    kernel/                 harness.ts, session.ts (actor), turn-machine.ts (pure), turn-runner.ts, lifecycle.ts
+    kernel/                 session.ts (entity, lock), channel.ts (actor), turn-machine.ts (pure), turn-runner.ts, lifecycle.ts
     context/                pipeline/, renderers/, compactors/, store/          (pure, except store/)
     model/                  chain/, profiles/, clients/openai-compatible/ (render.ts, parse.ts, client.ts)
     tools/                  registry.ts, chain/, providers/configured/, providers/mcp/, providers/own/
@@ -89,8 +89,9 @@ packages/native-harness/
     events/                 event sources (reminders later)
     config/                 schema, loading, versions
     identity/               timeline, positions, digests, shared-state projection
-    delegation/             native subagents; remote (forwards to host callbacks)
-    history/                own-sessions source; remote (host callbacks)
+    delegation/             remote (forwards to host callbacks); native subagents later
+    history/                own-channels source; remote (host callbacks)
+    usage/                  usage ledger by purpose
     execution/              the execution port: local spawn, prefix
     protocol/               JSON-RPC messages, server (`harness serve`), client, stdio and in-process transports
     storage/                SQLite for the identity core, JSONL snapshots
@@ -192,9 +193,9 @@ Enforced by tooling (dependency-cruiser or eslint-plugin-boundaries):
 | Config and CLI | `config/`, `cli/` | Schema, versions, `harness chat` |
 | Policy | `policy/` | Capabilities, tool patterns, presets, most-restrictive resolution |
 | Identity | `identity/`, `storage/` | Timeline, positions, stitched digests, shared state, SQLite |
-| Delegation | `delegation/` | Backend contract; native subagents; remote backend over callbacks |
+| Delegation | `delegation/` | Backend contract; remote backend over callbacks |
 | Protocol | `protocol/`, `execution/` | Server and client over stdio and in process; the execution port |
-| Member sessions (phase 2) | `mcp-server/` | Scoped endpoints, delivery handshake |
+| Member channels (phase 2) | `mcp-server/` | Scoped endpoints, delivery handshake |
 
 **Integration** happens in the library (`../library/11-11-SPEC-native-harness-integration.md`) after the provider,
 context and tools workstreams.
