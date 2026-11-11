@@ -72,7 +72,7 @@ package only when it needs its own release cycle or dependencies. The fallback, 
 
 ```
 packages/native-harness/
-  package.json              exports: ".", "./openai-compatible", "./mcp", "./mcp-server", "./testing"
+  package.json              exports: ".", "./client", "./openai-compatible", "./mcp", "./mcp-server", "./testing"
   AGENTS.md                 contribution rules (below)
   ARCHITECTURE.md           the pattern and the rules, next to the code
   decisions/                0001-contracts.md, ...
@@ -82,15 +82,17 @@ packages/native-harness/
     kernel/                 harness.ts, session.ts (actor), turn-machine.ts (pure), turn-runner.ts, lifecycle.ts
     context/                pipeline/, renderers/, compactors/, store/          (pure, except store/)
     model/                  chain/, profiles/, clients/openai-compatible/ (render.ts, parse.ts, client.ts)
-    tools/                  registry.ts, chain/, providers/configured/, providers/mcp/
+    tools/                  registry.ts, chain/, providers/configured/, providers/mcp/, providers/own/
     permissions/            allow-all.ts
     policy/                 the policy engine
     guards/                 call-limit.ts, unattended-turns.ts
     events/                 event sources (reminders later)
     config/                 schema, loading, versions
     identity/               timeline, positions, digests, shared-state projection
-    delegation/             native subagents
-    history/                own-sessions source
+    delegation/             native subagents; remote (forwards to host callbacks)
+    history/                own-sessions source; remote (host callbacks)
+    execution/              the execution port: local spawn, prefix
+    protocol/               JSON-RPC messages, server (`harness serve`), client, stdio and in-process transports
     storage/                SQLite for the identity core, JSONL snapshots
     memory/                 phase 2
     mcp-server/             phase 2
@@ -103,6 +105,9 @@ packages/native-harness/
 ```
 
 - Subpath exports keep heavy dependencies optional (the MCP SDK loads only for consumers who use it).
+- `./client` is what hosts import: the `HarnessClient` with process and in-process transports. A host never imports
+  `kernel/` or any module internals, so running the harness in process or in another environment is a transport
+  choice.
 - Conformance suites are exported through `./testing`, so the library's implementations (its history source,
   delegation backend) run the same suites.
 
@@ -187,7 +192,8 @@ Enforced by tooling (dependency-cruiser or eslint-plugin-boundaries):
 | Config and CLI | `config/`, `cli/` | Schema, versions, `harness chat` |
 | Policy | `policy/` | Capabilities, tool patterns, presets, most-restrictive resolution |
 | Identity | `identity/`, `storage/` | Timeline, positions, stitched digests, shared state, SQLite |
-| Delegation | `delegation/` | Backend contract; native subagents |
+| Delegation | `delegation/` | Backend contract; native subagents; remote backend over callbacks |
+| Protocol | `protocol/`, `execution/` | Server and client over stdio and in process; the execution port |
 | Member sessions (phase 2) | `mcp-server/` | Scoped endpoints, delivery handshake |
 
 **Integration** happens in the library (`../library/11-11-SPEC-native-harness-integration.md`) after the provider,

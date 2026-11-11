@@ -8,7 +8,8 @@ The why is `11-11-SPEC-harness-design.md`; folders, rules and build order are `1
 In: the kernel and turn state machine; the contracts; JSON configuration and policies; configured tools and the MCP
 client; the delegation and messaging tools; an OpenAI-compatible model client; the context pipeline with tool
 placement and basic compaction; the timeline v1 (positions, digests from host summaries, shared state as a projection);
-storage; the public API; the `harness` CLI.
+storage; the public API; **server mode** (`harness serve --stdio`, the protocol and host callbacks) and the execution
+port, because the harness must run isolated in the agent's environment from v1; the `harness` CLI.
 
 Out (phase 2): long-term memory and consolidation; digests at several granularities; the MCP server and member
 sessions; watches (`todos/11-11-TODO-watches.md`); reminders; skills; deferred tool loading; file and shell capabilities;
@@ -66,6 +67,11 @@ specific tool, permission rules, retry logic, knowledge of policies, workers or 
 | `harness.config.get()` / `update(patch)` | Read and change the JSON config (versioned) |
 
 `export()` / `importSession(bundle)` (portable sessions) are in the contract and can be stubbed in v1.
+
+**The API is serializable.** Every call takes and returns JSON-shaped data (items, events, config, receipts), so the
+same API is served over the protocol unchanged. The only things that can't cross a process boundary as values, a
+host's function handlers, delegation backend and history sources, are host callbacks: in process they are
+registered objects; over the protocol they are requests from the harness to the host (Running as a process).
 
 ## Core data model
 
@@ -126,13 +132,13 @@ version (cached by version). Code adds only what JSON can't hold: function handl
     "owner": {
       "memory":     { "read": "all", "write": true },
       "messaging":  { "send": ["*"], "trigger": ["*"] },
-      "delegation": { "use": true, "scope": "all", "max": 2 },
+      "delegation": { "use": true, "scope": "all", "redirect": true },
       "tools":      { "send_email": "ask", "mcp:gmail/*": "allow", "*": "allow" }
     },
     "guest": {
       "memory":     { "read": "none", "write": false },
       "messaging":  { "send": ["policy:owner"], "trigger": [] },
-      "delegation": { "use": true, "scope": "none", "max": 1 },
+      "delegation": { "use": true, "scope": "none", "redirect": false, "maxOpen": 1 },
       "tools":      { "*": "deny" }
     }
   },
@@ -156,7 +162,8 @@ version (cached by version). Code adds only what JSON can't hold: function handl
 ## Policies
 
 - **Capabilities** have fixed names: `memory` (`read`: none, own, all; `write`), `messaging` (`send`, `trigger`:
-  target patterns), `delegation` (`use`, `scope`: none, own, all; `max`), later `files`, `shell`. **Tools** are matched
+  target patterns), `delegation` (`use`; `scope`: none or all, the workers it sees; `redirect`: may redirect work given from
+  another conversation, stop and drop; optional `maxOpen`), later `files`, `shell`. **Tools** are matched
   by name or pattern with `*` as fallback; levels deny, ask, allow.
 - **Messaging targets:** `*`, a conversation id, or `policy:<name>` for conversations whose current sender holds that
   policy.
@@ -182,7 +189,15 @@ version (cached by version). Code adds only what JSON can't hold: function handl
   delegated agent can"); errors that say how to fix the call ("`to` must be an id returned by `delegate`; open ones:
   w1, w2").
 - **Delegation tools** call the delegation backend; with none registered they are absent. The built-in backend runs
-  native subagents (another session of the same harness, with a worker policy).
+  native subagents (another session of the same harness, with a worker policy). Workers belong to the entity, not to
+  a conversation, so the tools see every worker the turn's policy allows:
+  - `delegate(text, about?, to?)`: no `to` opens a worker; with `to` sends to it. `about` is a short description the
+    agent writes ("debugging the 403 on /path"), kept for `check`, `list` and the busy answer.
+  - Sending to a worker busy with work given from another conversation returns `busy` with that work's `about`,
+    conversation, sender and elapsed time, and sends nothing. The agent may tell its user ("I'm in the middle of what
+    you asked in our other chat…") or call again with `redirect: true`, which the policy gates.
+  - `check(to)`, `list()`, `stop(to)`. The rules live in the backend (the library's orchestrator,
+    `../library/11-11-SPEC-orchestrator.md`); the tools only describe and call.
 - **Messaging tools:** `message_participant(to[], text)` appends a message to each target conversation with no model
   call; `trigger_response(to[], text)` pushes a wake item into each. Targets are checked against `messaging`; content
   is checked against the target's visibility.
@@ -269,11 +284,84 @@ The store is event-sourced: a session is an append-only log, the context a proje
 Calls per turn (`limits.callsPerTurn`); the unattended-turn budget (`limits.unattendedTurns`: turns with no human
 input, which stops agent–worker and agent–agent ping-pong); a cost budget later.
 
+## Running as a process
+
+The harness must run isolated in the agent's environment, as external harnesses do today: its loop, credentials,
+tools, MCP servers and storage live there, while the host (acp-client) may run elsewhere.
+
+- **`harness serve --stdio`** serves the public API as JSON-RPC 2.0 over stdio, one process per entity, all sessions
+  multiplexed. The protocol is the harness's, versioned (`protocol.version` in an `initialize` exchange).
+- **Host → harness:** `initialize`, `session/create`, `session/load`, `session/push`, `session/interrupt`,
+  `session/close`, `prompt`, `report`, `config/get`, `config/update`, `member/prepare`, `member/delivered` (phase 2
+  for members).
+- **Harness → host notifications:** `session/event` (text deltas, tool calls, usage, model-call log, turn end).
+- **Harness → host requests (callbacks):** `functions/call`, `delegation/open|send|check|stop|list|answerPermission`,
+  `history/search|read`. Declared by the host in `initialize`; a callback the host didn't declare makes the matching
+  tools unavailable, not broken.
+- **The client** (`HarnessClient`) is exported by the package (`./client`) with two transports: process (spawn a
+  prepared command, stdio) and in-process (direct calls, for tests and the CLI). Hosts never write protocol code.
+- **Lifecycle:** the host starts the process (through its own launcher), the harness opens its root and answers
+  `initialize`; on stdin close it finishes running turns as interrupted and exits. A crash is the host's to restart.
+- **Contract tests** run the same scenarios through both transports.
+
+## Execution port
+
+Every process the harness starts (`command` tools, stdio MCP servers) goes through one port:
+
+```ts
+interface ExecutionPort {
+  prepare(request: { purpose: "command_tool" | "mcp_server"; command: string[]; cwd?: string; env?: Record<string, string> }):
+    Promise<{ command: string[]; cwd?: string; env: Record<string, string>; dispose?(): Promise<void> }>;
+}
+```
+
+The default spawns locally, in the harness's own environment (which, when a host launched it in a container, is the
+container). A config entry (`execution.prefix`) covers simple cases standalone. Same shape as acp-client's launcher.
+
 ## CLI
 
 `harness chat [--root DIR] [--config FILE] [--as ID] [--policy NAME]` opens or resumes a session and prints text,
-tool calls and wakes; `--log` shows the model-call log. `harness config get|set|validate`. It drives the public API
-only.
+tool calls and wakes; `--log` shows the model-call log. `harness config get|set|validate`. `harness serve --stdio`
+for hosts. It drives the public API only.
+
+## v1 code plan
+
+How v1 fills the layout of `11-11-SPEC-harness-project.md`. Folders not listed are empty in v1.
+
+| v1 part | Folders and files | v1 contents | Left for later |
+| --- | --- | --- | --- |
+| Contracts | `contracts/` all files | every type and interface, doc-commented | `memory`, member types beyond the receipt |
+| Kernel | `kernel/harness.ts`, `session.ts`, `turn-machine.ts`, `turn-runner.ts`, `lifecycle.ts` | full | — |
+| Config | `config/schema.ts`, `load.ts`, `versions.ts` | schema, validation with paths, versions, overlay | migrations between versions |
+| Policy | `policy/engine.ts`, `resolve.ts`, `presets.ts` | capabilities, tool patterns, most-restrictive resolution, presets | `files`, `shell` |
+| Model | `model/clients/openai-compatible/{render,parse,client}.ts`, `model/chain/{retry,call-log}.ts` | one client, retries, call log | profiles, native Anthropic client |
+| Context | `context/pipeline/{layers,history,inbox,senders,placement,cache-order}.ts`, `context/renderers/*` | the five stages; renderers for user messages, worker replies, failures, redirects, permission requests, digests | deferred tool loading |
+| Compaction | `context/compactors/{clear-tool-results,summarize}.ts` | both | smarter summaries |
+| Store | `context/store/{log,memory,file}.ts` | event-sourced log, in-memory, JSONL snapshots | export/import bundles (stubbed) |
+| Tools | `tools/registry.ts`, `tools/chain/*`, `tools/providers/configured/{http,command,function}.ts`, `tools/providers/mcp/` | all | MCP resources and prompts |
+| Own tools | `tools/providers/own/{delegation,messaging,state,timeline}.ts` | delegate, check, list, stop; message_participant, trigger_response; state_read, state_write; timeline_since, timeline_search | memory tools |
+| Safety | `permissions/allow-all.ts`, `guards/{call-limit,unattended-turns}.ts` | gate via the policy engine; two guards | cost budget |
+| Identity | `identity/{timeline,positions,digest,shared-state,delivery}.ts` | append, positions, stitched digests, projection, native delivery | member delivery, digests at several granularities |
+| Storage | `storage/sqlite.ts`, `storage/schema.ts` | identity core in `bun:sqlite` | — |
+| Delegation | `delegation/native-subagents.ts`, `delegation/remote.ts` | built-in backend; the backend that forwards to host callbacks | — |
+| History | `history/own-sessions.ts`, `history/remote.ts` | own sessions; host callback source | — |
+| Execution | `execution/local.ts`, `execution/prefix.ts` | local spawn, prefix | — |
+| Protocol | `protocol/{messages,server,client,transport-stdio,transport-inproc}.ts` | server mode, client, both transports | — |
+| CLI | `cli/{chat,config,serve}.ts` | three commands | TUI |
+| Testing | `testing/{scripted-client,golden}.ts`, `testing/conformance/*` | per contract | — |
+
+**Build order for v1,** each step with its check:
+
+1. `contracts/` reviewed as a whole. Check: types compile; no imports.
+2. Conformance skeletons, scripted client, golden harness. Check: suites run (empty implementations fail as expected).
+3. Kernel with in-memory store and empty pipeline. Check: a scripted tool loop, steering mid-turn, interrupt, limit.
+4. In parallel: model client (conformance + golden provider JSON); context pipeline and renderers (golden requests);
+   compaction (scenario over budget); tools and MCP (validation errors fed back; an MCP stdio server in a test);
+   config and policy (policy tests without a model); identity and storage (two sessions share a fact; a guest slice
+   excludes owner events); delegation (native subagent round trip); execution (a `command` tool through a prefix).
+5. Protocol: server and client, both transports. Check: the kernel scenarios pass through the process transport.
+6. CLI. Check: `harness chat` against a real endpoint when a key exists; `harness serve` driven by the client in a
+   test.
 
 ## Steps
 
@@ -285,6 +373,7 @@ The build order is in the project spec. Acceptance per step is its conformance s
   combined turns; a guest slice never contains owner-scoped events.
 - Two sessions of one harness: a fact written in one is delivered to the other; `message_participant` and
   `trigger_response` reach the other session.
+- The same scenarios pass in process and through `harness serve --stdio`.
 - `harness chat` works against a real OpenAI-compatible endpoint (when a key exists).
 
 ## Open

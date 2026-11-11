@@ -12,20 +12,22 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 ## The system in one picture
 
 ```
-                          consumer code (the host)
-                                  │  Agent API, CLI
-┌─────────────────────────────── Agent (acp-client) ───────────────────────────────┐
-│                                                                                    │
-│  AgentConversation ── NativeController ──► NativeHarness (its own package)         │
-│        │                                     kernel · context · tools · policies   │
-│        │                                     timeline · shared state · model client │
-│        │                                          │ delegation backend contract    │
-│        │                                          ▼                                │
-│        │                                     orchestrator ──► pool ──► workers     │
-│        │                                                       (ACP or native)     │
-│  AgentConversation ── HarnessController ─► Codex / Claude / OpenCode / Grok (ACP)  │
-│        └── IdentitySource (injects what the harness says a member should know)     │
-└────────────────────────────────────────────────────────────────────────────────────┘
+                       consumer code (the host)
+                               │  Agent API, CLI
+┌──────────────────────── Agent (acp-client process) ────────────────────────┐
+│                                                                             │
+│  AgentConversation ── NativeController ─┐                                   │
+│  AgentConversation ── NativeController ─┤ NativeHarnessHost (one per Agent) │
+│                                         │ HarnessClient ═══ stdio ══════════╪══► harness serve
+│                                         │ serves callbacks: functions,      │    (agent's environment:
+│                                         │ delegation, history               │     loop, tools, MCP, model
+│                                         ▼                                   │     calls, timeline, storage)
+│                               orchestrator ──► pool ──► worker conversations│
+│                                                                │            │
+│  AgentConversation ── HarnessController ──────────────────────┴────────────╪══► Codex / Claude / OpenCode
+│        └── identity runtime: load → preamble, update → timeline,           │    (started through the
+│            delivered → position                                            │     launcher, as today)
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **The native harness is the agent entity.** It talks to many parties at once (owner chats, trusted agents, guests,
@@ -77,7 +79,13 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
 8. **The orchestrator** is a library module holding the pool, with its own API; harness tools, MCP tools and the
    consumer API are thin wrappers and all checks live in it. It is registered as the harness's delegation backend.
 9. **Workers** are ordinary conversations managed by the pool, one pool per `Agent` instance; their adapter comes
-   from pool configuration, never from the agent; busy workers come back as interrupted after a restart.
+   from pool configuration, never from the agent; busy workers come back as interrupted after a restart. **They
+   belong to the entity, not to a conversation:** shared by every conversation the policy allows (`scope: none |
+   all`), with no per-conversation cap. Each carries soft context the agent writes (`about`), plus where and by whom
+   it was last instructed.
+   **Busy work is a warning:** a send from the conversation that gave the running work steers; from any other it
+   returns `busy` with that context; `redirect` steers anyway when the policy allows, and the previous conversation
+   is told. No queueing behind another conversation's work; no trust hierarchy.
 10. **Permissions:** four levels (deny, ask me, ask the agent, allow); worker requests are forwarded through the
     delegating turn's policy.
 11. **Policies** (renamed from "profiles") live in the harness configuration and are asserted per prompt by the host,
@@ -85,11 +93,13 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     `trusted`, `owner`; no participant registry, the owner is just a policy.
 12. **Tool placement** is a pipeline strategy (stable superset plus a per-turn hint by default); the gate always
     enforces.
-13. **The inbox** is the `agc`'s queue extended with non-prompt items; native steering injects at the next model
-    call; rendering into the context is the harness's.
+13. **The inbox** is two existing mechanisms: persisted items as out-of-band messages (with a kind and a sender),
+    live items through the conversation queue and steering. Native delivery pushes into the harness session (wake or
+    next model call); ACP delivery is next-prompt. Rendering is the harness's.
 14. **Identity is a timeline in the harness:** one append-only history, a position per conversation, shared state and
     memory as projections, delivery as a digest of the slice since a position. Conversation summaries are
-    acp-client's, reported into the timeline. acp-client only injects (`IdentitySource`); ACP conversations join as
+    acp-client's, reported into the timeline. acp-client only injects, through the existing `AgentIdentityRuntime`
+    (`load`, `update`, `delivered`) implemented over the harness; ACP conversations join as
     member sessions; the checkpoint-backed identity is deprecated.
 15. **Phase 1 memory** is a simple shared state on the timeline. Watches are deferred (`harness/todos/11-11-TODO-watches.md`).
 16. **Internal inference** gets an `http` runtime that imports the harness's model client; the ACP-session runtime
@@ -103,6 +113,20 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
 21. **First version:** the full skeleton with simple implementations, judged on the basic promise (harness design
     spec).
 22. **Breaking changes** to records and tables are allowed.
+23. **Isolation from v1.** The native harness runs as its own process in the agent's environment, one per `Agent`,
+    started through the launcher (generalized to `ProcessLauncher`), like external harnesses today. It speaks its own
+    JSON-RPC protocol over stdio (`harness serve --stdio`); ACP was rejected as the protocol. The public API is
+    serializable; host functions, the delegation backend and history sources are callbacks. An in-process transport
+    exists for tests and the standalone CLI.
+24. **Adapter types are separate.** `Adapter` stays the `HarnessController`'s (an external harness command);
+    `NativeAdapter` (`kind: "native"`) is its own type; `Agent` configs take either.
+25. **Controller names.** The interface is `ConversationController`; `AgentController` is renamed
+    `HarnessController` (alias kept); the new one is `NativeController`.
+26. **Execution port.** Every process the harness starts (`command` tools, stdio MCP servers) goes through one port;
+    the default spawns in the harness's own environment.
+27. **Watches are deferred** to `harness/todos/11-11-TODO-watches.md`.
+28. **New library code lives in new modules** (`src/conversation-controller/`, `src/orchestrator/`, `src/native/`);
+    `agent-session.ts` does not grow; only `src/native/` imports the harness package.
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations
 talk into; building on top of an existing harness; the custom harness as an in-process ACP agent; an HTTP controller
@@ -120,13 +144,12 @@ Decisions for the owner:
 
 Design questions, each owned by a spec:
 
-- [ ] The way back: what a worker reply contains, which turn ends wake the agent, batching, the loop guard
+- [ ] Whether a `worker_redirected` item always wakes, or only when the previous work came from a human
       (orchestrator).
 - [ ] Default target for an Ask me worker request the delegating conversation can't answer (orchestrator).
 - [ ] Whether only the pool may wake a worker (recommended) (orchestrator).
 - [ ] Eviction preference for adapters that reload cheaply; worker usage rolled up to the delegating conversation
       (orchestrator).
-- [ ] Preempted jobs: resumed or abandoned (orchestrator).
 - [ ] Do Codex and Claude support HTTP MCP servers over ACP, or is the stdio bridge needed (integration).
 - [ ] Cache measurement: does reloading a harness session keep cache reads (orchestrator).
 - [ ] Digests: granularities, how and when they are produced (harness v1, memory findings).
@@ -134,9 +157,24 @@ Design questions, each owned by a spec:
 - [ ] Config versioning and how the library overlays the document (harness v1).
 - [ ] Member-session tokens and cleanup (harness design; phase 2).
 - [ ] Does the managed `AgentSession` REPL fold into the new CLI (CLI).
+- [ ] Whether the consumer may wake an ACP conversation with an item, or ACP only gets next-prompt delivery
+      (integration).
+- [ ] agents-core runs on `SessionManager`, not `Agent`: when it moves to `Agent` to get native conversations and
+      workers (its own decision).
 
 **Blocked on:** a provider key for live runs (no OpenRouter key; the OpenCode Zen key has expired). Everything up to
 the integration step runs offline.
+
+## Code map
+
+| Side | Module | Owns |
+| --- | --- | --- |
+| library | `src/conversation-controller/` | the `ConversationController` interface, capabilities, the controller factory |
+| library | `src/controller.ts` | `HarnessController` (renamed in place) |
+| library | `src/orchestrator/` | pool, workers, busy rules, permissions, delivery, its persistence extension, `agent.workers` |
+| library | `src/native/` | `NativeAdapter`, host, callbacks, `NativeController`, event translation, steering host, inbox delivery, identity runtime |
+| library | `src/internal-inference/runtime/http-runtime.ts` | internal inference over HTTP |
+| harness | `packages/native-harness/` (pending H0) | everything in `harness/11-11-SPEC-harness-project.md`; v1 contents in `harness/11-11-SPEC-harness-v1.md`, v1 code plan |
 
 ## Order of work
 
@@ -147,13 +185,14 @@ Lines of work, with what each needs first. L = library, H = harness, X = cross-c
 | L1 | Extract the controller interface; neutral capabilities | nothing (offline) |
 | L2 | Orchestrator and pool, with fake workers | L1 for native workers only |
 | L3 | Permission forwarding for workers (four levels, timeout) | L2 |
-| L4 | The inbox: non-prompt items in the `agc` queue | L1 |
+| L4 | The inbox: out-of-band items with kind and sender; the delivery port | nothing (offline) |
 | H0 | Repo layout and the harness package | owner decision |
 | H1 | Contracts, conformance skeletons | H0 |
 | H2 | Kernel with the scripted client, in-memory store, golden requests | H1 |
 | H3–H9 | Workstreams: provider client, context pipeline, compaction, tools and MCP client, config and policy engine, timeline v1 and storage | H2 |
-| H10 | `harness` CLI | H3, H7 |
-| L5 | `NativeController`, native steering, `native` adapter kind | L1, L4, H2–H5 |
+| H10 | Protocol: `harness serve --stdio`, `HarnessClient`, both transports; execution port | H2 |
+| H11 | `harness` CLI (`chat`, `config`, `serve`) | H3, H7, H10 |
+| L5 | `NativeAdapter`, `NativeHarnessHost` (launch, restart, callbacks), `NativeController`, native steering | L1, L4, H2–H5, H10 |
 | L6 | Orchestrator as delegation backend; records as history source; functions | L2, L5 |
 | L7 | Identity injection for ACP conversations; summaries reported to the timeline; deprecate checkpoint-backed identity | L5, H8 |
 | L8 | `http` internal-inference runtime | H3 |

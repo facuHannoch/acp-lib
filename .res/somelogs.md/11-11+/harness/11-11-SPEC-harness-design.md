@@ -30,6 +30,9 @@ So we split the agent in two:
   what makes them one agent: configuration and system prompt, policies, the timeline, shared state, memory.
 - **It is self-sufficient.** Its own storage, model client, JSON configuration, policies and CLI. It runs standalone
   (`harness chat`); acp-client is one host among others.
+- **It runs isolated.** Like external harnesses today, it runs as its own process in the agent's environment (a
+  container, say): loop, credentials, tools, MCP servers and storage live there, while a host such as acp-client may
+  run elsewhere and talks to it over the harness's own protocol (`harness serve --stdio`). One process per entity.
 - **It is not a coding harness.** It does no file editing, shell or search at first; it may grow into them, and
   policies already name `files` and `shell` as future capabilities.
 - **It is an agent, not a chatbot.** It wakes on more than user input: worker replies, permission requests, reminders,
@@ -148,8 +151,15 @@ reliably than native sessions. Phase 2.
 
 ## Delegation
 
-Through tools, starting with three: `delegate(text, to?)` (no `to`: a new worker; with `to`: message it, steering if
-busy), `check(to)` (read without interrupting), `stop(to)`. Alternatives weighed and dropped: markup parsed from
+Through tools, starting with `delegate(text, about?, to?)` (no `to`: a new worker; with `to`: message it),
+`check(to)` (read without interrupting), `list()` and `stop(to)`.
+
+- **Workers belong to the entity,** not to the conversation that opened them: two conversations with the same agent
+  are the same agent, so both see and can use every worker their policy allows.
+- **Busy work is a warning, not a decision.** Sending to a worker busy with work given from another conversation
+  returns `busy` with what it is on (the `about` the agent wrote), where and for whom; the agent tells its user in its
+  own voice or redirects explicitly (`redirect`, gated by policy), and the other conversation is told. Urgency is
+  judgment; there is no trust hierarchy. Alternatives weighed and dropped: markup parsed from
 replies, structured output on every reply, a separate router model, code mode. The tool set is settled by a test run,
 not up front; it stays cheap to change because records keep primitive-level facts and the tool definitions are
 internal defaults.

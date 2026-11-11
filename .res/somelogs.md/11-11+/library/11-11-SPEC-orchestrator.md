@@ -1,34 +1,43 @@
 # Orchestrator and worker pool
 
-Status: agreed, not started. Written 2026-11-11. Lines of work L2 and L3 in `../11-11-NOTE-overview.md`. Buildable
-first: tested through the consumer API with real or fake workers, with no harness and no provider key.
+Status: agreed, not started. Written 2026-11-11, model restated and grounded in code the same day. Lines of work L2
+and L3 in `../11-11-NOTE-overview.md`. Buildable first: tested through the consumer API with real or fake workers,
+with no harness and no provider key.
 
 ## Problem
 
-Today every conversation owns a whole harness process (`AgentSession` creates an `AgentController`, which creates an
+Today every conversation owns a whole harness process (`AgentSession` creates its controller, which creates an
 `AcpClient`, which launches a process). Ten conversations are ten Codex or Claude processes, and nothing limits live
 processes or evicts idle ones.
 
-The design (overview, decisions 1, 8, 9): many cheap native conversations talk; a fixed number of workers, usually ACP
-harnesses, do the environment work. The harness is the agent's hands, not its voice. Between them sits one library
-module, the orchestrator, which holds the pool and applies every rule.
+The design (overview, decisions 1, 8, 9): many cheap native conversations talk; a fixed number of workers, usually
+external harnesses, do the environment work. Between them sits one library module, the orchestrator, which holds the
+pool and applies every rule about workers.
 
-Not in scope: how the agent decides to delegate (judgment, in the harness) and how worker replies are rendered (the
-harness's renderers).
+## What it is, and what it isn't
 
-## Roles
+The orchestrator turns "the agent wants work done" into worker conversations and keeps every rule about them in one
+place. It does not:
 
-- An **agent** is a conversation run by the native harness. A **worker** is a conversation the pool runs for it,
-  usually ACP-driven (Codex, Claude) and possibly native.
-- The agent decides whether to delegate, to which worker and what to tell the user. The user has no say in delegation.
-- **The library never speaks in the agent's voice.** It records facts (a prompt sent, a turn ended, a worker busy) and
-  never writes user-facing lines such as "Delegated · running"; the agent may not want to disclose that it delegates.
-- **No rigid model.** No task lifecycle, structured brief or library-decided "done". The only library concept is a
-  handle to a worker conversation, which lasts until the agent drops it.
-- The agent owns the conversation and the decisions taken with the user; the worker owns the execution. Nobody steers
-  the worker step by step: its harness is better at that.
+- decide whether to delegate, what to say or when to check (judgment, in the model);
+- render anything into a context (the harness);
+- speak to users (nobody in the library does: it records facts, never lines such as "Delegated · running");
+- know about the harness (it implements a backend shape that `src/native/` wires to the harness).
 
-## The orchestrator
+## Roles and the entity
+
+- An **agent** conversation is one run by the native harness. A **worker** is an ordinary conversation the pool runs
+  for the entity, usually on an external harness (Codex, Claude), possibly native. Whether the agent's tool
+  descriptions call it a worker or "an agent working for you" is wording in the harness's default prompts.
+- **Workers belong to the entity, not to a conversation.** Two conversations with the same agent are the same agent
+  talking twice, so every conversation of the entity sees and can use every worker unless its policy says otherwise.
+  Two conversations sharing two workers is better than each holding one.
+- **The agent owns the conversation and the decisions taken with the user; the worker owns the execution.** Nobody
+  steers the worker step by step.
+- **No task model.** No lifecycle, structured brief or library-decided "done". The only soft structure is a short
+  description the agent writes (`about`, below), kept for `check`, `list` and the busy answer.
+
+## Placement and dependencies
 
 ```
 consumer API  ──┐
@@ -37,155 +46,179 @@ MCP tools     ──┘    (rules, routing)
 (later)
 ```
 
-- **Its API is the primitives:** open, send, check, stop, drop, list, and answer a forwarded permission request.
-- **Every call says who it acts for:** a conversation, with the policy of the turn that made the call, or the
-  consumer, which is privileged.
-- **Scopes, caps and permission levels are checked here,** never in the tools, so the entry points can't disagree.
-- **The harness only wraps the API as tools** (`delegate`, `check`, `stop`) through its delegation-backend contract;
-  the MCP extension will be a second wrapper.
-- **Dependencies:** the orchestrator depends on the `Agent` (to create and load conversations) and on a delivery
-  interface for the way back. It doesn't import the harness, and the harness doesn't import it; the integration
-  module registers it as the backend. An `Agent` with no orchestrator configured behaves as today.
+| It uses | For |
+| --- | --- |
+| The `Agent`'s conversation manager (`create`, `open`, `list`, `delete`, stop; `src/agent/conversation-manager.ts`) | creating, reloading and deleting workers; nothing new in the manager |
+| A persistence extension `orchestrator` (the existing versioned extension mechanism, `persistence_extensions`, `src/persistence/sqlite-backend.ts:375`) | its own tables, without touching the core schema |
+| A delivery port (an interface it defines) | the way back into agent conversations |
+| The `Agent` event bus | events for the consumer |
+
+`conversations.metadata` is not used: it is the consumer's own string (`CreateAgentConversationConfig.metadata`).
+Nothing imports the orchestrator except the `Agent` (which constructs it when `orchestrator` is configured) and
+`src/native/delegation-backend.ts`. An `Agent` with no orchestrator configured behaves as today.
+
+## Data model
+
+`orchestrator_workers`, one row per worker:
+
+| Field | Meaning |
+| --- | --- |
+| `handle` | the short id the agent sees (`w1`), unique per `Agent` |
+| `conversationId` | the worker's ordinary conversation |
+| `adapterId`, `kind` | where it runs; `kind` for limits per kind (native workers count apart) |
+| `openedBy`, `openedAt` | provenance only: the conversation (or `consumer`) where the work started |
+| `about` | short free text written by the agent ("debugging the 403 on /path"); updatable on any send |
+| `lastConversation`, `lastSender`, `lastSenderPolicy`, `lastInstructedAt` | where and by whom it was last instructed: the conversation that gave the running work |
+| `residency` | `live` or `evicted` |
+| `activity` | `idle`, `busy`, `awaiting_permission`, `failed`, `interrupted` |
+| `currentPrompt` | start of the running prompt's text, started at |
+| `lastUsedAt` | LRU eviction |
+| `unreadReply` | a reply whose target conversation is gone |
+| `droppedAt` | soft delete until the conversation and provider session are gone |
+
+`orchestrator_permission_requests`: id, handle, the neutral request, target conversation, status, deadline.
+
+## Worker states
+
+```
+residency:  live ⇄ evicted                  slots; only an idle worker is evicted
+activity:   idle → busy → idle              a prompt, then its turn ends
+                   busy → awaiting_permission → busy
+                   busy → failed | interrupted        idle again on the next send
+dropped:    terminal; from any state (stops first if busy)
+```
+
+Only `live` counts against slots.
+
+## Policy limits
+
+The policy is the harness's; the orchestrator receives the `delegation` part of the calling turn's policy:
+
+```ts
+interface DelegationPolicy {
+  use: boolean;          // may open workers and send to them
+  scope: "none" | "all"; // which workers it sees: check, list, send
+  redirect: boolean;     // may redirect a worker busy with work from another conversation; may stop and drop
+}
+```
+
+- Owner and trusted presets: `use`, `scope: "all"`, `redirect: true`. Guest: `scope: "none"` (it may still be
+  allowed to `use`, opening work it then can't see from other conversations), `redirect: false`.
+- No per-conversation cap: the pool limit is the entity's capacity. A guest policy may add `maxOpen`.
+- Workers run under a worker policy: no messaging the entity's participants, delegation off by default; if the
+  consumer turns it on, a depth limit stops workers delegating without end.
+- No trust hierarchy. Urgency is judgment (an agent reporting a compromised package may matter more than an owner's
+  colour change); the code only says who may redirect at all.
+
+## Busy work: warn, don't decide
+
+`send` to a busy worker:
+
+| Sender | Effect |
+| --- | --- |
+| the conversation that gave the running work (`lastConversation`) | steer, as today (`busyDelivery: "steer"`) |
+| any other conversation | nothing sent; the answer is `busy` with the context: `about`, started in another conversation with whom, how long ago |
+| any other conversation, with `redirect: true` and a policy that allows it | steer anyway; `lastConversation` and `lastSender` move to the sender; the previous conversation gets a `worker_redirected` inbox item |
+
+- Queueing a prompt behind someone else's work is not offered: it suits users rarely and agent-to-agent never.
+- The agent tells its user in the entity's own voice ("I'm in the middle of the 403 you asked about in our other
+  chat; should I drop that and do this?"). Renderers say "another conversation with Bob", never "another agent".
+- The redirected conversation's item says what the worker was redirected to, from which conversation and by whom.
+  Delivery is `wake`: that conversation takes a turn and may tell its user, or say nothing.
+- **No worker free** is the same answer for the whole pool: every worker with `about`, conversation, sender, elapsed.
+  Taking one over is a `redirect` on it; there is no separate preemption path.
+
+## Operations
 
 ```ts
 interface Orchestrator {
-  open(actor: Actor, text: string, options?: { title?: string }): Promise<OpenResult>;     // new worker
-  send(actor: Actor, handle: string, text: string): Promise<SendResult>;                    // steer if busy
+  open(actor: Actor, input: { text: string; about?: string }): Promise<OpenResult>;
+  send(actor: Actor, handle: string, input: { text: string; about?: string; redirect?: boolean }): Promise<SendResult>;
   check(actor: Actor, handle: string): Promise<WorkerStatus>;
   stop(actor: Actor, handle: string): Promise<void>;
   drop(actor: Actor, handle: string): Promise<void>;
   list(actor: Actor): Promise<WorkerSummary[]>;
-  answerPermission(actor: Actor, requestId: string, optionId: string): Promise<void>;
+  answerPermission(actor: Actor, requestId: string, optionId: string): Promise<AnswerResult>;
 }
-type Actor = { kind: "consumer" } | { kind: "conversation"; conversationId: string; policy: DelegationPolicy };
-type OpenResult = { handle: string; status: "sent" } | { status: "no_worker_free"; workers: WorkerSummary[] };
-type SendResult = { status: "sent" | "steered" | "queued" } | { status: "no_worker_free"; workers: WorkerSummary[] };
+type Actor =
+  | { kind: "consumer" }
+  | { kind: "conversation"; conversationId: string; sender: SenderRef; policy: DelegationPolicy };
+type OpenResult = { status: "sent"; handle: string } | { status: "no_worker_free"; workers: WorkerSummary[] };
+type SendResult =
+  | { status: "sent" | "steered" }
+  | { status: "busy"; worker: WorkerSummary }
+  | { status: "no_worker_free"; workers: WorkerSummary[] };
 ```
 
-Shapes are a starting point; records store facts at the primitive level ("conversation X sent this prompt to worker
-Y"), never tool calls with their arguments, so the tools can be renamed or merged without touching stored data. The
-tool definitions are internal defaults of the harness, not public API.
-
-**Consumer, not end user.** The consumer API (`agent.workers.list()`, `check(id)`, `stop(id)`, `delete(id)`) sees and
-controls every worker; no policy applies to it. This is what makes delegated work stoppable through the product
-(agents-core: "a looping Agent must be stoppable through the product"). Whether end users see workers is the
-consumer's product decision; the library never shows them by itself.
-
-## Delegation limits from the turn's policy
-
-The policy is the harness's (`../harness/11-11-SPEC-harness-v1.md`, Configuration and policies); the orchestrator
-receives its `delegation` part with each call:
-
-```ts
-interface DelegationPolicy {
-  use: boolean;                         // may open and message workers
-  scope: "none" | "own" | "all";        // which workers it may check, message and stop
-  max: number;                          // workers held at once by this conversation
-}
-```
-
-"Own" means workers this conversation opened. A guest with `scope: "none"` asking to "stop whatever it's doing" is
-refused by the orchestrator, not by the model. Worker conversations run under a worker policy: read what relates to
-their delegation, write findings, no messaging the entity's participants, `delegate` off by default; if the consumer
-turns it on, a depth limit stops workers delegating without end.
-
-## Pool and busy policy
-
-One pool per `Agent` instance, shared by every conversation; policies limit what each can touch. Two `Agent` instances
-are two entities with two pools.
-
-- **A handle is a persisted worker conversation, not a process.** The pool limit N counts live processes.
-- **Idle workers are evicted.** When all N slots are taken and one is idle, the pool stops the least recently used
-  idle worker. Its handle stays valid and it reloads on the next message, losing the provider cache.
-- **No worker free** happens only when all N are busy. The answer lists each worker: who opened it, the start of its
-  text, how long it has run. The agent decides (stop one, wait, tell the user).
-- **Preemption needs no library policy:** an agent whose policy allows it calls `stop` and delegates again.
-- **No wait queue for now.** Add one if the test run shows the agent retrying.
-- **Native workers** (a research worker on consumer tools, say) cost API calls, not a process; the limit then counts
-  per adapter or per kind.
-
-**Workers are ordinary conversations** in the `Agent`'s registry, persisted and listable, with metadata marking them
-as workers and who opened them. No new conversation type and no second registry: the pool manages them by querying
-the registry.
-
-| Stage | Meaning |
-| --- | --- |
-| created | `open` (`delegate` without `to`) |
-| live | holds a slot |
-| idle | turn ended; evictable |
-| evicted | process stopped, handle kept |
-| reloaded | a message arrived; needs a slot again |
-| dropped | conversation and provider session deleted |
-
-- **Only the pool wakes a worker.** The consumer can read and stop one, but a direct prompt would bypass the slot
-  count, so prompts go through the pool or are refused.
-- **Reload cost depends on the adapter.** Where the adapter can load a session, a reload keeps context and loses only
-  the provider cache; otherwise context is rebuilt from the transcript, which costs more and loses detail.
-- **Deletion** happens when the agent drops a worker, by an optional retention rule (off by default, `retention:
-  { idleDays }`), or through `agent.workers.delete(id)`.
-- **The worker's adapter** comes from the pool configuration, else the `Agent`'s default; the agent never chooses
-  adapters. Leave room in the configuration for consumer-defined worker kinds ("coder" on Codex, "reviewer" on Claude)
-  that the agent picks by name.
-- **Restart.** The pool rebuilds its list from records with no live workers. Workers that were busy lost their
-  process: they are marked interrupted and each delegating conversation gets an "interrupted" inbox item. Pending
-  forwarded permission requests are refused.
-
-```ts
-new Agent({
-  // ...
-  orchestrator: {
-    workers: { adapterId: "codex", cwd: "/work", limit: 2 },
-    retention: { idleDays: 30 },
-  },
-});
-```
-
-**Jobs, and caching.** The recommended shape is a job per task, kept for follow-ups: a new task opens a worker (clean
-context, isolation), a follow-up messages the same one (continuity), idle jobs are evicted and reloaded. The pool
-limits jobs live at once, not jobs that exist. Provider caches are keyed on the request prefix, not on the process,
-so a reload within the TTL keeps the cache unless the harness rebuilds its prompt differently on load; a new job
-loses only its own history's cache.
-
-**Measurement to run** (throwaway sessions only): per harness (Codex, Claude, OpenCode), a turn, stop, load, another
-turn within a few minutes, compare cached input tokens in metering; then the same with a fresh session.
-
-## Communication
-
-**Agent to worker: plain prompts,** written by the agent, through the existing machinery:
-
-| Need | Existing piece |
-| --- | --- |
-| Talk to work in progress | `busyDelivery: "steer"` folds a prompt into the running turn; `"queue"` waits (`src/steering/contracts.ts`) |
-| Stop | `interrupt()`, with `clearQueue` |
-| Status | the worker's `state.operation` (stage, tools in flight, last output) and latest messages |
-| Results | the `prompt()` result, records, metering, stall handling, recovery |
-| Several fronts on one worker | prompts into its queue, in order, each with `participantId` set to the sender |
-
-The worker sees none of the agent's conversation; decisions agreed with the user reach it only if the agent writes
-them into the prompt (the harness's default tool guidance says so). The library doesn't attach transcripts: costly,
-leaks the conversation under guest policies, and takes the choice from the agent.
-
-**Worker to agent, cheapest first:**
-
-| Level | When | What |
+| Operation | Checks | Effect |
 | --- | --- | --- |
-| The reply | the worker's turn ends | its final message, as an inbox item from that worker |
-| `check` | when the agent asks | state, elapsed time, current plan, last tool call titles, latest message, from records already stored |
-| Reading more (later) | rarely | a page of the worker's transcript |
+| `open` | `use`; depth if the actor is a worker | acquire a slot; create the worker conversation on the pool adapter; write the row; prompt without awaiting |
+| `send` | `use`, `scope`; not dropped; busy rules above | acquire a slot if evicted (reload); prompt (idle) or steer (owner of the running work, or redirect) |
+| `check` | `scope` | none: activity, elapsed, `about`, last conversation and sender, current plan, last tool call titles, latest message, unread reply, pending permission |
+| `stop` | `scope`, `redirect` (unless it is the conversation that gave the running work) | `interrupt()` on the worker with `clearQueue` |
+| `drop` | `scope`, `redirect` | stop, delete the conversation and provider session, mark dropped |
+| `list` | `scope` | summaries |
+| `answerPermission` | the actor is the request's target | resolve the waiting handler |
 
-- **`open` and `send` return at once** ("sent", "steered", "queued"); awaiting the worker's `prompt()` inside a tool
-  would hold the agent's turn open for the whole job.
-- **The way back belongs to the orchestrator.** It delivers replies, failures (stalled, crashed) and permission
-  requests to the delegating conversation through a small delivery interface: an inbox item for a native
-  conversation, a queued prompt for an ACP conversation once MCP exists.
-- A worker needing a decision ends its turn with a question, which arrives as its reply. Asking without ending the
-  turn (an `ask_agent` tool) comes with the MCP extension.
-- A reply whose agent conversation is gone stays unread on the handle and shows on any `check`.
-- **Events for the consumer:** worker opened, busy, idle, replied, permission requested, evicted, dropped.
+`open` and `send` return at once. Awaiting the worker's `prompt()` inside a tool would hold the agent's turn open for
+the whole job. Records store facts at the primitive level ("conversation X sent this to worker w1"), never tool calls
+with arguments, so harness tools can be renamed or merged without touching stored data.
+
+**The consumer API** is the same operations with `actor: consumer`, which bypasses policy: `agent.workers.list()`,
+`check(id)`, `stop(id)`, `delete(id)`. This is what makes delegated work stoppable through the product (agents-core:
+"a looping Agent must be stoppable through the product"). Whether end users see workers is the consumer's decision.
+
+## Slots and scheduling
+
+- `workers.limit` counts live workers; optional limits per kind; native workers count apart (API calls, no process).
+- An `open`, or a `send` to an evicted worker, acquires a slot. Full pool: evict the least recently used idle worker
+  (stopped, handle kept, reloaded on the next send, losing the provider cache). None idle: `no_worker_free`.
+- Eviction only under pressure in v1; no idle timer.
+- Pool operations (acquire, evict, drop) run one at a time per `Agent`, so two conversations can't race for the last
+  slot. Prompts to one worker are serialized by that worker conversation's own queue.
+- Reload cost depends on the adapter: where it can load a session, context is kept and only the cache is lost;
+  otherwise context is rebuilt from the transcript.
+- No wait queue and no retries by the orchestrator.
+
+## Prompting a worker
+
+Through the worker conversation's ordinary `prompt` (`src/agent-session.ts`), with:
+
+- `participantId` set to the sending conversation's sender, so the worker's records say who instructed it;
+- `delivery: "steer"` when steering, otherwise a plain prompt on an idle worker;
+- `handlers.onPermissionRequest` set to the orchestrator's forwarding handler (below);
+- the result awaited in the background, never in the caller.
+
+The worker sees none of the agent's conversation: decisions agreed with the user reach it only if the agent writes
+them into the prompt. The library never attaches transcripts.
+
+## The way back
+
+```ts
+interface DeliveryPort {
+  deliver(to: ConversationId, item: InboxItemInput): Promise<"delivered" | "target_gone">;
+}
+```
+
+| When | Item | To |
+| --- | --- | --- |
+| a worker's turn ends normally | `worker_reply`: its final message | `lastConversation` |
+| a turn fails (stalled, crashed, error) | `worker_failed` with the error kind | `lastConversation` |
+| a forwarded permission needs an answer | `permission_request` with the options | the target (below) |
+| another conversation redirects the worker | `worker_redirected` | the previous `lastConversation` |
+| restart finds a worker that was busy | `worker_interrupted` | `lastConversation` |
+
+- A stop asked by the conversation itself produces no item: the tool result said "stopped".
+- Several items arriving together are taken in one turn: the harness drains what waits at each model call.
+- Pull stays available: `check` and `list`. Worker report tools (asking without ending the turn) come with the MCP
+  extension. What a reply contains is tuned by the test run; v1 sends the final message.
+- **Target gone:** the reply stays on the row as `unreadReply` and shows on `check` and `list`.
+- The port's implementation is the inbox (`11-11-SPEC-native-harness-integration.md`): persisted first, then pushed.
+  For an ACP conversation (later, with MCP) it becomes an out-of-band message delivered with the next prompt.
 
 ## Permissions
 
-One permission system covers the harness's tools, the consumer's tools and forwarded worker requests:
+One system for the harness's tools, the consumer's tools and forwarded worker requests:
 
 | Level | Who decides |
 | --- | --- |
@@ -194,51 +227,117 @@ One permission system covers the harness's tools, the consumer's tools and forwa
 | Ask the agent | the agent, on the user's behalf (worker requests only) |
 | Allow | approved without asking |
 
-- **Worker requests are forwarded.** ACP hands over the full request (tool call, options allow once / allow always /
-  reject once / reject always, raw data). It goes through the policy of the turn that delegated the work, so a user
-  who wants everything asked gets that. When that conversation can't approve (a guest), the request goes to a
-  consumer-chosen conversation or is refused. Deny matters: worker tools come from a harness we don't control.
-- **Ask the agent:** the request arrives in the delegating conversation as an inbox item and the agent answers with a
-  tool, picking one of the worker's options; where Ask me is also possible, it can pass the request up. Never the
-  default: the default is Ask me, or Deny where no human can answer.
-- **A timeout.** The stale timer has no deadline while a permission is pending, so an unanswered request would hold a
-  slot forever. Forwarded requests time out to a refusal.
-- **Allow always outlives the request** (the worker harness keeps it for later tasks from other users), so it is
-  stripped from what non-owner conversations are offered.
+The forwarding handler, passed per prompt as `handlers.onPermissionRequest(request, signal)` (today
+`src/agent-session.ts:3536`):
+
+1. resolves the level from the policy of the turn that gave the running work (`lastSenderPolicy`);
+2. deny or allow: answer at once;
+3. ask: write a pending request, deliver a `permission_request` item to `lastConversation`, or, when that
+   conversation can't approve (a guest), to a consumer-chosen conversation; mark the worker `awaiting_permission`;
+4. wait for `answerPermission`, the deadline (refusal) or the abort signal (cancelled);
+5. return the outcome; the worker's harness continues.
+
+- **Ask the agent:** the agent answers with a tool, picking one of the worker's options; where Ask me is also possible
+  it can pass the request up. Never the default: the default is Ask me, or Deny where no human can answer.
+- **Allow always outlives the request** (the worker's harness keeps it for later work from others), so it is stripped
+  from what non-owner conversations are offered.
 - **Today's default refuses everything** (`defaultPermission` defaults to `"cancel"`, `src/agent-session.ts:625`), so
-  the pool needs forwarding before workers can do real work.
-- **Approve by exact command or tool name, never by substring.**
+  forwarding is needed before workers can do real work.
+- Approve by exact tool or command, never by substring.
+- The request shape is made neutral by the controller-interface work (`11-11-SPEC-controller-interface.md`, Records).
+
+## Events
+
+`worker_opened`, `worker_busy`, `worker_idle`, `worker_replied`, `worker_failed`, `worker_redirected`,
+`worker_permission_requested`, `worker_permission_resolved`, `worker_evicted`, `worker_reloaded`, `worker_dropped`.
+Each carries the handle, the conversation id, `openedBy` and `lastConversation`. Facts, never user-facing text.
+
+## Failure modes and restart
+
+| Case | Behaviour |
+| --- | --- |
+| The worker process crashes mid-turn | existing crash handling ends the turn with an error; `failed`; `worker_failed` item |
+| The worker stalls | the stale supervisor cancels, then force-stops; `failed`; item |
+| A reload fails (session gone, adapter missing) | `send` returns an error the tool turns into a fixable message; `failed` |
+| A permission request goes unanswered | refused at the deadline; `worker_permission_resolved` with `timeout` |
+| The agent conversation's turn is interrupted | workers keep running; stop on an agent conversation stops only its own turn |
+| The agent conversation is deleted | workers stay (they are the entity's); replies become `unreadReply`; retention cleans up |
+| The `Agent` closes | `stopAll` stops live workers; busy ones come back `interrupted` |
+| Restart | rows read back, none live; busy ones marked `interrupted` with an item each; pending permissions refused |
+
+## Configuration
+
+```ts
+new Agent({
+  // ...
+  orchestrator: {
+    workers: { adapterId: "codex", cwd: "/work", limit: 2 },  // the pool adapter, else the Agent's default
+    retention: { idleDays: 30 },                              // off by default
+  },
+});
+```
+
+- Workers are ordinary conversations, so they keep the adapter, the launcher (`src/launcher.ts`) and `cwd` exactly as
+  today. A consumer running each agent in its own container gives the pool a launcher that targets it.
+- ACP harnesses send filesystem and terminal requests back to the client (`src/client.ts`, `src/terminals.ts`);
+  workers inherit that behaviour unchanged.
+- The agent never chooses adapters or paths. Later: consumer-defined worker kinds ("coder" on Codex, "reviewer" on
+  Claude) and named workspaces the agent may pick by name.
 
 ## Accepted risk: workers sharing a workspace
 
-The agent is an entity, not a coding harness, so the pool isn't tied to git or worktrees. Mitigations: `check` and "no
-worker free" show what each worker does, so the agent can avoid overlap (judgment); the consumer can configure one
-worker per workspace, or worker kinds with different working directories.
+The agent is not a coding harness, so the pool isn't tied to git or worktrees. `about`, `check` and the busy answer
+show what each worker does, so the agent can avoid overlap; the consumer can configure one workspace per worker
+kind.
+
+## Code plan
+
+```
+src/orchestrator/
+  contracts.ts      Orchestrator, Actor, DelegationPolicy, DeliveryPort, results, statuses, events
+  orchestrator.ts   the operations: checks first, then pool and workers
+  pool.ts           slots, serialization, LRU eviction, limits per kind
+  workers.ts        prompting a worker (participantId, steer, handlers), reading status from its state and records
+  busy.ts           the busy rules: owner of the running work, redirect, the busy answer
+  permissions.ts    the forwarding handler, levels, deadlines, answer routing
+  delivery.ts       turn ends → reply, failure, redirected and interrupted items
+  persistence.ts    the persistence extension: tables, migrations, queries
+  restart.ts        rebuild on start
+  consumer-api.ts   agent.workers.*
+  index.ts
+```
+
+- **Touches existing code in three places only:** `src/agent.ts` (construct when configured, expose
+  `agent.workers`); `src/agent/config.ts` (the `orchestrator` option); `src/index.ts` (exports). The conversation
+  manager is used through its public methods; `agent-session.ts` is not edited.
+- Each file under ~400 lines; the module under ~2,000.
+- Tests: `test/orchestrator/` with a fake worker conversation (scripted turn ends, permission requests, crashes) and
+  an in-memory or temp-file SQLite.
 
 ## Steps
 
-1. Worker metadata on conversations; the orchestrator with `open`, `send`, `check`, `stop`, `drop`, `list` over the
-   registry; slot accounting and LRU eviction; consumer API and events.
-2. Delegation policy checks (`use`, `scope`, `max`) and the depth limit.
-3. The delivery interface and the way back (reply, failure, interrupted on restart).
-4. Permission forwarding with the four levels, timeout, and stripping allow-always.
-5. Restart rebuild; retention.
+1. Persistence extension and rows; `open`, `send` (idle), `check`, `list` over fake workers; slots and LRU eviction;
+   consumer API and events.
+2. Busy rules: steer from the owner of the running work, `busy` answer, `redirect` with the redirected item.
+3. Policy checks (`use`, `scope`, `redirect`) and the worker depth limit.
+4. Delivery port and the way back (reply, failure, interrupted), with a test delivery port.
+5. Permission forwarding: levels, deadline, stripping allow-always.
+6. `stop`, `drop`, restart rebuild, retention.
+7. One run with real throwaway ACP workers on a cheap model: a reply reaches the delegating conversation, a forwarded
+   permission is answered, a redirect is reported. Sessions deleted afterwards.
 
 ## Acceptance
 
-- Tests through the consumer API with fake workers cover: slots, eviction and reload, no worker free with the
-  listing, policy refusals for each scope, `max`, restart with a busy worker, forwarded permission at each level and
-  on timeout. No provider key.
-- One run with real throwaway ACP workers (cheap model) shows a reply reaching the delegating conversation and a
-  forwarded permission answered.
-- A consumer can list and stop every worker.
+- The fake-worker suite covers slots, eviction and reload, `no_worker_free` with the listing, busy and redirect,
+  policy refusals, restart with a busy worker, forwarded permissions at each level and on timeout. No provider key.
+- A consumer lists and stops every worker.
+- No edit to `src/agent-session.ts`.
 
 ## Open
 
-- [ ] What a reply contains (final message only, or more); which turn ends wake the agent; batching several replies;
-      the loop guard for agent–worker ping-pong.
-- [ ] The default target for an Ask me request the delegating conversation can't answer.
-- [ ] Only the pool wakes a worker (recommended), or direct consumer prompts allowed?
+- [ ] The default target for an Ask me request that the conversation which gave the work can't answer.
+- [ ] Whether only the pool may wake a worker (recommended), or the consumer may prompt one directly.
 - [ ] Eviction preferring adapters that reload cheaply.
-- [ ] Linking worker usage to the delegating conversation for cost roll-up.
-- [ ] A preempted job: resumed later or abandoned?
+- [ ] Linking worker usage to the conversation that gave the work, for cost roll-up.
+- [ ] Whether the redirected item always wakes, or wakes only when the previous work came from a human.
+- [ ] Measurement: does reloading a harness session keep cache reads (Codex, Claude, OpenCode; throwaway sessions).

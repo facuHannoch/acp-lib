@@ -92,6 +92,43 @@ in its own store (two logs, deliberately; integration spec). The changes this re
 Superseded by the identity decision: generalizing `identity_delivery_cursors` and `targetProviderContextId` into a
 context epoch. Delivery positions move to the harness timeline (integration spec).
 
+## Code plan
+
+Checked against `src/agent-session.ts` on 2026-11-11.
+
+**Seams.** `AgentSession` holds `private controller: AgentController` (line 491) and reaches controllers in these
+places, all of which move to the interface:
+
+| Seam | Where | Change |
+| --- | --- | --- |
+| Creation | `createController` (line 733) | becomes a factory keyed by adapter type: `Adapter` → `HarnessController`, `NativeAdapter` → `NativeController` |
+| Binding | `bindController` (line 742): connection, commands, usage subscriptions | typed on the interface; commands only if the capability says so |
+| Handoff targets | `handoff` creates a target controller (around line 2460) | through the factory |
+| Degraded-mode switch | recreates the controller with another mode | capability-gated; `HarnessController` only |
+| Internal prompts | `InternalPromptTarget.controller` (line 308): recap and internal inference run on a controller | typed on the interface |
+| Supervision | `supervisedPrompt(controller, …)` (line 4037) takes `subscribeOutput`, `cancel`, `forceStop`, `cancelGraceMs` | typed on the interface; these four are core members (the 11-09 count missed them because they are not reached through `this.controller`) |
+| Public escape hatch | `get connection(): AgentController` (line 1897) | returns `ConversationController`; a breaking change for consumers using ACP-only members through it (agents-core doesn't; checked). Add `harnessConnection(): HarnessController \| null` for those who need ACP specifics |
+
+**Files.**
+
+```
+src/conversation-controller/
+  contracts.ts       ConversationController: core and optional members, documented guarantees
+  capabilities.ts    ConversationCapabilities; fromAcp(initialize result) for the HarnessController
+  factory.ts         adapter type → controller
+  index.ts
+src/controller.ts    class AgentController → HarnessController (implements the interface); alias export
+test/conversation-controller/
+  fake-controller.ts core-only fake
+  conformance.ts     the suite every controller passes (prompt, steer, interrupt, force stop, stale, usage)
+```
+
+- **`agent-session.ts` shrinks or stays the same.** Each capability-gated path (continuation, recovery, adoption,
+  degraded mode) that needs more than a guard is extracted into its own file first, the way
+  `agent-conversation-continuation.ts` and `src/agent/adoption/` already were.
+- The adapter types are separate (`Adapter` for the `HarnessController`, `NativeAdapter` for the native one;
+  `11-11-SPEC-native-harness-integration.md`).
+
 ## Steps
 
 1. Introduce `ConversationController` and `ConversationCapabilities`; rename `AgentController` to `HarnessController`
