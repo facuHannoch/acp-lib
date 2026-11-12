@@ -141,6 +141,13 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     a turn: that turn; otherwise entity-level metering). The session keeps its own ledger. acp-client's conversation
     summaries stay acp-client's internal inference.
 33. **No native subagents** in the first or second pass; a standalone session has no delegation tools.
+34. **Messages in, turns out.** A message going in and a turn running are separate. `send()` puts a message in and
+    resolves when it is accepted; every turn, whatever caused it, is reported on the conversation's turn events with
+    its cause (a message, a worker reply, another channel); `prompt()` stays as a shortcut: send, then wait for the
+    turn that took the message. For native conversations the harness decides when turns run and acp-client records
+    the turns it reports (harness → box); for ACP, each message gives exactly one turn, as today. Inside, `runPrompt`
+    is split into "accept a message" and "run a turn"; this is part of L1. ACP harnesses talking outside a turn, and
+    ACP v2 (a draft that adopts the same model), are in `library/todos/11-12-TODO-acp-messages-outside-a-turn.md`.
 
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations

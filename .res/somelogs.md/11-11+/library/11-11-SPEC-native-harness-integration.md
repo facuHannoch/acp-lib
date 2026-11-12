@@ -144,6 +144,23 @@ agents-core runs on `SessionManager` and `AgentSession` (the managed path), not 
 orchestrator are `Agent`-only by design, so agents-core gets them only after it moves to `Agent`. Its pinned 0.10.2
 is unaffected.
 
+### Turns the harness starts
+
+The harness decides when a native channel runs a turn: because of a message, a worker reply pushed by the
+orchestrator, another channel (`trigger_response`), later its own background work. It reports each turn (`turn
+started`, with the items it took, then the stream, then the end). The `NativeController` passes that to
+`runTurn(cause)` (`11-11-SPEC-controller-interface.md`, Messages in, turns out), which records, meters and supervises
+it like any turn and emits it on the conversation's turn events. acp-client never schedules a native turn and never
+asks the harness for permission to run one.
+
+- A prompt's promise resolves with the turn that took its message; the harness reports which items each turn took.
+- A message sent while a turn runs is pushed and taken by the harness (into the running turn or the next).
+- A channel is never unreachable: channels aren't evicted, so the harness can always take a turn while the process
+  runs. When acp-client stops, the harness (its child process) stops too; pending items are persisted and handled
+  when both start again.
+- Turns the harness starts carry no prompt handler, so the conversation needs a standing permission handler (open
+  item 4 of the model review).
+
 ## Two logs of one native conversation
 
 The harness keeps the context the model sees, in its store and format. The library keeps its records as an

@@ -92,6 +92,29 @@ in its own store (two logs, deliberately; integration spec). The changes this re
 Superseded by the identity decision: generalizing `identity_delivery_cursors` and `targetProviderContextId` into a
 context epoch. Delivery positions move to the harness timeline (integration spec).
 
+## Messages in, turns out
+
+Today one call does two jobs: `prompt()` puts a message in and makes the backend take a turn, and its promise is the
+turn's result. Inside, `pump`'s prompt branch (about 45 lines, `src/agent-session.ts:2253`) and `runPrompt` (about
+450 lines, line 3337) hold both. A native agent also takes turns nobody prompted (a worker reply, another channel), so
+the two are separated (overview, decision 34):
+
+- **`acceptMessage`:** the first half of `runPrompt`: media, the user record, identity `load`, out-of-band items, the
+  participant.
+- **`runTurn(cause)`:** the second half: the metered operation, the supervisor, the backend call, records, metering.
+  `turn_started` (which exists already, with `turn_completed` and `turn_failed`) gains the cause: the message(s) or
+  the items the backend reports.
+- **ACP (`HarnessController`):** a message is accepted and its turn runs right after; one message, one turn, as today.
+  Steering's combining of queued steer messages into one run stays as it is.
+- **Native:** a message is accepted and pushed to the channel; `runTurn` runs when the harness reports that it
+  started a turn, with the items it took. A prompt's promise resolves with the turn that took its message.
+- **Public API:** `send(message)` resolves when the message is accepted; `prompt()` stays as send plus waiting for the
+  turn that took it. The REPL, the CLI and the seven internal call sites keep using `prompt()`; consumers that want
+  every turn subscribe to the turn events. Breaking changes are allowed, so the shapes may change freely.
+
+This split is the turn-path extraction that keeps `agent-session.ts` from growing: `acceptMessage` and `runTurn` move
+to their own module (`src/conversation-turns/`), with `pump` calling into it.
+
 ## Code plan
 
 Checked against `src/agent-session.ts` on 2026-11-11.
@@ -131,6 +154,8 @@ test/conversation-controller/
 
 ## Steps
 
+0. Split the turn path: `acceptMessage` and `runTurn(cause)` in `src/conversation-turns/`; `turn_started` carries the
+   cause; `send()` added; `prompt()` rebuilt on them. No behaviour change for ACP.
 1. Introduce `ConversationController` and `ConversationCapabilities`; rename `AgentController` to `HarnessController`
    (alias kept); it implements both. No behaviour
    change; existing tests cover it.
