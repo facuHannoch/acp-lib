@@ -154,8 +154,9 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     resolves when it is accepted; every turn, whatever caused it, is reported on the conversation's turn events with
     its cause (a message, a worker reply, another channel); `prompt()` stays as a shortcut: send, then wait for the
     turn that took the message. For native conversations the harness decides when turns run and acp-client records
-    the turns it reports (harness → box); for ACP, each message gives exactly one turn, as today. Inside, `runPrompt`
-    is split into "accept a message" and "run a turn"; this is the first library spec (the controller interface). ACP harnesses talking outside a turn, and
+    the turns it reports (harness → box); for ACP, each message gives exactly one turn, as today. Inside, every turn
+    runs from the controller's `turn_started` (the first library spec, the controller interface). ACP harnesses
+    talking outside a turn, and
     ACP v2 (a draft that adopts the same model), are in `library/todos/11-12-TODO-acp-messages-outside-a-turn.md`.
 35. **Messages between channels.** `message_participant` puts the agent's text in another channel without a turn
     (acp-client records it as an appended assistant message on that conversation and emits it); `trigger_response`
@@ -179,9 +180,11 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     channel's settings in the harness, overriding the session's config for that channel only; there is no config
     overlay.
 40. **The controller interface is turn-based.** `send` puts a message in; `subscribeTurns` reports every turn the
-    backend runs, with its cause. The `HarnessController` reports each ACP prompt as one turn; the `NativeController`
-    reports the harness's turns. `AgentSession` runs turns on `turn_started` from either. `runInternalPrompt` is
-    optional (ACP only). For consumers, `prompt()` stays the main method; `send()` plus the turn events are for those
+    backend runs, with its cause; `executeTurn(turnId, content?)` runs a reported turn (ACP: today's prompt call, with
+    the content the session builds at turn time; native: waits for the harness's end of turn). The
+    `HarnessController` reports each message as one turn at once, so the order of events stays as today; the
+    `NativeController` reports the harness's turns. `AgentSession` runs every turn from `turn_started`.
+    `runInternalPrompt` (prompts outside any turn: handoff summaries, recaps) is optional (ACP only). For consumers, `prompt()` stays the main method; `send()` plus the turn events are for those
     who want every turn.
 
 

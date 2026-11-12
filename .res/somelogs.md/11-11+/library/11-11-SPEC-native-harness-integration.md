@@ -154,7 +154,8 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 | --- | --- |
 | `start` / `startFresh` | open the conversation's channel on the shared session (`channel/open` with policy and label) / reset it to a fresh context; nothing to launch |
 | `send` | push a user-message item with sender and policy on the channel |
-| `subscribeTurns` | the harness's `turn_started` (with the items the turn took) and `turn_ended` |
+| `subscribeTurns` | the harness's `turn_started` (with the items the turn took) and its end of turn, as `turn_completed` / `turn_failed` |
+| `executeTurn` | waits for the harness's end of turn; ignores the content (the harness built the context) |
 | `cancel` / `forceStop` | `channel.interrupt()`; force stop abandons the turn if the process doesn't answer |
 | `subscribeOutput` | harness events translated into the update model the `agc` consumes |
 | `configOptions` / `setConfig` | model, reasoning, temperature as `ConfigOption`s; stored as the channel's settings (`channel.setSettings`) |
@@ -177,9 +178,9 @@ is unaffected.
 
 The harness decides when a native channel runs a turn: because of a message, a worker reply pushed by the
 orchestrator, another channel (`trigger_response`), later its own background work. It reports each turn (`turn
-started`, with the items it took, then the stream, then the end). The `NativeController` passes that to
-`runTurn(cause)` (`11-11-SPEC-controller-interface.md`, Messages in, turns out), which records, meters and supervises
-it like any turn and emits it on the conversation's turn events. acp-client never schedules a native turn and never
+started`, with the items it took, then the stream, then the end). The `NativeController` reports it as
+`turn_started` with its cause (`11-11-SPEC-controller-interface.md`), and `AgentSession` runs it like any turn: it
+records, meters and supervises it through `executeTurn`, and emits it and emits it on the conversation's turn events. acp-client never schedules a native turn and never
 asks the harness for permission to run one.
 
 - A prompt's promise resolves with the turn that took its message; the harness reports which items each turn took.
