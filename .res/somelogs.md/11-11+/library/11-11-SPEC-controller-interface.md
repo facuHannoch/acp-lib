@@ -1,6 +1,6 @@
 # Controller interface: what a conversation needs from its backend
 
-Status: agreed, not started; reviews 1–6 done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
+Status: agreed, not started; reviews 1–7 done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
 (`../11-11-NOTE-overview.md`, Order of work). A refactor with **no new behaviour**: every native piece depends on it,
 and its gate is that nothing breaks. Carries over the "provider-session interface" prerequisite of
 `../../9-22+/10-17-NOTE-model-call-controller.md` and the 2026-11-09 review.
@@ -24,7 +24,7 @@ conversation type was rejected.
 
 ## Scope
 
-**In:** the turn-based `ConversationController` interface (`send`, `subscribeTurns`, `executeTurn`,
+**In:** the turn-based `ConversationController` interface (`send`, `subscribeTurns`, `prepareTurn`,
 `abandonTurn`); `AgentSession` running every turn from `turn_started`, including turns the backend starts on its
 own; public turn completion owned by the session; `runPrompt` moved out of `agent-session.ts` into phases; the
 `cause` on `turn_started`; renaming `AgentController` to `HarnessController`; the controller factory; the startup
@@ -111,7 +111,10 @@ controller (`InternalPromptTarget`, line 307) before it is live, and emits no tu
 `currentSessionId` 2, and once each `stop`, `reconnect`, `prompt`, `listSessions`, `cancel`, `bridge`,
 `availableCommands`, `authenticate`; plus `subscribeConnection`, `subscribeAvailableCommands`,
 `subscribeUsageUpdate` in `bindController`, and `subscribeOutput`, `cancel`, `forceStop`, `cancelGraceMs` through
-`supervisedPrompt` (line 4037).
+`supervisedPrompt` (line 4037), which builds a `SupervisedProvider` (`src/operations/supervisor.ts:21`: `prompt`,
+`subscribeOutput`, `cancel`, `forceStop`) for the `OperationSupervisor`. The supervisor subscribes to output
+**before** it calls `prompt()` (`run()`, line 115), so it sees the first signals. Turns, handoff summaries, recaps and
+recovery seeds all go through it, each kind with its own stall limits (`turn`, `recap`, `internal_inference`).
 
 **Tests:** 1,096 tests in 112 files pass in about 90 seconds (`bun test`); `bun run typecheck` is clean. Conversation
 tests drive real fake ACP agents (`test/fixtures/*-agent.ts`: echo-prompt, steer, permission, permission-order,
@@ -127,8 +130,8 @@ a turn started and runs it; the session decides what the turn means for the conv
 it.
 
 A turn is reported by the controller and run by the session: `send` puts a run of messages in; the controller
-reports `turn_started` whenever a turn starts (because of a `send`, or on its own); the session runs it through
-`executeTurn` and owns its completion.
+reports `turn_started` whenever a turn starts (because of a `send`, or on its own); the session prepares it with
+`prepareTurn`, runs it under the supervisor and owns its completion.
 
 **Who chooses a turn's messages** depends on the backend, and the contract says which:
 
@@ -141,15 +144,15 @@ reports `turn_started` whenever a turn starts (because of a `send`, or on its ow
 
 | Group | Members | Native backend (later) |
 | --- | --- | --- |
-| Core (required) | `send`, `subscribeTurns`, `executeTurn`, `abandonTurn`, `cancel`, `forceStop`, `stop`, `start`, `startFresh`, `isConnected`, `subscribeOutput`, `subscribeConnection`, `cancelGraceMs`, `capabilities`, `configOptions`, `setConfig`, `subscribeUsageUpdate`, `currentSessionId` | `send` pushes onto the channel; the harness starts turns freely and they are reported; `executeTurn` delivers the turn's stream to the session's handlers and resolves at its end; `start` opens the channel; options known before start |
-| Optional methods | `runInternalPrompt`, `availableCommands` + `subscribeAvailableCommands`, `currentMode` + `setMode`, `reconnect`, `listSessions`, `bridge`, `authenticate` | absent |
+| Core (required) | `send`, `subscribeTurns`, `prepareTurn`, `abandonTurn`, `cancel`, `forceStop`, `stop`, `start`, `startFresh`, `isConnected`, `subscribeOutput`, `subscribeConnection`, `cancelGraceMs`, `conversationCapabilities`, `configOptions`, `setConfig`, `subscribeUsageUpdate`, `currentSessionId` | `send` pushes onto the channel; the harness starts turns freely and they are reported; a prepared turn's `prompt()` replays its held output, streams the rest to the session's handlers and resolves at its end; `start` opens the channel; options known before start |
+| Optional methods | `prepareInternalPrompt`, `availableCommands` + `subscribeAvailableCommands`, `currentMode` + `setMode`, `reconnect`, `listSessions`, `bridge`, `authenticate` | absent |
 
 ```ts
 interface ConversationController {
   // turns
   send(run: TurnRun): void;                        // reports turn_started synchronously for session-run backends
   subscribeTurns(listener: (event: TurnStarted) => void): () => void;
-  executeTurn(turnId: string, content: TurnContent): TurnExecution;
+  prepareTurn(turnId: string, content: TurnContent): PreparedTurn;  // starts nothing
   abandonTurn(turnId: string, reason: unknown): void;
   subscribeOutput(listener: OutputListener): () => void;           // controller-wide supervision signals, as today
   cancel(): void;                                                  // cancels the turn executing now, as today
@@ -168,7 +171,7 @@ interface ConversationController {
   readonly currentSessionId: string | null;
   readonly conversationCapabilities: ConversationCapabilities;
   // optional: absent when the controller type doesn't support them
-  runInternalPrompt?(content: TurnContent): Promise<PromptResult>;
+  prepareInternalPrompt?(content: TurnContent): SupervisedProvider;  // starts nothing; not a turn
   readonly availableCommands?: readonly InternalSessionCommand[];
   subscribeAvailableCommands?(listener: () => void): () => void;
   readonly currentMode?: AgentMode;
@@ -187,11 +190,11 @@ interface TurnContent {
   input?: ClientPrompt;                 // what the backend is told; ACP only, built by the session at turn time
   handlers: PromptHandlers;             // the session's recording handlers: stream, activity, permissions; both backends
 }
-interface TurnExecution {               // one turn's execution: supervision and cancel scoped to it
+// The supervisor's existing contract (src/operations/supervisor.ts:21), moved to src/operations/contracts.ts:
+// interface SupervisedProvider { prompt(): Promise<PromptResult>; subscribeOutput(l): () => void;
+//                                cancel(): void; forceStop(): Promise<void> }
+interface PreparedTurn extends SupervisedProvider {   // one turn, prepared; prompt() starts it
   readonly turnId: string;
-  readonly result: Promise<PromptResult>;
-  subscribeOutput(listener: OutputListener): () => void;  // this turn's supervision signals only
-  cancel(): void;                       // cancels this turn; a no-op once it finished in the backend
   readonly live: boolean;               // false while replaying output held for a turn that already ended
 }
 interface TurnStarted { kind: "turn_started"; turnId: string; cause: TurnCause; sentBySession: boolean }
@@ -209,29 +212,38 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
   is an error (the controller throws, the session treats it as a bug). In this stage each dispatched message belongs
   to exactly one turn. A cause's ids name messages the session sent; a backend-scheduled cause naming an unknown id
   is recorded and logged, not trusted for settlement.
-- **`turn_started`** is the only turn event the controller reports. A turn's end is `executeTurn` resolving or
-  rejecting, which is the single authority for the provider's outcome; the public `turn_completed` / `turn_failed`
+- **`turn_started`** is the only turn event the controller reports. A turn's end is its prepared turn's `prompt()`
+  resolving or rejecting, which is the single authority for the provider's outcome; the public `turn_completed` / `turn_failed`
   are the session's, emitted after finalization (below). A result forced by the supervisor (stall, force stop) goes
   the same way; the controller never announces an outcome of its own.
-- **`executeTurn(turnId, content)`** runs a reported turn and resolves with its result. The `HarnessController`
-  prompts with `content.input` and `content.handlers` (today's `controller.prompt`, unchanged). The native controller
-  ignores `input` (the harness built the context) and drives `handlers` from the harness's events.
-- **Supervision and cancel are per turn.** `executeTurn` returns a `TurnExecution` for that turn; the supervisor
-  watches its `subscribeOutput` and cancels through its `cancel`, never the controller-wide ones. This matters for
+- **`prepareTurn(turnId, content)`** prepares a reported turn and **starts nothing**. The session hands the
+  `PreparedTurn` to the supervisor, which subscribes to its output and only then calls `prompt()`: that call starts
+  the provider work (or, for a held turn, the replay of its output) and resolves with the result. This is the
+  attachment barrier, the same order the supervisor keeps today, so no first signal (a tool starting, a permission
+  request) is missed. The `HarnessController`'s `prompt()` calls today's `controller.prompt(content.input,
+  content.handlers)`, unchanged. The native controller ignores `input` (the harness built the context) and drives
+  `handlers` from the harness's events.
+- **Internal prompts use the same shape.** `prepareInternalPrompt(content)` returns a `SupervisedProvider` that
+  starts nothing until `prompt()`. The session runs it through the same supervisor with its own stall limits
+  (`recap`, `internal_inference`), cancel escalation and metering, as today; it emits no turn events, because it
+  isn't a turn.
+- **Supervision and cancel are per turn.** A prepared turn's `subscribeOutput`, `cancel` and `forceStop` are what the
+  supervisor uses, never the controller-wide ones. This matters for
   backend-scheduled controllers, where the backend can finish turn B (its output held) and start turn C before the
   session runs B: supervising B must not see C's activity, and interrupting B must not cancel C. Rules:
-  - a turn's signals reach only its own execution; signals of a turn not yet executed are held with its output;
-  - `cancel` on a turn that already ended in the backend does nothing (its result is known);
+  - a turn's signals reach only its own prepared turn; signals of a turn whose `prompt()` hasn't been called are held
+    with its output and replayed, in order, once it is;
+  - `cancel` cancels only that turn, and does nothing if it already ended in the backend (its result is known);
   - while `live` is false (output replayed from the hold) the stall check doesn't apply; it applies from the point
     the turn is live, if it still is;
-  - `forceStop` stays controller-wide: it stops the backend, and every open execution rejects.
+  - `forceStop` stops the backend itself (controller-wide), and every open prepared turn rejects.
 
-  For the `HarnessController` there is only ever one turn: its `TurnExecution` wraps today's controller-wide
-  `subscribeOutput` and `cancel`, `live` is always true, and nothing changes. The supervisor (`supervisedPrompt`)
-  takes the execution instead of the controller.
-- **A controller holds a reported turn's output until `executeTurn` is called** for it, then delivers it in order to
-  that call's handlers. The `HarnessController` never needs this (its turns start inside `executeTurn`'s call
-  chain); the fake and the native controller do.
+  For the `HarnessController` there is only ever one turn: its prepared turn wraps today's controller-wide
+  `subscribeOutput`, `cancel` and `forceStop`, `live` is always true, and nothing changes. It is the wrapper
+  `supervisedPrompt` builds today, moved into the controller; the supervisor itself is unchanged.
+- **A controller holds a reported turn's output until its `prompt()` is called,** then delivers it in order to
+  that turn's handlers. The `HarnessController` never needs this (its turns start inside `prompt()`); the fake and
+  the native controller do.
 - **`abandonTurn(turnId, reason)`** ends a reported turn the session won't run (the provider connection fails, a
   pre-dispatch record fails, the conversation stops). It releases the controller's bookkeeping for that turn and
   discards any output held for it. It is idempotent (a second call, or a call for a turn already executed, does
@@ -275,12 +287,12 @@ today:  pump: emit turn_started → ensureProvider → runPrompt: [content, reco
 after:  pump: controller.send(run) → the controller reports turn_started (inside send)
               → the session emits turn_started with cause (same moment as today)
               → runTurn: ensureProvider → [content, records, preflight]
-              → controller.executeTurn(turnId, content) → [records, metering, afterPrompt]
+              → supervisor(controller.prepareTurn(turnId, content)) → [records, metering, afterPrompt]
               → the session emits turn_completed (same moment as today)
 ```
 
 - **`runPrompt` moves, intact, to `src/conversation-turns/run-turn.ts`,** organized into phases in today's order
-  (prepare content and records per persistence mode; open the metered operation; dispatch through `executeTurn`
+  (prepare content and records per persistence mode; open the metered operation; dispatch through `prepareTurn`
   under the supervisor; assistant records; close metering and transcript; `afterPrompt`). No phase is reordered.
 - **Completion is the session's.** `turn_completed` (with the session's `AgentSessionPromptResult`) goes out after
   metering, transcript and `afterPrompt`, as today; `turn_failed` for any failure, before or after dispatch,
@@ -360,7 +372,7 @@ session re-reads capabilities after `start`, after a mode switch and after a han
 
 | Member | Present on | Guard before calling | When unsupported |
 | --- | --- | --- | --- |
-| `runInternalPrompt` | `HarnessController` | method present | the caller skips the internal prompt (handoff without a summary) |
+| `prepareInternalPrompt` | `HarnessController` | method present | the caller skips the internal prompt (handoff without a summary) |
 | `availableCommands`, `subscribeAvailableCommands` | `HarnessController` | method present | no commands |
 | `currentMode`, `setMode` | `HarnessController` | method present | no mode switch (`degraded` not offered) |
 | `bridge` | `HarnessController` | method present (the controller chooses: the live PTY in degraded mode, a temporary PTY in normal mode that leaves the ACP session untouched; `src/controller.ts:303`) | absent |
@@ -394,11 +406,11 @@ first, so it signals a bug.
 | Creation | `createController` (line 733) | through `factory.ts`; only `Adapter` → `HarnessController` exists in this spec |
 | Binding | `bindController` (line 742) | typed on the interface; commands only with the capability; subscribes to turn events |
 | Turn dispatch | `pump`'s prompt branch (line 2253) | calls `controller.send(run)`; the turn runs from `turn_started`; reported turns not sent by the session become queue items |
-| Turn execution | `runPrompt` (line 3337) → `controller.prompt` | moved to `run-turn.ts`; calls `controller.executeTurn` |
+| Turn execution | `runPrompt` (line 3337) → `controller.prompt` | moved to `run-turn.ts`; runs `controller.prepareTurn(...)` under the supervisor |
 | Handoff targets | `handoff` creates a target controller (around line 2460) | through the factory |
 | Degraded-mode switch | `runSetMode` (line 3218) recreates the controller | capability-gated; `HarnessController` only |
-| Internal prompts | `meteredInternalPrompt` (line ~4087) on `InternalPromptTarget.controller` (line 307) | `runInternalPrompt`, if present |
-| Supervision | `supervisedPrompt` (line 4037) | takes the turn's `TurnExecution` (its output and cancel) instead of the controller |
+| Internal prompts | `meteredInternalPrompt` (line ~4087) on `InternalPromptTarget.controller` (line 307) | `prepareInternalPrompt`, if present, under the same supervisor with its own limits |
+| Supervision | `supervisedPrompt` (line 4037) | takes a `SupervisedProvider` (a prepared turn or internal prompt) instead of building one from the controller; `OperationSupervisor` unchanged |
 | Capability readers | `.capabilities.agent` at lines 3357, 4516; `src/agent/adoption/provider-sessions.ts:50` | `conversationCapabilities.backend`; the public `capabilities` getter unchanged |
 | Public escape hatch | `get connection(): AgentController` (line 1897) | returns `ConversationController`; `harnessConnection(): HarnessController \| null` added |
 
@@ -462,7 +474,11 @@ typecheck and 1,096 passing tests in 112 files. Commit after each step with expl
    - `bridge` from degraded mode and from normal mode (the temporary PTY), at least asserting which path runs and
      that the ACP session is untouched in normal mode;
    - `conversation.capabilities.agent.promptCapabilities` read before and after start;
-   - a handoff with a summary (managed and Agent-owned only).
+   - a handoff with a summary (managed and Agent-owned only);
+   - an internal prompt that stalls (a handoff summary under a short `internal_inference` limit) and one cancelled
+     by force: metering recorded, the cancel escalation as today, and no `turn_*` events;
+   - a permission request or tool start sent by the agent the instant the prompt reaches it: the operation's stage
+     events show it (the supervisor saw it).
 
    Each case captures: the conversation's events (kind, ids, order; the `turn_*`, `message_delivered` and
    `message_withdrawn` events and the record events), the records written, read back the way each mode stores them
@@ -474,7 +490,7 @@ typecheck and 1,096 passing tests in 112 files. Commit after each step with expl
 **Gate:** typecheck clean; full suite green (1,096 + the new cases); three runs identical.
 **Done:** report the cases per mode, any case that couldn't be written in a mode and why, and the commit.
 
-### Brief A2: the turn path through `send`, `executeTurn` and `abandonTurn`
+### Brief A2: the turn path through `send`, `prepareTurn` and `abandonTurn`
 
 **Scope:** steps 1–4, on top of A1. Must not touch: records and schemas, `src/persistence/`, the adoption,
 continuation and recovery paths except to call the moved code, the A1 snapshot files except in step 4's own commit.
@@ -483,14 +499,15 @@ continuation and recovery paths except to call the moved code, the A1 snapshot f
    order; `AgentSession` calls it. **Gate:** suite green; A1 snapshots unchanged.
 2. **Contracts:** `src/conversation-controller/contracts.ts` with the turn members, the types and doc comments.
    **Gate:** typecheck.
-3. **`AgentController` gains `send`, `subscribeTurns`, `executeTurn` and `abandonTurn`** (its `prompt` stays):
-   `send` reports `turn_started` synchronously with `sentBySession: true`; `executeTurn` calls `prompt` with the
-   content's input and handlers and returns a `TurnExecution` wrapping today's controller-wide output and cancel
-   (`supervisedPrompt` takes it); `abandonTurn` clears its bookkeeping, idempotently. **Gate:** suite green.
+3. **`AgentController` gains `send`, `subscribeTurns`, `prepareTurn`, `prepareInternalPrompt` and `abandonTurn`**
+   (its `prompt` stays): `send` reports `turn_started` synchronously with `sentBySession: true`; `prepareTurn` and
+   `prepareInternalPrompt` return a `SupervisedProvider` whose `prompt()` calls today's `prompt` with the content's
+   input and handlers, wrapping today's controller-wide output, cancel and force stop; `supervisedPrompt` takes it;
+   `SupervisedProvider` moves to `src/operations/contracts.ts`; `abandonTurn` clears its bookkeeping, idempotently. **Gate:** suite green.
 4. **`AgentSession` drives turns through them:** the session registers the run's state, then `pump` calls `send(run)`
    with the run's message ids; `run-turn.ts` takes a turn context (`{ turnId, cause, messages? }`) instead of the
    queue item, with today's preparation running when `messages` is present; the session
-   emits `turn_started` with `cause` when the controller reports it; `run-turn.ts` dispatches through `executeTurn`
+   emits `turn_started` with `cause` when the controller reports it; `run-turn.ts` dispatches through `prepareTurn`
    under the supervisor; completion stays the session's, after finalization; a failure before dispatch calls
    `abandonTurn`. **Gate:** suite green; A1 snapshots unchanged except the added `cause` field, updated in a commit
    of its own whose diff shows only `cause`. New tests: a combined steer run's cause lists both message ids while
@@ -511,8 +528,7 @@ operations had to change (expected: none).
    A1 capability case unchanged.
 2. **Rename** `AgentController` to `HarnessController` and `AgentControllerStartEvent` to `ControllerStartEvent`
    across the files listed above; keep both old names as deprecated aliases; `HarnessController` declares
-   `implements ConversationController`, with `runInternalPrompt` as its name for the prompt `meteredInternalPrompt`
-   uses. **Gate:** suite green.
+   `implements ConversationController`. **Gate:** suite green.
 3. **`AgentSession` on the interface:** the field and every seam in the table typed `ConversationController`; every
    optional member behind its guard (the capabilities table); capabilities re-read after start, mode switch and
    handoff; `connection` returns the interface, `harnessConnection()` added; new exports in `src/index.ts`.
@@ -523,8 +539,8 @@ operations had to change (expected: none).
    in order, through `runTurn` with no `messages`: no user record, the session's recording handlers, supervision and
    metering attached to that turn. **Gate:** suite green (no ACP path reaches it).
 6. **Fake controller and conformance suite:** `fake-controller.ts` implements only the core: `send` reporting turns,
-   `executeTurn` with scripted output and results delivered to the handlers, a script step that starts a turn on its
-   own (holding its output until `executeTurn`), cancel, force stop, usage, options before start. `conformance.ts`
+   `prepareTurn` with scripted output and results delivered to the handlers once `prompt()` is called, a script step
+   that starts a turn on its own (holding its output until its `prompt()`), cancel, force stop, usage, options before start. `conformance.ts`
    runs a conversation on any controller:
    - prompt; queue and steer delivery with the cause; withdraw and interrupt settling queued prompts;
    - interrupt, force stop, stale detection;
@@ -538,6 +554,11 @@ operations had to change (expected: none).
    - late output arriving after a force stop is dropped, not recorded on the next turn;
    - finalization that is slow to finish: completion and the next operation both wait for it;
    - `turn_started` reported synchronously inside `send` is not missed;
+   - **the attachment barrier:** `prepareTurn` starts nothing; a prepared turn that emits a permission or tool
+     boundary the instant `prompt()` is called has it seen by the supervisor (stage and stall timer right), also for
+     a held turn whose replay begins with such a boundary (fake only);
+   - an internal prompt prepared through `prepareInternalPrompt` is supervised with its own limits and emits no turn
+     events;
    - options available before start (fake only);
    - **per-turn supervision** (fake only): the backend finishes turn B (held) and starts turn C before the session
      runs B; B's supervisor never sees C's signals; cancelling B leaves C running; B replayed from the hold doesn't
@@ -566,7 +587,7 @@ member it guards.
 - **Order changes in the turn path.** The managed-mode preflight, the moment `turn_started` is emitted and the
   user-record ids are the likely places. Sign: an A1 snapshot changes in order or ids. Fix the order, never the
   snapshot.
-- **A reported turn left open.** If `send` reports `turn_started` and the turn then fails before `executeTurn`, the
+- **A reported turn left open.** If `send` reports `turn_started` and the turn then fails before its `prompt()` is called, the
   turn must still be abandoned and end with `turn_failed`, and steering's `turnEnded` must still run. Covered by the
   A2 step 4 tests and the conformance suite.
 - **Completion announced before finalization.** Sign: `turn_completed` emitted before `afterPrompt` or with the raw
@@ -644,7 +665,7 @@ the backend starts, which the fake exercises.
   being self-sufficient in how it acts. Revisit if a channel gets several hosts or consumers need per-turn approval.
 - **Acknowledged turns (open for stage 2a).** The harness starts a channel's next turn only after acp-client
   confirms it processed the previous one. At most one turn per channel is then ever in flight between them, so no
-  output is held for a finished turn while the next runs; per-turn supervision (`TurnExecution`) stays correct
+  output is held for a finished turn while the next runs; per-turn supervision (`PreparedTurn`) stays correct
   either way. The cost: the agent's next turn waits for acp-client's finalization (usually milliseconds, longer with
   slow persistence). Decide in stage 2a.
 - **Concurrency without holds.** Turns run whenever the harness wants and acp-client records them as they come. No

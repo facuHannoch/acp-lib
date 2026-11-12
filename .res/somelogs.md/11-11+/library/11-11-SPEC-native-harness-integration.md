@@ -155,7 +155,7 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 | `start` / `startFresh` | open the conversation's channel on the shared session (`channel/open` with policy and label) / reset it to a fresh context; nothing to launch |
 | `send` | push a user-message item with sender and policy on the channel |
 | `subscribeTurns` | the harness's `turn_started` (with the items the turn took) and its end of turn, as `turn_completed` / `turn_failed` |
-| `executeTurn` | waits for the harness's end of turn; ignores the content (the harness built the context) |
+| `prepareTurn` | a prepared turn whose `prompt()` replays the turn's held output, then streams the rest into the session's handlers and resolves at the harness's end of turn; ignores the content's input (the harness built the context) |
 | `cancel` / `forceStop` | `channel.interrupt()`; force stop abandons the turn if the process doesn't answer |
 | `subscribeOutput` | harness events translated into the update model the `agc` consumes |
 | `configOptions` / `setConfig` | model, reasoning, temperature as `ConfigOption`s; stored as the channel's settings (`channel.setSettings`) |
@@ -164,8 +164,9 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 
 - **The internal event model stays.** Messages, tool calls, usage and permissions cover the native side; the record
   kind `protocol` is generic enough for model-call details.
-- **Stale supervision fits unchanged:** output events, cancel, force stop (`supervisedPrompt`,
-  `src/agent-session.ts:4037`).
+- **Stale supervision fits unchanged,** per turn: each prepared turn carries its own output signals and cancel, so
+  supervising a held turn never sees or cancels the next one (`supervisedPrompt`, `src/agent-session.ts:4037`;
+  controller-interface spec).
 - **Native conversations are `Agent`-only** (no detached `AgentSession`, no `SessionManager`).
 
 ### agents-core
@@ -180,7 +181,7 @@ The harness decides when a native channel runs a turn: because of a message, a w
 orchestrator, another channel (`trigger_response`), later its own background work. It reports each turn (`turn
 started`, with the items it took, then the stream, then the end). The `NativeController` reports it as
 `turn_started` with its cause (`11-11-SPEC-controller-interface.md`), and `AgentSession` runs it like any turn: it
-records, meters and supervises it through `executeTurn`, and emits it on the conversation's turn events. acp-client never schedules a native turn and the
+records, meters and supervises it through `prepareTurn`, and emits it on the conversation's turn events. acp-client never schedules a native turn and the
 harness never asks it for permission to run one (overview, decision 41). Exclusive operations on a native
 conversation (a handoff out, a stop, a delete) first hold the channel (`channel/hold`, then `channel/release`); every
 such operation must hold, and stage 2a tests each one. Budgets are the harness's guard.

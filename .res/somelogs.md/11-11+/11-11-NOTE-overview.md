@@ -180,7 +180,7 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     channel's settings in the harness, overriding the session's config for that channel only; there is no config
     overlay.
 40. **The controller interface is turn-based.** `send(run)` puts a run of messages in; the controller reports
-    `turn_started` with its cause; the session runs the turn through `executeTurn(turnId, content)` (ACP: today's
+    `turn_started` with its cause; the session prepares the turn with `prepareTurn(turnId, content)` and runs it under the supervisor (ACP: today's
     prompt call, with the input the session builds at turn time; native: the harness's stream into the session's
     handlers) and owns the public completion, after finalization; `abandonTurn` ends a turn that won't run. The
     `HarnessController` reports each run at once, so the order of events stays as today. Turns the backend starts on
