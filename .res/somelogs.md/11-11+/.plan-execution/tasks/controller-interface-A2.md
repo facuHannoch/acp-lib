@@ -1,0 +1,11 @@
+# Controller interface: A2 assignment
+
+Coordinator: bob-b. A1 gate passed at implementation `9de0ca3` and review `547b522`; see `.plan-execution/status/11-12-GATE-A1.md` and `.plan-execution/status/controller-interface.md` on `controller-interface-status`.
+
+Before A2 starts, both implementer and reviewer bring beta `1bda9ef29547446b9012834c1e6e67681769915a` (or later, if coordinator confirms) into their own branches, preserving previous work. The implementer waits for bob-b to confirm both branches contain it before starting A2. Report the resulting branch commit to bob-b. The updated spec is `library/11-11-SPEC-controller-interface.md` on beta: read it whole, especially A2 and the new `send` acceptance, optional run `turnId`, `turn_took`, and backend-scheduled queue semantics. If merge conflicts or unexpected beta changes occur, preserve work and report instead of overwriting.
+
+Once bob-b confirms both updates, agentclad-1 implements brief A2 on `controller-interface`, steps and gates strictly in spec order, committing each step with explicit paths. Report all commits, gates (test counts and times), agent-session.ts line count, deviations and questions in `library/reports/11-12-REPORT-A2.md`. The A1 snapshot exception is solely the added `cause` field in a snapshot-only commit; no snapshot loosening or other regeneration. Preserve visible error strings naming `AgentController`. Escalate suspected spec issues instead of working around them. Do not start B1 until A2 review and bob-b gate pass.
+
+Agentco-1 independently reviews A2 when bob-b assigns its final commit, without editing src or checking out the implementation branch, commits findings and gate evidence to `library/reports/11-12-REVIEW-A2.md` on `controller-interface-reviews`, and waits for bob-b's independent gate.
+
+All agents follow `.plan-execution/plan.md`, including no live harness runs, no tokens spent, no pushes, no merges into beta, exact-path commits, bounded waits, no protected files/worktrees/processes, and temp files outside the repo. Follow the user's shared-log instruction: after each step append what was done, tests/results, and possible gaps or limitations to `$AGENTS_COMMON_ARTIFACTS_DIR/logs/12-11-LOG-controller-interface.md`. Communicate actionable details through committed files; inbox messages point to them.
