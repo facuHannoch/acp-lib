@@ -305,7 +305,7 @@ delivery      digest(position..now, the turn's policy) → appended to the chann
 
 | Data | v1 |
 | --- | --- |
-| Identity core: config, timeline, positions, shared-state projection, usage ledger | Required. SQLite through `bun:sqlite` |
+| Identity core: config, timeline, positions, shared-state projection, usage ledger, channel inboxes (items not yet taken) | Required. SQLite through `bun:sqlite` |
 | Channel contexts | In memory; optional JSONL snapshots |
 | Transcripts | Not kept; hosts supply them as history sources |
 
@@ -313,7 +313,7 @@ delivery      digest(position..now, the turn's policy) → appended to the chann
 <home>/                       ~/.harness/ by default; HARNESS_HOME or --home overrides; a host may choose
   sessions/<session-id>/
     config.json
-    session.sqlite            timeline, positions, shared state, usage ledger
+    session.sqlite            timeline, positions, shared state, usage ledger, channel inboxes
     channels/<channel-id>.jsonl   optional context snapshots
     lock
 ```

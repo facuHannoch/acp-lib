@@ -246,21 +246,21 @@ the `http` runtime.
 ## The inbox
 
 A conversation's **inbox** is what waits to reach the agent in that conversation, other than the host's own prompt
-calls: worker replies, failures, redirects, permission requests, items the consumer pushes. Today's code has two
-mechanisms, and the inbox is both, not a new store:
+calls: worker replies, failures, redirects, permission requests, items the consumer pushes. Where it lives depends
+on who runs the conversation's loop:
 
-| Part | Existing mechanism | For |
-| --- | --- | --- |
-| Persisted items | out-of-band messages: records with `origin: out_of_band` plus `out_of_band_delivery` (`src/out-of-band-messages.ts`) | items that must survive a restart: worker replies, failures, redirects, interrupted |
-| Live items | the conversation's in-memory queue (`AgentConversationQueue`) and the steering controller (`src/steering/controller.ts`) | prompts and steering while the process runs |
-
-- **Native delivery:** an item is persisted first, then pushed onto the conversation's channel: it starts a turn if
-  the channel is idle, or goes into the context at the next model call. Consumption marks it delivered (the existing
-  `out_of_band_delivery` cursor), so a restart re-pushes only what wasn't consumed.
-- **ACP delivery:** an out-of-band message, delivered into the next prompt, as today. ACP harnesses can't be woken by
-  an item; a wake needs a prompt the consumer allows (later).
-- **Item shape:** out-of-band records gain a kind and a sender in their metadata (`worker_reply`, `worker_failed`,
-  `worker_redirected`, `permission_request`, `worker_interrupted`, consumer kinds). The harness renders each kind.
+- **Native conversations: the harness's.** An item is pushed onto the conversation's channel; the harness keeps it in
+  that channel's inbox in its own store (so it survives a restart), starts a turn if the channel is idle, or puts it
+  into the context at the next model call. acp-client stores nothing for it; the turn that takes it is recorded like
+  any turn.
+- **ACP conversations: acp-client's out-of-band messages,** as today (`src/out-of-band-messages.ts`: records with
+  `origin: out_of_band` plus the `out_of_band_delivery` cursor), delivered into the next prompt. ACP harnesses can't
+  be woken by an item; a wake needs a prompt the consumer allows (later). For these, out-of-band records gain a kind
+  and a sender in their metadata.
+- **Live prompts and steering** go through the conversation's queue (`AgentConversationQueue`) and the steering
+  controller (`src/steering/controller.ts`), as today.
+- **Item kinds:** `worker_reply`, `worker_failed`, `worker_redirected`, `permission_request`, `worker_interrupted`,
+  consumer kinds. The harness renders each kind.
 - **Native steering:** the steering controller cancels a running turn through `SteeringHost.cancelProviderTurn`. With
   `nativeSteering`, the native host pushes the steer item onto the channel instead; nothing is cancelled and
   `endedBy: "steer"` doesn't occur for native turns. Interrupt stays a separate action.
@@ -361,7 +361,7 @@ src/native/
   native-controller.ts   ConversationController over the client
   translate-events.ts    harness events → the agc update model
   steering-host.ts       native steering: push instead of cancel
-  inbox-delivery.ts      the orchestrator's DeliveryPort: persist as out-of-band item, push or defer
+  inbox-delivery.ts      the orchestrator's DeliveryPort: push onto the channel (native), out-of-band item (ACP)
   identity-runtime.ts    harnessIdentityRuntime (AgentIdentityRuntime)
   index.ts
 src/internal-inference/runtime/http-runtime.ts
@@ -380,8 +380,8 @@ src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "nat
 
 ## Steps
 
-1. Out-of-band items with kind and sender; the delivery port over them, tested with ACP conversations (next-prompt
-   delivery).
+1. The delivery port: pushing items onto native channels, and out-of-band items with kind and sender for ACP
+   conversations (next-prompt delivery).
 2. `NativeAdapter` and the registry change; the `NativeHarnessHost` with the in-process transport; the
    `NativeController` passes the controller conformance suite on the harness's scripted client.
 3. The process transport: launch through the launcher, crash and restart, a test with a real `harness serve` process;

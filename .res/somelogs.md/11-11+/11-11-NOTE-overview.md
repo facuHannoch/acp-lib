@@ -97,9 +97,10 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     conversations is the same person); the conversation's `title` is the channel's label.
 12. **Tool placement** is a pipeline strategy (stable superset plus a per-turn hint by default); the gate always
     enforces.
-13. **The inbox** is two existing mechanisms: persisted items as out-of-band messages (with a kind and a sender),
-    live items through the conversation queue and steering. Native delivery pushes into the harness session (wake or
-    next model call); ACP delivery is next-prompt. Rendering is the harness's.
+13. **The inbox** belongs to whoever runs the loop: for native conversations the harness keeps it, per channel, in
+    its own store (an item wakes the channel or goes in at the next model call); for ACP conversations it is
+    acp-client's out-of-band messages (with a kind and a sender), delivered with the next prompt. Rendering is the
+    harness's.
 14. **Identity is a timeline in the harness:** one append-only history, a position per conversation, shared state and
     memory as projections, delivery as a digest of the slice since a position. Conversation summaries are
     acp-client's, reported into the timeline. acp-client only injects, through the existing `AgentIdentityRuntime`
@@ -166,6 +167,10 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     native gives the channel a fresh context; a handoff out of native seeds the ACP session from acp-client's records
     or a summary, as today, and the channel stays in the session; deleting closes the channel and keeps its timeline
     events. `conversation.setTitle()` is added, since the title is the channel's label.
+38. **The orchestrator stores almost nothing:** one core `workers` table (handle, conversation, opened by, about,
+    last conversation). Progress is read from the worker conversation; slots, busy state, policies of running work
+    and pending permissions are in memory. No persistence extension. The harness reaches the orchestrator only
+    through its delegation tools and hears from it only through items on its channels.
 
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations
@@ -211,7 +216,7 @@ the integration step runs offline.
 | --- | --- | --- |
 | library | `src/conversation-controller/` | the `ConversationController` interface, capabilities, the controller factory |
 | library | `src/controller.ts` | `HarnessController` (renamed in place) |
-| library | `src/orchestrator/` | pool, workers, busy rules, permissions, delivery, its persistence extension, `agent.workers` |
+| library | `src/orchestrator/` | pool, workers, busy rules, permissions, delivery, `agent.workers`; the `workers` table in `src/persistence/` |
 | library | `src/native/` | `NativeAdapter`, host, callbacks, `NativeController`, event translation, steering host, inbox delivery, identity runtime |
 | library | `src/internal-inference/runtime/http-runtime.ts` | internal inference over HTTP |
 | harness | `packages/native-harness/` (pending H0) | everything in `harness/11-11-SPEC-harness-project.md`; v1 contents in `harness/11-11-SPEC-harness-v1.md`, v1 code plan |
@@ -225,7 +230,7 @@ Lines of work, with what each needs first. L = library, H = harness, X = cross-c
 | L1 | Extract the controller interface; neutral capabilities | nothing (offline) |
 | L2 | Orchestrator and pool, with fake workers | L1 for native workers only |
 | L3 | Permission forwarding for workers (four levels, timeout) | L2 |
-| L4 | The inbox: out-of-band items with kind and sender; the delivery port | nothing (offline) |
+| L4 | The delivery port: items pushed onto native channels; out-of-band items with kind and sender for ACP | nothing (offline) |
 | H0 | Repo layout and the harness package | owner decision |
 | H1 | Contracts, conformance skeletons | H0 |
 | H2 | Kernel with the scripted client, in-memory store, golden requests | H1 |
