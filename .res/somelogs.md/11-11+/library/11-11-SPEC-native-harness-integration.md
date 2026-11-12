@@ -1,6 +1,6 @@
 # Native harness in acp-client
 
-Status: agreed, not started; reviews 1–2 done 2026-11-12 (against the controller-interface spec, reviews 1–7, and the
+Status: agreed, not started; reviews 1–3 done 2026-11-12 (against the controller-interface spec, reviews 1–7, and the
 code on `beta`). No implementation plan or briefs yet. Implemented in two stages (2a, 2b) alongside the two parts of
 harness v1; see Stages and the overview. The harness seen from the library: what acp-client needs from it
 and what changes in acp-client. How the harness works inside is `../harness/11-11-SPEC-harness-design.md` and
@@ -171,7 +171,7 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 
 | Controller member | Native |
 | --- | --- |
-| `start` / `startFresh` | make sure the host's process is running (starting it lazily; Process lifecycle) / the same, then reset the channel to a fresh context. The channel's policy, label and settings are already in force (Channel changes, below). Result: `{ sessionId: <the Agent's id>, resumed: <the channel already had a context> }` |
+| `start` / `startFresh` | cheap: attach the conversation to its channel **without** starting the process (Process lifecycle). `startFresh` also marks the channel for a reset, applied as a channel change. Result: `{ sessionId: <the Agent's id>, resumed }`, where `resumed` comes from acp-client's own records (true when the conversation has had turns), so the harness isn't needed for it. `isConnected` is true unless the host is in the failed state |
 | `send` | push each message as an item on the channel, with sender, policy and a delivery hint; resolves when the harness has accepted it, which ends the message's queue operation; promises no turn |
 | `subscribeTurns` | the harness's `turn_started` (with the items it took) and `turn_took` (items folded into a turn already running); never an end of turn (the end is the prepared turn's `prompt()`) |
 | `prepareTurn` | a prepared turn whose `prompt()` replays the turn's held output, usage and supervision signals, then streams the rest into the session's handlers and resolves at the harness's end of turn; ignores the content's input (the harness built the context) |
@@ -197,11 +197,14 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 
 The process is what costs (and, isolated, a container per agent); channels are cheap and always exist.
 
-- **Started lazily, on activity:** when a native conversation first needs the harness (a message, an item pushed by
-  the orchestrator or the consumer, an operation that needs the harness such as export), like an ACP provider is
-  started on first use today. Starting happens inside that operation (the conversation is busy meanwhile, as when an
-  ACP provider connects); start progress behaves as for ACP. `agent.harness.start()` starts it ahead of time for
-  consumers who want to.
+- **Opening a conversation starts nothing.** Today opening or creating any `Agent` conversation starts its provider:
+  `AgentConversation.create` calls `session.start()`, which calls `controller.start()` (`src/agent-session.ts:867`,
+  `:1093`; `src/agent/conversation-manager.ts:892`). For native, `start` only attaches the conversation to its
+  channel, so opening or creating a native conversation never starts a process or a container.
+- **Started lazily, on the first real need:** a message's `send`, an item pushed by the orchestrator or the consumer,
+  an operation that needs the harness such as export. Starting happens inside that operation (the conversation is
+  busy meanwhile, as when an ACP provider connects); start progress behaves as for ACP. `agent.harness.start()`
+  starts it ahead of time for consumers who want to.
 - **Started once:** several conversations, the orchestrator or the consumer may need the process at the same moment;
   the host starts it once and the others wait for that start.
 - **`isBusy` and the queue are unchanged.** A native conversation is busy exactly while acp-client runs an operation
@@ -215,13 +218,33 @@ The process is what costs (and, isolated, a container per agent); channels are c
   once, as above, also when it races the stop). The harness home must be durable for this (no sync in v1; the
   consumer mounts it).
 - **Stopped with the `Agent`.** Not when its last native conversation closes.
-- **Restarts on a crash:** bounded (3 within 60 s, with a pause between); running turns end with an error. When the
-  retries run out the host is failed: native conversations' operations fail with `HarnessUnavailableError` until
-  `agent.harness.restart()`.
+- **Restarts on a crash:** bounded (3 within 60 s, with a pause between). Running turns end with an error; held turns
+  are abandoned; a message a crashed turn had already taken settles as failed (its prompt rejects); a message still
+  waiting in the harness inbox survives the restart and is taken afterwards. When the retries run out the host is
+  failed: native conversations' operations fail with `HarnessUnavailableError` until `agent.harness.restart()`.
 - **Turns for conversations not loaded:** when the harness reports a turn on a channel whose conversation acp-client
   hasn't loaded in this process, acp-client loads it from persistence and records the turn there.
 - **No background work in v1:** a stopped harness never needs to wake itself. Waking it, and a harness that starts
   cheaply and loads lazily, are in `../harness/todos/11-12-TODO-background-work-and-lazy-harness.md`.
+
+### Lazy start for ACP conversations too
+
+The same decoupling, as an option for ACP conversations: `conversationDefaults.providerStart: "on_open" |
+"on_first_use"` (default `"on_open"`, today's behaviour; also settable per conversation at creation).
+
+- **How:** with `"on_first_use"`, an `Agent` conversation's `start()` skips `controller.start()` and leaves the
+  provider unconnected; the first operation's `ensureProvider()` (`src/agent-session.ts:3911`), which already
+  reloads the recorded provider session or starts a fresh one, with continuation from acp-client's records when
+  reloading fails, does the rest. The lazy path exists today for reconnects; this uses it on the first operation.
+- **What changes for a consumer that opts in** (inherent to ACP: only the running harness knows these): model options
+  and commands are empty until the first operation; the ACP `capabilities` getter throws until then; a settings
+  change before the first prompt starts the provider (the settings operation calls `ensureProvider` first); errors
+  found at open today (a bad command, authentication needed) appear at the first operation instead.
+- **Only `Agent` conversations.** The managed path (`SessionManager`, which agents-core uses) keeps starting on open.
+- **Adoption is unaffected:** it lists and replays provider sessions with its own client (`src/agent/adoption/`), and
+  its follow-up summary goes through `ensureProvider`. Adoption stays ACP-only (the controller-interface spec gates
+  it); for native conversations it doesn't exist. Importing an ACP session's history into a native channel (like a
+  handoff into native) is a possible later feature, not v1.
 
 ### Configuration known before start
 
@@ -235,11 +258,12 @@ native conversation always looks ready.
   an update while it runs is also sent at once (`config/update`). Your code's config stays the base: a later change
   to it applies, under the stored overrides.
 - **Channel settings** set through `setConfig` (model, reasoning, temperature) are stored per conversation and sent
-  when the channel is next used.
+  as channel changes (below). A config update or a channel setting sent while a turn runs applies from its next model
+  call.
 - **Models and reasoning options** come from the config, which lists the allowed models with what each supports
   (`../harness/11-11-SPEC-harness-v1.md`, Configuration).
-- **Commands, capabilities and validation** come from `describe(config) → { configOptions, commands, capabilities,
-  errors }`, a pure function the harness package exports (`./client`). It runs in acp-client's process and launches
+- **Commands, capabilities, policy names and validation** come from `describe(config) → { configOptions, commands,
+  capabilities, policies, errors }`, a pure function the harness package exports (`./client`). It runs in acp-client's process and launches
   nothing, so a bad config fails before any container starts.
 - **The live description wins after start:** the protocol's version check at start catches a harness version that
   differs from the installed package; the running harness's own description then replaces the static one, and a
@@ -261,7 +285,9 @@ force before the harness runs any turn on that channel.
 - **At start, the pending changes go inside the start call itself** (`session/load`, or `session/create` the first
   time): the harness applies them before it can start any turn, so no message or waiting item can run under an old
   policy. Flags are cleared once the harness confirms. Deleting a conversation while stopped closes its channel at
-  that start, so a delete never starts a container on its own.
+  that start, so a delete never starts a container on its own. A reset requested while stopped (`startFresh`) is a
+  pending change too. In stage 2b, registering an ACP conversation as a member while the harness is stopped goes the
+  same way.
 
 ### agents-core
 
@@ -276,9 +302,8 @@ orchestrator, another channel (`trigger_response`), later its own background wor
 started`, with the items it took, then the stream, then the end). The `NativeController` reports it as
 `turn_started` with its cause (`11-11-SPEC-controller-interface.md`), and `AgentSession` runs it like any turn: it
 records, meters and supervises it through `prepareTurn`, and emits it on the conversation's turn events. acp-client never schedules a native turn and the
-harness never asks it for permission to run one (overview, decision 41). Exclusive operations on a native
-conversation (a handoff out, a stop, a delete, a reset) first hold the channel (`channel/hold`, then `channel/release`); every
-such operation must hold, and stage 2a tests each one. Budgets are the harness's guard.
+harness never asks it for permission to run one (overview, decision 41). Exclusive operations hold the channel first
+(below), and budgets are the harness's guard.
 
 - **A prompt's promise resolves with the turn that took its message.** The harness reports which items each turn took:
   at its start (`turn_started`), and as it folds more in (`turn_took`). A message folded into a running turn settles
@@ -286,7 +311,7 @@ such operation must hold, and stage 2a tests each one. Budgets are the harness's
 - **Steer or queue, through the existing system.** acp-client's queue and steering work as today. A steer message
   that arrives during a turn would normally make the steering controller cancel the turn and resend; for native the
   steering host pushes it to the harness instead (`delivery: "steer"`), which folds it into the running turn at its
-  next model call. Queued (non-steer) messages wait in acp-client's queue as today and are pushed when the queue
+  next model call; `message_delivered` is emitted when the harness reports that it took it (`turn_took`). Queued (non-steer) messages wait in acp-client's queue as today and are pushed when the queue
   reaches them (`delivery: "queue"`), which starts a turn. Items other than messages get a default per kind, set in
   the harness. The consumer sees the same meaning as with ACP. Pushing queued messages to the harness earlier, so they
   are durable sooner, is an option for later.
@@ -297,19 +322,59 @@ such operation must hold, and stage 2a tests each one. Budgets are the harness's
   only if the harness confirms the message wasn't taken yet. Before the push is accepted, withdraw is local, as today.
 - **Exclusive operations hold the channel first:** handing the conversation off out of native, stopping it, deleting
   it, and resetting it (a cleared transcript). Handoff out and reset wait for a running turn to end; stop and delete
-  interrupt it. `setPolicy` and `setConfig` are not exclusive: they apply from the next item or model call.
+  interrupt it. `setPolicy` and `setConfig` are not exclusive: they apply from the next item or model call. Every
+  such operation must hold, and stage 2a tests each one. A hold is a **lease** (Nothing waits forever, below).
 - **Native admission** (what the session's pre-turn checks mean when the harness already started the turn; overview,
   decision 41; controller-interface spec, Appendix A):
   - a metering preflight that would reject a turn the harness started can't stop it: the turn is recorded and metered
-    as executed, flagged `over_budget`, and the budget is enforced by the harness's guard;
+    as executed, flagged `over_budget` (a field on the metering record), and the budget is enforced by the harness's
+    guard;
   - a settings change applies from the next model call; it doesn't hold the channel;
-  - while acp-client's persistence is unhealthy, it holds its native channels, and releases them when it recovers;
+  - **a persistence failure never holds anything.** A failed write is surfaced (an error event on the conversation,
+    logged), the turn is recorded as far as possible ("completed by the backend, recording failed"), and the agent
+    keeps working. acp-client's records may then have gaps while the harness's context stays complete (the two logs
+    disagree, an accepted limitation; controller-interface spec, Appendix A). Holding until persistence recovers was
+    rejected: if nothing writes again, nothing releases, and the agent is stuck;
   - acknowledged turns (the harness waiting for acp-client to finish recording before the next turn) are not adopted
     in v1.
 - **Usage and supervision signals of a held turn** are held with its output and filed when the session runs the turn,
   under that turn's metering.
 - Turns the harness starts carry no prompt handler; permissions reach the user as events instead (Permissions,
   below).
+
+### Nothing waits forever
+
+Anything that makes a channel or the agent wait needs a bound, and a new wait must name its bound here. A stuck agent
+is a real failure, not a minor one.
+
+| What waits | Its bound |
+| --- | --- |
+| A hold (exclusive operation) | a lease: it expires on its own after a set time (default 60 s) unless acp-client renews it while the operation runs; released when acp-client disconnects or the process restarts; acp-client releases it when the operation ends, success or failure |
+| Starting the process | a start timeout (default 60 s), then an error; the next activity tries again (within the restart bounds) |
+| A crashed process | bounded restarts, then the failed state with an explicit error, never a silent wait |
+| A permission request | acp-client's `permissionTimeoutMs` (5 min), then the harness's gate timeout (10 min), then refused |
+| A held turn | only behind operations that are themselves bounded |
+| An idle stop | only when both sides agree there is no work; never cuts off a turn |
+| A persistence failure | waits for nothing: surfaced and recorded as far as possible |
+| A withdraw through the harness | the harness's answer, with a timeout; on timeout the message counts as taken |
+
+### Robustness: refined by an end-to-end stress test
+
+Errors around persistence and message delivery exist today and will exist here. The model above is a decent first
+version; it is made robust by an extensive end-to-end test, run against a real `harness serve` (scripted model) and
+used to refine the model rather than only to check it:
+
+- many messages back and forth on several native conversations of one `Agent` at once, queued and steered;
+- interrupts mid-turn and mid-tool, withdraws racing the harness taking a message;
+- the harness process killed at random points (mid-turn, mid-permission, during start), and restarted;
+- the connection lost and restored; a slow or failing persistence backend; disk-full style write failures;
+- holds and their lease expiry; idle stop racing new messages; config and policy changes while stopped;
+- invariants checked after every run: every prompt settles exactly once; no conversation stays busy with nothing
+  running; no channel stays held; records and the harness's context agree except where a surfaced error says why;
+  usage is filed once per model call.
+
+Each failure found becomes a scripted scenario first, then a fix, and where it shows a gap in the model, a change to
+this spec.
 
 ### Permissions
 
@@ -574,10 +639,17 @@ the harness's scripted model (its test mode), so they need no provider key.
 
 - `NativeAdapter`, `AgentHarnessConfig` and the registry change; the `NativeHarnessHost` with the in-process
   transport; the `NativeController` passes the controller conformance suite on the harness's scripted model.
-- The process transport and lifecycle: launch through the launcher, lazy start, optional idle stop, crash and bounded
-  restart, `HarnessUnavailableError`; a real `harness serve` process in tests; `harness.home`.
-- Configuration known before start: stored config and overrides, `describe`, channel settings stored per
-  conversation; `agent.harness.config()`, `updateConfig`, `resetConfig`.
+- The process transport and lifecycle: launch through the launcher; `start` that attaches without the process;
+  lazy start on first need, started once, with a start timeout; optional idle stop with both sides agreeing; crash
+  and bounded restart, settling held turns and taken messages; `HarnessUnavailableError`; a real `harness serve`
+  process in tests; `harness.home`.
+- `providerStart: "on_first_use"` for ACP conversations (opt-in; default unchanged).
+- Channel changes: the `harness_pending` flag, coalesced changes sent at once or inside the start call, deletes and
+  resets while stopped.
+- Holds as leases; persistence failures surfaced, never held; the bounds in Nothing waits forever.
+- The end-to-end stress test, and the spec changes it leads to.
+- Configuration known before start: stored config and overrides, `describe` (with policy names), channel settings
+  stored per conversation; `agent.harness.config()`, `updateConfig`, `resetConfig`.
 - Turns the harness starts reach `runTurn`, also for conversations not loaded; `turn_took` extends a cause; steer
   and queue hints; dropped messages settled; withdraw through the harness; held usage and signals; native steering
   behind `nativeSteering`; usage filed by purpose.
@@ -586,7 +658,7 @@ the harness's scripted model (its test mode), so they need no provider key.
 - Native user records at acceptance; `accepted` on the prompt handle.
 - Permissions as events: `permission_requested`, `answerPermission`, `answersPermissions`, `permissionTimeoutMs`; the
   one permission setting replacing `defaultPermission`, with the ACP matcher and the optional function; the harness's
-  `permission/request` routed to the conversation.
+  `permission/request` routed to the conversation; the first-message permission-handler rule.
 - `setTitle`, `setPolicy` (the `policy` column), per-channel settings through `setConfig`.
 - From the controller-interface spec: a neutral provider-session record (native: the `Agent`'s id plus the channel
   id), the neutral permission request shape, the model-call record, opaque provider data on messages; the
@@ -615,6 +687,13 @@ the harness's scripted model (its test mode), so they need no provider key.
   running; the first message starts the process; with idle stop on, it stops and starts again on the next message.
 - A message folded into a running turn settles with that turn's result; a dropped message settles cancelled.
 - `forceStop` on one native conversation leaves the others' turns running.
+- Opening or creating a native conversation starts no process; with `providerStart: "on_first_use"`, opening an ACP
+  conversation starts no provider and its first prompt does.
+- A policy changed while the harness is stopped is in force before the first turn after start; a delete while stopped
+  starts no container.
+- Importing into a home that already has the session fails.
+- `isBusy` and the queue behave as for ACP: busy only while an operation runs.
+- No wait in the stress test exceeds its bound in Nothing waits forever; a hold whose holder disappears expires.
 - A turn the harness starts on its own (an item pushed onto the channel) is recorded and emitted on the conversation's
   turn events with its cause.
 - Killing the harness process ends running turns with an error, and the next prompt works after the restart.
@@ -637,6 +716,8 @@ the harness's scripted model (its test mode), so they need no provider key.
 ## Open
 
 - [ ] Whether acp-client hard-depends on the harness package or takes it as an optional peer (overview).
+- [ ] `billing_required` for native conversations: after the four main specs
+      (`todos/11-12-TODO-billing-required-native.md`).
 - [ ] Do Codex and Claude support HTTP MCP servers over ACP, or is the stdio bridge needed (phase 2)?
 - [ ] Whether the consumer may wake an ACP conversation with an item (a prompt it allows), or ACP only gets next-prompt
       delivery.

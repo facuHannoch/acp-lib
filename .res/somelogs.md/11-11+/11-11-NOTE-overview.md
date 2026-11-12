@@ -281,6 +281,9 @@ implementing agent (about an hour per brief; a large spec is split into several 
    Needed before integration stage 2a.
 3. **Harness part 2**: the actual harness. Needed before integration stage 2b and the orchestrator's end-to-end tests.
 
+**After the four main specs:** `billing_required` for native conversations
+(`library/todos/11-12-TODO-billing-required-native.md`).
+
 **Then:** the smoke test on the duration-parser fixture and the basic-promise checks (a provider key), evals and the
 prompt-injection suite, and phase 2 (long-term memory, the harness's MCP server for members, watches, skills, deferred
 tools, worker kinds, sync and backup, removal of the checkpoint-backed identity).

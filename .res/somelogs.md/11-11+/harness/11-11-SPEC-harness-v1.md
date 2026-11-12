@@ -172,7 +172,7 @@ only what JSON can't hold: function handlers and backends.
   they are the channel's, not config edits (`channel.setSettings`). A channel's model must be one of
   `model.allowed` (the default model is always allowed).
 - **`describe(config)`**, exported from `./client`: a pure function returning `{ configOptions, commands,
-  capabilities, errors }` for a config without starting anything, so a host can show models, commands and
+  capabilities, policies, errors }` for a config without starting anything, so a host can show models, commands and
   capabilities and validate the config before the harness runs (integration spec, Configuration known before start).
   The running harness returns the same through `initialize`, which wins if they differ.
 - **Interrupt and the inbox:** an interrupt ends the running turn; items waiting in the inbox stay unless the
@@ -395,7 +395,9 @@ decision 41).
 
 **Holds.** A host can hold a channel (`channel/hold`) before an operation that needs it to itself: the harness
 starts no turn on it until `channel/release`; a running turn is waited for, or interrupted when the hold asks for it.
-Items keep arriving in the inbox meanwhile.
+Items keep arriving in the inbox meanwhile. A hold is a **lease**: it expires on its own after its duration (default
+60 s) unless the host renews it, and it ends when the host disconnects or the process restarts, so a crashed or
+buggy host can't leave a channel held forever.
 
 ## Running as a process
 
