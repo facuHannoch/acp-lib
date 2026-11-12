@@ -11,13 +11,27 @@ Branch: `controller-interface`, created from beta `e4ecb7e`. Nothing under `src/
 | `f5e724c` | 1 | `test/conversation-turns/normalize.ts` |
 | `52050ee` | 2, all-modes group | `test/conversation-turns/characterization.test.ts` and its `__snapshots__` (23 cases) |
 | `686d401` | 2, the rest | once-only cases (12), `test/fixtures/auth-required-agent.ts` (new), `test/fixtures/lifecycle-agent.ts` (opt-in end delay) |
-| this report | | `.res/somelogs.md/11-11+/library/reports/11-12-REPORT-A1.md` |
+| `a6d0945` | | this report, first version |
+| `80eeb10` | review P2 | the instant tool-start case waits on a commit event instead of a fixed delay (`characterization.test.ts`, `lifecycle-agent.ts`); snapshots unchanged |
+| this commit | | this report, updated after the independent review (`11-12-REVIEW-A1.md`, reviewer commit `064e3ce`) |
 
 The all-modes group went in first, in its own commit, because it guards A2. Committing the
 once-only group changed no line of the all-modes snapshots: the snapshot diff in `686d401` is
 additions only.
 
 ## Gate results
+
+### After the review fix (`80eeb10`)
+
+| Gate | Result |
+| --- | --- |
+| `bun run typecheck` | clean, 2.8 s; new test files clean under the temporary tsconfig |
+| characterization file, three runs without update | 35 pass each (12.8 s, 12.6 s, 12.5 s); snapshot unchanged each run, SHA-256 `e19d85c8fed49ff4…`, the same hash the reviewer recorded for `a6d0945` |
+| gated case alone | 15/15 pass, and 10/10 more while two busy loops loaded the CPU; snapshot untouched |
+| full suite `bun test` | **still red: 1,130 pass, 1 fail, 1 error; 1,131 tests in 113 files; 84.4 s.** The failure is only the P1 heartbeat (the bridge case again), unchanged by this fix and not addressed in A1 |
+| full suite without `manager.test.ts`, plus that file alone | 1,123 pass, 0 fail, 86.5 s; then 8 pass, 0 fail. Supporting evidence only: separate subsets do not meet the gate |
+
+### First version (`686d401`)
 
 | Gate | Result |
 | --- | --- |
@@ -117,17 +131,24 @@ Totals: 23 all-modes tests (8 cases × 3 modes, minus the detached handoff), 12 
    first completed turn, which runs a second harness session concurrently with the case. It is not
    the turn path. Snapshots were identical with and without it. I first suspected it of the
    full-suite failure; it turned out not to be the cause, but it stays off to keep cases isolated.
-6. **One fixture timing knob.** In the instant-tool case, the Agent-owned record order between the
+6. **A commit-event barrier in the instant-tool case** (replaced a fixed delay after review). In the instant-tool case, the Agent-owned record order between the
    last chunk's in-progress message snapshot (`message:<turn>:assistant:1:snapshot:1`) and the
    metering record flipped between runs (about 2 of 12 one way). The cause is in today's code: the
    snapshot goes through the serialized `ownerRecordWrite` chain (`queueOwnedRecord`), while
    `ownerLifecycle.meteringRecorded` writes directly, so when the last chunk arrives in the same
    instant as the end of the turn, behind queued tool records, the two writes race. Following the
-   spec's rule (wait on events, never loosen), the lifecycle fixture gained an opt-in
-   `LIFECYCLE_END_DELAY_MS` (default 0, behaviour unchanged for every existing test; guarded against
-   a cancel during the delay), used only by this case (100 ms). After that: 10/10 runs plus the
-   checks above were stable. The permission cases, which end the same way but have no tool records
-   queued ahead, were 12/12 stable without it.
+   spec's rule (wait on events, never loosen), the first version added a 100 ms delay in the fixture
+   before the end of the turn. The review (P2) rightly called that a timer that masks the race, not
+   a barrier. It is replaced (`80eeb10`) by an event barrier: the lifecycle fixture's opt-in
+   `LIFECYCLE_END_GATE_FILE` makes the tool mode end the turn, after its last chunk, only once that
+   file exists (a cancel while waiting still answers the prompt; without the variable, behaviour is
+   unchanged for every existing test). The case subscribes to the Agent's committed-record bus and
+   writes the file when the turn's in-progress assistant snapshot record is published, that is,
+   once it is committed. The order the snapshot pins (message snapshot, then metering) now follows
+   from that commit, not from wall-clock time: 15/15 runs, 10/10 under CPU load, the three-run
+   check, and an unchanged snapshot. The tool start itself still reaches the client the instant the
+   prompt arrives (stages `waiting → tool_running → streaming`). The permission cases, which end the
+   same way but have no tool records queued ahead, were 12/12 stable without a barrier.
 7. **Agent-owned capture.** The Agent-owned set-up uses `capture: { message: "content", error: "raw"
    }` (as the existing stall test does), so error records appear in the snapshots.
 8. **Event capture is compact.** Events are kept with kind, ids and order. `turn_completed`,
@@ -154,8 +175,10 @@ Totals: 23 all-modes tests (8 cases × 3 modes, minus the detached handoff), 12 
 ## Limitations
 
 - **The full suite is not green** until the leaked heartbeat is handled (open question 1).
-- **A known order race in Agent-owned records** (deviation 6) is avoided by the cases rather than
-  pinned. A2 cannot detect a change in that particular order, because today's code does not fix it.
+- **A known order race in Agent-owned records** (deviation 6). The instant-tool case pins the
+  order with the barrier: the final chunk is committed before the provider result. It does not
+  characterize a chunk and result delivered in the same instant; today's code fixes no order for
+  that, so A2 cannot be checked against one. This narrowing is deliberate.
 - **Error message texts are pinned**, for example "AgentController is not started — call start()
   first" and "operation requires ACP (normal) mode — the controller is degraded (pty)". If B1's
   rename changes those strings, the A1 capability and PTY snapshots change (open question 2).
@@ -165,7 +188,7 @@ Totals: 23 all-modes tests (8 cases × 3 modes, minus the detached handoff), 12 
 
 ## Open questions
 
-1. **The leaked internal-inference heartbeat.** It makes the full suite fail once any test file
+1. **The leaked internal-inference heartbeat** (review P1, reproduced independently on unchanged beta; no fix or mitigation is authorized yet, and the user is being asked). It makes the full suite fail once any test file
    runs after `test/internal-inference/manager.test.ts`. Options:
    - (a) a `src/` fix: `InternalInferenceManager.close()` clears the heartbeat of executions it
      fences. It is a library bug, but outside A1's scope and outside the controller-interface spec,
