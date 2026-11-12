@@ -38,6 +38,47 @@ a first draft and will be rewritten from the scenarios.
    in v1 (the registry, references, labels); designed so group channels, per-participant defaults, addressing a
    person rather than a channel, and outside agents as participants come later without changing its shape.
 
+## Priorities
+
+When two goals conflict, the higher one wins:
+
+1. **Correctness of conversation state.** No message lost or applied twice, every prompt settles exactly once,
+   events of a channel in order, nothing runs under the wrong policy or setting.
+2. **Robustness to failure.** Crashes, hangs and slow or failing persistence are expected; every wait is bounded and
+   every state is recoverable.
+3. **Selectivity.** Each side receives only what it asked for, at the level of detail it asked for (Decisions, 2).
+4. **Evolvability.** It will grow with phase 2: versioning and optional fields from the start.
+5. **Performance.** Last: it is a local pipe and the model is always the slow part. The only heavy traffic is the
+   token stream, which subscriptions already reduce.
+
+Simplicity is not a goal that wins arguments but the baseline of a good design: no concept, message or option
+without a scenario that needs it.
+
+## Delivery
+
+How messages survive loss and repetition, borrowed from messaging protocols (MQTT's delivery levels, idempotency keys
+as in Matrix transaction ids or Stripe, durable acknowledgements, XMPP stream management and Matrix sync for
+recovery):
+
+- **Host → harness: at least once, with idempotency keys, so exactly once in effect.** Every push carries an item id
+  chosen by the host; a push whose id the harness has already stored is acknowledged again, not stored twice. A
+  channel update carries the full state of what changed, so sending it twice changes nothing. A timeout always means
+  "send again"; retrying is always safe.
+- **Acknowledgements mean "stored durably."** `channel/push` returns `accepted` only once the item is in the
+  harness's store, so the host can stop holding it.
+- **Harness → host, by kind of event:**
+  - **text deltas and progress signals: at most once.** Losing one changes nothing; the final message and the turn's
+    end carry the truth.
+  - **state events (`turn_started`, `turn_took`, `turn_ended`, usage, `messages_dropped`, out-of-turn messages):
+    reliable through reconciliation.** The connection only breaks when the process dies (the harness is the host's
+    child; Non-goals), so the only gap is around a crash. At start, `session/load` returns each channel's recent
+    turns (their ids, the items each took, how they ended, their usage) and the items still waiting; the host
+    compares that with its own records and settles what it missed. One comparison at the only moment a gap can
+    appear, instead of acknowledging every event.
+  - **later, with a network transport** (connections dropping while both sides live): per-channel sequence numbers
+    on state events, host acknowledgements, and replay from the last acknowledged number after a reconnect.
+- **Ordering:** within a channel, always; across channels, never promised.
+
 ## Principles
 
 - **The harness's public API, made serializable.** Every call takes and returns JSON-shaped data; the same calls
