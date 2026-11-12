@@ -138,11 +138,13 @@ type Part = { type: "text"; text: string } | { type: "media"; ref: string; mime:
 type SenderRef = { id: string; label?: string; kind?: "person" | "agent" | "worker" | "harness" | "host" };
 
 interface InboxItem {
+  id: string;                   // chosen by the host for items it pushes
   kind: "user_message" | "worker_reply" | "permission_request" | "timeline_digest" | string;
   sender: SenderRef;
   content: Part[];
   policy?: string;              // asserted by the host; a turn takes the most restrictive
-  delivery: "wake" | "quiet";
+  delivery?: "steer" | "queue"; // default per kind; see the protocol spec (Shared types)
+  wake?: boolean;               // default true; false waits for the next turn without starting one
   data?: unknown;               // kind-specific facts for renderers
 }
 
@@ -394,7 +396,7 @@ refuses model calls over the limit, in turns and outside them (the host can't re
 decision 41).
 
 **Holds.** A host can hold a channel (`channel/hold`) before an operation that needs it to itself: the harness
-starts no turn on it until `channel/release`; a running turn is waited for, or interrupted when the hold asks for it.
+starts no turn on it until the hold is released (`channel/release`); a running turn is waited for, or interrupted when the hold asks for it.
 Items keep arriving in the inbox meanwhile. A hold is a **lease**: it expires on its own after its duration (default
 60 s) unless the host renews it, and it ends when the host disconnects or the process restarts, so a crashed or
 buggy host can't leave a channel held forever.
@@ -406,22 +408,13 @@ tools, MCP servers and storage live there, while the host (acp-client) may run e
 
 - **`harness serve --stdio`** serves the public API as JSON-RPC 2.0 over stdio, one process per session (entity), all
   its channels multiplexed. The protocol is the harness's, versioned (`protocol.version` in an `initialize` exchange).
-- **Host → harness:** `initialize`, `session/create` and `session/load` (both carrying the effective config and the
-  host's pending channel changes, applied before any turn can start), `session/export`, `session/import` (only into a
-  home without that session), `session/idle` (whether any turn runs or any inbox holds items, asked before an idle
-  stop),
-  `channel/open` (with policy and label), `channel/push` (with a delivery hint), `channel/withdraw`,
-  `channel/interrupt` (optionally dropping waiting items), `channel/reset`, `channel/close`,
-  `channel/setPolicy`, `channel/setSettings`, `channel/hold`, `channel/release`, `prompt`, `report`, `member/register`, `member/prepare`,
-  `member/delivered`, `config/get`, `config/update`, `usage/get`.
-- **Harness → host notifications:** `channel/event`: `turn_started` (turn id and the items it took), `turn_took`,
-  text deltas, tool calls, usage, model-call log, `turn_ended`, `messages_dropped`, and `message` (text placed on a
-  channel outside a turn).
-- **Harness → host requests (callbacks):** `functions/call`; `delegation/open|send|check|stop|list` (each with the
-  channel, the sender and the turn's delegation policy and `worker:` rules); `permission/request` (an `ask` from the
-  gate; the host's reply is the answer); `history/search|read`. Declared by the host in `initialize`; a callback the host didn't declare makes the matching
-  tools unavailable, not broken.
-- **The client** (`HarnessClient`) is exported by the package (`./client`) with two transports: process (spawn a
+- **The protocol** (methods, events, callbacks, errors, timeouts, framing, versioning) is its own spec,
+  `../11-12-SPEC-harness-protocol.md`, agreed before either side is built. In short: host → harness requests for the
+  lifecycle (`initialize`, `session/create`, `session/load`, `session/idle`, export and import), channels
+  (`channel/push`, `channel/withdraw`, `channel/interrupt`, `channel/update`, holds as leases) and config; harness →
+  host `channel/event` notifications; harness → host callbacks the host declared (`permission/request`,
+  `functions/call`, `delegation/*`, `history/*`).
+- **The client** (`HarnessClient`) is exported from `src/native-harness/client.ts` with two transports: process (spawn a
   prepared command, stdio) and in-process (direct calls, for tests and the CLI). Hosts never write protocol code.
 - **Lifecycle:** the host starts the process (through its own launcher), the harness opens its root and answers
   `initialize`; on stdin close it finishes running turns as interrupted and exits. A crash is the host's to restart.

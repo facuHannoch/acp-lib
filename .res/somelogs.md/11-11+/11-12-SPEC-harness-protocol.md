@@ -1,0 +1,203 @@
+# The harness protocol: how a host talks to the native harness
+
+Status: draft for review, written 2026-11-12. The boundary between the native harness (`src/native-harness/`) and
+its hosts (acp-client's `src/native/`, the standalone CLI, any other host). Both sides are built against this spec in
+parallel: the harness implements it (`harness/11-11-SPEC-harness-v1.md`), acp-client builds against a fake that
+implements it first and swaps in a real `harness serve` last (`library/11-11-SPEC-native-harness-integration.md`).
+It collects what those two specs say about the protocol; where they disagree, this spec wins and they are corrected.
+
+## Principles
+
+- **The harness's public API, made serializable.** Every call takes and returns JSON-shaped data; the same calls
+  work in process (direct method calls, for tests and the CLI) and over stdio (JSON-RPC). Hosts never write protocol
+  code: they use `HarnessClient` from `src/native-harness/client.ts`.
+- **One process per session (entity), all its channels multiplexed** over one connection.
+- **The host owns policy and lifecycle; the harness owns the agent's work.** The host starts, stops and restarts the
+  process, decides policies and what may happen on each channel; the harness decides when a channel takes a turn and
+  what it does in it (overview, decision 41).
+- **Nothing waits forever.** Every request that can wait has a bound (Timeouts, below).
+- **Part 1 and part 2.** Each method is marked with the harness part that implements it (`harness/11-11-SPEC-harness-v1.md`,
+  Two parts). Part 1 is what integration stage 2a needs.
+
+## Transport and framing
+
+- **JSON-RPC 2.0** over the process's stdin and stdout, one JSON message per line (newline-delimited, as ACP does).
+  stderr is the harness's log, never protocol.
+- **Three kinds of message:** host → harness requests; harness → host notifications (events, no reply); harness →
+  host requests (callbacks, the host replies).
+- **The in-process transport** carries the same messages as values, with no serialization; contract tests run every
+  scenario through both transports.
+- **Start:** `harness serve --stdio [--home <path>]`, launched by the host through its own launcher (for acp-client,
+  `ProcessLauncher`, so `docker exec`, cwd and env work as for ACP harnesses).
+- **Stop:** closing stdin. The harness finishes running turns as interrupted, writes its store, releases the lock and
+  exits. A crash is the host's to detect (the process exits or stops answering) and restart.
+
+## Versioning
+
+- `initialize` exchanges `protocolVersion` (an integer, starting at 1). The harness refuses a host with a version it
+  doesn't support (`version_mismatch`); the host refuses a harness the same way.
+- Additive changes (a new optional field, a new event, a new method) keep the version; anything else bumps it.
+- `initialize` also returns the harness's own version, which acp-client uses to check the static `describe` it ran
+  from its installed copy (integration spec, Configuration known before start).
+
+## Shared types
+
+```ts
+type SessionId = string;     // the entity; acp-client uses the Agent's id
+type ChannelId = string;     // a line into it; acp-client uses the conversation id (agc-…)
+type ItemId = string;        // chosen by the host for items it pushes (acp-client: the message id)
+type TurnId = string;        // chosen by the harness
+type Part =
+  | { type: "text"; text: string }
+  | { type: "media"; mime: string; data: string };          // base64; size-limited (Open)
+type SenderRef = { id: string; label?: string; kind?: "person" | "agent" | "worker" | "harness" | "host" };
+
+interface Item {
+  id: ItemId;
+  kind: "user_message" | "worker_reply" | "worker_failed" | "worker_redirected" | "worker_interrupted"
+      | "permission_request" | string;                     // open; each kind has a renderer in the harness
+  sender: SenderRef;
+  content: Part[];
+  policy?: string;               // asserted by the host for this item only; a turn takes the most restrictive
+  delivery?: "steer" | "queue";  // default per kind (user_message: from the host; worker_reply: steer)
+  wake?: boolean;                // default true; false: waits for the next turn without starting one
+  data?: unknown;                // kind-specific facts for the renderer
+}
+
+interface ChannelState {         // what the host holds as the truth for a channel
+  policy?: string;
+  label?: string;
+  settings?: { model?: string; reasoning?: string; temperature?: number };
+  reset?: true;                  // start the channel on a fresh context
+  closed?: true;                 // the conversation was deleted
+}
+
+interface Usage {
+  purpose: "turn" | "compaction" | string;
+  turnId?: TurnId;               // when the call happened inside a turn
+  model: string;
+  input: number; output: number; cachedInput?: number;
+  cost?: number;                 // when the provider reports it
+  latencyMs: number;
+}
+```
+
+## Host → harness requests
+
+**Lifecycle (part 1)**
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `initialize` | `{ protocolVersion, host: { name, version }, callbacks: string[] }` (the callbacks the host serves, e.g. `"functions/call"`, `"permission/request"`) | `{ protocolVersion, harness: { version }, description: { configOptions, commands, capabilities, policies } }` |
+| `session/create` | `{ sessionId, config, channels: Record<ChannelId, ChannelState> }` | `{ sessionId }`; fails with `already_exists` |
+| `session/load` | `{ sessionId, config, channels: Record<ChannelId, ChannelState> }` | `{ sessionId, channels: Record<ChannelId, { hasContext: boolean }> }`; fails with `not_found`, `locked` |
+| `session/idle` | `{}` | `{ idle: boolean }`: no turn running, no inbox holding items, no hold active |
+| `session/export` | `{}` | `{ bundle }` |
+| `session/import` | `{ sessionId, bundle }` (before any create or load on this process) | `{ sessionId }`; fails with `already_exists` |
+
+- **The config and the pending channel changes go inside `session/create` and `session/load`.** The harness applies
+  them before it can start any turn, so nothing runs under an old policy or setting (integration spec, Channel
+  changes). `channels` lists only channels with changes; each entry carries the latest value of each field.
+- **The session is locked** by `session/create` and `session/load`; a lock whose process is gone is reclaimed.
+
+**Channels (part 1)**
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `channel/push` | `{ channel, item }` | `{ accepted: true }` once the item is stored in the channel's inbox (durable) |
+| `channel/withdraw` | `{ channel, itemId }` | `{ withdrawn: boolean }`: false when the item was already taken |
+| `channel/interrupt` | `{ channel, dropWaiting?: boolean }` | `{ interrupted: boolean, dropped: ItemId[] }` |
+| `channel/update` | `{ channel, state: ChannelState }` | `{}`: policy and label apply from the next item; settings from the next model call; `reset` and `closed` wait for a running turn unless the channel is held with interrupt |
+| `channel/hold` | `{ channel, leaseMs, interrupt?: boolean }` | `{ holdId }` once no turn runs on the channel (waiting for it, or interrupting it) |
+| `channel/renew` | `{ holdId, leaseMs }` | `{}`; fails with `hold_expired` |
+| `channel/release` | `{ holdId }` | `{}` (releasing an expired hold is not an error) |
+
+- **Channels always exist:** there is no `channel/open`. A channel is created the first time it is named (in a push,
+  an update or a load's `channels`).
+- **`channel/update` replaces** the separate `setPolicy`, `setSettings`, `reset` and `close` calls of earlier drafts:
+  one call carries whatever changed, the same shape as a pending change at start.
+- **Holds are leases:** a hold expires on its own after `leaseMs` unless renewed, and ends when the host disconnects
+  or the process restarts. While held, the harness starts no turn on the channel; items keep arriving in its inbox.
+
+**Config and usage (part 1)**
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `config/update` | `{ config }` (the full effective config) | `{ description }`; applies from the next model call; fails with `invalid_config` |
+| `usage/get` | `{ since?: string }` | `{ records: Usage[] }` (the session's own ledger; part 2) |
+
+**Members and reports (part 2)**
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `member/register` | `{ member: ChannelId, policy, label }` | `{}` |
+| `report` | `{ member, kind: "message" \| "summary", from: SenderRef, policy, content: Part[], at }` | `{}` |
+| `member/prepare` | `{ member, context: string }` | `{ preamble: Part[] \| null, receipt: unknown }` |
+| `member/delivered` | `{ receipt }` | `{}` |
+
+## Harness → host notifications
+
+One notification method, `channel/event`, with `{ channel, event }`. Events for a channel arrive in order.
+
+| Event | Fields | Meaning |
+| --- | --- | --- |
+| `turn_started` | `turnId, items: ItemId[]` | the channel started a turn, taking these items |
+| `turn_took` | `turnId, items: ItemId[]` | more items folded into the running turn (steer) |
+| `text_delta` | `turnId, messageId, text` | assistant text, streamed |
+| `tool_call` | `turnId, id, name, status, input?, output?` | a tool call starting, updating, ending |
+| `usage` | `Usage` | one model call |
+| `model_call` | `turnId?, request: summary, stopReason, latencyMs` | the model-call log |
+| `turn_ended` | `turnId, outcome: "completed" \| "interrupted" \| "failed", error?` | the turn ended |
+| `messages_dropped` | `items: ItemId[]` | items an interrupt removed from the inbox |
+| `message` | `messageId, from: ChannelId, text` | text placed on this channel outside a turn (`message_participant`; part 2) |
+| `description_changed` | `description` | the live description changed (after a config update) |
+
+- **Order guarantees per channel:** `turn_started` comes before any event of its turn; `turn_took` and the stream
+  come between it and `turn_ended`; `turn_ended` is the last event of its turn. `usage` for a call inside a turn comes
+  before that turn's `turn_ended`.
+- **Usage outside a turn** (compaction between turns) has no `turnId`.
+
+## Harness → host requests (callbacks)
+
+Only the callbacks the host declared in `initialize`; for any other, the matching tools are unavailable, not broken.
+
+| Method | Params | Result | Part |
+| --- | --- | --- | --- |
+| `permission/request` | `{ channel, turnId, requestId, tool: { name, input }, title, options: { id, label, kind }[] }` | `{ optionId }` or `{ outcome: "refused" }` | 1 |
+| `functions/call` | `{ channel, turnId, name, input }` | `{ output }` or `{ error }` | 2 |
+| `delegation/open\|send\|check\|stop\|list` | `{ channel, sender, delegation, workerPermissions, ... }` | per orchestrator spec | 2 |
+| `history/search\|read` | `{ channel, query \| ref }` | `{ results }` | 2 |
+
+## Errors
+
+JSON-RPC errors with a stable `data.code`:
+
+| Code | When |
+| --- | --- |
+| `version_mismatch` | `initialize` with an unsupported protocol version |
+| `locked` | the session is open in another live process |
+| `not_found` / `already_exists` | load of a missing session / create or import of an existing one |
+| `invalid_config` | a config that fails validation, with paths to the bad fields |
+| `unknown_policy` | an item or update naming a policy the config doesn't have |
+| `hold_expired` | renewing a hold that already expired |
+| `channel_closed` | a push or update on a channel closed by a delete |
+| `not_ready` | a request before `session/create` or `session/load` |
+
+## Timeouts
+
+Every wait has a bound (integration spec, Nothing waits forever).
+
+| Who waits | For | Bound |
+| --- | --- | --- |
+| host | `initialize` and `session/load` after launch | the host's start timeout (acp-client: 60 s) |
+| host | any other request | 30 s by default, longer for `session/export` and `session/import` |
+| harness | a `permission/request` reply | the gate timeout (default 10 min), longer than any host's permission timeout; then refused |
+| harness | other callbacks | per callback (functions: the tool's timeout; delegation: 30 s) |
+| harness | a hold | its lease; expiry releases it |
+
+## Open
+
+- [ ] Media: inline base64 with a size limit (this draft), or a host callback (`media/read`) for large files.
+- [ ] Whether the host may ask for a channel's recent events after a reconnect, or relies on its own records (this
+      draft: its own records).
+- [ ] Batching several pushes in one request.

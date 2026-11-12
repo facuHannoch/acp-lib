@@ -40,8 +40,9 @@ gives the same guarantee, from v1:
   `kind` gains `"native-harness"`), so `docker exec`, cwd and env work unchanged; the default is the one conversations
   already use (`conversationDefaults.launcher`, `src/agent.ts:229`). `AcpLauncher` stays as an alias.
 - **`harness serve --stdio`:** the harness's server mode. Its protocol is the harness's public API made
-  serializable: JSON-RPC over stdio, defined and versioned by the harness, with the client exported by the harness
-  package (`./client`). acp-client doesn't write protocol code; it launches the process and uses the client.
+  serializable: JSON-RPC over stdio, defined and versioned in its own spec (`../11-12-SPEC-harness-protocol.md`),
+  with the client exported from `src/native-harness/client.ts`. acp-client doesn't write protocol code; it launches
+  the process and uses the client.
 - **Everything the agent does runs there:** model calls (API keys in that environment), `http` and `command` tools,
   MCP servers, the session's files.
 - **Callbacks from the harness to the host,** like ACP's fs and terminal requests to the client: function tools, the
@@ -263,7 +264,7 @@ native conversation always looks ready.
 - **Models and reasoning options** come from the config, which lists the allowed models with what each supports
   (`../harness/11-11-SPEC-harness-v1.md`, Configuration).
 - **Commands, capabilities, policy names and validation** come from `describe(config) → { configOptions, commands,
-  capabilities, policies, errors }`, a pure function the harness package exports (`./client`). It runs in acp-client's process and launches
+  capabilities, policies, errors }`, a pure function the harness exports (`src/native-harness/client.ts`). It runs in acp-client's process and launches
   nothing, so a bad config fails before any container starts.
 - **The live description wins after start:** the protocol's version check at start catches a harness version that
   differs from the installed package; the running harness's own description then replaces the static one, and a
@@ -277,8 +278,8 @@ A channel's policy, label and settings, and its deletion, can change while the h
 force before the harness runs any turn on that channel.
 
 - **acp-client is the truth:** it stores each conversation's current policy, title and settings.
-- **While the harness runs,** a change is sent at once (`channel/setPolicy`, `channel/setSettings`, the label,
-  `channel/close` for a delete).
+- **While the harness runs,** a change is sent at once (`channel/update`, carrying whatever changed: policy, label,
+  settings, a reset, or `closed` for a delete).
 - **While it is stopped,** the conversation is marked as having pending changes (a `harness_pending` flag on the
   conversation). This is a queue of changes, coalesced: only the latest value of each field is sent, however many
   times it changed.
@@ -570,7 +571,7 @@ Checkpoints, summaries and recovery seeds are one prompt and one answer, today r
   no process, structured output.
 - **Its own minimal client.** Internal inference is one call with structured output: no tools, no streaming, no
   channels. acp-client keeps a small OpenAI-compatible client of its own for it instead of importing the harness's,
-  so internal inference doesn't need the harness package; the duplication is small. It runs in acp-client's process
+  so internal inference doesn't depend on the harness; the duplication is small. It runs in acp-client's process
   (internal inference is the library's own work, not the agent's), with its own model config and key
   (`internalInference.model`), since the harness's key lives in the harness's environment.
 - **The lifecycle is ACP-shaped** (`stageChanged("creating_session" | "prompting")`, `sessionStarted({
@@ -601,7 +602,9 @@ src/internal-inference/runtime/openai-compatible.ts   the minimal client (one ca
 src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "native-harness"
 ```
 
-- **`src/native/` is the only place that imports the harness package.** The acp-client core depends on contracts
+- **`src/native/` is the only place that imports the harness,** and only its entry points (`src/native-harness/`
+  `index.ts`, `client.ts`, `testing.ts`); the harness never imports acp-client (harness project spec, Layout and
+  Dependency rules). The acp-client core depends on contracts
   (`ConversationController`, `AgentIdentityRuntime`, `DeliveryPort`).
 - **Touches existing code:** `src/agent.ts` and `src/agent/config.ts` (the `AgentAdapter` union, constructing the host,
   `functions`); `src/agent-adapter-registry.ts` (store either adapter type); the controller factory
@@ -702,7 +705,6 @@ the harness's scripted model (its test mode), so they need no provider key.
 
 ## Open
 
-- [ ] Whether acp-client hard-depends on the harness package or takes it as an optional peer (overview).
 - [ ] `billing_required` for native conversations: after the four main specs
       (`todos/11-12-TODO-billing-required-native.md`).
 - [ ] Do Codex and Claude support HTTP MCP servers over ACP, or is the stdio bridge needed (phase 2)?
