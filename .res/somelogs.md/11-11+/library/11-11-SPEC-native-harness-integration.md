@@ -180,7 +180,7 @@ The harness decides when a native channel runs a turn: because of a message, a w
 orchestrator, another channel (`trigger_response`), later its own background work. It reports each turn (`turn
 started`, with the items it took, then the stream, then the end). The `NativeController` reports it as
 `turn_started` with its cause (`11-11-SPEC-controller-interface.md`), and `AgentSession` runs it like any turn: it
-records, meters and supervises it through `executeTurn`, and emits it and emits it on the conversation's turn events. acp-client never schedules a native turn and never
+records, meters and supervises it through `executeTurn`, and emits it on the conversation's turn events. acp-client never schedules a native turn and never
 asks the harness for permission to run one.
 
 - A prompt's promise resolves with the turn that took its message; the harness reports which items each turn took.
