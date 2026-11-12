@@ -5,10 +5,10 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Preparing / released | Bring beta `1bda9ef` into both implementation and review branches; implement updated A2 steps in order; then review and bob-b gate. |
+| A2 | Implementing step 1; spec issue escalated | Both branches contain beta `1bda9ef` (implementation `065d1a3`, review `7a64c57`). Step 1 released; contracts and dependent steps wait on `11-12-ISSUE-A2-turn-events.md`, then review and bob-b gate. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
 Latest spec adds optional backend-scheduled `TurnRun.turnId`, `turn_took`, asynchronous `send` acceptance and backend-scheduled queue release at acceptance. An ACP run still reports `turn_started` synchronously inside `send`. Preserve the existing `AgentController` error strings and A1 snapshots (only A2's isolated cause addition is allowed).
 
-Open questions: none blocking after A1 decisions; A1's startup/force/capability adaptations and narrowed record-order characterization are accepted in the gate file. Escalate scope exceptions, behaviour changes, token-spending or live harness runs to the user; spec problems to the spec owner through the user. Each contributor records completed steps, testing and limits in the shared artifacts log.
+Open question: the turn event exclusivity wording is escalated to the spec owner via the user; A2 contracts and dependent steps wait for correction. After A1 decisions, A1's startup/force/capability adaptations and narrowed record-order characterization are accepted in the gate file. Escalate scope exceptions, behaviour changes, token-spending or live harness runs to the user; spec problems to the spec owner through the user. Each contributor records completed steps, testing and limits in the shared artifacts log.
