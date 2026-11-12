@@ -642,6 +642,11 @@ the backend starts, which the fake exercises.
   covers every guarantee and acp-client can refuse turns, but each native turn waits a round trip, a busy or stuck
   host mutes the agent, the harness needs a waiting state with timeouts and refusal reasons, and the harness stops
   being self-sufficient in how it acts. Revisit if a channel gets several hosts or consumers need per-turn approval.
+- **Acknowledged turns (open for stage 2a).** The harness starts a channel's next turn only after acp-client
+  confirms it processed the previous one. At most one turn per channel is then ever in flight between them, so no
+  output is held for a finished turn while the next runs; per-turn supervision (`TurnExecution`) stays correct
+  either way. The cost: the agent's next turn waits for acp-client's finalization (usually milliseconds, longer with
+  slow persistence). Decide in stage 2a.
 - **Concurrency without holds.** Turns run whenever the harness wants and acp-client records them as they come. No
   ordering against handoffs or stops; rejected.
 - **Buffering only.** acp-client holds every reported turn's output until it may run, with no holds. Output goes
