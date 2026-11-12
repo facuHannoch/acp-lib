@@ -1,6 +1,6 @@
 # Controller interface: what a conversation needs from its backend
 
-Status: agreed, not started; reviews 1–4 done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
+Status: agreed, not started; reviews 1–5 done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
 (`../11-11-NOTE-overview.md`, Order of work). A refactor with **no new behaviour**: every native piece depends on it,
 and its gate is that nothing breaks. Carries over the "provider-session interface" prerequisite of
 `../../9-22+/10-17-NOTE-model-call-controller.md` and the 2026-11-09 review.
@@ -120,9 +120,23 @@ Agent-owned in `test/agent-conversation-*.test.ts`, managed in `test/session-man
 
 ## The interface
 
+**The ownership rule: the controller owns provider execution; the session owns the conversation's outcome**, once
+supervision, metering and persistence have finished. Every rule below follows from it: the controller reports that
+a turn started and runs it; the session decides what the turn means for the conversation, records it and announces
+it.
+
 A turn is reported by the controller and run by the session: `send` puts a run of messages in; the controller
 reports `turn_started` whenever a turn starts (because of a `send`, or on its own); the session runs it through
 `executeTurn` and owns its completion.
+
+**Who chooses a turn's messages** depends on the backend, and the contract says which:
+
+- **Session-scheduled (the `HarnessController`):** the session chooses each run and combines queued steer messages
+  into it, as today; the controller runs exactly that run. Cancel-to-steer (cancel the running turn, resend with
+  the steer) applies only here.
+- **Backend-scheduled (the native controller, later; `nativeSteering: true`):** the session hands messages over; the
+  backend decides which turn takes which, and reports it in the cause. The session never combines or cancels to
+  steer for it.
 
 | Group | Members | Native backend (later) |
 | --- | --- | --- |
@@ -180,9 +194,17 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
 
 - **`send(run)`** puts a run in. The `HarnessController` makes no provider call: it reports `turn_started` for the
   run synchronously, inside `send`, with `sentBySession: true`. The native controller (later) pushes each message to
-  the harness, which starts turns as it decides.
+  the harness, which starts turns as it decides; for it, `send` promises no turn.
+- **The session registers a run's state before calling `send`,** since the `HarnessController` reports
+  `turn_started` inside the call; registering afterwards would miss it.
+- **Message ids in a run:** `messageIds` is non-empty and in queue order; an id unknown to the session, or repeated,
+  is an error (the controller throws, the session treats it as a bug). In this stage each dispatched message belongs
+  to exactly one turn. A cause's ids name messages the session sent; a backend-scheduled cause naming an unknown id
+  is recorded and logged, not trusted for settlement.
 - **`turn_started`** is the only turn event the controller reports. A turn's end is `executeTurn` resolving or
-  rejecting; the public `turn_completed` / `turn_failed` are the session's, emitted after finalization (below).
+  rejecting, which is the single authority for the provider's outcome; the public `turn_completed` / `turn_failed`
+  are the session's, emitted after finalization (below). A result forced by the supervisor (stall, force stop) goes
+  the same way; the controller never announces an outcome of its own.
 - **`executeTurn(turnId, content)`** runs a reported turn and resolves with its result. The `HarnessController`
   prompts with `content.input` and `content.handlers` (today's `controller.prompt`, unchanged). The native controller
   ignores `input` (the harness built the context) and drives `handlers` from the harness's events. The supervisor
@@ -191,11 +213,26 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
   that call's handlers. The `HarnessController` never needs this (its turns start inside `executeTurn`'s call
   chain); the fake and the native controller do.
 - **`abandonTurn(turnId, reason)`** ends a reported turn the session won't run (the provider connection fails, a
-  pre-dispatch record fails, the conversation stops). The `HarnessController` drops its bookkeeping; the native
-  controller (later) interrupts the channel's turn.
-- **Startup** keeps today's result and progress: `{ sessionId, resumed }` and the two progress events. For native
-  (later): the harness session id, and `resumed` when the channel already had a context. Where the session reads
-  `resumed` to decide on seeding from records, it also checks `capabilities.backend?.loadSession`.
+  pre-dispatch record fails, the conversation stops). It releases the controller's bookkeeping for that turn and
+  discards any output held for it. It is idempotent (a second call, or a call for a turn already executed, does
+  nothing) and it is not a cancel: it never stops provider work; stopping work is `cancel` / `forceStop`. The native
+  controller (later) also interrupts the channel's turn, through its own interrupt, not through `abandonTurn`'s
+  contract.
+- **Startup** keeps today's result and progress: `{ sessionId, resumed }` and the two progress events. The
+  contract documents, as today's code behaves:
+  - **`resumed: true`** confirms the backend reattached an existing context (the provider has its history);
+    `false` means a fresh context, including a resume that fell back to fresh.
+  - **A successful start always has a provider session:** `sessionId` is non-empty after `start` resolves (an empty
+    id from an already-running controller is today's edge case and is documented as such).
+  - **Progress:** `initialized` fires once the backend answered its handshake, with its capabilities;
+    `internal_session_acquired` fires when the context exists, before `start` resolves.
+  - **A rejected start** may already have fired `internal_session_acquired`: the session keeps what it learned
+    (attachment and recovery state rely on it), as today.
+
+  Where the session reads `resumed` to decide on seeding from records, it also checks
+  `capabilities.backend?.loadSession`. For native (later): `sessionId` is the harness session id, and `resumed`
+  means the channel already had a context. **Reconnecting the shared harness process is not resuming a
+  conversation:** the native controller maps them separately.
 - **Settings may be known before start.** `configOptions` may be non-empty before `start` and change after it. For
   the `HarnessController` it is empty until the agent reports options, as today; a native controller has them from
   the session's config at once. The contract says so; the session never assumes options appear only after start.
@@ -224,8 +261,15 @@ after:  pump: controller.send(run) → the controller reports turn_started (insi
   (prepare content and records per persistence mode; open the metered operation; dispatch through `executeTurn`
   under the supervisor; assistant records; close metering and transcript; `afterPrompt`). No phase is reordered.
 - **Completion is the session's.** `turn_completed` (with the session's `AgentSessionPromptResult`) goes out after
-  metering, transcript and `afterPrompt`, as today; `turn_failed` for any failure, before or after dispatch. A
-  failure before dispatch calls `abandonTurn` and then emits `turn_failed`, as `pump`'s catch does today.
+  metering, transcript and `afterPrompt`, as today; `turn_failed` for any failure, before or after dispatch,
+  including a provider success followed by a persistence failure. A failure before dispatch calls `abandonTurn` and
+  then emits `turn_failed`, as `pump`'s catch does today.
+- **The queue waits for the session's finalization,** not for `send` or the provider: the next operation (a prompt,
+  a config change, a handoff) starts only after the turn's records, metering and `afterPrompt` are done, as today.
+- **`runTurn` takes a turn context, not a queue item:** `{ turnId, cause, messages? }`, where `messages` are the
+  originating queued messages with their handlers when the session sent the turn, and absent for a turn the backend
+  started from items. ACP preparation (content, user records, the prompt's handlers) runs only when `messages` is
+  present; a turn without messages writes no user record and uses the session's own recording handlers.
 - **Turns the backend starts on its own** (`sentBySession: false`; none for ACP) join the conversation's operation
   queue as a turn item, so they never overlap another operation, and run when their turn comes: `turn_started` is
   emitted when the item runs, then `runTurn` without the ACP content phase, then completion. The controller holds
@@ -234,8 +278,19 @@ after:  pump: controller.send(run) → the controller reports turn_started (insi
 - **Ids.** A message's id is the turn id minted at enqueue (the handle's `id`). A run's turn id is its first
   message's id; `messageIds` lists every message in it (the same list steering reports in `message_delivered`). No
   new ids are minted; record and presentation ids don't change.
-- **Messages settle on their own,** as today: a message's promise resolves with the result of the turn that took it,
-  or with the cancelled result when it is withdrawn or dropped by an interrupt, with no turn.
+- **Messages settle on their own,** directly from the session's message state (never reconstructed from public
+  events), as today:
+
+  | What happens to the message | Its prompt's promise |
+  | --- | --- |
+  | rejected on acceptance (blank participant, conversation stopped) | rejects |
+  | withdrawn before dispatch | resolves with today's cancelled result |
+  | dropped by an interrupt or queue clearing | resolves with today's cancelled result |
+  | taken into a turn that completes | resolves with that turn's finalized `AgentSessionPromptResult` |
+  | taken into a turn that fails | rejects, after the failure is finalized |
+
+  Settled entries are released. Withdrawal is local and before dispatch only; for native, removing a message the
+  harness already accepted needs the harness's acknowledgement (stage 2a).
 - **An ACP message is durable only once its turn starts** (the user record is written then, as today); accepted for
   now and recorded in `findings/11-12-FINDING-acp-message-durability.md`.
 
@@ -284,6 +339,18 @@ session re-reads capabilities after `start`, after a mode switch and after a han
 | `authenticate` | `HarnessController` | method present | `UnsupportedError` |
 | session load with replay, fork | `HarnessController` | `backend?.loadSession` / `forkSession` | the continuation path runs as today when unsupported |
 | media in a prompt | both | `backend?.media`; PTY keeps today's degraded rule | as today |
+
+Paired members are present together or not at all (`currentMode` with `setMode`, `availableCommands` with
+`subscribeAvailableCommands`); the contract documents each pair.
+
+**Support is not readiness.** A present method says the controller type can do it; whether it can right now
+depends on the state: `authenticate`, `listSessions` and `reconnect` need a connected agent, `bridge` needs degraded
+mode, and `backend` says what the connected agent offers. So:
+
+- reading `capabilities` and checking for a method is always safe, before connecting and in PTY mode;
+- availability is re-evaluated after `start`, a reconnect, a mode switch and a controller replacement (handoff);
+- a call that isn't possible fails **before** the session opens any metered or durable operation for it;
+- existing ACP errors (`NotConnectedError` and the rest) stay as they are for ACP paths.
 
 `UnsupportedError` (`src/errors.ts`, new) is thrown by a controller asked for something it can't do; callers guard
 first, so it signals a bug.
@@ -380,15 +447,18 @@ continuation and recovery paths except to call the moved code, the A1 snapshot f
    **Gate:** typecheck.
 3. **`AgentController` gains `send`, `subscribeTurns`, `executeTurn` and `abandonTurn`** (its `prompt` stays):
    `send` reports `turn_started` synchronously with `sentBySession: true`; `executeTurn` calls `prompt` with the
-   content's input and handlers; `abandonTurn` clears its bookkeeping. **Gate:** suite green.
-4. **`AgentSession` drives turns through them:** `pump` calls `send(run)` with the run's message ids; the session
+   content's input and handlers; `abandonTurn` clears its bookkeeping, idempotently. **Gate:** suite green.
+4. **`AgentSession` drives turns through them:** the session registers the run's state, then `pump` calls `send(run)`
+   with the run's message ids; `run-turn.ts` takes a turn context (`{ turnId, cause, messages? }`) instead of the
+   queue item, with today's preparation running when `messages` is present; the session
    emits `turn_started` with `cause` when the controller reports it; `run-turn.ts` dispatches through `executeTurn`
    under the supervisor; completion stays the session's, after finalization; a failure before dispatch calls
    `abandonTurn`. **Gate:** suite green; A1 snapshots unchanged except the added `cause` field, updated in a commit
    of its own whose diff shows only `cause`. New tests: a combined steer run's cause lists both message ids while
    record ids stay keyed by the turn; a provider-connection failure calls `abandonTurn`, emits `turn_failed` and
    rejects the prompt; a finalization failure after the provider finished emits `turn_failed`, not
-   `turn_completed`.
+   `turn_completed`; a config change queued behind a turn starts only after that turn's finalization (a slow
+   `afterPrompt` delays it); a duplicate or unknown message id in a run throws.
 
 **Done:** report the commits, test count and time, the `agent-session.ts` line count, and any place the order of
 operations had to change (expected: none).
@@ -409,7 +479,8 @@ operations had to change (expected: none).
    `src/conversation-turns/` outside the factory and `harnessConnection`.
 4. **Factory:** `createController` and handoff targets through `factory.ts`. **Gate:** suite green.
 5. **Turns the backend starts:** a reported `turn_started` with `sentBySession: false` becomes a queue item and runs
-   in order. **Gate:** suite green (no ACP path reaches it).
+   in order, through `runTurn` with no `messages`: no user record, the session's recording handlers, supervision and
+   metering attached to that turn. **Gate:** suite green (no ACP path reaches it).
 6. **Fake controller and conformance suite:** `fake-controller.ts` implements only the core: `send` reporting turns,
    `executeTurn` with scripted output and results delivered to the handlers, a script step that starts a turn on its
    own (holding its output until `executeTurn`), cancel, force stop, usage, options before start. `conformance.ts`
@@ -418,8 +489,14 @@ operations had to change (expected: none).
    - interrupt, force stop, stale detection;
    - a turn that never executes (`abandonTurn`, `turn_failed`);
    - usage recorded, records written, completion after finalization;
-   - **a turn the backend starts on its own** while a prompt runs: it waits, then runs; its held output arrives in
-     order; it is supervised, recorded and completed like any turn (fake only);
+   - **a turn the backend starts on its own** with no preceding `send`, while a prompt runs: it waits, then runs;
+     its held output arrives in order and belongs to that turn; it is supervised and metered; no user record is
+     written for it; it completes after finalization (fake only);
+   - the same turn failing, the conversation stopping while it waits, and the controller being replaced (handoff)
+     while it waits: each leaves nothing unsettled and no held output behind (fake only);
+   - late output arriving after a force stop is dropped, not recorded on the next turn;
+   - finalization that is slow to finish: completion and the next operation both wait for it;
+   - `turn_started` reported synchronously inside `send` is not missed;
    - options available before start (fake only).
 
    It runs against the fake and against the `HarnessController` with the echo-prompt fixture agent (backend-started
@@ -434,7 +511,8 @@ member it guards.
 - Typecheck clean; the full suite passes (at least the 1,096 baseline tests plus the new ones).
 - The A1 snapshots are unchanged except for the added `cause` field, in one commit showing only that.
 - The conformance suite passes on the core-only fake and on the `HarnessController`, including a turn the fake
-  starts on its own.
+  starts on its own. Passing it shows the session handles backend-started turns; it does not show that native policy
+  is enforced (Appendix A, Limitations).
 - `agent-session.ts` is shorter than 5,022 lines; no ACP type is used in it outside guarded paths, the factory and
   `harnessConnection`.
 - `CHANGELOG-controller-interface.md` lists every public change.
@@ -503,6 +581,14 @@ the backend starts, which the fake exercises.
 - **Every exclusive operation must remember to hold.** A new operation that needs the channel to itself and forgets
   to hold can overlap a turn. The rule goes in the integration spec, and stage 2a's tests cover each exclusive
   operation.
+- **Local per-turn checks can't prevent native spending.** Holding a reported turn's output until the session runs
+  it keeps the order of what is observed; it does not stop the harness from executing or spending meanwhile. Stage
+  2a needs an explicit policy for each check the session makes before an ACP turn:
+  - **budget rejection:** the harness's guard, as above;
+  - **stale configuration:** the harness may run a turn on settings acp-client is about to change; a setting change
+    applies from the next model call, and stage 2a states whether a pending change holds the channel first;
+  - **unhealthy persistence:** the harness keeps working while acp-client can't record; stage 2a decides whether
+    acp-client holds its channels until persistence recovers (recommended) or records late.
 - **Per-turn approval is not possible.** A consumer that wants to approve each turn (an approval workflow) can't with
   this design; it would need the grant (below).
 
