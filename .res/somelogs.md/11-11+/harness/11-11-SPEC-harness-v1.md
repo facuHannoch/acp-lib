@@ -404,7 +404,10 @@ tools, MCP servers and storage live there, while the host (acp-client) may run e
 
 - **`harness serve --stdio`** serves the public API as JSON-RPC 2.0 over stdio, one process per session (entity), all
   its channels multiplexed. The protocol is the harness's, versioned (`protocol.version` in an `initialize` exchange).
-- **Host → harness:** `initialize`, `session/create`, `session/load`, `session/export`, `session/import`,
+- **Host → harness:** `initialize`, `session/create` and `session/load` (both carrying the effective config and the
+  host's pending channel changes, applied before any turn can start), `session/export`, `session/import` (only into a
+  home without that session), `session/idle` (whether any turn runs or any inbox holds items, asked before an idle
+  stop),
   `channel/open` (with policy and label), `channel/push` (with a delivery hint), `channel/withdraw`,
   `channel/interrupt` (optionally dropping waiting items), `channel/reset`, `channel/close`,
   `channel/setPolicy`, `channel/setSettings`, `channel/hold`, `channel/release`, `prompt`, `report`, `member/register`, `member/prepare`,

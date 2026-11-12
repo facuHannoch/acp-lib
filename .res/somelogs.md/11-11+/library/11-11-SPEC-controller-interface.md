@@ -150,7 +150,7 @@ reports `turn_started` whenever a turn starts (because of a `send`, or on its ow
 ```ts
 interface ConversationController {
   // turns
-  send(run: TurnRun): void;                        // reports turn_started synchronously for session-run backends
+  send(run: TurnRun): Promise<void>;               // resolves when the backend has accepted the run
   subscribeTurns(listener: (event: TurnEvent) => void): () => void;
   prepareTurn(turnId: string, content: TurnContent): PreparedTurn;  // starts nothing
   abandonTurn(turnId: string, reason: unknown): void;
@@ -207,8 +207,15 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
 ```
 
 - **`send(run)`** puts a run in. The `HarnessController` makes no provider call: it reports `turn_started` for the
-  run synchronously, inside `send`, with `sentBySession: true`. The native controller (later) pushes each message to
-  the harness, which starts turns as it decides; for it, `send` promises no turn.
+  run synchronously, inside `send`, with `sentBySession: true`, and returns an already resolved promise. The native
+  controller (later) pushes each message to the harness and resolves once the harness has accepted it; the harness
+  starts turns as it decides, so `send` promises no turn.
+- **A message's queue operation ends when `send` resolves, for a backend-scheduled controller; its turn runs as a
+  separate operation.** A turn the backend reports joins the queue as its own operation, so if the operation that
+  sent the message waited for that turn, each would wait for the other (a deadlock). The prompt's promise still
+  resolves when the turn that took the message ends: it is tied to the message, not to the queue operation (Messages
+  settle on their own, below). For the `HarnessController` nothing changes: the turn is reported inside `send` and
+  runs within the same operation, as today.
 - **`turnId` in a run:** the `HarnessController` requires it (a run without one is an error) and reports the turn
   under it. A backend-scheduled controller ignores it if given: the backend assigns turn ids and reports them in
   `turn_started`.
