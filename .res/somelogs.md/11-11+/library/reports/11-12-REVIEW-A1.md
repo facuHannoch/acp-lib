@@ -1,5 +1,7 @@
 # Independent review: A1 characterization tests
 
+Latest verdict: follow-up at `9de0ca3` resolves P1/P2 and meets the A1 gates; see the appended follow-up. The original red verdict below is retained as historical evidence. A2 remains held pending user release.
+
 Reviewed `e4ecb7e1bde559b2dbbbb5b9e41313bda554a2ed..a6d0945`
 (`f5e724c`, `52050ee`, `686d401`, `a6d0945`) against the entire authoritative
 `11-11-SPEC-controller-interface.md` at that beta commit, including both appendices.
@@ -161,3 +163,93 @@ snapshot change; no exception is approved by this review.
 
 No merge, push, production edit, live harness session, or change to protected worktrees,
 files or processes was performed. A2 remains gated on user release and the unmet gates.
+
+## Follow-up review — `a6d0945..9de0ca3` (2026-11-12)
+
+Reviewed commits `80eeb10` (event barrier), `6957407` (P2 report), `50cd497`
+(separately user-approved heartbeat fix and regression), and `9de0ca3` (final report).
+References in this section are at `9de0ca3`. This follow-up supersedes the original
+finding dispositions above; the original evidence remains intact.
+
+### Finding dispositions and cleanup review
+
+**P1 resolved by `50cd497`.** The only production change is the isolated heartbeat fix.
+`src/internal-inference/coordination/manager.ts:77` retains the interval on the active
+execution; `:257` assigns it before any awaited preparation or runtime work. `close()`
+first marks the execution fenced (`:169`), then clears its timer (`:172`) before its
+shutdown repository write and before the Agent closes persistence. The callback's
+fenced check (`:246`) also prevents a queued callback from initiating a new heartbeat.
+Normal execution retains its `finally` cleanup (`:374`); clearing an already-cleared
+interval is harmless. Graceful shutdown still allows live executions to maintain their
+leases until they finish or are fenced.
+
+For the SQLite path, a heartbeat already initiated before fencing is serialized on the
+backend's write queue; the shutdown failure write and backend close wait for queued
+writes (`src/persistence/sqlite-backend.ts:301`, `:432`). Clearing an interval cannot
+cancel an already-started promise, but this change does not start additional fenced
+writes or close SQLite ahead of that existing queue. No new blocking cleanup race was
+found in the affected path. This is a narrow fenced-execution fix, not a general proof
+of every scheduler/close interleaving or arbitrary custom repository behavior.
+
+The regression at `test/internal-inference/manager.test.ts:160` uses a genuinely
+abort-ignoring, never-returning runtime and real 250ms heartbeat configuration. After
+close it observes **800ms** (the actual code, exceeding three intervals), checks that
+heartbeat call count does not increase, and checks for unhandled rejections (`:189`–`:195`).
+It restores the spy/listener in `finally`. The listener does not conceal a broken test:
+I independently ran this new test with unchanged beta production source in a temporary
+archive, and it failed with the original heartbeat/closed-SQLite stack (0 pass / 1 fail,
+398ms). With the fix, all nine manager tests plus the original temporary 12s idle test
+pass (10 pass / 0 fail, 14.16s). Thus the regression is sensitive to the original defect,
+and the original long-window reproduction no longer fails.
+
+Limitations: the new test does not require a successful pre-close beat, use a nonzero
+shutdown grace period, or force every possible in-flight repository/claim race. Its
+before/after failure and the code inspection establish the targeted leak fix. No
+broader shutdown guarantee is claimed, and no extra source change is requested.
+
+**P2 resolved by `80eeb10`.** `test/conversation-turns/characterization.test.ts:627`
+subscribes before prompting, filters for this turn's committed in-progress assistant
+message (`:628`–`:629`), and releases a unique, initially absent gate file. The record
+bus publishes after persistence commit. The lifecycle fixture emits the initial tool
+start immediately at `test/fixtures/lifecycle-agent.ts:140`, emits its final message
+at `:144`, then waits for the file (`:149`–`:159`) before replying with the result.
+The 2ms polling interval checks a condition; it does not substitute elapsed time for
+a completed commit. Cancellation while waiting changes `pending`, so the next check
+returns without a second result. Ungated fixture behavior is unchanged. No fixed
+completion delay remains.
+
+This supplies the explicit event barrier requested by the original review, and leaves
+the initial attachment-boundary stage sequence intact. It deliberately characterizes
+commit-before-result delivery; it does not fix or pin a universal order for a final
+chunk and result delivered together. That pre-existing unordered scenario remains a
+disclosed limitation, not a reason to sort records or loosen snapshots. A failure to
+write the gate is not swallowed (its rejection/test timeout fails verification).
+
+### Snapshot integrity and independent checks
+
+`git diff a6d0945..9de0ca3 -- test/conversation-turns/__snapshots__
+test/conversation-turns/normalize.ts` is empty. Three independent ordinary characterization
+runs passed, each with 35 pass / 0 fail and all 35 snapshots (12.65s, 12.68s, 12.95s).
+The file hash after every run remained
+`e19d85c8fed49ff4cd1fd514aa5f8ca03b9d22cc8c00fd964b64e2a978b8cb5a`.
+No snapshots were regenerated. Source typecheck is clean; a temporary tsconfig covering
+the added/changed tests and fixtures is also clean.
+
+Verification used `/tmp/controller-a1-followup`, extracted from the exact reviewed commit,
+and offline fixture processes only. The separate before-fix experiment copied only the
+new test into an unchanged-beta temporary archive. No production source was edited by
+the reviewer. The implementer's loaded stress runs were not repeated independently;
+three ordinary stable runs plus the event-barrier inspection cover the requested gate.
+
+**Final follow-up verdict: A1 gates now hold at `9de0ca3`, including the separately
+approved fix.** The independently run complete `bun test` is **1,132 pass / 0 fail,
+113 files, 35 snapshots, 88.39s**, with no unhandled error reported. P1 and P2 are
+resolved; no blocking finding remains to return to the implementer. No split-run
+substitution was used.
+
+Remaining scope/interpretation limitations from the original review remain disclosed:
+controller-level startup access, supervisor force escalation rather than explicit consumer
+force stop, compact event capture, disabled background checkpoints, and the intentionally
+gated completion scenario. Existing error strings remain pinned: no B1 snapshot/error-text
+exception is granted. This verifies A1; it does not release A2, which still requires the
+user's explicit release. No merge, push, or protected-path/process changes were made.
