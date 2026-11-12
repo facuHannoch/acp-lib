@@ -45,6 +45,8 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 | `library/11-11-SPEC-native-harness-integration.md` | The harness from acp-client's side, in two stages: native conversations, permissions as events (2a); identity, callbacks, internal inference over HTTP (2b) | Library 2 and 3, with harness parts 1 and 2 |
 | `library/11-11-SPEC-orchestrator.md` | Orchestrator, pool, worker lifecycle, consumer API, permission forwarding, the way back, delegation callbacks | Library 4 |
 | `library/11-11-SPEC-cli.md` | The `acp-client agent` CLI on `Agent` | Library 5, last |
+| `11-12-SPEC-harness-protocol.md` | The protocol between a host and the harness: methods, events, callbacks, errors, timeouts, framing, versioning | Agreed before either side is built; both build against it |
+| `11-12-SPEC-end-to-end-robustness.md` | A stress test across the library and the harness, used to refine the model (messages, interrupts, crashes, persistence failures, holds, changes while stopped) | After everything that builds is done |
 | `harness/11-11-SPEC-harness-design.md` | What the native harness is and why we build it; alternatives; the overall design | Read first |
 | `harness/11-11-SPEC-harness-project.md` | Package layout, the pattern, dependency and contribution rules, testing, build order | Harness 1, before the first harness commit |
 | `harness/11-11-SPEC-harness-v1.md` | The first implementation, in two parts: the core, server mode and a test mode (part 1); the actual harness (part 2) | Harness 2 and 3, in parallel with the library line |
@@ -135,7 +137,7 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     the default spawns in the harness's own environment.
 27. **Watches are deferred** to `harness/todos/11-11-TODO-watches.md`.
 28. **New library code lives in new modules** (`src/conversation-controller/`, `src/orchestrator/`, `src/native/`);
-    `agent-session.ts` does not grow; only `src/native/` imports the harness package.
+    `agent-session.ts` does not grow; only `src/native/` imports the harness (its entry points in `src/native-harness/`).
 29. **A harness session is the entity; channels are lines into it.** One session has its own config, timeline,
     shared state and memory; two sessions are two agents. A harness home (`~/.harness/` by default) stores many
     sessions; one process serves one session, locked while open. Each conversation is a channel (the host's
@@ -190,6 +192,12 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     turn. acp-client keeps its guarantees with holds for exclusive operations (handoff out, stop, delete), in-order
     handling of each conversation's turns, and a budget guard in the harness. Limitations and the alternatives (a
     grant before each turn) are in the controller-interface spec, Appendix A.
+42. **The native harness process starts lazily, on activity, and its config is known before start.** Channels always
+    exist; the process (and its container) starts when a native conversation first needs it and may stop when idle.
+    acp-client stores the harness config (the `Agent` config as base, API changes as overrides) and answers models,
+    commands and capabilities from it and the harness's `describe(config)`, so a native conversation always
+    looks ready. The harness session id is the `Agent`'s id. Background work and waking a stopped harness are phase 2
+    (`harness/todos/11-12-TODO-background-work-and-lazy-harness.md`).
 
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations
@@ -201,10 +209,10 @@ answering everything through a `send_message` tool (MemGPT); a participant regis
 
 Decisions for the owner:
 
-- [ ] Repo layout: Bun workspace with `packages/native-harness` (recommended, private until stable), or
-      `src/native-harness/` with lint-enforced boundaries.
-- [ ] The harness's package name (and whether `NativeHarness` stays the public name).
-- [ ] Whether acp-client hard-depends on the harness package or takes it as an optional peer.
+- [x] Repo layout (decided 2026-11-12): `src/native-harness/` in this repo, acting as a separate package from the
+      start (its own entry points, never importing acp-client, enforced in CI); split out later as a package or a
+      binary. acp-client depends on it directly until then.
+- [ ] The harness's package name for when it is split out (and whether `NativeHarness` stays the public name).
 
 Design questions, each owned by a spec:
 
@@ -236,7 +244,7 @@ Design questions, each owned by a spec:
 | library | `src/orchestrator/` | pool, workers, busy rules, permissions, delivery, `agent.workers`; the `workers` table in `src/persistence/` |
 | library | `src/native/` | `NativeAdapter`, host, callbacks, `NativeController`, event translation, steering host, inbox delivery, identity runtime |
 | library | `src/internal-inference/runtime/http-runtime.ts` | internal inference over HTTP |
-| harness | `packages/native-harness/` (pending the repo layout decision) | everything in `harness/11-11-SPEC-harness-project.md`; v1 contents in `harness/11-11-SPEC-harness-v1.md`, v1 code plan |
+| harness | `src/native-harness/` (acting as a separate package) | everything in `harness/11-11-SPEC-harness-project.md`; v1 contents in `harness/11-11-SPEC-harness-v1.md`, v1 code plan |
 
 ## Order of work
 
@@ -267,13 +275,19 @@ implementing agent (about an hour per brief; a large spec is split into several 
    the way back (native and ACP), permission forwarding, the delegation callbacks, restart.
 5. **CLI on `Agent`** (`library/11-11-SPEC-cli.md`).
 
-**The harness line, in parallel** (once its spec is reviewed; the repo layout decision comes first):
+**The harness line, in parallel** (once its spec is reviewed; the protocol spec is agreed first):
 
 1. **Harness project setup** (`harness/11-11-SPEC-harness-project.md`): the package, tooling for the dependency rules,
    `AGENTS.md`, `ARCHITECTURE.md`, the decision-record format. Short.
 2. **Harness part 1** (`harness/11-11-SPEC-harness-v1.md`, Two parts): the core, server mode and the test mode.
    Needed before integration stage 2a.
 3. **Harness part 2**: the actual harness. Needed before integration stage 2b and the orchestrator's end-to-end tests.
+
+**After the four main specs:** `billing_required` for native conversations
+(`library/todos/11-12-TODO-billing-required-native.md`).
+
+**Once everything is built:** the end-to-end robustness stress test (`11-12-SPEC-end-to-end-robustness.md`), whose
+findings refine the specs.
 
 **Then:** the smoke test on the duration-parser fixture and the basic-promise checks (a provider key), evals and the
 prompt-injection suite, and phase 2 (long-term memory, the harness's MCP server for members, watches, skills, deferred

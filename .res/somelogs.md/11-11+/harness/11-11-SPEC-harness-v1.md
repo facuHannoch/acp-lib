@@ -102,11 +102,12 @@ specific tool, permission rules, retry logic, knowledge of policies, workers or 
 | --- | --- |
 | `createSession({ home?, config })` / `loadSession({ home?, id })` | Create an entity with its config / wake an existing one; locks it |
 | `session.channel(id, { policy?, label? })` | Open or resume a channel (created on first use); `channel.setPolicy(name)` changes it |
-| `channel.push(item)` | Add an inbox item: starts a turn if idle, injected at the next call if busy |
+| `channel.push(item, { delivery })` | Add an inbox item. `steer`: folded into the running turn at its next model call (reported as `turn_took`); `queue`: waits for the current turn to end and goes into the next. Either starts a turn if the channel is idle. Items other than messages default per kind (a worker reply: `steer`) |
+| `channel.withdraw(itemId)` | Remove an item not yet taken; reports whether it was removed |
 | `channel.interrupt()` | Abort the running turn |
 | `channel.reset()` / `channel.close()` | Start the channel on a fresh context (a cleared transcript, a handoff in) / close it; its timeline events stay |
 | `channel.setSettings({ model?, reasoning?, temperature? })` | Per-channel overrides of the session's model settings |
-| `channel.events` | `turn_started` (with the items the turn took), text deltas, tool calls, usage, model-call log, `turn_ended`; `message` for text placed on the channel outside a turn (`message_participant`); `permission_requested` |
+| `channel.events` | `turn_started` (with the items the turn took), `turn_took` (items folded into the running turn), text deltas, tool calls, usage, model-call log, `turn_ended`; `messages_dropped` (items an interrupt removed from the inbox); `message` for text placed on the channel outside a turn (`message_participant`); `permission_requested` |
 | `channel.answerPermission(id, option)` | Answer an `ask` from the gate (in process; over the protocol it is the reply to `permission/request`) |
 | `session.member(id, { policy, label })` / `prepare({ member, context })` / `delivered(receipt)` | Managed member channels: a conversation a host runs elsewhere; what it should be told since its position, and the receipt that moves the position |
 | `session.prompt({ channel, from, policy?, content })` | Host shorthand: push a user message with sender and policy |
@@ -137,11 +138,13 @@ type Part = { type: "text"; text: string } | { type: "media"; ref: string; mime:
 type SenderRef = { id: string; label?: string; kind?: "person" | "agent" | "worker" | "harness" | "host" };
 
 interface InboxItem {
+  id: string;                   // chosen by the host for items it pushes
   kind: "user_message" | "worker_reply" | "permission_request" | "timeline_digest" | string;
   sender: SenderRef;
   content: Part[];
   policy?: string;              // asserted by the host; a turn takes the most restrictive
-  delivery: "wake" | "quiet";
+  delivery?: "steer" | "queue"; // default per kind; see the protocol spec (Shared types)
+  wake?: boolean;               // default true; false waits for the next turn without starting one
   data?: unknown;               // kind-specific facts for renderers
 }
 
@@ -168,13 +171,22 @@ only what JSON can't hold: function handlers and backends.
 - **Standalone,** the stored config (`<home>/sessions/<id>/config.json`) is the source of truth.
 - **Hosted,** the host is: it creates the session with its config and saves changes made through the API.
 - **Per-channel settings** (model, reasoning, temperature) override the session's model settings for one channel;
-  they are the channel's, not config edits (`channel.setSettings`).
+  they are the channel's, not config edits (`channel.setSettings`). A channel's model must be one of
+  `model.allowed` (the default model is always allowed).
+- **`describe(config)`**, exported from `./client`: a pure function returning `{ configOptions, commands,
+  capabilities, policies, errors }` for a config without starting anything, so a host can show models, commands and
+  capabilities and validate the config before the harness runs (integration spec, Configuration known before start).
+  The running harness returns the same through `initialize`, which wins if they differ.
+- **Interrupt and the inbox:** an interrupt ends the running turn; items waiting in the inbox stay unless the
+  interrupt asks to drop them, and dropped items are reported (`messages_dropped`). The permission gate's timeout is
+  longer than any host's permission timeout (default 10 minutes), so the host decides first.
 
 ```json
 {
   "version": 1,
   "model": { "protocol": "openai-compatible", "baseUrl": "https://openrouter.ai/api/v1",
-             "apiKeyEnv": "OPENROUTER_API_KEY", "model": "...", "reasoning": "low" },
+             "apiKeyEnv": "OPENROUTER_API_KEY", "model": "...", "reasoning": "low",
+             "allowed": [ { "id": "...", "reasoning": ["low", "medium", "high"], "media": ["image"] } ] },
   "system": "You are ...",
   "tools": [
     { "name": "lookup_order", "description": "...", "input": { "type": "object" },
@@ -384,8 +396,10 @@ refuses model calls over the limit, in turns and outside them (the host can't re
 decision 41).
 
 **Holds.** A host can hold a channel (`channel/hold`) before an operation that needs it to itself: the harness
-starts no turn on it until `channel/release`; a running turn is waited for, or interrupted when the hold asks for it.
-Items keep arriving in the inbox meanwhile.
+starts no turn on it until the hold is released (`channel/release`); a running turn is waited for, or interrupted when the hold asks for it.
+Items keep arriving in the inbox meanwhile. A hold is a **lease**: it expires on its own after its duration (default
+60 s) unless the host renews it, and it ends when the host disconnects or the process restarts, so a crashed or
+buggy host can't leave a channel held forever.
 
 ## Running as a process
 
@@ -394,17 +408,13 @@ tools, MCP servers and storage live there, while the host (acp-client) may run e
 
 - **`harness serve --stdio`** serves the public API as JSON-RPC 2.0 over stdio, one process per session (entity), all
   its channels multiplexed. The protocol is the harness's, versioned (`protocol.version` in an `initialize` exchange).
-- **Host → harness:** `initialize`, `session/create`, `session/load`, `session/export`, `session/import`,
-  `channel/open` (with policy and label), `channel/push`, `channel/interrupt`, `channel/reset`, `channel/close`,
-  `channel/setPolicy`, `channel/setSettings`, `channel/hold`, `channel/release`, `prompt`, `report`, `member/register`, `member/prepare`,
-  `member/delivered`, `config/get`, `config/update`, `usage/get`.
-- **Harness → host notifications:** `channel/event`: `turn_started` (turn id and the items it took), text deltas,
-  tool calls, usage, model-call log, `turn_ended`, and `message` (text placed on a channel outside a turn).
-- **Harness → host requests (callbacks):** `functions/call`; `delegation/open|send|check|stop|list` (each with the
-  channel, the sender and the turn's delegation policy and `worker:` rules); `permission/request` (an `ask` from the
-  gate; the host's reply is the answer); `history/search|read`. Declared by the host in `initialize`; a callback the host didn't declare makes the matching
-  tools unavailable, not broken.
-- **The client** (`HarnessClient`) is exported by the package (`./client`) with two transports: process (spawn a
+- **The protocol** (methods, events, callbacks, errors, timeouts, framing, versioning) is its own spec,
+  `../11-12-SPEC-harness-protocol.md`, agreed before either side is built. In short: host → harness requests for the
+  lifecycle (`initialize`, `session/create`, `session/load`, `session/idle`, export and import), channels
+  (`channel/push`, `channel/withdraw`, `channel/interrupt`, `channel/update`, holds as leases) and config; harness →
+  host `channel/event` notifications; harness → host callbacks the host declared (`permission/request`,
+  `functions/call`, `delegation/*`, `history/*`).
+- **The client** (`HarnessClient`) is exported from `src/native-harness/client.ts` with two transports: process (spawn a
   prepared command, stdio) and in-process (direct calls, for tests and the CLI). Hosts never write protocol code.
 - **Lifecycle:** the host starts the process (through its own launcher), the harness opens its root and answers
   `initialize`; on stdin close it finishes running turns as interrupted and exits. A crash is the host's to restart.

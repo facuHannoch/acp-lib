@@ -150,8 +150,8 @@ reports `turn_started` whenever a turn starts (because of a `send`, or on its ow
 ```ts
 interface ConversationController {
   // turns
-  send(run: TurnRun): void;                        // reports turn_started synchronously for session-run backends
-  subscribeTurns(listener: (event: TurnStarted) => void): () => void;
+  send(run: TurnRun): Promise<void>;               // resolves when the backend has accepted the run
+  subscribeTurns(listener: (event: TurnEvent) => void): () => void;
   prepareTurn(turnId: string, content: TurnContent): PreparedTurn;  // starts nothing
   abandonTurn(turnId: string, reason: unknown): void;
   subscribeOutput(listener: OutputListener): () => void;           // controller-wide supervision signals, as today
@@ -182,7 +182,8 @@ interface ConversationController {
   authenticate?(...args: Parameters<HarnessController["authenticate"]>): ReturnType<HarnessController["authenticate"]>;
 }
 interface TurnRun {
-  turnId: string;                       // the session's id for the run (its first message's id)
+  turnId?: string;                      // session-scheduled: the session's id for the run (its first message's id),
+                                        // required; backend-scheduled: absent, the backend assigns turn ids
   messageIds: readonly string[];        // every message the run carries (one, or several for a combined steer run)
   operationKind: MeteredOperationKind;
 }
@@ -198,14 +199,30 @@ interface PreparedTurn extends SupervisedProvider {   // one turn, prepared; pro
   readonly live: boolean;               // false while replaying output held for a turn that already ended
 }
 interface TurnStarted { kind: "turn_started"; turnId: string; cause: TurnCause; sentBySession: boolean }
+interface TurnTook { kind: "turn_took"; turnId: string; cause: TurnCause }  // more items folded into a running turn
+type TurnEvent = TurnStarted | TurnTook;
 type TurnCause = { kind: "messages"; messageIds: readonly string[] } | { kind: "items"; items: readonly unknown[] };
 type StartResult = ConnectResult;      // { sessionId, resumed }
 type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
 ```
 
 - **`send(run)`** puts a run in. The `HarnessController` makes no provider call: it reports `turn_started` for the
-  run synchronously, inside `send`, with `sentBySession: true`. The native controller (later) pushes each message to
-  the harness, which starts turns as it decides; for it, `send` promises no turn.
+  run synchronously, inside `send`, with `sentBySession: true`, and returns an already resolved promise. The native
+  controller (later) pushes each message to the harness and resolves once the harness has accepted it; the harness
+  starts turns as it decides, so `send` promises no turn.
+- **A message's queue operation ends when `send` resolves, for a backend-scheduled controller; its turn runs as a
+  separate operation.** A turn the backend reports joins the queue as its own operation, so if the operation that
+  sent the message waited for that turn, each would wait for the other (a deadlock). The prompt's promise still
+  resolves when the turn that took the message ends: it is tied to the message, not to the queue operation (Messages
+  settle on their own, below). For the `HarnessController` nothing changes: the turn is reported inside `send` and
+  runs within the same operation, as today.
+- **`turnId` in a run:** the `HarnessController` requires it (a run without one is an error) and reports the turn
+  under it. A backend-scheduled controller ignores it if given: the backend assigns turn ids and reports them in
+  `turn_started`.
+- **`turn_took`** extends a running turn's cause: a backend-scheduled controller reports it when the backend folds
+  more items into a turn already running (native steering). The session adds them to the turn's cause, and a message
+  taken this way settles with that turn's finalized result, like one in the original cause. A `turn_took` for a turn
+  the session doesn't know, or that has ended, is logged and ignored. The `HarnessController` never reports it.
 - **The session registers a run's state before calling `send`,** since the `HarnessController` reports
   `turn_started` inside the call; registering afterwards would miss it.
 - **Message ids in a run:** `messageIds` is non-empty and in queue order; an id unknown to the session, or repeated,
@@ -509,7 +526,8 @@ continuation and recovery paths except to call the moved code, the A1 snapshot f
 
 1. **Move `runPrompt`** into `src/conversation-turns/run-turn.ts` with the context object, in phases, in today's
    order; `AgentSession` calls it. **Gate:** suite green; A1 snapshots unchanged.
-2. **Contracts:** `src/conversation-controller/contracts.ts` with the turn members, the types and doc comments.
+2. **Contracts:** `src/conversation-controller/contracts.ts` with the turn members, the types (including `TurnTook`
+   and the optional `turnId`) and doc comments.
    **Gate:** typecheck.
 3. **`AgentController` gains `send`, `subscribeTurns`, `prepareTurn`, `prepareInternalPrompt` and `abandonTurn`**
    (its `prompt` stays): `send` reports `turn_started` synchronously with `sentBySession: true`; `prepareTurn` and
@@ -557,7 +575,8 @@ member it guards.
 
 5. **Turns the backend starts:** a reported `turn_started` with `sentBySession: false` becomes a queue item and runs
    in order, through `runTurn` with no `messages`: no user record, the session's recording handlers, supervision and
-   metering attached to that turn. **Gate:** suite green (no ACP path reaches it).
+   metering attached to that turn. A `turn_took` extends the cause of the turn it names and settles the messages it
+   lists with that turn's result. **Gate:** suite green (no ACP path reaches it).
 6. **Fake controller and conformance suite:** `fake-controller.ts` implements only the core: `send` reporting turns,
    `prepareTurn` with scripted output and results delivered to the handlers once `prompt()` is called, a script step
    that starts a turn on its own (holding its output until its `prompt()`), cancel, force stop, usage, options before start. `conformance.ts`
@@ -574,6 +593,9 @@ member it guards.
    - late output arriving after a force stop is dropped, not recorded on the next turn;
    - finalization that is slow to finish: completion and the next operation both wait for it;
    - `turn_started` reported synchronously inside `send` is not missed;
+   - **`turn_took`** (fake only): a message sent while a fake turn runs and folded into it settles with that turn's
+     result; a `turn_took` for an unknown or ended turn is ignored; the `HarnessController` rejects a run without a
+     `turnId`;
    - **the attachment barrier:** `prepareTurn` starts nothing; a prepared turn that emits a permission or tool
      boundary the instant `prompt()` is called has it seen by the supervisor (stage and stall timer right), also for
      a held turn whose replay begins with such a boundary (fake only);

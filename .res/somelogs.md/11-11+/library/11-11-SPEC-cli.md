@@ -18,7 +18,7 @@ Two binaries, not three:
 | Binary | Owner | What it drives |
 | --- | --- | --- |
 | `acp-client` | the library | `chat`: `AgentController` (adapter bring-up, `--wire`, degraded mode). `create` / `open`: managed sessions. New `agent ...`: `Agent` and its conversations |
-| `harness` | the harness package | `harness new`, `harness sessions`, `harness chat --session S [--channel C]`, `harness config`, `harness usage` against a harness home (`~/.harness/` by default), standalone; `harness serve --stdio --session S`, which hosts such as acp-client launch (`../harness/11-11-SPEC-harness-v1.md`) |
+| `harness` | the harness (`src/native-harness/`, its `cli/main.ts`) | `harness new`, `harness sessions`, `harness chat --session S [--channel C]`, `harness config`, `harness usage` against a harness home (`~/.harness/` by default), standalone; `harness serve --stdio --session S`, which hosts such as acp-client launch (`../harness/11-11-SPEC-harness-v1.md`) |
 
 - **Decoupled on purpose.** The harness must be usable without acp-client, so its CLI ships with it. `acp-client agent`
   hosts the harness through `Agent` and adds what only the library has: ACP conversations, workers, the shared

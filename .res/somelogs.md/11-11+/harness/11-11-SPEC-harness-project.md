@@ -1,6 +1,6 @@
 # Native harness: project organization and rules
 
-Status: agreed, not started; the repo layout waits on the owner's decision (overview, open questions). Written
+Status: agreed, not started; repo layout decided 2026-11-12 (below). Written
 2026-11-11. Seeds the package's `ARCHITECTURE.md` and `AGENTS.md`. What it builds is `11-11-SPEC-harness-v1.md`.
 
 ## Why this needs its own rules
@@ -67,18 +67,33 @@ Rules for every extension point:
 
 ## Layout
 
-One workspace package organized by module, with subpath exports for optional heavy parts. A module becomes its own
-package only when it needs its own release cycle or dependencies. The fallback, if the repo stays one package, is
-`src/native-harness/` with the same layout and the same enforced rules.
+**Decided (owner, 2026-11-12): `src/native-harness/` inside the acp-client repo, acting as a separate package from
+the start.** It will probably be split out later, as its own package that acp-client depends on, or as a binary; the
+boundary is kept from the first commit so that split is a move, not an untangling. What "acting as a separate
+package" means:
+
+- **Its own entry points** play the role of package exports: `index.ts` (public API), `client.ts` (what hosts
+  import: `HarnessClient`, transports, `describe`), `testing.ts` (scripted model, conformance suites); later
+  `openai-compatible.ts`, `mcp.ts`, `mcp-server.ts`. Nothing outside `src/native-harness/` imports anything else from
+  it.
+- **It never imports from outside itself:** no `../` out of `src/native-harness/`, no acp-client modules.
+- **Its own dependencies are listed** (in its `README`/`ARCHITECTURE.md` until it has a `package.json`), so the split
+  knows what to carry.
+- **Its own tests** under `src/native-harness/test/` (or `test/native-harness/`), runnable on their own.
+- **The `harness` binary** is a script entry (`src/native-harness/cli/main.ts`), runnable with `bun`.
+- **Enforced by tooling,** not by convention (Dependency rules, below).
+
+The protocol between a host and the harness is its own spec: `../11-12-SPEC-harness-protocol.md`.
 
 ```
-packages/native-harness/
-  package.json              exports: ".", "./client", "./openai-compatible", "./mcp", "./mcp-server", "./testing"
+src/native-harness/
+  index.ts                  public API only
+  client.ts                 for hosts: HarnessClient, stdio and in-process transports, describe()
+  testing.ts                scripted model, golden helpers, conformance suites
   AGENTS.md                 contribution rules (below)
   ARCHITECTURE.md           the pattern and the rules, next to the code
   decisions/                0001-contracts.md, ...
-  src/
-    contracts/              imports nothing: entries, inbox, model, context, tools, permissions, guards,
+  contracts/              imports nothing: entries, inbox, model, context, tools, permissions, guards,
                             events, config, policy, timeline, delegation, history, errors
     kernel/                 session.ts (entity, lock), channel.ts (actor), turn-machine.ts (pure), turn-runner.ts, lifecycle.ts
     context/                pipeline/, renderers/, compactors/, store/          (pure, except store/)
@@ -98,19 +113,18 @@ packages/native-harness/
     storage/                SQLite for the identity core, JSONL snapshots
     memory/                 phase 2
     mcp-server/             phase 2
-    cli/                    the `harness` binary
+    cli/                    the `harness` binary (main.ts)
     testing/                scripted-client.ts, golden.ts, conformance/
-    index.ts                public API only
   test/
     scenarios/              whole turns with the scripted client
     golden/                 expected requests
 ```
 
-- Subpath exports keep heavy dependencies optional (the MCP SDK loads only for consumers who use it).
-- `./client` is what hosts import: the `HarnessClient` with process and in-process transports. A host never imports
+- Separate entry points keep heavy dependencies optional (the MCP SDK loads only for consumers who use it).
+- `client.ts` is what hosts import: the `HarnessClient` with process and in-process transports. A host never imports
   `kernel/` or any module internals, so running the harness in process or in another environment is a transport
   choice.
-- Conformance suites are exported through `./testing`, so the library's implementations (its history source,
+- Conformance suites are exported through `testing.ts`, so the library's implementations (its history source,
   delegation backend) run the same suites.
 
 ## Dependency rules
@@ -121,8 +135,11 @@ Enforced by tooling (dependency-cruiser or eslint-plugin-boundaries):
 2. `kernel` imports only `contracts`.
 3. Every other folder imports `contracts`, never another folder's internals; shared helpers go to a small `util` that
    imports only `contracts`.
-4. Nothing in the package imports from the library; the library imports only public entry points.
-5. Size limits: a file over about 400 lines or a module over about 2,000 needs a reason in review.
+4. Nothing in `src/native-harness/` imports from outside it; the rest of acp-client imports only its entry points
+   (`index.ts`, `client.ts`, `testing.ts`), and within acp-client only `src/native/` does.
+5. Checked in CI by a small import check (a script over the import graph, or dependency-cruiser), so a violation
+   fails the build.
+6. Size limits: a file over about 400 lines or a module over about 2,000 needs a reason in review.
 
 ## Testing
 
@@ -203,7 +220,6 @@ context and tools workstreams.
 
 ## Open
 
-- [ ] Workspace package or a folder with a lint-enforced boundary (overview).
-- [ ] Package name; published from the start or private until stable.
+- [ ] Package name for when it is split out; published or private.
 - [ ] Exact size limits and which tool enforces the dependency rules.
 - [ ] Decision record format and numbering.
