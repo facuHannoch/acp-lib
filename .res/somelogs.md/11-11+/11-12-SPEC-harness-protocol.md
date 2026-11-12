@@ -333,6 +333,45 @@ Every wait has a bound (integration spec, Nothing waits forever).
 | harness | other callbacks | per callback (functions: the tool's timeout; delegation: 30 s) |
 | harness | a hold | its lease; expiry releases it |
 
+## Worked example: the first message to a cold agent
+
+An illustration of the normal path, showing how the pieces fit and in what order; it is also the sequence the fake
+harness client must reproduce. Not a reviewed walkthrough: failure cases are walked through after implementation
+(Scenarios, below).
+
+*Setup:* an `Agent` with a native harness configured. Conversation `agc-1` exists, with policy `owner` and title
+"Owner, private chat"; participant `bob` is known. The harness isn't running, and nothing has been sent yet. The
+consumer only wants final messages.
+
+1. **The consumer opens `agc-1`.** acp-client attaches it to its channel; no process starts. Models, commands and
+   policy names are already known (stored config and `describe`).
+2. **The consumer calls `prompt({ text: "summarize the repo", participantId: "bob" })`.** acp-client queues it; the
+   queue runs it, and the conversation is busy.
+3. **The harness isn't running, so acp-client starts it** through the launcher (`harness serve --stdio`), once: a
+   second conversation needing it now would wait for this start. The start is bounded (60 s).
+4. **acp-client → harness: `initialize`** `{ protocolVersion: 1, host, callbacks: ["permission/request"],
+   subscription: { text: "final", tools: "summary", reasoning: "none", modelLog: false, usage: "per_call" } }`.
+5. **harness → acp-client:** `{ protocolVersion: 1, harness: { version }, description }`. acp-client compares the
+   description with what `describe` gave and emits a change if they differ.
+6. **acp-client → harness: `session/load`** `{ sessionId: <the Agent's id>, config, participants: [{ id: "bob",
+   kind: "person", label: "Bob" }], channels: { "agc-1": { policy: "owner", label: "Owner, private chat" } },
+   since }`. The channel had pending changes, so they ride along; the harness applies them before it can start any
+   turn. The result carries each active channel's recent turns and waiting items (none here: nothing to reconcile).
+   For a session that doesn't exist yet this is `session/create`, without `since`.
+7. **acp-client → harness: `channel/push`** `{ channel: "agc-1", item: { id: "msg-1", kind: "user_message",
+   sender: "bob", content: [{ type: "text", text: "summarize the repo" }], delivery: "queue" } }`.
+8. **harness → acp-client:** `{ accepted: true }`: `msg-1` is stored durably. acp-client writes the user record and
+   the prompt's queue operation ends; the prompt's promise waits for the turn that takes `msg-1`. Had the answer not
+   come in time, acp-client would push `msg-1` again, safely.
+9. **harness: `turn_started`** `{ turnId: "t-1", items: ["msg-1"] }`. acp-client queues turn `t-1` and, with nothing
+   else running, runs it at once: busy again.
+10. **harness: during the turn,** as subscribed: `progress` every few seconds; `tool_call` summaries (name, start,
+    end, status); `usage` after each model call. No text deltas, since the subscription is `final`.
+11. **harness: `message_completed`** `{ turnId: "t-1", messageId: "m-1", parts: [...] }`: the whole assistant message.
+12. **harness: `turn_ended`** `{ turnId: "t-1", outcome: "completed" }`. acp-client finalizes: the assistant record,
+    metering from the usage events, then `turn_completed` on the conversation's events.
+13. **The prompt's promise resolves** with `t-1`'s result; the conversation is idle.
+
 ## Scenarios
 
 Walked through step by step and stress-tested once both sides are built (`11-12-SPEC-end-to-end-robustness.md`),
