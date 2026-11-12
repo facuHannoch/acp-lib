@@ -36,7 +36,6 @@ import type {
   PersistenceJsonValue,
 } from "./persistence/backend.ts";
 import {
-  OwnedPromptPostCommitError,
   type AgentConversationOwnerLifecycle,
 } from "./agent-conversation-owner.ts";
 import {
@@ -52,11 +51,10 @@ import type { Capabilities } from "./capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
-import { formatResponseMessages, ResponseAccumulator } from "./response.ts";
+import { formatResponseMessages } from "./response.ts";
 import { MeteringEngine, type OpenDetachedOperation, type OpenOperation } from "./metering/engine.ts";
 import {
   AgentSessionHandoffError,
-  AgentSessionOperationError,
   type AgentSessionMeteringSnapshot,
   type MeteredOperationKind,
   type MeteringConfig,
@@ -85,9 +83,6 @@ import type {
   Attachment,
   PromptHandlers,
   PromptResult,
-  PermissionOutcome,
-  PermissionRequest,
-  ResponseMessage,
   SessionListEntry,
   TokenUsage,
   WireEntry,
@@ -111,7 +106,6 @@ import type {
   InternalSessionHistoryEntry,
   InternalSessionDescriptor,
   TranscriptHeaderRecord,
-  OperationKind,
 } from "./persistence/records.ts";
 import { TranscriptPersistenceRuntime } from "./persistence/transcript-runtime.ts";
 import {
@@ -174,7 +168,6 @@ import {
   type PendingMessageId,
   type PromptDelivery,
   type PromptHandle,
-  type SteeringPrompt,
 } from "./steering/index.ts";
 import { AgentConversationPresentation } from "./agent-conversation-presentation.ts";
 import {
@@ -186,12 +179,14 @@ import {
   normalizeContinuationStrategies,
   stageOpeningContinuation,
 } from "./agent-conversation-continuation.ts";
-import { attachmentParts } from "./media/acp.ts";
+import { runTurn, type PromptQueueItem, type TurnRunContext } from "./conversation-turns/index.ts";
+import {
+  persistenceOperationKind,
+  toPersistenceJsonValue,
+} from "./conversation-turns/record-helpers.ts";
 import {
   partsText,
   promptParts,
-  transcriptParts,
-  unresolvedParts,
   type MessagePart,
   type ResolvedPart,
 } from "./media/parts.ts";
@@ -200,28 +195,6 @@ import { redactMedia } from "./media/redact.ts";
 /** The text of an object-form prompt: its leading text plus its text parts. */
 function promptInputText(input: { readonly text?: string; readonly parts?: readonly MessagePart[] }): string {
   return partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]);
-}
-
-/** The older JSONL transcript has no media store: a message with parts keeps a line per part. */
-function legacyTranscriptText(
-  text: string,
-  parts?: readonly MessagePart[],
-  attachments?: readonly Attachment[],
-): string {
-  if (!parts && !attachments?.length) return text;
-  return transcriptParts([...(parts ?? [{ kind: "text", text }]), ...attachmentParts(attachments)]);
-}
-
-/** The older JSONL transcript's view of response messages, with a line per media part. */
-function legacyTranscriptMessages(messages: readonly ResponseMessage[], text: string) {
-  const messageText = (message: ResponseMessage) => (message.parts ? transcriptParts(message.parts) : message.text);
-  return {
-    text: messages.some((message) => message.parts) ? messages.map(messageText).join("\n\n") : text,
-    messages: messages.map((message) => ({
-      ...(message.messageId ? { messageId: message.messageId } : {}),
-      text: messageText(message),
-    })),
-  };
 }
 
 export {
@@ -268,11 +241,6 @@ export type {
   TranscriptContinuationBuilder,
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
-
-interface PromptQueueItem extends SteeringPrompt {
-  /** How this operation is classified in its metering record. */
-  operationKind: MeteredOperationKind;
-}
 
 /** Object-form prompt input for per-message consumer metadata on Agent-owned conversations. */
 export interface AgentConversationPromptInput {
@@ -3334,457 +3302,67 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
   }
 
-  private async runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
-    const targetProviderContextId = this.ownerLifecycle
-      ? this._internalSessionId ?? `runtime:${this.ownerContextNonce ??= crypto.randomUUID()}`
-      : undefined;
-    const owned = this.ownerLifecycle
-      ? await this.ownerLifecycle.beforePrompt({
-          operationId: item.turnId,
-          agentSessionId: this.ownerAgentSessionId!,
-          agentConversationId: this.agentConversationId,
-          targetProviderContextId,
-          ...(item.participantId ? { participantId: item.participantId } : {}),
-          ...(item.consumerMetadata !== undefined ? { consumerMetadata: item.consumerMetadata } : {}),
-          ...(item.parts ? { parts: item.parts } : {}),
-          text: item.text,
-          messageParts: item.messageParts,
-          attachments: item.attachments,
-          mediaContext: {
-            cwd: this.controllerDefaults.cwd ?? process.cwd(),
-            ...(this.controller.isDegraded
-              ? { degraded: true }
-              : { capabilities: this.controller.capabilities.agent.promptCapabilities }),
-          },
-        })
-      : undefined;
-    for (const participant of owned?.participants ?? (owned?.participant ? [owned.participant] : [])) {
-      if (!this._participants.some((known) => known.id === participant.id)) {
-        this._participants = [...this._participants, Object.freeze({ ...participant })];
-      }
-    }
-    this.beginTurn(item.turnId);
-    let operation: OpenOperation;
-    if (this.v2Transcript) {
-      let transcriptStarted = false;
-      try {
-        // Metering preflight has no provider side effect. Run it before minting durable
-        // operation evidence so a strict pricing/policy rejection needs no abort record.
-        operation = await this.openMeteredOperation(item);
-        await this.v2Transcript.beginOperation(item.turnId, persistenceOperationKind(item.operationKind));
-        transcriptStarted = true;
-        // A combined prompt shows each original message, as it was sent.
-        const userTexts = item.parts
-          ? item.parts.map((part) => legacyTranscriptText(part.text, part.messageParts, part.attachments))
-          : [legacyTranscriptText(item.text, item.messageParts, item.attachments)];
-        const userRecords = [];
-        for (const [index, text] of userTexts.entries()) {
-          userRecords.push(await this.v2Transcript.appendPresentationEvent({
-            kind: "message",
-            operationId: item.turnId,
-            role: "user",
-            text,
-            status: "completed",
-            presentation: { id: `message:${item.turnId}:user${index === 0 ? "" : `:${index + 1}`}`, revision: 1 },
-          }));
-        }
-        await this.v2Transcript.syncBeforeDispatch();
-        for (const userRecord of userRecords) this.presentation.emitPersistedRecord(userRecord);
-      } catch (error) {
-        this.endTurn(item.turnId, item.handlers);
-        if (transcriptStarted) {
-          await this.v2Transcript.abortOperation("pre_dispatch_persistence_failure").catch(
-            (abortError) => this.log.warn("transcript_predispatch_abort_failed", { error: String(abortError) }),
-          );
-        }
-        throw error;
-      }
-    } else {
-      await this.appendTranscript({
-        v: 1,
-        t: "msg",
-        role: "user",
-        text: legacyTranscriptText(item.text, item.messageParts, item.attachments),
-        ts: Date.now(),
-      });
-      operation = await this.openMeteredOperation(item);
-    }
+  /** Runs one prompt turn; the turn itself lives in `src/conversation-turns/run-turn.ts`. */
+  private runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
+    return runTurn(this.turnRunContext(), item);
+  }
 
-    const chunks: string[] = [];
-    const response = new ResponseAccumulator();
-    let assistantOrdinal = 0;
-    let assistantMessage: {
-      readonly id: string;
-      providerMessageId?: string;
-      text: string;
-      parts?: readonly ResolvedPart[];
-      revision: number;
-      dirty: boolean;
-    } | null = null;
-    const beginAssistantMessage = (providerMessageId?: string) => {
-      assistantOrdinal++;
-      assistantMessage = {
-        id: `message:${item.turnId}:assistant:${assistantOrdinal}`,
-        ...(providerMessageId === undefined ? {} : { providerMessageId }),
-        text: "",
-        revision: 0,
-        dirty: false,
-      };
-      return assistantMessage;
-    };
-    // When each message that ended before the turn did received its last text, in order. The
-    // turn's commit records those messages as completed at these times; only the last message
-    // takes the turn's own outcome.
-    const messageEnds: string[] = [];
-    const flushAssistantMessage = (
-      status: "in_progress" | "completed" | "cancelled" | "error",
-      stopReason?: string,
-      force = false,
-      ended = false,
-    ) => {
-      if ((!this.v2Transcript && !this.ownerLifecycle) || !assistantMessage
-        || (!assistantMessage.dirty && !force)) return;
-      assistantMessage.revision++;
-      assistantMessage.dirty = false;
-      const message = assistantMessage;
-      const timestamp = new Date().toISOString();
-      if (ended) messageEnds.push(timestamp);
-      if (this.ownerAgentSessionId && (status === "in_progress" || ended)) {
-        this.queueOwnedRecord({
-          recordId: `${message.id}:snapshot:${message.revision}`,
-          agentSessionId: this.ownerAgentSessionId,
-          agentConversationId: this.agentConversationId,
-          kind: "message",
-          timestamp,
-          operationId: item.turnId,
-          role: "assistant",
-          logicalMessageId: message.id,
-          content: message.text,
-          status: ended ? "completed" : "in_progress",
-          metadata: JSON.stringify({ operationId: item.turnId,
-            ...(message.providerMessageId ? { providerMessageId: message.providerMessageId } : {}) }),
-        }, message.parts);
-      }
-      if (this.v2Transcript) this.presentation.queuePresentation({
-        kind: "message",
-        operationId: item.turnId,
-        role: "assistant",
-        text: message.parts ? transcriptParts(message.parts) : message.text,
-        ...(message.providerMessageId === undefined ? {} : { providerMessageId: message.providerMessageId }),
-        structured: {
-          version: 1,
-          messages: [message.providerMessageId === undefined
-            ? { text: message.text }
-            : { messageId: message.providerMessageId, text: message.text }],
+  /** What a turn reads and changes in this session (`TurnRunContext`), read live through getters. */
+  private turnRunContext(): TurnRunContext {
+    const session = this;
+    return {
+      log: this.log,
+      get controller() { return session.controller; },
+      supervisedPrompt: (controller, operationId, kind, prompt) =>
+        this.supervisedPrompt(controller, operationId, kind, prompt),
+      get supervising() { return session.activeSupervisor !== null; },
+      persistence: {
+        get v2Transcript() { return session.v2Transcript; },
+        appendTranscript: (line) => this.appendTranscript(line),
+        persist: () => this.persist(),
+        finishV2Prompt: (status, record, errorCode) => this.finishV2Prompt(status, record, errorCode),
+      },
+      presentation: this.presentation,
+      metering: {
+        open: (item) => this.openMeteredOperation(item),
+        close: (operation, outcome, reportedCumulative, usageFailureReason) =>
+          this.closeOperation(operation, outcome, reportedCumulative, usageFailureReason),
+      },
+      steering: this.steering,
+      owner: {
+        get lifecycle() { return session.ownerLifecycle; },
+        get agentSessionId() { return session.ownerAgentSessionId; },
+        get agentConversationId() { return session.agentConversationId; },
+        contextNonce: () => this.ownerContextNonce ??= crypto.randomUUID(),
+        queueRecord: (record, parts) => this.queueOwnedRecord(record, parts),
+        recordNow: (record) => this.recordOwned(record),
+        get recordWrite() { return session.ownerRecordWrite; },
+      },
+      turn: {
+        begin: (turnId) => this.beginTurn(turnId),
+        end: (turnId, handlers) => this.endTurn(turnId, handlers),
+        queueActivityRecords: (turnId, records) => this.queueActivityRecords(turnId, records),
+      },
+      session: {
+        get cwd() { return session.controllerDefaults.cwd; },
+        get defaultPermission() { return session.defaultPermission; },
+        get internalSessionId() { return session._internalSessionId; },
+        setInternalSessionId: (next) => this.setInternalSessionId(next),
+        get title() { return session._title; },
+        set title(value) { session._title = value; },
+        learnParticipant: (participant) => {
+          if (!this._participants.some((known) => known.id === participant.id)) {
+            this._participants = [...this._participants, Object.freeze({ ...participant })];
+          }
         },
-        status,
-        ...(stopReason === undefined ? {} : { stopReason }),
-        presentation: { id: message.id, revision: message.revision },
-      });
-    };
-    // A message receives no more text once the next message or a tool call begins. Record it
-    // completed then, rather than leaving it open until the turn ends.
-    const endAssistantMessage = () => {
-      flushAssistantMessage("completed", undefined, true, true);
-      assistantMessage = null;
-    };
-    const wrappedHandlers: PromptHandlers = {
-      ...item.handlers,
-      // Fired from here, from the one aggregator this session owns — nothing below needs
-      // to know the handler exists, and two places firing it would be two folds.
-      onRecord: undefined,
-      onChunk: (chunk) => {
-        chunks.push(chunk);
-        item.handlers?.onChunk?.(chunk);
-      },
-      onResponseChunk: (chunk) => {
-        const settledReasoning = this.presentation.closeReasoningBoundary();
-        if (settledReasoning) {
-          this.queueActivityRecords(item.turnId, [settledReasoning]);
-          item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
-        }
-        response.append(chunk);
-        if (this.v2Transcript || this.ownerLifecycle) {
-          if (chunk.startsMessage) {
-            endAssistantMessage();
-            beginAssistantMessage(chunk.messageId);
-          }
-          const current = assistantMessage ?? beginAssistantMessage(chunk.messageId);
-          if (current.providerMessageId === undefined && chunk.messageId !== undefined) {
-            current.providerMessageId = chunk.messageId;
-          }
-          current.text += chunk.text;
-          current.parts = response.currentParts();
-          current.dirty = true;
-          // Persist the first usable snapshot. Later token chunks remain in memory until
-          // an interleaving item, a new message, or the operation boundary.
-          if (current.revision === 0) flushAssistantMessage("in_progress");
-        }
-        item.handlers?.onResponseChunk?.(chunk);
-      },
-      onActivity: (event) => {
-        // The message snapshot must enter the shared queue before an activity first seen
-        // after it. Later activity revisions keep their original presentation position.
-        if (event.kind === "tool") endAssistantMessage();
-        else flushAssistantMessage("in_progress");
-        if (!this.activeSupervisor) this.steering.observeActivity(item.turnId, event);
-        const result = this.presentation.applyActivity(event);
-        this.queueActivityRecords(item.turnId, result.emitted);
-        item.handlers?.onRecord?.(result);
-        item.handlers?.onActivity?.(event);
-      },
-      onPermissionRequest: async (request, signal) => {
-        const permissionBase = `${item.turnId}:permission:${request.toolCallId}`;
-        if (this.ownerAgentSessionId) {
-          await this.recordOwned({
-            recordId: `${permissionBase}:requested`,
-            agentSessionId: this.ownerAgentSessionId,
-            agentConversationId: this.agentConversationId,
-            kind: "permission",
-            timestamp: new Date().toISOString(),
-            operationId: item.turnId,
-            permissionId: request.toolCallId,
-            state: "requested",
-            request: toPersistenceJsonValue({
-              toolCallId: request.toolCallId,
-              ...(request.title ? { title: request.title } : {}),
-              options: request.options,
-              raw: request.raw,
-            }),
-          });
-        }
-        const outcome = item.handlers?.onPermissionRequest
-          ? await permissionWithAbort(() => item.handlers!.onPermissionRequest!(request, signal), signal)
-          : defaultPermissionOutcome(request, this.defaultPermission);
-        if (this.ownerAgentSessionId) {
-          await this.recordOwned({
-            recordId: `${permissionBase}:resolved`,
-            agentSessionId: this.ownerAgentSessionId,
-            agentConversationId: this.agentConversationId,
-            kind: "permission",
-            timestamp: new Date().toISOString(),
-            operationId: item.turnId,
-            permissionId: request.toolCallId,
-            state: "resolved",
-            outcome: permissionRecordOutcome(request, outcome),
-          });
-        }
-        return outcome;
+        get providerAttachment() { return session.providerAttachment; },
+        set providerAttachment(value) { session.providerAttachment = value; },
+        installProviderAttachment: (internalSessionId, kind, created, options) =>
+          this.installProviderAttachment(internalSessionId, kind, created, options),
+        get lastRecordedInternalSessionId() { return session.lastRecordedInternalSessionId; },
+        set lastRecordedInternalSessionId(value) { session.lastRecordedInternalSessionId = value; },
       },
     };
-
-    let closed: OperationMeteringRecord | null = null;
-    let transcriptClosed = false;
-    let providerSettled = false;
-    // A lazily created thread acquires its provider session during dispatch, so this is the
-    // closest observable acquisition time when `session/new` happens inside `prompt()`.
-    const dispatchedAt = new Date().toISOString();
-    try {
-      let res = await this.supervisedPrompt(this.controller, item.turnId, "turn",
-        // An owned conversation already resolved the parts and wrapped them with the provider-only
-        // text (identity, out-of-band messages); otherwise the client resolves them.
-        () => this.controller.prompt(owned?.providerParts
-          ? { parts: unresolvedParts(owned.providerParts), handlers: wrappedHandlers }
-          : item.messageParts
-            ? { parts: item.messageParts, attachments: item.attachments, handlers: wrappedHandlers }
-            : { text: item.text, attachments: item.attachments, handlers: wrappedHandlers }));
-      if (res.cancel === "forced") {
-        const messages = response.snapshot();
-        res = { ...res, messages, text: response.text || chunks.join("") };
-      }
-      providerSettled = true;
-      if (this.v2Transcript) {
-        if (assistantOrdinal === 0) {
-          for (const message of res.messages) {
-            const current = beginAssistantMessage(message.messageId);
-            current.text = message.text;
-            current.dirty = true;
-            flushAssistantMessage(res.status, res.stopReason, true);
-          }
-        } else {
-          flushAssistantMessage(res.status, res.stopReason, true);
-        }
-      }
-      // Before the assistant msg: `msg` delimits a turn, so anything still open has to
-      // land inside those fences.
-      this.endTurn(item.turnId, item.handlers);
-      if (!this._title && item.text.trim()) {
-        this._title = item.text.trim().replace(/\s+/g, " ").slice(0, 60);
-      }
-      // A session may have been created lazily on first prompt (degraded has none).
-      const observedInternalSessionId = this.controller.currentSessionId ?? this._internalSessionId;
-      if (observedInternalSessionId) {
-        if (
-          this.providerAttachment.kind === "absent"
-          || this.providerAttachment.descriptor.internalSessionId !== observedInternalSessionId
-        ) {
-          this.installProviderAttachment(observedInternalSessionId, "runtime_only", true, {
-            acquiredAt: dispatchedAt,
-          });
-        }
-      } else {
-        this.setInternalSessionId(observedInternalSessionId);
-      }
-      // Metering closes BEFORE local persistence. The provider has already been paid and
-      // has already told us what it charged; letting a transcript or catalog write failure
-      // send us down the catch path would discard usage we are holding and, in a strict
-      // mode, block the session over a local disk problem.
-      //
-      // `closed` then guards the catch path. Closing twice would accrue the operation
-      // twice and emit a second record for it — double-counting tokens and cost, which is
-      // a worse failure than the one closing early prevents.
-      const record = await this.closeOperation(operation, res.status, res.usage);
-      closed = record;
-      await this.ownerLifecycle?.meteringRecorded?.(record);
-      // The Agent-owned and transcript paths record the attachment inside their own
-      // commit. A catalog-backed conversation has one mutable row, so the completed turn
-      // is simply what makes the live thread the selected one.
-      const pending = this.providerAttachment;
-      if (res.status === "completed"
-        && !this.ownerLifecycle
-        && !this.v2Transcript
-        && pending.kind === "runtime_only") {
-        this.providerAttachment = recordedProviderAttachment(pending.descriptor);
-        this.lastRecordedInternalSessionId = pending.descriptor.internalSessionId;
-      }
-      await this.persist();
-      if (this.v2Transcript) {
-        await this.presentation.drain();
-        await this.finishV2Prompt(res.status, record);
-        transcriptClosed = true;
-      } else {
-        await this.appendTranscript({
-          v: 1,
-          t: "msg",
-          role: "assistant",
-          ...legacyTranscriptMessages(res.messages, res.text),
-          ts: Date.now(),
-          usage: res.usage,
-          stopReason: res.stopReason,
-          status: res.status,
-        });
-      }
-      const result = Object.freeze({
-        ...res,
-        operationId: item.turnId,
-        metering: record,
-        ...this.steering.resultFields(item.turnId, res.stopReason),
-      });
-      await this.ownerRecordWrite;
-      if (this.ownerLifecycle) {
-        const completed = {
-          operationId: item.turnId,
-          agentSessionId: this.ownerAgentSessionId!,
-          agentConversationId: this.agentConversationId,
-          targetProviderContextId,
-          ...(owned?.identityDeliveryReceipt
-            ? { identityDeliveryReceipt: owned.identityDeliveryReceipt }
-            : {}),
-          ...(item.participantId ? { participantId: item.participantId } : {}),
-          text: item.text,
-          result,
-          messageEnds,
-          providerAttachment: this.providerAttachment,
-        };
-        try {
-          const committed = await this.ownerLifecycle.afterPrompt(completed);
-          if (committed?.providerAttachment) {
-            this.providerAttachment = acknowledgeProviderAttachment(
-              this.providerAttachment,
-              committed.providerAttachment,
-            );
-          }
-        } catch (error) {
-          if (error instanceof OwnedPromptPostCommitError) {
-            if (error.commit.providerAttachment) {
-              this.providerAttachment = acknowledgeProviderAttachment(
-                this.providerAttachment,
-                error.commit.providerAttachment,
-              );
-            }
-            throw error.cause ?? error;
-          }
-          throw error;
-        }
-      }
-      await this.ownerRecordWrite;
-      return result;
-    } catch (err) {
-      // Easy to miss, and the whole point of R4: a turn that died mid-tool still records
-      // what it was doing, at its real status.
-      this.endTurn(item.turnId, item.handlers);
-      const structured = response.snapshot();
-      const text = structured.length > 0 ? response.text : chunks.join("");
-      const messages: readonly ResponseMessage[] = structured.length > 0
-        ? structured
-        : text
-          ? Object.freeze([{ text }])
-          : Object.freeze([]);
-      if (!providerSettled) {
-        await this.ownerRecordWrite.catch((persistenceError) => {
-          this.log.warn("owned_runtime_persistence_failed", { error: String(persistenceError) });
-        });
-        await this.ownerLifecycle?.promptFailed({
-          operationId: item.turnId,
-          agentSessionId: this.ownerAgentSessionId!,
-          agentConversationId: this.agentConversationId,
-          ...(item.participantId ? { participantId: item.participantId } : {}),
-          text: item.text,
-          messages,
-          messageEnds,
-          error: err,
-        }).catch((persistenceError) => {
-          this.log.warn("owned_prompt_failure_persistence_failed", { error: String(persistenceError) });
-        });
-      }
-      await this.ownerRecordWrite.catch((persistenceError) => {
-        this.log.warn("owned_runtime_persistence_failed", { error: String(persistenceError) });
-      });
-      if (this.v2Transcript) {
-        if (!transcriptClosed && assistantOrdinal === 0 && messages.length > 0) {
-          for (const message of messages) {
-            const current = beginAssistantMessage(message.messageId);
-            current.text = message.text;
-            current.dirty = true;
-            flushAssistantMessage("error", "error", true);
-          }
-        } else if (!transcriptClosed) {
-          flushAssistantMessage("error", "error", true);
-        }
-        await this.presentation.drain().catch(() => undefined);
-      } else {
-        await this.appendTranscript({
-          v: 1,
-          t: "msg",
-          role: "assistant",
-          ...legacyTranscriptMessages(messages, text),
-          ts: Date.now(),
-          stopReason: "error",
-          status: "error",
-        });
-      }
-      // A failed operation may still have consumed tokens, so its record has to survive
-      // the rejection rather than only reaching event subscribers.
-      // Already metered: the failure happened after the operation closed (a transcript or
-      // catalog write), so the record stands and must not be minted a second time.
-      const outcome = err instanceof OperationStalledError ? "cancelled" : "error";
-      const record = closed ?? (await this.closeOperation(operation, outcome, null, String(err)));
-      await this.ownerLifecycle?.meteringRecorded?.(record);
-      if (this.v2Transcript && !transcriptClosed) {
-        await this.finishV2Prompt("error", record, "unknown").catch(
-          (persistenceError) => this.log.warn("transcript_terminal_write_failed", { error: String(persistenceError) }),
-        );
-      }
-      if (err instanceof OperationStalledError) {
-        err.messages = messages;
-        err.metering = record;
-        await this.ownerLifecycle?.operationFailed?.({ operationId: item.turnId, error: err }).catch((error) => {
-          this.log.warn("operation_failure_recording_failed", { error: String(error) });
-        });
-        throw err;
-      }
-      throw new AgentSessionOperationError(item.turnId, record, err);
-    }
   }
 
   private openMeteredOperation(item: PromptQueueItem): Promise<OpenOperation> {
@@ -4731,16 +4309,6 @@ export type AgentConversationOpenResult = AgentSessionOpenResult;
 export type ManagedAgentConversationCreationBootstrap = ManagedAgentSessionCreationBootstrap;
 export type ManagedAgentConversationPersistenceSnapshot = ManagedAgentSessionPersistenceSnapshot;
 
-function persistenceOperationKind(kind: MeteredOperationKind): OperationKind {
-  if (kind === "internal_command") return "internal_session_command";
-  if (
-    kind === "conversation_checkpoint"
-    || kind === "conversation_recovery"
-    || kind === "identity_update"
-  ) return "other";
-  return kind;
-}
-
 function ownHandoffOptions(options: HandoffOptions): HandoffOptions {
   return Object.freeze({
     ...(options.summary === undefined ? {} : { summary: options.summary }),
@@ -4964,33 +4532,6 @@ function protocolMethod(message: PersistenceJsonValue): string | undefined {
   return typeof method === "string" ? method : undefined;
 }
 
-function toPersistenceJsonValue(value: unknown): PersistenceJsonValue {
-  if (value === undefined) return null;
-  const serialized = JSON.stringify(value);
-  return serialized === undefined ? String(value) : JSON.parse(serialized) as PersistenceJsonValue;
-}
-
-function defaultPermissionOutcome(
-  request: PermissionRequest,
-  policy: "approve" | "cancel",
-): PermissionOutcome {
-  if (policy === "cancel") return { outcome: "cancelled" };
-  const allow = request.options.find((option) => option.kind === "allow_once")
-    ?? request.options.find((option) => option.kind === "allow_always");
-  return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
-}
-
-function permissionRecordOutcome(
-  request: PermissionRequest,
-  outcome: PermissionOutcome,
-): "approved" | "denied" | "cancelled" {
-  if (outcome.outcome === "cancelled") return "cancelled";
-  const selected = request.options.find((option) => option.optionId === outcome.optionId);
-  return selected?.kind === "allow_once" || selected?.kind === "allow_always"
-    ? "approved"
-    : "denied";
-}
-
 /** Do not let one notification observer mutate the PromptResult another observer sees. */
 function copyPromptResult(result: PromptResult): PromptResult {
   const messages = result.messages ?? (result.text ? [{ text: result.text }] : []);
@@ -5003,20 +4544,3 @@ function copyPromptResult(result: PromptResult): PromptResult {
   });
 }
 
-/** Settle our wrapper too, so cancelled permission decisions are durably recorded. */
-async function permissionWithAbort(
-  handler: () => PermissionOutcome | Promise<PermissionOutcome>,
-  signal?: AbortSignal,
-): Promise<PermissionOutcome> {
-  if (signal?.aborted) return { outcome: "cancelled" };
-  let abort!: () => void;
-  const cancelled = new Promise<PermissionOutcome>((resolve) => {
-    abort = () => resolve({ outcome: "cancelled" });
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-  try {
-    return await Promise.race([Promise.resolve().then(handler), cancelled]);
-  } finally {
-    signal?.removeEventListener("abort", abort);
-  }
-}
