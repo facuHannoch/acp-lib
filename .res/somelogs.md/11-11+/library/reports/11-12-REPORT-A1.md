@@ -13,13 +13,31 @@ Branch: `controller-interface`, created from beta `e4ecb7e`. Nothing under `src/
 | `686d401` | 2, the rest | once-only cases (12), `test/fixtures/auth-required-agent.ts` (new), `test/fixtures/lifecycle-agent.ts` (opt-in end delay) |
 | `a6d0945` | | this report, first version |
 | `80eeb10` | review P2 | the instant tool-start case waits on a commit event instead of a fixed delay (`characterization.test.ts`, `lifecycle-agent.ts`); snapshots unchanged |
-| this commit | | this report, updated after the independent review (`11-12-REVIEW-A1.md`, reviewer commit `064e3ce`) |
+| `6957407` | | this report, updated after the independent review (`11-12-REVIEW-A1.md`, reviewer commit `064e3ce`) |
+| `50cd497` | outside A1, user-approved | `fix:` `InternalInferenceManager.close()` stops the heartbeat of executions it fences, plus a regression test (`src/internal-inference/coordination/manager.ts`, `test/internal-inference/manager.test.ts`); its own commit, separate from the A1 tests |
+| this commit | | this report, updated for the heartbeat fix and the green gate |
 
 The all-modes group went in first, in its own commit, because it guards A2. Committing the
 once-only group changed no line of the all-modes snapshots: the snapshot diff in `686d401` is
 additions only.
 
 ## Gate results
+
+### With the heartbeat fix (`50cd497`): gate met
+
+| Gate | Result |
+| --- | --- |
+| `bun run typecheck` | clean, 2.8 s |
+| full suite `bun test` | **green: 1,132 pass, 0 fail; 1,132 tests in 113 files; 88.7 s** (1,096 baseline + 35 characterization + 1 regression test); 35 snapshots matched; A1 snapshot file untouched |
+| regression test before the fix | fails with the original stack (closed-SQLite write from the heartbeat at `manager.ts:241`) |
+| `manager.test.ts` after the fix | 9 pass, 0 fail, three runs |
+| the original reproduction (`manager.test.ts` followed by a 12 s idle test) | 10 pass, 0 fail (it failed before the fix) |
+
+The fix: the active execution keeps its heartbeat handle; `close()` clears it for each execution
+it fences; a beat for a fenced execution also stops itself. The regression test runs an
+abort-ignoring runtime with a 250 ms heartbeat, closes the Agent, and asserts no further heartbeat
+call over three intervals and no unhandled rejection. Checking that something does *not* happen
+needs a time window; that window is the only wait in it.
 
 ### After the review fix (`80eeb10`)
 
@@ -174,7 +192,8 @@ Totals: 23 all-modes tests (8 cases × 3 modes, minus the detached handoff), 12 
 
 ## Limitations
 
-- **The full suite is not green** until the leaked heartbeat is handled (open question 1).
+- **Full-suite gate:** green only with the separate heartbeat fix (`50cd497`). The A1 commits alone
+  are red, from that pre-existing defect.
 - **A known order race in Agent-owned records** (deviation 6). The instant-tool case pins the
   order with the barrier: the final chunk is committed before the provider result. It does not
   characterize a chunk and result delivered in the same instant; today's code fixes no order for
@@ -188,7 +207,7 @@ Totals: 23 all-modes tests (8 cases × 3 modes, minus the detached handoff), 12 
 
 ## Open questions
 
-1. **The leaked internal-inference heartbeat** (review P1, reproduced independently on unchanged beta; no fix or mitigation is authorized yet, and the user is being asked). It makes the full suite fail once any test file
+1. **Resolved:** the user approved a `src/` fix, done in `50cd497`. Original text follows. **The leaked internal-inference heartbeat** (review P1, reproduced independently on unchanged beta). It makes the full suite fail once any test file
    runs after `test/internal-inference/manager.test.ts`. Options:
    - (a) a `src/` fix: `InternalInferenceManager.close()` clears the heartbeat of executions it
      fences. It is a library bug, but outside A1's scope and outside the controller-interface spec,
