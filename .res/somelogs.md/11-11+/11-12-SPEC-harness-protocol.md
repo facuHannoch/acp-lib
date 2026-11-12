@@ -38,6 +38,16 @@ a first draft and will be rewritten from the scenarios.
    in v1 (the registry, references, labels); designed so group channels, per-participant defaults, addressing a
    person rather than a channel, and outside agents as participants come later without changing its shape.
 
+## Who it is for
+
+**Only between our two components:** a host (acp-client's `src/native/`, the harness's own CLI) and the harness.
+**No stability guarantees of any kind:** breaking it in any way is free, as long as both sides change together (one
+commit, since they live in the same repo). The version number still exists, only to detect a mismatch (a harness
+installed in a container from a different release than acp-client) and fail clearly. It may later be treated as
+public, even split out and published; then stability promises, fuller documentation and conformance tests for
+outside hosts come with that decision, not before. Outside tools that want the harness today use the optional ACP
+mode (Decisions, 1).
+
 ## Priorities
 
 When two goals conflict, the higher one wins:
@@ -108,8 +118,9 @@ recovery):
 ## Versioning
 
 - `initialize` exchanges `protocolVersion` (an integer, starting at 1). The harness refuses a host with a version it
-  doesn't support (`version_mismatch`); the host refuses a harness the same way.
-- Additive changes (a new optional field, a new event, a new method) keep the version; anything else bumps it.
+  doesn't support (`version_mismatch`); the host refuses a harness the same way. This only detects mismatched
+  releases; there is no compatibility promise across versions (Who it is for).
+- Any change may bump the version; both sides support exactly one version at a time.
 - `initialize` also returns the harness's own version, which acp-client uses to check the static `describe` it ran
   from its installed copy (integration spec, Configuration known before start).
 
