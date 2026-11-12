@@ -64,6 +64,19 @@ When two goals conflict, the higher one wins:
 Simplicity is not a goal that wins arguments but the baseline of a good design: no concept, message or option
 without a scenario that needs it.
 
+## Non-goals
+
+- **Not a network protocol in v1.** The transport is stdio: the harness runs as the host's child process, locally or
+  in a container through the launcher (`docker exec`), as ACP harnesses do today. A broken connection always means
+  the process died, which is why reconciliation at start is enough (Delivery). Nothing in the messages assumes
+  stdio, so a socket or network transport later is a new way to carry the same messages, bringing with it sequence
+  numbers and replay, authentication, reconnects and the question of several hosts.
+- **Not several hosts on one session at once.** The session is locked to one host.
+- **Not a public or stable API** (Who it is for).
+- **Not optimized for throughput** (Priorities, 5).
+- **Not a way to run the agent without a host.** The harness's CLI is its own host, using the same protocol or the
+  in-process transport, not a separate mode.
+
 ## Delivery
 
 How messages survive loss and repetition, borrowed from messaging protocols (MQTT's delivery levels, idempotency keys
