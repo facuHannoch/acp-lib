@@ -1,6 +1,6 @@
 # Controller interface: what a conversation needs from its backend
 
-Status: agreed, not started; reviews 1–5 done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
+Status: agreed, not started; reviews 1–6 done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
 (`../11-11-NOTE-overview.md`, Order of work). A refactor with **no new behaviour**: every native piece depends on it,
 and its gate is that nothing breaks. Carries over the "provider-session interface" prerequisite of
 `../../9-22+/10-17-NOTE-model-call-controller.md` and the 2026-11-09 review.
@@ -42,7 +42,8 @@ a core-only fake controller and the controller conformance suite.
 
 **Behaviour:** none changes for ACP conversations, in any of the three persistence modes (below). Public additions:
 `cause` on `turn_started`, `harnessConnection()`, the `HarnessController` name and the new types. Public change: the
-type of `connection`.
+type of `connection`. `capabilities` on conversations, sessions and the `HarnessController` keeps its ACP shape
+unchanged (the neutral shape has its own name, `conversationCapabilities`).
 
 ## The code as it is
 
@@ -148,11 +149,11 @@ interface ConversationController {
   // turns
   send(run: TurnRun): void;                        // reports turn_started synchronously for session-run backends
   subscribeTurns(listener: (event: TurnStarted) => void): () => void;
-  executeTurn(turnId: string, content: TurnContent): Promise<PromptResult>;
+  executeTurn(turnId: string, content: TurnContent): TurnExecution;
   abandonTurn(turnId: string, reason: unknown): void;
-  subscribeOutput(listener: OutputListener): () => void;           // supervision signals, as today
-  cancel(): void;
-  forceStop(): Promise<void>;
+  subscribeOutput(listener: OutputListener): () => void;           // controller-wide supervision signals, as today
+  cancel(): void;                                                  // cancels the turn executing now, as today
+  forceStop(): Promise<void>;                                      // stops the backend itself; controller-wide
   // lifecycle
   start(onProgress?: (event: ControllerStartEvent) => void): Promise<StartResult>;
   startFresh(onProgress?: (event: ControllerStartEvent) => void): Promise<StartResult>;
@@ -165,7 +166,7 @@ interface ConversationController {
   setConfig(id: string, value: unknown): Promise<void>;
   subscribeUsageUpdate(listener: UsageListener): () => void;
   readonly currentSessionId: string | null;
-  readonly capabilities: ConversationCapabilities;
+  readonly conversationCapabilities: ConversationCapabilities;
   // optional: absent when the controller type doesn't support them
   runInternalPrompt?(content: TurnContent): Promise<PromptResult>;
   readonly availableCommands?: readonly InternalSessionCommand[];
@@ -185,6 +186,13 @@ interface TurnRun {
 interface TurnContent {
   input?: ClientPrompt;                 // what the backend is told; ACP only, built by the session at turn time
   handlers: PromptHandlers;             // the session's recording handlers: stream, activity, permissions; both backends
+}
+interface TurnExecution {               // one turn's execution: supervision and cancel scoped to it
+  readonly turnId: string;
+  readonly result: Promise<PromptResult>;
+  subscribeOutput(listener: OutputListener): () => void;  // this turn's supervision signals only
+  cancel(): void;                       // cancels this turn; a no-op once it finished in the backend
+  readonly live: boolean;               // false while replaying output held for a turn that already ended
 }
 interface TurnStarted { kind: "turn_started"; turnId: string; cause: TurnCause; sentBySession: boolean }
 type TurnCause = { kind: "messages"; messageIds: readonly string[] } | { kind: "items"; items: readonly unknown[] };
@@ -207,8 +215,20 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
   the same way; the controller never announces an outcome of its own.
 - **`executeTurn(turnId, content)`** runs a reported turn and resolves with its result. The `HarnessController`
   prompts with `content.input` and `content.handlers` (today's `controller.prompt`, unchanged). The native controller
-  ignores `input` (the harness built the context) and drives `handlers` from the harness's events. The supervisor
-  wraps `executeTurn` as it wraps `prompt` today.
+  ignores `input` (the harness built the context) and drives `handlers` from the harness's events.
+- **Supervision and cancel are per turn.** `executeTurn` returns a `TurnExecution` for that turn; the supervisor
+  watches its `subscribeOutput` and cancels through its `cancel`, never the controller-wide ones. This matters for
+  backend-scheduled controllers, where the backend can finish turn B (its output held) and start turn C before the
+  session runs B: supervising B must not see C's activity, and interrupting B must not cancel C. Rules:
+  - a turn's signals reach only its own execution; signals of a turn not yet executed are held with its output;
+  - `cancel` on a turn that already ended in the backend does nothing (its result is known);
+  - while `live` is false (output replayed from the hold) the stall check doesn't apply; it applies from the point
+    the turn is live, if it still is;
+  - `forceStop` stays controller-wide: it stops the backend, and every open execution rejects.
+
+  For the `HarnessController` there is only ever one turn: its `TurnExecution` wraps today's controller-wide
+  `subscribeOutput` and `cancel`, `live` is always true, and nothing changes. The supervisor (`supervisedPrompt`)
+  takes the execution instead of the controller.
 - **A controller holds a reported turn's output until `executeTurn` is called** for it, then delivers it in order to
   that call's handlers. The `HarnessController` never needs this (its turns start inside `executeTurn`'s call
   chain); the fake and the native controller do.
@@ -222,11 +242,13 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
   contract documents, as today's code behaves:
   - **`resumed: true`** confirms the backend reattached an existing context (the provider has its history);
     `false` means a fresh context, including a resume that fell back to fresh.
-  - **A successful start always has a provider session:** `sessionId` is non-empty after `start` resolves (an empty
-    id from an already-running controller is today's edge case and is documented as such).
+  - **A start can succeed without a context.** In PTY mode (`src/controller.ts:574`), and when the connection works
+    but creating the session fails, for example because authentication is needed (line 617), `start` resolves
+    with `{ sessionId: "", resumed: false }` and the connection stays usable (to log in, then start again). An
+    already-running controller with no session returns the same.
   - **Progress:** `initialized` fires once the backend answered its handshake, with its capabilities;
-    `internal_session_acquired` fires when the context exists, before `start` resolves.
-  - **A rejected start** may already have fired `internal_session_acquired`: the session keeps what it learned
+    `internal_session_acquired` fires only when a context actually exists, before `start` resolves.
+  - **A rejected start** keeps whatever progress was reported before it failed; the session keeps what it learned
     (attachment and recovery state rely on it), as today.
 
   Where the session reads `resumed` to decide on seeding from records, it also checks
@@ -305,7 +327,15 @@ Two kinds of support, kept apart:
 
 - **What the controller type supports** is the presence of its optional methods. The compiler forces a check
   (`controller.reconnect?.(…)`), so no flags are needed for them.
-- **What the backend offers** is data, which can change and may be unknown:
+- **What the backend offers** is data, which can change and may be unknown. It is a new member,
+  `conversationCapabilities`; the existing `capabilities` (the raw ACP `Capabilities`) stays on the
+  `HarnessController`, `AgentSession` and `AgentConversation` with its shape unchanged, so
+  `conversation.capabilities.agent.promptCapabilities` keeps working. Inside the library, the readers of
+  `.capabilities.agent` (`src/agent-session.ts:3357` media, `:4516` session listing,
+  `src/agent/adoption/provider-sessions.ts:50`) move to `conversationCapabilities.backend`; the REPL
+  (`src/repl/commands.ts:138`) keeps the ACP getter through `harnessConnection()`. When a native conversation exists
+  (stage 2a) it has no ACP capabilities: the public `capabilities` then becomes `Capabilities | null`, a breaking
+  change made and documented there.
 
 ```ts
 interface ConversationCapabilities {
@@ -333,7 +363,7 @@ session re-reads capabilities after `start`, after a mode switch and after a han
 | `runInternalPrompt` | `HarnessController` | method present | the caller skips the internal prompt (handoff without a summary) |
 | `availableCommands`, `subscribeAvailableCommands` | `HarnessController` | method present | no commands |
 | `currentMode`, `setMode` | `HarnessController` | method present | no mode switch (`degraded` not offered) |
-| `bridge` | `HarnessController` | method present and `currentMode === "degraded"` | `UnsupportedError` |
+| `bridge` | `HarnessController` | method present (the controller chooses: the live PTY in degraded mode, a temporary PTY in normal mode that leaves the ACP session untouched; `src/controller.ts:303`) | absent |
 | `reconnect` | `HarnessController` | method present | recovery paths skip it (gated with continuation) |
 | `listSessions` | `HarnessController` | method present and `backend?.listSessions` | empty list |
 | `authenticate` | `HarnessController` | method present | `UnsupportedError` |
@@ -344,10 +374,10 @@ Paired members are present together or not at all (`currentMode` with `setMode`,
 `subscribeAvailableCommands`); the contract documents each pair.
 
 **Support is not readiness.** A present method says the controller type can do it; whether it can right now
-depends on the state: `authenticate`, `listSessions` and `reconnect` need a connected agent, `bridge` needs degraded
-mode, and `backend` says what the connected agent offers. So:
+depends on the state: `authenticate`, `listSessions` and `reconnect` need a connected agent, and `backend` says what
+the connected agent offers. `bridge` works in both modes. So:
 
-- reading `capabilities` and checking for a method is always safe, before connecting and in PTY mode;
+- reading `conversationCapabilities` and checking for a method is always safe, before connecting and in PTY mode;
 - availability is re-evaluated after `start`, a reconnect, a mode switch and a controller replacement (handoff);
 - a call that isn't possible fails **before** the session opens any metered or durable operation for it;
 - existing ACP errors (`NotConnectedError` and the rest) stay as they are for ACP paths.
@@ -368,7 +398,8 @@ first, so it signals a bug.
 | Handoff targets | `handoff` creates a target controller (around line 2460) | through the factory |
 | Degraded-mode switch | `runSetMode` (line 3218) recreates the controller | capability-gated; `HarnessController` only |
 | Internal prompts | `meteredInternalPrompt` (line ~4087) on `InternalPromptTarget.controller` (line 307) | `runInternalPrompt`, if present |
-| Supervision | `supervisedPrompt` (line 4037) | typed on the interface; wraps `executeTurn` |
+| Supervision | `supervisedPrompt` (line 4037) | takes the turn's `TurnExecution` (its output and cancel) instead of the controller |
+| Capability readers | `.capabilities.agent` at lines 3357, 4516; `src/agent/adoption/provider-sessions.ts:50` | `conversationCapabilities.backend`; the public `capabilities` getter unchanged |
 | Public escape hatch | `get connection(): AgentController` (line 1897) | returns `ConversationController`; `harnessConnection(): HarnessController \| null` added |
 
 ```
@@ -424,6 +455,13 @@ typecheck and 1,096 passing tests in 112 files. Commit after each step with expl
    - a permission request answered through the handler (permission agent);
    - an internal command (`executeInternalSessionCommand`);
    - a provider that fails to start (the prompt rejects, `turn_failed`);
+   - a PTY start (`idle-pty-agent`): `start` resolves with an empty session id and no `internal_session_acquired`;
+   - a connection whose session creation fails because authentication is needed: `start` resolves with an empty
+     session id, the connection stays usable, no `internal_session_acquired` (add a fixture mode under
+     `test/fixtures/` if no agent can do this);
+   - `bridge` from degraded mode and from normal mode (the temporary PTY), at least asserting which path runs and
+     that the ACP session is untouched in normal mode;
+   - `conversation.capabilities.agent.promptCapabilities` read before and after start;
    - a handoff with a summary (managed and Agent-owned only).
 
    Each case captures: the conversation's events (kind, ids, order; the `turn_*`, `message_delivered` and
@@ -447,7 +485,8 @@ continuation and recovery paths except to call the moved code, the A1 snapshot f
    **Gate:** typecheck.
 3. **`AgentController` gains `send`, `subscribeTurns`, `executeTurn` and `abandonTurn`** (its `prompt` stays):
    `send` reports `turn_started` synchronously with `sentBySession: true`; `executeTurn` calls `prompt` with the
-   content's input and handlers; `abandonTurn` clears its bookkeeping, idempotently. **Gate:** suite green.
+   content's input and handlers and returns a `TurnExecution` wrapping today's controller-wide output and cancel
+   (`supervisedPrompt` takes it); `abandonTurn` clears its bookkeeping, idempotently. **Gate:** suite green.
 4. **`AgentSession` drives turns through them:** the session registers the run's state, then `pump` calls `send(run)`
    with the run's message ids; `run-turn.ts` takes a turn context (`{ turnId, cause, messages? }`) instead of the
    queue item, with today's preparation running when `messages` is present; the session
@@ -467,7 +506,9 @@ operations had to change (expected: none).
 
 **Scope:** steps 1–6, on top of A2. Must not touch: ACP behaviour, records, persistence, the A1 snapshot files.
 
-1. **Capabilities:** `capabilities.ts` with `fromAcp`; `UnsupportedError`. **Gate:** typecheck.
+1. **Capabilities:** `capabilities.ts` with `fromAcp`; `UnsupportedError`; `conversationCapabilities` next to the
+   unchanged `capabilities`; the internal `.capabilities.agent` readers moved. **Gate:** typecheck; suite green; the
+   A1 capability case unchanged.
 2. **Rename** `AgentController` to `HarnessController` and `AgentControllerStartEvent` to `ControllerStartEvent`
    across the files listed above; keep both old names as deprecated aliases; `HarnessController` declares
    `implements ConversationController`, with `runInternalPrompt` as its name for the prompt `meteredInternalPrompt`
@@ -497,7 +538,10 @@ operations had to change (expected: none).
    - late output arriving after a force stop is dropped, not recorded on the next turn;
    - finalization that is slow to finish: completion and the next operation both wait for it;
    - `turn_started` reported synchronously inside `send` is not missed;
-   - options available before start (fake only).
+   - options available before start (fake only);
+   - **per-turn supervision** (fake only): the backend finishes turn B (held) and starts turn C before the session
+     runs B; B's supervisor never sees C's signals; cancelling B leaves C running; B replayed from the hold doesn't
+     stall; `forceStop` rejects both executions.
 
    It runs against the fake and against the `HarnessController` with the echo-prompt fixture agent (backend-started
    cases are skipped for it). Changelog completed (`connection` type, renames, aliases, `harnessConnection`, new
