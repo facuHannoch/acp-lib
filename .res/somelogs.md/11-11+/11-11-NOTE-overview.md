@@ -41,13 +41,13 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 
 | Spec | What it settles | Priority |
 | --- | --- | --- |
-| `library/11-11-SPEC-controller-interface.md` | The controller interface `AgentSession` depends on, ACP-only features as capabilities, neutral capabilities | First: offline refactor, prerequisite for every native piece |
-| `library/11-11-SPEC-orchestrator.md` | Orchestrator, pool, worker lifecycle, consumer API, permission forwarding, the way back | Second: offline, testable with fake workers |
-| `library/11-11-SPEC-native-harness-integration.md` | The harness from acp-client's side: why, the `native` adapter, `NativeController`, inbox and native steering, identity as injection, the `http` internal-inference runtime | After the harness foundation |
-| `library/11-11-SPEC-cli.md` | The `acp-client agent` CLI on `Agent` | Last |
+| `library/11-11-SPEC-controller-interface.md` | The turn split and the turn-based controller interface, ACP-only features as capabilities, neutral capabilities | Library 1: an offline refactor, no new behaviour |
+| `library/11-11-SPEC-native-harness-integration.md` | The harness from acp-client's side, in two stages: native conversations, permissions as events (2a); identity, callbacks, internal inference over HTTP (2b) | Library 2 and 3, with harness parts 1 and 2 |
+| `library/11-11-SPEC-orchestrator.md` | Orchestrator, pool, worker lifecycle, consumer API, permission forwarding, the way back, delegation callbacks | Library 4 |
+| `library/11-11-SPEC-cli.md` | The `acp-client agent` CLI on `Agent` | Library 5, last |
 | `harness/11-11-SPEC-harness-design.md` | What the native harness is and why we build it; alternatives; the overall design | Read first |
-| `harness/11-11-SPEC-harness-v1.md` | The first implementation: kernel, contracts, config and policies, tools, model client, context, timeline v1, storage, CLI | With the controller interface |
-| `harness/11-11-SPEC-harness-project.md` | Package layout, the pattern, dependency and contribution rules, testing, build order | Before the first harness commit |
+| `harness/11-11-SPEC-harness-project.md` | Package layout, the pattern, dependency and contribution rules, testing, build order | Harness 1, before the first harness commit |
+| `harness/11-11-SPEC-harness-v1.md` | The first implementation, in two parts: the core, server mode and a test mode (part 1); the actual harness (part 2) | Harness 2 and 3, in parallel with the library line |
 | `harness/11-11-NOTE-memory-findings.md` | Findings on memory: kinds, write and read paths, Letta, digests, what is deferred | Reference |
 | `harness/theory/11-11-NOTE-harness-theory.md` | How harnesses work in general | Reference |
 
@@ -155,7 +155,7 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     its cause (a message, a worker reply, another channel); `prompt()` stays as a shortcut: send, then wait for the
     turn that took the message. For native conversations the harness decides when turns run and acp-client records
     the turns it reports (harness → box); for ACP, each message gives exactly one turn, as today. Inside, `runPrompt`
-    is split into "accept a message" and "run a turn"; this is part of L1. ACP harnesses talking outside a turn, and
+    is split into "accept a message" and "run a turn"; this is the first library spec (the controller interface). ACP harnesses talking outside a turn, and
     ACP v2 (a draft that adopts the same model), are in `library/todos/11-12-TODO-acp-messages-outside-a-turn.md`.
 35. **Messages between channels.** `message_participant` puts the agent's text in another channel without a turn
     (acp-client records it as an appended assistant message on that conversation and emits it); `trigger_response`
@@ -219,8 +219,6 @@ Design questions, each owned by a spec:
 - [ ] agents-core runs on `SessionManager`, not `Agent`: when it moves to `Agent` to get native conversations and
       workers (its own decision).
 
-**Blocked on:** a provider key for live runs (no OpenRouter key; the OpenCode Zen key has expired). Everything up to
-the integration step runs offline.
 
 ## Code map
 
@@ -231,29 +229,48 @@ the integration step runs offline.
 | library | `src/orchestrator/` | pool, workers, busy rules, permissions, delivery, `agent.workers`; the `workers` table in `src/persistence/` |
 | library | `src/native/` | `NativeAdapter`, host, callbacks, `NativeController`, event translation, steering host, inbox delivery, identity runtime |
 | library | `src/internal-inference/runtime/http-runtime.ts` | internal inference over HTTP |
-| harness | `packages/native-harness/` (pending H0) | everything in `harness/11-11-SPEC-harness-project.md`; v1 contents in `harness/11-11-SPEC-harness-v1.md`, v1 code plan |
+| harness | `packages/native-harness/` (pending the repo layout decision) | everything in `harness/11-11-SPEC-harness-project.md`; v1 contents in `harness/11-11-SPEC-harness-v1.md`, v1 code plan |
 
 ## Order of work
 
-Lines of work, with what each needs first. L = library, H = harness, X = cross-cutting.
+Work proceeds **one spec at a time**, from review to done. Each spec is first reviewed on its own several times
+(corrected, improved, checked against the code), then closed with an implementation brief, then handed to an
+implementing agent (about an hour per brief; a large spec is split into several briefs).
 
-| Id | Work | Needs |
-| --- | --- | --- |
-| L1 | Split the turn path (messages in, turns out); the turn-based controller interface; neutral capabilities | nothing (offline) |
-| L2 | Orchestrator and pool, with fake workers | L1 for native workers only |
-| L3 | Permissions: the one permission setting (also for ACP conversations), `permission_requested` and `answerPermission`, forwarding worker requests | L1, L2 |
-| L4 | The delivery port: items pushed onto native channels; out-of-band items with kind and sender for ACP | nothing (offline) |
-| H0 | Repo layout and the harness package | owner decision |
-| H1 | Contracts, conformance skeletons | H0 |
-| H2 | Kernel with the scripted client, in-memory store, golden requests | H1 |
-| H3–H9 | Workstreams: provider client, context pipeline, compaction, tools and MCP client, config and policy engine, timeline v1 and storage | H2 |
-| H10 | Protocol: `harness serve --stdio`, `HarnessClient`, both transports; execution port | H2 |
-| H11 | `harness` CLI (`chat`, `config`, `serve`) | H3, H7, H10 |
-| L5 | `NativeAdapter`, `NativeHarnessHost` (launch, restart, callbacks), `NativeController`, native steering | L1, L4, H2–H5, H10 |
-| L6 | Orchestrator as delegation backend; records as history source; functions | L2, L5 |
-| L7 | Identity injection for ACP conversations; summaries reported to the timeline; deprecate checkpoint-backed identity | L5, H8 |
-| L8 | `http` internal-inference runtime with its own minimal client | nothing (a key for live use) |
-| X1 | Smoke test (duration-parser fixture) and the basic-promise checks | L6, a key |
-| X2 | Evals and the prompt-injection suite | X1 |
-| L9 | CLI on `Agent` | L5 (REPL value exists earlier for ACP-only) |
-| P2 | Phase 2: long-term memory, MCP server and member channels, watches, skills, deferred tools, worker kinds, removal of checkpoint identity | phase 1 |
+**The implementation brief** at the end of each spec:
+
+1. scope, and what the run must not touch;
+2. steps, each with a gate: the tests that must pass and the commands that run them before moving on;
+3. a test plan: new unit tests, conformance suites, regression and characterization tests, end-to-end tests (offline,
+   with the harness's scripted model where a harness is involved), and any live run with its authorization noted;
+4. done criteria, and what to report back (commits, test output, deviations from the spec);
+5. risks, and how to tell a step went wrong.
+
+**The library line, in order:**
+
+1. **Controller interface** (`library/11-11-SPEC-controller-interface.md`): the turn split, the turn-based
+   controller, the `HarnessController` rename, neutral capabilities. A refactor with no new behaviour; its gate is no
+   regressions (the existing suite, plus characterization tests written before the refactor). Likely two or three
+   briefs.
+2. **Integration stage 2a** (`library/11-11-SPEC-native-harness-integration.md`): native conversations end to end
+   against harness part 1, permissions as events and the one permission setting, export and import.
+3. **Integration stage 2b**: identity for ACP conversations, the function and history callbacks, messages between
+   channels, the `http` internal-inference runtime (which can go anywhere). Needs harness part 2.
+4. **Orchestrator** (`library/11-11-SPEC-orchestrator.md`): the pool, the `workers` table, the busy and redirect rules,
+   the way back (native and ACP), permission forwarding, the delegation callbacks, restart.
+5. **CLI on `Agent`** (`library/11-11-SPEC-cli.md`).
+
+**The harness line, in parallel** (once its spec is reviewed; the repo layout decision comes first):
+
+1. **Harness project setup** (`harness/11-11-SPEC-harness-project.md`): the package, tooling for the dependency rules,
+   `AGENTS.md`, `ARCHITECTURE.md`, the decision-record format. Short.
+2. **Harness part 1** (`harness/11-11-SPEC-harness-v1.md`, Two parts): the core, server mode and the test mode.
+   Needed before integration stage 2a.
+3. **Harness part 2**: the actual harness. Needed before integration stage 2b and the orchestrator's end-to-end tests.
+
+**Then:** the smoke test on the duration-parser fixture and the basic-promise checks (a provider key), evals and the
+prompt-injection suite, and phase 2 (long-term memory, the harness's MCP server for members, watches, skills, deferred
+tools, worker kinds, sync and backup, removal of the checkpoint-backed identity).
+
+**Blocked on:** a provider key for live runs (no OpenRouter key; the OpenCode Zen key has expired). Everything else
+runs offline.

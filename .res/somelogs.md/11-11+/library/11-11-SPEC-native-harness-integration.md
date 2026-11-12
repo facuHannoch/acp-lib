@@ -1,7 +1,7 @@
 # Native harness in acp-client
 
 Status: agreed, not started. Written 2026-11-11, grounded in code and updated with process isolation the same day.
-Lines of work L4–L8 in `../11-11-NOTE-overview.md`. The harness seen from the library: what acp-client needs from it
+Implemented in two stages (2a, 2b) alongside the two parts of harness v1; see Stages and the overview. The harness seen from the library: what acp-client needs from it
 and what changes in acp-client. How the harness works inside is `../harness/11-11-SPEC-harness-design.md` and
 `../harness/11-11-SPEC-harness-v1.md`.
 
@@ -349,7 +349,7 @@ What the library provides to the harness, all through its protocol:
 | Where the session lives | `harness.home` (a path in the harness's environment) |
 | The configuration | `harness.config`, when the session is created |
 | Function tools | callback `functions/call` for each name in `functions` |
-| Workers for delegation | callback `delegation/*`, served by the orchestrator |
+| Workers for delegation | callback `delegation/*`, served by the orchestrator (its spec) |
 | ACP transcripts for history tools | callback `history/*` over its records |
 | Sender and policy | on each prompt, chosen by the consumer, never by the end user |
 
@@ -377,11 +377,11 @@ src/native/
   adapter.ts             NativeAdapter, AgentHarnessConfig, validation, AgentAdapter union helpers
   host.ts                NativeHarnessHost: one per Agent = one session; launches `harness serve`, holds the client,
                          restarts on crash, serves callbacks
-  callbacks.ts           functions, delegation (→ orchestrator), history (→ records)
+  callbacks.ts           functions, history (→ records); routes `delegation/*` to the orchestrator (added by its spec)
   native-controller.ts   ConversationController over the client
   translate-events.ts    harness events → the agc update model
   steering-host.ts       native steering: push instead of cancel
-  inbox-delivery.ts      the orchestrator's DeliveryPort: push onto the channel (native), out-of-band item (ACP)
+  inbox-delivery.ts      pushing items onto native channels (the orchestrator's delivery port uses it)
   identity-runtime.ts    harnessIdentityRuntime (AgentIdentityRuntime)
   index.ts
 src/internal-inference/runtime/http-runtime.ts
@@ -398,35 +398,66 @@ src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "nat
   `mcpServers`, `checkpointed`; opaque receipt); the checkpoint coordinator (call `checkpointed`); the permission
   setting replacing `defaultPermission` (`src/agent/config.ts` and where `defaultPermission` is read in
   `src/agent-session.ts`, a replacement, not new code); `permission_requested` and `answerPermission` on conversations
-  (with the L3 work).
+  (stage 2a).
 - **`agent-session.ts` does not grow.** Steering already goes through `SteeringHost`; the controller choice is the
   factory; anything else needed there is extracted first.
 
-## Steps
+## Stages
 
-1. The delivery port: pushing items onto native channels, and out-of-band items with kind and sender for ACP
-   conversations (next-prompt delivery).
-2. `NativeAdapter` and the registry change; the `NativeHarnessHost` with the in-process transport; the
-   `NativeController` passes the controller conformance suite on the harness's scripted client.
-3. The process transport: launch through the launcher, crash and restart, a test with a real `harness serve` process;
-   `harness.home`; `agent.harness.export()` and `import()`.
-4. Native steering behind `nativeSteering`.
-5. Callbacks: functions, delegation backend over the orchestrator, history over records.
-6. The `http` internal-inference runtime.
-7. `harnessIdentityRuntime`: `load`, `update`, `delivered`; the `checkpointed` hook; opaque receipts.
+This spec is implemented in two stages, each against the matching part of harness v1
+(`../harness/11-11-SPEC-harness-v1.md`, Two parts). End-to-end tests run through a real `harness serve` process with
+the harness's scripted model (its test mode), so they need no provider key.
+
+**Stage 2a, with harness part 1: native conversations end to end.**
+
+1. `NativeAdapter`, `AgentHarnessConfig` and the registry change; the `NativeHarnessHost` with the in-process
+   transport; the `NativeController` passes the controller conformance suite on the harness's scripted model.
+2. The process transport: launch through the launcher, crash and restart, a real `harness serve` process in tests;
+   `harness.home`.
+3. Turns the harness starts reach `runTurn`; a prompt resolves with the turn that took its message; native steering
+   behind `nativeSteering`; usage filed by purpose.
+4. The native half of delivery: pushing items onto channels (the port the orchestrator will use).
+5. Permissions as events: `permission_requested`, `answerPermission`, `answersPermissions`, the timeout; the one
+   permission setting replacing `defaultPermission` for ACP conversations; the harness's `permission/request` routed
+   to the conversation.
+6. `setTitle`, `setPolicy`, per-channel settings through `setConfig`.
+7. `agent.harness.export()` and `import()`.
+
+**Stage 2b, with harness part 2: what needs the full harness.**
+
+8. Identity for ACP conversations: `harnessIdentityRuntime` (`load`, `update`, `delivered` over `member/*` and
+   `report`), the `checkpointed` hook, opaque receipts; the checkpoint-backed runtime wrapped as a deprecated source.
+9. Callbacks: functions (`functions/call`) and history (`history/*` over records). Delegation callbacks belong to the
+   orchestrator spec.
+10. Messages placed on a channel outside a turn (`message_participant`) recorded on the target conversation and
+    emitted.
+11. The `http` internal-inference runtime with its own minimal client (independent of the harness; it can be done at
+    any point).
 
 ## Acceptance
 
-- A native conversation runs end to end against `harness serve` started through a launcher (locally, and in one
-  container test): prompt, tool loop, steer injected without cancel, interrupt, usage in metering, records written.
-- Killing the harness process ends running turns with an error and the next prompt works after the restart.
-- An exported session imported into a fresh home is the same entity: its timeline and shared state come back.
-- Two native conversations of one `Agent` are channels of one session: a fact told in one is known in the other.
-- A native conversation delegates to a fake worker and wakes on its reply, also after an acp-client restart.
+**Stage 2a:**
+
+- A native conversation runs end to end against `harness serve` (scripted model) started through a launcher: prompt,
+  steer injected without cancel, interrupt, usage in metering, records written; once also in a container.
+- A turn the harness starts on its own (an item pushed onto the channel) is recorded and emitted on the conversation's
+  turn events with its cause.
+- Killing the harness process ends running turns with an error, and the next prompt works after the restart.
+- A permission `ask` from the harness reaches the consumer as `permission_requested` and `answerPermission` resolves
+  it; with no answerer, `default` applies at once; an ACP conversation's permissions follow the same setting.
+- Two native conversations of one `Agent` are channels of one session.
+- An exported session imported into a fresh home is the same entity.
+- With no native adapter configured, behaviour is unchanged and the existing suite passes.
+
+**Stage 2b:**
+
+- A fact told in one native conversation is known in another (timeline delivery).
 - An ACP conversation with a harness configured receives a preamble from `load`, and its position advances only after
   `delivered`.
+- A `function` tool runs through the callback; the history tools read acp-client's records.
+- `message_participant` from one native conversation appears on the other conversation as an appended assistant
+  message and on its events.
 - Internal inference runs over `http` with a key, and over the disposable session without one.
-- With no native adapter configured, behaviour is unchanged and the existing suite passes.
 
 ## Open
 

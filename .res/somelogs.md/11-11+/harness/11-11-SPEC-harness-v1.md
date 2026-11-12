@@ -1,6 +1,6 @@
 # Native harness v1
 
-Status: agreed, not started. Written 2026-11-11. What the first version builds (H1–H10 in `../11-11-NOTE-overview.md`).
+Status: agreed, not started. Written 2026-11-11. What the first version builds, in two parts (harness line in `../11-11-NOTE-overview.md`, Order of work).
 The why is `11-11-SPEC-harness-design.md`; folders, rules and build order are `11-11-SPEC-harness-project.md`.
 
 ## Scope
@@ -15,6 +15,36 @@ port, because the harness must run isolated in the agent's environment from v1; 
 Out (phase 2): long-term memory and consolidation; digests at several granularities; the MCP server that lets
 members read and write the identity through tools, and unmanaged members; native subagents (not in the first or second pass); watches (`todos/11-11-TODO-watches.md`); reminders; skills; deferred tool loading; file and shell capabilities;
 model profiles.
+
+## Two parts
+
+v1 is built in two parts, each a self-contained implementation run. Part 1 is what acp-client's integration stage 2a
+needs; part 2 is the rest of v1 and unblocks stage 2b.
+
+**Part 1: the core and a test mode.**
+
+- All of `contracts/`, reviewed as a whole (part 2 implements against the same contracts).
+- The kernel: sessions (entity, lock), channels (actor, inbox, reset, settings), the turn machine and runner, turn
+  events with the items each turn took.
+- A minimal context pipeline: the system prompt verbatim, history, inbox items rendered as tagged blocks, sender tags,
+  cache order. No compaction yet (a call over the window fails with a typed error).
+- Config: schema, loading and validation for the part-1 keys (model, system, policies with `permissions` only,
+  `defaultPolicy`, limits).
+- Policies, minimal: the three layers resolved per item and the one permission setting with its gate (`ask` raises
+  `permission_requested` / `permission/request`). Capabilities (`memory`, `messaging`, `delegation`) come in part 2.
+- The OpenAI-compatible model client, and the **test mode**: a scripted model selectable at launch
+  (`"model": { "protocol": "scripted", "script": "<file>" }`, or `harness serve --model scripted:<file>`) that replays
+  answers, tool calls included, and records the requests it received; plus one built-in test tool (`echo`) available
+  only in test mode, so permission and tool paths can be exercised without real tools.
+- Storage: the session's SQLite (session record, config, channel inboxes) and whole-session export and import.
+- Usage events with their purpose (the ledger comes in part 2).
+- Server mode: the protocol, `HarnessClient`, the stdio and in-process transports.
+- CLI: `harness new`, `harness chat`, `harness serve`.
+
+**Part 2: the actual harness.** Policy capabilities and most-restrictive resolution; configured tools (`http`,
+`command`, `function` via callbacks), the MCP client, the harness's own tools (delegation over callbacks, messaging,
+state, timeline); the timeline, positions, digests, shared state and managed member channels; compaction; history
+sources; the usage ledger; the execution port; the rest of the CLI (`sessions`, `config`, `usage`).
 
 ## Sessions and channels
 
@@ -430,7 +460,8 @@ How v1 fills the layout of `11-11-SPEC-harness-project.md`. Folders not listed a
 | CLI | `cli/{new,sessions,chat,config,usage,serve}.ts` | the commands above | TUI |
 | Testing | `testing/{scripted-client,golden}.ts`, `testing/conformance/*` | per contract | — |
 
-**Build order for v1,** each step with its check:
+**Build order for v1,** each step with its check. Steps 1–3, 5 and the part-1 subset of 4 and 6 are part 1; the rest
+is part 2:
 
 1. `contracts/` reviewed as a whole. Check: types compile; no imports.
 2. Conformance skeletons, scripted client, golden harness. Check: suites run (empty implementations fail as expected).

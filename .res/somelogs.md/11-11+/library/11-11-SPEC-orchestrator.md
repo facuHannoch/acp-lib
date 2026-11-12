@@ -1,8 +1,10 @@
 # Orchestrator and worker pool
 
-Status: agreed, not started. Written 2026-11-11; model restated and grounded in code 2026-11-12. Lines of work L2 and
-L3 in `../11-11-NOTE-overview.md`. Buildable first: tested through the consumer API with real or fake workers, with
-no harness and no provider key.
+Status: agreed, not started. Written 2026-11-11; model restated and grounded in code 2026-11-12. Third in the order
+(`../11-11-NOTE-overview.md`): after the controller interface and integration stage 2a, whose turn events, native
+delivery and permission events it uses. Its core is still tested through the consumer API with fake workers, with
+no harness and no provider key; with 2a in place, the way back is also tested end to end against native channels
+(the harness's scripted model).
 
 ## Problem
 
@@ -68,6 +70,16 @@ Nothing about workers goes into the system prompt; the tool descriptions say how
 Nothing imports the orchestrator except the `Agent` (which constructs it when `orchestrator` is configured) and
 `src/native/` (which serves the harness's delegation callbacks with it). An `Agent` with no orchestrator configured
 behaves as today.
+
+**What this spec owns beyond the pool:**
+
+- **The delegation callbacks.** The harness's `delegate`, `check`, `list` and `stop` tools arrive as `delegation/*`
+  requests over the protocol, each with the channel, the sender, the turn's `DelegationPolicy` and its
+  `WorkerPermissions`. `src/native/callbacks.ts` (from the integration spec) routes them to the orchestrator; this spec
+  adds that route and maps the results back (`sent`, `steered`, `busy`, `no_worker_free`, statuses).
+- **The delivery port's ACP half.** For an ACP conversation, items become out-of-band messages delivered with its
+  next prompt, with a kind and a sender in their metadata (`src/out-of-band-messages.ts`). The native half (pushing
+  onto a channel) comes from integration stage 2a.
 
 ## Roles
 
@@ -325,12 +337,15 @@ src/persistence/    the workers table: a schema migration and a small repository
 
 ## Steps
 
+0. The delegation route: `delegation/*` callbacks to the orchestrator, results mapped back (tested with a fake
+   harness client first, then with `harness serve` once harness part 2 has the delegation tools).
 1. The `workers` table and repository; `open`, `send` (idle), `check`, `list` over fake workers; slots and LRU
    eviction; consumer API and events.
 2. Busy rules: steer from the conversation that gave the running work, the `busy` answer, `redirect` with the
    redirected item.
 3. Policy checks (`use`, `scope`, `redirect`, `maxOpen`) and the worker depth limit.
-4. Delivery port and the way back (reply, failure, interrupted), with a test port.
+4. Delivery port and the way back (reply, failure, interrupted): the native half from integration 2a, the ACP half
+   here (out-of-band items with kind and sender); tested with a test port, then against a native channel.
 5. Permission forwarding: levels, deadline, stripping allow-always.
 6. `stop`, `drop`, restart rebuild, retention.
 7. One run with real throwaway ACP workers on a cheap model: a reply reaches the delegating conversation, a forwarded

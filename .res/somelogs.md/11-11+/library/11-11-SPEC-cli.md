@@ -1,6 +1,6 @@
 # CLI on `Agent`
 
-Status: agreed, lowest priority (L9 in `../11-11-NOTE-overview.md`). Written 2026-11-11.
+Status: agreed, lowest priority (library line, last, in `../11-11-NOTE-overview.md`). Written 2026-11-11.
 
 ## Problem
 

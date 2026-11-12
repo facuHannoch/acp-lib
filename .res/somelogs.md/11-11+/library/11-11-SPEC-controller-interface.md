@@ -1,6 +1,6 @@
 # Controller interface: what a conversation needs from its backend
 
-Status: agreed, not started. Written 2026-11-11. First line of work (L1 in `../11-11-NOTE-overview.md`): an offline
+Status: agreed, not started. Written 2026-11-11. First in the library line (`../11-11-NOTE-overview.md`, Order of work): an offline
 refactor that every native piece depends on. Carries over the "provider-session interface" prerequisite of
 `../../9-22+/10-17-NOTE-model-call-controller.md` and the 2026-11-09 review (counts below are from that review, on
 `beta` at 0.12.1).
