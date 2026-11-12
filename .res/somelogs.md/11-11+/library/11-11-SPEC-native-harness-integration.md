@@ -358,23 +358,11 @@ is a real failure, not a minor one.
 | A persistence failure | waits for nothing: surfaced and recorded as far as possible |
 | A withdraw through the harness | the harness's answer, with a timeout; on timeout the message counts as taken |
 
-### Robustness: refined by an end-to-end stress test
+### Robustness
 
-Errors around persistence and message delivery exist today and will exist here. The model above is a decent first
-version; it is made robust by an extensive end-to-end test, run against a real `harness serve` (scripted model) and
-used to refine the model rather than only to check it:
-
-- many messages back and forth on several native conversations of one `Agent` at once, queued and steered;
-- interrupts mid-turn and mid-tool, withdraws racing the harness taking a message;
-- the harness process killed at random points (mid-turn, mid-permission, during start), and restarted;
-- the connection lost and restored; a slow or failing persistence backend; disk-full style write failures;
-- holds and their lease expiry; idle stop racing new messages; config and policy changes while stopped;
-- invariants checked after every run: every prompt settles exactly once; no conversation stays busy with nothing
-  running; no channel stays held; records and the harness's context agree except where a surfaced error says why;
-  usage is filed once per model call.
-
-Each failure found becomes a scripted scenario first, then a fix, and where it shows a gap in the model, a change to
-this spec.
+Errors around persistence and message delivery exist today and will exist here. The model above is a first version,
+made robust afterwards by an extensive end-to-end stress test across the library and the harness, in its own spec:
+`../11-12-SPEC-end-to-end-robustness.md`, run once everything is built.
 
 ### Permissions
 
@@ -647,7 +635,6 @@ the harness's scripted model (its test mode), so they need no provider key.
 - Channel changes: the `harness_pending` flag, coalesced changes sent at once or inside the start call, deletes and
   resets while stopped.
 - Holds as leases; persistence failures surfaced, never held; the bounds in Nothing waits forever.
-- The end-to-end stress test, and the spec changes it leads to.
 - Configuration known before start: stored config and overrides, `describe` (with policy names), channel settings
   stored per conversation; `agent.harness.config()`, `updateConfig`, `resetConfig`.
 - Turns the harness starts reach `runTurn`, also for conversations not loaded; `turn_took` extends a cause; steer
@@ -693,7 +680,7 @@ the harness's scripted model (its test mode), so they need no provider key.
   starts no container.
 - Importing into a home that already has the session fails.
 - `isBusy` and the queue behave as for ACP: busy only while an operation runs.
-- No wait in the stress test exceeds its bound in Nothing waits forever; a hold whose holder disappears expires.
+- A hold whose holder disappears expires; a start that hangs fails after its timeout.
 - A turn the harness starts on its own (an item pushed onto the channel) is recorded and emitted on the conversation's
   turn events with its cause.
 - Killing the harness process ends running turns with an error, and the next prompt works after the restart.

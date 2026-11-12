@@ -45,6 +45,7 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 | `library/11-11-SPEC-native-harness-integration.md` | The harness from acp-client's side, in two stages: native conversations, permissions as events (2a); identity, callbacks, internal inference over HTTP (2b) | Library 2 and 3, with harness parts 1 and 2 |
 | `library/11-11-SPEC-orchestrator.md` | Orchestrator, pool, worker lifecycle, consumer API, permission forwarding, the way back, delegation callbacks | Library 4 |
 | `library/11-11-SPEC-cli.md` | The `acp-client agent` CLI on `Agent` | Library 5, last |
+| `11-12-SPEC-end-to-end-robustness.md` | A stress test across the library and the harness, used to refine the model (messages, interrupts, crashes, persistence failures, holds, changes while stopped) | After everything that builds is done |
 | `harness/11-11-SPEC-harness-design.md` | What the native harness is and why we build it; alternatives; the overall design | Read first |
 | `harness/11-11-SPEC-harness-project.md` | Package layout, the pattern, dependency and contribution rules, testing, build order | Harness 1, before the first harness commit |
 | `harness/11-11-SPEC-harness-v1.md` | The first implementation, in two parts: the core, server mode and a test mode (part 1); the actual harness (part 2) | Harness 2 and 3, in parallel with the library line |
@@ -283,6 +284,9 @@ implementing agent (about an hour per brief; a large spec is split into several 
 
 **After the four main specs:** `billing_required` for native conversations
 (`library/todos/11-12-TODO-billing-required-native.md`).
+
+**Once everything is built:** the end-to-end robustness stress test (`11-12-SPEC-end-to-end-robustness.md`), whose
+findings refine the specs.
 
 **Then:** the smoke test on the duration-parser fixture and the basic-promise checks (a provider key), evals and the
 prompt-injection suite, and phase 2 (long-term memory, the harness's MCP server for members, watches, skills, deferred
