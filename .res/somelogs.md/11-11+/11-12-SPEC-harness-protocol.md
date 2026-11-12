@@ -6,6 +6,38 @@ parallel: the harness implements it (`harness/11-11-SPEC-harness-v1.md`), acp-cl
 implements it first and swaps in a real `harness serve` last (`library/11-11-SPEC-native-harness-integration.md`).
 It collects what those two specs say about the protocol; where they disagree, this spec wins and they are corrected.
 
+**Being designed with the owner, top-down:** decisions (below), then purpose, priorities and non-goals, then the main
+scenarios written as step-by-step sequences, then a failure walk-through of each. The message tables further down are
+a first draft and will be rewritten from the scenarios.
+
+## Decisions
+
+1. **Our own protocol, shaped like ACP.** ACP is the shared protocol for driving coding harnesses (Codex, Claude
+   through its adapter, Gemini CLI, OpenCode, Grok), but it is built on "one prompt in, one turn out": the agent
+   can't start a turn, a session takes one prompt at a time (so steering means cancel and resend), and it has no
+   items other than user prompts, no policy per message or channel, no holds, members or our callbacks. About two
+   thirds of what we need would live in extensions no other ACP client understands, while we'd carry ACP's
+   constraints and its schedule. So the protocol is ours, but it borrows ACP's conventions wherever the meaning is
+   the same: JSON-RPC 2.0 with one message per line, update events shaped like `session/update`, permission requests
+   shaped like `session/request_permission`. Later, an optional second mode (`harness serve --acp`) lets any ACP
+   client use the harness in a reduced form (prompt and turn only). When ACP v2 (a draft that adopts messages in,
+   turns out) is stable, we revisit. MCP (tools) and A2A (agents talking to agents, remote, task-based) don't fit;
+   A2A may matter later for outside agents joining as participants.
+2. **The host subscribes to what it wants.** ACP sends a client everything (every chunk, tool update, thought),
+   whether it wants it or not. Here the host subscribes per channel (with a connection default) to classes of
+   events, with levels: assistant text `stream`, `stream` coalesced, or `final` only; tool calls `none`, `summary`
+   or `full`; reasoning `none`, `summary` or `full`; the model-call log on or off. Always on, whatever the
+   subscription: usage (metering needs it; per call or per turn), turn boundaries, permission requests, and a small
+   periodic `progress` signal on every running turn, so stall detection works even when no text streams.
+   Subscriptions can change mid-session. acp-client subscribes to the union of what it persists and what its
+   consumer asked for, so "chats only" persistence with a non-streaming consumer means the extra traffic is never
+   sent, instead of being sent and discarded.
+3. **Channels and participants are first-class.** ACP has a session with one implicit user. Here channels are real
+   objects (state, events, the participants on them) and participants are a registry per session (id, kind, label),
+   which the host maintains; items reference their sender by id, so the agent sees who's who across channels. Small
+   in v1 (the registry, references, labels); designed so group channels, per-participant defaults, addressing a
+   person rather than a channel, and outside agents as participants come later without changing its shape.
+
 ## Principles
 
 - **The harness's public API, made serializable.** Every call takes and returns JSON-shaped data; the same calls
