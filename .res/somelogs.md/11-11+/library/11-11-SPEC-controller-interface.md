@@ -1,6 +1,6 @@
 # Controller interface: what a conversation needs from its backend
 
-Status: agreed, not started; reviews 1–7 done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
+Status: ready for implementation; reviews 1–7 and a final review done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
 (`../11-11-NOTE-overview.md`, Order of work). A refactor with **no new behaviour**: every native piece depends on it,
 and its gate is that nothing breaks. Carries over the "provider-session interface" prerequisite of
 `../../9-22+/10-17-NOTE-model-call-controller.md` and the 2026-11-09 review.
@@ -264,7 +264,7 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
     (attachment and recovery state rely on it), as today.
 
   Where the session reads `resumed` to decide on seeding from records, it also checks
-  `capabilities.backend?.loadSession`. For native (later): `sessionId` is the harness session id, and `resumed`
+  `conversationCapabilities.backend?.loadSession`. For native (later): `sessionId` is the harness session id, and `resumed`
   means the channel already had a context. **Reconnecting the shared harness process is not resuming a
   conversation:** the native controller maps them separately.
 - **Settings may be known before start.** `configOptions` may be non-empty before `start` and change after it. For
@@ -342,7 +342,10 @@ Two kinds of support, kept apart:
 - **What the backend offers** is data, which can change and may be unknown. It is a new member,
   `conversationCapabilities`; the existing `capabilities` (the raw ACP `Capabilities`) stays on the
   `HarnessController`, `AgentSession` and `AgentConversation` with its shape unchanged, so
-  `conversation.capabilities.agent.promptCapabilities` keeps working. Inside the library, the readers of
+  `conversation.capabilities.agent.promptCapabilities` keeps working. `AgentSession.capabilities` delegates to the
+  `HarnessController`'s getter through `harnessConnection()`, so it returns the same value and throws in the same
+  cases as today (before the agent connects, and in PTY mode: `requireAcp()`, `src/controller.ts:207`). Inside the
+  library, the readers of
   `.capabilities.agent` (`src/agent-session.ts:3357` media, `:4516` session listing,
   `src/agent/adoption/provider-sessions.ts:50`) move to `conversationCapabilities.backend`; the REPL
   (`src/repl/commands.ts:138`) keeps the ACP getter through `harnessConnection()`. When a native conversation exists
@@ -404,11 +407,11 @@ first, so it signals a bug.
 | Field | `private controller: AgentController` (line 491) | typed `ConversationController` |
 | Startup | `controller.start` / `startFresh` (lines 1093, 1126, 1164, 1235) | `StartResult` and `ControllerStartEvent`; unchanged shapes |
 | Creation | `createController` (line 733) | through `factory.ts`; only `Adapter` → `HarnessController` exists in this spec |
-| Binding | `bindController` (line 742) | typed on the interface; commands only with the capability; subscribes to turn events |
+| Binding | `bindController` (line 742) | typed on the interface; commands only if `subscribeAvailableCommands` is present; subscribes to turn events |
 | Turn dispatch | `pump`'s prompt branch (line 2253) | calls `controller.send(run)`; the turn runs from `turn_started`; reported turns not sent by the session become queue items |
 | Turn execution | `runPrompt` (line 3337) → `controller.prompt` | moved to `run-turn.ts`; runs `controller.prepareTurn(...)` under the supervisor |
 | Handoff targets | `handoff` creates a target controller (around line 2460) | through the factory |
-| Degraded-mode switch | `runSetMode` (line 3218) recreates the controller | capability-gated; `HarnessController` only |
+| Degraded-mode switch | `runSetMode` (line 3218) recreates the controller | only if `setMode` is present (`HarnessController`) |
 | Internal prompts | `meteredInternalPrompt` (line ~4087) on `InternalPromptTarget.controller` (line 307) | `prepareInternalPrompt`, if present, under the same supervisor with its own limits |
 | Supervision | `supervisedPrompt` (line 4037) | takes a `SupervisedProvider` (a prepared turn or internal prompt) instead of building one from the controller; `OperationSupervisor` unchanged |
 | Capability readers | `.capabilities.agent` at lines 3357, 4516; `src/agent/adoption/provider-sessions.ts:50` | `conversationCapabilities.backend`; the public `capabilities` getter unchanged |
@@ -416,7 +419,7 @@ first, so it signals a bug.
 
 ```
 src/conversation-controller/
-  contracts.ts       ConversationController, TurnRun, TurnContent, TurnStarted, TurnCause, StartResult; guarantees
+  contracts.ts       ConversationController, TurnRun, TurnContent, PreparedTurn, TurnStarted, TurnCause, StartResult
   capabilities.ts    ConversationCapabilities, BackendCapabilities; fromAcp()
   factory.ts         adapter → controller
   index.ts
@@ -425,6 +428,7 @@ src/conversation-turns/
   context.ts         the narrow context object run-turn receives from AgentSession
   index.ts
 src/controller.ts    AgentController → HarnessController, implements ConversationController; alias export
+src/operations/contracts.ts  SupervisedProvider, moved here from supervisor.ts (re-exported there)
 src/errors.ts        UnsupportedError
 src/index.ts         exports the new types, HarnessController, the aliases
 test/conversation-controller/
@@ -443,7 +447,8 @@ CHANGELOG-controller-interface.md
 
 ## Implementation briefs
 
-Three briefs, each about one agent run. Gates use `bun run typecheck` and `bun test`; the baseline is a clean
+Four briefs, each about one agent run. Line numbers are as of the baseline (`beta`, 0.12.1); after A2 moves code,
+find places by name. Gates use `bun run typecheck` and `bun test`; the baseline is a clean
 typecheck and 1,096 passing tests in 112 files. Commit after each step with explicit paths
 (`git commit -- <paths>`), never `git add -A`. No live harness runs are needed.
 
@@ -454,27 +459,33 @@ typecheck and 1,096 passing tests in 112 files. Commit after each step with expl
 1. **`test/conversation-turns/normalize.ts`:** turns a captured run into a stable value. Replace UUIDs, minted ids
    and timestamps with placeholders numbered by first appearance (`<id:1>`, `<ts>`), keeping equal ids equal so
    relations stay visible; drop durations and process ids.
-2. **`test/conversation-turns/characterization.test.ts`:** for each persistence mode, with the set-ups the existing
-   tests use (Agent-owned: `test/agent-conversation-*.test.ts`; managed: `test/session-manager-*.test.ts`; detached:
-   `test/agent-session-*.test.ts`) and the fixture agents, these cases:
+2. **`test/conversation-turns/characterization.test.ts`,** with the set-ups the existing tests use (Agent-owned:
+   `test/agent-conversation-*.test.ts`; managed: `test/session-manager-*.test.ts`; detached:
+   `test/agent-session-*.test.ts`) and the fixture agents. Cases that write records run in **all three modes**, since
+   records are where the modes differ; the others run **once**, in an Agent-owned conversation unless noted. The
+   first group, in all three modes:
    - a plain prompt (echo-prompt agent);
    - a second prompt queued behind a running one;
    - two steer messages combined into one run (steer agent);
-   - a queued message withdrawn, its promise awaited (cancelled result);
-   - an interrupt that drops queued messages, their promises awaited;
    - an interrupt of the running turn;
    - a stalled prompt (stalling-prompt agent, a short stale policy);
    - a permission request answered through the handler (permission agent);
    - an internal command (`executeInternalSessionCommand`);
+   - a handoff with a summary (managed and Agent-owned only).
+
+   Once each:
+   - a queued message withdrawn, its promise awaited (cancelled result);
+   - an interrupt that drops queued messages, their promises awaited;
    - a provider that fails to start (the prompt rejects, `turn_failed`);
    - a PTY start (`idle-pty-agent`): `start` resolves with an empty session id and no `internal_session_acquired`;
    - a connection whose session creation fails because authentication is needed: `start` resolves with an empty
      session id, the connection stays usable, no `internal_session_acquired` (add a fixture mode under
      `test/fixtures/` if no agent can do this);
    - `bridge` from degraded mode and from normal mode (the temporary PTY), at least asserting which path runs and
-     that the ACP session is untouched in normal mode;
-   - `conversation.capabilities.agent.promptCapabilities` read before and after start;
-   - a handoff with a summary (managed and Agent-owned only);
+     that the ACP session is untouched in normal mode; if driving a terminal isn't possible in tests, assert the
+     path chosen and report the limit;
+   - `conversation.capabilities.agent.promptCapabilities` read before and after start (today it throws before
+     the agent connects);
    - an internal prompt that stalls (a handoff summary under a short `internal_inference` limit) and one cancelled
      by force: metering recorded, the cancel escalation as today, and no `turn_*` events;
    - a permission request or tool start sent by the agent the instant the prompt reaches it: the operation's stage
@@ -488,7 +499,8 @@ typecheck and 1,096 passing tests in 112 files. Commit after each step with expl
 3. **Self-check:** run the file three times; the snapshots must not change between runs.
 
 **Gate:** typecheck clean; full suite green (1,096 + the new cases); three runs identical.
-**Done:** report the cases per mode, any case that couldn't be written in a mode and why, and the commit.
+**Done:** report the cases per mode, any case that couldn't be written in a mode and why, and the commit. If the
+whole set doesn't fit one run, commit the all-modes group first (it guards A2), then the rest.
 
 ### Brief A2: the turn path through `send`, `prepareTurn` and `abandonTurn`
 
@@ -519,9 +531,9 @@ continuation and recovery paths except to call the moved code, the A1 snapshot f
 **Done:** report the commits, test count and time, the `agent-session.ts` line count, and any place the order of
 operations had to change (expected: none).
 
-### Brief B: capabilities, the rename, turns the backend starts, the conformance suite
+### Brief B1: capabilities, the rename, the session on the interface
 
-**Scope:** steps 1–6, on top of A2. Must not touch: ACP behaviour, records, persistence, the A1 snapshot files.
+**Scope:** steps 1–4, on top of A2. Must not touch: ACP behaviour, records, persistence, the A1 snapshot files.
 
 1. **Capabilities:** `capabilities.ts` with `fromAcp`; `UnsupportedError`; `conversationCapabilities` next to the
    unchanged `capabilities`; the internal `.capabilities.agent` readers moved. **Gate:** typecheck; suite green; the
@@ -535,6 +547,14 @@ operations had to change (expected: none).
    **Gate:** suite green; snapshots unchanged; no `HarnessController` type in `agent-session.ts` or
    `src/conversation-turns/` outside the factory and `harnessConnection`.
 4. **Factory:** `createController` and handoff targets through `factory.ts`. **Gate:** suite green.
+
+**Done:** report the commits, test count and time, `agent-session.ts` line count, and every guard added with the
+member it guards.
+
+### Brief B2: turns the backend starts and the conformance suite
+
+**Scope:** steps 5–6, on top of B1. Must not touch: ACP behaviour, records, persistence, the A1 snapshot files.
+
 5. **Turns the backend starts:** a reported `turn_started` with `sentBySession: false` becomes a queue item and runs
    in order, through `runTurn` with no `messages`: no user record, the session's recording handlers, supervision and
    metering attached to that turn. **Gate:** suite green (no ACP path reaches it).
@@ -562,14 +582,13 @@ operations had to change (expected: none).
    - options available before start (fake only);
    - **per-turn supervision** (fake only): the backend finishes turn B (held) and starts turn C before the session
      runs B; B's supervisor never sees C's signals; cancelling B leaves C running; B replayed from the hold doesn't
-     stall; `forceStop` rejects both executions.
+     stall; `forceStop` rejects both prepared turns.
 
-   It runs against the fake and against the `HarnessController` with the echo-prompt fixture agent (backend-started
-   cases are skipped for it). Changelog completed (`connection` type, renames, aliases, `harnessConnection`, new
+   It runs against the fake and against the `HarnessController` with the echo-prompt fixture agent in an
+   Agent-owned conversation (backend-started and fake-only cases are skipped for it). Changelog completed (`connection` type, renames, aliases, `harnessConnection`, new
    types). **Gate:** both pass; suite green.
 
-**Done:** report the commits, test count and time, `agent-session.ts` line count, and every guard added with the
-member it guards.
+**Done:** report the commits, test count and time, and each conformance case with the controllers it ran on.
 
 ## Acceptance
 
@@ -578,8 +597,8 @@ member it guards.
 - The conformance suite passes on the core-only fake and on the `HarnessController`, including a turn the fake
   starts on its own. Passing it shows the session handles backend-started turns; it does not show that native policy
   is enforced (Appendix A, Limitations).
-- `agent-session.ts` is shorter than 5,022 lines; no ACP type is used in it outside guarded paths, the factory and
-  `harnessConnection`.
+- `agent-session.ts` is shorter than 5,022 lines; no ACP type is used in it outside guarded paths, the factory,
+  `harnessConnection` and the public `capabilities` getter (kept for compatibility).
 - `CHANGELOG-controller-interface.md` lists every public change.
 
 ## Risks
