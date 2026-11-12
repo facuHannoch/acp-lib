@@ -75,6 +75,8 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     leaseToken: string;
     attempt: InternalInferenceAttemptRecord;
     metering: InternalInferenceMeteringOperation | null;
+    /** Set by `execute`; cleared there, or by `close` when it fences an execution that never ends. */
+    heartbeat?: ReturnType<typeof setInterval>;
   }>();
   private readonly fenced = new Set<InternalInferenceId>();
   private readonly pollIntervalMs: number;
@@ -165,6 +167,9 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     }
     for (const [id, execution] of this.active) {
       this.fenced.add(id);
+      // A fenced execution may never reach its own `finally` (a runtime that ignores abort), so
+      // its heartbeat must stop here: persistence closes after this and a later beat would fail.
+      if (execution.heartbeat) clearInterval(execution.heartbeat);
       execution.metering?.settled();
       const canRetry = execution.attempt.attemptNumber < this.config.settings.retry.maxAttempts;
       await this.config.repository.fail({
@@ -238,6 +243,10 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
     let meteringRecord: OperationMeteringRecord | null = null;
     let writes: import("../contracts.ts").ConversationWritePolicy | undefined;
     const heartbeat = setInterval(() => {
+      if (this.fenced.has(attempt.internalInferenceId)) {
+        clearInterval(heartbeat);
+        return;
+      }
       void this.config.repository.heartbeat(
         attempt.internalInferenceId,
         this.workerId,
@@ -245,6 +254,8 @@ export class DefaultInternalInferenceManager implements InternalInferenceManager
         this.config.settings.leaseDurationMs,
       );
     }, this.config.settings.heartbeatIntervalMs);
+    const active = this.active.get(attempt.internalInferenceId);
+    if (active) active.heartbeat = heartbeat;
     try {
       const strategy = this.registry.require(
         attempt.purpose,
