@@ -186,6 +186,15 @@ asks the harness for permission to run one.
 - Turns the harness starts carry no prompt handler, so the conversation needs a standing permission handler (open
   item 4 of the model review).
 
+### Messages from another channel
+
+When the agent, in one channel, uses `message_participant` on another, the harness reports a message on the target
+channel outside any turn. acp-client records it on that conversation as an assistant message appended without a turn
+(the existing shape of `appendAssistantMessage`, origin `out_of_band`), marked with the channel it came from, and emits
+it on that conversation's events so the consumer shows it to that channel's user. `trigger_response` needs nothing
+new: the target channel takes a turn of its own, reported like any harness-started turn. In v1 only native channels
+of the same session are targets; ACP conversations can become targets as members in phase 2.
+
 ## Two logs of one native conversation
 
 The harness keeps the context the model sees, in its store and format. The library keeps its records as an

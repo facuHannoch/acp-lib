@@ -152,6 +152,12 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     the turns it reports (harness → box); for ACP, each message gives exactly one turn, as today. Inside, `runPrompt`
     is split into "accept a message" and "run a turn"; this is part of L1. ACP harnesses talking outside a turn, and
     ACP v2 (a draft that adopts the same model), are in `library/todos/11-12-TODO-acp-messages-outside-a-turn.md`.
+35. **Messages between channels.** `message_participant` puts the agent's text in another channel without a turn
+    (acp-client records it as an appended assistant message on that conversation and emits it); `trigger_response`
+    makes the other channel take its own turn. Targets are channels of the same session; how the agent addresses
+    them (titles, handles) is settled after real use. Code guarantees actions (who may message whom, what tools run),
+    not the confidentiality of what the agent writes (`harness/todos/11-12-TODO-information-confidentiality.md`).
+    Tool names are provisional.
 
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations

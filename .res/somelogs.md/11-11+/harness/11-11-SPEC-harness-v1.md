@@ -224,9 +224,16 @@ only what JSON can't hold: function handlers and backends.
     you asked in our other chat…") or call again with `redirect: true`, which the policy gates.
   - `check(to)`, `list()`, `stop(to)`. The rules live in the backend (the library's orchestrator,
     `../library/11-11-SPEC-orchestrator.md`); the tools only describe and call.
-- **Messaging tools:** `message_participant(to[], text)` appends a message to each target conversation with no model
-  call; `trigger_response(to[], text)` pushes a wake item into each. Targets are checked against `messaging`; content
-  is checked against the target's visibility.
+- **Messaging tools** (names provisional): `message_participant(to[], text)` puts the agent's text in each target
+  channel with no model call there (reported to the host as a message on that channel, outside any turn);
+  `trigger_response(to[], text)` pushes a wake item into each, and that channel takes its own turn. Both record a
+  "told" event.
+  - **Targets** in v1 are channels of the same session. The agent tells channels apart by their labels (the host's
+    titles); how exactly it addresses them (labels, short handles, a listing tool) is left to be settled after real
+    use.
+  - **Code checks who may message whom** (`messaging.send`, `messaging.trigger` of the sending turn's policy). It
+    does not check what the text says: confidentiality of information is not guaranteed in v1
+    (`todos/11-12-TODO-information-confidentiality.md`).
 
 ### Tool placement
 
