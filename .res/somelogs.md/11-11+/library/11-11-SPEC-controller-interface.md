@@ -19,13 +19,27 @@ conversations.
 
 ## The interface
 
-`AgentSession` uses about 20 members of `AgentController`. They split three ways.
+`AgentSession` uses about 20 members of `AgentController`. The interface keeps them, with one change: it is
+**turn-based**. A message going in (`send`) and a turn running (`subscribeTurns`) are separate, because a native
+backend starts turns nobody prompted (Messages in, turns out, below).
 
 | Group | Members | Native backend |
 | --- | --- | --- |
-| Core (required) | `prompt`, `cancel`, `forceStop`, `stop`, `start`, `startFresh`, `isConnected`, `subscribeOutput`, `subscribeConnection`, `cancelGraceMs`, `capabilities` | Implemented. `forceStop` aborts the HTTP call; `start` has nothing to launch. |
-| Generalize | `configOptions`, `setConfig` (27 and 5 uses), `subscribeUsageUpdate`, `currentSessionId`, `availableCommands`, `subscribeAvailableCommands` | Its own settings in the same `ConfigOption` shape (model, reasoning, temperature); usage from every response; no commands at first. |
-| Optional, behind capabilities | `isDegraded`, `currentMode`, `setMode`, `reconnect`, `listSessions`, `bridge`, `authenticate`; `session/load` with replay, `session/delete` | Absent; callers check capabilities. |
+| Core (required) | `send`, `subscribeTurns`, `cancel`, `forceStop`, `stop`, `start`, `startFresh`, `isConnected`, `subscribeOutput`, `subscribeConnection`, `cancelGraceMs`, `capabilities` | Implemented. `send` pushes onto the channel; turns are reported as the harness starts them; `forceStop` abandons the turn if the harness process doesn't answer; `start` opens the channel on the shared session. |
+| Generalize | `configOptions`, `setConfig` (27 and 5 uses), `subscribeUsageUpdate`, `currentSessionId`, `availableCommands`, `subscribeAvailableCommands` | Per-channel settings in the same `ConfigOption` shape (model, reasoning, temperature); usage from every model call; no commands at first. |
+| Optional, behind capabilities | `runInternalPrompt` (one synchronous turn, for recap and handoff summaries), `isDegraded`, `currentMode`, `setMode`, `reconnect`, `listSessions`, `bridge`, `authenticate`; `session/load` with replay, `session/delete` | Absent; callers check capabilities. Native internal inference uses the `http` runtime instead. |
+
+```ts
+interface ConversationController {
+  send(message): Promise<{ messageId: string }>;   // the message goes in
+  subscribeTurns(listener): Unsubscribe;           // turn_started { turnId, cause: messageIds | items }
+                                                   // turn_ended   { turnId, result }
+  subscribeOutput(listener): Unsubscribe;          // the stream inside a turn, as today
+  cancel(): void; forceStop(): Promise<void>; stop(): Promise<void>;
+  capabilities: ConversationCapabilities;
+  // … the rest of the core and generalized members above
+}
+```
 
 - **Names.** The interface is `ConversationController`: what a conversation needs from whatever backs it. Its two
   implementations are the `HarnessController` (today's `AgentController`, renamed: it drives an external harness;
@@ -104,12 +118,16 @@ the two are separated (overview, decision 34):
 - **`runTurn(cause)`:** the second half: the metered operation, the supervisor, the backend call, records, metering.
   `turn_started` (which exists already, with `turn_completed` and `turn_failed`) gains the cause: the message(s) or
   the items the backend reports.
-- **ACP (`HarnessController`):** a message is accepted and its turn runs right after; one message, one turn, as today.
-  Steering's combining of queued steer messages into one run stays as it is.
-- **Native:** a message is accepted and pushed to the channel; `runTurn` runs when the harness reports that it
-  started a turn, with the items it took. A prompt's promise resolves with the turn that took its message.
-- **Public API:** `send(message)` resolves when the message is accepted; `prompt()` stays as send plus waiting for the
-  turn that took it. The REPL, the CLI and the seven internal call sites keep using `prompt()`; consumers that want
+- **One path for both backends:** `runTurn` runs on the controller's `turn_started`, whichever backend started it;
+  `AgentSession` never asks whether it started the turn itself.
+- **ACP (`HarnessController`):** `send` calls its existing ACP prompt and reports `turn_started` (cause: that message)
+  at once and `turn_ended` with the prompt's result: one message, one turn, as today. Steering's combining of queued
+  steer messages into one run stays as it is.
+- **Native:** `send` pushes the message onto the channel; turns are reported when the harness starts them, with the
+  items they took. A prompt's promise resolves with the `turn_ended` whose cause includes its `messageId`.
+- **Public API:** `prompt()` stays the main consumer method: send, then wait for the turn that took the message.
+  `send(message)`, which resolves when the message is accepted, plus the turn events, are for consumers that want
+  every turn, including ones nobody prompted. The REPL, the CLI and the seven internal call sites keep using `prompt()`; consumers that want
   every turn subscribe to the turn events. Breaking changes are allowed, so the shapes may change freely.
 
 This split is the turn-path extraction that keeps `agent-session.ts` from growing: `acceptMessage` and `runTurn` move
@@ -128,7 +146,7 @@ places, all of which move to the interface:
 | Binding | `bindController` (line 742): connection, commands, usage subscriptions | typed on the interface; commands only if the capability says so |
 | Handoff targets | `handoff` creates a target controller (around line 2460) | through the factory |
 | Degraded-mode switch | recreates the controller with another mode | capability-gated; `HarnessController` only |
-| Internal prompts | `InternalPromptTarget.controller` (line 308): recap and internal inference run on a controller | typed on the interface |
+| Internal prompts | `InternalPromptTarget.controller` (line 308): recap and internal inference run on a controller | `runInternalPrompt`, optional; the `HarnessController` has it |
 | Supervision | `supervisedPrompt(controller, …)` (line 4037) takes `subscribeOutput`, `cancel`, `forceStop`, `cancelGraceMs` | typed on the interface; these four are core members (the 11-09 count missed them because they are not reached through `this.controller`) |
 | Public escape hatch | `get connection(): AgentController` (line 1897) | returns `ConversationController`; a breaking change for consumers using ACP-only members through it (agents-core doesn't; checked). Add `harnessConnection(): HarnessController \| null` for those who need ACP specifics |
 
@@ -155,7 +173,8 @@ test/conversation-controller/
 ## Steps
 
 0. Split the turn path: `acceptMessage` and `runTurn(cause)` in `src/conversation-turns/`; `turn_started` carries the
-   cause; `send()` added; `prompt()` rebuilt on them. No behaviour change for ACP.
+   cause; `send()` added; `prompt()` rebuilt on them; the `HarnessController` reports its prompts as `turn_started` and
+   `turn_ended`. No behaviour change for ACP.
 1. Introduce `ConversationController` and `ConversationCapabilities`; rename `AgentController` to `HarnessController`
    (alias kept); it implements both. No behaviour
    change; existing tests cover it.

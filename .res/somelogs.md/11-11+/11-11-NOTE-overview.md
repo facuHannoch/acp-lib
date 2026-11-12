@@ -72,7 +72,7 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
    `AgentController`, renamed; it drives an external harness, ACP being the means) or `NativeController`, both behind
    the `ConversationController` interface. Requires the controller interface (spec
    above). Rejected: a separate conversation type.
-7. **Delegation through tools,** starting with `delegate`, `check`, `stop`; `message_participant` (deliver, no model
+7. **Delegation through tools,** starting with `delegate(text, about?, to?)`, `check`, `list`, `stop`; `message_participant` (deliver, no model
    call) and `trigger_response` (wake the target conversation) reach other conversations, several recipients each.
    Records stay at the primitive level so tools stay cheap to change. No plan-based events and no `notify` tool; the
    way back is wake events, later worker report tools, and the agent checking.
@@ -86,8 +86,10 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
    **Busy work is a warning:** a send from the conversation that gave the running work steers; from any other it
    returns `busy` with that context; `redirect` steers anyway when the policy allows, and the previous conversation
    is told. No queueing behind another conversation's work; no trust hierarchy.
-10. **Permissions:** four levels (deny, ask me, ask the agent, allow); worker requests are forwarded through the
-    delegating turn's policy.
+10. **Permissions:** four levels (deny, ask me, ask the agent, allow), in one permission setting with one shape
+    (`permissions: { default, rules }`, rules by pattern) covering the harness's own tools, tools declared in the
+    config, MCP tools and worker requests (`worker:` rules, applied by the orchestrator to the work of whoever gave
+    it). acp-client's ACP conversations use the same shape instead of `defaultPermission: "approve" | "cancel"`.
 11. **Policies** (renamed from "profiles") live in the harness configuration and are asserted by the host, never by
     end users, in three layers: the message's policy, else the channel's, else the session's `defaultPolicy`. A
     native adapter's default only seeds a new channel's policy. A turn triggered by several items takes the most
@@ -101,14 +103,16 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     its own store (an item wakes the channel or goes in at the next model call); for ACP conversations it is
     acp-client's out-of-band messages (with a kind and a sender), delivered with the next prompt. Rendering is the
     harness's.
-14. **Identity is a timeline in the harness:** one append-only history, a position per conversation, shared state and
+14. **Identity is a timeline in the harness:** one append-only history, a position per channel, shared state and
     memory as projections, delivery as a digest of the slice since a position. Conversation summaries are
     acp-client's, reported into the timeline. acp-client only injects, through the existing `AgentIdentityRuntime`
-    (`load`, `update`, `delivered`) implemented over the harness; ACP conversations join as
-    member channels; the checkpoint-backed identity is deprecated.
+    (`load`, `update`, `delivered`) implemented over the harness; ACP conversations are managed member channels in v1
+    (identity prepared for them, their messages and summaries reported); the harness's MCP server for members and
+    unmanaged members are phase 2; the checkpoint-backed identity is deprecated.
 15. **Phase 1 memory** is a simple shared state on the timeline. Watches are deferred (`harness/todos/11-11-TODO-watches.md`).
-16. **Internal inference** gets an `http` runtime that imports the harness's model client; the ACP-session runtime
-    stays as the fallback.
+16. **Internal inference** gets an `http` runtime with its own minimal OpenAI-compatible client and model config in
+    acp-client (duplicated on purpose: one call, no tools; it keeps internal inference independent of the harness
+    package); the ACP-session runtime stays as the fallback.
 17. **MCP** is an optional extension for ACP-backed controllers, not the channel between conversations; the harness
     is an MCP client from phase 1.
 18. **The internal event model** stays as it is; the `NativeController` translates into it.
@@ -171,6 +175,14 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     last conversation). Progress is read from the worker conversation; slots, busy state, policies of running work
     and pending permissions are in memory. No persistence extension. The harness reaches the orchestrator only
     through its delegation tools and hears from it only through items on its channels.
+39. **Per-channel settings.** Model settings changed on a conversation (model, reasoning, temperature) are that
+    channel's settings in the harness, overriding the session's config for that channel only; there is no config
+    overlay.
+40. **The controller interface is turn-based.** `send` puts a message in; `subscribeTurns` reports every turn the
+    backend runs, with its cause. The `HarnessController` reports each ACP prompt as one turn; the `NativeController`
+    reports the harness's turns. `AgentSession` runs turns on `turn_started` from either. `runInternalPrompt` is
+    optional (ACP only). For consumers, `prompt()` stays the main method; `send()` plus the turn events are for those
+    who want every turn.
 
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations
@@ -199,8 +211,8 @@ Design questions, each owned by a spec:
 - [ ] Cache measurement: does reloading a harness session keep cache reads (orchestrator).
 - [ ] Digests: granularities, how and when they are produced (harness v1, memory findings).
 - [ ] Steering: abort an in-flight model call and resend, or always wait (harness v1).
-- [ ] Config versioning and how the library overlays the document (harness v1).
-- [ ] Member-session tokens and cleanup (harness design; phase 2).
+- [ ] Config versioning and the shape of validation errors (harness v1).
+- [ ] Member-channel tokens and cleanup (harness design; phase 2).
 - [ ] Does the managed `AgentSession` REPL fold into the new CLI (CLI).
 - [ ] Whether the consumer may wake an ACP conversation with an item, or ACP only gets next-prompt delivery
       (integration).
@@ -227,9 +239,9 @@ Lines of work, with what each needs first. L = library, H = harness, X = cross-c
 
 | Id | Work | Needs |
 | --- | --- | --- |
-| L1 | Extract the controller interface; neutral capabilities | nothing (offline) |
+| L1 | Split the turn path (messages in, turns out); the turn-based controller interface; neutral capabilities | nothing (offline) |
 | L2 | Orchestrator and pool, with fake workers | L1 for native workers only |
-| L3 | Permission forwarding for workers (four levels, timeout) | L2 |
+| L3 | Permissions: the one permission setting (also for ACP conversations), `permission_requested` and `answerPermission`, forwarding worker requests | L1, L2 |
 | L4 | The delivery port: items pushed onto native channels; out-of-band items with kind and sender for ACP | nothing (offline) |
 | H0 | Repo layout and the harness package | owner decision |
 | H1 | Contracts, conformance skeletons | H0 |
@@ -240,7 +252,7 @@ Lines of work, with what each needs first. L = library, H = harness, X = cross-c
 | L5 | `NativeAdapter`, `NativeHarnessHost` (launch, restart, callbacks), `NativeController`, native steering | L1, L4, H2–H5, H10 |
 | L6 | Orchestrator as delegation backend; records as history source; functions | L2, L5 |
 | L7 | Identity injection for ACP conversations; summaries reported to the timeline; deprecate checkpoint-backed identity | L5, H8 |
-| L8 | `http` internal-inference runtime | H3 |
+| L8 | `http` internal-inference runtime with its own minimal client | nothing (a key for live use) |
 | X1 | Smoke test (duration-parser fixture) and the basic-promise checks | L6, a key |
 | X2 | Evals and the prompt-injection suite | X1 |
 | L9 | CLI on `Agent` | L5 (REPL value exists earlier for ACP-only) |

@@ -49,13 +49,14 @@ providers, storage and hosts sit behind adapters. Inside it:
 | Tool providers | Registry | List definitions under the turn's policy; execute; may change | Configured; MCP; delegation and messaging |
 | Tool chain | Middleware | Validation, permission gate, timeout, truncation, usage | All five |
 | Model chain | Middleware | Retries, rate limits, logging | Retries; call log |
-| Permission gate | Interface | Allow, deny or ask under the policy of the turn's triggering items; timeout | Allow-all; policy engine |
+| Permission gate | Interface | Allow, deny or ask under the turn's policy (one permission setting, rules by pattern); timeout | Allow-all; policy engine |
 | Event sources | Interface | Feed inbox items into channels | Host pushes |
 | Guards | Interface | Veto a call or a turn | Call limit; unattended turns |
 | Lifecycle events | Event bus | Before and after turn, call, tool, compaction; deltas | Console; CLI call log |
 | Function registry | Registry by name | Implements `run.type: "function"` tools | `registerFunction` |
-| Delegation backend | Interface | Open, message, check, stop delegated agents | Native subagents; the library's orchestrator |
-| History sources | Registry | Search and read past conversations | Own channels; the library's records |
+| Delegation backend | Interface | Open, message, check, stop, list delegated agents | Remote (host callbacks; acp-client serves them with its orchestrator). Native subagents later |
+| History sources | Registry | Search and read past conversations | Own channels; remote (host callbacks; acp-client serves its records) |
+| Execution port | Interface | Prepare every process the harness starts (`command` tools, stdio MCP servers) | Local spawn; prefix |
 
 Rules for every extension point:
 

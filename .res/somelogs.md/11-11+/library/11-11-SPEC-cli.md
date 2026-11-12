@@ -43,8 +43,9 @@ Order:
 2. **A TUI** once events are complete. It is the most demanding consumer of events (streaming text, tool calls,
    permission prompts, worker states, wakes), so events that drive a TUI drive any consumer's UI.
 
-- Native conversations use the `Agent`'s harness session (its home and config); overrides (`--model`, `--base-url`, `--system-prompt
-  FILE`) write a config overlay, not new library options. The API key comes from the environment.
+- Native conversations use the `Agent`'s harness session (its home and config). `--model` and reasoning flags set the
+  conversation's channel settings; the system prompt and the rest of the config change through the harness's config
+  API (or `harness config`), not through new library options. The API key comes from the harness's environment.
 - ACP-only commands (`/bridge`, `/commands`) are hidden by controller capability
   (`11-11-SPEC-controller-interface.md`).
 - It starts as a subcommand group of `acp-client` and becomes its own binary only if it grows into a product.

@@ -44,7 +44,8 @@ gives the same guarantee, from v1:
 - **Everything the agent does runs there:** model calls (API keys in that environment), `http` and `command` tools,
   MCP servers, the session's files.
 - **Callbacks from the harness to the host,** like ACP's fs and terminal requests to the client: function tools, the
-  delegation backend (the orchestrator stays in acp-client), history sources, and identity delivery for members.
+  delegation backend (the orchestrator stays in acp-client), history sources, and permission requests. Identity for
+  ACP conversations goes the other way: acp-client asks the harness (`member/prepare`, `member/delivered`).
 - **In-process transport** exists too (same client interface), for tests and the standalone CLI; with acp-client the
   process is the default.
 - **One process for many conversations** means a crash affects all of them: the controller restarts the process
@@ -70,11 +71,13 @@ channels). In acp-client:
 | an `Agent` with a native harness configured | one session, created on the `Agent`'s first start and loaded afterwards; acp-client keeps its id in the `Agent`'s own persistence |
 | a native `AgentConversation` (`agc-…`) | a channel of that session; the channel id is the conversation id, passed through |
 | the conversation's provider-session row (`provider_sessions`) | `internal_session_id` = the harness session id (the same for every native conversation of the `Agent`; the index on it isn't unique); the channel id in the row's metadata |
-| a cleared transcript or a handoff into native | a fresh context on the same channel (`channel.close()` then reopen), the old row deactivated, a new one active |
+| a cleared transcript or a handoff into native | a fresh context on the same channel (`channel.reset()`), the old row deactivated, a new one active |
 | deleting the conversation | closing the channel; its timeline events stay (they are the entity's history) |
 | participants (`ParticipantRef { id, kind, name }`, shared by all of an `Agent`'s conversations) | senders: `id` → sender id, `name` → label, `kind` → person, agent or other; the same id in two conversations is the same person |
 | the conversation's `policy` | the channel's policy |
 | the conversation's `title` (set at creation; `conversation.setTitle()` added) | the channel's label, shown to the agent |
+| model settings changed on the conversation (`setConfig`: model, reasoning, temperature) | the channel's settings (`channel.setSettings`), overriding the session's for that channel only |
+| an ACP conversation, when a harness is configured | a managed member channel (`member/register`): its messages and summaries are reported, and it receives what the harness prepares |
 
 **Where the session lives:**
 
@@ -112,8 +115,8 @@ await conv.setPolicy("guest");                                               // 
 - **Senders** are participants as they exist today (`resolveParticipant`, `src/agent/persisted-lifecycle.ts:387`),
   passed through unchanged; `user:default` passes as a sender with no name. No notes and no per-participant policy
   for now; if testing shows the agent needs more about people, participants are where it goes.
-- **ACP conversations** get a `policy` too: the scope their messages carry when reported to the timeline, and later
-  what identity they receive as members.
+- **ACP conversations** get a `policy` too: the scope their messages carry when reported to the timeline, and what
+  identity they receive as member channels.
 
 ### Adapters
 
@@ -149,11 +152,12 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 
 | Controller member | Native |
 | --- | --- |
-| `start` / `startFresh` | open the conversation's channel on the shared session / open it with a fresh context; nothing to launch |
-| `prompt` | push a user-message item with sender and policy on the channel; resolves on turn end |
+| `start` / `startFresh` | open the conversation's channel on the shared session (`channel/open` with policy and label) / reset it to a fresh context; nothing to launch |
+| `send` | push a user-message item with sender and policy on the channel |
+| `subscribeTurns` | the harness's `turn_started` (with the items the turn took) and `turn_ended` |
 | `cancel` / `forceStop` | `channel.interrupt()`; force stop abandons the turn if the process doesn't answer |
 | `subscribeOutput` | harness events translated into the update model the `agc` consumes |
-| `configOptions` / `setConfig` | model, reasoning, temperature as `ConfigOption`s; written as a config overlay |
+| `configOptions` / `setConfig` | model, reasoning, temperature as `ConfigOption`s; stored as the channel's settings (`channel.setSettings`) |
 | `subscribeUsageUpdate` | usage events, one per model call |
 | `capabilities` | `nativeSteering: true`; media from the model; no load, fork, modes or degraded mode |
 
@@ -206,12 +210,17 @@ user answers                  →  conversation.answerPermission(id, optionId)  
   open.
 - **The per-prompt handler stays as a shortcut:** if the running turn's prompt brought one, it is called and nothing
   waits on events.
-- **When nobody will answer:** a conversation says whether its consumer answers permissions (`permissions: "answer"`).
+- **When nobody will answer:** a conversation says whether its consumer answers permissions (`answersPermissions: true`).
   If so, acp-client waits up to a timeout, then refuses; if not, `defaultPermission` applies at once, as today, so a
   consumer that never listens doesn't stall every `ask`.
 - **Forwarded worker requests** at Ask me arrive the same way: as `permission_requested` on the conversation that gave
   the work (marked with the worker), answered with the same method (`11-11-SPEC-orchestrator.md`, Permissions).
 - **Records** are unchanged: requested and resolved, with the outcome.
+- **One permission setting, everywhere.** The harness's policies use `permissions: { default, rules }` (rules by
+  pattern; levels deny, ask, ask the agent, allow; `../harness/11-11-SPEC-harness-v1.md`, Policies). acp-client's own
+  ACP conversations use the same shape, replacing today's `defaultPermission: "approve" | "cancel"`: `default` is the
+  old `defaultPermission`, and rules can approve or refuse by tool or command. Ask the agent doesn't apply there (no
+  agent above an ACP conversation).
 
 ### Messages from another channel
 
@@ -273,13 +282,18 @@ on who runs the conversation's loop:
 The harness owns the entity (the timeline; harness design spec). How it keeps it doesn't matter to the library;
 identity reaches ACP conversations by injection.
 
+ACP conversations are **managed member channels** of the session (v1): registered when a harness is configured
+(`member/register`, with the conversation's policy and title), their messages and summaries reported, and their
+identity prepared by the harness. The harness's MCP server, through which members could read and write the identity
+themselves, is phase 2.
+
 **The existing interface already fits.** `AgentIdentityRuntime` (`src/identity.ts`):
 
 | Method | Called | For the harness adapter |
 | --- | --- | --- |
-| `load(input)` | before every prompt, with participant and target provider context (`src/agent/persisted-lifecycle.ts:96`) | prepare: the digest since the member's position, as `promptPreamble`, plus a receipt |
-| `update(input)` | after every committed batch of records (`src/agent/record-capture.ts:44`) | report: append the conversation's messages to the timeline |
-| `delivered(receipt)` | once the provider has the prompt | advance the member's position |
+| `load(input)` | before every prompt, with participant and target provider context (`src/agent/persisted-lifecycle.ts:96`) | `member/prepare`: the digest since the member's position, as `promptPreamble`, plus a receipt |
+| `update(input)` | after every committed batch of records (`src/agent/record-capture.ts:44`) | `report`: append the conversation's messages to the timeline |
+| `delivered(receipt)` | once the provider has the prompt | `member/delivered`: advance the member's position |
 | `synchronize` | optional | not needed |
 
 So no new interface: `harnessIdentityRuntime(host)` implements `AgentIdentityRuntime`. Changes:
@@ -321,7 +335,10 @@ new Agent({
   persistence: { ... },
   functions: { crm_search: async (input) => { ... } }, // served to the harness for run.type "function" tools
   orchestrator: { workers: { adapterId: "codex", cwd: "/work", limit: 2 } },
-  internalInference: { runtime: "http" },              // "http" when a key is configured, else "harness"
+  internalInference: {                                 // "http" when a model is configured, else "harness"
+    runtime: "http",
+    model: { baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENROUTER_API_KEY", model: "..." },
+  },
 });
 ```
 
@@ -343,8 +360,11 @@ Checkpoints, summaries and recovery seeds are one prompt and one answer, today r
 
 - **A new `http` runtime** implementing `InternalInferenceRuntime.run(request, signal, lifecycle)`: one model call,
   no process, structured output.
-- **It imports the harness's model client** (`./openai-compatible`) instead of duplicating one. It runs in
-  acp-client's process: internal inference is the library's own work, not the agent's.
+- **Its own minimal client.** Internal inference is one call with structured output: no tools, no streaming, no
+  channels. acp-client keeps a small OpenAI-compatible client of its own for it instead of importing the harness's,
+  so internal inference doesn't need the harness package; the duplication is small. It runs in acp-client's process
+  (internal inference is the library's own work, not the agent's), with its own model config and key
+  (`internalInference.model`), since the harness's key lives in the harness's environment.
 - **The lifecycle is ACP-shaped** (`stageChanged("creating_session" | "prompting")`, `sessionStarted({
   internalSessionId })`): the runtime reports `prompting` only and no session; records that expect an
   `internalSessionId` must accept none.
@@ -365,6 +385,7 @@ src/native/
   identity-runtime.ts    harnessIdentityRuntime (AgentIdentityRuntime)
   index.ts
 src/internal-inference/runtime/http-runtime.ts
+src/internal-inference/runtime/openai-compatible.ts   the minimal client (one call, structured output, usage)
 src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "native-harness"
 ```
 
@@ -374,7 +395,10 @@ src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "nat
   `functions`); `src/agent-adapter-registry.ts` (store either adapter type); the controller factory
   (`createController`, `src/agent-session.ts:733`, via the controller-interface work) chooses `NativeController` for a
   `NativeAdapter`; `src/out-of-band-messages.ts` (kind and sender in metadata); `src/identity.ts` (optional
-  `mcpServers`, `checkpointed`; opaque receipt); the checkpoint coordinator (call `checkpointed`).
+  `mcpServers`, `checkpointed`; opaque receipt); the checkpoint coordinator (call `checkpointed`); the permission
+  setting replacing `defaultPermission` (`src/agent/config.ts` and where `defaultPermission` is read in
+  `src/agent-session.ts`, a replacement, not new code); `permission_requested` and `answerPermission` on conversations
+  (with the L3 work).
 - **`agent-session.ts` does not grow.** Steering already goes through `SteeringHost`; the controller choice is the
   factory; anything else needed there is extracted first.
 

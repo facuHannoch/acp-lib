@@ -310,28 +310,13 @@ Tool descriptions, prompts and models are cheap to change only if each change is
 
 ## How this maps to our native harness
 
-Our native harness is not a coding harness. It is an agent people and other agents talk to, which hands environment work (files, commands) to existing harnesses running as workers over ACP. Design details live in `../11-11-SPEC-harness-design.md`, `../11-11-SPEC-harness-v1.md` and the library specs under `../../library/`.
-
-| Concept | In our design |
-| --- | --- |
-| Harness | A self-sufficient native harness that is the agent entity: own storage, model client, JSON configuration, policies and CLI; acp-client is one host of it |
-| Inner loop | The harness kernel, as an explicit turn state machine run by one actor per session; turns are short (understand, delegate, answer) |
-| Outer loop | Each conversation's inbox: messages, worker replies, permission requests, reminders, watch matches. The agent's main mode |
-| Context | The consumer's system prompt verbatim; tools placed by a strategy (stable superset plus hint by default); everything else appended at the end for caching |
-| Compaction | Needed early: the agent's conversations run long |
-| Model answer | A `ModelClient` per protocol (first: OpenAI-compatible, OpenRouter as a base URL), model profiles later |
-| Usage | Exact, from each response |
-| Tools | Declared in the harness JSON (`http`, `command`, `function`), plus MCP servers and the harness's own (`delegate`, `check`, `stop`, `message_participant`, `trigger_response`) |
-| File and shell tools | None at first: the workers' job |
-| Skills | Later, as know-how loaded on demand |
-| Permissions and policies | Policies asserted per prompt by the host; four levels for tools and worker requests; the gate always enforces |
-| Sandbox | Not needed for the agent; workers keep their harness's sandbox |
-| Prompt injection | Policies limit what each conversation reaches; a test suite with policy and judgment parts |
-| Memory | One timeline of everything, a position per conversation, digests at several granularities; shared state and long-term memory as projections; phase 1 is a simple shared state |
-| Several agents | Orchestrator-workers: the library's orchestrator is the harness's delegation backend; other harnesses can also join the identity as member sessions |
-| Evaluation | The duration-parser smoke test and the basic-promise checks, then injection and other scenarios |
-
-The split of responsibilities follows one rule: **judgment goes to inference, policy goes to code.** The model decides whether to delegate, what to tell the person and when to check on work. The orchestrator enforces scopes, caps and permission levels.
+Our native harness is not a coding harness. It is an agent entity that people and other agents talk to on many
+channels at once, and that hands environment work (files, commands) to existing harnesses running as workers over ACP.
+How each concept above is applied (the two loops, context and caching, tools and permissions, memory as a timeline,
+several agents as a worker pool, evaluation) is specified in `../11-11-SPEC-harness-design.md`,
+`../11-11-SPEC-harness-v1.md` and the library specs under `../../library/`; the decisions are listed in
+`../../11-11-NOTE-overview.md`. The rule behind the split of responsibilities is the one from the Safety section:
+judgment goes to inference, policy goes to code.
 
 ## Glossary
 

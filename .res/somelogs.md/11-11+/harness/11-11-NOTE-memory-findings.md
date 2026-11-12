@@ -28,7 +28,7 @@ context. For one agent talking to many parties at once, the hard questions are:
 
 ## What we chose: a timeline
 
-One append-only history for the entity, a position per conversation, delivery as a digest of the slice since a
+One append-only history for the entity, a position per channel, delivery as a digest of the slice since a
 position, shared state and memory as projections (details in the harness design spec). Why it fits:
 
 - one truth that every conversation is positioned on, instead of pairwise cursors;

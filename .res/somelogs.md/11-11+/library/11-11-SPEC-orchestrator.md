@@ -95,7 +95,7 @@ workers
   created_at, dropped_at
 ```
 
-In memory only: which slot a worker holds, the policy of whoever gave the running work, pending permission requests
+In memory only: which slot a worker holds, the delegation policy and worker permission rules of whoever gave the running work, pending permission requests
 (refused on restart). Busy or idle is read from the worker conversation's state. Delegation facts (opened, sent,
 redirected, stopped, dropped) are also written as `agent_action` records on both conversations, for audit, not as the
 source of state.
@@ -112,7 +112,12 @@ interface DelegationPolicy {
   redirect: boolean;     // may redirect work given from another conversation; may stop and drop
   maxOpen?: number;      // optional cap, for guest-like policies
 }
+type WorkerPermissions = { default: Level; rules: Record<string, Level> };   // the policy's `worker:` rules
 ```
+
+Each delegation callback carries the turn's `DelegationPolicy` and its `WorkerPermissions` (the `worker:` rules of the
+policy's one permission setting, `../harness/11-11-SPEC-harness-v1.md`, Policies). The orchestrator keeps them in memory
+with the running work, and applies them to that work's permission requests.
 
 - Owner and trusted presets: `use`, `scope: "all"`, `redirect: true`. Guest: `scope: "none"`, `redirect: false`.
 - No per-conversation cap by default: the pool limit is the entity's capacity.
@@ -215,7 +220,7 @@ The user never sees the worker's text directly; the agent reads it and decides w
 ```
 w1 wants to run `bun test` → ACP request_permission → acp-client
   the orchestrator's handler (passed per prompt as handlers.onPermissionRequest):
-    level from the policy of whoever gave the running work
+    level from the WorkerPermissions of whoever gave the running work (rules by tool or command)
       deny / allow ──────► answered at once
       ask me ────────────► permission_requested event on agc-1 (marked "from w1");
                            the consumer shows it; agc-1.answerPermission(id, option)

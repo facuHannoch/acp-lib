@@ -110,18 +110,20 @@ looks stalled to any supervisor.
 
 ### Policies, in flight
 
-A policy says what the agent may do *for whoever sent this message*: capabilities (`memory`, `messaging`,
-`delegation`, later `files`, `shell`) and tools by name or pattern, at levels deny, ask, allow (worker requests add
-ask the agent). Presets: `readOnly`, `guest`, `trusted`, `owner`.
+A policy says what the agent may do on a channel: capabilities (`memory`, `messaging`, `delegation`, later `files`,
+`shell`) and one permission setting (a default plus rules by pattern over tools, MCP tools and worker requests, at
+levels deny, ask, ask the agent, allow). Presets: `readOnly`, `guest`, `trusted`, `owner`.
 
-- **Asserted per prompt by the host** (the consumer's code), never by the end user. The same conversation can carry
-  an owner's message and then a guest's.
+- **Asserted by the host** (the consumer's code), never by the end user, in three layers: the message's policy, else
+  the channel's, else the session's default. The agent is told each turn which channel it is in and what its policy
+  allows, so it can say "not here; talk to me in our other conversation".
 - **A turn triggered by several items takes the most restrictive policy,** so a guest can't ride on an owner's
   rights; what is delivered into the turn is filtered the same way.
 - **Rights and standing are separate.** The policy is rights. Who someone is to the agent is learned from the
   timeline and memory. There is no participant registry; the owner is just a policy.
-- **Prompts describe themselves:** each carries sender, policy and content, and the harness renders it with that
-  standing; the system prompt stays the consumer's, verbatim, with no layer added.
+- **Prompts describe themselves:** each carries its sender and content (and a policy when the host asserts one for
+  that message), and the harness renders it with that standing; the system prompt stays the consumer's, verbatim,
+  with no layer added.
 
 ### The timeline
 
@@ -188,11 +190,15 @@ enough; it is parked with its context in `todos/11-11-TODO-watches.md`.
 ### Member channels
 
 Other harnesses can join the entity's identity without running in it: a **member channel** is a channel with an id
-and a policy but no loop. Managed members (a host like acp-client injects what the harness returns before each
-prompt, through a `prepare` / `delivered` handshake) or unmanaged ones (any MCP client with a scoped token, pulling
-only). They read and write through the harness's MCP server (`timeline_since`, `timeline_search`, `state_read`,
-`state_write`, `state_share`, messaging where the policy allows). Members decide on their own when to record, less
-reliably than native channels. Phase 2.
+and a policy but no loop.
+
+- **Managed members (v1):** a host like acp-client registers a conversation it runs elsewhere, reports its messages
+  and summaries, and before each of its prompts asks what to deliver (`prepare`, then `delivered` once the provider
+  has the prompt). acp-client does this for its ACP conversations through its identity runtime.
+- **The MCP server and unmanaged members (phase 2):** the harness starts an MCP server through which members read and
+  write the identity themselves (`timeline_since`, `timeline_search`, `state_read`, `state_write`, `state_share`,
+  messaging where the policy allows), managed ones as an addition and unmanaged ones (any MCP client with a scoped
+  token) as their only way in. Members decide on their own when to record, less reliably than native channels.
 
 ## Delegation
 
@@ -204,10 +210,10 @@ Through tools, starting with `delegate(text, about?, to?)` (no `to`: a new worke
 - **Busy work is a warning, not a decision.** Sending to a worker busy with work given from another conversation
   returns `busy` with what it is on (the `about` the agent wrote), where and for whom; the agent tells its user in its
   own voice or redirects explicitly (`redirect`, gated by policy), and the other conversation is told. Urgency is
-  judgment; there is no trust hierarchy. Alternatives weighed and dropped: markup parsed from
-replies, structured output on every reply, a separate router model, code mode. The tool set is settled by a test run,
-not up front; it stays cheap to change because records keep primitive-level facts and the tool definitions are
-internal defaults.
+  judgment; there is no trust hierarchy.
+- **Through tools, not other mechanisms.** Weighed and dropped: markup parsed from replies, structured output on
+  every reply, a separate router model, code mode. The tool set is settled by a test run, not up front; it stays cheap
+  to change because records keep primitive-level facts and the tool definitions are internal defaults.
 
 - **Words shape the handoff.** "Delegate" and "agent" make the model brief a colleague with context; "task" pushes
   towards ticket-style briefs. Tool boundaries are described as capability ("you can't read files; this agent can"),
@@ -267,9 +273,10 @@ honesty. Per run: pass rate, cost, latency, model calls.
 ## Phases
 
 - **Phase 1: the entity talks and delegates.** Kernel, model client, context, tools and MCP client, policies, timeline
-  basics (positions, digests stitched from host summaries), shared state as a projection, delegation, storage, CLI. Judged on the basic promise.
-- **Phase 2: memory and reach.** Long-term memory, digests at several granularities, the MCP server and member
-  channels, watches, skills, deferred tool loading, reminders.
+  basics (positions, digests stitched from host summaries), shared state as a projection, managed member channels,
+  delegation, storage, server mode, CLI. Judged on the basic promise.
+- **Phase 2: memory and reach.** Long-term memory, digests at several granularities, the MCP server for members and
+  unmanaged members, watches, skills, deferred tool loading, reminders.
 
 ## Open
 
