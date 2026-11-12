@@ -14,12 +14,15 @@
  * - detached: an `AgentSession` with a legacy JSONL transcript (read back as written).
  * The rest run once, in an Agent-owned conversation unless noted.
  */
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent } from "../../src/agent.ts";
 import { AgentSession, type AgentSessionConfig } from "../../src/agent-session.ts";
+import { AgentController, type AgentControllerStartEvent } from "../../src/controller.ts";
+import { PtyClient } from "../../src/degraded/index.ts";
 import type { AgentSessionNotification } from "../../src/agent-conversation-contracts.ts";
 import type { OperationLifecycleConfig } from "../../src/operations/contracts.ts";
 import { FileAgentSessionStore } from "../../src/persistence/file-registry-store.ts";
@@ -30,6 +33,8 @@ const FIXTURES = resolve(import.meta.dir, "../fixtures");
 const ECHO = join(FIXTURES, "echo-prompt-agent.ts");
 const STEER = join(FIXTURES, "steer-agent.ts");
 const LIFECYCLE = join(FIXTURES, "lifecycle-agent.ts");
+const IDLE_PTY = join(FIXTURES, "idle-pty-agent.ts");
+const AUTH_REQUIRED = join(FIXTURES, "auth-required-agent.ts");
 const OPERATIONS = resolve(import.meta.dir, "../../smoke-tests/test5-operations/operations-agent.ts");
 
 type Mode = "agent-owned" | "managed" | "detached";
@@ -138,6 +143,10 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
       adapters: { fixture: adapter },
       defaultAdapterId: "fixture",
       capture: { message: "content", error: "raw" },
+      // Background recovery checkpoints (milestone 1 by default) run a second harness session
+      // concurrently with each case; they are not the turn path, and one still running when the
+      // Agent closes can outlive it (see the A1 report). Off, so each case is only its turn path.
+      checkpointing: { enabled: false },
       conversationDefaults: {
         metering: { pricing: false },
         env,
@@ -231,8 +240,8 @@ const has = (raw: readonly { kind: string }[], kind: string, count = 1) =>
   () => raw.filter((event) => event.kind === kind).length >= count;
 
 /** Normalizes a run against its own temporary directory and snapshots it. */
-function snapshot(opened: { directory: string }, run: Record<string, unknown>): void {
-  expect(normalize(run, { paths: [opened.directory, tmpdir()] })).toMatchSnapshot();
+function snapshot(opened: { directory: string }, run: Record<string, unknown>, extraPaths: readonly string[] = []): void {
+  expect(normalize(run, { paths: [opened.directory, ...extraPaths, tmpdir()] })).toMatchSnapshot();
 }
 
 const SEQUENTIAL = "Read a.txt, then b.txt, then c.txt, each with its own tool call, one at a time. Then tell me the three words in order.";
@@ -357,3 +366,258 @@ for (const mode of MODES) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Cases that run once, in an Agent-owned conversation unless noted.
+// ---------------------------------------------------------------------------------------------
+
+/** Settles a synchronous read that may throw. */
+function read(fn: () => unknown): unknown {
+  try {
+    return { value: fn() };
+  } catch (error) {
+    return { threw: error };
+  }
+}
+
+describe("characterization, once", () => {
+  test("a queued message withdrawn, its promise awaited", async () => {
+    const opened = await openMode("agent-owned", { fixture: ECHO });
+    const { events, raw } = capture(opened.conversation);
+    const first = opened.conversation.prompt("SLOW_TURN first");
+    await until(has(raw, "turn_started"));
+    const queued = opened.conversation.prompt({ text: "withdraw me", delivery: "queue" });
+    const withdrew = [queued.withdraw(), queued.withdraw()];
+    const results = [await settle(first), await settle(queued)];
+    const records = await opened.records();
+    await opened.close();
+    snapshot(opened, { handleIds: [first.id, queued.id], withdrew, events, results, records });
+  }, 20_000);
+
+  test("an interrupt that drops queued messages, their promises awaited", async () => {
+    const opened = await openMode("agent-owned", {
+      fixture: LIFECYCLE,
+      env: { LIFECYCLE_TOOL_MS: "5000" },
+      cancelGraceMs: 80,
+    });
+    const { events } = capture(opened.conversation);
+    const running = opened.conversation.prompt("[lifecycle:tool]");
+    await until(() => opened.conversation.state.operation?.stage === "tool_running");
+    const queuedA = opened.conversation.prompt({ text: "queued a", delivery: "queue" });
+    const queuedB = opened.conversation.prompt({ text: "queued b", delivery: "steer" });
+    opened.conversation.interrupt({ clearQueue: true });
+    const results = [await settle(running), await settle(queuedA), await settle(queuedB)];
+    const records = await opened.records();
+    await opened.close();
+    snapshot(opened, { handleIds: [running.id, queuedA.id, queuedB.id], events, results, records });
+  }, 20_000);
+
+  test("a provider that fails to start: the prompt rejects with turn_failed", async () => {
+    const directory = await tempDir();
+    const flag = join(directory, "fail-load");
+    const opened = await openMode("agent-owned", {
+      fixture: LIFECYCLE,
+      env: { LIFECYCLE_STATE: join(directory, "sessions.json"), LIFECYCLE_FAIL_LOAD_FILE: flag },
+    });
+    const { events, raw } = capture(opened.conversation);
+    const before = await settle(opened.conversation.prompt("hello"));
+    await writeFile(flag, "1");
+    await opened.conversation.connection.forceStop();
+    const failing = opened.conversation.prompt("the provider cannot be reattached");
+    const failed = await settle(failing);
+    const records = await opened.records();
+    await opened.close();
+    expect(failed).toHaveProperty("rejected");
+    expect(raw.some((event) => event.kind === "turn_failed" && event.turnId === failing.id)).toBe(true);
+    snapshot(opened, { handleId: failing.id, events, results: [before, failed], records }, [directory]);
+  }, 20_000);
+
+  test("a PTY start resolves with an empty session id and no internal_session_acquired (controller)", async () => {
+    const directory = await tempDir();
+    const controller = new AgentController({
+      adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY] },
+      adapterId: "fixture",
+      mode: "degraded",
+      cwd: directory,
+    });
+    cleanups.push(() => controller.stop());
+    const progress: AgentControllerStartEvent[] = [];
+    const result = await controller.start((event) => progress.push(event));
+    const again = await controller.start((event) => progress.push(event));
+    const state = {
+      isConnected: controller.isConnected,
+      isDegraded: controller.isDegraded,
+      currentSessionId: controller.currentSessionId,
+      capabilities: read(() => controller.capabilities),
+    };
+    await controller.stop();
+    snapshot({ directory }, { result, again, progress, state });
+  }, 20_000);
+
+  test("session creation refused for authentication: start resolves without a context, connection usable (controller)", async () => {
+    const directory = await tempDir();
+    const controller = new AgentController({
+      adapter: { command: ["bun", AUTH_REQUIRED] },
+      adapterId: "fixture",
+      cwd: directory,
+    });
+    cleanups.push(() => controller.stop());
+    const progress: AgentControllerStartEvent[] = [];
+    const result = await controller.start((event) => progress.push(event));
+    const afterStart = {
+      isConnected: controller.isConnected,
+      currentSessionId: controller.currentSessionId,
+      authMethods: controller.authMethods,
+    };
+    const again = await controller.start((event) => progress.push(event));
+    const authenticated = await settle(controller.authenticate("fixture-login"));
+    const fresh = await settle(controller.startFresh((event) => progress.push(event)));
+    const prompted = await settle(controller.prompt("after login"));
+    const afterLogin = { isConnected: controller.isConnected, currentSessionId: controller.currentSessionId };
+    await controller.stop();
+    snapshot({ directory }, { result, afterStart, again, authenticated, fresh, prompted, afterLogin, progress });
+  }, 20_000);
+
+  test("session creation refused for authentication through a conversation (detached)", async () => {
+    const directory = await tempDir();
+    const outcome = await settle(AgentSession.create({
+      adapter: { command: ["bun", AUTH_REQUIRED] },
+      adapterId: "fixture",
+      agentSessionId: "auth-detached",
+      cwd: directory,
+      transcriptPath: join(directory, "auth.jsonl"),
+    }).then(async (conversation) => {
+      cleanups.push(() => conversation.stop());
+      const state = { internalSessionId: conversation.internalSessionId, providerConnection: conversation.state.providerConnection };
+      const prompted = await settle(conversation.prompt("before login"));
+      await conversation.stop();
+      return { state, prompted };
+    }));
+    snapshot({ directory }, { outcome, transcript: await readJsonl(join(directory, "auth.jsonl")) });
+  }, 20_000);
+
+  test("bridge from degraded mode and from normal mode (the temporary PTY)", async () => {
+    const start = spyOn(PtyClient.prototype, "start");
+    const bridge = spyOn(PtyClient.prototype, "bridge");
+    const stop = spyOn(PtyClient.prototype, "stop");
+    cleanups.push(async () => { start.mockRestore(); bridge.mockRestore(); stop.mockRestore(); });
+    const count = () => ({ start: start.mock.calls.length, bridge: bridge.mock.calls.length, stop: stop.mock.calls.length });
+
+    /** Bridges, types a few bytes into the terminal, then the exit chord. */
+    async function bridgeOnce(target: { bridge(options?: object): Promise<void> }) {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      let written = "";
+      output.on("data", (chunk) => { written += String(chunk); });
+      const status: string[] = [];
+      const done = target.bridge({ input, output, onStatus: (message: string) => status.push(message.trim()) });
+      await until(() => status.length > 0);
+      input.write("typed\r");
+      await Bun.sleep(50);
+      input.write(Buffer.from([0x1d]));
+      await done;
+      return { status, wroteClearScreen: written.includes("\x1b[2J\x1b[H") };
+    }
+
+    // Degraded: the live PTY of the conversation is bridged; no other PTY starts.
+    const directory = await tempDir();
+    const degraded = new AgentController({
+      adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY], displayName: "fixture" },
+      adapterId: "fixture",
+      mode: "degraded",
+      cwd: directory,
+    });
+    cleanups.push(() => degraded.stop());
+    await degraded.start();
+    const beforeDegraded = count();
+    const degradedRun = await bridgeOnce(degraded);
+    const degradedCalls = { before: beforeDegraded, after: count(), stillConnected: degraded.isConnected };
+    await degraded.stop();
+
+    // Normal: a temporary PTY is started, bridged and stopped; the ACP session is untouched.
+    const conversation = await AgentSession.create({
+      adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY], displayName: "fixture" },
+      adapterId: "fixture",
+      agentSessionId: "bridge-normal",
+      cwd: directory,
+    });
+    cleanups.push(() => conversation.stop());
+    const sessionBefore = conversation.internalSessionId;
+    const beforeNormal = count();
+    const normalRun = await bridgeOnce(conversation);
+    const normalCalls = { before: beforeNormal, after: count() };
+    const after = await settle(conversation.prompt("after bridge"));
+    const untouched = {
+      sameInternalSession: conversation.internalSessionId === sessionBefore,
+      providerConnection: conversation.state.providerConnection,
+      mode: conversation.mode,
+    };
+    await conversation.stop();
+    snapshot({ directory }, { degradedRun, degradedCalls, normalRun, normalCalls, untouched, after });
+  }, 20_000);
+
+  test("capabilities.agent.promptCapabilities before and after start", async () => {
+    const directory = await tempDir();
+    const controller = new AgentController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture", cwd: directory });
+    cleanups.push(() => controller.stop());
+    const controllerBeforeStart = read(() => controller.capabilities.agent.promptCapabilities);
+    await controller.start();
+    const controllerAfterStart = read(() => controller.capabilities.agent.promptCapabilities);
+    await controller.stop();
+
+    const opened = await openMode("agent-owned", { fixture: ECHO });
+    const conversation = opened.conversation;
+    const afterCreate = read(() => conversation.capabilities.agent.promptCapabilities);
+    await conversation.connection.forceStop();
+    const afterForceStop = read(() => conversation.capabilities.agent.promptCapabilities);
+    await conversation.prompt("reconnect");
+    const afterReconnect = read(() => conversation.capabilities.agent.promptCapabilities);
+    await opened.close();
+    snapshot(opened, { controllerBeforeStart, controllerAfterStart, afterCreate, afterForceStop, afterReconnect }, [directory]);
+  }, 20_000);
+
+  for (const [name, instruction] of [
+    ["stalls in a tool and its cancel is acknowledged", "[lifecycle:tool]"],
+    ["stalls silently and is cancelled by force", "[lifecycle:silent]"],
+  ] as const) {
+    test(`an internal prompt (handoff summary) that ${name}`, async () => {
+      const opened = await openMode("agent-owned", {
+        fixture: LIFECYCLE,
+        env: { LIFECYCLE_TOOL_MS: "5000" },
+        cancelGraceMs: 50,
+        operationLifecycle: { internalInference: { firstOutputMs: 30, nextOutputMs: 30, toolMs: 30 } },
+      });
+      const { events, raw } = capture(opened.conversation, { stages: true });
+      const before = await settle(opened.conversation.prompt("remember kiwi"));
+      const turnEventsBefore = raw.filter((event) => event.kind.startsWith("turn_")).length;
+      const handoff = await settle(opened.conversation.handoff({
+        continuation: { kind: "generated", summaryInstructions: instruction },
+      }));
+      const turnEventsDuringHandoff = raw.filter((event) => event.kind.startsWith("turn_")).length - turnEventsBefore;
+      const records = await opened.records();
+      await opened.close();
+      expect(turnEventsDuringHandoff).toBe(0);
+      snapshot(opened, { events, results: [before, handoff], turnEventsDuringHandoff, records });
+    }, 20_000);
+  }
+
+  for (const [name, prompt, env] of [
+    ["a permission request", "[lifecycle:permission]", {}],
+    // The end delay keeps the last chunk's message snapshot ahead of the metering record: in
+    // Agent-owned mode the two are written on separate paths, so a chunk arriving in the same
+    // instant as the end of the turn has no fixed order between them (see the A1 report).
+    ["a tool start", "[lifecycle:tool]", { LIFECYCLE_TOOL_MS: "150", LIFECYCLE_END_DELAY_MS: "100" }],
+  ] as const) {
+    test(`${name} sent the instant the prompt reaches the agent shows in the operation's stages`, async () => {
+      const opened = await openMode("agent-owned", { fixture: LIFECYCLE, env: { ...env } });
+      const { events } = capture(opened.conversation, { stages: true });
+      const pending = opened.conversation.prompt(prompt, {
+        onPermissionRequest: () => ({ outcome: "selected", optionId: "allow" }),
+      });
+      const result = await settle(pending);
+      const records = await opened.records();
+      await opened.close();
+      snapshot(opened, { handleId: pending.id, events, results: [result], records });
+    }, 20_000);
+  }
+});
