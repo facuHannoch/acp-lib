@@ -125,18 +125,60 @@ ask the agent). Presets: `readOnly`, `guest`, `trusted`, `owner`.
 
 ### The timeline
 
-The entity's universal history. Every message, report, decision and notification appends one event
-(`{ seq, at, kind, conversation, from, policy, scope, content }`), and each conversation (and each provider context
-of it) holds a **position**: how far its context has been brought up to date.
+The entity's history: one append-only list per session of everything that happened, in order. Each channel keeps a
+bookmark (its **position**) of how far its context has caught up. When a channel takes a turn, the agent is shown a
+digest of what happened elsewhere since that point, filtered by what the turn's policy may see; then the bookmark moves
+to the end.
 
-- **Delivery is a digest of the slice** from a conversation's position to now, filtered by the receiving turn's
-  policy. "Tell John what happened" is the slice since his conversation's position.
-- **Shared state and memory are projections** of the timeline: current facts and commitments; later, long-term
-  memory consolidated from long spans.
-- **Digested, not copied:** coarse digests for old spans, raw events only for the recent part.
-- **What a person was told** is a separate "told" event, distinct from the agent's position.
-- **Complete only as far as hosts report.** Native channels append automatically; hosts report their conversations
-  (messages, and summaries when they checkpoint).
+- **An event:** `{ seq, at, kind, channel, from, scope, content }`. `seq` is one order across the session; `kind` is a
+  message, a reply, a delegation fact, a worker reply, a "told" event, a state write, a policy change or a summary;
+  `from` is a participant, the agent or a worker; `scope` is the policy it happened under.
+- **Positions:** one per channel; ACP conversations have one per provider session (a new ACP session starts from
+  nothing).
+- **Who writes:** native channels, automatically; acp-client, the messages of ACP conversations (through the identity
+  runtime's `update`) and the summary of any conversation whenever it checkpoints.
+- **Stored** in the session's own store (`session.sqlite`), written only by the harness. No copy elsewhere in v1.
+
+**Delivery into a native channel, each turn:**
+
+1. take the slice from the channel's position to now;
+2. leave out the channel's own events (they are already in its context);
+3. filter by the turn's policy (`memory.read`: `none` and `own` see nothing from other channels, `all` sees
+   everything);
+4. digest it: acp-client's summaries where they cover a span, raw events (truncated) for the rest, under a size
+   budget, newest last;
+5. append it as a `<since_last_turn>` block before the new item, and move the position to now. The block is part of
+   the context from then on, so it is never sent twice.
+
+**Delivery into an ACP conversation:** the same slice and digest, returned as a preamble by the identity runtime's
+`load`; the position moves only on `delivered` (at least once).
+
+**Around it:** shared state (current facts and commitments) is a projection of `state_write` events, read with
+`state_read`; `timeline_since` and `timeline_search` pull more detail than the digest gave; what a person was told is a
+separate "told" event; when a channel's context is compacted its position is reset to the current state plus a
+digest.
+
+**An example.** Channel A is the owner's private chat (`owner`); channel B is a trusted agent (`trusted`, with
+`memory.read: all`).
+
+```
+seq 1  A  owner:  "We're moving the launch to Friday"
+seq 2  A  agent:  "Noted, Friday it is"
+seq 3  A  agent:  state_write "launch date: Friday"
+seq 4  B  bot:    "When is the launch?"
+```
+
+B's turn at seq 4, with B's position at 0: the slice is 1–3 (B's own events left out); B's policy sees `owner`-scoped
+events, so all stay; the digest is "In the owner's chat: launch moved to Friday"; the agent sees it, then the
+question, and answers "Friday"; B's position moves to 4. A guest channel (`memory.read: none`) gets nothing from A,
+so the agent there doesn't know about Friday, as intended.
+
+**Accepted for v1:**
+
+- **A standalone harness has no summaries,** so its digests are truncated raw events only: fine for short histories,
+  weaker for long ones. The harness producing its own digests at several granularities is phase 2.
+- **The read levels are coarse:** a channel benefits from the entity only with `memory.read: all`. Finer levels (only
+  facts, only some channels) are for later presets.
 
 ### Watches (deferred)
 
