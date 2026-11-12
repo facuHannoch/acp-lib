@@ -131,8 +131,7 @@ CLI. There is no config shared across sessions. Each prompt reads the current ve
 only what JSON can't hold: function handlers and backends.
 
 - **Standalone,** the stored config (`<home>/sessions/<id>/config.json`) is the source of truth.
-- **Hosted,** the host is: it creates the session with its config and saves changes made through the API; with an
-  isolated, ephemeral home the host re-injects the session on start (Running as a process, State sync).
+- **Hosted,** the host is: it creates the session with its config and saves changes made through the API.
 
 ```json
 {
@@ -345,9 +344,8 @@ tools, MCP servers and storage live there, while the host (acp-client) may run e
 - **Host → harness:** `initialize`, `session/create`, `session/load`, `session/export`, `session/import`,
   `channel/push`, `channel/interrupt`, `channel/close`, `prompt`, `report`, `config/get`, `config/update`,
   `usage/get`, `member/prepare`, `member/delivered` (phase 2 for members).
-- **Harness → host notifications:** `channel/event` (text deltas, tool calls, usage, model-call log, turn end);
-  `state/appended` (new timeline events, for hosts that keep the durable copy).
-- **Harness → host requests (callbacks):** `functions/call`, `delegation/open|send|check|stop|list|answerPermission`,
+- **Harness → host notifications:** `channel/event` (text deltas, tool calls, usage, model-call log, turn end).
+- **Harness → host requests (callbacks):** `functions/call`, `delegation/open|send|check|stop|list`, `permission/request` (an `ask` from the gate; the host answers),
   `history/search|read`. Declared by the host in `initialize`; a callback the host didn't declare makes the matching
   tools unavailable, not broken.
 - **The client** (`HarnessClient`) is exported by the package (`./client`) with two transports: process (spawn a
@@ -356,17 +354,13 @@ tools, MCP servers and storage live there, while the host (acp-client) may run e
   `initialize`; on stdin close it finishes running turns as interrupted and exits. A crash is the host's to restart.
 - **Contract tests** run the same scenarios through both transports.
 
-### State sync for isolated sessions
+### Where the session is written
 
-The harness reads and writes its session directly, so when it is isolated the session lives in its environment,
-which may be ephemeral. The host then keeps the durable copy:
-
-- **Not isolated:** the session lives in the home the host chose; nothing to sync.
-- **Isolated:** on start the host injects the last saved state (`session/import`); while running the harness sends
-  new timeline events as they are appended (`state/appended`), and channel context snapshots on idle and on close;
-  the host stores them where the consumer chose. A crash loses at most what was in flight.
-- What needs syncing is small: transcripts are the host's records, the config is the host's; the timeline, shared
-  state, positions, usage and (optionally) channel contexts are the harness's.
+The harness writes its session to its home (`--home`, `HARNESS_HOME`, or what the host passes), a path in its own
+environment. v1 keeps no copy elsewhere: a home the harness can't reach fails, and an ephemeral home loses the entity
+with its environment. `session/export` returns the whole entity as a bundle and `session/import` creates a session from
+one, so hosts and users can back up by hand. Continuous copies and delegated writing are in
+`todos/11-12-TODO-session-sync-and-backup.md`.
 
 ## Execution port
 

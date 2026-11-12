@@ -53,6 +53,13 @@ MCP tools     ──┘    (rules, routing)
 | A delivery port (an interface it defines) | the way back into agent conversations |
 | The `Agent` event bus | events for the consumer |
 
+Today an extension can only create its tables (`migrate`, with `execute`) and be told about committed records
+(`recordsCommitted`); it has no way to read or write its tables afterwards (`src/persistence/backend.ts:805`). The
+orchestrator needs one, so step 1 adds a runtime handle: `scope.extension(id)` inside `persistence.transaction`,
+with `execute` and `query`, only for installed extensions and only on tables prefixed with the extension's id. A
+persistence backend without extensions (`capabilities.extensions: false`) can't host the orchestrator; the `Agent`
+rejects that configuration.
+
 `conversations.metadata` is not used: it is the consumer's own string (`CreateAgentConversationConfig.metadata`).
 Nothing imports the orchestrator except the `Agent` (which constructs it when `orchestrator` is configured) and
 `src/native/delegation-backend.ts`. An `Agent` with no orchestrator configured behaves as today.
@@ -138,7 +145,6 @@ interface Orchestrator {
   stop(actor: Actor, handle: string): Promise<void>;
   drop(actor: Actor, handle: string): Promise<void>;
   list(actor: Actor): Promise<WorkerSummary[]>;
-  answerPermission(actor: Actor, requestId: string, optionId: string): Promise<AnswerResult>;
 }
 type Actor =
   | { kind: "consumer" }
@@ -158,7 +164,6 @@ type SendResult =
 | `stop` | `scope`, `redirect` (unless it is the conversation that gave the running work) | `interrupt()` on the worker with `clearQueue` |
 | `drop` | `scope`, `redirect` | stop, delete the conversation and provider session, mark dropped |
 | `list` | `scope` | summaries |
-| `answerPermission` | the actor is the request's target | resolve the waiting handler |
 
 `open` and `send` return at once. Awaiting the worker's `prompt()` inside a tool would hold the agent's turn open for
 the whole job. Records store facts at the primitive level ("conversation X sent this to worker w1"), never tool calls
@@ -204,7 +209,7 @@ interface DeliveryPort {
 | --- | --- | --- |
 | a worker's turn ends normally | `worker_reply`: its final message | `lastConversation` |
 | a turn fails (stalled, crashed, error) | `worker_failed` with the error kind | `lastConversation` |
-| a forwarded permission needs an answer | `permission_request` with the options | the target (below) |
+| a forwarded permission needs an answer (Ask the agent) | `permission_request` with the options | the target (below) |
 | another conversation redirects the worker | `worker_redirected` | the previous `lastConversation` |
 | restart finds a worker that was busy | `worker_interrupted` | `lastConversation` |
 
@@ -232,9 +237,12 @@ The forwarding handler, passed per prompt as `handlers.onPermissionRequest(reque
 
 1. resolves the level from the policy of the turn that gave the running work (`lastSenderPolicy`);
 2. deny or allow: answer at once;
-3. ask: write a pending request, deliver a `permission_request` item to `lastConversation`, or, when that
-   conversation can't approve (a guest), to a consumer-chosen conversation; mark the worker `awaiting_permission`;
-4. wait for `answerPermission`, the deadline (refusal) or the abort signal (cancelled);
+3. ask me: write a pending request and raise it as a `permission_requested` event on `lastConversation` (marked
+   with the worker), or, when that conversation can't approve (a guest), on a consumer-chosen conversation; the
+   answer comes through that conversation's `answerPermission` (`11-11-SPEC-native-harness-integration.md`,
+   Permissions); ask the agent: deliver a `permission_request` inbox item to `lastConversation`, answered by the
+   agent with a tool; mark the worker `awaiting_permission`;
+4. wait for the answer, the deadline (refusal) or the abort signal (cancelled);
 5. return the outcome; the worker's harness continues.
 
 - **Ask the agent:** the agent answers with a tool, picking one of the worker's options; where Ask me is also possible
@@ -316,7 +324,7 @@ src/orchestrator/
 
 ## Steps
 
-1. Persistence extension and rows; `open`, `send` (idle), `check`, `list` over fake workers; slots and LRU eviction;
+1. The runtime handle for persistence extensions; the orchestrator's extension and rows; `open`, `send` (idle), `check`, `list` over fake workers; slots and LRU eviction;
    consumer API and events.
 2. Busy rules: steer from the owner of the running work, `busy` answer, `redirect` with the redirected item.
 3. Policy checks (`use`, `scope`, `redirect`) and the worker depth limit.

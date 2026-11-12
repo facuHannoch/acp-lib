@@ -138,9 +138,9 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     (configured once on the `Agent`, `AgentConfig.harness`); every native conversation's `internal_session_id` is
     that session's id. Native adapters differ only in channel defaults.
 30. **Config belongs to the session:** stored in it standalone; owned by the host while hosted.
-31. **Where a session lives:** acp-client's data location by default when not isolated; inside the agent's
-    environment when isolated, with acp-client keeping the durable copy by state sync (import on start, timeline
-    events as appended, channel snapshots).
+31. **Where a session lives:** in the harness home, settable by the consumer (`AgentConfig.harness.home`, a path in
+    the harness's environment); acp-client's data location by default. No sync in v1: a bad path fails, an ephemeral
+    home loses the entity, backup is a manual export and import (`harness/todos/11-12-TODO-session-sync-and-backup.md`).
 32. **Usage by purpose.** Every harness model call carries a purpose; the host files it by where it happened (inside
     a turn: that turn; otherwise entity-level metering). The session keeps its own ledger. acp-client's conversation
     summaries stay acp-client's internal inference.
@@ -158,6 +158,14 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     them (titles, handles) is settled after real use. Code guarantees actions (who may message whom, what tools run),
     not the confidentiality of what the agent writes (`harness/todos/11-12-TODO-information-confidentiality.md`).
     Tool names are provisional.
+36. **Permissions are events.** A request is a `permission_requested` event on the conversation, for prompted turns
+    and turns the harness starts alike; the answer is `conversation.answerPermission(id, option)`; the per-prompt
+    handler stays as a shortcut. A conversation whose consumer answers waits up to a timeout, then refuses; otherwise
+    `defaultPermission` applies at once. Forwarded worker requests at Ask me use the same path.
+37. **A conversation's life** follows the channel: its id is the channel id; a cleared transcript or a handoff into
+    native gives the channel a fresh context; a handoff out of native seeds the ACP session from acp-client's records
+    or a summary, as today, and the channel stays in the session; deleting closes the channel and keeps its timeline
+    events. `conversation.setTitle()` is added, since the title is the channel's label.
 
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations
