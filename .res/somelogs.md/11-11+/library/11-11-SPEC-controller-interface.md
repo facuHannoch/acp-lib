@@ -229,7 +229,8 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
   is an error (the controller throws, the session treats it as a bug). In this stage each dispatched message belongs
   to exactly one turn. A cause's ids name messages the session sent; a backend-scheduled cause naming an unknown id
   is recorded and logged, not trusted for settlement.
-- **`turn_started`** is the only turn event the controller reports. A turn's end is its prepared turn's `prompt()`
+- **The controller reports only the start of turns, never their end:** `turn_started`, and for backend-scheduled
+  controllers `turn_took` (more items folded into a running turn). A turn's end is its prepared turn's `prompt()`
   resolving or rejecting, which is the single authority for the provider's outcome; the public `turn_completed` / `turn_failed`
   are the session's, emitted after finalization (below). A result forced by the supervisor (stall, force stop) goes
   the same way; the controller never announces an outcome of its own.
@@ -346,7 +347,7 @@ after:  pump: controller.send(run) → the controller reports turn_started (insi
   now and recorded in `findings/11-12-FINDING-acp-message-durability.md`.
 
 **Public API.** `prompt()` and `PromptHandle` are unchanged. `turn_started` gains `cause`. Consumers that want every
-turn, including ones nobody prompted, subscribe to the conversation's events (`turn_started`, `turn_completed`,
+turn, including ones nobody prompted, subscgentribe to the conversation's events (`turn_started`, `turn_completed`,
 `turn_failed`), as they can today. In stage 2a the handle gains `accepted: Promise<void>` (queued for ACP, stored by
 the harness for native), which makes the durability difference visible per backend.
 
