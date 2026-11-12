@@ -257,8 +257,8 @@ implementing agent (about an hour per brief; a large spec is split into several 
 
 1. **Controller interface** (`library/11-11-SPEC-controller-interface.md`): the turn split, the turn-based
    controller, the `HarnessController` rename, neutral capabilities. A refactor with no new behaviour; its gate is no
-   regressions (the existing suite, plus characterization tests written before the refactor). Likely two or three
-   briefs.
+   regressions (the existing suite, plus characterization tests written before the refactor). Ready for
+   implementation, in four briefs (A1 characterization tests, A2 turn path, B1 interface, B2 conformance).
 2. **Integration stage 2a** (`library/11-11-SPEC-native-harness-integration.md`): native conversations end to end
    against harness part 1, permissions as events and the one permission setting, export and import.
 3. **Integration stage 2b**: identity for ACP conversations, the function and history callbacks, messages between
