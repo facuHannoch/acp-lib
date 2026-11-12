@@ -18,6 +18,13 @@ with several native conversations and, once the orchestrator exists, fake and re
 conversations through the fixture agents run alongside, since the two kinds share the queue, steering, permissions and
 persistence.
 
+## Protocol scenario walkthroughs
+
+Before the stress runs, the scenarios listed in the protocol spec (`11-12-SPEC-harness-protocol.md`, Scenarios) are
+walked through step by step against the built system, each with its failure cases: a message lost, repeated or late,
+or a side dying at each step. The protocol was designed to cover the bases, not reviewed to perfection; these
+walkthroughs and the stress runs are where its weak points show.
+
 ## Scenarios
 
 - many messages back and forth on several native conversations of one `Agent` at once, queued and steered;
