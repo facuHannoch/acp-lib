@@ -379,7 +379,13 @@ usage. A new kind of call needs only a new purpose name.
 ## Guards
 
 Calls per turn (`limits.callsPerTurn`); the unattended-turn budget (`limits.unattendedTurns`: turns with no human
-input, which stops agent–worker and agent–agent ping-pong); a cost budget later.
+input, which stops agent–worker and agent–agent ping-pong); a usage budget (`limits.budget`, set by the host), which
+refuses model calls over the limit, in turns and outside them (the host can't refuse a turn before it starts; overview,
+decision 41).
+
+**Holds.** A host can hold a channel (`channel/hold`) before an operation that needs it to itself: the harness
+starts no turn on it until `channel/release`; a running turn is waited for, or interrupted when the hold asks for it.
+Items keep arriving in the inbox meanwhile.
 
 ## Running as a process
 
@@ -390,7 +396,7 @@ tools, MCP servers and storage live there, while the host (acp-client) may run e
   its channels multiplexed. The protocol is the harness's, versioned (`protocol.version` in an `initialize` exchange).
 - **Host → harness:** `initialize`, `session/create`, `session/load`, `session/export`, `session/import`,
   `channel/open` (with policy and label), `channel/push`, `channel/interrupt`, `channel/reset`, `channel/close`,
-  `channel/setPolicy`, `channel/setSettings`, `prompt`, `report`, `member/register`, `member/prepare`,
+  `channel/setPolicy`, `channel/setSettings`, `channel/hold`, `channel/release`, `prompt`, `report`, `member/register`, `member/prepare`,
   `member/delivered`, `config/get`, `config/update`, `usage/get`.
 - **Harness → host notifications:** `channel/event`: `turn_started` (turn id and the items it took), text deltas,
   tool calls, usage, model-call log, `turn_ended`, and `message` (text placed on a channel outside a turn).

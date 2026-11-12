@@ -179,13 +179,17 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
 39. **Per-channel settings.** Model settings changed on a conversation (model, reasoning, temperature) are that
     channel's settings in the harness, overriding the session's config for that channel only; there is no config
     overlay.
-40. **The controller interface is turn-based.** `send` puts a message in; `subscribeTurns` reports every turn the
-    backend runs, with its cause; `executeTurn(turnId, content?)` runs a reported turn (ACP: today's prompt call, with
-    the content the session builds at turn time; native: waits for the harness's end of turn). The
-    `HarnessController` reports each message as one turn at once, so the order of events stays as today; the
-    `NativeController` reports the harness's turns. `AgentSession` runs every turn from `turn_started`.
-    `runInternalPrompt` (prompts outside any turn: handoff summaries, recaps) is optional (ACP only). For consumers, `prompt()` stays the main method; `send()` plus the turn events are for those
-    who want every turn.
+40. **The controller interface is turn-based.** `send(run)` puts a run of messages in; the controller reports
+    `turn_started` with its cause; the session runs the turn through `executeTurn(turnId, content)` (ACP: today's
+    prompt call, with the input the session builds at turn time; native: the harness's stream into the session's
+    handlers) and owns the public completion, after finalization; `abandonTurn` ends a turn that won't run. The
+    `HarnessController` reports each run at once, so the order of events stays as today. Turns the backend starts on
+    its own join the conversation's operation queue. For consumers, `prompt()` and its handle are unchanged; the turn
+    events carry the cause (controller-interface spec).
+41. **The backend starts turns freely; the host never grants them.** The harness decides when a channel takes a
+    turn. acp-client keeps its guarantees with holds for exclusive operations (handoff out, stop, delete), in-order
+    handling of each conversation's turns, and a budget guard in the harness. Limitations and the alternatives (a
+    grant before each turn) are in the controller-interface spec, Appendix A.
 
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations
