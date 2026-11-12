@@ -190,6 +190,12 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     turn. acp-client keeps its guarantees with holds for exclusive operations (handoff out, stop, delete), in-order
     handling of each conversation's turns, and a budget guard in the harness. Limitations and the alternatives (a
     grant before each turn) are in the controller-interface spec, Appendix A.
+42. **The native harness process starts lazily, on activity, and its config is known before start.** Channels always
+    exist; the process (and its container) starts when a native conversation first needs it and may stop when idle.
+    acp-client stores the harness config (the `Agent` config as base, API changes as overrides) and answers models,
+    commands and capabilities from it and the harness package's `describe(config)`, so a native conversation always
+    looks ready. The harness session id is the `Agent`'s id. Background work and waking a stopped harness are phase 2
+    (`harness/todos/11-12-TODO-background-work-and-lazy-harness.md`).
 
 
 **Rejected directions:** pooling several ACP sessions in one harness process; one shared thread all conversations
