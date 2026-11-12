@@ -88,9 +88,13 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
    is told. No queueing behind another conversation's work; no trust hierarchy.
 10. **Permissions:** four levels (deny, ask me, ask the agent, allow); worker requests are forwarded through the
     delegating turn's policy.
-11. **Policies** (renamed from "profiles") live in the harness configuration and are asserted per prompt by the host,
-    never by end users; a turn triggered by several items takes the most restrictive; presets `readOnly`, `guest`,
-    `trusted`, `owner`; no participant registry, the owner is just a policy.
+11. **Policies** (renamed from "profiles") live in the harness configuration and are asserted by the host, never by
+    end users, in three layers: the message's policy, else the channel's, else the session's `defaultPolicy`. A
+    native adapter's default only seeds a new channel's policy. A turn triggered by several items takes the most
+    restrictive; presets `readOnly`, `guest`, `trusted`, `owner`; no participant registry, the owner is just a
+    policy. The agent is told each turn which channel it is in and what its policy allows, so it can say "not here;
+    talk to me in our other conversation". Senders are acp-client's participants passed through (the same id in two
+    conversations is the same person); the conversation's `title` is the channel's label.
 12. **Tool placement** is a pipeline strategy (stable superset plus a per-turn hint by default); the gate always
     enforces.
 13. **The inbox** is two existing mechanisms: persisted items as out-of-band messages (with a kind and a sender),

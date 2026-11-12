@@ -70,7 +70,7 @@ specific tool, permission rules, retry logic, knowledge of policies, workers or 
 | Call | Meaning |
 | --- | --- |
 | `createSession({ home?, config })` / `loadSession({ home?, id })` | Create an entity with its config / wake an existing one; locks it |
-| `session.channel(id, { defaultPolicy? })` | Open or resume a channel (created on first use) |
+| `session.channel(id, { policy?, label? })` | Open or resume a channel (created on first use); `channel.setPolicy(name)` changes it |
 | `channel.push(item)` | Add an inbox item: starts a turn if idle, injected at the next call if busy |
 | `channel.interrupt()` / `channel.close()` | Abort the running turn / close the channel's context |
 | `channel.events` | Lifecycle and streaming events: text deltas, tool calls, usage, model-call log, turn end |
@@ -188,8 +188,14 @@ only what JSON can't hold: function handlers and backends.
   policy.
 - **Presets** ship as named examples: `readOnly`, `guest`, `trusted`, `owner`. With no policies configured a
   permissive single-user default applies; once policies exist, `defaultPolicy` is required.
-- **Resolution per turn:** the policy of each triggering item (item → channel default → `defaultPolicy`); several
-  items → the most restrictive, capability by capability.
+- **Three layers, resolved per item:** the item's own policy (asserted by the host for that message; worker replies
+  carry the policy of whoever gave the work), else the channel's policy, else the session's `defaultPolicy`. A turn
+  triggered by several items takes the most restrictive, capability by capability.
+- **The channel's policy** is set by the host when the channel is opened and can be changed (`channel.setPolicy`);
+  the change is a timeline event.
+- **The agent knows where it is:** each turn renders the channel's label and what its policy allows (with the tool
+  hint), so the model can explain a refusal ("I can't do that in this conversation") instead of only hitting the
+  gate.
 - **Read-only** writes no memory and gets no tool that carries content into other conversations, or a guest's words
   reach the agent through the back door.
 - **The policy engine is the permission gate.** It decides allow, deny or ask for every call under the turn's

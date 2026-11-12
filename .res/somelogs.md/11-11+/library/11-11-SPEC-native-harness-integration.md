@@ -72,8 +72,9 @@ channels). In acp-client:
 | the conversation's provider-session row (`provider_sessions`) | `internal_session_id` = the harness session id (the same for every native conversation of the `Agent`; the index on it isn't unique); the channel id in the row's metadata |
 | a cleared transcript or a handoff into native | a fresh context on the same channel (`channel.close()` then reopen), the old row deactivated, a new one active |
 | deleting the conversation | closing the channel; its timeline events stay (they are the entity's history) |
-| participants on the conversation (`ParticipantRef`) | senders on the channel's messages |
-| the conversation's default policy | the channel's default policy |
+| participants (`ParticipantRef { id, kind, name }`, shared by all of an `Agent`'s conversations) | senders: `id` → sender id, `name` → label, `kind` → person, agent or other; the same id in two conversations is the same person |
+| the conversation's `policy` | the channel's policy |
+| the conversation's `title` | the channel's label, shown to the agent |
 
 **Where the session lives:**
 
@@ -89,6 +90,30 @@ channels). In acp-client:
   is its source of truth while hosting: a change through the API is saved by acp-client and re-injected on start.
 - **The session is locked** while acp-client has it open; another host (the standalone CLI) can't open it meanwhile.
 
+### Sender and policy
+
+Three layers, first match wins: the message, the channel, the session.
+
+```ts
+const conv = await agent.conversations.create({ adapterId: "main", policy: "owner", title: "Owner, private chat" });
+await conv.send({ text: "hi", participantId: "bob", policy: "trusted" });   // this message only
+await conv.setPolicy("guest");                                               // the channel from now on
+```
+
+- **Message:** an optional `policy` on `send` / `prompt`, for that message only.
+- **Channel:** the conversation's `policy`, set at creation (else seeded from the native adapter's `defaultPolicy`)
+  and changed with `setPolicy`. Stored on the conversation; a change is recorded like a configuration change and
+  passed to the harness.
+- **Session:** the harness config's `defaultPolicy`.
+- **Only the consumer's code sets policies;** nothing reads them from message text. Names are checked by the harness:
+  an unknown one rejects the message, and `send` surfaces the error.
+- **Recorded:** the user-message record stores the policy that applied (record metadata), for audit.
+- **Senders** are participants as they exist today (`resolveParticipant`, `src/agent/persisted-lifecycle.ts:387`),
+  passed through unchanged; `user:default` passes as a sender with no name. No notes and no per-participant policy
+  for now; if testing shows the agent needs more about people, participants are where it goes.
+- **ACP conversations** get a `policy` too: the scope their messages carry when reported to the timeline, and later
+  what identity they receive as members.
+
 ### Adapters
 
 `Adapter` stays what it is: the `HarnessController`'s adapter, an external harness command
@@ -98,7 +123,7 @@ channels). In acp-client:
 ```ts
 interface NativeAdapter {
   kind: "native";            // a conversation on this adapter is a channel of the Agent's harness session
-  defaultPolicy?: string;    // the channel default; a prompt may assert another
+  defaultPolicy?: string;    // seeds a new channel's policy when the conversation sets none
   displayName?: string;
 }
 type AgentAdapter = Adapter | NativeAdapter;   // what Agent configs take
