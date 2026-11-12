@@ -66,6 +66,8 @@ interface Opened {
   readonly directory: string;
   /** Records as the mode stores them. Read before `close`. */
   records(): Promise<unknown>;
+  /** Agent-owned only: observe each record once it is committed (the committed-record bus). */
+  onCommitted?(listener: (record: Record<string, unknown>) => void): void;
   close(): Promise<void>;
 }
 
@@ -163,9 +165,11 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
     };
     cleanups.push(close);
     const bus: unknown[] = [];
+    const committedListeners: Array<(record: Record<string, unknown>) => void> = [];
     agent.events.subscribe((notification) => {
       const record = notification.event.record as unknown as Record<string, unknown>;
       bus.push({ kind: record.kind, recordId: record.recordId, operationId: record.operationId });
+      for (const listener of committedListeners) listener(record);
     });
     const conversation = await agent.conversations.create();
     return {
@@ -176,6 +180,7 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
         records: (await agent.persistence.records.list(conversation.id, { limit: 1000 })).records,
         committedBus: bus,
       }),
+      onCommitted: (listener) => { committedListeners.push(listener); },
       close,
     };
   }
@@ -601,17 +606,30 @@ describe("characterization, once", () => {
     }, 20_000);
   }
 
-  for (const [name, prompt, env] of [
-    ["a permission request", "[lifecycle:permission]", {}],
-    // The end delay keeps the last chunk's message snapshot ahead of the metering record: in
-    // Agent-owned mode the two are written on separate paths, so a chunk arriving in the same
-    // instant as the end of the turn has no fixed order between them (see the A1 report).
-    ["a tool start", "[lifecycle:tool]", { LIFECYCLE_TOOL_MS: "150", LIFECYCLE_END_DELAY_MS: "100" }],
+  for (const [name, prompt, env, gated] of [
+    ["a permission request", "[lifecycle:permission]", {}, false],
+    ["a tool start", "[lifecycle:tool]", { LIFECYCLE_TOOL_MS: "150" }, true],
   ] as const) {
     test(`${name} sent the instant the prompt reaches the agent shows in the operation's stages`, async () => {
-      const opened = await openMode("agent-owned", { fixture: LIFECYCLE, env: { ...env } });
+      // Gated: the fixture ends the turn only after the last chunk's in-progress message snapshot
+      // has been committed. In Agent-owned mode that snapshot is queued on the owned-record chain
+      // while the metering record is written directly, so a chunk arriving in the same instant as
+      // the end of the turn has no fixed order against it; the barrier pins the order the
+      // snapshot shows (see the A1 report). The tool start itself still arrives immediately.
+      const gate = gated ? join(await tempDir(), "release-end") : null;
+      const opened = await openMode("agent-owned", {
+        fixture: LIFECYCLE,
+        env: { ...env, ...(gate ? { LIFECYCLE_END_GATE_FILE: gate } : {}) },
+      });
       const { events } = capture(opened.conversation, { stages: true });
-      const pending = opened.conversation.prompt(prompt, {
+      let pending!: ReturnType<AgentSession["prompt"]>;
+      if (gate) {
+        opened.onCommitted!((record) => {
+          if (record.kind === "message" && record.role === "assistant" && record.status === "in_progress"
+            && record.operationId === pending.id) void writeFile(gate, "release\n");
+        });
+      }
+      pending = opened.conversation.prompt(prompt, {
         onPermissionRequest: () => ({ outcome: "selected", optionId: "allow" }),
       });
       const result = await settle(pending);
