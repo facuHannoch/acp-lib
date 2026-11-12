@@ -134,8 +134,16 @@ type TurnCause = { kind: "messages"; messageIds: string[] } | { kind: "items"; i
 **For the `HarnessController` (ACP and PTY), the order stays exactly as today.** `send` and its turn are one unit:
 the message is queued; when its turn comes the session runs the same sequence `runPrompt` runs now, in the same order,
 including the managed-mode preflight before any durable record. The split is a split of code, not a change of
-sequence. `messageId` is the turn id, so record and presentation ids don't change. Steering's combining of queued
-steer messages into one run stays as it is (a combined run is one turn whose cause lists every message).
+sequence.
+
+- **Message ids and turn ids are separate.** Each message keeps the id the queue already gives it (the pending
+  message id that `withdraw` takes); that is `messageId`. A turn has its own turn id, as today.
+- **Steering's combining** of queued steer messages into one run stays as it is: a combined run is one turn whose
+  cause lists every message id it took.
+- **Record and presentation ids stay keyed by the turn** (`<turnId>:user`, `<turnId>:user:2`,
+  `message:<turnId>:user`), so no record changes.
+- **An ACP message is durable only once its turn starts** (the user record is written then, as today); accepted for
+  now and recorded in `findings/11-12-FINDING-acp-message-durability.md`.
 
 **Turn events.** `turn_started` gains `cause` (`{ kind: "messages", messageIds }` for every ACP turn);
 `turn_completed` and `turn_failed` are unchanged. `AgentSession` runs `runTurn` when its controller reports
@@ -146,8 +154,8 @@ order of events is unchanged.
 
 - `prompt()` stays the main consumer method and behaves exactly as today.
 - `send(message)` is new: it queues the message (same inputs as `prompt`: text, parts, attachments, participant,
-  consumer metadata, delivery) and resolves with `{ messageId }` once queued; `withdraw()` works as on a prompt
-  handle. For ACP the user record is written when its turn begins, as today.
+  consumer metadata, delivery) and resolves with `{ messageId }` once queued, not once saved; `withdraw()` works as
+  on a prompt handle. For ACP the user record is written when its turn begins, as today (see the finding above).
 - `prompt()` becomes `send()` plus waiting for the turn whose cause includes the message.
 - Consumers that want every turn subscribe to the conversation's events (`turn_started`, `turn_completed`,
   `turn_failed`), as they can today.
@@ -239,7 +247,8 @@ recovery paths except to call the new functions, public behaviour.
    **Gate:** suite green; snapshots updated only by the added field.
 4. **`send()`** on `AgentConversation` / `AgentSession`, returning `{ messageId }` with `withdraw`; `prompt()` rebuilt
    as send plus waiting for the turn. New tests: `send` resolves before the turn ends; a turn's cause lists the
-   message; `withdraw` before dispatch. **Gate:** suite green; snapshots unchanged.
+   message id; two steer messages combined into one turn give two message ids in its cause, with record ids still
+   keyed by the turn; `withdraw` before dispatch. **Gate:** suite green; snapshots unchanged.
 5. **Changelog:** `CHANGELOG-controller-interface.md` with `send()` and `cause`. **Gate:** `agent-session.ts` shorter
    than before.
 
@@ -288,7 +297,8 @@ check added with the member it guards.
 - **Hidden coupling in `runPrompt`.** Closures over session fields (presentation, metering state, `ownerRecordWrite`)
   can make the narrow context object grow. Sign: the context passes most of the session. Then extract smaller pieces
   first rather than pass the session.
-- **Steering combine.** A combined run carries several messages; the cause must list them all, and `withdraw` must keep
-  working for messages not yet dispatched. Covered by the characterization tests.
+- **Steering combine.** A combined run carries several messages; the cause must list each message's own id (not the
+  turn id), and `withdraw` must keep working for messages not yet dispatched. Covered by the characterization tests
+  and the step 4 tests.
 - **The managed path is agents-core's.** Breaking it breaks the only consumer. The `session-manager-*` tests and the
   managed characterization tests must stay green.
