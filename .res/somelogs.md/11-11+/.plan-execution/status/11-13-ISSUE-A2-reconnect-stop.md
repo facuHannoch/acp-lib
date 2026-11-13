@@ -1,0 +1,5 @@
+# A2: stop while reconnect is unanswered
+
+Implementer report `controller-interface:library/reports/11-12-REPORT-A2.md` at `1ec6710`, open question 3, says an unchanged A1 `9de0ca3` prompt and `stop()` hang if provider `session/load` on reconnect is never answered, without fault-injected send. Controller stop cannot reach a client still being brought up. Implementer regards fixing cancellation of in-flight reconnect as a new ACP behavior outside A2 scope. The new A2 fix `9e0f457` rejects a fault-injected failed acceptance promptly but retains the in-flight reconnect as a queue barrier, so a never-answered reconnect can still prevent later queue operations and stop; its regression releases the held load before stopping. The plan says all new waits must have a bound. Independent review is assessing this, including whether the A2 fix introduces or extends a wait and whether a spec/scope decision is needed.
+
+Escalate to user for spec owner: decide how to handle the existing stop hang and the new path's reconnect wait under the no-behavior-change and bounded-wait rules. No change to source or acceptance of unbounded waits is authorized by this issue.
