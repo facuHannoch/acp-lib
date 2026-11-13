@@ -4,10 +4,10 @@ Spec: `../11-11-SPEC-controller-interface.md` (beta `1bda9ef`). Branch `controll
 (beta merged in `d48ddcb`; beta-update report `11-12-REPORT-A2-beta-update.md`). Status and
 release: bob-b, `controller-interface-status` at `14f56c4`.
 
-**State: steps 1–4 done; the first review's findings fixed in `e7f2d79`, the follow-up review's
-(`11-12-REVIEW-A2.md` at `8b4baf6`) in `f54dc05`. Gate met: full suite 1,144 pass / 0 fail, two
-runs.** Two intermittent snapshot orders are with the owner (open question 1); nothing here
-changes them. The spec correction (beta
+**State: steps 1–4 done; review findings fixed in `e7f2d79` (first review), `f54dc05` (follow-up)
+and `9e0f457` (second follow-up, `11-12-REVIEW-A2.md` at `f9919ad`). Gate: full suite 1,145
+pass / 0 fail, two runs.** Two pre-existing intermittent snapshot orders and one pre-existing stop
+hang are with the owner (open questions 1 and 3); nothing here changes them. The spec correction (beta
 `fcd1fd4`) was merged in `efe6ebe`; steps 2–4 were released at status `6992179`. The spec question
 was
 `.plan-execution/status/11-12-ISSUE-A2-turn-events.md` is corrected on beta and both branches have
@@ -340,6 +340,65 @@ new/changed tests (rejected send, still-queued injection, helper cases) fail the
 - The intermittent Agent-owned internal-command order the reviewer saw once (assistant snapshot
   vs metering record) did not occur in my two full runs. I haven't analysed it; see open question 1.
 
+## Second follow-up fix (`9e0f457`)
+
+Task: `.plan-execution/tasks/controller-interface-A2-followup-3-fix.md`.
+
+**A rejected acceptance waited behind a pending reconnect.**
+- **Fix:** `pump` still starts `ensureProvider()` right after the synchronous report, but now waits
+  for readiness and acceptance together, failing fast (`Promise.all([ready, accepted])`). A rejected
+  `send` fails the turn at once, even while the reconnect is held: `abandonTurn`, `turn_failed`, the
+  prompt rejects once, and the message leaves the registry.
+- **The reconnect in flight:** if it is still running when the turn fails, the queue operation waits
+  for it to settle (either way) before the next operation starts. Without that, the next operation's
+  `ensureProvider` would start a second reconnect on top of it.
+  - The wait is only taken when that readiness is still running; otherwise nothing is awaited, so
+    normal turns get no extra scheduling point.
+  - It is bounded like any reconnect: by the provider answering or the process ending. That is what
+    the operation already waited for before (on A1).
+
+**Probes:**
+- **Boundary probe:** still identical to A1 in all 10 scenarios.
+- **Rejected acceptance during a held reconnect** (lifecycle fixture, `session/load` unanswered):
+  the prompt now rejects in about 2 ms with `acceptance rejected`; before, it was still pending.
+
+**Regression:** "fails the turn at once; the reconnect in flight is waited for, not repeated; stop
+and cleanup finish". The lifecycle fixture gains an opt-in `LIFECYCLE_HOLD_CONTROL` +
+`LIFECYCLE_HOLD_FILE` (hold one method until a file exists, then answer normally; default
+unchanged), so the test controls when the reconnect's `session/load` is answered. Its steps:
+1. With the load held, a prompt whose `send` rejects after the real report fails within a 2 s
+   bound: `abandonTurn` with its id, events `turn_started, turn_failed`.
+2. A message queued behind it has not started, and `reconnect` was called once.
+3. After the load is released, the queued message completes on the same reconnect: still one
+   `reconnect` call, one `provider_reconnected`.
+4. `stop()` finishes within 5 s.
+5. No unhandled rejection was recorded.
+
+On `f54dc05` it fails at its 2 s bound and cleans up (the cleanup always releases the held load).
+
+**Gate (`9e0f457`):**
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean; new test files clean under the temporary tsconfig; `git diff --check` clean |
+| turn-path tests, three runs | 13 pass each |
+| characterization + turn-path, three runs without update | 46/2, 47/1, 48/0. Snapshot file unchanged each run (SHA-256 `d25f05a19cadeb8f…`). The failures are the pre-existing managed combined-steer race (identified in a repeat: the second turn's `metering_recorded` vs a presentation event, the pair the reviewer saw); see below |
+| full suite `bun test`, two runs | **1,145 pass, 0 fail; 114 files**; 92.4 s and 92.1 s (1,144 + 1) |
+| boundary probe vs A1 | identical, 10 scenarios |
+| `agent-session.ts` | 4,634 lines |
+
+**The intermittent snapshot orders, measured.** The characterization file alone, 20 runs each:
+
+| Code | Agent-owned `an internal command` | managed `two steer messages combined` |
+| --- | --- | --- |
+| A1 gate `9de0ca3` (no A2 code) | **3 / 20** | 1 / 20 |
+| this commit `9e0f457` | 0 / 20 | 3 / 20 |
+
+- **Both races exist in the unchanged A1 code.** That includes the internal-command order the
+  reviewer saw once in a full run, so it is pre-existing.
+- **The samples are too small** to say whether rates differ.
+- **Nothing was changed for them;** they stay with the owner (open question 1).
+
 ## Open questions
 
 1. **A pre-existing order race in an A1 snapshot (the managed combined-steer case).** While
@@ -373,8 +432,19 @@ new/changed tests (rejected send, still-queued injection, helper cases) fail the
      looks like the Agent-owned record race found in A1 (the owned-record chain against direct
      metering writes), but that is a hypothesis, not established. It is escalated with question 1,
      unchanged.
-2. **`agent-session.ts` is 4,623 lines after the follow-up fixes (4,594 at `524af30`), not ~4,550.** The spec's hard limit (shorter than 5,022) holds.
+2. **`agent-session.ts` is 4,634 lines after the second follow-up (4,594 at `524af30`), not ~4,550.** The spec's hard limit (shorter than 5,022) holds.
    B1 will move or retype more of the session.
+3. **A pre-existing stop hang during a held reconnect (outside A2).** On the unchanged A1 commit, with
+   no fault injected: if the provider's reconnect (`session/load`) is never answered, the prompt
+   never settles and `stop()` doesn't finish either (still pending after 2 s in the probe). The
+   current code behaves the same when nothing is injected. `AgentSession.stop()` calls
+   `controller.stop()` and then waits for the queue, but `controller.stop()` cannot reach a client
+   that is still being brought up (it only becomes the controller's client once `bringUp`
+   resolves). So the operation waiting on that reconnect, and `stop()` behind it, wait for the
+   provider. Making `stop` cancel a reconnect in progress would be new ACP behaviour in
+   `controller.ts`, outside A2's "no new behaviour" scope, so I did not change it. This is a
+   question for the owner. The new regression test releases the held load before stopping;
+   without a release, its cleanup would hit this hang. (Probe: `/tmp/a2-fix/held-reconnect-probe.ts`.)
 
 ## Gaps and limitations
 
