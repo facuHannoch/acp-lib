@@ -4,6 +4,12 @@ exports[`characterization, agent-owned a plain prompt 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -219,6 +225,12 @@ exports[`characterization, agent-owned a second prompt queued behind a running o
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -240,6 +252,12 @@ exports[`characterization, agent-owned a second prompt queued behind a running o
       "turnId": "<id:1>",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:2>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:2>",
     },
@@ -649,6 +667,12 @@ exports[`characterization, agent-owned two steer messages combined into one run 
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -675,6 +699,13 @@ exports[`characterization, agent-owned two steer messages combined into one run 
       "turnId": "<id:1>",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:2>",
+          "<id:3>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:2>",
     },
@@ -1333,6 +1364,12 @@ exports[`characterization, agent-owned an interrupt of the running turn 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -1579,6 +1616,12 @@ exports[`characterization, agent-owned a stalled prompt 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -1854,6 +1897,12 @@ exports[`characterization, agent-owned a permission request answered through the
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -2129,6 +2178,12 @@ exports[`characterization, agent-owned an internal command 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -2385,6 +2440,12 @@ exports[`characterization, agent-owned a handoff with a summary 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -2424,6 +2485,12 @@ exports[`characterization, agent-owned a handoff with a summary 1`] = `
       "summary": "pid=<pid>; history=remember kiwi | Create portable continuation context for a new agent thread. Summarize the objective, decisions, completed work, current state, important files or identifiers, and concrete next steps. Preserve unresolved risks and constraints. Return only the continuation context.",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:4>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:4>",
     },
@@ -3305,6 +3372,12 @@ exports[`characterization, managed a plain prompt 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -3832,6 +3905,12 @@ exports[`characterization, managed a second prompt queued behind a running one 1
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -3874,6 +3953,12 @@ exports[`characterization, managed a second prompt queued behind a running one 1
       "turnId": "<id:1>",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:2>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:2>",
     },
@@ -4741,6 +4826,12 @@ exports[`characterization, managed two steer messages combined into one run 1`] 
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -4786,6 +4877,13 @@ exports[`characterization, managed two steer messages combined into one run 1`] 
       "turnId": "<id:1>",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:2>",
+          "<id:3>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:2>",
     },
@@ -5903,6 +6001,12 @@ exports[`characterization, managed an interrupt of the running turn 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -6446,6 +6550,12 @@ exports[`characterization, managed a stalled prompt 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -7005,6 +7115,12 @@ exports[`characterization, managed a permission request answered through the han
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -7559,6 +7675,12 @@ exports[`characterization, managed an internal command 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -8135,6 +8257,12 @@ exports[`characterization, managed a handoff with a summary 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -8195,6 +8323,12 @@ exports[`characterization, managed a handoff with a summary 1`] = `
       "summary": "pid=<pid>; history=remember kiwi | Create portable continuation context for a new agent thread. Summarize the objective, decisions, completed work, current state, important files or identifiers, and concrete next steps. Preserve unresolved risks and constraints. Return only the continuation context.",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:4>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:4>",
     },
@@ -10339,6 +10473,12 @@ exports[`characterization, detached a plain prompt 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -10508,6 +10648,12 @@ exports[`characterization, detached a second prompt queued behind a running one 
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -10529,6 +10675,12 @@ exports[`characterization, detached a second prompt queued behind a running one 
       "turnId": "<id:1>",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:2>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:2>",
     },
@@ -10840,6 +10992,12 @@ exports[`characterization, detached two steer messages combined into one run 1`]
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -10866,6 +11024,13 @@ exports[`characterization, detached two steer messages combined into one run 1`]
       "turnId": "<id:1>",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:2>",
+          "<id:3>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:2>",
     },
@@ -11380,6 +11545,12 @@ exports[`characterization, detached an interrupt of the running turn 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -11543,6 +11714,12 @@ exports[`characterization, detached a stalled prompt 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -11715,6 +11892,12 @@ exports[`characterization, detached a permission request answered through the ha
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -11911,6 +12094,12 @@ exports[`characterization, detached an internal command 1`] = `
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -12125,6 +12314,12 @@ exports[`characterization, once a queued message withdrawn, its promise awaited 
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -12367,6 +12562,12 @@ exports[`characterization, once an interrupt that drops queued messages, their p
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -12657,6 +12858,12 @@ exports[`characterization, once a provider that fails to start: the prompt rejec
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -12673,6 +12880,12 @@ exports[`characterization, once a provider that fails to start: the prompt rejec
       "turnId": "<id:1>",
     },
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:2>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:2>",
     },
@@ -13427,6 +13640,12 @@ exports[`characterization, once an internal prompt (handoff summary) that stalls
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -14050,6 +14269,12 @@ exports[`characterization, once an internal prompt (handoff summary) that stalls
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -14667,6 +14892,12 @@ exports[`characterization, once a permission request sent the instant the prompt
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
@@ -14933,6 +15164,12 @@ exports[`characterization, once a tool start sent the instant the prompt reaches
 {
   "events": [
     {
+      "cause": {
+        "kind": "messages",
+        "messageIds": [
+          "<id:1>",
+        ],
+      },
       "kind": "turn_started",
       "turnId": "<id:1>",
     },
