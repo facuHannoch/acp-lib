@@ -814,7 +814,7 @@ stage 2a):
   and bounded restart, settling held turns and taken messages; `HarnessUnavailableError`; a real `harness serve`
   process in tests; `harness.home`.
 - `providerStart: "on_first_use"` for ACP conversations (opt-in; default unchanged).
-- Channel changes: the `harness_pending` flag, coalesced changes sent at once or inside the start call, deletes and
+- Channel changes: the pending flag (in the `channels?` repository), coalesced changes sent at once or inside the start call, deletes and
   resets while stopped.
 - Holds as leases; persistence failures surfaced, never held; the bounds in Nothing waits forever.
 - Configuration known before start: stored config and overrides, `describe` (with policy names), channel settings
