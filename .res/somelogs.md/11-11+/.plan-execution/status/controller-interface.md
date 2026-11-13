@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Review blockers returned; snapshot race escalated | Review `c2e8f4b` of `524af30` found P1 ACP scheduling regression and P2 unknown-ID validation and fixed-delay test. Fix assignment `tasks/controller-interface-A2-review-fixes.md`; snapshot issue `11-13-ISSUE-A2-managed-order.md` awaits owner decision. |
+| A2 | Follow-up review; snapshot race escalated | Fix `e7f2d79`, report `babc5b1`; independent follow-up assigned. Snapshot issue `11-13-ISSUE-A2-managed-order.md` awaits owner decision. Coordinator gate follows resolution. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
