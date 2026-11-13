@@ -181,7 +181,7 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 | `cancel` | `channel/interrupt` for the channel's running turn |
 | `forceStop` | interrupts the channel and gives up on its turn locally: open prepared turns reject. Never stops the shared process; only the host restarts it, on a crash or when it stops answering |
 | `stop` | the conversation is done with its channel for now; the process keeps running for the others |
-| `subscribeOutput` | supervision signals only, as for ACP (the stream goes to the turn's handlers); the harness's `progress` events count as output, so stall detection works even when no text streams |
+| `subscribeOutput` | supervision signals only, as for ACP (the stream goes to the turn's handlers). The harness's `progress` events feed stall detection by stage, as today's activity does: `model` counts as output; `tool` counts as a tool running (the tool-time limit still applies); `waiting` doesn't reset the clock. So a long silent turn stays alive, and a turn stuck waiting is still judged stalled (to be checked in the robustness tests) |
 | `configOptions` / `setConfig` | model, reasoning, temperature as `ConfigOption`s, known before start from the stored config and `describe`; `setConfig` stores the channel's settings and sends them (Channel changes, below) |
 | `subscribeUsageUpdate` | usage events, one per model call, with their purpose |
 | `conversationCapabilities` | `nativeSteering: true`; `backend` filled from the config at once (the model's media; no load, fork or session listing); the optional methods (modes, bridge, reconnect, authenticate, `listSessions`, `prepareInternalPrompt`) are absent |
@@ -222,9 +222,12 @@ The process is what costs (and, isolated, a container per agent); channels are c
 - **Stopped with the `Agent`.** Not when its last native conversation closes.
 - **Reconciliation at every start.** `session/load` carries `since` (the time of acp-client's last native record for
   the `Agent`) and returns each channel's recent turns and waiting items. acp-client compares them with its records and
-  settles what it missed around a crash: a turn that ended without acp-client hearing its end is recorded (from the
-  turn record's messages and usage) and its prompts settle; a turn `running_at_crash` settles as failed; a message
-  still waiting stays pending (it will be taken). This is how state events stay reliable without acknowledging each
+  settles what it missed around a crash: a turn that ended without acp-client finishing it goes through **the same
+  finishing step a live turn uses**, with the harness's turn record as input (the final assistant message, metering
+  from its per-call usage, the turn's end), keyed by the turn id so running it twice does nothing; the in-progress
+  records already written live are never rewritten; its prompts settle. A turn `running_at_crash` settles as failed;
+  a message still waiting stays pending (it will be taken). Fallback if finishing from the record proves hard: fail the
+  turn, but still write its metering from the record, so its cost is never lost. This is how state events stay reliable without acknowledging each
   one (protocol spec, Delivery).
 - **Restarts on a crash:** bounded (3 within 60 s, with a pause between). Running turns end with an error; held turns
   are abandoned; a message a crashed turn had already taken settles as failed (its prompt rejects); a message still
@@ -337,6 +340,7 @@ subscribes each channel to **the union of what it persists and what the conversa
   behaviour), with a default in `conversationDefaults`. With `"final"`, the conversation's events carry only complete
   assistant messages, no text deltas. For ACP conversations the option filters the events the consumer gets (an ACP
   harness sends everything regardless); for native it also reduces what crosses the wire.
+- **Usage is always per model call for native,** whatever else is subscribed: metering needs each call.
 - **What acp-client persists:** from the persistence policy. Persisting only chats needs `final` text and no tool or
   reasoning detail; persisting activity needs tool calls and reasoning at the matching level.
 - **Always received,** whatever the subscription: turn boundaries, `message_completed` (the source of truth for the
