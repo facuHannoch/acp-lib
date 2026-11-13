@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Owner decisions received; incorporating beta | Beta `fd9ec24` accepts existing ACP connect hang and permits a narrow two-pair snapshot exception with contractual assertions and ~50-run A1/A2 comparison. Both branches incorporate beta; implementer then makes dedicated test change and reviewer checks it. Coordinator gate follows. |
+| A2 | Test exception scope question | Beta `fd9ec24` decisions incorporated; reported 50-run samples available. A previously observed managed turn-2 variant is outside literal exception: `11-13-ISSUE-A2-managed-pair-scope.md` awaits owner direction. Independent review and coordinator gate pending. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
