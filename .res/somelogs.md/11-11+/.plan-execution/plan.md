@@ -105,6 +105,22 @@ The verdict and the evidence go in the GATE file.
 - **Temporary files outside the repo.**
 - **If a brief doesn't fit one run:** commit what passes its gates, report where it stopped.
 
+## Code quality
+
+- **Reuse first.** Each brief starts with a search for existing code that does the job. The report lists what was
+  reused, and any new helper that resembles existing code, with why it couldn't be reused. The reviewer checks for
+  duplication as a finding category.
+- **Large files don't grow:** `src/agent-session.ts`, `src/client.ts`, `src/agent/conversation-manager.ts`,
+  `src/controller.ts`. Code needed there is extracted into a module first; the report gives their line counts before
+  and after.
+- **One concern per new module.** A new file over about 400 lines is called out in the report, with why.
+- **Existing mechanisms, not parallel ones:** errors in the existing error modules; events added to the existing
+  unions; records through the existing record kinds; storage through the persistence backend (optional repositories
+  with a capability flag), never straight to SQLite.
+- **Grounding before a spec's first brief:** the implementer checks the spec's "code as it is" and reuse points against
+  the code at that moment and reports what moved or doesn't exist; the spec owner corrects the spec before the first
+  brief.
+
 ## Order and readiness
 
 | Spec | State | Trio |
