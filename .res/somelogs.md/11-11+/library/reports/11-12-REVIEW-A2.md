@@ -918,3 +918,89 @@ agents. No repository source/snapshot edits, implementation branch checkout, liv
 harness, push, merge into beta, or protected path/worktree/process change occurred.
 The two watcher gaps require a follow-up before the coordinator can accept the brief;
 B1 remains held.
+
+## Boundary follow-up: `c33f5b6`, consolidated exception `8ac866e`
+
+**Verdict: return the watcher to the implementer; B1 remains held.** The independently
+run full and focused numerical gates and both typechecks are green, but the watcher can
+still silently misclassify an unsettled open and erase a rejected opening attempt. Owner
+questions 4 and 5 also remain decisions for the owner; case declarations are exact
+expectations, not authority to settle the specification. Coordinator acceptance remains
+separate. The earlier two boundary counterexamples are fixed for their tested paths.
+
+### Findings
+
+1. **P2 — An open still pending is classified as never opened.** In
+   `test/conversation-turns/contract-watch.ts:121`–`130` the map is updated only when
+   `open` settles. At `:264`–`:267`, absence is treated as failure before the operation
+   was opened. In an independent synthetic offline probe, start a turn, call an open
+   returning an unresolved promise, then emit `turn_failed`: `assertRun` passes with no
+   metering. Resolve that same promise and the identical assertion now correctly rejects
+   an undeclared open-before-dispatch case. This is fault injection, not evidence that
+   today's production code emits this sequence. The check cannot distinguish no call from
+   a call whose outcome is unknown, and a late success escapes the assertion. Record the
+   call and pending state, and fail or otherwise explicitly settle the observation before
+   treating it as a known boundary; add a regression. Do not infer a metering policy for
+   that state.
+2. **P2 — Opening attempts overwrite one another.** At the same `:127` and `:130` map
+   writes, a second attempt for one operation replaces the first, while completion checks
+   at `:300`–`:313` verify only that some successful open preceded dispatch. An independent
+   synthetic probe rejects the first open with `MeteringPreflightError`, succeeds on a
+   second, dispatches and completes with one metering record; `assertRun` accepts it and
+   loses the preflight failure. This does not claim the current implementation retries or
+   that the specification already forbids all retries. Preserve and check attempt history
+   so that a rejection followed by continuation is observable; any intended retry policy
+   should be decided explicitly rather than silently accepted by the watcher.
+3. **P3 — Study 5 heading is stale.** The implementation report at
+   `.res/somelogs.md/11-11+/library/reports/11-12-REPORT-A2.md:906` says 20 runs each,
+   although its subsequent extended evidence and retained files contain 50 each. Correct
+   the heading to avoid obscuring the final sample size. This does not invalidate the
+   independently checked 100 retained runs.
+
+### Boundary and policy evidence
+
+The detached watcher now uses each turn's start offset and requires its user line followed
+by exactly one assistant line with that turn's messages. In an independent synthetic test,
+three valid turns with identical assistant text passed, including one following a failed
+turn; a later turn lacking its own assistant line failed even though prior identical lines
+existed. The committed tests also cover the two-turn positive and prior-text negative.
+
+The watcher observes actual `metering.open`, rethrows the same synchronous error and
+returns the original promise. Committed offline real-session tests establish today's three
+fault paths: managed `beginOperation` failure after successful open has zero records;
+detached `prepareTurn` failure after open has one; detached user-line failure before open
+has zero. The two post-open cases reject an undeclared expectation and check declared 0/1
+against the actual outcome. Preflight rejection and synchronous throw tests pass. The
+pending and repeated-open probes above identify gaps in the observation itself. Question 4
+(metering write failures) and question 5 (opened, not dispatched) require owner resolution
+before the gate; no current characterization case invokes their declaration overrides.
+No policy is inferred from these probes.
+
+### Study 5 and change scope
+
+I checked the 100 retained A1/A2 exit files, logs and 35-capture JSONL dumps: all exits
+zero, with no failure or unhandled diagnostics; runs alternate first version by pair and
+both versions use the same final watcher. Independent managed two-steer turn 1 recount,
+in order P1-meter-P2 / P1-P2-meter / meter-P1-P2: A1 **45/5/0**, A2 **46/4/0**;
+turn 2 is **0/0/50** in each. Agent-owned internal-command metering precedes the last
+in-progress snapshot in **50/50** for each version. These selected counts match the
+report; other cases and all three positions are reported there. Previous studies had
+roughly 48–50 of 50 in the first managed position, versus 45 and 46 here; the final
+watcher may affect timing on both versions. The comparison does not establish equal rates
+or isolate a cause; finite samples and synchronous instrumentation limit inference.
+
+Only watcher and watcher-test files changed between `2f3b073` and `8ac866e`; source,
+pair rules and snapshot are unchanged. The cause-only change remains separate. Snapshot
+SHA-256 is `47686d4ca0451cf89802c9df52d22d453c238f811b9864cd72358663bfd971e6`;
+no snapshots were regenerated.
+
+### Independent checks
+
+- Complete offline suite: **1,196 pass, 0 fail**, 116 files, 35 snapshots, 127.23s.
+- Focused characterization, turn-path, pair-rule and watcher suite: **99 pass, 0 fail**,
+  35 snapshots, 16.28s. Source and test/fixture typechecks passed.
+- Three extra synthetic probes passed their explicit assertions: detached repeated-text
+  isolation works; the pending-open and failed-open retry probes reproduce the two gaps.
+  These are fault injections, not production regression demonstrations.
+- Tests used a temporary archive and offline fixtures; no implementation branch checkout,
+  source/snapshot edit, live harness, push, or beta merge was performed.
