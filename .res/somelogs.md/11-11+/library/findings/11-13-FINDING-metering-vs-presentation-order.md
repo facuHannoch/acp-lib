@@ -6,7 +6,9 @@ Status: recorded 2026-11-13, during A2 of the controller-interface spec; accepte
 
 At the end of a turn, two writes race:
 
-- **managed mode:** the metering event and the turn's last presentation event;
+- **managed mode:** the metering event and the turn's presentation events; presentation events are delivered from
+  their own queue and may lag, so metering has been seen before the in-progress presentation as well as between the
+  in-progress and completed ones (2026-11-13);
 - **Agent-owned mode:** the metering record and the turn's last in-progress assistant snapshot record (the snapshot
   goes through the serialized `ownerRecordWrite` chain, while `ownerLifecycle.meteringRecorded` writes directly).
 

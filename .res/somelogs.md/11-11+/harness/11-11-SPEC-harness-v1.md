@@ -101,13 +101,14 @@ specific tool, permission rules, retry logic, knowledge of policies, workers or 
 | Call | Meaning |
 | --- | --- |
 | `createSession({ home?, config })` / `loadSession({ home?, id })` | Create an entity with its config / wake an existing one; locks it |
-| `session.channel(id, { policy?, label? })` | Open or resume a channel (created on first use); `channel.setPolicy(name)` changes it |
-| `channel.push(item, { delivery })` | Add an inbox item. `steer`: folded into the running turn at its next model call (reported as `turn_took`); `queue`: waits for the current turn to end and goes into the next. Either starts a turn if the channel is idle. Items other than messages default per kind (a worker reply: `steer`) |
+| `session.channel(id)` | The channel with that id (channels always exist; created the first time they are named) |
+| `channel.update({ policy?, label?, settings?, subscription?, reset?, closed? })` | One call for whatever changed: policy and label apply from the next item, settings (model, reasoning, temperature) from the next model call, a subscription at once; `reset` starts the channel on a fresh context (a cleared transcript, a handoff in); `closed` closes it (its timeline events stay). Idempotent |
+| `session.participants.update(participants)` | Add or change participants in the session's registry (id, kind, label); items name their sender by id |
+| `channel.push(item, { delivery })` | Add an inbox item; idempotent by item id (a repeated push is acknowledged, not stored twice); returns once the item is stored durably. `steer`: folded into the running turn at its next model call (reported as `turn_took`); `queue`: waits for the current turn to end and goes into the next. Either starts a turn if the channel is idle. Items other than messages default per kind (a worker reply: `steer`) |
 | `channel.withdraw(itemId)` | Remove an item not yet taken; reports whether it was removed |
 | `channel.interrupt()` | Abort the running turn |
-| `channel.reset()` / `channel.close()` | Start the channel on a fresh context (a cleared transcript, a handoff in) / close it; its timeline events stay |
-| `channel.setSettings({ model?, reasoning?, temperature? })` | Per-channel overrides of the session's model settings |
-| `channel.events` | `turn_started` (with the items the turn took), `turn_took` (items folded into the running turn), text deltas, tool calls, usage, model-call log, `turn_ended`; `messages_dropped` (items an interrupt removed from the inbox); `message` for text placed on the channel outside a turn (`message_participant`); `permission_requested` |
+| `channel.events` | As the protocol's `channel/event` (`../11-12-SPEC-harness-protocol.md`): always `turn_started`, `turn_took`, `progress`, `message_completed`, usage, `turn_ended`, `messages_dropped`, `message`, `permission_requested`; text deltas, tool calls, reasoning and the model-call log as the channel's subscription says |
+| `session.recentTurns({ since })` | What reconciliation needs: per channel, the turns that ended or were running at a crash since a time (items taken, outcome, usage, assistant messages) and the items still waiting |
 | `channel.answerPermission(id, option)` | Answer an `ask` from the gate (in process; over the protocol it is the reply to `permission/request`) |
 | `session.member(id, { policy, label })` / `prepare({ member, context })` / `delivered(receipt)` | Managed member channels: a conversation a host runs elsewhere; what it should be told since its position, and the receipt that moves the position |
 | `session.prompt({ channel, from, policy?, content })` | Host shorthand: push a user message with sender and policy |
@@ -171,7 +172,7 @@ only what JSON can't hold: function handlers and backends.
 - **Standalone,** the stored config (`<home>/sessions/<id>/config.json`) is the source of truth.
 - **Hosted,** the host is: it creates the session with its config and saves changes made through the API.
 - **Per-channel settings** (model, reasoning, temperature) override the session's model settings for one channel;
-  they are the channel's, not config edits (`channel.setSettings`). A channel's model must be one of
+  they are the channel's, not config edits (`channel.update({ settings })`). A channel's model must be one of
   `model.allowed` (the default model is always allowed).
 - **`describe(config)`**, exported from `./client`: a pure function returning `{ configOptions, commands,
   capabilities, policies, errors }` for a config without starting anything, so a host can show models, commands and
@@ -244,7 +245,7 @@ only what JSON can't hold: function handlers and backends.
 - **Three layers, resolved per item:** the item's own policy (asserted by the host for that message; worker replies
   carry the policy of whoever gave the work), else the channel's policy, else the session's `defaultPolicy`. A turn
   triggered by several items takes the most restrictive, capability by capability.
-- **The channel's policy** is set by the host when the channel is opened and can be changed (`channel.setPolicy`);
+- **The channel's policy** is set by the host (at start with the pending channel changes, or with `channel.update`);
   the change is a timeline event.
 - **The agent knows where it is:** each turn renders the channel's label and what its policy allows (with the tool
   hint), so the model can explain a refusal ("I can't do that in this conversation") instead of only hitting the
@@ -361,6 +362,12 @@ delivery      digest(position..now, the turn's policy) → appended to the chann
   moves the position (never back; at least once).
 
 ## Storage
+
+**What the protocol's delivery rules need stored** (`../11-12-SPEC-harness-protocol.md`, Delivery): the item ids each
+channel has stored (so a repeated push is recognized), and a record of each turn (id, items taken, outcome, usage,
+assistant messages) kept long enough for reconciliation at start (`session.recentTurns`); a turn running when the
+process died is recorded as `running_at_crash` when the session next loads.
+
 
 | Data | v1 |
 | --- | --- |

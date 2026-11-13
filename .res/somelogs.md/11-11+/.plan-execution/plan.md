@@ -101,7 +101,7 @@ The verdict and the evidence go in the GATE file.
   user authorizes it for that run; tests run offline with the fixture agents.
 - **Snapshots are never loosened or regenerated to make a test pass.** A changed snapshot means order or ids changed;
   the code is fixed. Waits in tests are on events, never fixed delays.
-- **Nothing waits forever** in what we build: every new wait names its bound.
+- **Nothing waits forever** in what we build: every new wait is bounded or cancellable, and names which.
 - **Temporary files outside the repo.**
 - **If a brief doesn't fit one run:** commit what passes its gates, report where it stopped.
 
