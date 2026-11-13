@@ -492,8 +492,9 @@ user answers                  →  conversation.answerPermission(id, optionId)  
     `bash -lc "…"`, joining argument lists), never as a substring or prefix.
 
   When several rules match, the most restrictive level wins; when none matches, `default` applies. A command that
-  can't be normalized matches no `command:` rule. Allow picks the request's `allow_once` option (never `allow_always`
-  automatically: it would leave a lasting grant in the provider); deny picks `reject_once`; ask goes to the handler or
+  can't be normalized matches no `command:` rule. Allow picks the request's `allow_once` option, falling back to
+  `allow_always` only when there is no `allow_once`, as today (`rules/11-13-RULES-permission-auto-approve.md`: the
+  fallback leaves a lasting grant in the harness, an escalation documented and kept); deny picks `reject_once`; ask goes to the handler or
   the event. Titles aren't matched, and MCP tools over ACP (kind `other`) can't be targeted yet.
 - **The same matcher serves the orchestrator:** workers are ACP harnesses, so the policy's `worker:` rules are these
   rules with a prefix (`worker:command:bun test`, `worker:kind:read`). One matcher, tested per adapter's raw input
@@ -810,7 +811,8 @@ neutral permission request.
 2. **The matcher** (`src/permissions/matcher.ts`): `permissions: { default, rules }`; rules `kind:<acp kind>` and
    `command:<exact command>` (normalized: unwrap `bash -lc "…"`, join argument lists; exact match only, never a
    substring or prefix); the most restrictive match wins; no match → `default`. Allow picks `allow_once`, falling back
-   to `allow_always` only when there is no `allow_once`, **as today**; deny picks `reject_once`. Tests per adapter's
+   to `allow_always` only when there is no `allow_once`, **as today** (`rules/11-13-RULES-permission-auto-approve.md`);
+   deny picks `reject_once`. Tests per adapter's
    raw input shape (Codex, Claude, OpenCode, Grok fixtures), including commands that can't be normalized (they match
    no `command:` rule). **Gate:** suite green; matcher tests green.
 3. **Replace `defaultPermission`** with the permission setting on `AgentConfig`, `CreateAgentConversationConfig` and
