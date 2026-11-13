@@ -14,7 +14,7 @@ import type { AgentSessionNotification } from "../../src/agent-conversation-cont
 import type { AgentConversationOwnerLifecycle } from "../../src/agent-conversation-owner.ts";
 import { AgentController } from "../../src/controller.ts";
 import type { TurnEvent } from "../../src/conversation-controller/contracts.ts";
-import { checkTurnRun, turnRunOf } from "../../src/conversation-turns/index.ts";
+import { checkTurnRun, turnRunOf, type RunMessageState } from "../../src/conversation-turns/index.ts";
 
 const FIXTURES = resolve(import.meta.dir, "../fixtures");
 const STEER = join(FIXTURES, "steer-agent.ts");
@@ -182,17 +182,25 @@ describe("the turn path through send", () => {
     cleanups.push(async () => { lifecycle.afterPrompt = afterPrompt; });
 
     const turn = conversation.prompt("a turn with a held finalization");
-    await within(finalizing, 5_000, "the turn's afterPrompt");
-    const configured = conversation.setConfig("model", "beta");
-    // While the finalization is held, the config change is queued behind the turn's operation,
-    // not running: the queue has not moved past the turn.
-    expect(conversation.state.phase).toBe("prompting");
-    expect(conversation.state.queuedOperationCount).toBe(1);
-    expect(order).toEqual(["afterPrompt:start"]);
-
-    release();
-    await within(turn, 5_000, "the turn");
-    await within(configured, 5_000, "the config change");
+    // Observed from the start, so a failing assertion below cannot leave either rejection unhandled.
+    const turnSettled = turn.then(() => null, (error: unknown) => error);
+    let configuredSettled: Promise<unknown> = Promise.resolve(null);
+    try {
+      await within(finalizing, 5_000, "the turn's afterPrompt");
+      const configured = conversation.setConfig("model", "beta");
+      configuredSettled = configured.then(() => null, (error: unknown) => error);
+      // While the finalization is held, the config change is queued behind the turn's operation,
+      // not running: the queue has not moved past the turn.
+      expect(conversation.state.phase).toBe("prompting");
+      expect(conversation.state.queuedOperationCount).toBe(1);
+      expect(order).toEqual(["afterPrompt:start"]);
+    } finally {
+      // Released on every path, so a failure above ends the test instead of holding the turn
+      // (and the Agent's close) open.
+      release();
+    }
+    expect(await within(turnSettled, 5_000, "the turn")).toBeNull();
+    expect(await within(configuredSettled, 5_000, "the config change")).toBeNull();
     expect(order).toEqual(["afterPrompt:start", "afterPrompt:end", "turn_completed", "configuration_started"]);
     expect(ofKind(events, "configuration_completed")).toHaveLength(1);
   }, 20_000);
@@ -244,14 +252,87 @@ describe("the turn path through send", () => {
     expect(next.status).toBe("completed");
     expect(send.mock.calls.map(([run]) => run.messageIds)).toEqual([[next.operationId]]);
   }, 20_000);
+
+  test("a run that takes a message still waiting in the queue is refused at dispatch; that message runs once, in its own turn", async () => {
+    const { conversation, events } = await detachedConversation();
+    const steering = (conversation as unknown as { steering: { prepareRun: (...args: any[]) => any } }).steering;
+    const prepareRun = steering.prepareRun.bind(steering);
+    let a!: ReturnType<AgentSession["prompt"]>;
+    let b!: ReturnType<AgentSession["prompt"]>;
+    steering.prepareRun = (...args: any[]) => {
+      const run = prepareRun(...args);
+      if (run.turnId !== a?.id) return run;
+      // A bad run for A: A, then B, which is still waiting in the queue.
+      return { ...run, parts: [{ id: run.turnId, text: run.text }, { id: b.id, text: "b" }] };
+    };
+    const send = spyOn(conversation.connection, "send");
+
+    // `turn_started` is emitted synchronously inside `prompt()`, so subscribe first.
+    const firstStarted = new Promise<void>((resolve) => {
+      conversation.subscribe(({ event }) => { if (event.kind === "turn_started") resolve(); });
+    });
+    const first = conversation.prompt("SLOW_TURN first");
+    await within(firstStarted, 5_000, "the first turn");
+    a = conversation.prompt({ text: "a", delivery: "queue" });
+    b = conversation.prompt({ text: "b", delivery: "queue" });
+    const [firstResult, aError, bResult] = await within(Promise.all([
+      first,
+      a.then(() => null, (error: unknown) => error),
+      b,
+    ]), 10_000, "the three prompts");
+
+    expect(firstResult.status).toBe("completed");
+    expect(String(aError)).toContain(`${b.id}, which is still queued`);
+    expect(bResult.status).toBe("completed");
+    // B ran once, in its own turn; A's bad run never reached the controller.
+    expect(send.mock.calls.map(([run]) => run.messageIds)).toEqual([[first.id], [b.id]]);
+    const started = events.filter((event) => event.kind === "turn_started") as any[];
+    expect(started.map((event) => event.cause.messageIds)).toEqual([[first.id], [b.id]]);
+    expect(events.filter((event) => event.kind === "turn_failed").map((event: any) => event.turnId)).toEqual([a.id]);
+  }, 20_000);
+
+  test("a send rejected after the controller reported the turn fails it: abandoned, no completion", async () => {
+    const { conversation, events } = await detachedConversation();
+    const controller = conversation.connection;
+    const send = controller.send.bind(controller);
+    let reject = true;
+    controller.send = (run) => {
+      const accepted = send(run); // the real synchronous report
+      if (!reject) return accepted;
+      reject = false;
+      return accepted.then(() => Promise.reject(new Error("acceptance rejected")));
+    };
+    const abandon = spyOn(controller, "abandonTurn");
+    const prepare = spyOn(controller, "prepareTurn");
+
+    const refused = conversation.prompt("hello");
+    const error = await within(refused.then(() => null, (reason: unknown) => reason), 5_000, "the refused prompt");
+    expect(String(error)).toContain("acceptance rejected");
+    expect(prepare).not.toHaveBeenCalled();
+    expect(abandon.mock.calls.map(([turnId]) => turnId)).toEqual([refused.id]);
+    const kinds = events.map((event) => event.kind).filter((kind) => KINDS.has(kind));
+    expect(kinds).toEqual(["turn_started", "turn_failed"]);
+
+    // Nothing is left behind: the next prompt runs normally.
+    expect((await conversation.prompt("again")).status).toBe("completed");
+  }, 20_000);
 });
 
 describe("runs that are not valid", () => {
-  test("the session refuses an empty run, a repeated or unknown message id, and a turn id that is not the first message's", () => {
-    const known = (id: string) => ["m1", "m2"].includes(id);
+  test("the session refuses an empty run, a repeated, unknown, taken, still queued or out-of-order message id, and a turn id that is not the first message's", () => {
+    const state: Record<string, RunMessageState> = {
+      m1: { order: 1, dispatched: false, queued: false },
+      m2: { order: 2, dispatched: false, queued: false },
+      taken: { order: 3, dispatched: true, queued: false },
+      waiting: { order: 4, dispatched: false, queued: true },
+    };
+    const known = (id: string) => state[id];
     expect(() => checkTurnRun({ turnId: "m1", messageIds: [], operationKind: "prompt" }, known)).toThrow("at least one");
     expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "m1"], operationKind: "prompt" }, known)).toThrow("repeats message id m1");
     expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "zz"], operationKind: "prompt" }, known)).toThrow("does not know");
+    expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "taken"], operationKind: "prompt" }, known)).toThrow("another run already took");
+    expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "waiting"], operationKind: "prompt" }, known)).toThrow("still queued");
+    expect(() => checkTurnRun({ turnId: "m2", messageIds: ["m2", "m1"], operationKind: "prompt" }, known)).toThrow("out of queue order");
     expect(() => checkTurnRun({ turnId: "m2", messageIds: ["m1", "m2"], operationKind: "prompt" }, known)).toThrow("not its first message");
     expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "m2"], operationKind: "prompt" }, known)).not.toThrow();
   });

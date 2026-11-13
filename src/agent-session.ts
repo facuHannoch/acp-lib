@@ -478,7 +478,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
    */
   private readonly sentRuns = new Map<string, { readonly run: TurnRun; cause?: TurnCause }>();
   /** Ids of the messages (queued prompts) the session accepted and has not settled yet. */
-  private readonly acceptedMessages = new Set<string>();
+  private readonly acceptedMessages = new Map<string, { readonly order: number; dispatched: boolean }>();
+  private acceptedMessageCount = 0;
   private readonly sessions?: SessionManager;
   private readonly _transcriptPath?: string;
   private readonly persistence: false | ResolvedAgentSessionPersistence;
@@ -2024,7 +2025,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           reject(error);
         },
       };
-      this.acceptedMessages.add(id);
+      this.acceptedMessages.set(id, { order: ++this.acceptedMessageCount, dispatched: false });
       this.operations.enqueue(item);
       this.steering.accepted(item);
       this.emitStateIfChanged();
@@ -2298,25 +2299,34 @@ export class AgentConversation implements AgentClient, Bridgeable {
           const controller = this.controller;
           let stopReason: string | undefined;
           try {
-            // Every id must be a message the session accepted and has not settled (independent of
-            // how the run was built), in queue order, the turn id being the first.
-            checkTurnRun(run, (id) => this.acceptedMessages.has(id));
+            // Checked against the session's own message state, independent of how the run was
+            // built: each id a message it accepted and has not settled, taken out of the queue,
+            // in no other run, in queue (acceptance) order, the turn id being the first.
+            const queued = new Set(this.operations.snapshot().flatMap((queuedItem) =>
+              queuedItem.kind === "prompt" ? [queuedItem.turnId] : []));
+            checkTurnRun(run, (id) => {
+              const message = this.acceptedMessages.get(id);
+              return message && { ...message, queued: queued.has(id) };
+            });
+            for (const id of run.messageIds) this.acceptedMessages.get(id)!.dispatched = true;
             // Registered before `send`: this controller reports `turn_started` inside the call, and
             // the session emits it then (with its cause), at the same moment as before.
             this.sentRuns.set(prompt.turnId, { run });
             const accepted = controller.send(run);
+            // Observed now so a rejection is never unhandled; it is rethrown below, before dispatch.
+            accepted.catch(() => undefined);
             let cause = this.sentRuns.get(prompt.turnId)?.cause;
-            if (cause) {
-              // Reported inside `send`: a session-scheduled controller, whose report is its
-              // acceptance (its promise is already resolved). Not awaited, so nothing can run
-              // between the report and `ensureProvider` that could not run before.
-              accepted.catch((error: unknown) => this.log.warn("controller_send_failed_after_report", { error: String(error) }));
-            } else {
+            if (!cause) {
+              // Not reported inside `send` (a backend-scheduled controller; Brief B2).
               await accepted;
               cause = this.sentRuns.get(prompt.turnId)?.cause;
             }
             if (!cause) throw new Error(`the controller did not report turn ${prompt.turnId}`);
+            // Provider readiness starts at once after the report, as before the refactor: no
+            // scheduling point between them. The acceptance must still hold before the turn is
+            // dispatched; a rejected `send` fails the turn here (abandoned below, no completion).
             await this.ensureProvider();
+            await accepted;
             reportDelivery?.();
             const result = await this.runPrompt({ turnId: prompt.turnId, cause, messages: prompt });
             stopReason = result.stopReason;
