@@ -493,3 +493,154 @@ snapshot-order questions require owner/coordinator disposition before treating t
 brief as passed. All tests used temporary archives and offline fixtures; no source or
 snapshot edits, implementation checkout, live harness, push, merge into beta, or
 protected path/worktree/process change was performed.
+
+## Final review — `d7303d8` against beta `95e9cf2` (2026-11-13)
+
+Reviewed final implementation `d7303d87bdd4840d4119ba41fa5ae06833a56cdb`, dedicated
+exception `1ad325d`, the updated A2 report and the user-confirmed owner decisions on
+`95e9cf249dbef18ee2a3d59322010a7447158058`. Earlier reviews remain historical.
+
+**Verdict: do not pass A2 yet; B1 remains held.** The independent numerical checks
+pass and the earlier accepted stuck-connect limitation is represented as decided. The
+exception implementation can hide an unauthorized Agent-owned bus reorder, and the
+new explicit contractual watcher does not establish all of the orders it claims.
+Study 1 also discarded information needed to establish that there were no unclassified
+errors. Return these findings before the coordinator's gate; do not loosen snapshots.
+
+### P1 — Agent-owned bus canonicalization can hide a completed-snapshot reorder
+
+**`test/conversation-turns/characterization.test.ts:434`–`:445`, `:473`–`:488`.**
+The approved Agent-owned exception is metering versus the same turn's **last
+in-progress assistant snapshot record** only. The raw records path checks role and
+status when `sequenced` is true, but the compact `committedBus` path invokes the same
+function with `sequenced = false`. At `:481`, `!sequenced` bypasses both role and
+status checks. Any same-turn `message` ID containing `:snapshot:` can therefore be
+moved across metering on the bus, including a **completed** assistant snapshot, which
+is outside the authorized exception. The bus and records are canonicalized separately;
+`assertRun` checks only unique bus IDs and membership in the records (`:204`–`:206`),
+not that the bus order represents the actual record statuses/order.
+
+Independent synthetic probe in a temporary test-only archive: hold the raw sequenced
+record list fixed as `[completed assistant snapshot, metering]`; compare two bus lists
+`[completed snapshot, metering]` and `[metering, completed snapshot]`. Both pass the
+raw `watchContract.assertRun` checks, and `withNonContractualPairsInOneOrder` produces
+the **same** value for both. The temporary test passed with 23 assertions, demonstrating
+that an unauthorized reorder and bus/records disagreement can be concealed from the
+snapshot comparison. This is a fault-injected comparison, not a claim that the live
+fixture emitted that regression.
+
+Use the actual raw record identity/role/status when deciding whether a bus item is the
+allowed last in-progress snapshot; preserve all other bus ordering and verify the bus
+against the raw records. Add positive tests for the two authorized orders and negative
+tests for completed/non-assistant snapshots, wrong turns, other intervening records and
+bus/record disagreement. Keep raw sequence checks and the exact approved scope.
+
+### P2 — Explicit completion and provider-result checks miss required cases
+
+**`test/conversation-turns/characterization.test.ts:107`–`:115`, `:144`–`:152`,
+`:190`–`:194`.** The promised explicit check that completion follows the last
+presentation is evaluated *during* `turn_completed`, immediately after pushing that
+completion into the timeline. A presentation not yet emitted cannot already have a
+later index, and there is no later full-timeline assertion for this relation. A
+synthetic watcher probe emitted `turn_started`, metering, `turn_completed`, then a
+same-turn presentation: `violations` stayed empty and `assertRun` passed. In a real
+captured run, the remaining strict snapshot may still catch a late event captured
+before snapshotting; that is not the separate explicit temporal assertion requested,
+and the watcher alone does not establish the bound.
+
+The provider-result check instruments only `conversation.connection` at watch setup
+and iterates only markers that happen to exist. A controller installed by a handoff is
+not wrapped, and absence of a marker causes no failure; forced/rejected provider paths
+are also omitted, as the report acknowledges. Likewise, the Agent-owned final-record
+presence check (`:154`–`:159`) is evidence that *a* final record was committed, not
+that `afterPrompt` itself has returned: no `afterPrompt` start/end is observed in this
+watcher. The existing dedicated turn-path test does explicitly hold `afterPrompt` and
+checks a config operation and `turn_completed` after release; it is useful coverage but
+does not make the per-case watcher claim true for handoff/replaced controllers or all
+persistence paths.
+
+Assert each completed turn's final presentation against completion on the **complete**
+captured timeline; require appropriate result/outcome evidence for every applicable
+turn including controller replacement; and explicitly observe finalization completion
+where required. If a forced turn has no provider result to observe, document and
+escalate the exact applicable outcome requirement rather than silently skipping it.
+Keep bounded event barriers and retain the existing targeted finalization test.
+
+### P2 — Comparative study 1 cannot establish that all other failures were classified
+
+The committed report's counts have a useful comparable design: two interleaved studies,
+with raw captures before canonicalization, the same respective instrumentation on A1
+and A2, all three managed positions reported separately including zeros, and
+Agent-owned before/after counts. I inspected `/tmp/a2-fix/instrument.py`,
+`instrument2.py`, `collect.sh`, `collect2.sh`, `collect2b.sh`, and the four JSONL
+dumps. Each dump has 1,750 captures, exactly 35 named cases × 50, and independent
+recounting of both combined-steer turns and the Agent-owned internal command matches
+the reported tables. The largest reported per-position difference is 2/50; these
+small samples do not establish equal rates. A1 always runs immediately before A2 in
+each pair, a possible order/load bias, and study 2 adds synchronous transcript reads
+and a promise observer to **both** versions, as disclosed.
+
+However, study 1's `/tmp/a2-fix/collect.sh` pipes each test's combined output through
+`grep '^\\(fail\\)'` and `sed`; it does not preserve raw output or the Bun exit code.
+Unhandled errors between tests, setup/teardown diagnostics, or a nonzero process exit
+without a `(fail)` line cannot be recovered from `fails-a1.txt` / `fails-a2.txt`.
+The 35 captures per iteration do not prove there was no later unhandled error. Thus
+`REPORT-A2.md`'s claim that study 1 had only the listed failures cannot be independently
+established from the retained evidence, despite the user requiring unclassified
+failures separately. Study 2 retains filtered `error` and `(fail)` lines but overwrites
+its full per-run log and likewise does not retain each exit status. Preserve complete
+per-run output and exit codes for any supplementary comparison needed to classify all
+failures; report unknowns honestly rather than treating missing diagnostics as zero.
+The sentence claiming “200 A1 and 200 A2 runs” is also inconsistent with the retained
+four 50-run dumps: two studies total **100 A1 and 100 A2**, 200 runs combined.
+
+## Snapshot, scope and accepted decisions
+
+- `cffce98` remains an isolated snapshot-only cause commit: removing exactly its 39
+  inserted cause blocks restores the preceding snapshot bytes. `1ad325d` is a separate
+  two-file test/snapshot commit; no later snapshot change appears through `d7303d8`.
+  The implementer's line-multiset check on its 14 changed snapshots establishes
+  equal line and sequence-number multisets, but by itself does not prove unchanged
+  object associations or authorized order. The bus counterexample above shows why
+  semantic negative checks are necessary.
+- The managed canonicalizer moves metering only across contiguous same-turn **response**
+  presentations, never across user presentations or other kinds/turns. This is narrower
+  than the owner's maximum allowance and is defensible: user presentations are written
+  before dispatch, and maintaining their order retains a stronger guard. Noncontiguous
+  otherwise-permitted arrangements may still fail; this is a coverage limitation rather
+  than permission to reorder unrelated events.
+- Raw Agent-owned sequence numbers are checked increasing and unique before any
+  canonicalization, and managed transcript `seq` is checked `1..n`; the snapshot also
+  retains sequence values. Inside an allowed adjacent Agent-owned pair the canonical
+  representation reassigns the pair's two existing sequence values, so their association
+  with those two records is intentionally not pinned. Other values are compared by the
+  snapshot. The bus status/identity bug above extends beyond that intended allowance.
+- The owner explicitly accepted the existing ACP stuck-connect/reconnect hang as a named
+  bounded-wait exception. No source changes after the last reviewed `1ec6710` alter that
+  fix; prompt rejection and non-overlapping reconnect behavior remain as previously
+  inspected. The exception does not authorize unrelated unbounded waits. Event-gated
+  tests remain bounded on the checked paths; earlier failure-cleanup regression was
+  independently verified in the preceding review.
+- A2's earlier step and scope evidence remains in previous sections: no source change
+  under `src/persistence/`, adoption, or continuation paths, and `agent-session.ts`
+  remains below 5,022 lines. B1 remains held until review and the coordinator gate.
+
+## Independent final checks
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean |
+| Temporary tsconfig including conversation-turn tests and lifecycle fixture | clean |
+| Complete offline `bun test` | **1,145 pass / 0 fail, 114 files, 35 snapshots, 100.59s** |
+| Characterization and turn-path focused run | **48 pass / 0 fail, 35 snapshots, 15.04s** |
+| Final snapshot SHA256 | `47686d4ca0451cf89802c9df52d22d453c238f811b9864cd72358663bfd971e6` |
+| Completed-snapshot bus negative probe | unauthorized opposite orders canonicalize identically and both pass raw checks |
+| Late-presentation watcher probe | watcher and its explicit `assertRun` accept a presentation after completion |
+| Cause-only commit | 39 blocks removed restores exact preceding snapshot bytes |
+| Comparative capture recount | four 1,750-entry dumps; selected per-turn managed and Agent-owned counts match report |
+
+Tests and synthetic probes used temporary `git archive` copies and offline fixtures;
+only temporary test files were altered for the probes. No repository source edits,
+implementation branch checkout, live harness, push, merge into beta, or protected
+path/worktree/process change occurred. Numerical gates are green for the runs above;
+the exception-scope and contractual-assertion findings prevent A2 acceptance.
