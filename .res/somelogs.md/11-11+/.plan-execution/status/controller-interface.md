@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Implementing steps 2–4 | Step 1 `0383681`; corrected beta `fcd1fd4` incorporated by implementation `d7f65c2` and review `66f4218`. Steps 2–4 released; then review and bob-b gate. |
+| A2 | In review; snapshot race escalated | Complete at `524af30`; A1 managed snapshot race: `11-13-ISSUE-A2-managed-order.md`. Independent review assigned; bob-b gate follows resolution of blockers and open decisions. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
