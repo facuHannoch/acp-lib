@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Watcher follow-up review | Consolidated exception `2f3b073`, report `120210f`; independent review assigned. Metering-write failure semantics escalated in `11-13-ISSUE-A2-metering-write-failure.md`; gate impact under review. |
+| A2 | Watcher boundary fixes | Review `a54cad2` found detached repeated-text and pre-dispatch metering-open observation gaps; fixes assigned. Metering failure/open questions remain escalated in `11-13-ISSUE-A2-metering-write-failure.md`; independent follow-up and gate pending. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
