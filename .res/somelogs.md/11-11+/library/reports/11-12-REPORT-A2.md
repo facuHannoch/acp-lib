@@ -4,8 +4,9 @@ Spec: `../11-11-SPEC-controller-interface.md` (beta `1bda9ef`). Branch `controll
 (beta merged in `d48ddcb`; beta-update report `11-12-REPORT-A2-beta-update.md`). Status and
 release: bob-b, `controller-interface-status` at `14f56c4`.
 
-**State: steps 1–4 done and committed; gate met** (full suite 1,139 pass / 0 fail). One
-pre-existing A1 snapshot race needs a decision (open question 1). The spec correction (beta
+**State: steps 1–4 done, and the three blocking review findings (`11-12-REVIEW-A2.md` at
+`c2e8f4b`) fixed in `e7f2d79`. Gate met: full suite 1,142 pass / 0 fail.** One pre-existing A1
+snapshot race still needs the owner's decision (open question 1). The spec correction (beta
 `fcd1fd4`) was merged in `efe6ebe`; steps 2–4 were released at status `6992179`. The spec question
 was
 `.plan-execution/status/11-12-ISSUE-A2-turn-events.md` is corrected on beta and both branches have
@@ -205,6 +206,72 @@ The two `afterPrompt` tests wrap the Agent-owned conversation's private `ownerLi
 (an already resolved promise) before `ensureProvider`. Every A1 snapshot matched apart from
 `cause`, and the race below is not made more frequent by it (measured below).
 
+## Review fixes (`e7f2d79`)
+
+Task: `.plan-execution/tasks/controller-interface-A2-review-fixes.md` (status `6a476a8`).
+
+**P1: a yield between the turn report and `ensureProvider` changed ACP behaviour.**
+- **Cause:** `pump` awaited `send`'s already resolved promise, which added a scheduling point
+  between the controller's synchronous `turn_started` and `ensureProvider`. Before A2 there was
+  none.
+- **Fix:** when the controller reported the turn inside `send` (session-scheduled, so the report is
+  its acceptance), `pump` doesn't await the promise. It attaches a `.catch` that logs, and goes
+  straight on to `ensureProvider`. A controller that didn't report inside `send`
+  (backend-scheduled, B2) is awaited, so the acceptance contract still holds for it. The report
+  stays synchronous inside `send`.
+- **Boundary probe:** I ran the same probe on the A1 gate commit (`9de0ca3`, from a `git archive`
+  copy) and on the fix, using a detached conversation on the echo fixture. Scenarios: `forceStop`,
+  `stop`, `interrupt` and `interrupt({ clearQueue })` right after `prompt()`; `forceStop`,
+  `interrupt` and `stop` from a `turn_started` listener; a second prompt, a queued-then-withdrawn
+  prompt, and a steer prompt from a `turn_started` listener.
+- **Results:** all 10 outcomes and event sequences are identical to A1. Before the fix, two
+  differed: `forceStop` right after `prompt()` reconnected and completed (A1: rejected,
+  `turn_started, turn_failed`); `stop` from the listener failed with "conversation is stopped"
+  (A1: `AgentSessionOperationError`). The probe scripts are outside the repo
+  (`/tmp/a2-fix/boundary-probe*.ts`).
+- **Regression tests:** "a force stop right after prompt() fails the turn without reconnecting, as
+  before" and "a stop from a turn_started listener fails the turn as before".
+
+**P2: the unknown-id check was tautological.**
+- **Fix:** the session keeps `acceptedMessages`, the ids of messages it accepted and hasn't settled.
+  An id is added in `enqueuePrompt` and removed in the item's own `resolve`/`reject`, which every
+  settlement path goes through (result, failure, withdraw, drop, combined-run fan-out). `pump`
+  checks each run id against that set, independently of how the run was built. Queue order and
+  turn id = first message id are still checked.
+- **Integration test:** "a run naming a message the session does not know is refused at dispatch,
+  before send" wraps the session's (private) `steering.prepareRun` to return a combined run with
+  an extra unknown id. It asserts:
+  - the prompt rejects with the unknown-id error;
+  - `controller.send` is never called;
+  - the only turn event is `turn_failed` (no `turn_started`, since the controller never reported);
+  - the next prompt runs normally, with only its own id.
+
+**P3: the fixed delay in the finalization-order test.**
+- **Fix:** the test now holds `afterPrompt` on a test-controlled gate. It waits (bounded, 5 s) until
+  `afterPrompt` is entered, then queues the config change and checks synchronously that it is
+  queued behind the turn: `phase` is `prompting`, `queuedOperationCount` is 1, and nothing but
+  `afterPrompt:start` has happened. Then it releases the gate and checks the order: `afterPrompt:end`,
+  `turn_completed`, `configuration_started`.
+- **Why it's deterministic:** if the queue moved past the turn before finalization, the config
+  change would be taken at once, so the queued check would fail every time. All waits go through a
+  bounded `within(...)`; there's no fixed delay.
+- **Also:** the trailing blank line at the end of `agent-session.ts` is gone (`git diff --check`
+  clean).
+
+**Checks that the tests catch the bugs:** the new turn-path tests run against the reviewed commit
+`524af30` (in a `git archive` copy): the three new regression tests fail there and pass at
+`e7f2d79`. The barrier test passes on both; the queue already waited, the old test just proved it
+with a delay.
+
+**Gate (`e7f2d79`):**
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean; new test files clean under the temporary tsconfig; `git diff --check` clean |
+| characterization + turn-path, three runs without update | 45 pass each (13.3 s, 14.0 s, 13.7 s); snapshot unchanged, SHA-256 `d25f05a19cadeb8f…` (the hash the reviewer recorded) |
+| full suite `bun test` | **1,142 pass, 0 fail; 114 files; 91.3 s** (1,139 + 3) |
+| `agent-session.ts` | **4,613 lines** (+19 for the acceptance branch and the accepted-message registry) |
+
 ## Open questions
 
 1. **A pre-existing order race in an A1 snapshot (the managed combined-steer case).** While
@@ -228,7 +295,11 @@ The two `afterPrompt` tests wrap the Agent-owned conversation's private `ownerLi
      green in every run here).
    - **Until decided:** the gate can occasionally fail on this case. It would show exactly this
      diff, not an A2 regression.
-2. **`agent-session.ts` is 4,594 lines, not ~4,550.** The spec's hard limit (shorter than 5,022) holds.
+   - **The reviewer also reproduced it** (on A1 and on A2) with a different pair: the **second,
+     completed** turn's in-progress `presentation_recorded` and its `metering_recorded`. So the race is
+     between managed-mode presentation writes and metering events generally, not one pair. It is
+     escalated to the owner; nothing here changes it.
+2. **`agent-session.ts` is 4,613 lines after the review fixes (4,594 before), not ~4,550.** The spec's hard limit (shorter than 5,022) holds.
    B1 will move or retype more of the session.
 
 ## Gaps and limitations
