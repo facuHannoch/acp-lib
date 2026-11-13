@@ -15,8 +15,7 @@ import type { ClientPrompt } from "../agent-client.ts";
 import type { ConnectResult } from "../client.ts";
 import type { AgentControllerStartEvent } from "../controller.ts";
 import type { MeteredOperationKind } from "../metering/record.ts";
-import type { OutputListener } from "../operations/contracts.ts";
-import type { SupervisedProvider } from "../operations/supervisor.ts";
+import type { OutputListener, SupervisedProvider } from "../operations/contracts.ts";
 import type { PromptHandlers } from "../types.ts";
 
 /** The turn path of a conversation's backend. */

@@ -13,6 +13,7 @@ import type { AgentController } from "../controller.ts";
 import type { Logger } from "../logger.ts";
 import type { ResolvedPart } from "../media/parts.ts";
 import type { OpenOperation } from "../metering/engine.ts";
+import type { SupervisedProvider } from "../operations/contracts.ts";
 import type { MeteredOperationKind, OperationMeteringRecord } from "../metering/record.ts";
 import type { NewConversationRecord, ParticipantRef } from "../persistence/backend.ts";
 import type { ProviderAttachmentState } from "../persistence/provider-attachment.ts";
@@ -38,7 +39,7 @@ export interface TurnRunContext {
     controller: AgentController,
     operationId: string,
     kind: "turn",
-    prompt: () => Promise<PromptResult>,
+    provider: SupervisedProvider,
   ): Promise<PromptResult>;
   /** Whether an operation supervisor is attached (it then routes activity to steering itself). */
   readonly supervising: boolean;

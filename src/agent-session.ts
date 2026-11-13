@@ -12,7 +12,7 @@
 import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
 import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
 import { OperationStalledError } from "./operations/errors.ts";
-import { OperationSupervisor } from "./operations/supervisor.ts";
+import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
 import {
   AgentController,
   type AgentControllerConfig,
@@ -3313,8 +3313,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return {
       log: this.log,
       get controller() { return session.controller; },
-      supervisedPrompt: (controller, operationId, kind, prompt) =>
-        this.supervisedPrompt(controller, operationId, kind, prompt),
+      supervisedPrompt: (controller, operationId, kind, provider) =>
+        this.supervisedPrompt(controller, operationId, kind, provider),
       get supervising() { return session.activeSupervisor !== null; },
       persistence: {
         get v2Transcript() { return session.v2Transcript; },
@@ -3615,17 +3615,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
     controller: AgentController,
     operationId: string,
     kind: "turn" | "internal_inference" | "recap",
-    prompt: () => Promise<PromptResult>,
+    provider: SupervisedProvider,
   ): Promise<PromptResult> {
     const limits = kind === "turn"
       ? this.operationLifecycle.turns
       : kind === "recap" ? this.operationLifecycle.recap : this.operationLifecycle.internalInference;
-    const supervisor = new OperationSupervisor({
-      prompt,
-      subscribeOutput: (listener) => controller.subscribeOutput(listener),
-      cancel: () => controller.cancel(),
-      forceStop: () => controller.forceStop(),
-    }, {
+    const supervisor = new OperationSupervisor(provider, {
       operationId,
       kind,
       sessionId: controller.currentSessionId,
@@ -3709,7 +3704,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.runningOperationId = operationId;
     try {
       const kind = operationKind === "conversation_checkpoint" ? "recap" : "internal_inference";
-      const result = await this.supervisedPrompt(controller, operationId, kind, () => controller.prompt(text));
+      const result = await this.supervisedPrompt(controller, operationId, kind,
+        controller.prepareInternalPrompt({ input: { text }, handlers: {} }));
       const record = await this.closeOperation(
         operation,
         result.status,

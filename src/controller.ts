@@ -1,5 +1,11 @@
 import { ForcedStopError } from "./operations/errors.ts";
-import type { OperationLifecycleConfig, OutputListener } from "./operations/contracts.ts";
+import type { OperationLifecycleConfig, OutputListener, SupervisedProvider } from "./operations/contracts.ts";
+import type {
+  PreparedTurn,
+  TurnContent,
+  TurnEvent,
+  TurnRun,
+} from "./conversation-controller/contracts.ts";
 import {
   AcpClient,
   type AcpClientConfig,
@@ -139,6 +145,9 @@ export class AgentController implements AgentClient {
     (update: unknown, sessionId: string | null) => void
   >();
   private readonly outputListeners = new Set<OutputListener>();
+  private readonly turnListeners = new Set<(event: TurnEvent) => void>();
+  /** Turns reported by `send` that have not been prepared or abandoned yet. */
+  private readonly reportedTurns = new Set<string>();
   private detachOutput: (() => void) | null = null;
   private detachUsageUpdates: (() => void) | null = null;
 
@@ -287,6 +296,66 @@ export class AgentController implements AgentClient {
     });
     return Promise.race([current.prompt(prompt), interrupted])
       .finally(() => this.forceStopListeners.delete(forced));
+  }
+
+  // --- turn path (ConversationController; controller-interface spec) -----------------------------
+
+  /**
+   * Session-scheduled: makes no provider call. Reports `turn_started` for the run synchronously,
+   * inside this call (`sentBySession: true`), and returns an already resolved promise. The turn's
+   * provider work starts when its prepared turn's `prompt()` is called.
+   */
+  send(run: TurnRun): Promise<void> {
+    const turnId = run.turnId;
+    if (!turnId) throw new Error("send: a session-scheduled run requires its turnId");
+    if (run.messageIds.length === 0) throw new Error("a run carries at least one message id");
+    if (new Set(run.messageIds).size !== run.messageIds.length) {
+      throw new Error(`a run repeats a message id: ${run.messageIds.join(", ")}`);
+    }
+    this.reportedTurns.add(turnId);
+    const event: TurnEvent = {
+      kind: "turn_started",
+      turnId,
+      cause: { kind: "messages", messageIds: Object.freeze([...run.messageIds]) },
+      sentBySession: true,
+    };
+    for (const listener of [...this.turnListeners]) listener(event);
+    return Promise.resolve();
+  }
+
+  /** `turn_started` only: this controller never folds items into a running turn (`turn_took`). */
+  subscribeTurns(listener: (event: TurnEvent) => void): () => void {
+    this.turnListeners.add(listener);
+    return () => this.turnListeners.delete(listener);
+  }
+
+  /**
+   * Starts nothing. The returned turn's `prompt()` calls `prompt` with the content's input and
+   * handlers; its output, cancel and force stop are this controller's own, since it only ever runs
+   * one turn. `live` is always true (nothing is held).
+   */
+  prepareTurn(turnId: string, content: TurnContent): PreparedTurn {
+    this.reportedTurns.delete(turnId);
+    return { turnId, live: true, ...this.supervisedContent(content) };
+  }
+
+  /** An internal prompt (summary, recap, seed): the same shape, no turn bookkeeping. */
+  prepareInternalPrompt(content: TurnContent): SupervisedProvider {
+    return this.supervisedContent(content);
+  }
+
+  /** Releases a reported turn the session won't run. Idempotent; never stops provider work. */
+  abandonTurn(turnId: string, _reason: unknown): void {
+    this.reportedTurns.delete(turnId);
+  }
+
+  private supervisedContent(content: TurnContent): SupervisedProvider {
+    return {
+      prompt: () => this.prompt({ ...(content.input ?? {}), handlers: content.handlers }),
+      subscribeOutput: (listener) => this.subscribeOutput(listener),
+      cancel: () => this.cancel(),
+      forceStop: () => this.forceStop(),
+    };
   }
 
   cancel(): void { this.current?.interrupt(); }

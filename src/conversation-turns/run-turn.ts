@@ -124,14 +124,19 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
   const dispatchedAt = new Date().toISOString();
   try {
     // Phase 4: dispatch under the supervisor.
+    // The prepared turn starts nothing; the supervisor subscribes to its output, then calls its
+    // `prompt()` (the attachment barrier).
     let res = await ctx.supervisedPrompt(ctx.controller, item.turnId, "turn",
-      // An owned conversation already resolved the parts and wrapped them with the provider-only
-      // text (identity, out-of-band messages); otherwise the client resolves them.
-      () => ctx.controller.prompt(owned?.providerParts
-        ? { parts: unresolvedParts(owned.providerParts), handlers: recording.handlers }
-        : item.messageParts
-          ? { parts: item.messageParts, attachments: item.attachments, handlers: recording.handlers }
-          : { text: item.text, attachments: item.attachments, handlers: recording.handlers }));
+      ctx.controller.prepareTurn(item.turnId, {
+        // An owned conversation already resolved the parts and wrapped them with the provider-only
+        // text (identity, out-of-band messages); otherwise the client resolves them.
+        input: owned?.providerParts
+          ? { parts: unresolvedParts(owned.providerParts) }
+          : item.messageParts
+            ? { parts: item.messageParts, attachments: item.attachments }
+            : { text: item.text, attachments: item.attachments },
+        handlers: recording.handlers,
+      }));
     if (res.cancel === "forced") {
       const messages = response.snapshot();
       res = { ...res, messages, text: response.text || chunks.join("") };

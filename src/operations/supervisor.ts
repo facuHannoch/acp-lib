@@ -10,21 +10,15 @@ import type {
   CancelOutcome,
   CancelReason,
   OperationActivity,
-  OutputListener,
   ProviderOutput,
   StaleLimits,
   SupervisedOperationKind,
+  SupervisedProvider,
 } from "./contracts.ts";
 import { ToolTracker } from "./activity-tracker.ts";
 import { realTimers, type Timers } from "./timers.ts";
 
-/** The narrow view of a provider the supervisor needs. */
-export interface SupervisedProvider {
-  prompt(): Promise<PromptResult>;
-  subscribeOutput(listener: OutputListener): () => void;
-  cancel(): void;
-  forceStop(): Promise<void>;
-}
+export type { SupervisedProvider } from "./contracts.ts";
 
 export interface SupervisorOptions {
   readonly operationId: string;
