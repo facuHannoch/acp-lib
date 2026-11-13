@@ -1,7 +1,8 @@
 # TODO: cancellable provider connect (a harness that never answers)
 
-Status: accepted as today's behaviour for now (decided 2026-11-13, during A2 of the controller-interface spec); to be
-fixed as its own small change. It changes ACP behaviour, so it needs the owner's go-ahead.
+Status: **moved into the integration spec** (`../11-11-SPEC-native-harness-integration.md`, Cancellable connect), as
+the second item of stage 2a, decided 2026-11-13. Accepted as today's behaviour for the controller-interface work.
+Kept for the history of the decision.
 
 ## The problem
 

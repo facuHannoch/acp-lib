@@ -113,7 +113,7 @@ recovery):
 - **The host owns policy and lifecycle; the harness owns the agent's work.** The host starts, stops and restarts the
   process, decides policies and what may happen on each channel; the harness decides when a channel takes a turn and
   what it does in it (overview, decision 41).
-- **Nothing waits forever.** Every request that can wait has a bound (Timeouts, below).
+- **Nothing waits forever.** Every request that can wait is bounded or cancellable by the host (Timeouts, below).
 - **Part 1 and part 2.** Each method is marked with the harness part that implements it (`harness/11-11-SPEC-harness-v1.md`,
   Two parts). Part 1 is what integration stage 2a needs.
 
@@ -323,11 +323,11 @@ JSON-RPC errors with a stable `data.code`:
 
 ## Timeouts
 
-Every wait has a bound (integration spec, Nothing waits forever).
+Every wait is bounded or cancellable (integration spec, Nothing waits forever).
 
 | Who waits | For | Bound |
 | --- | --- | --- |
-| host | `initialize` and `session/load` after launch | the host's start timeout (acp-client: 60 s) |
+| host | `initialize` and `session/load` after launch | no automatic limit: cancellable by the host (it stops the process); acp-client cancels on `stop()` or close |
 | host | any other request | 30 s by default, longer for `session/export` and `session/import` |
 | harness | a `permission/request` reply | the gate timeout (default 10 min), longer than any host's permission timeout; then refused |
 | harness | other callbacks | per callback (functions: the tool's timeout; delegation: 30 s) |
@@ -348,7 +348,8 @@ consumer only wants final messages.
 2. **The consumer calls `prompt({ text: "summarize the repo", participantId: "bob" })`.** acp-client queues it; the
    queue runs it, and the conversation is busy.
 3. **The harness isn't running, so acp-client starts it** through the launcher (`harness serve --stdio`), once: a
-   second conversation needing it now would wait for this start. The start is bounded (60 s).
+   second conversation needing it now would wait for this start. The start is cancellable: stopping or closing the
+   conversation stops it cleanly.
 4. **acp-client → harness: `initialize`** `{ protocolVersion: 1, host, callbacks: ["permission/request"],
    subscription: { text: "final", tools: "summary", reasoning: "none", modelLog: false, usage: "per_call" } }`.
 5. **harness → acp-client:** `{ protocolVersion: 1, harness: { version }, description }`. acp-client compares the

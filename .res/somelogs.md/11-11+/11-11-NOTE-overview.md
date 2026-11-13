@@ -53,6 +53,10 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 | `harness/11-11-NOTE-memory-findings.md` | Findings on memory: kinds, write and read paths, Letta, digests, what is deferred | Reference |
 | `harness/theory/11-11-NOTE-harness-theory.md` | How harnesses work in general | Reference |
 
+**Document types:** `SPEC` (what to build), `NOTE` (context and decisions), `TODO` (deferred work), `FINDING`
+(something observed, accepted for now), `RULES` (how the library behaves and why, documented without changing it).
+Named `<month>-<day>-<TYPE>-<topic>.md`, in the folder of the part they concern.
+
 ## Decisions
 
 Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorded here.

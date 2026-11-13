@@ -110,15 +110,16 @@ controller (`InternalPromptTarget`, line 307) before it is live, and emits no tu
 - the final assistant message is recorded before the turn is announced complete;
 - `turn_completed` comes only after metering, the transcript and `afterPrompt` are done.
 
-**Not contractual:** the relative order of metering against a turn's last presentation event (managed mode) or its
-last in-progress assistant snapshot record (Agent-owned mode). They are written on separate paths and today's code
+**Not contractual:** the relative order of metering against a turn's presentation events (managed mode: any of them,
+since presentation events are delivered from their own queue and may lag behind metering) or its last in-progress
+assistant snapshot record (Agent-owned mode). They are written on separate paths and today's code
 fixes no order between them; both orders occur on A1. Making one order hold would be a behaviour change
 (`findings/11-13-FINDING-metering-vs-presentation-order.md`), not part of this spec.
 
 **A known hang, accepted for now:** an ACP harness that never answers while connecting or reconnecting leaves its
 conversation stuck (the queue and `stop()` wait forever). It is today's behaviour, seen on A1, and a named exception
-to the "nothing waits forever" rule for ACP's existing lifecycle; the fix is
-`todos/11-13-TODO-cancellable-provider-connect.md`. A2 keeps the queue waiting on an in-progress reconnect (two
+to the "nothing waits forever" rule for ACP's existing lifecycle; the fix is in
+the integration spec (Cancellable connect, stage 2a). A2 keeps the queue waiting on an in-progress reconnect (two
 reconnects never overlap), and fails the prompt that triggered it as soon as `send` fails.
 
 **Who uses `AgentController` directly:** `src/agent-session.ts` (18 references), `src/controller.ts`,
@@ -648,9 +649,13 @@ member it guards.
 - **Order changes in the turn path.** The managed-mode preflight, the moment `turn_started` is emitted and the
   user-record ids are the likely places. Sign: an A1 snapshot changes in order or ids. Fix the order, never the
   snapshot.
-- **The one allowed snapshot exception (A2).** For the two non-contractual pairs only (metering vs. the last
-  presentation event in managed mode; metering vs. the last in-progress assistant snapshot record in Agent-owned
-  mode), the characterization tests accept either order. Everything else stays strict (content, ids, order within each
+- **The one allowed snapshot exception (A2).** For the two non-contractual cases only, the characterization tests
+  accept the observed alternatives: in managed mode, the turn's metering event may appear anywhere among that turn's
+  presentation events, but only after its `turn_started` and before its `turn_completed` (widened 2026-11-13 after
+  `M → P1 → P2` was observed: metering ahead of the in-progress presentation, not only the completed one); in
+  Agent-owned mode, metering vs. the last in-progress assistant snapshot record, either order. The presentation
+  events' own order (in-progress before completed), stable ids, metering exactly once, and `turn_completed` after
+  both metering and the turn's last presentation event stay strict. Everything else stays strict (content, ids, order within each
   stream, sequence numbers), and the contractual orders get explicit assertions of their own. Where a test is about a
   specific sequence, it waits on an event barrier instead (as A1's instant-tool case does). This is one dedicated
   commit, reviewed. Before the gate, the affected cases run many times (about 50) on A1 and on A2, and the frequency
