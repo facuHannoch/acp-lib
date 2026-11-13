@@ -404,7 +404,8 @@ started`, with the items it took, then the stream, then the end). The `NativeCon
 `turn_started` with its cause (`11-11-SPEC-controller-interface.md`), and `AgentSession` runs it like any turn: it
 records, meters and supervises it through `prepareTurn`, and emits it on the conversation's turn events. acp-client never schedules a native turn and the
 harness never asks it for permission to run one (overview, decision 41). Exclusive operations hold the channel first
-(below), and budgets are the harness's guard.
+(below). The library enforces no spending limit (none exists today either); it measures every call (Billing-grade
+metering), and a cap is deferred (`todos/11-13-TODO-spending-cap.md`).
 
 - **A prompt's promise resolves with the turn that took its message.** The harness reports which items each turn took:
   at its start (`turn_started`), and as it folds more in (`turn_took`). A message folded into a running turn settles
@@ -428,9 +429,9 @@ harness never asks it for permission to run one (overview, decision 41). Exclusi
   such operation must hold, and stage 2a tests each one. A hold is a **lease** (Nothing waits forever, below).
 - **Native admission** (what the session's pre-turn checks mean when the harness already started the turn; overview,
   decision 41; controller-interface spec, Appendix A):
-  - a metering preflight that would reject a turn the harness started can't stop it: the turn is recorded and metered
-    as executed, flagged `over_budget` (a field on the metering record), and the budget is enforced by the harness's
-    guard;
+  - the metering preflight (which checks that usage can be measured, not money) is checked when the harness starts,
+    not per turn: under `billing_required` an unconfirmed harness doesn't start (Billing-grade metering), so a turn
+    the harness starts never meets a failing preflight;
   - a settings change applies from the next model call; it doesn't hold the channel;
   - **a persistence failure never holds anything.** A failed write is surfaced (an error event on the conversation,
     logged), the turn is recorded as far as possible ("completed by the backend, recording failed"), and the agent
@@ -561,6 +562,25 @@ any. acp-client files each call by where it happened, not by its purpose:
 A new kind of harness call needs only a new purpose name. The session also keeps its own usage ledger, for standalone
 use. acp-client's own conversation summaries (checkpoints) stay acp-client's internal inference, now able to run on
 the `http` runtime.
+
+### Billing-grade metering
+
+The library knows native costs as precisely as it knows the certified OpenCode plugin's (decided 2026-11-13; this
+brings the measurement part of `todos/11-12-TODO-billing-required-native.md` into stage 2a). A consumer enforces
+limits outside, from the records and the per-call usage events; a cap enforced by the library is deferred
+(`todos/11-13-TODO-spending-cap.md`).
+
+- **An inference source fed by the harness's per-call usage,** like the OpenCode plugin's
+  (`src/metering/opencode/`): one inference per model call, with its tokens, its cost when the provider reports it
+  (else priced by acp-client's catalog, as today) and its purpose. A tool-using turn's several calls are all counted.
+- **A certification entry,** `native-harness@1` in `src/metering/certification.ts`, whose supported versions are
+  harness protocol versions; looked up by adapter **kind** (native adapter ids are the consumer's, e.g. `"main"`),
+  not only by adapter id.
+- **Checked at start, not per turn:** `billing_required` is checked statically at open (the installed harness
+  package's version and `describe`) and confirmed at the start handshake. If the running harness can't confirm it,
+  the start fails, so no turn (including one the harness would start on its own) can run unmetered.
+- **Every call counted somewhere:** inside a turn, in that turn's metering; outside a turn, an entity-level record
+  (Usage, above).
 
 ## The inbox
 
@@ -792,13 +812,13 @@ stage 2a):
 
 ## Implementation plan, stage 2a
 
-Written 2026-11-13, revised after review 4 the same day; not yet reviewed again. Eleven briefs, each about one agent
+Written 2026-11-13, revised after review 4 the same day; not yet reviewed again. Twelve briefs, each about one agent
 run, run in order by one trio (`../.plan-execution/plan.md`). Stage 2b gets its own plan later, against harness part 2.
 
 **Dependencies.** All briefs start after the controller-interface spec is merged into `beta` (they build on its
 turn-based interface: `send`, `subscribeTurns`, `prepareTurn`, `abandonTurn`, `turn_took`, the factory, capabilities).
 N0–N2 need nothing else. N3 onwards build against a **fake harness client** that implements the protocol
-(`../11-12-SPEC-harness-protocol.md`); only N10 needs a real `harness serve` (harness part 1).
+(`../11-12-SPEC-harness-protocol.md`); only N11 needs a real `harness serve` (harness part 1).
 
 **The shared contract.** The protocol's types and the `HarnessClient` interface live in `src/native-harness/` (the
 harness's entry points `client.ts` and `protocol/`). Whichever trio reaches them first (this one in N3, or the harness
@@ -1055,9 +1075,8 @@ idempotency by turn id is the guard.
 1. **`permission/request`** from the harness routed to the conversation as `permission_requested` (N2's machinery);
    the answer returned as the callback's reply; a request in a held turn waits with it, its clock counting from when
    the harness asked. **Gate:** answered, timed out, no answerer, in a held turn.
-2. **Admission:** a preflight that would reject a harness-started turn records it as executed and flags
-   `over_budget` (a field on the metering record); a persistence failure surfaced (an error event) and never held;
-   usage of a held turn filed when it runs. **Gate:** suite green; tests for each.
+2. **Admission:** a persistence failure surfaced (an error event) and never held; usage of a held turn filed when it
+   runs. **Gate:** suite green; tests for each.
 3. **Usage filing:** inside a turn, to that turn's metering, tagged with its purpose; outside a turn, an entity-level
    record. **Gate:** compaction mid-turn in the turn's cost; compaction between turns at entity level.
 4. **The delivery port** (`src/native/inbox-delivery.ts`): pushing items onto a native channel (kind, sender, delivery
@@ -1066,7 +1085,24 @@ idempotency by turn id is the guard.
 
 **Done:** report commits and each case.
 
-### Brief N10: a real `harness serve`, export and import, acceptance
+### Brief N10: billing-grade metering
+
+**Scope:** steps 1–3 (Billing-grade metering). Must not touch: the OpenCode certification's behaviour.
+
+1. **The inference source** (`src/metering/native/`): fed by the harness's per-call usage; each call one inference
+   with tokens, cost (reported or priced by the catalog) and purpose. **Gate:** a turn with three model calls and a
+   tool records three inferences; the totals match the fake's usage exactly.
+2. **The certification:** `native-harness@1`, supported protocol versions, lookup by adapter kind. **Gate:** a native
+   conversation under `billing_required` opens; a plain ACP one is still rejected; OpenCode unchanged.
+3. **Checked at start:** statically at open, confirmed at the start handshake; an unconfirmed harness fails the start.
+   **Gate:** a fake reporting an unsupported version fails the start under `billing_required` and starts under
+   `best_effort`; no turn runs before confirmation.
+
+**Done:** report commits, a turn's records next to the fake's usage, the certification entry.
+**Risks:** a call counted twice or not at all (sign: totals differing from the harness's own ledger); compared in the
+acceptance test.
+
+### Brief N11: a real `harness serve`, export and import, acceptance
 
 **Scope:** steps 1–4. Needs harness part 1.
 
@@ -1115,6 +1151,8 @@ idempotency by turn id is the guard.
 - After the harness is killed mid-turn and restarted, reconciliation settles every prompt exactly once: a turn that
   ended unheard is recorded, a turn running at the crash fails, a waiting message is taken afterwards.
 - A push resent after a restart is stored once.
+- A tool-using native turn's metering counts every model call, matching the harness's own usage; `billing_required`
+  accepts a native conversation and fails the start of a harness that can't confirm its certification.
 - A crash after the harness ended a turn but before its end reached acp-client settles that turn's prompt once,
   successfully, from reconciliation.
 - One conversation's `stop()` during a start leaves the others waiting; `agent.harness.stop()` ends the start for all.
@@ -1134,8 +1172,7 @@ idempotency by turn id is the guard.
 
 ## Open
 
-- [ ] `billing_required` for native conversations: after the four main specs
-      (`todos/11-12-TODO-billing-required-native.md`).
+- [ ] A spending cap enforced by the library: deferred (`todos/11-13-TODO-spending-cap.md`).
 - [ ] Do Codex and Claude support HTTP MCP servers over ACP, or is the stdio bridge needed (phase 2)?
 - [ ] Whether the consumer may wake an ACP conversation with an item (a prompt it allows), or ACP only gets next-prompt
       delivery.

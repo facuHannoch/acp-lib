@@ -1,7 +1,8 @@
 # TODO: `billing_required` for native conversations
 
-Status: deferred; one of the last items, after the four main specs (controller interface, integration, orchestrator,
-CLI). Written 2026-11-12 from review 3 of the integration spec.
+Status: **moved into integration stage 2a** (`../11-11-SPEC-native-harness-integration.md`, Billing-grade metering;
+brief N10), decided 2026-11-13: the library must know native costs as precisely as the OpenCode plugin's. Written
+2026-11-12 from review 3 of the integration spec; kept for the history of the decision.
 
 ## Why native can meet it
 
@@ -21,8 +22,8 @@ Usage), which is what billing-grade metering needs.
   `describe`), confirm at the start handshake; if the harness can't confirm, the first turn fails before running
   rather than metering wrongly.
 - **Cost:** from the harness when the provider reports it; otherwise priced by acp-client's catalog, as today.
-- **What it guarantees for native:** accurate measurement, not refusal. Turns the harness starts can't be refused
-  before they run (overview, decision 41); budgets are the harness's guard.
+- **What it guarantees for native:** accurate measurement, not refusal. A spending cap is deferred
+  (`11-13-TODO-spending-cap.md`).
 
 ## Questions
 

@@ -117,7 +117,7 @@ The verdict and the evidence go in the GATE file.
 | Integration stage 2b, harness part 2 | after 2a and part 1 | later |
 | CLI (`library/11-11-SPEC-cli.md`) | lowest priority | last |
 | End-to-end robustness (`11-12-SPEC-end-to-end-robustness.md`) | after everything that builds is done | last |
-| `billing_required` for native (`library/todos/11-12-TODO-billing-required-native.md`) | after the four main specs | last |
+| `billing_required` for native | moved into integration stage 2a (brief N10) | — |
 
 A spec is ready for a trio when it has its implementation briefs (steps with gates, a test plan, done criteria,
 risks) and has passed the spec owner's reviews.

@@ -399,9 +399,9 @@ usage. A new kind of call needs only a new purpose name.
 ## Guards
 
 Calls per turn (`limits.callsPerTurn`); the unattended-turn budget (`limits.unattendedTurns`: turns with no human
-input, which stops agent–worker and agent–agent ping-pong); a usage budget (`limits.budget`, set by the host), which
-refuses model calls over the limit, in turns and outside them (the host can't refuse a turn before it starts; overview,
-decision 41).
+input, which stops agent–worker and agent–agent ping-pong). A usage budget (`limits.budget`) that refuses model calls
+over a limit is deferred, with the library's spending cap (`../library/todos/11-13-TODO-spending-cap.md`); in v1 the
+harness reports every call's usage and the host meters it.
 
 **Holds.** A host can hold a channel (`channel/hold`) before an operation that needs it to itself: the harness
 starts no turn on it until the hold is released (`channel/release`); a running turn is waited for, or interrupted when the hold asks for it.

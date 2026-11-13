@@ -36,7 +36,7 @@ a core-only fake controller and the controller conformance suite.
 - **Integration stage 2a** (where the native backend needs them): channel holds, `accepted` on the prompt handle, a
   separate "accept a message" step for messages a backend takes on its own, generalizing `provider_sessions`, the
   neutral permission request shape, the model-call record, opaque provider data on messages; anything native.
-- **Harness part 1:** the protocol for holds and the budget guard (Appendix A).
+- **Harness part 1:** the protocol for holds (Appendix A).
 - **No new public `send()`.** Today's `PromptHandle` (the result promise plus `id` and `withdraw`) already is "put a
   message in, get its result later": a consumer that doesn't want to wait doesn't await it.
 
@@ -692,11 +692,12 @@ How the guarantees that today depend on acp-client starting every turn are kept:
    operation.
 2. **Turn 1 is recorded before turn 2.** acp-client handles each conversation's turns in order, locally; the
    controller holds turn 2's output until the session runs it. No protocol step.
-3. **Budgets.** A harness guard, configured by the host, refuses calls over the limit. The harness keeps the usage
-   ledger and is the only place that also sees model calls outside turns (compaction).
+3. **Costs.** The harness reports every model call's usage, in turns and outside them (compaction), and acp-client
+   meters each at billing grade (integration spec, Billing-grade metering). Spending limits are the consumer's,
+   outside; a cap enforced by the library is deferred (`todos/11-13-TODO-spending-cap.md`, revised 2026-11-13).
 4. **A stopped or deleted conversation starts nothing new:** its channel is closed.
 
-Where it is built: holds and the budget guard in harness part 1 (protocol `channel/hold`, `channel/release`; the
+Where it is built: holds in harness part 1 (protocol `channel/hold`, `channel/release`; the
 guard's limit in the config); their use in integration stage 2a. This spec only needs the session to accept turns
 the backend starts, which the fake exercises.
 
@@ -722,7 +723,8 @@ the backend starts, which the fake exercises.
 - **Local per-turn checks can't prevent native spending.** Holding a reported turn's output until the session runs
   it keeps the order of what is observed; it does not stop the harness from executing or spending meanwhile. Stage
   2a needs an explicit policy for each check the session makes before an ACP turn:
-  - **budget rejection:** the harness's guard, as above;
+  - **budget rejection:** none in the library (there is none today either); the consumer enforces limits from the
+    metering, as above;
   - **stale configuration:** the harness may run a turn on settings acp-client is about to change; a setting change
     applies from the next model call, and stage 2a states whether a pending change holds the channel first;
   - **unhealthy persistence:** the harness keeps working while acp-client can't record; stage 2a decides whether
