@@ -789,3 +789,132 @@ source edits, implementation branch checkout, live harness, push, merge into bet
 protected path/worktree/process change occurred. Numerical tests are green; the
 explicit contractual-assertion findings must be resolved before the coordinator can
 pass A2.
+
+## Watcher-fixes review — `120210f` (2026-11-13)
+
+Reviewed consolidated exception `2f3b073`, report `120210f`, prior review `54ced2e`,
+beta `95e9cf2` and the owner decisions. Earlier review sections remain historical.
+
+**Verdict: the prior three watcher counterexamples are addressed and independent
+numerical tests pass, but two additional explicit-assertion gaps remain. Do not pass
+A2 until the gaps and the separately escalated metering-write question receive their
+appropriate disposition; B1 remains held.** These findings concern the test watcher
+and contract evidence, not a newly established production regression.
+
+### P2 — Detached final-message check can reuse an identical previous turn's line
+
+**`test/conversation-turns/contract-watch.ts:140`–`:146`.** At completion, the
+watcher selects the last assistant line in the entire detached transcript and checks
+its message texts against the current result. It does not check that this assistant
+line was appended for the current turn. If the previous turn produced the same text
+and the current turn's assistant line is missing, the previous line satisfies the
+check even when the current turn's user line comes after it.
+
+Independent temporary synthetic test (`/tmp/controller-a2-detached-duplicate.test.ts`):
+the transcript contains a prior assistant message `same`, followed by the current
+turn's user message, with **no current assistant line**. A current completed turn whose
+result also contains `same` gives `violations = []`, and `assertRun("detached", {})`
+passes. The actual characterization snapshot still compares captured transcript lines
+and can catch a missing line in its covered fixtures; this is the separately required
+per-turn final-message assertion, and its claimed positional identification is not
+sufficient when messages repeat.
+
+Track a turn-specific transcript boundary (for example the relevant user/assistant
+segment or an independently recorded offset before the current turn's assistant
+append), and require the final assistant line to belong to that segment as well as
+matching all messages. Add a negative repeated-text case and a correct two-turn positive
+case. Keep detached transcript ordering and content strict.
+
+### P2 — An unobserved pre-dispatch phase is labeled “before metered operation” from error text alone
+
+**`test/conversation-turns/contract-watch.ts:196`–`:207`.** For a failed turn with
+no `provider_called` marker, any error other than the preflight or metering-carrying
+name prefixes is classified as “failed before the metered operation” and expected to
+have no metering. The watcher does not observe whether `metering.open()` actually
+succeeded; an error name alone does not establish that boundary. This is an implicit
+classification, distinct from the explicit `expectMeteringWriteFailure` override.
+
+Independent runtime fault probe (`/tmp/controller-a2-postopen-classification.test.ts`):
+create a real managed session on the offline echo fixture, count successful
+`metering.open()` calls, and make `v2Transcript.beginOperation()` throw a plain
+`Error` immediately after the metering open succeeds. The prompt fails, the open count
+is **1**, no provider call occurs, and the watcher nevertheless accepts the run as one
+that failed before the metered operation. The probe passed with seven assertions; only
+runtime methods in the temporary test process were wrapped. This establishes the
+classification is factually wrong; it does not by itself decide whether the existing
+pre-dispatch persistence-failure path must produce a metering record or authorize a
+production behavior change.
+
+Observe the metering-open/pre-dispatch boundary directly or represent it explicitly,
+then make expectations for an opened-but-not-dispatched failure distinguishable from a
+failure before opening. Escalate the expected record behavior if the spec does not
+settle it. Add positive/negative tests for both sides of the boundary. Do not silently
+infer that missing metering is allowed from a generic error prefix or from the
+declared-only metering-write override.
+
+## Prior findings and owner question 4
+
+- A provider-dispatched failure without metering now fails the explicit watcher; one
+  metering after a promise rejection or synchronous throw passes, duplicates and early
+  metering fail. The wrapper catches a synchronous throw, records an outcome and
+  rethrows the **same error**, and returns the **same promise** on async paths. The 27
+  committed synthetic watcher tests include positive/negative cases and pass in the
+  independent full/focused runs. The implementer reports individual temporary mutation
+  checks; I inspected the synthetic cases and report but did not independently repeat
+  each mutation.
+- Agent-owned and managed final-message checks now use the current turn's final ordinal
+  and text, including multi-message negative cases. The detached repeated-text
+  counterexample above remains. These checks are separate from strict snapshot content.
+- Metering-write failure policy remains open question 4 for the owner. The synthetic
+  declared `close` / `record` overrides are not used by any current characterization
+  case (`rg` found no call there); their mere presence does **not** authorize missing
+  metering. I do not decide that policy. The post-open fault above reveals a separate
+  implicit classification that does not use the override. No existing characterization
+  case injects that fault, so the green numerical run is not evidence resolving it.
+- The previous late-presentation and `afterPrompt` timeline fixes, pair-rule negative
+  tests, raw bus/record agreement and accepted existing ACP stuck-connect exception are
+  unchanged. No new unbounded-wait exception is inferred.
+
+## Snapshot and comparison evidence
+
+`2f3b073` is the single consolidated exception commit on the implementation branch,
+with `cffce98` still separate. The old implementation head is preserved on the named
+pre-watcher-fixes branch. Relative to `5eeb54c`, only the characterization watcher
+extraction and new watcher/test files changed: source, snapshot, pair-rule, pair-rule
+unit tests and normalizer are byte-identical. Snapshot SHA256 remains
+`47686d4ca0451cf89802c9df52d22d453c238f811b9864cd72358663bfd971e6`; no snapshot was
+regenerated in review. The numerical and strict-scope checks from the preceding review
+remain applicable to those unchanged files.
+
+Study 3's retained A1/A2 comparison used the **same prior watcher** on both versions;
+our previous review checked all 100 exit files/logs and selected per-turn counts.
+For the changed watcher, the implementer ran Study 4: 20 A2-only instrumented runs.
+I independently checked all 20 exit files/logs and dumps: all exit zero, no fail or
+unhandled diagnostic, 35 captures each; Agent-owned internal-command order is 18
+metering-first / 2 snapshot-first, matching the report. The Study 4 watcher file matches
+this commit and the characterization diff is only the same dump/name instrumentation.
+The supplementary A2-only sample supports that the final test runs and captures the
+known alternatives; it is **not** a paired final-watcher A1/A2 comparison and cannot
+establish unchanged rates after the instrumentation changes. Study 3 remains valid
+for its shared prior instrumentation and unchanged production source; synchronous
+watcher work may itself affect timing. Finite samples and the always-possible noise
+remain limitations. All three managed positions and zeros are recorded in the prior
+A1/A2 comparison; no equality of rates is inferred.
+
+## Independent checks
+
+| Check | Result |
+| --- | --- |
+| Source and test/fixture typechecks | clean |
+| Complete offline `bun test` | **1,187 pass / 0 fail, 116 files, 35 snapshots, 104.03s** |
+| Characterization, turn-path, pair-rule and watcher | **90 pass / 0 fail, 14.55s** |
+| Detached repeated-text synthetic probe | watcher accepts missing current assistant line |
+| Managed post-open pre-dispatch fault probe | actual open count 1; watcher accepts it as before-open, no declaration |
+| Study 4 retained evidence | 20/20 exit zero, 35 captures each, no fail/unhandled diagnostic |
+| Snapshot / pair rule / source | unchanged from `5eeb54c`; diff check clean |
+
+Tests used temporary archive copies, synthetic conversations, and offline fixture
+agents. No repository source/snapshot edits, implementation branch checkout, live
+harness, push, merge into beta, or protected path/worktree/process change occurred.
+The two watcher gaps require a follow-up before the coordinator can accept the brief;
+B1 remains held.
