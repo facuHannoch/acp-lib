@@ -4,10 +4,12 @@ Spec: `../11-11-SPEC-controller-interface.md` (beta `1bda9ef`). Branch `controll
 (beta merged in `d48ddcb`; beta-update report `11-12-REPORT-A2-beta-update.md`). Status and
 release: bob-b, `controller-interface-status` at `14f56c4`.
 
-**State: steps 1–4 done; review findings fixed in `e7f2d79` (first review), `f54dc05` (follow-up)
-and `9e0f457` (second follow-up, `11-12-REVIEW-A2.md` at `f9919ad`). Gate: full suite 1,145
-pass / 0 fail, two runs.** Two pre-existing intermittent snapshot orders and one pre-existing stop
-hang are with the owner (open questions 1 and 3); nothing here changes them. The spec correction (beta
+**State: steps 1–4 done; review findings fixed in `e7f2d79`, `f54dc05` and `9e0f457`; the owner's
+decisions (beta `fd9ec24`, `95e9cf2`) merged in `174200e` and `83114f1` and applied in the one
+dedicated snapshot-exception commit `5eeb54c` (which replaces `1ad325d` after the final review). Gate:
+full suite 1,160 pass / 0 fail (two runs).**
+The accepted connect/reconnect hang (spec, "A known hang, accepted for now") is unchanged and
+represented as accepted (open question 3, answered). The spec correction (beta
 `fcd1fd4`) was merged in `efe6ebe`; steps 2–4 were released at status `6992179`. The spec question
 was
 `.plan-execution/status/11-12-ISSUE-A2-turn-events.md` is corrected on beta and both branches have
@@ -399,9 +401,284 @@ On `f54dc05` it fails at its 2 s bound and cleans up (the cleanup always release
 - **The samples are too small** to say whether rates differ.
 - **Nothing was changed for them;** they stay with the owner (open question 1).
 
+## Owner decisions and the snapshot exception (`5eeb54c`, replacing `1ad325d`)
+
+Tasks: `.plan-execution/tasks/controller-interface-A2-owner-decisions.md` and
+`controller-interface-A2-managed-decision.md`.
+
+**Beta brought in:**
+- `fd9ec24` (merge `174200e`): contractual orders, the narrow exception, the accepted connect hang,
+  the finding and the TODO;
+- `95e9cf2` (merge `83114f1`): the widened managed exception.
+
+Both are documentation only, and neither conflicted. The uncommitted candidate was preserved through
+the second merge (byte-identical to its backup).
+
+**The one dedicated commit: `5eeb54c`.** It contains `test/conversation-turns/characterization.test.ts`,
+its snapshot, `pair-rule.ts` and `pair-rule.test.ts`; nothing else.
+- **How it replaced `1ad325d`:** after the final review (`11-12-REVIEW-A2.md` at `72406be`), the
+  first exception commit `1ad325d` and its report commit `d7303d8` were replaced so that the
+  corrected exception is still a single commit.
+- **Steps:** the old head `d7303d8` was kept as branch `controller-interface-pre-consolidation-d7303d8`;
+  `git reset --soft 83114f1`; the corrected test files committed as `5eeb54c`; the report committed
+  after it.
+- **Safety:** no other branch contained `1ad325d` or `d7303d8` (checked on the reviews and status
+  branches), and nothing was pushed. The snapshot in `5eeb54c` is byte-identical to `1ad325d`'s; the
+  test files are exactly the ones that passed the gate below.
+
+**Accepted alternatives, nothing else.**
+- **Managed:** a turn's metering event may sit anywhere among that turn's *response* presentation
+  events.
+  - **Canonical form:** the metering event is moved before the contiguous same-turn response
+    presentations directly ahead of it.
+  - **Bounds:** it never crosses another kind of event or another turn's events, and presentations
+    are never reordered among themselves.
+  - **Deliberately narrower than "any presentation event":** the turn's own user-message
+    presentations are not crossed. They are written before dispatch, and no observed variant
+    involves them. Letting metering cross them would hide a real regression.
+- **Agent-owned:** a turn's metering record vs its last in-progress assistant snapshot record, either
+  order. Decided on the raw records: kind `message`, the same turn, role `assistant`, status
+  `in_progress`, a `:snapshot:` id, and the turn's last such record.
+  - **Canonical form:** metering first. In the records, the pair keeps its own two sequence numbers,
+    reassigned in ascending order.
+  - **The bus:** it must list exactly the records' ids in the records' order (`canonicalOwnedRecords`
+    throws otherwise, and `assertRun` checks it on the raw run). The same pair, by record id, is the
+    only thing swapped on the bus. Since the review, the bus no longer has its own looser rule: a
+    completed or non-assistant snapshot, another turn's snapshot, a record in between, or a
+    bus/record disagreement can't be hidden.
+  - **The actual sequence numbers are checked on the raw run before this,** so the swap can never
+    hide a gap, a duplicate or a misordering: strictly increasing and unique; each record id unique.
+- **Focused tests** (`pair-rule.test.ts`, 15):
+  - **Allowed forms:** all three managed positions give one form; tool presentations count;
+    Agent-owned both orders give one form with the pair's sequence numbers.
+  - **Forbidden ones:** crossing user presentations, other kinds of event or other turns'
+    presentations; reordering presentations among themselves; duplicate metering kept (not
+    merged); a completed or non-assistant snapshot, another turn's snapshot, a non-last snapshot, or
+    a record in between, all not moved; bus disagreement, including the reviewer's counterexample,
+    refused.
+
+**Explicit checks, per case, on the raw run** (`watchContract` / `assertRun`; a timeline that is never
+snapshotted):
+
+| Contract | How it is checked |
+| --- | --- |
+| each stream keeps its order | Agent-owned records: sequence numbers strictly increasing and unique; the bus equals the records' ids in order; managed transcript: `seq` is 1..n; events in emission order (the snapshot) |
+| a turn's records and metering appear once, ids stable | exactly one `metering_recorded` per metered turn and one for each completed turn; Agent-owned: exactly one `<turn>:metering` record, record ids unique; managed: one `metering_reference` per metered turn |
+| metering after the provider's result | every controller the conversation uses is wrapped: the first at once, a handoff target at its first `turn_started`. Each wrap returns the same promise and records "called" and "outcome" (result or rejection) for the open turn. Every completed turn must have reached the provider; every turn that did must have an outcome, and its metering must come after it |
+| final assistant message before completion | at `turn_completed` (synchronously): Agent-owned, the final `<turn>:assistant:N` record is on the bus; managed, the transcript has the terminal assistant message; detached, the assistant line is there (when the result has messages) |
+| `turn_completed` after metering, transcript, `afterPrompt` | metering before completion (full timeline); managed: at completion the transcript has the closed operation and the metering reference; Agent-owned: `ownerLifecycle.afterPrompt` is wrapped (same promise) and must have settled before `turn_completed` |
+| managed exception bounds | over the complete timeline, after the run: each completed turn's metering lies after its `turn_started` and before its `turn_completed`; `turn_completed` comes after the turn's last presentation event (later arrivals included); no presentation item goes back to `in_progress` |
+
+**Forced and rejected provider paths:** for these, the outcome is the rejection of the controller's
+promise (a forced stop or a transport failure). Metering must come after it, and in every case it
+does (stalls, ignored cancels, forced internal stalls). So no turn is skipped and nothing needed
+escalating. Turns that fail before dispatch never call the provider; they are exempt from the outcome
+check and still checked for everything else.
+
+**Proof the handoff coverage works:** in a temporary copy with re-wrapping on `turn_started`
+removed, both handoff cases fail on `reachedProvider`.
+
+**Snapshot:** 14 cases moved into the canonical form (5 Agent-owned, 3 managed, 6 once-only). Each was
+verified mechanically to differ from the previous snapshot only by order: the same multiset of lines
+apart from sequence values, and the same set of sequence numbers. No other case or line changed.
+
+### Comparative counts (methodology, data, analysis)
+
+**Methodology.** Two studies, each 50 runs of the whole characterization file on A1 (`9de0ca3`) and
+50 on A2. A1 and A2 runs alternate one after the other, so they share the machine's load. Nothing
+else ran meanwhile, and snapshots were never updated.
+- **Instrumentation:** each run comes from a `git archive` copy outside the repo whose test file is
+  patched to append each case's normalized capture to a dump, taken *before* the pair rule. The true
+  orders are counted.
+- **Study 1:** the test file as it was before this change (no contract checks).
+- **Study 2:** the final test file (contract checks on) on both A1 and A2.
+- **Why study 2:** the turn-2 `P1 → M → P2` variant had been seen with the checks on but not in
+  study 1.
+- **Interruption:** study 2 was interrupted at 46 pairs by a session restart. The partial 47th pair
+  was discarded and pairs 47–50 were rerun the same way.
+- **Analysis:** for each managed turn with two response presentation events, metering's position
+  among them is counted separately for all three positions. For each Agent-owned turn, the metering
+  record's position vs the last in-progress snapshot is counted. Every run's capture is also checked
+  against the rule: after it, each case must have exactly one form.
+
+**Managed: metering's position among the turn's two response presentation events P1, P2** (A1 / A2, 50 runs each).
+
+| Case (managed) | Turn | P1 / P2 | Study | `M → P1 → P2` | `P1 → M → P2` | `P1 → P2 → M` |
+| --- | --- | --- | --- | --- | --- | --- |
+| a handoff with a summary | `<id:1>` | message in_progress / message completed | study 1 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a handoff with a summary | `<id:4>` | message in_progress / message completed | study 1 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a permission request answered through the handler | `<id:1>` | message in_progress / message completed | study 1 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a plain prompt | `<id:1>` | message in_progress / message completed | study 1 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a second prompt queued behind a running one | `<id:1>` | message in_progress / message completed | study 1 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a second prompt queued behind a running one | `<id:2>` | message in_progress / message completed | study 1 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a stalled prompt | `<id:1>` | message in_progress / message error | study 1 | 0 / 0 | 0 / 0 | 50 / 50 |
+| an internal command | `<id:1>` | message in_progress / message completed | study 1 | 50 / 50 | 0 / 0 | 0 / 0 |
+| an interrupt of the running turn | `<id:1>` | tool in_progress / tool in_progress | study 1 | 0 / 0 | 50 / 50 | 0 / 0 |
+| two steer messages combined into one run | `<id:1>` | tool in_progress / tool completed | study 1 | 0 / 0 | 49 / 49 | 1 / 1 |
+| two steer messages combined into one run | `<id:2>` | message in_progress / message completed | study 1 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a handoff with a summary | `<id:1>` | message in_progress / message completed | study 2 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a handoff with a summary | `<id:4>` | message in_progress / message completed | study 2 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a permission request answered through the handler | `<id:1>` | message in_progress / message completed | study 2 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a plain prompt | `<id:1>` | message in_progress / message completed | study 2 | 49 / 50 | 1 / 0 | 0 / 0 |
+| a second prompt queued behind a running one | `<id:1>` | message in_progress / message completed | study 2 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a second prompt queued behind a running one | `<id:2>` | message in_progress / message completed | study 2 | 50 / 50 | 0 / 0 | 0 / 0 |
+| a stalled prompt | `<id:1>` | message in_progress / message error | study 2 | 0 / 0 | 0 / 0 | 50 / 50 |
+| an internal command | `<id:1>` | message in_progress / message completed | study 2 | 50 / 50 | 0 / 0 | 0 / 0 |
+| an interrupt of the running turn | `<id:1>` | tool in_progress / tool in_progress | study 2 | 0 / 0 | 50 / 50 | 0 / 0 |
+| two steer messages combined into one run | `<id:1>` | tool in_progress / tool completed | study 2 | 0 / 0 | 49 / 48 | 1 / 2 |
+| two steer messages combined into one run | `<id:2>` | message in_progress / message completed | study 2 | 49 / 50 | 1 / 0 | 0 / 0 |
+
+**Agent-owned: metering record vs the turn's last in-progress assistant snapshot record** (A1 / A2, 50 runs each).
+
+| Case | Turn | Study | snapshot → metering | metering → snapshot |
+| --- | --- | --- | --- | --- |
+| agent-owned > a handoff with a summary | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| agent-owned > a handoff with a summary | `<id:4>` | study 1 | 50 / 50 | 0 / 0 |
+| agent-owned > a permission request answered through the handler | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| agent-owned > a plain prompt | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| agent-owned > a second prompt queued behind a running one | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| agent-owned > a second prompt queued behind a running one | `<id:2>` | study 1 | 50 / 50 | 0 / 0 |
+| agent-owned > a stalled prompt | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| agent-owned > an internal command | `<id:1>` | study 1 | 4 / 2 | 46 / 48 |
+| agent-owned > two steer messages combined into one run | `<id:2>` | study 1 | 50 / 50 | 0 / 0 |
+| once > a permission request sent the instant the prompt reaches the agent shows in the operation's stages | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| once > a provider that fails to start: the prompt rejects with turn_failed | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| once > a queued message withdrawn, its promise awaited | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| once > a tool start sent the instant the prompt reaches the agent shows in the operation's stages | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| once > an internal prompt (handoff summary) that stalls in a tool and its cancel is acknowledged | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| once > an internal prompt (handoff summary) that stalls silently and is cancelled by force | `<id:1>` | study 1 | 50 / 50 | 0 / 0 |
+| agent-owned > a handoff with a summary | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| agent-owned > a handoff with a summary | `<id:4>` | study 2 | 50 / 50 | 0 / 0 |
+| agent-owned > a permission request answered through the handler | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| agent-owned > a plain prompt | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| agent-owned > a second prompt queued behind a running one | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| agent-owned > a second prompt queued behind a running one | `<id:2>` | study 2 | 50 / 50 | 0 / 0 |
+| agent-owned > a stalled prompt | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| agent-owned > an internal command | `<id:1>` | study 2 | 2 / 2 | 48 / 48 |
+| agent-owned > two steer messages combined into one run | `<id:2>` | study 2 | 50 / 50 | 0 / 0 |
+| once > a permission request sent the instant the prompt reaches the agent shows in the operation's stages | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| once > a provider that fails to start: the prompt rejects with turn_failed | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| once > a queued message withdrawn, its promise awaited | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| once > a tool start sent the instant the prompt reaches the agent shows in the operation's stages | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| once > an internal prompt (handoff summary) that stalls in a tool and its cancel is acknowledged | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+| once > an internal prompt (handoff summary) that stalls silently and is cancelled by force | `<id:1>` | study 2 | 50 / 50 | 0 / 0 |
+
+Cases not listed have no such pair, or a single order in every run.
+
+**What studies 1 and 2 can and can't show:**
+- **Size:** they are 50 + 50 runs each, i.e. **100 A1 and 100 A2 runs in total** (the previous
+  version of this report wrongly said 200 and 200).
+- **Raw variants:** in those runs, every raw variant is one of the orders counted above, and after
+  the rule each case has exactly one form.
+- **Diagnostics not kept:** study 1 kept only the `(fail)` lines, and study 2 only the `(fail)` and
+  `error` lines. Neither kept the full output or the exit status of each run. So an unhandled error
+  between tests, a setup or teardown diagnostic, or a nonzero exit without a `(fail)` line **cannot
+  be ruled out for studies 1 and 2: unknown, not zero.**
+- **What they did retain:** study 1's listed failures were only the known orders (A1: 4
+  internal-command and 1 managed-steer runs; A2: 2 and 1). Study 2: A2 listed no failures; A1 listed
+  exactly the 14 snapshot mismatches expected from A1's old snapshot in every run, and no
+  contract-check failure.
+
+### Study 3: complete per-run evidence (the final test file)
+
+**Methodology:**
+- **Runs:** 50 runs of `characterization.test.ts` on A1 (`9de0ca3`) and 50 on A2 (`5eeb54c`), the
+  same test file on both.
+- **Order:** alternating per pair (odd pairs A1 first, even pairs A2 first), so neither always runs
+  first. Nothing else ran meanwhile.
+- **Kept per run:** the complete output (`/tmp/a2-fix/s3/logs/<version>-<n>.log`), the exit status
+  (`…exit`), and the raw captures before the pair rule (`dump-<version>-<n>.jsonl`, 35 per run).
+- **A1 copy:** `git archive 9de0ca3` plus the final test files (`characterization.test.ts`,
+  `pair-rule.ts`; `normalize.ts` is unchanged since A1). Its snapshot is the final snapshot with
+  exactly its 39 `cause` blocks removed (the inverse of `cffce98`). The remaining `"cause"` keys
+  (error causes) matched A1's own snapshot: 4. So an A1 failure would be a real difference, not
+  `cause`. The A2 copy is `git archive 5eeb54c`.
+- **Instrumentation in both:** a test-name tracker and one dump write per case.
+
+**Classification of every run:**
+- **A1:** 50/50 exit 0, no `(fail)`, no unhandled error.
+- **A2:** 50/50 exit 0, no `(fail)`, no unhandled error.
+- **Searched for:** the logs were searched for `Unhandled` and `error between tests` as well as
+  `(fail)`.
+- **Unclassified nonzero results:** none.
+
+| Case (managed) | Turn | `M → P1 → P2` (A1 / A2) | `P1 → M → P2` | `P1 → P2 → M` |
+| --- | --- | --- | --- | --- |
+| a handoff with a summary | `<id:1>` | 50 / 50 | 0 / 0 | 0 / 0 |
+| a handoff with a summary | `<id:4>` | 50 / 50 | 0 / 0 | 0 / 0 |
+| a permission request answered through the handler | `<id:1>` | 50 / 50 | 0 / 0 | 0 / 0 |
+| a plain prompt | `<id:1>` | 50 / 50 | 0 / 0 | 0 / 0 |
+| a second prompt queued behind a running one | `<id:1>` | 50 / 50 | 0 / 0 | 0 / 0 |
+| a second prompt queued behind a running one | `<id:2>` | 50 / 50 | 0 / 0 | 0 / 0 |
+| a stalled prompt | `<id:1>` | 0 / 0 | 0 / 0 | 50 / 50 |
+| an internal command | `<id:1>` | 50 / 50 | 0 / 0 | 0 / 0 |
+| an interrupt of the running turn | `<id:1>` | 1 / 0 | 49 / 50 | 0 / 0 |
+| two steer messages combined into one run | `<id:1>` | 0 / 0 | 50 / 48 | 0 / 2 |
+| two steer messages combined into one run | `<id:2>` | 50 / 50 | 0 / 0 | 0 / 0 |
+
+| Case (Agent-owned) | Turn | snapshot → metering (A1 / A2) | metering → snapshot |
+| --- | --- | --- | --- |
+| agent-owned > a handoff with a summary | `<id:1>` | 50 / 50 | 0 / 0 |
+| agent-owned > a handoff with a summary | `<id:4>` | 50 / 50 | 0 / 0 |
+| agent-owned > a permission request answered through the handler | `<id:1>` | 50 / 50 | 0 / 0 |
+| agent-owned > a plain prompt | `<id:1>` | 50 / 50 | 0 / 0 |
+| agent-owned > a second prompt queued behind a running one | `<id:1>` | 50 / 50 | 0 / 0 |
+| agent-owned > a second prompt queued behind a running one | `<id:2>` | 50 / 50 | 0 / 0 |
+| agent-owned > a stalled prompt | `<id:1>` | 50 / 50 | 0 / 0 |
+| agent-owned > an internal command | `<id:1>` | 0 / 0 | 50 / 50 |
+| agent-owned > two steer messages combined into one run | `<id:2>` | 50 / 50 | 0 / 0 |
+| once > a permission request sent the instant the prompt reaches the agent shows in the operation's stages | `<id:1>` | 50 / 50 | 0 / 0 |
+| once > a provider that fails to start: the prompt rejects with turn_failed | `<id:1>` | 50 / 50 | 0 / 0 |
+| once > a queued message withdrawn, its promise awaited | `<id:1>` | 50 / 50 | 0 / 0 |
+| once > a tool start sent the instant the prompt reaches the agent shows in the operation's stages | `<id:1>` | 50 / 50 | 0 / 0 |
+| once > an internal prompt (handoff summary) that stalls in a tool and its cancel is acknowledged | `<id:1>` | 50 / 50 | 0 / 0 |
+| once > an internal prompt (handoff summary) that stalls silently and is cancelled by force | `<id:1>` | 50 / 50 | 0 / 0 |
+
+**Timing-shift investigation, all three studies:**
+- **No position shows a noticeable shift between A1 and A2;** the largest per-position difference
+  in any study is 2 in 50 runs.
+- **Combined-steer turn 1:** `P1 → M → P2` / `P1 → P2 → M` were 49/1 and 49/1 (study 1), 49/1 and
+  48/2 (study 2), 50/0 and 48/2 (study 3), A1 then A2.
+- **Agent-owned internal command,** metering after snapshot / metering first: study 1 A1 4/46 and
+  A2 2/48; study 2 2/48 and 2/48; study 3 0/50 and 0/50.
+- **The rare message-turn `P1 → M → P2`** appeared only on A1 in study 2, and in earlier ad-hoc runs
+  on A2.
+- **Managed interrupt, new in study 3:** `M → P1 → P2` appeared once on A1, a position not seen
+  before (otherwise `P1 → M → P2`, 49 on A1 and 50 on A2). The rule covers it.
+- **No noticeable shift between A1 and A2 in any of the three positions.** Finite samples cannot
+  establish equal rates.
+
+**Limitations:**
+- **The exception accepts orders that are deterministic today** in some cases: the stalled prompt's
+  error path drains presentations before metering; the interrupt case. The snapshot no longer pins
+  those particular orders. Their contractual parts are still asserted (metering after the result,
+  completion after metering and the last presentation).
+- **Measurement effects:** study 2's checks read the transcript synchronously at `turn_completed`.
+  That may shift timing slightly, which is why both conditions are reported. The controller wrap
+  returns the same promise and adds no scheduling point.
+- **The Agent-owned rule needs the pair adjacent** (it always was, in all 150 A1 and 150 A2 runs of
+  the three studies). A non-adjacent swap would fail the snapshot rather than be accepted.
+- **The late-presentation bound has no synthetic unit test.** It is checked over the complete
+  timeline in every case, but there is no fabricated late event.
+- **The `afterPrompt` observation goes through a private seam** (`ownerLifecycle`), as the
+  turn-path finalization test does.
+
+**Gate (`5eeb54c`):**
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean; test files (including `pair-rule*.ts`) clean under the temporary tsconfig; `git diff --check` clean |
+| pair-rule tests | 15 pass |
+| characterization + turn-path + pair-rule, three runs without update | 63 pass each (14.9 s, 14.8 s, 14.9 s); snapshot unchanged and byte-identical to `1ad325d`'s (SHA-256 `47686d4ca0451cf8…`) |
+| full suite `bun test`, two runs | **1,160 pass, 0 fail; 115 files**, exit 0; 94.4 s and 103.1 s (1,145 + 15 pair-rule tests) |
+| study 3 | 100/100 runs exit 0 (above) |
+| `agent-session.ts` | 4,634 lines (unchanged since `9e0f457`) |
+
 ## Open questions
 
-1. **A pre-existing order race in an A1 snapshot (the managed combined-steer case).** While
+1. **Answered (owner, beta `fd9ec24`, `95e9cf2`): the two non-contractual orders are accepted; see
+   "Owner decisions and the snapshot exception".** Original text: **A pre-existing order race in an
+   A1 snapshot (the managed combined-steer case).** While
    generating the `cause`-only snapshot, one regeneration put the cancelled first turn's
    `metering_recorded` event after a `presentation_recorded` (the settled `read-0` tool) instead of
    before it. I discarded that regeneration; the committed one has 0 removed lines.
@@ -434,7 +711,10 @@ On `f54dc05` it fails at its 2 s bound and cleans up (the cleanup always release
      unchanged.
 2. **`agent-session.ts` is 4,634 lines after the second follow-up (4,594 at `524af30`), not ~4,550.** The spec's hard limit (shorter than 5,022) holds.
    B1 will move or retype more of the session.
-3. **A pre-existing stop hang during a held reconnect (outside A2).** On the unchanged A1 commit, with
+3. **Answered (owner, beta `fd9ec24`): accepted as today's behaviour and a named exception to
+   "nothing waits forever"; the fix is the integration spec's cancellable connect (stage 2a). A2
+   keeps the queue waiting on an in-progress reconnect and fails the prompt at once on a rejected
+   `send`.** Original text: **A pre-existing stop hang during a held reconnect (outside A2).** On the unchanged A1 commit, with
    no fault injected: if the provider's reconnect (`session/load`) is never answered, the prompt
    never settles and `stop()` doesn't finish either (still pending after 2 s in the probe). The
    current code behaves the same when nothing is injected. `AgentSession.stop()` calls
