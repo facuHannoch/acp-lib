@@ -130,7 +130,7 @@ await conv.setPolicy("guest");                                               // 
 
 - **Message:** an optional `policy` on `prompt`, for that message only.
 - **Channel:** the conversation's `policy`, set at creation (else seeded from the native adapter's `defaultPolicy`)
-  and changed with `setPolicy`. Stored in a `policy` column on `conversations`, current value only (no history), so
+  and changed with `setPolicy`. Stored in the `channels?` repository (Code plan, Storage), current value only (no history), so
   the consumer sets it once and acp-client can send it to the harness even if the harness isn't running when it is
   set (Channel changes, below). A change applies from the next item; it is not an exclusive operation.
 - **Session:** the harness config's `defaultPolicy`.
@@ -240,7 +240,7 @@ The process is what costs (and, isolated, a container per agent); channels are c
 - **Reconciliation at every start.** `session/load` carries `since`: a position, not a time (clocks differ across
   containers). The harness numbers every turn with a session-wide position, assigned when the turn starts.
   acp-client stores a **contiguous watermark**: the highest position W such that every turn up to W is finished
-  (with the config, `harness_config`), and sends it. Not "the highest finished": turns on different channels finish
+  (in the `channels?` repository, Code plan), and sends it. Not "the highest finished": turns on different channels finish
   out of order, and a turn still being recorded must not fall below `since`. A long-running turn holds W back, so a
   restart may return turns already finished; harmless, since finishing is keyed by turn id. With no stored position (a fresh
   database), acp-client takes the harness's current position without reconciling: nothing of its own is pending.
@@ -395,8 +395,8 @@ force before the harness runs any turn on that channel.
 - **acp-client is the truth:** it stores each conversation's current policy, title and settings.
 - **While the harness runs,** a change is sent at once (`channel/update`, carrying whatever changed: policy, label,
   settings, a reset, or `closed` for a delete).
-- **While it is stopped,** the conversation is marked as having pending changes (a `harness_pending` flag on the
-  conversation). This is a queue of changes, coalesced: only the latest value of each field is sent, however many
+- **While it is stopped,** the conversation is marked as having pending changes (a pending flag in the conversation's channel
+  state). This is a queue of changes, coalesced: only the latest value of each field is sent, however many
   times it changed.
 - **At start, the pending changes go inside the start call itself** (`session/load`, or `session/create` the first
   time): the harness applies them before it can start any turn, so no message or waiting item can run under an old
@@ -835,7 +835,7 @@ stage 2a):
 - Permissions as events: `permission_requested`, `answerPermission`, `answersPermissions`, `permissionTimeoutMs`; the
   one permission setting replacing `defaultPermission`, with the ACP matcher and the optional function; the harness's
   `permission/request` routed to the conversation; the first-message permission-handler rule.
-- `setTitle`, `setPolicy` (the `policy` column), per-channel settings through `setConfig`.
+- `setTitle`, `setPolicy` (stored in the `channels?` repository), per-channel settings through `setConfig`.
 - From the controller-interface spec: a neutral provider-session record (native: the `Agent`'s id plus the channel
   id), the neutral permission request shape, the model-call record, opaque provider data on messages; the
   `capabilities` getter becoming `Capabilities | null`.
