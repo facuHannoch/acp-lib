@@ -102,6 +102,25 @@ controller (`InternalPromptTarget`, line 307) before it is live, and emits no tu
 - The identity delivery receipt is confirmed at the end (`ownerLifecycle.afterPrompt` with
   `identityDeliveryReceipt`).
 
+**Which orders are contractual** (decided 2026-11-13, during A2). Tests assert these strictly:
+
+- each stream keeps its own order: records in sequence-number order, events in emission order;
+- a turn's records and metering belong to that turn, each appears once, and record ids are stable;
+- metering is recorded after the provider's result;
+- the final assistant message is recorded before the turn is announced complete;
+- `turn_completed` comes only after metering, the transcript and `afterPrompt` are done.
+
+**Not contractual:** the relative order of metering against a turn's last presentation event (managed mode) or its
+last in-progress assistant snapshot record (Agent-owned mode). They are written on separate paths and today's code
+fixes no order between them; both orders occur on A1. Making one order hold would be a behaviour change
+(`findings/11-13-FINDING-metering-vs-presentation-order.md`), not part of this spec.
+
+**A known hang, accepted for now:** an ACP harness that never answers while connecting or reconnecting leaves its
+conversation stuck (the queue and `stop()` wait forever). It is today's behaviour, seen on A1, and a named exception
+to the "nothing waits forever" rule for ACP's existing lifecycle; the fix is
+`todos/11-13-TODO-cancellable-provider-connect.md`. A2 keeps the queue waiting on an in-progress reconnect (two
+reconnects never overlap), and fails the prompt that triggered it as soon as `send` fails.
+
 **Who uses `AgentController` directly:** `src/agent-session.ts` (18 references), `src/controller.ts`,
 `src/internal-inference/runtime/harness-runtime.ts` (6), `src/repl/commands.ts`, `src/cli/index.ts`, `src/index.ts`,
 `src/wire-log.ts`; tests `test/commands.test.ts`, `test/internal-inference/harness-runtime.test.ts`.
@@ -629,6 +648,13 @@ member it guards.
 - **Order changes in the turn path.** The managed-mode preflight, the moment `turn_started` is emitted and the
   user-record ids are the likely places. Sign: an A1 snapshot changes in order or ids. Fix the order, never the
   snapshot.
+- **The one allowed snapshot exception (A2).** For the two non-contractual pairs only (metering vs. the last
+  presentation event in managed mode; metering vs. the last in-progress assistant snapshot record in Agent-owned
+  mode), the characterization tests accept either order. Everything else stays strict (content, ids, order within each
+  stream, sequence numbers), and the contractual orders get explicit assertions of their own. Where a test is about a
+  specific sequence, it waits on an event barrier instead (as A1's instant-tool case does). This is one dedicated
+  commit, reviewed. Before the gate, the affected cases run many times (about 50) on A1 and on A2, and the frequency
+  of each order is compared; a noticeable shift means A2 changed timing in the turn path and is investigated.
 - **A reported turn left open.** If `send` reports `turn_started` and the turn then fails before its `prompt()` is called, the
   turn must still be abandoned and end with `turn_failed`, and steering's `turnEnded` must still run. Covered by the
   A2 step 4 tests and the conformance suite.
