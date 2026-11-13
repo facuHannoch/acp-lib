@@ -231,8 +231,11 @@ The process is what costs (and, isolated, a container per agent); channels are c
   consumer mounts it).
 - **Stopped with the `Agent`.** Not when its last native conversation closes.
 - **Reconciliation at every start.** `session/load` carries `since`: a position, not a time (clocks differ across
-  containers). The harness numbers every turn record with a session-wide position; acp-client stores the highest
-  position it has finished (with the config, `harness_config`) and sends it. With no stored position (a fresh
+  containers). The harness numbers every turn with a session-wide position, assigned when the turn starts.
+  acp-client stores a **contiguous watermark**: the highest position W such that every turn up to W is finished
+  (with the config, `harness_config`), and sends it. Not "the highest finished": turns on different channels finish
+  out of order, and a turn still being recorded must not fall below `since`. A long-running turn holds W back, so a
+  restart may return turns already finished; harmless, since finishing is keyed by turn id. With no stored position (a fresh
   database), acp-client takes the harness's current position without reconciling: nothing of its own is pending.
   `session/load` returns each channel's turns after that position and its waiting items. acp-client compares them with its records and
   settles what it missed around a crash: a turn that ended without acp-client finishing it goes through **the same
@@ -379,7 +382,10 @@ force before the harness runs any turn on that channel.
   times it changed.
 - **At start, the pending changes go inside the start call itself** (`session/load`, or `session/create` the first
   time): the harness applies them before it can start any turn, so no message or waiting item can run under an old
-  policy. Flags are cleared once the harness confirms. Deleting a conversation while stopped closes its channel at
+  policy. When the harness confirms, a conversation's flag is cleared **only if its stored state is still what was
+  sent**; a change made while the start call was in flight keeps the flag and is sent at once with `channel/update`,
+  since the harness is running by then. A reset resent after a crash is harmless (nothing ran on the channel in
+  between), so it needs no id. Deleting a conversation while stopped closes its channel at
   that start, so a delete never starts a container on its own. A reset requested while stopped (`startFresh`) is a
   pending change too. In stage 2b, registering an ACP conversation as a member while the harness is stopped goes the
   same way.
@@ -612,6 +618,11 @@ So no new interface: `harnessIdentityRuntime(host)` implements `AgentIdentityRun
   ACP conversation, and when the harness next starts it reports everything since, so saving records never starts the
   harness. `load` runs inside the prompt's own operation, as today, and starts the harness if needed (`prepare` needs
   it), adding start time to that prompt only. Neither changes `isBusy`.
+- **While the harness runs,** each report is sent as its batch is committed. **Before `member/prepare`,** acp-client
+  waits until every report already sent (from any ACP conversation of the `Agent`) is acknowledged, so a prompt's
+  context reflects everything recorded before it in any conversation. Example: "my name is Bob" said in a Codex
+  conversation is known to a Claude conversation prompted two seconds later. Part of the thinner identity's design,
+  stage 2b.
 - **MCP servers for members** are attached at session creation, not per prompt: a new optional
   `mcpServers(conversation)` on the runtime, read where `CreateAgentConversationConfig.mcpServers` is applied. Phase 2,
   with the harness's MCP server.
@@ -718,7 +729,8 @@ src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "nat
   setting replacing `defaultPermission` (`src/agent/config.ts` and where `defaultPermission` is read in
   `src/agent-session.ts`, a replacement, not new code); `permission_requested` and `answerPermission` on conversations
   (stage 2a).
-- **Storage** (schema changes, no migrations needed): a `harness_config` table (the `Agent`'s id, the overrides as
+- **Storage** (schema version 17, an upgrade migration from 16 in `src/persistence/sqlite-schema.ts`, tested on a
+  version-16 database): a `harness_config` table (the `Agent`'s id, the overrides as
   JSON, updated at); on `conversations`, a `policy` column and a `harness_pending` flag; channel settings reuse the
   conversation configuration persistence `setConfig` already uses for ACP; native user records keyed by message id.
 - **`agent-session.ts` does not grow.** Steering already goes through `SteeringHost`; the controller choice is the
@@ -934,7 +946,8 @@ conformance test is the guard.
    options, commands, capabilities and policy names. **Gate:** suite green; tests: overrides survive a restart; a
    change to the base under overrides; reset.
 3. **Conversation storage:** the `policy` column and the `harness_pending` flag on `conversations`; channel settings
-   through the existing configuration persistence; `setPolicy` (validated against `describe`), `setTitle`.
+   through the existing configuration persistence; `setPolicy` (validated against `describe`), `setTitle`. Schema
+   version 17 with an upgrade migration from 16; a test opens a version-16 database and upgrades it.
    **Gate:** suite green.
 4. **Options before start:** a native conversation's `configOptions` and `conversationCapabilities` come from the
    effective config with no process. **Gate:** suite green; a test reading and changing options with no harness.
@@ -953,9 +966,10 @@ conformance test is the guard.
    **Gate:** suite green; one conversation's `stop()` during a silent start leaves the others waiting;
    `agent.harness.stop()` ends it for all.
 2. **Start with pending changes:** `session/create` or `session/load` with the effective config, the participants and
-   the pending channel changes (`src/native/channel-changes.ts`); flags cleared when confirmed; changes sent at once
-   while running (`channel/update`, `participants/update`). **Gate:** a policy changed while stopped is in force before
-   the first turn; a delete while stopped starts no process.
+   the pending channel changes (`src/native/channel-changes.ts`); a flag cleared on confirmation only if the stored
+   state is still what was sent, else the change sent at once; changes sent at once while running (`channel/update`,
+   `participants/update`). **Gate:** a policy changed while stopped is in force before the first turn; a policy changed
+   while the start call is in flight reaches the harness; a delete while stopped starts no process.
 3. **Crash and restart:** bounded restarts (3 within 60 s), the failed state with `HarnessUnavailableError`,
    `agent.harness.restart()`; running turns kept pending for reconciliation (N8), not failed by the crash. **Gate:**
    tests with the fake crashing at chosen points; the restarts running out fail the pending turns.
@@ -987,8 +1001,10 @@ conformance test is the guard.
    clock; the clock paused while the host restarts. **Gate:** a long silent turn with progress isn't stalled; a turn
    stuck `waiting` is; a restart doesn't stall a pending turn.
 4. **Holds:** the exclusive operations (handoff out, stop, delete, reset) hold the channel as a lease, renewed while
-   they run, released at the end. **Gate:** each exclusive operation's test; a holder that disappears lets the lease
-   expire.
+   they run, released at the end; the hold id is chosen by acp-client, so cancelling an operation while its hold is
+   still waiting is a `channel/release` with that id (the harness drops the waiting hold, or releases it if it was
+   granted at that moment). **Gate:** each exclusive operation's test; a holder that disappears lets the lease expire;
+   cancelling during a waiting hold leaves the channel free.
 
 **Done:** report commits, conformance results, each exclusive operation and its test.
 **Risks:** `forceStop` reaching the shared process (sign: other conversations' turns failing); the acceptance test
@@ -1017,9 +1033,10 @@ guards it.
 
 **Scope:** steps 1–3 (Process lifecycle: Reconciliation, Restarts on a crash).
 
-1. **The position:** `session/load` carries `since` (the highest turn position acp-client finished, stored with the
-   config); with no stored position, acp-client takes the harness's current position without reconciling. **Gate:** a
-   fresh database reconciles nothing; a stored position gets only later turns.
+1. **The watermark:** `session/load` carries `since` (the contiguous watermark: every turn up to it finished, stored
+   with the config); with no stored position, acp-client takes the harness's current position without reconciling.
+   **Gate:** a fresh database reconciles nothing; a stored watermark gets only later turns; out-of-order completion
+   across channels (turn 2 finished, turn 1 still recording, then a crash) still settles turn 1.
 2. **Settling from reconciliation:** a turn that ended without acp-client finishing it goes through the live finishing
    step from its turn record, keyed by turn id; its pending prompt resolves from it; a turn `running_at_crash` fails;
    waiting messages stay pending; the position advances. **Gate:** after a fake crash at each point (before a turn's
@@ -1082,7 +1099,8 @@ idempotency by turn id is the guard.
   starts no container.
 - Importing into a home that already has the session fails.
 - `isBusy` and the queue behave as for ACP: busy only while an operation runs.
-- A hold whose holder disappears expires; a native start that hangs is cancelled cleanly by `stop()`.
+- A hold whose holder disappears expires; a native start that hangs: a conversation's `stop()` withdraws only its
+  own wait, and `agent.harness.stop()` cancels the start.
 - `stop()` during an ACP connect that never answers returns promptly, leaves no process running and frees the queue
   (queued operations fail with `ConnectionCancelledError`); a late answer after the cancel installs nothing.
 - A turn the harness starts on its own (an item pushed onto the channel) is recorded and emitted on the conversation's

@@ -201,7 +201,7 @@ interface Usage {
 
 interface TurnRecord {           // for reconciliation at start (Delivery)
   turnId: TurnId;
-  position: number;              // session-wide, increasing; what `session/load`'s `since` refers to
+  position: number;              // session-wide, increasing, assigned when the turn starts; `since` is the host's contiguous watermark
   items: ItemId[];               // every item the turn took, in order
   outcome: "completed" | "interrupted" | "failed" | "running_at_crash";
   usage: Usage[];
@@ -241,9 +241,9 @@ interface TurnRecord {           // for reconciliation at start (Delivery)
 | `channel/withdraw` | `{ channel, itemId }` | `{ withdrawn: boolean }`: false when the item was already taken (or never stored) |
 | `channel/interrupt` | `{ channel, dropWaiting?: boolean }` | `{ interrupted: boolean, dropped: ItemId[] }` |
 | `channel/update` | `{ channel, state: ChannelState }` | `{}`: policy and label apply from the next item; settings from the next model call; a subscription at once; `reset` and `closed` wait for a running turn unless the channel is held with interrupt. Idempotent |
-| `channel/hold` | `{ channel, leaseMs, interrupt?: boolean }` | `{ holdId }` once no turn runs on the channel (waiting for it, or interrupting it) |
+| `channel/hold` | `{ channel, holdId, leaseMs, interrupt?: boolean }` (the id chosen by the host; idempotent by it) | `{}` once no turn runs on the channel (waiting for it, or interrupting it) |
 | `channel/renew` | `{ holdId, leaseMs }` | `{}`; fails with `hold_expired` |
-| `channel/release` | `{ holdId }` | `{}` (releasing an expired hold is not an error) |
+| `channel/release` | `{ holdId }` | `{}`; valid while the hold is still waiting (it is dropped) or granted (it is released); releasing an expired or unknown hold is not an error |
 
 - **Channels always exist:** a channel is created the first time it is named (in a push, an update or a start's
   `channels`).
