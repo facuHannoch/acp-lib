@@ -2298,6 +2298,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
           const run = turnRunOf(prompt);
           const controller = this.controller;
           let stopReason: string | undefined;
+          /** This turn's provider readiness while it is still running (null once settled). */
+          let readiness: Promise<void> | null = null;
           try {
             // Checked against the session's own message state, independent of how the run was
             // built: each id a message it accepted and has not settled, taken out of the queue,
@@ -2324,9 +2326,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
             if (!cause) throw new Error(`the controller did not report turn ${prompt.turnId}`);
             // Provider readiness starts at once after the report, as before the refactor: no
             // scheduling point between them. The acceptance must still hold before the turn is
-            // dispatched; a rejected `send` fails the turn here (abandoned below, no completion).
-            await this.ensureProvider();
-            await accepted;
+            // dispatched, and a rejection is acted on at once, even while readiness is pending: the
+            // turn fails (abandoned below, no completion). Readiness that is still running then is
+            // waited for after the turn settles (below), so no second reconnect overlaps it.
+            const ready = this.ensureProvider();
+            const settled = ready.then(() => { readiness = null; }, () => { readiness = null; });
+            readiness = settled;
+            await Promise.all([ready, accepted]);
             reportDelivery?.();
             const result = await this.runPrompt({ turnId: prompt.turnId, cause, messages: prompt });
             stopReason = result.stopReason;
@@ -2356,6 +2362,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
             this.steering.turnEnded(stopReason);
             this.providerFailedTurnId = null;
           }
+          // A turn that failed while its readiness was still running (a rejected acceptance during
+          // a reconnect) has settled; the queue operation still waits for that readiness, as it
+          // would have without the failure, so the next operation does not start a second one.
+          // Bounded like any reconnect: by the provider answering or the process ending.
+          if (readiness) await readiness;
         } else if (item.kind === "handoff") {
           try {
             item.resolve(await this.runHandoff(item));

@@ -9,7 +9,8 @@
  * test can release the end on an event it observed). Any other prompt
  * echoes the process id and the session's history, so a test can kill the process and check context.
  *
- * Faults: `LIFECYCLE_HANG_CONTROL` never answers that one method, `LIFECYCLE_FAIL_CONTROL` answers it
+ * Faults: `LIFECYCLE_HANG_CONTROL` never answers that one method; `LIFECYCLE_HOLD_CONTROL` holds that
+ * method until the file `LIFECYCLE_HOLD_FILE` exists, then answers it normally; `LIFECYCLE_FAIL_CONTROL` answers it
  * with an error; `LIFECYCLE_FAIL_LOAD=1` reports
  * every session missing; while the file `LIFECYCLE_FAIL_LOAD_FILE` exists, loads fail with an internal
  * error although the session exists, and each failed load appends a line to it.
@@ -54,6 +55,11 @@ function handle(m: any): void {
     return;
   }
   if (process.env.LIFECYCLE_HANG_CONTROL === m.method) return;
+  const holdFile = process.env.LIFECYCLE_HOLD_FILE;
+  if (holdFile && process.env.LIFECYCLE_HOLD_CONTROL === m.method && !existsSync(holdFile)) {
+    setTimeout(() => handle(m), 5);
+    return;
+  }
   if (process.env.LIFECYCLE_FAIL_CONTROL === m.method) {
     send({ id: m.id, error: { code: -32603, message: "internal error" } });
     return;

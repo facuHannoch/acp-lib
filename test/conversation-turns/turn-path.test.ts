@@ -318,6 +318,71 @@ describe("the turn path through send", () => {
   }, 20_000);
 });
 
+describe("a rejected acceptance while the provider reconnects", () => {
+  test("fails the turn at once; the reconnect in flight is waited for, not repeated; stop and cleanup finish", async () => {
+    const directory = await tempDir();
+    const hold = join(directory, "release-load");
+    const conversation = await AgentSession.create({
+      adapter: { command: ["bun", LIFECYCLE], cancelGraceMs: 50 },
+      adapterId: "fixture",
+      agentSessionId: "turn-path-held-reconnect",
+      cwd: directory,
+      // The reconnect's session/load is held until the test creates `hold`.
+      env: { LIFECYCLE_STATE: join(directory, "sessions.json"), LIFECYCLE_HOLD_CONTROL: "session/load", LIFECYCLE_HOLD_FILE: hold },
+    });
+    let stopped = false;
+    cleanups.push(async () => {
+      await writeFile(hold, "release").catch(() => undefined); // never leave the load held
+      if (!stopped) await conversation.stop();
+    });
+    const events: AgentSessionNotification["event"][] = [];
+    conversation.subscribe(({ event }) => events.push(event));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    cleanups.push(async () => { process.off("unhandledRejection", onUnhandled); });
+
+    await conversation.prompt("hello");
+    await conversation.connection.forceStop(); // the next turn reconnects (session/load, held)
+    const controller = conversation.connection;
+    const send = controller.send.bind(controller);
+    let reject = true;
+    controller.send = (run) => {
+      const accepted = send(run); // the real synchronous report
+      if (!reject) return accepted;
+      reject = false;
+      return accepted.then(() => Promise.reject(new Error("acceptance rejected")));
+    };
+    const abandon = spyOn(controller, "abandonTurn");
+    const reconnect = spyOn(controller, "reconnect");
+
+    const refused = conversation.prompt("refused while reconnecting");
+    const queued = conversation.prompt({ text: "queued behind it", delivery: "queue" });
+    const queuedSettled = queued.then((result) => result, (error: unknown) => error);
+
+    // The rejection is acted on while the reconnect is still held.
+    const error = await within(refused.then(() => null, (reason: unknown) => reason), 2_000, "the refused prompt");
+    expect(String(error)).toContain("acceptance rejected");
+    expect(abandon.mock.calls.map(([turnId]) => turnId)).toEqual([refused.id]);
+    expect(events.filter((event) => (event as any).turnId === refused.id).map((event) => event.kind))
+      .toEqual(["turn_started", "turn_failed"]);
+    // The queued message has not started: its turn waits for the reconnect already in flight.
+    expect(events.some((event) => event.kind === "turn_started" && (event as any).turnId === queued.id)).toBe(false);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+
+    await writeFile(hold, "release");
+    const next = await within(queuedSettled, 5_000, "the queued prompt") as { status?: string };
+    expect(next.status).toBe("completed");
+    // One reconnect served both: none was started a second time.
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event.kind === "provider_reconnected")).toHaveLength(1);
+
+    await within(conversation.stop(), 5_000, "stop");
+    stopped = true;
+    expect(unhandled).toEqual([]);
+  }, 20_000);
+});
+
 describe("runs that are not valid", () => {
   test("the session refuses an empty run, a repeated, unknown, taken, still queued or out-of-order message id, and a turn id that is not the first message's", () => {
     const state: Record<string, RunMessageState> = {
