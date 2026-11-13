@@ -1,0 +1,5 @@
+# A2: acceptance rejection while readiness hangs
+
+Read reviewer follow-up `controller-interface-reviews:library/reports/11-12-REVIEW-A2.md` at `f9919ad` (second follow-up). Fix P2 on `controller-interface`: a synchronous turn report followed by rejected send can remain unsettled indefinitely while `ensureProvider()` reconnect hangs. Start readiness synchronously to preserve A1 behavior, independently act on rejection while readiness is pending, abandon and settle once, and safely handle concurrent reconnect and later cleanup. Add a bounded offline regression using a held reconnect and verify stop/cleanup and no late unhandled errors. Do not restore the earlier readiness yield. Review identifies other prior findings as resolved for observed paths.
+
+Preserve A2 scope and unchanged snapshots, run relevant tests, typecheck and full suite, commit exact paths and update A2 report, log each step with evidence/limitations, and notify bob-b with a report pointer. Escalate spec conflicts/scope exceptions; do not mask the separate snapshot race awaiting owner decision. B1 remains held.

@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Second follow-up review; snapshot race escalated | Fix `f54dc05`, report `b74658d`; second follow-up review assigned. Snapshot issue `11-13-ISSUE-A2-managed-order.md` awaits owner decision. Coordinator gate follows resolution. |
+| A2 | Acceptance/readiness race returned; snapshot race escalated | Review `f9919ad` reproduced rejected acceptance hanging behind a held reconnect; fix assigned. Snapshot issue `11-13-ISSUE-A2-managed-order.md` awaits owner decision. Coordinator gate follows resolution. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
