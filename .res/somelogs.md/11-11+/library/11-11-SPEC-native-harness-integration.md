@@ -247,6 +247,54 @@ The same decoupling, as an option for ACP conversations: `conversationDefaults.p
   it); for native conversations it doesn't exist. Importing an ACP session's history into a native channel (like a
   handoff into native) is a possible later feature, not v1.
 
+### Cancellable connect (ACP and native)
+
+**The problem.** Bringing a provider up means creating its client, then waiting for the harness to answer the
+handshake and the session (new or load), inside `bringUp` (`src/controller.ts:551`). Only when both answer is the
+client stored as the controller's `current`. While those answers are pending, nothing `stop()` can reach holds the
+client: `stop()` only stops `current`. A harness that never answers leaves the attempt waiting forever, the
+conversation's queue behind it (later prompts, settings changes), and the harness process running, orphaned. Every
+path that connects goes through `bringUp`: `start`, `startFresh`, `reconnect` (line 168), `setMode` (line 360) and
+handoff targets. Today's behaviour, accepted for the controller-interface work; fixed here, because native's start
+timeout needs the same mechanism.
+
+**How it relates to stale detection.** The operation supervisor watches an operation already running (a turn, a recap,
+an internal inference), from the moment the prompt goes to a connected provider; a stall cancels, waits the grace,
+then force-stops, which works because the client is `current` by then. Connecting happens before that: the queue calls
+`ensureProvider()` (`src/agent-session.ts:2283`) and only then runs the turn under the supervisor. So a harness that
+never answers while connecting is outside stale detection, and even a supervisor's `forceStop` couldn't reach the
+client being brought up. The two are complementary: this section gives the mechanism, and the optional connect limit
+below is a stall limit for the connecting stage.
+
+**The fix:**
+
+- **The attempt is reachable:** the controller stores the attempt as soon as its client is created
+  (`connecting = { client, cancelled }`).
+- **`stop()` cancels it:** it marks the attempt cancelled and stops its client with the existing bounded teardown
+  (SIGTERM, 500 ms, SIGKILL; `src/transport/acp-transport.ts:144`). Repeated `stop` calls are harmless.
+- **The pending calls fail promptly:** the handshake and session calls are raced against the transport's "connection
+  closed" signal (`acp-transport.ts:60`), so they fail as soon as the process is gone, whether or not the ACP library
+  fails its own pending request.
+- **A late answer can't install itself:** before installing a client, every path checks whether its attempt was
+  cancelled or superseded; a cancelled attempt never installs and never emits `provider_reconnected`.
+- **One attempt at a time:** a new attempt first cancels, or waits for, the previous one, so two connections never
+  overlap.
+- **A distinct error:** callers get `ConnectionCancelledError` (not a provider error); queued operations settle once,
+  cleanly, and the conversation is free again; late rejections are observed, never left unhandled.
+- **An optional connect limit:** a `connectMs` stall limit in `operationLifecycle`, next to the existing `turns`,
+  `internalInference` and `recap` limits (`src/operations/contracts.ts:59`). When it expires it cancels the attempt
+  as above. Off by default for ACP (cutting off a slow but working harness is a policy choice); 60 s for native, as
+  its start timeout (Nothing waits forever).
+
+**To verify while building it:** whether the ACP library fails a pending request when the process dies (the race
+covers it either way); and that killing a `docker exec` client may not stop the process inside a container, a
+launcher concern that already exists for stopping a running conversation.
+
+**Tests,** with an offline fixture agent that never answers the handshake, or never answers the session load: `stop()`
+during each; a late answer after cancel; repeated `stop`; a failed reconnect; prompts queued behind a stuck connect
+settling with the cancel error; a harness that ignores SIGTERM; the `connectMs` limit firing; every connecting path
+(`start`, `startFresh`, `reconnect`, `setMode`, a handoff target).
+
 ### Configuration known before start
 
 With ACP, models and commands exist only inside the running harness, so a consumer must start it to learn them and
@@ -351,7 +399,8 @@ is a real failure, not a minor one.
 | What waits | Its bound |
 | --- | --- |
 | A hold (exclusive operation) | a lease: it expires on its own after a set time (default 60 s) unless acp-client renews it while the operation runs; released when acp-client disconnects or the process restarts; acp-client releases it when the operation ends, success or failure |
-| Starting the process | a start timeout (default 60 s), then an error; the next activity tries again (within the restart bounds) |
+| Starting the process | a start timeout (default 60 s, the native `connectMs`), then an error; the next activity tries again (within the restart bounds) |
+| Connecting an ACP provider | cancellable by `stop()`; an optional `connectMs` limit, off by default (Cancellable connect) |
 | A crashed process | bounded restarts, then the failed state with an explicit error, never a silent wait |
 | A permission request | acp-client's `permissionTimeoutMs` (5 min), then the harness's gate timeout (10 min), then refused |
 | A held turn | only behind operations that are themselves bounded |
@@ -630,6 +679,9 @@ the harness's scripted model (its test mode), so they need no provider key.
 
 - `NativeAdapter`, `AgentHarnessConfig` and the registry change; the `NativeHarnessHost` with the in-process
   transport; the `NativeController` passes the controller conformance suite on the harness's scripted model.
+- Cancellable connect, for ACP and native: the attempt reachable by `stop()`, the pending calls raced against the
+  connection closing, no late install, one attempt at a time, `ConnectionCancelledError`, the optional `connectMs`
+  limit (Cancellable connect).
 - The process transport and lifecycle: launch through the launcher; `start` that attaches without the process;
   lazy start on first need, started once, with a start timeout; optional idle stop with both sides agreeing; crash
   and bounded restart, settling held turns and taken messages; `HarnessUnavailableError`; a real `harness serve`
@@ -684,6 +736,8 @@ the harness's scripted model (its test mode), so they need no provider key.
 - Importing into a home that already has the session fails.
 - `isBusy` and the queue behave as for ACP: busy only while an operation runs.
 - A hold whose holder disappears expires; a start that hangs fails after its timeout.
+- `stop()` during an ACP connect that never answers returns promptly, leaves no process running and frees the queue
+  (queued operations fail with `ConnectionCancelledError`); a late answer after the cancel installs nothing.
 - A turn the harness starts on its own (an item pushed onto the channel) is recorded and emitted on the conversation's
   turn events with its cause.
 - Killing the harness process ends running turns with an error, and the next prompt works after the restart.

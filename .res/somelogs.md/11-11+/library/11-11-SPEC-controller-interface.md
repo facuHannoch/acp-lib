@@ -117,8 +117,8 @@ fixes no order between them; both orders occur on A1. Making one order hold woul
 
 **A known hang, accepted for now:** an ACP harness that never answers while connecting or reconnecting leaves its
 conversation stuck (the queue and `stop()` wait forever). It is today's behaviour, seen on A1, and a named exception
-to the "nothing waits forever" rule for ACP's existing lifecycle; the fix is
-`todos/11-13-TODO-cancellable-provider-connect.md`. A2 keeps the queue waiting on an in-progress reconnect (two
+to the "nothing waits forever" rule for ACP's existing lifecycle; the fix is in
+the integration spec (Cancellable connect, stage 2a). A2 keeps the queue waiting on an in-progress reconnect (two
 reconnects never overlap), and fails the prompt that triggered it as soon as `send` fails.
 
 **Who uses `AgentController` directly:** `src/agent-session.ts` (18 references), `src/controller.ts`,
