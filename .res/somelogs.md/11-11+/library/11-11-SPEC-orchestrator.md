@@ -356,7 +356,7 @@ src/persistence/    the optional workers? repository (WorkerPersistence) with ca
   conversations, and identity skipping marked conversations (`src/agent/persisted-lifecycle.ts`,
   `src/agent/record-capture.ts`); `src/index.ts` (exports). The conversation manager is used through its public methods; `agent-session.ts` is not edited.
 - Each file under ~400 lines; the module under ~2,000.
-- Tests: `test/orchestrator/` with a fake worker conversation (scripted turn ends, permission requests, crashes) and a
+- Tests: `test/orchestrator/` with workers on the offline fixture ACP agents (turn ends, permission requests, stalls) and a
   temp-file SQLite.
 
 ## Implementation plan
@@ -489,7 +489,7 @@ decides the `agent_action` question with a recommendation, and reports what move
 
 ## Acceptance
 
-- The fake-worker suite covers slots, eviction and reload, `no_worker_free` with the listing, busy and redirect,
+- The suite (workers on the offline fixture agents) covers slots, eviction and reload, `no_worker_free` with the listing, busy and redirect,
   policy refusals, restart with a busy worker, forwarded permissions at each level and on timeout. No provider key.
 - A consumer lists and stops every worker.
 - No edit to `src/agent-session.ts`.
