@@ -697,8 +697,8 @@ How the guarantees that today depend on acp-client starting every turn are kept:
    outside; a cap enforced by the library is deferred (`todos/11-13-TODO-spending-cap.md`, revised 2026-11-13).
 4. **A stopped or deleted conversation starts nothing new:** its channel is closed.
 
-Where it is built: holds in harness part 1 (protocol `channel/hold`, `channel/release`; the
-guard's limit in the config); their use in integration stage 2a. This spec only needs the session to accept turns
+Where it is built: holds in harness part 1 (protocol `channel/hold`, `channel/release`);
+their use in integration stage 2a. This spec only needs the session to accept turns
 the backend starts, which the fake exercises.
 
 ### Limitations
