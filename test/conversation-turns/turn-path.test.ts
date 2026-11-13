@@ -1,14 +1,15 @@
 /**
  * The turn path through `send`, `prepareTurn` and `abandonTurn` (controller-interface spec,
  * Brief A2 step 4): the cause of a combined steer run, a turn released when it never reaches the
- * provider, completion only after finalization, the queue waiting for finalization, and invalid runs.
+ * provider, completion only after finalization, the queue waiting for finalization, invalid runs,
+ * and the readiness boundary right after `prompt()` behaving as before the refactor.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent } from "../../src/agent.ts";
-import type { AgentSession } from "../../src/agent-session.ts";
+import { AgentSession } from "../../src/agent-session.ts";
 import type { AgentSessionNotification } from "../../src/agent-conversation-contracts.ts";
 import type { AgentConversationOwnerLifecycle } from "../../src/agent-conversation-owner.ts";
 import { AgentController } from "../../src/controller.ts";
@@ -57,6 +58,35 @@ function lifecycleOf(conversation: AgentSession): AgentConversationOwnerLifecycl
 }
 
 const ofKind = (events: readonly { kind: string }[], kind: string) => events.filter((event) => event.kind === kind) as any[];
+const KINDS = new Set(["turn_started", "turn_completed", "turn_failed", "provider_reconnected"]);
+
+/** Waits for `promise`, failing after `ms` (every wait in these tests is bounded). */
+async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms waiting for ${what}`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A detached conversation on the echo fixture. */
+async function detachedConversation() {
+  const directory = await tempDir();
+  const conversation = await AgentSession.create({
+    adapter: { command: ["bun", ECHO] },
+    adapterId: "fixture",
+    agentSessionId: "turn-path-detached",
+    cwd: directory,
+  });
+  cleanups.push(() => conversation.stop());
+  const events: AgentSessionNotification["event"][] = [];
+  conversation.subscribe(({ event }) => events.push(event));
+  return { conversation, events };
+}
 
 describe("the turn path through send", () => {
   test("a combined steer run's cause lists both message ids; record ids stay keyed by the turn", async () => {
@@ -136,23 +166,83 @@ describe("the turn path through send", () => {
     });
     const lifecycle = lifecycleOf(conversation);
     const afterPrompt = lifecycle.afterPrompt.bind(lifecycle);
-    let configured!: Promise<void>;
+    // The test holds the turn's finalization open until it releases it.
+    let release!: () => void;
+    const finalizationGate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const finalizing = new Promise<void>((resolve) => { entered = resolve; });
     lifecycle.afterPrompt = async (input) => {
       order.push("afterPrompt:start");
-      // Queued while this turn finalizes. Give it a window (bounded: 100 ms) in which it would
-      // start if the queue did not wait for finalization.
-      configured = conversation.setConfig("model", "beta");
-      await Bun.sleep(100);
+      entered();
+      await finalizationGate;
       const committed = await afterPrompt(input);
       order.push("afterPrompt:end");
       return committed;
     };
     cleanups.push(async () => { lifecycle.afterPrompt = afterPrompt; });
 
-    await conversation.prompt("a turn with a slow finalization");
-    await configured;
+    const turn = conversation.prompt("a turn with a held finalization");
+    await within(finalizing, 5_000, "the turn's afterPrompt");
+    const configured = conversation.setConfig("model", "beta");
+    // While the finalization is held, the config change is queued behind the turn's operation,
+    // not running: the queue has not moved past the turn.
+    expect(conversation.state.phase).toBe("prompting");
+    expect(conversation.state.queuedOperationCount).toBe(1);
+    expect(order).toEqual(["afterPrompt:start"]);
+
+    release();
+    await within(turn, 5_000, "the turn");
+    await within(configured, 5_000, "the config change");
     expect(order).toEqual(["afterPrompt:start", "afterPrompt:end", "turn_completed", "configuration_started"]);
     expect(ofKind(events, "configuration_completed")).toHaveLength(1);
+  }, 20_000);
+
+  test("a force stop right after prompt() fails the turn without reconnecting, as before", async () => {
+    const { conversation, events } = await detachedConversation();
+    const handle = conversation.prompt("hello");
+    const settled = handle.then(() => null, (reason: unknown) => reason);
+    await conversation.connection.forceStop();
+    const error = await settled;
+    expect((error as Error | null)?.name).toBe("AgentSessionOperationError");
+    expect(events.map((event) => event.kind).filter((kind) => KINDS.has(kind))).toEqual(["turn_started", "turn_failed"]);
+  }, 20_000);
+
+  test("a stop from a turn_started listener fails the turn as before", async () => {
+    const { conversation, events } = await detachedConversation();
+    let stopped: Promise<void> | null = null;
+    conversation.subscribe(({ event }) => {
+      if (event.kind === "turn_started" && !stopped) stopped = conversation.stop();
+    });
+    const error = await conversation.prompt("hello").then(() => null, (reason: unknown) => reason);
+    await stopped;
+    expect((error as Error | null)?.name).toBe("AgentSessionOperationError");
+    expect(events.map((event) => event.kind).filter((kind) => KINDS.has(kind))).toEqual(["turn_started", "turn_failed"]);
+  }, 20_000);
+
+  test("a run naming a message the session does not know is refused at dispatch, before send", async () => {
+    const { conversation, events } = await detachedConversation();
+    const steering = (conversation as unknown as { steering: { prepareRun: (...args: any[]) => any } }).steering;
+    const prepareRun = steering.prepareRun.bind(steering);
+    let inject = true;
+    steering.prepareRun = (...args: any[]) => {
+      const run = prepareRun(...args);
+      if (!inject) return run;
+      inject = false;
+      // A bad combined run: its own message, then one no queued message owns.
+      return { ...run, parts: [{ id: run.turnId, text: run.text }, { id: "not-a-session-message", text: "x" }] };
+    };
+    const send = spyOn(conversation.connection, "send");
+
+    const refused = conversation.prompt("hello");
+    const error = await refused.then(() => null, (reason: unknown) => reason);
+    expect(String(error)).toContain("not-a-session-message, which the session does not know");
+    expect(send).not.toHaveBeenCalled();
+    expect(events.map((event) => event.kind).filter((kind) => KINDS.has(kind))).toEqual(["turn_failed"]);
+
+    // The refused message is settled and released; the next prompt runs normally.
+    const next = await conversation.prompt("again");
+    expect(next.status).toBe("completed");
+    expect(send.mock.calls.map(([run]) => run.messageIds)).toEqual([[next.operationId]]);
   }, 20_000);
 });
 

@@ -477,6 +477,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
    * a session-scheduled controller reports `turn_started` inside the call). Keyed by turn id.
    */
   private readonly sentRuns = new Map<string, { readonly run: TurnRun; cause?: TurnCause }>();
+  /** Ids of the messages (queued prompts) the session accepted and has not settled yet. */
+  private readonly acceptedMessages = new Set<string>();
   private readonly sessions?: SessionManager;
   private readonly _transcriptPath?: string;
   private readonly persistence: false | ResolvedAgentSessionPersistence;
@@ -2013,9 +2015,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
         handlers,
         attachments,
         messageParts,
-        resolve,
-        reject,
+        resolve: (result) => {
+          this.acceptedMessages.delete(id);
+          resolve(result);
+        },
+        reject: (error) => {
+          this.acceptedMessages.delete(id);
+          reject(error);
+        },
       };
+      this.acceptedMessages.add(id);
       this.operations.enqueue(item);
       this.steering.accepted(item);
       this.emitStateIfChanged();
@@ -2289,12 +2298,23 @@ export class AgentConversation implements AgentClient, Bridgeable {
           const controller = this.controller;
           let stopReason: string | undefined;
           try {
-            checkTurnRun(run, (id) => run.messageIds.includes(id));
+            // Every id must be a message the session accepted and has not settled (independent of
+            // how the run was built), in queue order, the turn id being the first.
+            checkTurnRun(run, (id) => this.acceptedMessages.has(id));
             // Registered before `send`: this controller reports `turn_started` inside the call, and
             // the session emits it then (with its cause), at the same moment as before.
             this.sentRuns.set(prompt.turnId, { run });
-            await controller.send(run);
-            const cause = this.sentRuns.get(prompt.turnId)?.cause;
+            const accepted = controller.send(run);
+            let cause = this.sentRuns.get(prompt.turnId)?.cause;
+            if (cause) {
+              // Reported inside `send`: a session-scheduled controller, whose report is its
+              // acceptance (its promise is already resolved). Not awaited, so nothing can run
+              // between the report and `ensureProvider` that could not run before.
+              accepted.catch((error: unknown) => this.log.warn("controller_send_failed_after_report", { error: String(error) }));
+            } else {
+              await accepted;
+              cause = this.sentRuns.get(prompt.turnId)?.cause;
+            }
             if (!cause) throw new Error(`the controller did not report turn ${prompt.turnId}`);
             await this.ensureProvider();
             reportDelivery?.();
@@ -4591,4 +4611,3 @@ function copyPromptResult(result: PromptResult): PromptResult {
     usage: result.usage ? Object.freeze({ ...result.usage }) : null,
   });
 }
-
