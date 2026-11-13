@@ -4,10 +4,27 @@ Spec: `../11-11-SPEC-controller-interface.md` (beta `1bda9ef`). Branch `controll
 (beta merged in `d48ddcb`; beta-update report `11-12-REPORT-A2-beta-update.md`). Status and
 release: bob-b, `controller-interface-status` at `14f56c4`.
 
-**State: step 1 done and committed. Steps 2–4 are held** until the spec question
+**State: step 1 done and committed; the spec correction (beta `fcd1fd4`) is merged in `efe6ebe`.
+Steps 2–4 are held** until bob-b confirms both branches contain it. The spec question was
 `.plan-execution/status/11-12-ISSUE-A2-turn-events.md` is corrected on beta and both branches have
 brought the correction in. That question: `TurnEvent = TurnStarted | TurnTook`, versus
 "`turn_started` is the only turn event the controller reports".
+
+## Spec correction brought in (`efe6ebe`)
+
+Task: `.plan-execution/tasks/controller-interface-A2-correction.md` (status `bef318c`).
+
+| Item | Value |
+| --- | --- |
+| Beta brought in | `fcd1fd49b6bf844724fb86a3040b0866e0ec4488` |
+| Method | `git merge --no-ff fcd1fd4` into `controller-interface` (no rebase; all commits kept, including step 1 `0383681` and its report `db3d979`) |
+| Result | merge `efe6ebe`; `git merge-base --is-ancestor fcd1fd4 HEAD` holds; no conflicts |
+| What it changed | only `library/11-11-SPEC-controller-interface.md`, 3 lines added and 2 removed: "the controller reports only the start of turns, never their end: `turn_started`, and for backend-scheduled controllers `turn_took`"; plus the unrelated typo `subscgentribe` (no contract effect, already noted for the spec owner) |
+| `src/`, `test/` | unchanged by the merge; step 1's gate stands |
+
+Effect on A2: the contracts (step 2) declare `TurnEvent = TurnStarted | TurnTook`, and the doc
+comment says the controller never reports a turn's end. The `HarnessController` reports only
+`turn_started`. Steps 2–4 stay held until bob-b confirms both branches contain the correction.
 
 ## Step 1: move `runPrompt` (`0383681`)
 
