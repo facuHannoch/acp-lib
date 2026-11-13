@@ -76,10 +76,11 @@ channels). In acp-client:
 | the conversation's provider-session row (`provider_sessions`) | `internal_session_id` = the harness session id = the `Agent`'s id, the same for every native conversation of the `Agent` (the index on it isn't unique); the channel id in the row's metadata |
 | a cleared transcript or a handoff into native | a fresh context on the same channel (`channel.reset()`), the old row deactivated, a new one active |
 | deleting the conversation | closing the channel; its timeline events stay (they are the entity's history) |
-| participants (`ParticipantRef { id, kind, name }`, shared by all of an `Agent`'s conversations) | senders: `id` → sender id, `name` → label, `kind` → person, agent or other; the same id in two conversations is the same person |
+| participants (`ParticipantRef { id, kind, name }`, shared by all of an `Agent`'s conversations) | the session's participant registry: `id` → id, `name` → label, `kind` → person, agent or other; sent at start and with `participants/update` when one is added or changes; items name their sender by id; the same id in two conversations is the same person |
 | the conversation's `policy` (stored, current value only) | the channel's policy |
 | the conversation's `title` (set at creation; `conversation.setTitle()` added) | the channel's label, shown to the agent |
-| model settings changed on the conversation (`setConfig`: model, reasoning, temperature) | the channel's settings (`channel.setSettings`), overriding the session's for that channel only |
+| model settings changed on the conversation (`setConfig`: model, reasoning, temperature) | the channel's settings (`channel/update`), overriding the session's for that channel only |
+| what the conversation's consumer wants to receive, and what acp-client persists | the channel's subscription (Subscriptions, below) |
 | an ACP conversation, when a harness is configured | a managed member channel (`member/register`): its messages and summaries are reported, and it receives what the harness prepares |
 
 **One session id, many conversations.** Like one phone number with many extensions: the session id says which agent,
@@ -173,14 +174,14 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 | Controller member | Native |
 | --- | --- |
 | `start` / `startFresh` | cheap: attach the conversation to its channel **without** starting the process (Process lifecycle). `startFresh` also marks the channel for a reset, applied as a channel change. Result: `{ sessionId: <the Agent's id>, resumed }`, where `resumed` comes from acp-client's own records (true when the conversation has had turns), so the harness isn't needed for it. `isConnected` is true unless the host is in the failed state |
-| `send` | push each message as an item on the channel, with sender, policy and a delivery hint; resolves when the harness has accepted it, which ends the message's queue operation; promises no turn |
+| `send` | push each message as an item on the channel (its id is the message id), with sender, policy and a delivery hint; resolves when the harness has stored it durably, which ends the message's queue operation; a push that gets no answer in time is sent again with the same id, which is safe (the harness ignores a repeat); promises no turn |
 | `subscribeTurns` | the harness's `turn_started` (with the items it took) and `turn_took` (items folded into a turn already running); never an end of turn (the end is the prepared turn's `prompt()`) |
 | `prepareTurn` | a prepared turn whose `prompt()` replays the turn's held output, usage and supervision signals, then streams the rest into the session's handlers and resolves at the harness's end of turn; ignores the content's input (the harness built the context) |
 | `abandonTurn` | drops what is held for the turn; interrupts the channel's turn if it is still running |
 | `cancel` | `channel/interrupt` for the channel's running turn |
 | `forceStop` | interrupts the channel and gives up on its turn locally: open prepared turns reject. Never stops the shared process; only the host restarts it, on a crash or when it stops answering |
 | `stop` | the conversation is done with its channel for now; the process keeps running for the others |
-| `subscribeOutput` | supervision signals only, as for ACP (the stream goes to the turn's handlers) |
+| `subscribeOutput` | supervision signals only, as for ACP (the stream goes to the turn's handlers); the harness's `progress` events count as output, so stall detection works even when no text streams |
 | `configOptions` / `setConfig` | model, reasoning, temperature as `ConfigOption`s, known before start from the stored config and `describe`; `setConfig` stores the channel's settings and sends them (Channel changes, below) |
 | `subscribeUsageUpdate` | usage events, one per model call, with their purpose |
 | `conversationCapabilities` | `nativeSteering: true`; `backend` filled from the config at once (the model's media; no load, fork or session listing); the optional methods (modes, bridge, reconnect, authenticate, `listSessions`, `prepareInternalPrompt`) are absent |
@@ -219,6 +220,12 @@ The process is what costs (and, isolated, a container per agent); channels are c
   once, as above, also when it races the stop). The harness home must be durable for this (no sync in v1; the
   consumer mounts it).
 - **Stopped with the `Agent`.** Not when its last native conversation closes.
+- **Reconciliation at every start.** `session/load` carries `since` (the time of acp-client's last native record for
+  the `Agent`) and returns each channel's recent turns and waiting items. acp-client compares them with its records and
+  settles what it missed around a crash: a turn that ended without acp-client hearing its end is recorded (from the
+  turn record's messages and usage) and its prompts settle; a turn `running_at_crash` settles as failed; a message
+  still waiting stays pending (it will be taken). This is how state events stay reliable without acknowledging each
+  one (protocol spec, Delivery).
 - **Restarts on a crash:** bounded (3 within 60 s, with a pause between). Running turns end with an error; held turns
   are abandoned; a message a crashed turn had already taken settles as failed (its prompt rejects); a message still
   waiting in the harness inbox survives the restart and is taken afterwards. When the retries run out the host is
@@ -320,6 +327,23 @@ native conversation always looks ready.
   change is emitted if they differ.
 - **Cost:** the first message after a cold start waits for the process (and container) to start; consumers show
   progress through the start events.
+
+### Subscriptions
+
+The harness sends only what acp-client asks for (`../11-12-SPEC-harness-protocol.md`, Decisions 2). acp-client
+subscribes each channel to **the union of what it persists and what the conversation's consumer wants**:
+
+- **What the consumer wants:** a conversation option, `streaming: "stream" | "final"` (default `"stream"`, today's
+  behaviour), with a default in `conversationDefaults`. With `"final"`, the conversation's events carry only complete
+  assistant messages, no text deltas. For ACP conversations the option filters the events the consumer gets (an ACP
+  harness sends everything regardless); for native it also reduces what crosses the wire.
+- **What acp-client persists:** from the persistence policy. Persisting only chats needs `final` text and no tool or
+  reasoning detail; persisting activity needs tool calls and reasoning at the matching level.
+- **Always received,** whatever the subscription: turn boundaries, `message_completed` (the source of truth for the
+  assistant record; deltas are a convenience), usage (per call, for metering), `progress` (liveness for stall
+  detection), dropped messages and permission requests.
+- **Changing it:** when the consumer's option or the persistence policy changes, acp-client sends the new subscription
+  with `channel/update`; it applies at once.
 
 ### Channel changes
 
@@ -695,6 +719,10 @@ the harness's scripted model (its test mode), so they need no provider key.
 - Holds as leases; persistence failures surfaced, never held; the bounds in Nothing waits forever.
 - Configuration known before start: stored config and overrides, `describe` (with policy names), channel settings
   stored per conversation; `agent.harness.config()`, `updateConfig`, `resetConfig`.
+- Subscriptions: the `streaming` option, the union with the persistence policy, `channel/update` on change;
+  `message_completed` as the source of the assistant record; `progress` feeding stall detection.
+- The participant registry: sent at start, `participants/update` when one is added or changes.
+- Reconciliation at start: `since`, settling turns and prompts missed around a crash; pushes retried with the same id.
 - Turns the harness starts reach `runTurn`, also for conversations not loaded; `turn_took` extends a cause; steer
   and queue hints; dropped messages settled; withdraw through the harness; held usage and signals; native steering
   behind `nativeSteering`; usage filed by purpose.
@@ -748,6 +776,11 @@ the harness's scripted model (its test mode), so they need no provider key.
   it; with no answerer, `default` applies at once; an ACP conversation's permissions follow the same setting.
 - Two native conversations of one `Agent` are channels of one session.
 - An exported session imported into a fresh home is the same entity.
+- With `streaming: "final"` and chats-only persistence, no text deltas or tool detail cross the wire, and a long turn
+  with no text isn't judged stalled (progress keeps it alive).
+- After the harness is killed mid-turn and restarted, reconciliation settles every prompt exactly once: a turn that
+  ended unheard is recorded, a turn running at the crash fails, a waiting message is taken afterwards.
+- A push repeated after a timeout is stored once.
 - With no native adapter configured, behaviour is unchanged and the existing suite passes.
 
 **Stage 2b:**
