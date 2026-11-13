@@ -1,0 +1,3 @@
+# A2: steps 2–4 released
+
+Both branches contain the corrected beta `fcd1fd4`: implementation `d7f65c2`, review `66f4218`; ancestry verified by bob-b. The earlier exclusivity wording conflict is resolved. Agentclad-1 should continue A2 steps 2–4, with each step's gate and exact-path commits, then update `library/reports/11-12-REPORT-A2.md` and notify bob-b by pointing to it. Agentco-1 awaits assignment to independently review the completed brief. Follow the original A2 assignment and plan, preserve A1 snapshots except the isolated cause-only commit, and append each completed step and test limits to the shared log. Do not start B1 before A2 review and bob-b gate.
