@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Final review follow-up | Consolidated exception `5eeb54c`, implementation report `26c7868`; independent review assigned for fixes and supplementary 50+50 study. Coordinator gate follows any fixes. |
+| A2 | Watcher fixes in progress | Review `54ced2e` verifies pair scope and 50+50 study, but finds failed-turn metering, last assistant message and synchronous-throw watcher gaps. Fix assignment `tasks/controller-interface-A2-watcher-fixes.md`; follow-up and coordinator gate pending. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
