@@ -4,9 +4,10 @@ Spec: `../11-11-SPEC-controller-interface.md` (beta `1bda9ef`). Branch `controll
 (beta merged in `d48ddcb`; beta-update report `11-12-REPORT-A2-beta-update.md`). Status and
 release: bob-b, `controller-interface-status` at `14f56c4`.
 
-**State: steps 1–4 done, and the three blocking review findings (`11-12-REVIEW-A2.md` at
-`c2e8f4b`) fixed in `e7f2d79`. Gate met: full suite 1,142 pass / 0 fail.** One pre-existing A1
-snapshot race still needs the owner's decision (open question 1). The spec correction (beta
+**State: steps 1–4 done; the first review's findings fixed in `e7f2d79`, the follow-up review's
+(`11-12-REVIEW-A2.md` at `8b4baf6`) in `f54dc05`. Gate met: full suite 1,144 pass / 0 fail, two
+runs.** Two intermittent snapshot orders are with the owner (open question 1); nothing here
+changes them. The spec correction (beta
 `fcd1fd4`) was merged in `efe6ebe`; steps 2–4 were released at status `6992179`. The spec question
 was
 `.plan-execution/status/11-12-ISSUE-A2-turn-events.md` is corrected on beta and both branches have
@@ -272,6 +273,73 @@ with a delay.
 | full suite `bun test` | **1,142 pass, 0 fail; 114 files; 91.3 s** (1,139 + 3) |
 | `agent-session.ts` | **4,613 lines** (+19 for the acceptance branch and the accepted-message registry) |
 
+## Follow-up review fixes (`f54dc05`)
+
+Task: `.plan-execution/tasks/controller-interface-A2-followup-fixes.md` (status `4bc275b`).
+
+**A rejected `send` after a synchronous report was discarded.**
+- **Fix:** `pump` now:
+  1. observes `send`'s promise at once (`.catch(() => undefined)`, so it is never unhandled);
+  2. starts `ensureProvider()` immediately after the report, as before (no scheduling point between
+     them, so the first review's P1 is not reintroduced);
+  3. then `await`s the acceptance before dispatching.
+- **Result:** a rejection fails the turn through the normal failure path: `abandonTurn`,
+  `turn_failed`, the prompt rejects, no `turn_completed`. The turn is never prepared. A controller
+  that didn't report inside `send` (backend-scheduled, B2) is awaited before anything else.
+- **Cost:** for the `HarnessController`, the only addition is one `await` of an already resolved
+  promise *after* `ensureProvider`. The boundary probe is still identical to A1 in all 10 scenarios
+  (re-run on `f54dc05`).
+- **Regression:** "a send rejected after the controller reported the turn fails it: abandoned, no
+  completion". It wraps the real controller's `send`: the real synchronous report, then a rejected
+  promise. It asserts the rejection error, no `prepareTurn`, `abandonTurn` with the turn id, events
+  `turn_started, turn_failed`, and that the next prompt runs normally.
+
+**Accepted membership didn't prove ownership or order.**
+- **Fix:** the registry is now a `Map` of id to `{ order, dispatched }`. `order` is the acceptance
+  sequence (the queue is FIFO; steering combines contiguous steers from the head, so a run's
+  messages follow acceptance order); `dispatched` is set when a run takes the message.
+- **Checks** (`checkTurnRun` with a lookup over the session's own state, plus the queue's
+  `snapshot()`): every run id must be accepted and unsettled, out of the queue, taken by no other
+  run, and in strictly increasing acceptance order; the turn id is the first id. All ids are marked
+  dispatched before `send`. Entries are still removed when the message's promise settles.
+- **Regression:** "a run that takes a message still waiting in the queue is refused at dispatch;
+  that message runs once, in its own turn". With a slow first turn and two queued messages A and B,
+  it wraps `steering.prepareRun` so A's run also names B. A is refused ("…which is still queued")
+  and never reaches `send`. B then runs once, in its own turn: `send` receives `[first]`, `[B]`;
+  causes are `[first]`, `[B]`; `turn_failed` only for A.
+- **Helper cases added:** taken, still queued, out of order. The existing unknown and duplicate
+  cases are kept.
+
+**The gated test's failure path held the turn open.**
+- **Fix:** the gate is released in `finally`, and the turn's and the config change's promises are
+  observed from the start (then asserted to have resolved).
+- **Checked:** in a copy outside the repo with the phase assertion deliberately broken, the test
+  fails in 116 ms with just that assertion error: no unhandled rejection, no `afterEach` timeout.
+
+**The tests catch the bugs:** the current turn-path tests run against `e7f2d79`: the three
+new/changed tests (rejected send, still-queued injection, helper cases) fail there and pass at
+`f54dc05`.
+
+**Gate (`f54dc05`):**
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean; new test files clean under the temporary tsconfig; `git diff --check` clean |
+| characterization + turn-path, three runs without update | 47 pass each (14.4 s, 14.8 s, 14.1 s); snapshot unchanged, SHA-256 `d25f05a19cadeb8f…` |
+| full suite `bun test`, two runs | **1,144 pass, 0 fail; 114 files**; 92.4 s and 94.9 s (1,142 + 2 new tests) |
+| boundary probe vs A1 | identical, 10 scenarios |
+| `agent-session.ts` | 4,623 lines |
+
+**Limitations:**
+- The order check relies on acceptance order matching queue order. That holds for today's FIFO
+  queue and contiguous steer combining; a future scheduler that reorders messages would need its
+  own rule (backend-scheduled runs are B2).
+- The fault injections go through private seams: `steering.prepareRun`, and replacing the
+  controller's `send` on the instance. The real `AgentController.send` never rejects after
+  reporting.
+- The intermittent Agent-owned internal-command order the reviewer saw once (assistant snapshot
+  vs metering record) did not occur in my two full runs. I haven't analysed it; see open question 1.
+
 ## Open questions
 
 1. **A pre-existing order race in an A1 snapshot (the managed combined-steer case).** While
@@ -299,7 +367,13 @@ with a delay.
      completed** turn's in-progress `presentation_recorded` and its `metering_recorded`. So the race is
      between managed-mode presentation writes and metering events generally, not one pair. It is
      escalated to the owner; nothing here changes it.
-2. **`agent-session.ts` is 4,613 lines after the review fixes (4,594 before), not ~4,550.** The spec's hard limit (shorter than 5,022) holds.
+   - **A second intermittent order, reported by the reviewer:** one full-suite run at `babc5b1`
+     failed the Agent-owned `an internal command` case (assistant in-progress snapshot vs metering
+     record, in both the bus and SQLite). Targeted probes were 30/30 on A1 and on the follow-up. It
+     looks like the Agent-owned record race found in A1 (the owned-record chain against direct
+     metering writes), but that is a hypothesis, not established. It is escalated with question 1,
+     unchanged.
+2. **`agent-session.ts` is 4,623 lines after the follow-up fixes (4,594 at `524af30`), not ~4,550.** The spec's hard limit (shorter than 5,022) holds.
    B1 will move or retype more of the session.
 
 ## Gaps and limitations
