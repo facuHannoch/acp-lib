@@ -28,6 +28,8 @@ import type { OperationLifecycleConfig } from "../../src/operations/contracts.ts
 import { FileAgentSessionStore } from "../../src/persistence/file-registry-store.ts";
 import { SessionManager } from "../../src/session-manager.ts";
 import { normalize } from "./normalize.ts";
+import { type ContractWatch, type Mode, watchContract } from "./contract-watch.ts";
+import { canonicalManagedEvents, canonicalOwnedRecords } from "./pair-rule.ts";
 
 const FIXTURES = resolve(import.meta.dir, "../fixtures");
 const ECHO = join(FIXTURES, "echo-prompt-agent.ts");
@@ -37,7 +39,6 @@ const IDLE_PTY = join(FIXTURES, "idle-pty-agent.ts");
 const AUTH_REQUIRED = join(FIXTURES, "auth-required-agent.ts");
 const OPERATIONS = resolve(import.meta.dir, "../../smoke-tests/test5-operations/operations-agent.ts");
 
-type Mode = "agent-owned" | "managed" | "detached";
 const MODES: readonly Mode[] = ["agent-owned", "managed", "detached"];
 
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -68,6 +69,8 @@ interface Opened {
   records(): Promise<unknown>;
   /** Agent-owned only: observe each record once it is committed (the committed-record bus). */
   onCommitted?(listener: (record: Record<string, unknown>) => void): void;
+  /** The contractual-order checks for this conversation (asserted by `snapshot`). */
+  readonly contract: ContractWatch;
   close(): Promise<void>;
 }
 
@@ -165,14 +168,18 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
     };
     cleanups.push(close);
     const bus: unknown[] = [];
+    const committed: Record<string, unknown>[] = [];
     const committedListeners: Array<(record: Record<string, unknown>) => void> = [];
     agent.events.subscribe((notification) => {
       const record = notification.event.record as unknown as Record<string, unknown>;
       bus.push({ kind: record.kind, recordId: record.recordId, operationId: record.operationId });
+      committed.push(record);
       for (const listener of committedListeners) listener(record);
     });
     const conversation = await agent.conversations.create();
+    const contract = watchContract(mode, conversation, { committed });
     return {
+      contract,
       mode,
       conversation,
       directory,
@@ -197,7 +204,9 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
       persistence: { transcript: { preset: "activity" } },
     });
     cleanups.push(() => conversation.stop());
+    const contract = watchContract(mode, conversation, { transcriptPath: conversation.transcriptPath! });
     return {
+      contract,
       mode,
       conversation,
       directory,
@@ -215,7 +224,9 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
     transcriptPath,
   });
   cleanups.push(() => conversation.stop());
+  const contract = watchContract(mode, conversation, { transcriptPath });
   return {
+    contract,
     mode,
     conversation,
     directory,
@@ -245,8 +256,27 @@ const has = (raw: readonly { kind: string }[], kind: string, count = 1) =>
   () => raw.filter((event) => event.kind === kind).length >= count;
 
 /** Normalizes a run against its own temporary directory and snapshots it. */
-function snapshot(opened: { directory: string }, run: Record<string, unknown>, extraPaths: readonly string[] = []): void {
-  expect(normalize(run, { paths: [opened.directory, ...extraPaths, tmpdir()] })).toMatchSnapshot();
+function snapshot(
+  opened: { directory: string; mode?: Mode; contract?: ContractWatch },
+  run: Record<string, unknown>,
+  extraPaths: readonly string[] = [],
+): void {
+  if (opened.contract && opened.mode) opened.contract.assertRun(opened.mode, run);
+  const compared = opened.mode ? withNonContractualPairsInOneOrder(opened.mode, run) : run;
+  expect(normalize(compared, { paths: [opened.directory, ...extraPaths, tmpdir()] })).toMatchSnapshot();
+}
+
+/** The run as compared with the snapshot: the two non-contractual pairs in one order (`pair-rule.ts`). */
+function withNonContractualPairsInOneOrder(mode: Mode, run: Record<string, unknown>): Record<string, unknown> {
+  if (mode === "managed" && Array.isArray(run.events)) {
+    return { ...run, events: canonicalManagedEvents(run.events as Record<string, any>[]) };
+  }
+  const records = run.records as Record<string, any> | undefined;
+  if (mode === "agent-owned" && records && Array.isArray(records.records)) {
+    const canonical = canonicalOwnedRecords(records.records, records.committedBus);
+    return { ...run, records: { ...records, records: canonical.records, committedBus: canonical.bus } };
+  }
+  return run;
 }
 
 const SEQUENTIAL = "Read a.txt, then b.txt, then c.txt, each with its own tool call, one at a time. Then tell me the three words in order.";
