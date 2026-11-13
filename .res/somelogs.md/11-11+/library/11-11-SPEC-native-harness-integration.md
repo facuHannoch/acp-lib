@@ -1,8 +1,9 @@
 # Native harness in acp-client
 
 Status: agreed, not started; reviews 1–3 done 2026-11-12 (against the controller-interface spec, reviews 1–7, and the
-code on `beta`), review 4 on 2026-11-13. Stage 2a's implementation plan is below (Implementation plan, stage 2a). Implemented in two stages (2a, 2b) alongside the two parts of
-harness v1; see Stages and the overview. The harness seen from the library: what acp-client needs from it
+code on `beta`), reviews 4 and 5 and the final review on 2026-11-13; ready for implementation. Stage 2a's
+implementation plan is below (Implementation plan, stage 2a). Implemented in two stages (2a, 2b) alongside the two
+parts of harness v1; see Stages and the overview. The harness seen from the library: what acp-client needs from it
 and what changes in acp-client. How the harness works inside is `../harness/11-11-SPEC-harness-design.md` and
 `../harness/11-11-SPEC-harness-v1.md`.
 
@@ -56,8 +57,9 @@ gives the same guarantee, from v1:
   costs well under a millisecond against model calls of seconds), and under load a separate process is better: it
   has its own thread, so the harness's CPU work doesn't slow acp-client's, nor the reverse.
 - **One process for many conversations** means a crash affects all of them: the host restarts the process
-  (bounded retries; Process lifecycle, below), each native conversation's running turn ends with an error, and the
-  orchestrator's restart rules apply to workers it was running. For the same reason, nothing a single conversation
+  (bounded retries; Process lifecycle, below), each native conversation's running turn is settled by reconciliation
+  after the restart (finished if it had ended, failed if it was still running), and the orchestrator's restart rules
+  apply to workers it was running. For the same reason, nothing a single conversation
   does stops the process: a conversation's `stop` and `forceStop` act on its channel only.
 
 ## What acp-client sees
@@ -184,7 +186,7 @@ Implements the `ConversationController` interface (`11-11-SPEC-controller-interf
 | `prepareTurn` | a prepared turn whose `prompt()` replays the turn's held output, usage and supervision signals, then streams the rest into the session's handlers and resolves at the harness's end of turn; ignores the content's input (the harness built the context) |
 | `abandonTurn` | drops what is held for the turn; interrupts the channel's turn if it is still running |
 | `cancel` | `channel/interrupt` for the channel's running turn |
-| `forceStop` | interrupts the channel and gives up on its turn locally: open prepared turns reject. Never stops the shared process; only the host restarts it, on a crash or when it stops answering |
+| `forceStop` | interrupts the channel and gives up on its turn locally: open prepared turns reject. Never stops the shared process; only the host restarts it, on a crash, or the consumer through `agent.harness.restart()` |
 | `stop` | the conversation is done with its channel for now; the process keeps running for the others |
 | `subscribeOutput` | supervision signals only, as for ACP (the stream goes to the turn's handlers). The harness's `progress` events feed stall detection by stage, as today's activity does: `model` counts as output; `tool` counts as a tool running (the tool-time limit still applies); `waiting` doesn't reset the clock. So a long silent turn stays alive, and a turn stuck waiting is still judged stalled (to be checked in the robustness tests) |
 | `configOptions` / `setConfig` | model, reasoning, temperature as `ConfigOption`s, known before start from the stored config and `describe`; `setConfig` stores the channel's settings and sends them (Channel changes, below) |
@@ -260,8 +262,9 @@ The process is what costs (and, isolated, a container per agent); channels are c
   harness may have ended a turn just before crashing, without its end reaching acp-client. Running turns stay pending
   through the restart (the stall clock paused), and reconciliation gives each its outcome: ended → finished from its
   turn record; `running_at_crash` → failed (a message it had taken settles as failed). So a prompt settles once, from
-  the turn's end or from reconciliation. A message still waiting in the harness inbox survives the restart and is
-  taken afterwards. When the retries run out the host is failed: pending turns fail, and native conversations'
+  the turn's end or from reconciliation. A turn the consumer gave up on locally during the restart (`forceStop`, its
+  prompt already rejected) is still recorded if reconciliation reports it ended (its messages and metering), but its
+  prompt stays as settled. A message still waiting in the harness inbox survives the restart and is taken afterwards. When the retries run out the host is failed: pending turns fail, and native conversations'
   operations fail with `HarnessUnavailableError` until `agent.harness.restart()`. The consumer's way out during a
   restart that hangs is `forceStop` or `stop`, as for any cancellable wait.
 - **Turns for conversations not loaded:** when the harness reports a turn on a channel whose conversation acp-client
@@ -297,7 +300,7 @@ client: `stop()` only stops `current`. A harness that never answers leaves the a
 conversation's queue behind it (later prompts, settings changes), and the harness process running, orphaned. Every
 path that connects goes through `bringUp`: `start`, `startFresh`, `reconnect` (line 168), `setMode` (line 360) and
 handoff targets. Today's behaviour, accepted for the controller-interface work; fixed here, because native's start
-timeout needs the same mechanism.
+must be cancellable the same way.
 
 **How it relates to stale detection.** The operation supervisor watches an operation already running (a turn, a recap,
 an internal inference), from the moment the prompt goes to a connected provider; a stall cancels, waits the grace,
@@ -761,8 +764,9 @@ src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "nat
   `NativeAdapter`; `src/out-of-band-messages.ts` (kind and sender in metadata); `src/identity.ts` (optional
   `mcpServers`, `checkpointed`; opaque receipt); the checkpoint coordinator (call `checkpointed`); the permission
   setting replacing `defaultPermission` (`src/agent/config.ts` and where `defaultPermission` is read in
-  `src/agent-session.ts`, a replacement, not new code); `permission_requested` and `answerPermission` on conversations
-  (stage 2a).
+  `src/agent-session.ts`, a replacement, not new code); `permission_requested`, `permission_resolved` and
+  `answerPermission` on conversations (stage 2a); `src/permissions/request.ts` (the neutral request);
+  `src/metering/native/` and `src/metering/certification.ts` (`native-harness@1`, lookup by adapter kind).
 - **Storage** (schema version 17, an upgrade migration from 16 in `src/persistence/sqlite-schema.ts`, tested on a
   version-16 database): a `harness_config` table (the `Agent`'s id, the overrides as
   JSON, updated at); on `conversations`, a `policy` column and a `harness_pending` flag; channel settings reuse the
@@ -804,7 +808,10 @@ stage 2a):
   behind `nativeSteering`; usage filed by purpose.
 - Holds for the exclusive operations; the native admission rules.
 - The native half of delivery: pushing items onto channels (the port the orchestrator will use).
-- Native user records at acceptance; `accepted` on the prompt handle.
+- Native user records written before the push and confirmed at acceptance; `accepted` on the prompt handle.
+- The host's controls: `agent.harness.start()`, `stop()`, `restart()`, `state`; `harness_unresponsive`.
+- Billing-grade metering: the native inference source, `native-harness@1`, checked at start.
+- `permission_resolved`, `expiresAt`, and acp-client owning the permission timeout.
 - Permissions as events: `permission_requested`, `answerPermission`, `answersPermissions`, `permissionTimeoutMs`; the
   one permission setting replacing `defaultPermission`, with the ACP matcher and the optional function; the harness's
   `permission/request` routed to the conversation; the first-message permission-handler rule.
@@ -827,7 +834,7 @@ stage 2a):
 
 ## Implementation plan, stage 2a
 
-Written 2026-11-13, revised after review 4 the same day; not yet reviewed again. Twelve briefs, each about one agent
+Written 2026-11-13, revised after reviews 4 and 5 and the final review the same day. Twelve briefs, each about one agent
 run, run in order by one trio (`../.plan-execution/plan.md`). Stage 2b gets its own plan later, against harness part 2.
 
 **Dependencies.** All briefs start after the controller-interface spec is merged into `beta` (they build on its
@@ -961,7 +968,7 @@ held). A path missed (sign: a connecting call outside `bringUp`).
    crashes at a chosen point (including after a turn ends, before its end is sent), a start that never answers, a
    request that never answers. It reproduces the protocol spec's worked example exactly. It replaces the whole harness,
    for acp-client's tests; the harness's own `testing.ts` is a different layer (a real harness with a scripted model,
-   used in N10). **Gate:** its own tests, including the worked example as a test.
+   used in N11). **Gate:** its own tests, including the worked example as a test.
 3. **A conformance test of the contract** that both the fake and, later, the real `harness serve` run
    (`test/native/protocol-conformance.ts`). **Gate:** green on the fake.
 
@@ -1016,7 +1023,8 @@ conformance test is the guard.
    including when racing the stop. **Gate:** suite green; the race test.
 
 **Done:** report commits, each lifecycle transition and its test.
-**Risks:** two starts racing (sign: two `initialize` calls); a stop racing a start (covered by N1's mechanism).
+**Risks:** two starts racing (sign: two `initialize` calls); a stop racing a start (the host's ownership of the start,
+step 1).
 
 ### Brief N6: the `NativeController`
 
@@ -1077,8 +1085,10 @@ guards it.
    step from its turn record, keyed by turn id; its pending prompt resolves from it; a turn `running_at_crash` fails;
    the item status for every unsettled message: `waiting` stays pending, `taken` settles with its turn, `dropped` and
    `withdrawn` settle cancelled, `unknown` fails (and an unconfirmed record is marked never accepted); the watermark
-   advances. **Gate:** after a fake crash at each point (before a turn's
-   end is sent, mid-turn, between turns), every prompt settles exactly once; finishing twice does nothing.
+   advances; a turn given up locally (`forceStop`) during the restart is recorded if it ended, its prompt left as
+   settled. **Gate:** after a fake crash at each point (before a turn's end is sent, mid-turn, between turns), every
+   prompt settles exactly once; finishing twice does nothing; `forceStop` during the restart, then a turn reported
+   ended, records it without settling the prompt again.
 3. **The fallback**, if finishing from the record proves hard: fail the turn, still writing its metering from the
    record; the report says if it was used. **Gate:** the turn's cost is recorded in either case.
 
@@ -1159,7 +1169,8 @@ acceptance test.
   (queued operations fail with `ConnectionCancelledError`); a late answer after the cancel installs nothing.
 - A turn the harness starts on its own (an item pushed onto the channel) is recorded and emitted on the conversation's
   turn events with its cause.
-- Killing the harness process ends running turns with an error, and the next prompt works after the restart.
+- Killing the harness process mid-turn fails that turn through reconciliation after the restart, and the next prompt
+  works.
 - A permission `ask` from the harness reaches the consumer as `permission_requested` and `answerPermission` resolves
   it; with no answerer, `default` applies at once; an ACP conversation's permissions follow the same setting.
 - Two native conversations of one `Agent` are channels of one session.

@@ -111,7 +111,7 @@ The verdict and the evidence go in the GATE file.
 | --- | --- | --- |
 | Controller interface (`library/11-11-SPEC-controller-interface.md`) | being implemented: A1 gate passed 2026-11-12 (`9de0ca3`); A2 released | 1 |
 | Harness protocol (`11-12-SPEC-harness-protocol.md`) | first design; shared by integration and harness part 1 | (no code of its own) |
-| Native harness integration, stage 2a (`library/11-11-SPEC-native-harness-integration.md`) | reviewed 3 times; implementation plan not written yet | next |
+| Native harness integration, stage 2a (`library/11-11-SPEC-native-harness-integration.md`) | reviewed 5 times plus the final review; plan written (briefs N0–N11); ready | next |
 | Harness project setup and harness part 1 (`harness/11-11-SPEC-harness-project.md`, `harness/11-11-SPEC-harness-v1.md`) | not yet reviewed on their own | next, in parallel |
 | Orchestrator (`library/11-11-SPEC-orchestrator.md`) | not yet reviewed on its own | later |
 | Integration stage 2b, harness part 2 | after 2a and part 1 | later |
