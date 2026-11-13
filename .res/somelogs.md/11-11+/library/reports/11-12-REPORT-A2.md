@@ -4,8 +4,10 @@ Spec: `../11-11-SPEC-controller-interface.md` (beta `1bda9ef`). Branch `controll
 (beta merged in `d48ddcb`; beta-update report `11-12-REPORT-A2-beta-update.md`). Status and
 release: bob-b, `controller-interface-status` at `14f56c4`.
 
-**State: step 1 done and committed; the spec correction (beta `fcd1fd4`) is merged in `efe6ebe`.
-Steps 2–4 are held** until bob-b confirms both branches contain it. The spec question was
+**State: steps 1–4 done and committed; gate met** (full suite 1,139 pass / 0 fail). One
+pre-existing A1 snapshot race needs a decision (open question 1). The spec correction (beta
+`fcd1fd4`) was merged in `efe6ebe`; steps 2–4 were released at status `6992179`. The spec question
+was
 `.plan-execution/status/11-12-ISSUE-A2-turn-events.md` is corrected on beta and both branches have
 brought the correction in. That question: `TurnEvent = TurnStarted | TurnTook`, versus
 "`turn_started` is the only turn event the controller reports".
@@ -92,6 +94,147 @@ at the same moments the method read `this.…`. The session itself is not passed
 - **Possible gaps:** the A1 snapshots and the full suite are the evidence that order didn't change;
   no new tests were added in step 1 (the brief asks for none).
 
-## Steps 2–4
+## Commits (A2)
 
-Not started (held; see above).
+| Commit | Step | Content |
+| --- | --- | --- |
+| `0383681` | 1 | `runPrompt` moved to `src/conversation-turns/` |
+| `b5d13a9` | 2 | `src/conversation-controller/contracts.ts`, `index.ts` |
+| `d8c1fe2` | 3 | `AgentController` turn methods; `SupervisedProvider` moved; `supervisedPrompt` takes a provider |
+| `47d9931` | 4 | `AgentSession` drives turns through `send`; turn context; `cause`; `abandonTurn`; new tests |
+| `cffce98` | 4, snapshot-only | A1 snapshots gain `cause` on `turn_started`: **237 lines added, 0 removed**, all inside `cause` blocks (39 blocks × 6 lines, plus one extra id for each mode's combined steer run) |
+
+Between `47d9931` and `cffce98` the A1 characterization fails only on the missing `cause` (the
+brief puts the snapshot change in its own commit). The gate is on `cffce98` and later.
+
+## Step 2: contracts (`b5d13a9`)
+
+`src/conversation-controller/contracts.ts`:
+- **Members:** `ConversationController`'s turn members (`send(run): Promise<void>`, `subscribeTurns`
+  with `TurnEvent`, `prepareTurn`, `abandonTurn`, `subscribeOutput`, `cancel`, `forceStop`, optional
+  `prepareInternalPrompt`).
+- **Types:** `TurnRun` (optional `turnId`), `TurnContent`, `PreparedTurn`, `TurnCause`,
+  `TurnStarted`, `TurnTook`, `TurnEvent`, `StartResult`, `ControllerStartEvent`.
+- **Doc comments** follow the corrected wording: the controller reports only the start of turns
+  (and `turn_took` for backend-scheduled ones), never their end.
+- **Not here yet:** the lifecycle, settings and capability members, and `implements`, are B1's (the
+  file says so).
+
+Gate: typecheck clean.
+
+## Step 3: `AgentController` turn methods (`d8c1fe2`)
+
+- **`send(run)`:**
+  - requires `turnId` (error: "send: a session-scheduled run requires its turnId");
+  - throws on an empty or repeated message id list;
+  - records the turn as reported and calls the turn listeners synchronously with `turn_started`
+    (`sentBySession: true`, cause = the run's message ids);
+  - returns `Promise.resolve()`.
+- **`prepareTurn(turnId, content)`** marks the turn executed and returns a `PreparedTurn`:
+  - `live: true`;
+  - `prompt()` calls today's `prompt({ ...content.input, handlers: content.handlers })`;
+  - `subscribeOutput`, `cancel` and `forceStop` are the controller's own.
+  - It starts nothing.
+- **`prepareInternalPrompt(content)`:** the same, without bookkeeping.
+- **`abandonTurn`:** removes the turn from the reported set; idempotent; never stops work.
+- **`SupervisedProvider`** moved to `src/operations/contracts.ts`; `supervisor.ts` re-exports it.
+- **`supervisedPrompt`** takes a `SupervisedProvider` instead of a closure. The turn passes
+  `controller.prepareTurn(...)`; the internal prompt passes
+  `controller.prepareInternalPrompt({ input: { text }, handlers: {} })`. `OperationSupervisor` is
+  unchanged and still subscribes before calling `prompt()`.
+- **`prompt`** stays.
+
+Gate: typecheck clean; A1 snapshots unchanged (three runs); full suite 1,132 pass / 0 fail, 91.3 s.
+
+## Step 4: the session drives turns (`47d9931`, `cffce98`)
+
+- **`pump`'s prompt branch**, in order:
+  1. `steering.prepareRun`, `steering.turnStarted` (unchanged);
+  2. build the run (`turnRunOf`: turn id = first message id, `messageIds` = every original message);
+  3. check it (`checkTurnRun`);
+  4. register `sentRuns[turnId]`;
+  5. `await controller.send(run)`. The controller reports `turn_started` inside the call, and the
+     session's listener emits the public `turn_started { turnId, cause }`, at the same point in the
+     sequence as before (after `turnStarted`, before `ensureProvider`);
+  6. then `ensureProvider`, delivery report, `runTurn({ turnId, cause, messages: prompt })`,
+     `turn_completed`;
+  7. on failure: `controller.abandonTurn(turnId, err)` (idempotent: a no-op once the turn was
+     prepared), then `turn_failed`, as before;
+  8. `sentRuns` cleared in `finally`.
+- **The listener** is bound in `bindController` like the other controller subscriptions, guarded
+  by `this.controller === controller`:
+  - `turn_took`: logged and ignored (B2);
+  - a turn with `sentBySession: false`: logged and abandoned (B2);
+  - a report for a turn the session didn't send: logged.
+- **`runTurn(ctx, turn: TurnContext)`** with `{ turnId, cause, messages? }`. Today's preparation runs
+  from `messages`; a turn without messages throws (B2; no ACP path reaches it). `recording.ts` now
+  takes the turn id and the consumer's handlers rather than the queue item.
+- **Public:** `turn_started` gains `cause: TurnCause` (`agent-conversation-contracts.ts`).
+- **Completion** stays after finalization; no phase moved.
+
+**New tests** (`test/conversation-turns/turn-path.test.ts`, 7):
+- a combined steer run: `turn_started` causes are `[first]` and `[a, b]`; user record ids are
+  `first:user`, `a:user`, `a:user:2`;
+- a provider-connection failure: `abandonTurn` is called once with the turn id, `prepareTurn` never,
+  events `turn_started, turn_failed`, and the prompt rejects;
+- a finalization failure (`afterPrompt` throws after the provider finished): `turn_failed`, no
+  `turn_completed`;
+- a config change queued during a slow `afterPrompt`: order `afterPrompt:start`, `afterPrompt:end`,
+  `turn_completed`, `configuration_started`. A 100 ms window inside `afterPrompt` gives a wrong
+  implementation the chance to start early; checking that something does not happen needs a
+  bounded window;
+- invalid runs: the session check refuses an empty run, a repeated id, an unknown id, and a turn
+  id that is not the first message's id;
+- the run ids of single and combined prompts;
+- the controller refuses a run without a turn id, with repeated ids, or empty. A valid run reports
+  `turn_started` synchronously inside `send` and resolves, and `abandonTurn` is idempotent.
+
+The two `afterPrompt` tests wrap the Agent-owned conversation's private `ownerLifecycle.afterPrompt`
+(a cast). That is the only seam for a slow or failing finalization without touching `src/`.
+
+**Gate:**
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean (new test files clean under the temporary tsconfig) |
+| characterization + turn-path, three runs without update | 42 pass each (14.1 s, 13.7 s, 14.0 s); snapshot file unchanged |
+| full suite `bun test` | **1,139 pass, 0 fail; 114 files; 104.6 s** (1,132 + 7) |
+| `agent-session.ts` | **4,594 lines** (5,022 before A2; 4,546 after step 1; +48 in step 4 for the context's turn wiring, the turn listener and `sentRuns`). Under 5,022, but ~44 over the spec's "about 4,550" expectation |
+
+**Order of operations:** no reordering. One added scheduling point: `await controller.send(run)`
+(an already resolved promise) before `ensureProvider`. Every A1 snapshot matched apart from
+`cause`, and the race below is not made more frequent by it (measured below).
+
+## Open questions
+
+1. **A pre-existing order race in an A1 snapshot (the managed combined-steer case).** While
+   generating the `cause`-only snapshot, one regeneration put the cancelled first turn's
+   `metering_recorded` event after a `presentation_recorded` (the settled `read-0` tool) instead of
+   before it. I discarded that regeneration; the committed one has 0 removed lines.
+   - **Measured on the unchanged A1 gate commit** (`9de0ca3`, from a `git archive` copy):
+     **8 of 80** runs of `-t "managed two steer"` flip it.
+   - **On A2** (`cffce98`): **3 of 65**.
+   - **So it predates A2** and A2 doesn't make it worse. A1's 14 runs didn't catch it.
+   - **Cause:** in managed mode the tool's settled presentation is written through the
+     presentation queue (asynchronous), while `closeOperation` emits `metering_recorded` directly.
+     When the steer cancel lands right at the tool boundary, the two race. It's the same class as
+     A1's P2.
+   - **No test barrier pins the dominant order** (metering first): the only thing a test can hold
+     back is the provider's reply, which would force the minority order.
+   - **Options for the owner:** (a) a `src/` change ordering the two (out of A2's scope; would change
+     the turn path's order); (b) capture these two event kinds in separate per-kind sequences for
+     this case. That's a weaker comparison and arguably loosening, so it needs an explicit decision;
+     (c) accept a known intermittent failure (about 1 in 10–20 runs of that case; the full suite was
+     green in every run here).
+   - **Until decided:** the gate can occasionally fail on this case. It would show exactly this
+     diff, not an A2 regression.
+2. **`agent-session.ts` is 4,594 lines, not ~4,550.** The spec's hard limit (shorter than 5,022) holds.
+   B1 will move or retype more of the session.
+
+## Gaps and limitations
+
+- `send` accepting a run is not separately observable for the `HarnessController` (it resolves
+  at once); the backend-scheduled semantics (the queue operation ending at acceptance) are B2's.
+- The unknown-id check compares the run with the session's own run (built from its queue items),
+  so for ACP it guards against a bug in building the run, not against external input.
+- The "config waits for finalization" test proves the order over a 100 ms window.
