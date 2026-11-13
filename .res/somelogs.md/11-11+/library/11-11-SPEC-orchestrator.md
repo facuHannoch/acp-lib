@@ -1,7 +1,7 @@
 # Orchestrator and worker pool
 
 Status: agreed, not started. Written 2026-11-11; model restated and grounded in code 2026-11-12; review 1 on
-2026-11-13 (aligned with the integration spec; no implementation plan yet). Third in the order
+2026-11-13 (aligned with the integration spec); implementation plan written, not yet reviewed. Third in the order
 (`../11-11-NOTE-overview.md`): after the controller interface and integration stage 2a, whose turn events, native
 delivery and permission events it uses. Its core is still tested through the consumer API with fake workers, with
 no harness and no provider key; with 2a in place, the way back is also tested end to end against native channels
@@ -359,21 +359,133 @@ src/persistence/    the optional workers? repository (WorkerPersistence) with ca
 - Tests: `test/orchestrator/` with a fake worker conversation (scripted turn ends, permission requests, crashes) and a
   temp-file SQLite.
 
-## Steps
+## Implementation plan
 
-0. The delegation route: `delegation/*` callbacks to the orchestrator, results mapped back (tested with a fake
-   harness client first, then with `harness serve` once harness part 2 has the delegation tools).
-1. The `workers` table and repository; `open`, `send` (idle), `check`, `list` over fake workers; slots and LRU
-   eviction; consumer API and events.
-2. Busy rules: steer from the conversation that gave the running work, the `busy` answer, `redirect` with the
-   redirected item.
-3. Policy checks (`use`, `scope`, `redirect`, `maxOpen`) and the worker depth limit.
-4. Delivery port and the way back (reply, failure, interrupted): the native half from integration 2a, the ACP half
-   here (out-of-band items with kind and sender); tested with a test port, then against a native channel.
-5. Permission forwarding: levels, deadline, stripping allow-always.
-6. `stop`, `drop`, idle stop, restart rebuild.
-7. One run with real throwaway ACP workers on a cheap model: a reply reaches the delegating conversation, a forwarded
-   permission is answered, a redirect is reported. Sessions deleted afterwards.
+Written 2026-11-13; not yet reviewed. Seven briefs, each about one agent run, run in order by one trio
+(`../.plan-execution/plan.md`; its code-quality and triage rules apply).
+
+**Dependencies.** Starts after integration stage 2a is merged: it uses the turn-based controller interface, the
+permission events and `answerPermission` (integration N2), the permission matcher with `worker:` rules (N0), the
+native delivery port (N9), and the optional-repository pattern (`channels?`, N4). O1–O5 need no harness: workers are
+ordinary conversations on the existing offline fixture ACP agents (`test/fixtures/`: `steer-agent`,
+`permission-agent`, `stalling-prompt-agent`, …), so they are tested as real conversations, not fakes. O6 needs harness
+part 2 (the delegation tools) for its end-to-end step.
+
+**Common to every brief.** Clean-copy gates (`bun run typecheck`, full `bun test`, output saved); the integration
+spec's final gate is the baseline; no edit to `src/agent-session.ts`; no live harness runs except O6's step 3, with
+the owner's authorization.
+
+### The code as it is (for these briefs)
+
+Read on `beta` 2026-11-13; line numbers move once the controller-interface and integration work land.
+
+- **Conversation manager** (`src/agent/conversation-manager.ts`): `create` (147), `open` (383), `list` (581),
+  `delete` (617), `appendAssistantMessage` (673). Stop is the conversation's own.
+- **Interrupt:** `interrupt({ clearQueue })` on the conversation (`src/agent-client.ts:15`, `:52`).
+- **Events:** `agent.events`, an `AgentEventBus` (`src/agent.ts:105`).
+- **Identity calls:** `agent.identity.load` before each prompt (`src/agent/persisted-lifecycle.ts:96`) and
+  `agent.identity.update` after each committed batch (`src/agent/record-capture.ts:44`): where worker conversations are
+  skipped.
+- **Out-of-band messages:** `src/out-of-band-messages.ts` (`pendingOutOfBandMessages`, `composeProviderParts`):
+  the ACP half of delivery.
+- **Record kinds** (`src/persistence/records.ts:507`): `header`, `operation`, `reasoning`, `activity`,
+  `configuration`, `permission`, `transition`, `metering_reference`, `lifecycle`, `cancellation`. **There is no
+  `agent_action` kind** (What it keeps assumes one): brief G decides whether an existing kind fits the delegation
+  facts or they are left to the events and the `workers` row in v1.
+- **Persistence:** optional repositories with capability flags (`src/persistence/backend.ts`), as `channels?`.
+
+### Brief G: grounding
+
+The implementer checks The code as it is and every reuse point in the briefs against the code after integration 2a
+(the delivery port's real shape, the permission events, the matcher's `worker:` prefix, the `channels?` pattern),
+decides the `agent_action` question with a recommendation, and reports what moved or doesn't exist
+(`library/reports/<date>-REPORT-OG.md`). Corrections go to the spec owner before O1.
+
+### Brief O1: the pool and the workers table
+
+**Scope:** steps 1–4.
+
+1. **The `workers?` repository** with `capabilities.workers`, its SQLite implementation (schema 18, upgrade from 17,
+   tested on a version-17 database); the orchestrator refused at `Agent` construction on a backend without it.
+   **Gate:** suite green; the upgrade test.
+2. **The worker marker:** worker conversations created with `role: "worker"`; identity `load`, `update` and member
+   registration skip them; `agent.conversations.list()` shows the role. **Gate:** a worker's records never reach the
+   identity runtime; its prompts get no preamble.
+3. **`open`, `send` (to an idle worker), `check`, `list`** over workers on fixture agents; slots (`workers.limit`),
+   pool operations one at a time per `Agent`, LRU eviction of idle workers, reload on the next send; `no_worker_free`
+   with the listing. **Gate:** tests for each, including two opens racing for the last slot.
+4. **The consumer API** (`agent.workers.list`, `check`, `stop`, `delete`) and the events. **Gate:** a consumer lists
+   and stops every worker.
+
+**Done:** report commits, the schema change, each operation and its test.
+**Risks:** a worker reaching the identity (sign: a worker's text in a preamble); the gate is the guard.
+
+### Brief O2: busy rules and policy
+
+**Scope:** steps 1–2.
+
+1. **Busy rules:** steer when the same conversation gave the running work; `busy` with the listing otherwise;
+   `redirect: true` steers, moves `last_conversation`, and pushes `worker_redirected` to the previous one. **Gate:**
+   each case, with two conversations on one worker.
+2. **Policy checks:** `use`, `scope`, `redirect` (also gating stop by others and drop), `maxOpen`; the worker policy's
+   delegation off and the depth limit. **Gate:** a refusal for each.
+
+**Done:** report commits and each case.
+
+### Brief O3: the way back
+
+**Scope:** steps 1–2.
+
+1. **The delivery port** (`src/orchestrator/contracts.ts`): the native half is integration's (N9); the ACP half here,
+   out-of-band messages with a kind and a sender in their metadata, delivered with the next prompt. **Gate:** an item
+   reaches a native channel (fake harness client) and an ACP conversation.
+2. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
+   `last_conversation`; a stop asked by the conversation itself produces none; a gone target keeps the reply on the
+   worker (`check`, `list`). **Gate:** each item; a deleted target.
+
+**Done:** report commits and each item.
+
+### Brief O4: permission forwarding
+
+**Scope:** steps 1–2.
+
+1. **The handler** passed with each prompt to a worker: the level from the giving conversation's `worker:` rules
+   (integration N0's matcher); allow and deny answered at once; ask me as `permission_requested` on the giving
+   conversation, marked with the worker (integration N2); ask the agent as a `permission_request` item; a giving
+   conversation that doesn't answer permissions gets its default at once. **Gate:** each level; the timeout; a
+   headless giving conversation.
+2. **Allow always:** stripped from the options shown when a non-owner conversation is asked; automatic allow follows
+   the auto-approve rule. **Gate:** both.
+
+**Done:** report commits and each case.
+
+### Brief O5: stop, drop, idle stop, restart
+
+**Scope:** steps 1–3.
+
+1. **`stop`** (`interrupt({ clearQueue })`, allowed for the giver or with `redirect`) and **`drop`** (stop, delete the
+   conversation and provider session, mark the row dropped). **Gate:** each, and a refusal.
+2. **Idle stop:** `workers.idleStopMs` (default 10 minutes, `false` off); the next send reloads; `worker_stopped` with
+   the reason. **Gate:** a worker idle past the limit has no process and reloads on the next send.
+3. **Restart:** workers read from the repository; a turn that started and never ended reported `worker_interrupted`
+   to `last_conversation`; pending permission requests refused. **Gate:** a restart with a busy worker.
+
+**Done:** report commits and each case.
+
+### Brief O6: the delegation route, end to end
+
+**Scope:** steps 1–3.
+
+1. **The route:** `delegation/*` callbacks (`src/native/callbacks.ts`) to the orchestrator, with the turn's
+   `DelegationPolicy` and `WorkerPermissions`; results mapped back (`sent`, `steered`, `busy`, `no_worker_free`,
+   statuses). **Gate:** with the fake harness client.
+2. **Against `harness serve`** (harness part 2's delegation tools, scripted model): delegate, a reply reaching the
+   agent's channel, a forwarded permission, a redirect. **Gate:** each.
+3. **One live run,** with the owner's authorization: real throwaway ACP workers on a cheap model; a reply reaches the
+   delegating conversation, a forwarded permission is answered, a redirect is reported; sessions deleted afterwards.
+   **Gate:** the run's evidence in the report.
+
+**Done:** report commits, the end-to-end evidence.
 
 ## Acceptance
 
@@ -390,6 +502,9 @@ src/persistence/    the optional workers? repository (WorkerPersistence) with ca
 - **Worker costs are metered on the worker's own conversation.** Attributing them to the conversation that gave the
   work is the consumer's, from `last_conversation` and the events.
 - **Headless conversations can't get human approval for worker requests;** they use rules (Flow 4).
+- **All workers are equal:** any conversation whose policy allows `redirect` can take any worker. Workers only the
+  owner may steer are later, as worker kinds a policy can be limited to (how such workers are created, and which
+  policies they accept).
 
 ## Decided in review 1
 
