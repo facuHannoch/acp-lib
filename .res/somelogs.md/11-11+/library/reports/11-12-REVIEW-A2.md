@@ -280,3 +280,100 @@ sorting, or snapshot update is authorized by this review.
 All probes used offline fixture agents and temporary archive copies, with no reviewer
 edits to repository source or snapshots, no implementation checkout, no live harness,
 push, merge into beta, or protected path/worktree/process change. B1 remains held.
+
+## Second follow-up — `babc5b1..b74658d` (2026-11-13)
+
+Reviewed fix `f54dc05` and updated implementer report `b74658d3cc8780aa7610cbf0a14ea4b3992557df`
+against the follow-up above. The earlier findings and test results remain historical evidence.
+
+**Verdict: A2 remains blocked; B1 remains held.** The independent numerical typecheck and
+full-suite checks pass, and the previous three fault probes are addressed on their tested
+paths. A rejected acceptance can still remain unsettled indefinitely while provider
+readiness is pending, as independently reproduced below. The separately escalated A1
+snapshot-order issue remains unresolved; this review does not decide or waive it.
+
+### P2 — A rejected acceptance waits behind a hung provider reconnect
+
+**`src/agent-session.ts:2315`–`:2329`; `src/agent-session.ts:3571`–`:3583`.** The
+session now observes the `send` promise immediately, starts `ensureProvider()` without
+the earlier pre-readiness scheduling gap, and awaits acceptance before dispatch. This
+fixes the previously reproduced false success when readiness resolves. But the awaits
+are sequential: `await this.ensureProvider()` must finish before `await accepted` can
+propagate a rejection already known to the session. The attached empty catch prevents
+an unhandled rejection without settling the prompt.
+
+Independent offline reproduction (`/tmp/controller-a2-rejected-reconnect.ts`): start a
+real detached session on the existing lifecycle fixture configured with
+`LIFECYCLE_HANG_CONTROL=session/load` and persistent fixture state; force-stop the
+provider; wrap the real controller's `send` to synchronously report its normal turn and
+return a rejected acceptance promise; then prompt, causing the provider to reconnect
+and wait on the deliberately unanswered load. After 500ms the prompt remains pending,
+only `turn_started` has been observed, and `acceptedMessages.size` remains 1. Calling
+`stop()` also remains pending after a further second, and the prompt still has not
+settled. The offline probe itself was externally bounded at eight seconds and exited
+with timeout code 124; no live harness was involved.
+
+The send rejection is fault-injected: the unmodified current ACP controller guarantees
+an already-resolved promise after its synchronous report. The hanging reconnect is a
+real existing fixture behavior. This is an interface acceptance-failure and cleanup
+race, not a claim that the unmodified current `AgentController.send` rejects. It
+contradicts the follow-up's requirement that a rejected send cannot leave its prompt
+unsettled and the plan's bounded-wait rule. If reconnect eventually fails first, its
+error can also mask the already-rejected acceptance.
+
+Start provider readiness synchronously to preserve the A1 boundary, but independently
+observe and act on acceptance failure even while readiness is pending. Ensure the turn
+is abandoned, its message and queue settle once, and any concurrently started reconnect
+is safely handled or torn down without late unhandled work. Add a bounded regression for
+rejected acceptance concurrent with held reconnect, including stop/cleanup. A simple
+reordering that reinstates the original force-stop regression is not sufficient.
+
+### Previous finding dispositions
+
+- **Synchronous report then rejected acceptance:** fixed when provider readiness
+  completes. The original fault probe now rejects with `acceptance rejected`, emits
+  `turn_started`, `turn_failed`, and does not complete; the new regression passes.
+  The pending-readiness race above remains open.
+- **Original ACP readiness boundary:** the immediate prompt-then-force-stop probe
+  again matches A1 (`turn_started`, `turn_failed`, rejected prompt). An additional
+  microtask-scheduled force-stop comparison across A1, the prior follow-up, and this
+  commit gave the same failure/event sequence. This covers those boundaries, not all
+  possible operation interleavings.
+- **Known-but-still-queued message:** resolved for the demonstrated malformed run.
+  `src/agent-session.ts:2304` builds an independent queued-ID set; the registry tracks
+  accepted order and dispatched state, and `checkTurnRun` rejects unknown, repeated,
+  already dispatched, still queued, or out-of-order IDs. The prior injected duplicate
+  ownership probe now rejects with `which is still queued`; the committed integration
+  test additionally verifies the queued message subsequently runs once. Inspection
+  confirms combined prompt fan-out reaches each original wrapped `resolve`/`reject`.
+  A separate normal-path probe found registry size zero after success, provider failure,
+  withdrawal, queue-clearing interrupt, combined steering, and stop. Acceptance-order
+  checking is tied to the current FIFO/contiguous-steer policy; a future backend
+  scheduler needs its own explicit semantics.
+- **Gated-test failure cleanup:** resolved. Gate release is in `finally`, and the
+  turn and queued-config promises are observed from creation. In an independent
+  temporary archive, deliberately breaking the phase assertion now produced only that
+  assertion failure in 137.67ms (266ms test process), without an unhandled rejection
+  or `afterEach` timeout. No production source or repository test was modified.
+
+### Independent checks and limitations
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean |
+| Temporary tsconfig including conversation-turn tests | clean |
+| Complete `bun test` | **1,144 pass / 0 fail, 114 files, 35 snapshots, 92.50s** |
+| Turn-path tests in complete run | all 12 pass, including two added regressions |
+| Snapshot/normalizer diff `babc5b1..b74658d` | empty |
+| Snapshot SHA256 | `d25f05a19cadeb8ff2a310ee85fca41d47323576bec64f39eb6025cc844aca1a` |
+| `git diff --check babc5b1..b74658d` | clean |
+| `agent-session.ts` | 4,623 lines, under the 5,022 hard limit |
+
+The complete suite passed on this run. It does not erase the independently observed
+prior full-run Agent-owned internal-command ordering failure, nor resolve the separately
+escalated managed-steer ordering race. No repeated stress run or claim about their
+frequency is made here; no snapshot was changed or regenerated. Tests ran in temporary
+`git archive` copies with offline fixtures. No implementation branch checkout, reviewer
+source edit, live harness, push, merge into beta, or protected path/worktree/process
+change occurred. Return the open acceptance race to the implementer; retain B1 hold
+until the new review and coordinator gate and outstanding owner decisions.
