@@ -179,8 +179,9 @@ only what JSON can't hold: function handlers and backends.
   capabilities and validate the config before the harness runs (integration spec, Configuration known before start).
   The running harness returns the same through `initialize`, which wins if they differ.
 - **Interrupt and the inbox:** an interrupt ends the running turn; items waiting in the inbox stay unless the
-  interrupt asks to drop them, and dropped items are reported (`messages_dropped`). The permission gate's timeout is
-  longer than any host's permission timeout (default 10 minutes), so the host decides first.
+  interrupt asks to drop them, and dropped items are reported (`messages_dropped`). While a host is connected
+  the permission gate waits for its answer with no limit of its own (the host's timeout decides); the gate's own
+  timeout (default 10 minutes) applies standalone or after the host disconnects.
 
 ```json
 {
@@ -254,7 +255,7 @@ only what JSON can't hold: function handlers and backends.
   reach the agent through the back door.
 - **The policy engine is the permission gate.** It decides allow, deny or ask for every call under the turn's
   policy. Ask raises `permission_requested` on the channel (over the protocol, a `permission/request` to the host) and
-  waits for the answer with a timeout, then refuses. The `worker:` rules of the turn's policy travel with each
+  waits for the answer (the host's timeout while a host is connected, else the gate's), then refuses. The `worker:` rules of the turn's policy travel with each
   delegation callback, so the host applies them to that worker's requests; at ask the agent, the request comes back as
   an inbox item and the agent answers with a tool.
 
@@ -364,7 +365,7 @@ delivery      digest(position..now, the turn's policy) → appended to the chann
 ## Storage
 
 **What the protocol's delivery rules need stored** (`../11-12-SPEC-harness-protocol.md`, Delivery): the item ids each
-channel has stored (so a repeated push is recognized), and a record of each turn (id, items taken, outcome, usage,
+channel has stored (so a repeated push is recognized), and a record of each turn (id, a session-wide position, items taken, outcome, usage,
 assistant messages) kept long enough for reconciliation at start (`session.recentTurns`); a turn running when the
 process died is recorded as `running_at_crash` when the session next loads.
 

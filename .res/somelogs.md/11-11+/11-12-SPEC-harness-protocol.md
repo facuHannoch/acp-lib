@@ -201,6 +201,7 @@ interface Usage {
 
 interface TurnRecord {           // for reconciliation at start (Delivery)
   turnId: TurnId;
+  position: number;              // session-wide, increasing; what `session/load`'s `since` refers to
   items: ItemId[];               // every item the turn took, in order
   outcome: "completed" | "interrupted" | "failed" | "running_at_crash";
   usage: Usage[];
@@ -216,7 +217,7 @@ interface TurnRecord {           // for reconciliation at start (Delivery)
 | --- | --- | --- |
 | `initialize` | `{ protocolVersion, host: { name, version }, callbacks: string[], subscription: Subscription }` (the callbacks the host serves; the connection's default subscription) | `{ protocolVersion, harness: { version }, description: { configOptions, commands, capabilities, policies } }` |
 | `session/create` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState> }` | `{ sessionId }`; fails with `already_exists` |
-| `session/load` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState>, since?: string }` | `{ sessionId, channels: Record<ChannelId, { hasContext, turns: TurnRecord[], waiting: ItemId[] }> }`; fails with `not_found`, `locked` |
+| `session/load` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState>, since?: number }` | `{ sessionId, position: number, channels: Record<ChannelId, { hasContext, turns: TurnRecord[], waiting: ItemId[] }> }`; fails with `not_found`, `locked` |
 | `session/idle` | `{}` | `{ idle: boolean }`: no turn running, no inbox holding items, no hold active |
 | `session/export` | `{}` | `{ bundle }` |
 | `session/import` | `{ sessionId, bundle }` (before any create or load on this process) | `{ sessionId }`; fails with `already_exists` |
@@ -225,8 +226,10 @@ interface TurnRecord {           // for reconciliation at start (Delivery)
   harness applies them before it can start any turn, so nothing runs under an old policy or setting (integration
   spec, Channel changes). `channels` lists only channels with changes; each entry carries the latest value of each
   field.
-- **Reconciliation:** `session/load` returns, for every channel with activity after `since` (the host's last known
-  record time), the turns that ended or were running at a crash, and the items still waiting. The host compares them
+- **Reconciliation:** `session/load` returns, for every channel with turns after `since` (a turn position, not a
+  time: host and harness clocks may differ), the turns that ended or were running at a crash, and the items still
+  waiting; `position` is the session's current highest turn position (a host with no stored position starts from it
+  without reconciling). The host compares them
   with its records and settles what it missed (Delivery).
 - **The session is locked** by `session/create` and `session/load`; a lock whose process is gone is reclaimed.
 
@@ -328,8 +331,8 @@ Every wait is bounded or cancellable (integration spec, Nothing waits forever).
 | Who waits | For | Bound |
 | --- | --- | --- |
 | host | `initialize` and `session/load` after launch | no automatic limit: cancellable by the host (it stops the process); acp-client cancels on `stop()` or close |
-| host | any other request | 30 s by default, longer for `session/export` and `session/import` |
-| harness | a `permission/request` reply | the gate timeout (default 10 min), longer than any host's permission timeout; then refused |
+| host | any other request | no automatic failure: after 30 s (longer for `session/export` and `session/import`) the host reports the harness unresponsive and keeps waiting; cancellable by the host |
+| harness | a `permission/request` reply | while the host is connected, none of its own (the host's permission timeout decides); standalone or after the host disconnects, the gate timeout (default 10 min), then refused |
 | harness | other callbacks | per callback (functions: the tool's timeout; delegation: 30 s) |
 | harness | a hold | its lease; expiry releases it |
 
