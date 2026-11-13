@@ -644,3 +644,148 @@ only temporary test files were altered for the probes. No repository source edit
 implementation branch checkout, live harness, push, merge into beta, or protected
 path/worktree/process change occurred. Numerical gates are green for the runs above;
 the exception-scope and contractual-assertion findings prevent A2 acceptance.
+
+## Final-fixes review — `26c7868` (2026-11-13)
+
+Reviewed consolidated exception `5eeb54c1cb6a1f2253886ddc6e727b70995eaded` and
+report `26c78680b404b421eeb105c555bce9cc21533aad` against beta `95e9cf2`, the
+owner decisions, and prior review `72406be`. The prior report remains historical;
+`1ad325d` was replaced by the consolidated commit and the old implementation head is
+retained on `controller-interface-pre-consolidation-d7303d8`.
+
+**Verdict: the numerical tests pass and the unauthorized bus normalization is fixed,
+but the explicit contractual watcher still has two acceptance gaps and one failure-path
+instrumentation defect. Do not pass A2 yet; B1 remains held.** These are test/evidence
+findings; this review does not claim a newly observed production regression.
+
+### P2 — A provider-dispatched failed turn can have no metering and still pass the explicit check
+
+**`test/conversation-turns/characterization.test.ts:213`–`:239`.** Completed turns
+must have one `metering_recorded`, but for a failed turn that reached the provider,
+`:237`–`:239` explicitly accepts `"not metered"`. The map loop at `:213` checks the
+counts of events that exist; it does not require one for a provider-dispatched failed
+turn. The separate strict snapshot may catch missing metering in a particular captured
+scenario, but the owner specifically requires a separate per-turn assertion of records
+and metering once and metering after provider outcome.
+
+Independent temporary synthetic watcher probe: emit `turn_started`, invoke a controller
+prompt that returns a rejected promise, await the rejection, then emit `turn_failed`
+with **no** metering event. `watchContract.assertRun("detached", {})` returns without
+throwing. This proves the explicit assertion misses the absence. Pre-dispatch failures
+are different: the spec explicitly allows a metering preflight rejection without a
+record. A failure of metering persistence itself may also need a distinct explicitly
+identified case; do not require a nonexistent record in such a case by assumption.
+Require one metering record/event for applicable provider-dispatched failed turns,
+assert its outcome order, and add positive and negative failure-path tests or escalate
+a genuine metering-failure exception for decision.
+
+### P2 — “Final assistant message” assertion accepts only an earlier message
+
+**`test/conversation-turns/characterization.test.ts:178`–`:193`.** In Agent-owned mode,
+`some` accepts any `<turn>:assistant:N` committed record; managed mode accepts any
+terminal assistant transcript line; detached mode compares only a cumulative assistant
+line count with a cumulative ended-turn count. None establishes that the **last**
+assistant message of a multi-message completed turn was recorded before that turn's
+completion. The strict snapshot retains the actual captured records and can catch a
+missing record in the covered fixtures, but that does not make the explicitly required
+per-turn final-message assertion true.
+
+Independent temporary synthetic watcher probe: emit a completed result with two
+assistant messages, provide only the first committed final record, and otherwise
+provide provider-outcome, metering, and completed `afterPrompt` markers. Both
+`violations` and `assertRun` pass. Assert the expected final message/ordinal for the
+specific turn, not just the presence of some earlier message or a global count, and
+include a multi-message negative case. Preserve the real records and sequence checks.
+
+### P2 — A synchronous controller prompt throw is not recorded as an outcome
+
+**`test/conversation-turns/characterization.test.ts:118`–`:125`, `:232`–`:239`.**
+The wrapper records `provider_called` and then calls `prompt(...args)` before attaching
+outcome handlers. If it throws synchronously, no `provider_outcome` marker is recorded;
+the watcher later fails its own assertion even if metering and `turn_failed` are
+correct. This is a real possible controller behavior: `AgentController.prompt` calls
+`requireCurrent` before returning a promise (`src/controller.ts:285`–`:291`), and the
+original immediate-force-stop probe exercises a not-started failure boundary.
+
+Independent temporary synthetic watcher probe: make `prompt()` synchronously throw
+`not connected`, catch it as the supervisor would, then emit metering and `turn_failed`.
+The watcher rejects the timeline because it never recorded an outcome. Record a
+synchronous throw as the outcome while rethrowing the same error, and test it alongside
+promise rejection and forced completion. This is a false test failure / incomplete
+failure-path observation, not an assertion that production swallows the exception.
+
+## Disposition of prior final-review findings
+
+- **Unauthorized Agent-owned bus reorder:** resolved for the probed scope.
+  `canonicalOwnedRecords` now selects the allowed pair from raw record kind, role,
+  status, turn and last-in-progress identity, requires bus IDs in the same raw order,
+  and swaps that exact pair on the bus. Independent seven-test synthetic probe passes:
+  both allowed orders converge; completed/non-assistant/wrong-turn snapshots and
+  intervening records remain distinct; bus disagreement throws; managed three-position
+  forms converge without crossing another turn. The 15 committed pair-rule tests also
+  pass in the focused/full runs. Their representative negative cases are meaningful;
+  the snapshot exception remains narrower for managed user presentations, which is a
+  defensible stronger guard, and nonadjacent alternatives still fail rather than hide
+  other ordering.
+- **Late presentation and `afterPrompt`:** the watcher now checks the complete timeline,
+  rewraps a replacement controller on its first `turn_started`, and observes the
+  Agent-owned `afterPrompt` promise. Independent synthetic negative probes confirm a
+  late presentation, a missing provider outcome, and still-pending `afterPrompt` are
+  rejected; positive probes confirm a replacement controller and a rejected provider
+  promise are observed. The remaining coverage and synchronous-throw gaps are above.
+  The existing real held-finalization test remains an independent ordering check.
+- **Comparison evidence:** the earlier studies now explicitly label missing diagnostics
+  and exit codes unknown and correct their total to 100 A1 plus 100 A2 runs. Study 3
+  retains one complete output log, exit code and 35 raw captures for each of 50 A1 and
+  50 A2 runs; odd/even pairs reverse execution order. I independently read all 100 exit
+  files and logs: 50/50 exit zero on each version, no `(fail)`, `Unhandled`, or
+  `error between tests`, and 35 captures per run. The instrumented A1 and A2 test files
+  are identical and differ from final characterization only by test-name tracking and
+  raw capture; pair-rule/normalize hashes match. Removing 39 allowed cause blocks from
+  the final snapshot exactly reproduces the A1 study snapshot. Independent recount of
+  combined-steer turns and Agent-owned internal-command counts matches the report,
+  including zeros in all three managed positions. Largest reported per-position
+  difference is 2/50; no material shift is evident in these samples, which cannot prove
+  equal rates. Instrumentation, filesystem writes and synchronous transcript checks can
+  affect timing, but are applied to both versions; finite samples and environment remain
+  limitations.
+
+## Snapshot, scope, and accepted reconnect limitation
+
+`cffce98` remains the separate cause-only commit. `5eeb54c` is the single consolidated
+exception commit, containing characterization test, snapshot, pair-rule and its tests;
+no later test/snapshot changes occur through `26c7868`. Its snapshot is byte-identical
+to the previously reviewed exception snapshot; normalization remains unchanged.
+The accepted Agent-owned pair's two actual sequence numbers are checked on raw records
+for order/uniqueness, then their association with the two allowed records may be
+canonicalized; other sequence/content/ID assertions remain strict. The managed rule
+moves metering only across contiguous same-turn response presentations, never user
+messages, unrelated events or another turn.
+
+The owner-accepted existing ACP connect/reconnect hang is a named bounded-wait
+exception, not a general exemption. The previously reviewed prompt rejection and
+non-overlapping reconnect behavior is unchanged since `1ec6710`; no source changes
+occur in the dedicated exception or final report commits. Earlier event-gate cleanup
+fix and accepted stuck-connect behavior remain as previously documented. No new
+snapshot-order waiver is inferred.
+
+## Independent verification
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean |
+| Temporary tsconfig including turn tests, pair-rule and lifecycle fixture | clean |
+| Complete offline `bun test` | **1,160 pass / 0 fail, 115 files, 35 snapshots, 92.87s** |
+| Characterization + turn-path + pair-rule | **63 pass / 0 fail, 35 snapshots, 15.72s** |
+| Independent pair-rule positive/negative probes | 7 pass / 0 fail |
+| Watcher synthetic probes | late presentation, missing outcome and pending finalization are rejected; replacement controller and rejected promise observed; three gaps reproduced above |
+| Study 3 retained evidence | 100/100 exit zero; 35 captures each; selected per-turn counts independently match |
+| Snapshot SHA256 | `47686d4ca0451cf89802c9df52d22d453c238f811b9864cd72358663bfd971e6` |
+| Snapshot identity / `git diff --check` | prior exception snapshot identical; diff check clean |
+
+Full/focused tests and synthetic probes ran in temporary `git archive` copies with
+offline fixtures; only temporary test files were changed for probes. No repository
+source edits, implementation branch checkout, live harness, push, merge into beta, or
+protected path/worktree/process change occurred. Numerical tests are green; the
+explicit contractual-assertion findings must be resolved before the coordinator can
+pass A2.
