@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Final independent review | Implementation `d7303d8`, dedicated exception `1ad325d`; 50-run A1/A2 comparisons reported separately for all managed orders. Review assigned; coordinator gate follows any fixes. |
+| A2 | Final review blockers returned | Review `72406be` found P1 bus exception exceeds approved scope and P2 gaps in contractual assertions and comparison evidence. Fix assignment `tasks/controller-interface-A2-final-review-fixes.md`; independent review and coordinator gate pending. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
