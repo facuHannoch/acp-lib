@@ -11,3 +11,5 @@ Follow-up review `8b4baf6`: a complete independent run at `babc5b1` failed the A
 Implementer report `1ec6710` sampled 20 runs of each filtered case on unchanged A1 `9de0ca3` and current A2 `9e0f457`: Agent-owned internal command failed 3/20 and 0/20 respectively; managed combined steer failed 1/20 and 3/20. This supports both mismatches existing on A1; small samples do not establish equal rates or common causes. Independent reviewer is assessing.
 
 Review `a661a2d` records the latest A1 and A2 20-run sample as implementer-reported, not independently rerun, and retains the owner decision. Its complete suite passed 1,145/0; that one passing run does not establish snapshot stability.
+
+Owner decision: beta `fd9ec24` (2026-11-13); see `tasks/controller-interface-A2-owner-decisions.md`. This supersedes the pending-decision language above.
