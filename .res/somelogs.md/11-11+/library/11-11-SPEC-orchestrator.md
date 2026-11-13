@@ -1,6 +1,7 @@
 # Orchestrator and worker pool
 
-Status: agreed, not started. Written 2026-11-11; model restated and grounded in code 2026-11-12. Third in the order
+Status: agreed, not started. Written 2026-11-11; model restated and grounded in code 2026-11-12; review 1 on
+2026-11-13 (aligned with the integration spec; no implementation plan yet). Third in the order
 (`../11-11-NOTE-overview.md`): after the controller interface and integration stage 2a, whose turn events, native
 delivery and permission events it uses. Its core is still tested through the consumer API with fake workers, with
 no harness and no provider key; with 2a in place, the way back is also tested end to end against native channels
@@ -62,8 +63,8 @@ Nothing about workers goes into the system prompt; the tool descriptions say how
 
 | It uses | For |
 | --- | --- |
-| The `Agent`'s conversation manager (`create`, `open`, `list`, `delete`, stop; `src/agent/conversation-manager.ts`) | creating, reloading and deleting workers; nothing new in the manager |
-| The `workers` table (core schema) | the little it must remember |
+| The `Agent`'s conversation manager (`create`, `open`, `list`, `delete`; `src/agent/conversation-manager.ts`) and the conversation's own `stop` | creating, reloading, stopping and deleting workers; nothing new in the manager |
+| An optional `workers?` persistence repository | the little it must remember (What it keeps) |
 | A delivery port (an interface it defines) | the way back into agent conversations |
 | The `Agent` event bus | events for the consumer |
 
@@ -84,7 +85,15 @@ behaves as today.
 ## Roles
 
 - An **agent** conversation is one run by the native harness (a channel of its session). A **worker** is an ordinary
-  conversation the pool runs for the entity, usually on an external harness (Codex, Claude), possibly native.
+  conversation the pool runs for the entity, on an external ACP harness (Codex, Claude, OpenCode, Grok). **No native
+  workers in v1;** later, the simplest path is probably the native harness speaking ACP (with a few extensions), so it
+  runs as a worker like any other harness.
+- **Workers are not part of the agent's identity** (provisional, 2026-11-13). They are tools the agent uses: a
+  worker's transcript is never reported to the agent's timeline, and its prompts never get the agent's identity
+  preamble. What reaches the agent from a worker is what comes back as items (replies, failures), recorded on the
+  agent's own conversation. Worker conversations are marked (`role: "worker"`, name provisional), so identity
+  reporting, preparing and member registration skip them, and consumers can tell them apart in
+  `agent.conversations.list()`.
 - **Workers belong to the entity, not to a conversation.** Two conversations with the same agent are the same agent
   talking twice, so every conversation of the entity sees and can use every worker unless its policy says otherwise.
 - **The agent owns the conversation and the decisions taken with the user; the worker owns the execution.** Nobody
@@ -95,7 +104,9 @@ behaves as today.
 
 Everything about a worker's progress is already in the worker's own conversation (its state, operation, messages,
 tool calls, records); `check` and `list` read it from there. The orchestrator stores only what nobody else knows and
-what must survive a restart, in one core table (normal schema migration, like `provider_sessions`):
+what must survive a restart, in an optional `workers?` repository with a `capabilities.workers` flag (the same
+pattern as `identity?` and the integration spec's `channels?`; SQLite implements it, schema version 18; a custom
+backend without it can't enable the orchestrator: creating the `Agent` fails with a clear error):
 
 ```
 workers
@@ -241,11 +252,18 @@ w1 wants to run `bun test` → ACP request_permission → acp-client
   w1 continues
 ```
 
-- When the conversation that gave the work can't approve (a guest), the request goes to a consumer-chosen
-  conversation or is refused. Ask the agent is never the default: the default is Ask me, or Deny where no human can
-  answer.
+- **When the conversation that gave the work doesn't answer permissions** (`answersPermissions: false`, for example
+  one driven by an API integration with no human watching), its permission default applies at once, usually deny:
+  the rule every conversation follows (integration spec, Permissions). No routing to another conversation; a headless
+  conversation gets worker approvals through rules instead (the policy allows the specific commands). Ask the agent
+  is never the default: the default is Ask me, or Deny where no human can answer.
+- **Forwarded requests use the conversation's own events:** `permission_requested` on the giving conversation, marked
+  with the worker, answered with its `answerPermission`, closed by `permission_resolved`. No separate worker
+  permission events.
 - **Allow always outlives the request** (the worker's harness keeps it for later work from others), so it is stripped
-  from what non-owner conversations are offered.
+  from the options shown when a non-owner conversation is *asked*. Automatic allow (the level is allow) follows the
+  auto-approve rule, `allow_once` else `allow_always` (`rules/11-13-RULES-permission-auto-approve.md`). Guests can't
+  delegate at all (`scope: "none"`), so this concerns trusted conversations.
 - **Today's default refuses everything** (`defaultPermission` defaults to `"cancel"`, `src/agent-session.ts:625`), so
   forwarding is needed before workers can do real work.
 - Approve by exact tool or command, never by substring. The request shape is made neutral by the controller-interface
@@ -256,11 +274,15 @@ w1 wants to run `bun test` → ACP request_permission → acp-client
 - **`stop(w1)`** interrupts its turn (`interrupt()` with `clearQueue`); allowed for the conversation that gave the
   running work, or a policy with `redirect`.
 - **`drop(w1)`** stops it, deletes its conversation and provider session, and marks the row dropped.
+- **Idle stop:** a worker idle for `workers.idleStopMs` (default 10 minutes; `false` turns it off) has its process
+  stopped, so a worker that isn't working holds no connection. Its handle, conversation and row stay; the next send
+  reloads it, as after eviction. A reload may lose the provider's cache, so the next message to it costs a little
+  more.
 - **Eviction:** when all N slots are taken and one is needed, the least recently used idle worker is stopped. Its
   handle stays valid; the next send reloads it (for an ACP worker, `session/load` where the adapter supports it,
-  losing only the provider cache; otherwise context is rebuilt from the transcript). Eviction only under pressure in
-  v1.
-- **Deletion** also by an optional retention rule (off by default) or `agent.workers.delete(id)`.
+  losing only the provider cache; otherwise context is rebuilt from the transcript).
+- **Deletion** only explicitly: `drop` by the agent, or `agent.workers.delete(id)` by the consumer. No retention rule
+  in v1.
 
 ## Flow 6: restart
 
@@ -275,7 +297,7 @@ acp-client starts
 
 ## Slots and scheduling
 
-- `workers.limit` counts live workers; optional limits per kind; native workers count apart (API calls, no process).
+- `workers.limit` counts live workers (those with a running process); optional limits per kind.
 - Pool operations (acquire, evict, drop) run one at a time per `Agent`, so two conversations can't race for the last
   slot. Prompts to one worker are serialized by that worker conversation's own queue.
 - **Only the pool prompts workers,** so the slot count holds; the consumer can read and stop them.
@@ -284,8 +306,9 @@ acp-client starts
 ## Events
 
 `worker_opened`, `worker_busy`, `worker_idle`, `worker_replied`, `worker_failed`, `worker_redirected`,
-`worker_permission_requested`, `worker_permission_resolved`, `worker_evicted`, `worker_reloaded`, `worker_dropped`.
-Each carries the handle, the conversation id, `opened_by` and `last_conversation`. Facts, never user-facing text.
+`worker_stopped` (idle stop or eviction, with which), `worker_reloaded`, `worker_dropped`. Each carries the handle,
+the conversation id, `opened_by` and `last_conversation`. Facts, never user-facing text. Permission requests use the
+giving conversation's own `permission_requested` and `permission_resolved` (Flow 4).
 
 ## Configuration
 
@@ -293,8 +316,8 @@ Each carries the handle, the conversation id, `opened_by` and `last_conversation
 new Agent({
   // ...
   orchestrator: {
-    workers: { adapterId: "codex", cwd: "/work", limit: 2 },  // the pool adapter, else the Agent's default
-    retention: { idleDays: 30 },                              // off by default
+    workers: { adapterId: "codex", cwd: "/work", limit: 2, idleStopMs: 600_000 },  // the pool adapter, else the
+                                                              // Agent's default (an ACP adapter); idle stop 10 min
   },
 });
 ```
@@ -325,12 +348,13 @@ src/orchestrator/
   restart.ts        rebuild on start
   consumer-api.ts   agent.workers.*
   index.ts
-src/persistence/    the workers table: a schema migration and a small repository (WorkerPersistence)
+src/persistence/    the optional workers? repository (WorkerPersistence) with capabilities.workers; SQLite schema 18
 ```
 
 - **Touches existing code:** `src/agent.ts` (construct when configured, expose `agent.workers`); `src/agent/config.ts`
-  (the `orchestrator` option); `src/persistence/` (one table, one repository, like the others); `src/index.ts`
-  (exports). The conversation manager is used through its public methods; `agent-session.ts` is not edited.
+  (the `orchestrator` option); `src/persistence/` (one optional repository, like the others); the worker marker on
+  conversations, and identity skipping marked conversations (`src/agent/persisted-lifecycle.ts`,
+  `src/agent/record-capture.ts`); `src/index.ts` (exports). The conversation manager is used through its public methods; `agent-session.ts` is not edited.
 - Each file under ~400 lines; the module under ~2,000.
 - Tests: `test/orchestrator/` with a fake worker conversation (scripted turn ends, permission requests, crashes) and a
   temp-file SQLite.
@@ -347,7 +371,7 @@ src/persistence/    the workers table: a schema migration and a small repository
 4. Delivery port and the way back (reply, failure, interrupted): the native half from integration 2a, the ACP half
    here (out-of-band items with kind and sender); tested with a test port, then against a native channel.
 5. Permission forwarding: levels, deadline, stripping allow-always.
-6. `stop`, `drop`, restart rebuild, retention.
+6. `stop`, `drop`, idle stop, restart rebuild.
 7. One run with real throwaway ACP workers on a cheap model: a reply reaches the delegating conversation, a forwarded
    permission is answered, a redirect is reported. Sessions deleted afterwards.
 
@@ -358,11 +382,21 @@ src/persistence/    the workers table: a schema migration and a small repository
 - A consumer lists and stops every worker.
 - No edit to `src/agent-session.ts`.
 
+## Limitations
+
+- **No native workers in v1** (Roles).
+- **Eviction picks the least recently used idle worker,** not the one cheapest to reload (Codex and Claude reload
+  their session from the provider; a harness that can't has its history re-sent). Preferring cheap reloads is later.
+- **Worker costs are metered on the worker's own conversation.** Attributing them to the conversation that gave the
+  work is the consumer's, from `last_conversation` and the events.
+- **Headless conversations can't get human approval for worker requests;** they use rules (Flow 4).
+
+## Decided in review 1
+
+- Only the pool prompts workers (Slots); the consumer reads, stops and deletes them.
+- Whether a `worker_redirected` item wakes the agent is the harness's per-kind default, as for every item.
+
 ## Open
 
-- [ ] The default target for an Ask me request that the conversation which gave the work can't answer.
-- [ ] Whether only the pool may wake a worker (recommended), or the consumer may prompt one directly.
-- [ ] Eviction preferring adapters that reload cheaply.
-- [ ] Linking worker usage to the conversation that gave the work, for cost roll-up.
-- [ ] Whether the redirected item always wakes, or only when the previous work came from a human.
-- [ ] Measurement: does reloading a harness session keep cache reads (Codex, Claude, OpenCode; throwaway sessions).
+- [ ] Measurement, later: does reloading a harness session keep cache reads (Codex, Claude, OpenCode; throwaway
+      sessions).
