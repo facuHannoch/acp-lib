@@ -440,7 +440,9 @@ metering), and a cap is deferred (`todos/11-13-TODO-spending-cap.md`).
   settles their prompts with the cancelled result, as for ACP.
 - **Withdraw** of a message the harness already accepted asks the harness to remove it from the inbox; it succeeds
   only if the harness confirms the message wasn't taken yet. With no answer it waits like any request (A harness that
-  doesn't answer); it never guesses. Before the push is accepted, withdraw is local, as today.
+  doesn't answer); it never guesses. Withdraw is local only while the push **hasn't been sent**; once sent (even
+  before its acknowledgement) it goes through the harness, which sees the push before the withdraw (one ordered
+  connection), so "withdrawn" is never reported for a message the agent is working on.
 - **Exclusive operations hold the channel first:** handing the conversation off out of native, stopping it, deleting
   it, and resetting it (a cleared transcript). Handoff out and reset wait for a running turn to end; stop and delete
   interrupt it. `setPolicy` and `setConfig` are not exclusive: they apply from the next item or model call. Every
@@ -1233,6 +1235,29 @@ acceptance test.
 - `message_participant` from one native conversation appears on the other conversation as an appended assistant
   message and on its events.
 - Internal inference runs over `http` with a key, and over the disposable session without one.
+
+## Limitations
+
+Accepted for v1, not designed around (owner, 2026-11-13: edge cases that already existed before, or that can't leave
+the agent or a channel stuck nor silently lose data in normal operation, are recorded here rather than solved).
+
+- **Stopping a native conversation unloads it; it doesn't suspend its channel.** The harness may still run turns on
+  that channel (a worker reply, another channel's trigger), which reload the conversation to record them. To make a
+  channel quiet: delete it, or change its policy.
+- **Usage between turns can be missed around a crash.** A model call outside a turn (a compaction between turns) whose
+  usage hadn't reached acp-client when the harness crashed isn't recovered; the harness's own usage ledger still has
+  it. Calls inside turns are recovered with their turn.
+- **Concurrent spending overshoots.** Limits are the consumer's, outside the library (a cap is deferred,
+  `todos/11-13-TODO-spending-cap.md`); two channels running at once can both pass a consumer's check.
+- **The two logs can disagree.** After a persistence failure acp-client's records have gaps while the harness's
+  context is complete (Native admission).
+- **No sync of the harness home in v1.** An isolated harness on an ephemeral home loses the entity unless the consumer
+  mounts a durable volume (Where the session lives).
+- **Waits without automatic limits.** A start or connect that never answers, and a request the harness never answers,
+  wait until the consumer cancels them; the library reports (`agent.harness.state`, `harness_unresponsive`) but
+  doesn't decide (Nothing waits forever).
+- **Permission requests in a held turn** reach the consumer only when the session runs the turn, with the clock
+  already running (Permissions).
 
 ## Open
 

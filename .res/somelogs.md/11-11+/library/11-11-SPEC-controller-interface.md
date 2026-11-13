@@ -695,7 +695,9 @@ How the guarantees that today depend on acp-client starting every turn are kept:
 3. **Costs.** The harness reports every model call's usage, in turns and outside them (compaction), and acp-client
    meters each at billing grade (integration spec, Billing-grade metering). Spending limits are the consumer's,
    outside; a cap enforced by the library is deferred (`todos/11-13-TODO-spending-cap.md`, revised 2026-11-13).
-4. **A stopped or deleted conversation starts nothing new:** its channel is closed.
+4. **A deleted conversation starts nothing new:** its channel is closed. A stopped one is only unloaded: the backend
+   may still run turns on its channel (a worker reply, another channel's trigger), which reload it (integration spec,
+   Limitations).
 
 Where it is built: holds in harness part 1 (protocol `channel/hold`, `channel/release`);
 their use in integration stage 2a. This spec only needs the session to accept turns

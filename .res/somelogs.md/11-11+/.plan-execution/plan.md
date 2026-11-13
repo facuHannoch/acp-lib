@@ -121,6 +121,29 @@ The verdict and the evidence go in the GATE file.
   the code at that moment and reports what moved or doesn't exist; the spec owner corrects the spec before the first
   brief.
 
+## Triage: what gets fixed
+
+Decided 2026-11-13, to stop the design growing on edge cases. A finding (in a review, a gate check, or while
+implementing) is **fixed** only if it:
+
+- can leave the agent or a channel stuck;
+- silently loses data in normal operation;
+- contradicts another part of a spec (then the wording is fixed, often by stating a limitation).
+
+Anything else is **accepted**: the spec owner records it in the spec's Limitations section, and nobody designs around
+it. An edge case that existed before and wasn't handled stays unhandled unless it meets the rule above.
+
+**Every bug or error found is written down, even when it isn't fixed:** one new Markdown file per error in
+`$AGENTS_COMMON_ARTIFACTS_DIR/errors/`, named `<date>-<short-slug>.md`, with:
+
+- **What:** the behaviour seen, and what was expected;
+- **Where:** files and lines, the commit, the brief;
+- **How it was found,** and how to reproduce it (a test name, steps);
+- **Impact:** what it can break, and how likely;
+- **Status:** fixed (with the commit), accepted (with the triage reason), or left for the owner to decide.
+
+The report or review that found it links the file.
+
 ## Order and readiness
 
 | Spec | State | Trio |

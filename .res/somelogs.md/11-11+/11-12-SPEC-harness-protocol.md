@@ -290,7 +290,7 @@ optional events a host gets follows the channel's subscription.
 
 | Event | Fields | When sent | Meaning |
 | --- | --- | --- | --- |
-| `turn_started` | `turnId, items: ItemId[]` | always | the channel started a turn, taking these items |
+| `turn_started` | `turnId, position, items: ItemId[]` | always | the channel started a turn, taking these items; `position` is the turn's session-wide position (the host computes its watermark from it) |
 | `turn_took` | `turnId, items: ItemId[]` | always | more items folded into the running turn (steer) |
 | `progress` | `turnId, stage: "model" \| "tool" \| "waiting"` | always, every few seconds while a turn runs | liveness for stall detection, even when nothing else streams |
 | `text_delta` | `turnId, messageId, text` | `text: stream` or `coalesced` | assistant text, streamed (at most once) |
@@ -381,7 +381,7 @@ consumer only wants final messages.
 8. **harness → acp-client:** `{ accepted: true }`: `msg-1` is stored durably. acp-client writes the user record and
    the prompt's queue operation ends; the prompt's promise waits for the turn that takes `msg-1`. Had the answer not
    come in time, acp-client would push `msg-1` again, safely.
-9. **harness: `turn_started`** `{ turnId: "t-1", items: ["msg-1"] }`. acp-client queues turn `t-1` and, with nothing
+9. **harness: `turn_started`** `{ turnId: "t-1", position: 1, items: ["msg-1"] }`. acp-client queues turn `t-1` and, with nothing
    else running, runs it at once: busy again.
 10. **harness: during the turn,** as subscribed: `progress` every few seconds; `tool_call` summaries (name, start,
     end, status); `usage` after each model call. No text deltas, since the subscription is `final`.
