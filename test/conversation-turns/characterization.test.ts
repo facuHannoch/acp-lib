@@ -15,6 +15,7 @@
  * The rest run once, in an Agent-owned conversation unless noted.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
@@ -28,6 +29,7 @@ import type { OperationLifecycleConfig } from "../../src/operations/contracts.ts
 import { FileAgentSessionStore } from "../../src/persistence/file-registry-store.ts";
 import { SessionManager } from "../../src/session-manager.ts";
 import { normalize } from "./normalize.ts";
+import { canonicalManagedEvents, canonicalOwnedRecords, presentationTurn } from "./pair-rule.ts";
 
 const FIXTURES = resolve(import.meta.dir, "../fixtures");
 const ECHO = join(FIXTURES, "echo-prompt-agent.ts");
@@ -68,7 +70,198 @@ interface Opened {
   records(): Promise<unknown>;
   /** Agent-owned only: observe each record once it is committed (the committed-record bus). */
   onCommitted?(listener: (record: Record<string, unknown>) => void): void;
+  /** The contractual-order checks for this conversation (asserted by `snapshot`). */
+  readonly contract: ContractWatch;
   close(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Contractual orders (spec, "Which orders are contractual"), asserted explicitly for every case:
+// - each stream keeps its own order (records by sequence number, transcript lines by `seq`);
+// - a turn's records and metering belong to it, each appears once, record ids are stable;
+// - metering is recorded after the provider's result;
+// - the final assistant message is recorded before the turn is announced complete;
+// - `turn_completed` comes only after metering, the transcript and `afterPrompt` are done.
+// They are observed on a separate timeline that is never snapshotted.
+// ---------------------------------------------------------------------------------------------
+
+interface ContractWatch {
+  /** Violations seen while the conversation ran (checked at the moment of `turn_completed`). */
+  readonly violations: string[];
+  /** Checks over the whole run: per-stream order, once-only records, provider outcome, bounds. */
+  assertRun(mode: Mode, run: Record<string, unknown>): void;
+}
+
+function watchContract(
+  mode: Mode,
+  conversation: AgentSession,
+  sources: { readonly transcriptPath?: string; readonly committed?: readonly Record<string, unknown>[] },
+): ContractWatch {
+  const violations: string[] = [];
+  const timeline: string[] = [];
+  const position = (entry: string) => timeline.indexOf(entry);
+  let openTurn: string | null = null;
+  let endedTurns = 0;
+  const meteringCount = new Map<string, number>();
+  const completed = new Set<string>();
+  const failed = new Set<string>();
+
+  // The provider's outcome for the open turn: the controller's own prompt settling, with a result
+  // or a rejection (a forced stop, a transport failure). Every controller the conversation uses is
+  // wrapped: the first now, one installed later (a handoff target) at its first turn. The wrapper
+  // returns the same promise, so the turn path gains no scheduling point.
+  const wrapped = new WeakSet<object>();
+  const wrap = (controller: AgentSession["connection"]) => {
+    if (wrapped.has(controller)) return;
+    wrapped.add(controller);
+    const prompt = controller.prompt.bind(controller);
+    controller.prompt = ((...args: Parameters<typeof prompt>) => {
+      const turn = openTurn;
+      if (turn) timeline.push(`provider_called:${turn}`);
+      const result = prompt(...args);
+      result.then(
+        () => { if (turn) timeline.push(`provider_outcome:${turn}`); },
+        () => { if (turn) timeline.push(`provider_outcome:${turn}`); },
+      );
+      return result;
+    }) as typeof controller.prompt;
+  };
+  wrap(conversation.connection);
+
+  // Agent-owned finalization, observed directly: `afterPrompt` settling (same promise returned).
+  const lifecycle = (conversation as unknown as { ownerLifecycle?: { afterPrompt: (input: any) => Promise<unknown> } }).ownerLifecycle;
+  if (mode === "agent-owned" && lifecycle) {
+    const afterPrompt = lifecycle.afterPrompt.bind(lifecycle);
+    lifecycle.afterPrompt = (input: { operationId: string }) => {
+      const result = afterPrompt(input);
+      result.then(
+        () => { timeline.push(`after_prompt_done:${input.operationId}`); },
+        () => { timeline.push(`after_prompt_done:${input.operationId}`); },
+      );
+      return result;
+    };
+  }
+
+  const transcript = (): Record<string, any>[] => {
+    if (!sources.transcriptPath) return [];
+    const text = (() => { try { return readFileSync(sources.transcriptPath, "utf8"); } catch { return ""; } })();
+    return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  };
+
+  /** Each presentation item's statuses, in arrival order (in-progress may not follow completed). */
+  const presentationStatuses = new Map<string, string[]>();
+  conversation.subscribe(({ event }) => {
+    const e = event as Record<string, any>;
+    if (event.kind === "presentation_recorded") {
+      const id = String(e.item?.id);
+      presentationStatuses.set(id, [...(presentationStatuses.get(id) ?? []), String(e.item?.status)]);
+      timeline.push(`presentation:${presentationTurn({ id })}`);
+    } else if (event.kind === "turn_started") {
+      openTurn = e.turnId;
+      wrap(conversation.connection);
+      timeline.push(`turn_started:${e.turnId}`);
+    } else if (event.kind === "metering_recorded") {
+      const turn = e.record?.operationId as string;
+      meteringCount.set(turn, (meteringCount.get(turn) ?? 0) + 1);
+      timeline.push(`metering:${turn}`);
+    } else if (event.kind === "turn_failed") {
+      endedTurns += 1;
+      failed.add(e.turnId);
+      timeline.push(`turn_failed:${e.turnId}`);
+      if (openTurn === e.turnId) openTurn = null;
+    } else if (event.kind === "turn_completed") {
+      endedTurns += 1;
+      const turn = e.turnId as string;
+      completed.add(turn);
+      timeline.push(`turn_completed:${turn}`);
+      if (openTurn === turn) openTurn = null;
+      // What must already be done at the moment of completion (read synchronously, now).
+      const hasMessages = (e.result?.messages?.length ?? 0) > 0;
+      if (mode === "agent-owned") {
+        const finalRecord = (sources.committed ?? []).some((record) =>
+          typeof record.recordId === "string" && new RegExp(`^${turn}:assistant:\\d+$`).test(record.recordId));
+        if (hasMessages && !finalRecord) violations.push(`turn ${turn} completed before its final assistant message was committed`);
+      } else if (mode === "managed") {
+        const lines = transcript().filter((line) => line.operationId === turn);
+        if (hasMessages && !lines.some((line) => line.t === "message" && line.role === "assistant" && line.status !== "in_progress")) {
+          violations.push(`turn ${turn} completed before its final assistant message was in the transcript`);
+        }
+        if (!lines.some((line) => line.t === "metering_reference")) violations.push(`turn ${turn} completed before its metering reference was in the transcript`);
+        if (!lines.some((line) => line.t === "operation" && line.event !== "started")) violations.push(`turn ${turn} completed before its operation was closed in the transcript`);
+      } else {
+        const assistantLines = transcript().filter((line) => line.t === "msg" && line.role === "assistant").length;
+        if (assistantLines < endedTurns) violations.push(`turn ${turn} completed before its assistant line was in the transcript`);
+      }
+    }
+  });
+
+  const before = (earlier: string, later: string) => {
+    const a = position(earlier);
+    const b = position(later);
+    return a >= 0 && b >= 0 && a < b;
+  };
+
+  return {
+    violations,
+    assertRun(runMode, run) {
+      expect(violations).toEqual([]);
+      // Presentation events keep their own order: no item goes back to in progress once completed.
+      for (const [id, statuses] of presentationStatuses) {
+        const completedAt = statuses.findIndex((status) => status !== "in_progress");
+        if (completedAt >= 0) expect({ id, after: statuses.slice(completedAt).filter((status) => status === "in_progress") }).toEqual({ id, after: [] });
+      }
+      for (const [turn, count] of meteringCount) expect({ turn, metering: count }).toEqual({ turn, metering: 1 });
+      for (const turn of completed) {
+        // Over the complete timeline (presentations that arrive later included):
+        expect({
+          turn,
+          meteredOnce: meteringCount.get(turn) ?? 0,
+          meteringInsideTurn: before(`turn_started:${turn}`, `metering:${turn}`) && before(`metering:${turn}`, `turn_completed:${turn}`),
+          completionAfterLastPresentation: timeline.lastIndexOf(`presentation:${turn}`) < position(`turn_completed:${turn}`),
+          reachedProvider: position(`provider_called:${turn}`) >= 0,
+          ...(runMode === "agent-owned" ? { completionAfterAfterPrompt: before(`after_prompt_done:${turn}`, `turn_completed:${turn}`) } : {}),
+        }).toEqual({
+          turn,
+          meteredOnce: 1,
+          meteringInsideTurn: true,
+          completionAfterLastPresentation: true,
+          reachedProvider: true,
+          ...(runMode === "agent-owned" ? { completionAfterAfterPrompt: true } : {}),
+        });
+      }
+      // Every turn that reached the provider has its outcome (a result or a rejection, such as a
+      // forced stop), and its metering, when recorded, comes after that outcome.
+      for (const turn of [...completed, ...failed]) {
+        if (position(`provider_called:${turn}`) < 0) continue; // failed before dispatch
+        const outcome = position(`provider_outcome:${turn}`) >= 0;
+        const metered = position(`metering:${turn}`) >= 0;
+        expect({ turn, outcome, meteringAfterOutcome: metered ? before(`provider_outcome:${turn}`, `metering:${turn}`) : "not metered" })
+          .toEqual({ turn, outcome: true, meteringAfterOutcome: metered ? true : "not metered" });
+      }
+      const records = run.records as Record<string, any> | undefined;
+      if (runMode === "agent-owned" && records?.records) {
+        const list = records.records as Record<string, any>[];
+        const sequences = list.map((record) => record.sequence as number);
+        expect(sequences).toEqual([...sequences].sort((a, b) => a - b));
+        expect(new Set(sequences).size).toBe(sequences.length);
+        const ids = list.map((record) => record.recordId as string);
+        expect(new Set(ids).size).toBe(ids.length);
+        // The committed-record bus lists exactly the records, in the records' order (raw).
+        expect((records.committedBus as Record<string, any>[]).map((record) => record.recordId)).toEqual(ids);
+        for (const turn of meteringCount.keys()) {
+          expect(list.filter((record) => record.kind === "metering" && record.operationId === turn).map((record) => record.recordId))
+            .toEqual([`${turn}:metering`]);
+        }
+      }
+      if (runMode === "managed" && records?.transcript) {
+        const lines = records.transcript as Record<string, any>[];
+        expect(lines.map((line) => line.seq)).toEqual(lines.map((_, index) => index + 1));
+        for (const turn of meteringCount.keys()) {
+          expect(lines.filter((line) => line.t === "metering_reference" && line.operationId === turn)).toHaveLength(1);
+        }
+      }
+    },
+  };
 }
 
 const EVENT_KINDS = new Set([
@@ -165,14 +358,18 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
     };
     cleanups.push(close);
     const bus: unknown[] = [];
+    const committed: Record<string, unknown>[] = [];
     const committedListeners: Array<(record: Record<string, unknown>) => void> = [];
     agent.events.subscribe((notification) => {
       const record = notification.event.record as unknown as Record<string, unknown>;
       bus.push({ kind: record.kind, recordId: record.recordId, operationId: record.operationId });
+      committed.push(record);
       for (const listener of committedListeners) listener(record);
     });
     const conversation = await agent.conversations.create();
+    const contract = watchContract(mode, conversation, { committed });
     return {
+      contract,
       mode,
       conversation,
       directory,
@@ -197,7 +394,9 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
       persistence: { transcript: { preset: "activity" } },
     });
     cleanups.push(() => conversation.stop());
+    const contract = watchContract(mode, conversation, { transcriptPath: conversation.transcriptPath! });
     return {
+      contract,
       mode,
       conversation,
       directory,
@@ -215,7 +414,9 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
     transcriptPath,
   });
   cleanups.push(() => conversation.stop());
+  const contract = watchContract(mode, conversation, { transcriptPath });
   return {
+    contract,
     mode,
     conversation,
     directory,
@@ -245,8 +446,27 @@ const has = (raw: readonly { kind: string }[], kind: string, count = 1) =>
   () => raw.filter((event) => event.kind === kind).length >= count;
 
 /** Normalizes a run against its own temporary directory and snapshots it. */
-function snapshot(opened: { directory: string }, run: Record<string, unknown>, extraPaths: readonly string[] = []): void {
-  expect(normalize(run, { paths: [opened.directory, ...extraPaths, tmpdir()] })).toMatchSnapshot();
+function snapshot(
+  opened: { directory: string; mode?: Mode; contract?: ContractWatch },
+  run: Record<string, unknown>,
+  extraPaths: readonly string[] = [],
+): void {
+  if (opened.contract && opened.mode) opened.contract.assertRun(opened.mode, run);
+  const compared = opened.mode ? withNonContractualPairsInOneOrder(opened.mode, run) : run;
+  expect(normalize(compared, { paths: [opened.directory, ...extraPaths, tmpdir()] })).toMatchSnapshot();
+}
+
+/** The run as compared with the snapshot: the two non-contractual pairs in one order (`pair-rule.ts`). */
+function withNonContractualPairsInOneOrder(mode: Mode, run: Record<string, unknown>): Record<string, unknown> {
+  if (mode === "managed" && Array.isArray(run.events)) {
+    return { ...run, events: canonicalManagedEvents(run.events as Record<string, any>[]) };
+  }
+  const records = run.records as Record<string, any> | undefined;
+  if (mode === "agent-owned" && records && Array.isArray(records.records)) {
+    const canonical = canonicalOwnedRecords(records.records, records.committedBus);
+    return { ...run, records: { ...records, records: canonical.records, committedBus: canonical.bus } };
+  }
+  return run;
 }
 
 const SEQUENTIAL = "Read a.txt, then b.txt, then c.txt, each with its own tool call, one at a time. Then tell me the three words in order.";
