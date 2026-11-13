@@ -15,6 +15,7 @@
  * The rest run once, in an Agent-owned conversation unless noted.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
@@ -68,7 +69,155 @@ interface Opened {
   records(): Promise<unknown>;
   /** Agent-owned only: observe each record once it is committed (the committed-record bus). */
   onCommitted?(listener: (record: Record<string, unknown>) => void): void;
+  /** The contractual-order checks for this conversation (asserted by `snapshot`). */
+  readonly contract: ContractWatch;
   close(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Contractual orders (spec, "Which orders are contractual"), asserted explicitly for every case:
+// - each stream keeps its own order (records by sequence number, transcript lines by `seq`);
+// - a turn's records and metering belong to it, each appears once, record ids are stable;
+// - metering is recorded after the provider's result;
+// - the final assistant message is recorded before the turn is announced complete;
+// - `turn_completed` comes only after metering, the transcript and `afterPrompt` are done.
+// They are observed on a separate timeline that is never snapshotted.
+// ---------------------------------------------------------------------------------------------
+
+interface ContractWatch {
+  /** Violations seen while the conversation ran (checked at the moment of `turn_completed`). */
+  readonly violations: string[];
+  /** Checks over the whole run: per-stream order, once-only records, metering after the provider. */
+  assertRun(mode: Mode, run: Record<string, unknown>): void;
+}
+
+function watchContract(
+  mode: Mode,
+  conversation: AgentSession,
+  sources: { readonly transcriptPath?: string; readonly committed?: readonly Record<string, unknown>[] },
+): ContractWatch {
+  const violations: string[] = [];
+  const timeline: string[] = [];
+  const position = (entry: string) => timeline.indexOf(entry);
+  let openTurn: string | null = null;
+  let endedTurns = 0;
+  const meteringCount = new Map<string, number>();
+  const completed = new Set<string>();
+
+  // The provider's result for the open turn: the controller's own prompt settling with a result.
+  // The same promise is returned, so the turn path gains no scheduling point.
+  const controller = conversation.connection;
+  const prompt = controller.prompt.bind(controller);
+  controller.prompt = ((...args: Parameters<typeof prompt>) => {
+    const turn = openTurn;
+    const result = prompt(...args);
+    result.then(() => { if (turn) timeline.push(`provider_result:${turn}`); }, () => undefined);
+    return result;
+  }) as typeof controller.prompt;
+
+  const transcript = (): Record<string, any>[] => {
+    if (!sources.transcriptPath) return [];
+    const text = (() => { try { return readFileSync(sources.transcriptPath, "utf8"); } catch { return ""; } })();
+    return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  };
+
+  /** Each presentation item's statuses, in arrival order (in-progress may not follow completed). */
+  const presentationStatuses = new Map<string, string[]>();
+  conversation.subscribe(({ event }) => {
+    const e = event as Record<string, any>;
+    if (event.kind === "presentation_recorded") {
+      const id = String(e.item?.id);
+      const turn = id.split(":")[1];
+      presentationStatuses.set(id, [...(presentationStatuses.get(id) ?? []), String(e.item?.status)]);
+      timeline.push(`presentation:${turn}`);
+    }
+    if (event.kind === "turn_started") {
+      openTurn = e.turnId;
+      timeline.push(`turn_started:${e.turnId}`);
+    } else if (event.kind === "metering_recorded") {
+      const turn = e.record?.operationId as string;
+      meteringCount.set(turn, (meteringCount.get(turn) ?? 0) + 1);
+      timeline.push(`metering:${turn}`);
+    } else if (event.kind === "turn_failed") {
+      endedTurns += 1;
+      if (openTurn === e.turnId) openTurn = null;
+    } else if (event.kind === "turn_completed") {
+      endedTurns += 1;
+      const turn = e.turnId as string;
+      completed.add(turn);
+      timeline.push(`turn_completed:${turn}`);
+      if (openTurn === turn) openTurn = null;
+      if (position(`metering:${turn}`) < 0) violations.push(`turn ${turn} completed before its metering was recorded`);
+      if (timeline.lastIndexOf(`presentation:${turn}`) > timeline.lastIndexOf(`turn_completed:${turn}`)) {
+        violations.push(`turn ${turn} completed before its last presentation event`);
+      }
+      const hasMessages = (e.result?.messages?.length ?? 0) > 0;
+      if (mode === "agent-owned") {
+        // afterPrompt commits the final assistant message(s): they are on the bus before completion.
+        const finalRecord = (sources.committed ?? []).some((record) =>
+          typeof record.recordId === "string" && new RegExp(`^${turn}:assistant:\\d+$`).test(record.recordId));
+        if (hasMessages && !finalRecord) violations.push(`turn ${turn} completed before its final assistant message was committed`);
+      } else if (mode === "managed") {
+        const lines = transcript().filter((line) => line.operationId === turn);
+        if (hasMessages && !lines.some((line) => line.t === "message" && line.role === "assistant" && line.status !== "in_progress")) {
+          violations.push(`turn ${turn} completed before its final assistant message was in the transcript`);
+        }
+        if (!lines.some((line) => line.t === "metering_reference")) violations.push(`turn ${turn} completed before its metering reference was in the transcript`);
+        if (!lines.some((line) => line.t === "operation" && line.event !== "started")) violations.push(`turn ${turn} completed before its operation was closed in the transcript`);
+      } else {
+        const assistantLines = transcript().filter((line) => line.t === "msg" && line.role === "assistant").length;
+        if (assistantLines < endedTurns) violations.push(`turn ${turn} completed before its assistant line was in the transcript`);
+      }
+    }
+  });
+
+  return {
+    violations,
+    assertRun(runMode, run) {
+      expect(violations).toEqual([]);
+      // Presentation events keep their own order: no item goes back to in progress once completed.
+      for (const [id, statuses] of presentationStatuses) {
+        const completedAt = statuses.findIndex((status) => status !== "in_progress");
+        if (completedAt >= 0) expect({ id, after: statuses.slice(completedAt).filter((status) => status === "in_progress") }).toEqual({ id, after: [] });
+      }
+      // Managed bounds: each turn's metering sits after its turn_started and before its turn_completed.
+      for (const turn of completed) {
+        expect({ turn, inside: position(`turn_started:${turn}`) < position(`metering:${turn}`)
+          && position(`metering:${turn}`) < position(`turn_completed:${turn}`) }).toEqual({ turn, inside: true });
+      }
+      for (const [turn, count] of meteringCount) expect({ turn, metering: count }).toEqual({ turn, metering: 1 });
+      for (const turn of completed) expect({ turn, metered: meteringCount.get(turn) ?? 0 }).toEqual({ turn, metered: 1 });
+      // Metering after the provider's result (turns whose result came from this controller).
+      for (const entry of timeline.filter((value) => value.startsWith("provider_result:"))) {
+        const turn = entry.slice("provider_result:".length);
+        const metered = position(`metering:${turn}`);
+        if (metered >= 0) expect({ turn, meteringAfterResult: metered > position(entry) }).toEqual({ turn, meteringAfterResult: true });
+      }
+      const records = run.records as Record<string, any> | undefined;
+      if (runMode === "agent-owned" && records?.records) {
+        const list = records.records as Record<string, any>[];
+        const sequences = list.map((record) => record.sequence as number);
+        expect(sequences).toEqual([...sequences].sort((a, b) => a - b));
+        expect(new Set(sequences).size).toBe(sequences.length);
+        const ids = list.map((record) => record.recordId as string);
+        expect(new Set(ids).size).toBe(ids.length);
+        const bus = (records.committedBus as Record<string, any>[]).map((record) => record.recordId as string);
+        expect(new Set(bus).size).toBe(bus.length);
+        for (const id of bus) expect(ids).toContain(id);
+        for (const turn of meteringCount.keys()) {
+          expect(list.filter((record) => record.kind === "metering" && record.operationId === turn).map((record) => record.recordId))
+            .toEqual([`${turn}:metering`]);
+        }
+      }
+      if (runMode === "managed" && records?.transcript) {
+        const lines = records.transcript as Record<string, any>[];
+        expect(lines.map((line) => line.seq)).toEqual(lines.map((_, index) => index + 1));
+        for (const turn of meteringCount.keys()) {
+          expect(lines.filter((line) => line.t === "metering_reference" && line.operationId === turn)).toHaveLength(1);
+        }
+      }
+    },
+  };
 }
 
 const EVENT_KINDS = new Set([
@@ -165,14 +314,18 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
     };
     cleanups.push(close);
     const bus: unknown[] = [];
+    const committed: Record<string, unknown>[] = [];
     const committedListeners: Array<(record: Record<string, unknown>) => void> = [];
     agent.events.subscribe((notification) => {
       const record = notification.event.record as unknown as Record<string, unknown>;
       bus.push({ kind: record.kind, recordId: record.recordId, operationId: record.operationId });
+      committed.push(record);
       for (const listener of committedListeners) listener(record);
     });
     const conversation = await agent.conversations.create();
+    const contract = watchContract(mode, conversation, { committed });
     return {
+      contract,
       mode,
       conversation,
       directory,
@@ -197,7 +350,9 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
       persistence: { transcript: { preset: "activity" } },
     });
     cleanups.push(() => conversation.stop());
+    const contract = watchContract(mode, conversation, { transcriptPath: conversation.transcriptPath! });
     return {
+      contract,
       mode,
       conversation,
       directory,
@@ -215,7 +370,9 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
     transcriptPath,
   });
   cleanups.push(() => conversation.stop());
+  const contract = watchContract(mode, conversation, { transcriptPath });
   return {
+    contract,
     mode,
     conversation,
     directory,
@@ -245,8 +402,93 @@ const has = (raw: readonly { kind: string }[], kind: string, count = 1) =>
   () => raw.filter((event) => event.kind === kind).length >= count;
 
 /** Normalizes a run against its own temporary directory and snapshots it. */
-function snapshot(opened: { directory: string }, run: Record<string, unknown>, extraPaths: readonly string[] = []): void {
-  expect(normalize(run, { paths: [opened.directory, ...extraPaths, tmpdir()] })).toMatchSnapshot();
+function snapshot(
+  opened: { directory: string; mode?: Mode; contract?: ContractWatch },
+  run: Record<string, unknown>,
+  extraPaths: readonly string[] = [],
+): void {
+  if (opened.contract && opened.mode) opened.contract.assertRun(opened.mode, run);
+  const compared = opened.mode ? withNonContractualPairsInOneOrder(opened.mode, run) : run;
+  expect(normalize(compared, { paths: [opened.directory, ...extraPaths, tmpdir()] })).toMatchSnapshot();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The one allowed snapshot exception (spec, Risks; decided 2026-11-13, managed mode widened the
+// same day). Today's code writes these on separate paths with no fixed order
+// (findings/11-13-FINDING-metering-vs-presentation-order.md):
+//   - managed: a turn's metering event may sit anywhere among that turn's response presentation
+//     events (its presentations other than its user messages, which are written before dispatch).
+//     Canonical form: the metering event is moved before the contiguous same-turn response
+//     presentations directly ahead of it. It never crosses another kind of event or another turn's
+//     events, and the presentations keep their own order;
+//   - Agent-owned: a turn's metering record and that turn's last in-progress assistant snapshot
+//     record, either order (in the records and on the bus). When adjacent in the other order they
+//     are put metering first, and the pair keeps its own two sequence numbers in ascending order.
+//     The actual sequence numbers are checked before this, on the raw run (`assertRun`: strictly
+//     increasing, unique), so the swap never hides a gap or a duplicate.
+// Nothing else moves: everything else in every stream, all content, ids and sequence numbers stay
+// strict. The bounds (metering after its turn_started, completion after metering and the last
+// presentation, presentations in order) are asserted separately in `watchContract`.
+// ---------------------------------------------------------------------------------------------
+
+function withNonContractualPairsInOneOrder(mode: Mode, run: Record<string, unknown>): Record<string, unknown> {
+  if (mode === "managed" && Array.isArray(run.events)) {
+    return { ...run, events: meteringFirstAmongEvents(run.events as Record<string, any>[]) };
+  }
+  const records = run.records as Record<string, any> | undefined;
+  if (mode === "agent-owned" && records && Array.isArray(records.records)) {
+    return {
+      ...run,
+      records: {
+        ...records,
+        records: meteringFirstAmongRecords(records.records as Record<string, any>[], true),
+        committedBus: meteringFirstAmongRecords(records.committedBus as Record<string, any>[], false),
+      },
+    };
+  }
+  return run;
+}
+
+/** The turn a presentation item belongs to: `message:<turn>:…` or `<item kind>:<turn>:…`. */
+const presentationTurn = (event: Record<string, any>) => String(event.id ?? "").split(":")[1];
+
+/** A presentation event of `turn` other than one of its user messages. */
+const isResponsePresentation = (event: Record<string, any>, turn: unknown) =>
+  event.kind === "presentation_recorded" && presentationTurn(event) === turn && event.role !== "user";
+
+function meteringFirstAmongEvents(events: readonly Record<string, any>[]): Record<string, any>[] {
+  const out = [...events];
+  for (let index = 0; index < out.length; index += 1) {
+    if (out[index]!.kind !== "metering_recorded") continue;
+    const turn = out[index]!.operationId;
+    let at = index;
+    while (at > 0 && isResponsePresentation(out[at - 1]!, turn)) {
+      [out[at - 1], out[at]] = [out[at]!, out[at - 1]!];
+      at -= 1;
+    }
+  }
+  return out;
+}
+
+function meteringFirstAmongRecords(records: readonly Record<string, any>[], sequenced: boolean): Record<string, any>[] {
+  const out = [...records];
+  for (let index = 1; index < out.length; index += 1) {
+    const metering = out[index]!;
+    if (metering.kind !== "metering") continue;
+    const turn = metering.operationId;
+    const lastSnapshot = out.reduce((last, record, at) =>
+      record.kind === "message" && record.operationId === turn && String(record.recordId).includes(":snapshot:")
+        && (!sequenced || (record.role === "assistant" && record.status === "in_progress")) ? at : last, -1);
+    if (lastSnapshot !== index - 1) continue;
+    const snapshotRecord = out[index - 1]!;
+    if (sequenced) {
+      out[index - 1] = { ...metering, sequence: snapshotRecord.sequence };
+      out[index] = { ...snapshotRecord, sequence: metering.sequence };
+    } else {
+      [out[index - 1], out[index]] = [metering, snapshotRecord];
+    }
+  }
+  return out;
 }
 
 const SEQUENTIAL = "Read a.txt, then b.txt, then c.txt, each with its own tool call, one at a time. Then tell me the three words in order.";
