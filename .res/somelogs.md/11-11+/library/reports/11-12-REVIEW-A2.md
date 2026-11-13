@@ -151,3 +151,132 @@ or protected-path/worktree/process change occurred. The independent race probes 
 while the full suite was executing in a separate process using the same temporary A2 archive; their results show
 possible orderings, not production frequency. A2 requires correction and another
 review before the coordinator's gate; B1 remains held.
+
+## Follow-up review — `524af30..babc5b1` (2026-11-13)
+
+Reviewed fix `e7f2d79` and updated implementer report `babc5b1`. The earlier
+findings and original gate evidence above are retained as history.
+
+**Follow-up verdict: A2 is not ready for the coordinator's passing gate; B1 remains
+held.** The original normal-path force-stop regression and unknown-ID membership check
+are fixed, and the finalization test now uses a test-controlled event gate. However,
+the session can treat a rejected send as a successful turn, the new membership check
+does not establish exclusive ownership of a run, and the gated test's failure path
+leaves its gate unresolved. The first independent full-suite run was also red on a
+snapshot ordering mismatch in an additional case. Findings below should return to the
+implementer; snapshot instability remains subject to the owner's decision.
+
+### P2 — A send rejection after a synchronous turn report is discarded
+
+**`src/agent-session.ts:2307`–`:2319`.** If a controller reports a matching
+`turn_started` synchronously and then returns a rejected `send` promise, this branch
+attaches a logging-only catch and continues to prepare and execute the turn. Thus the
+prompt may settle successfully even though acceptance failed. A report before promise
+settlement is not proof of successful acceptance for the general asynchronous `send`
+contract. In particular, inferring controller scheduling policy solely from the timing
+of an event couples it to a fact the interface does not expose.
+
+Independent fault-injection reproduction (`/tmp/controller-a2-rejected-send.ts`):
+wrap the real offline echo controller's `send` to emit the normal synchronous turn
+report and then return `Promise.reject(new Error("acceptance rejected"))`. The prompt
+resolves **completed** and the public events are `turn_started`, `turn_completed`;
+the rejected acceptance is not reported to the caller. The current real
+`AgentController.send` itself promises an already-resolved acceptance, so this probe
+injects an acceptance failure rather than demonstrating a failure from the unmodified
+ACP implementation. The handling is nevertheless unsafe at the new interface seam and
+would hide a controller acceptance failure. A late rejection can also arrive after the
+turn has completed.
+
+Preserve the original synchronous readiness check while making actual dispatch and
+settlement honor `send` acceptance, including synchronous turn reporting followed by a
+rejection. Add a bounded regression asserting failure, no false `turn_completed`, and
+proper turn abandonment/cleanup. Do not restore the prior P1 yield before invoking
+provider readiness.
+
+### P2 — Accepted membership does not prove message ownership by a run
+
+**`src/agent-session.ts:2301`–`:2303`; `src/conversation-turns/turn-run.ts:24`.**
+The independent accepted-ID set correctly rejects genuinely unknown IDs and removes
+normal messages when their own promise settles. It does not check that every known ID
+was taken from the queue into this run, that the run respects queue order, or that an
+ID cannot occur in two runs. The assertion in the comment that queue order is checked
+is therefore stronger than the implementation.
+
+Independent fault injection (`/tmp/controller-a2-duplicate-ownership.ts`): with one
+slow prompt and two separately queued prompts A and B, wrap `steering.prepareRun` only
+for A to append B's still-queued accepted ID to A's `parts`. The guard allows the run:
+its reported causes are `[first]`, `[A, B]`, then `[B]`; all three prompts complete,
+and B's ID has appeared in two turns. This is a deliberately malformed internal run,
+not a claim that normal `combinePrompts` currently constructs it. It shows the guard
+cannot enforce the spec's one-dispatched-message/one-turn and queue-order invariants
+against a run-construction bug, the class of bug the guard is intended to catch.
+Validate against the actual messages selected into the run, or another independently
+maintained ownership/order representation; add a dispatch-level regression for a known
+but still-queued ID. Keep the existing unknown and duplicate tests.
+
+Normal-path cleanup was independently probed using the existing offline echo and steer
+fixtures: `acceptedMessages.size` returned to zero after successful completion,
+provider failure, withdrawal, queue-clearing interrupt, combined steer fan-out, and
+stop with a queued message (`/tmp/controller-a2-registry-probe.ts`). These tests and
+inspection of each wrapped `resolve`/`reject` support cleanup for those paths; they do
+not establish correctness for every injected malformed run or future backend scheduling.
+
+### P2 — A failed event-gate assertion leaves cleanup waiting on the held turn
+
+**`test/conversation-turns/turn-path.test.ts:170`–`:193`.** The fixed 100ms sleep is
+removed and the success path uses a bounded wait for entry and a test-controlled
+finalization gate. But the gate itself is released only after three assertions. If any
+of them fails, `release()` is never called; cleanup calls `agent.close()`, which waits
+for the still-held turn, and the queued config promise can reject without a handler.
+The gate is not bounded on this failure path, contrary to the plan's bounded-wait rule.
+
+I tested this in a separate archive with **only the test assertion changed** to expect
+a deliberately wrong phase, under an eight-second process timeout. The intended
+assertion failed, followed by an unhandled `configuration change cancelled before it
+started` error and an `afterEach` timeout at about five seconds. No repository source or
+snapshot was changed. Release the gate in `finally` (and observe/settle the queued
+promise on failure) so a regression produces the intended assertion without hanging
+cleanup. The success-path assertions check current queue state synchronously and final
+observable order; they do not by themselves prove every possible asynchronously
+advanced scheduler would have run before the test releases the gate.
+
+### Snapshot ordering: additional independent full-suite failure
+
+The first complete independent run at `babc5b1` was **1,141 pass / 1 fail, 114 files,
+91.47s**. The failure was **Agent-owned `an internal command`**, not the previously
+reported managed combined-steer case: the in-progress assistant message snapshot and
+the metering record swapped order in both the committed bus and SQLite records,
+including record sequence numbers. The committed snapshot was untouched. Targeted probes of this case passed 30/30 runs on unchanged A1 and 30/30 on the
+follow-up; these results do not prove the mismatch is new or rule out a rare race. Its relationship to the already escalated managed
+race and the earlier Agent-owned record-write race is unresolved; do not assert that
+it is the same cause without further evidence. The implementer's reported 1,142-pass
+run remains evidence of one green run, not proof that this ordering is deterministic.
+An independent complete rerun passed **1,142 / 0, 114 files, 35 snapshots, 93.12s**.
+Both results matter: the numerical full-suite check passed on rerun, while the first
+full run demonstrates a still-unresolved intermittent ordering mismatch. No reordering,
+sorting, or snapshot update is authorized by this review.
+
+### Original findings and verification
+
+- **Original P1, prompt then force-stop:** resolved for the observed ACP boundary.
+  An independent replay of the original probe against the follow-up again rejects with
+  `AgentSessionOperationError` and emits `turn_started`, `turn_failed`, matching A1.
+  The new full-suite regression tests for this and listener-triggered stop pass. The
+  rejected-acceptance finding above is a separate failure introduced by the chosen
+  handling, not a reason to restore the old unconditional await before readiness.
+- **Original P2, unknown-ID tautology:** resolved for unknown membership: IDs are
+  registered at acceptance, checked against `acceptedMessages`, and deleted through
+  each prompt's resolve/reject wrapper. The new injected-unknown dispatch test passes.
+  Exclusive run ownership and order remain unverified and can be violated as above.
+- **Original P2, fixed-delay finalization test:** the fixed sleep is gone and normal
+  success-path order is asserted with a gate, resolving the delay concern. The
+  failure-path cleanup defect above remains.
+- Source typecheck and a temporary tsconfig including the conversation-turn tests are
+  clean. All ten turn-path tests pass. The first complete run was red and the second
+  was green, as stated; the red result is not erased by the rerun. The snapshot and normalizer diff from `524af30` to `babc5b1`
+  is empty; the unchanged snapshot SHA256 is
+  `d25f05a19cadeb8ff2a310ee85fca41d47323576bec64f39eb6025cc844aca1a`.
+
+All probes used offline fixture agents and temporary archive copies, with no reviewer
+edits to repository source or snapshots, no implementation checkout, no live harness,
+push, merge into beta, or protected path/worktree/process change. B1 remains held.
