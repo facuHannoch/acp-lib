@@ -365,7 +365,9 @@ delivery      digest(position..now, the turn's policy) → appended to the chann
 ## Storage
 
 **What the protocol's delivery rules need stored** (`../11-12-SPEC-harness-protocol.md`, Delivery): the item ids each
-channel has stored (so a repeated push is recognized), and a record of each turn (id, a session-wide position, items taken, outcome, usage,
+channel has stored, with what became of each (waiting, taken by which turn, dropped, withdrawn), so a repeated push
+is recognized and the host can ask an item's status; out-of-turn messages with their positions; and a record of each
+turn (id, a session-wide position, items taken, outcome, usage,
 assistant messages) kept long enough for reconciliation at start (`session.recentTurns`); a turn running when the
 process died is recorded as `running_at_crash` when the session next loads.
 

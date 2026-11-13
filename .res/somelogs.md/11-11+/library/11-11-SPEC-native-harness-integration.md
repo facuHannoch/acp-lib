@@ -48,8 +48,13 @@ gives the same guarantee, from v1:
 - **Callbacks from the harness to the host,** like ACP's fs and terminal requests to the client: function tools, the
   delegation backend (the orchestrator stays in acp-client), history sources, and permission requests. Identity for
   ACP conversations goes the other way: acp-client asks the harness (`member/prepare`, `member/delivered`).
-- **In-process transport** exists too (same client interface), for tests and the standalone CLI; with acp-client the
-  process is the default.
+- **In-process transport** exists too (same client interface), for tests, the standalone CLI and trusted local use;
+  with acp-client the process is the default. It passes data the way the protocol would: copies, never shared
+  objects, so both clients behave the same and tests on one hold for the other. It gives up isolation (the agent's
+  tools, keys and files run in acp-client's process) and a harness crash takes acp-client down; what it gains is no
+  process start and no serialization of large payloads. It isn't faster per request in any way that matters (stdio
+  costs well under a millisecond against model calls of seconds), and under load a separate process is better: it
+  has its own thread, so the harness's CPU work doesn't slow acp-client's, nor the reverse.
 - **One process for many conversations** means a crash affects all of them: the host restarts the process
   (bounded retries; Process lifecycle, below), each native conversation's running turn ends with an error, and the
   orchestrator's restart rules apply to workers it was running. For the same reason, nothing a single conversation
@@ -237,7 +242,13 @@ The process is what costs (and, isolated, a container per agent); channels are c
   out of order, and a turn still being recorded must not fall below `since`. A long-running turn holds W back, so a
   restart may return turns already finished; harmless, since finishing is keyed by turn id. With no stored position (a fresh
   database), acp-client takes the harness's current position without reconciling: nothing of its own is pending.
-  `session/load` returns each channel's turns after that position and its waiting items. acp-client compares them with its records and
+  `session/load` returns each channel's turns after that position and its waiting items, and **the status of every
+  item acp-client asks about**: acp-client sends the ids of its messages not yet settled (including those written but
+  not yet acknowledged, below), and the harness answers each `waiting`, `taken` (with its turn), `dropped`,
+  `withdrawn` or `unknown`. So a message dropped by an interrupt just before a crash settles cancelled, and a message
+  the harness never stored fails, instead of either staying pending forever. Messages placed on a channel outside a
+  turn (`message_participant`, stage 2b) carry positions in the same sequence and are returned after `since` too.
+  acp-client compares them with its records and
   settles what it missed around a crash: a turn that ended without acp-client finishing it goes through **the same
   finishing step a live turn uses**, with the harness's turn record as input (the final assistant message, metering
   from its per-call usage, the turn's end), keyed by the turn id so running it twice does nothing; the in-progress
@@ -592,8 +603,11 @@ on who runs the conversation's loop:
   that channel's inbox in its own store (so it survives a restart), starts a turn if the channel is idle, or puts it
   into the context at the next model call. acp-client stores nothing for items; the turn that takes one is recorded
   like any turn.
-- **A native user message is recorded when the harness accepts it,** keyed by the message id (not by a turn), and is
-  durable from then on; the turn that takes it links to it through its cause. So native messages don't share ACP's
+- **A native user message is recorded before it is pushed,** keyed by the message id (not by a turn), marked "not
+  yet accepted", and confirmed when the harness acknowledges it; durable from then on; the turn that takes it links to
+  it through its cause. Writing first closes the gap where the harness has stored a message and acp-client crashed
+  before recording it: after the crash, reconciliation asks about unconfirmed messages (known to the harness →
+  accepted; `unknown` → never stored, the message fails). So native messages don't share ACP's
   "durable only once its turn starts" (`findings/11-12-FINDING-acp-message-durability.md`), and `accepted` on the
   prompt handle resolves at that moment (for ACP, when queued).
 - **ACP conversations: acp-client's out-of-band messages,** as today (`src/out-of-band-messages.ts`: records with
@@ -752,7 +766,8 @@ src/launcher.ts          AcpLauncher → ProcessLauncher (alias kept), kind "nat
 - **Storage** (schema version 17, an upgrade migration from 16 in `src/persistence/sqlite-schema.ts`, tested on a
   version-16 database): a `harness_config` table (the `Agent`'s id, the overrides as
   JSON, updated at); on `conversations`, a `policy` column and a `harness_pending` flag; channel settings reuse the
-  conversation configuration persistence `setConfig` already uses for ACP; native user records keyed by message id.
+  conversation configuration persistence `setConfig` already uses for ACP; native user records keyed by message id, with an
+  acceptance state (not yet accepted, accepted, never accepted).
 - **`agent-session.ts` does not grow.** Steering already goes through `SteeringHost`; the controller choice is the
   factory; anything else needed there is extracted first.
 
@@ -1037,7 +1052,8 @@ guards it.
 1. **Native steering:** with `nativeSteering`, the steering host pushes steer messages (`delivery: "steer"`) instead
    of cancelling; `message_delivered` on `turn_took`; queued messages pushed when the queue reaches them
    (`delivery: "queue"`). **Gate:** a steer folded without cancel; a queued message as a turn of its own.
-2. **Records:** native user records written at acceptance, keyed by message id; `accepted` on the prompt handle (for
+2. **Records:** native user records written before the push, keyed by message id, marked not yet accepted and
+   confirmed on the acknowledgement; `accepted` on the prompt handle (for
    ACP, when queued); the assistant record from `message_completed`; dropped messages settled cancelled; withdraw
    through the harness (`channel/withdraw`, waiting like any request); the neutral provider-session record (the
    `Agent`'s id plus the channel id); the model-call record; opaque provider data on messages. **Gate:** suite green;
@@ -1059,7 +1075,9 @@ guards it.
    across channels (turn 2 finished, turn 1 still recording, then a crash) still settles turn 1.
 2. **Settling from reconciliation:** a turn that ended without acp-client finishing it goes through the live finishing
    step from its turn record, keyed by turn id; its pending prompt resolves from it; a turn `running_at_crash` fails;
-   waiting messages stay pending; the position advances. **Gate:** after a fake crash at each point (before a turn's
+   the item status for every unsettled message: `waiting` stays pending, `taken` settles with its turn, `dropped` and
+   `withdrawn` settle cancelled, `unknown` fails (and an unconfirmed record is marked never accepted); the watermark
+   advances. **Gate:** after a fake crash at each point (before a turn's
    end is sent, mid-turn, between turns), every prompt settles exactly once; finishing twice does nothing.
 3. **The fallback**, if finishing from the record proves hard: fail the turn, still writing its metering from the
    record; the report says if it was used. **Gate:** the turn's cost is recorded in either case.
@@ -1149,7 +1167,8 @@ acceptance test.
 - With `streaming: "final"` and chats-only persistence, no text deltas or tool detail cross the wire, and a long turn
   with no text isn't judged stalled (progress keeps it alive).
 - After the harness is killed mid-turn and restarted, reconciliation settles every prompt exactly once: a turn that
-  ended unheard is recorded, a turn running at the crash fails, a waiting message is taken afterwards.
+  ended unheard is recorded, a turn running at the crash fails, a waiting message is taken afterwards, a message
+  dropped just before the crash settles cancelled, a message the harness never stored fails.
 - A push resent after a restart is stored once.
 - A tool-using native turn's metering counts every model call, matching the harness's own usage; `billing_required`
   accepts a native conversation and fails the start of a harness that can't confirm its certification.

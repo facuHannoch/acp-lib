@@ -97,7 +97,8 @@ recovery):
   - **state events (`turn_started`, `turn_took`, `turn_ended`, usage, `messages_dropped`, out-of-turn messages):
     reliable through reconciliation.** The connection only breaks when the process dies (the harness is the host's
     child; Non-goals), so the only gap is around a crash. At start, `session/load` returns each channel's recent
-    turns (their ids, the items each took, how they ended, their usage) and the items still waiting; the host
+    turns (their ids, the items each took, how they ended, their usage), the items still waiting, out-of-turn
+    messages, and the status of each item the host asks about (so a dropped or never-stored item is known); the host
     compares that with its own records and settles what it missed. One comparison at the only moment a gap can
     appear, instead of acknowledging every event.
   - **later, with a network transport** (connections dropping while both sides live): per-channel sequence numbers
@@ -199,6 +200,17 @@ interface Usage {
   calls?: number;                // per_turn: how many model calls the record sums
 }
 
+type ItemStatus =
+  | { status: "waiting" | "dropped" | "withdrawn" | "unknown" }
+  | { status: "taken"; turnId: TurnId };
+
+interface OutOfTurnMessage {     // a message placed on a channel outside a turn (part 2)
+  messageId: string;
+  position: number;              // the same sequence as turn positions
+  fromChannel: ChannelId;
+  parts: Part[];
+}
+
 interface TurnRecord {           // for reconciliation at start (Delivery)
   turnId: TurnId;
   position: number;              // session-wide, increasing, assigned when the turn starts; `since` is the host's contiguous watermark
@@ -217,7 +229,7 @@ interface TurnRecord {           // for reconciliation at start (Delivery)
 | --- | --- | --- |
 | `initialize` | `{ protocolVersion, host: { name, version }, callbacks: string[], subscription: Subscription }` (the callbacks the host serves; the connection's default subscription) | `{ protocolVersion, harness: { version }, description: { configOptions, commands, capabilities, policies } }` |
 | `session/create` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState> }` | `{ sessionId }`; fails with `already_exists` |
-| `session/load` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState>, since?: number }` | `{ sessionId, position: number, channels: Record<ChannelId, { hasContext, turns: TurnRecord[], waiting: ItemId[] }> }`; fails with `not_found`, `locked` |
+| `session/load` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState>, since?: number, items?: ItemId[] }` | `{ sessionId, position: number, channels: Record<ChannelId, { hasContext, turns: TurnRecord[], waiting: ItemId[], messages: OutOfTurnMessage[] }>, items: Record<ItemId, ItemStatus> }`; fails with `not_found`, `locked` |
 | `session/idle` | `{}` | `{ idle: boolean }`: no turn running, no inbox holding items, no hold active |
 | `session/export` | `{}` | `{ bundle }` |
 | `session/import` | `{ sessionId, bundle }` (before any create or load on this process) | `{ sessionId }`; fails with `already_exists` |
@@ -229,8 +241,10 @@ interface TurnRecord {           // for reconciliation at start (Delivery)
 - **Reconciliation:** `session/load` returns, for every channel with turns after `since` (a turn position, not a
   time: host and harness clocks may differ), the turns that ended or were running at a crash, and the items still
   waiting; `position` is the session's current highest turn position (a host with no stored position starts from it
-  without reconciling). The host compares them
-  with its records and settles what it missed (Delivery).
+  without reconciling). `items` asks about specific items (the host's unsettled ones); each gets a status:
+  `waiting`, `taken` (with its turn id), `dropped`, `withdrawn` or `unknown` (never stored). `messages` are the
+  out-of-turn messages (`message_participant`) after `since`, numbered in the same position sequence as turns (part
+  2). The host compares all of it with its records and settles what it missed (Delivery).
 - **The session is locked** by `session/create` and `session/load`; a lock whose process is gone is reclaimed.
 
 **Channels (part 1)**
