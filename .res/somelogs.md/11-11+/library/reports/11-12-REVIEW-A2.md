@@ -377,3 +377,119 @@ frequency is made here; no snapshot was changed or regenerated. Tests ran in tem
 source edit, live harness, push, merge into beta, or protected path/worktree/process
 change occurred. Return the open acceptance race to the implementer; retain B1 hold
 until the new review and coordinator gate and outstanding owner decisions.
+
+## Third follow-up — `b74658d..1ec6710` (2026-11-13)
+
+Reviewed fix `9e0f457` and implementer report `1ec6710`, especially its second
+follow-up and open question 3. Earlier findings and gate results remain as history.
+
+**Verdict: the independent numerical checks pass; a passing A2 gate is pending the
+owner/coordinator decisions below. B1 remains held.** The prior rejected-acceptance
+prompt-settlement defect is fixed, and the regression detects the previous behavior.
+The prior concern also required bounded queue/stop cleanup: that portion is not
+resolved for a permanently unanswered reconnect. The underlying ordinary stop hang
+predates A2, so fixing it may change ACP behavior outside the A2 brief; do not silently
+expand scope or claim the hang is new.
+
+### P1 — Permanently unanswered reconnect leaves queue and stop unsettled
+
+**`src/agent-session.ts:2328`–`:2333`, `:2365`–`:2369`; `src/controller.ts:263`–`:265`,
+`:401`–`:420`.** Provider readiness now starts synchronously and is combined with
+acceptance via `Promise.all`, so an acceptance rejection fails the prompt promptly.
+If readiness remains pending, the queue operation intentionally waits for it after the
+prompt settles, preventing a second reconnect. There is no deadline or reachable
+cancellation in this path. If the in-flight `session/load` never answers, the queue
+never advances and `stop()` waits for the active operation indefinitely. The controller
+only installs its new client after `bringUp` resolves, so stopping the current client
+does not necessarily terminate the connection being brought up.
+
+Independent offline comparison (`/tmp/controller-a2-stop-held-comparison.ts`) uses the
+existing lifecycle fixture with `LIFECYCLE_HANG_CONTROL=session/load`, persistent
+fixture state and a force-stop before the prompt:
+
+| Source / scenario | Prompt before stop | `stop()` after 500ms | Prompt after stop | Events / registry |
+| --- | --- | --- | --- | --- |
+| A1 `9de0ca3`, no injected send failure | pending | pending | pending | `turn_started` |
+| A2 `1ec6710`, no injected send failure | pending | pending | pending | `turn_started`; accepted registry size 1 |
+| A2, synchronous report then injected rejected acceptance | rejects `acceptance rejected` | pending | remains rejected | `turn_started`, `turn_failed`; registry size 0 |
+
+These are bounded observations, not proof of an infinite wait by themselves; the code
+has no timeout and the fixture never answers. The processes were explicitly ended after
+the observations. No send failure was injected in the first two scenarios, confirming
+the ordinary reconnect/stop hang on A1 and current code. The third scenario establishes
+that the new fix settles the prompt and cleans its registry entry but leaves its queue
+operation and stop waiting on the same readiness promise. It therefore only partially
+resolves the cleanup requirement recorded in `f9919ad`.
+
+The added regression releases the held load **before** calling stop. It proves the
+reconnect is not duplicated, the queued message completes after release, and stop then
+finishes; it does not test a permanently unanswered load. I also independently called
+stop **before** releasing a held reconnect after an injected rejection, then released
+it: stop completed, the controller was disconnected, the accepted registry was empty,
+and events were `turn_started`, `turn_failed` with no `provider_reconnected`.
+
+**Decision needed:** the plan says nothing waits forever, while A2 also prohibits new
+ACP behavior and changes outside its scope. A bounded/cancellable in-progress reconnect
+and its stop teardown may require an owner-approved separate fix or a spec/plan
+clarification. The prompt-settlement improvement is valid, but the provider merely
+answering or its process ending is not a time bound. Escalate this conflict and the
+queue/stop limitation; do not silently waive it or treat the released-fixture test as
+proof of permanent-hold cleanup. No source fix is authorized or made by this review.
+
+### Dispositions and concurrent safety
+
+- **Rejected acceptance during pending readiness:** fixed for prompt settlement.
+  `Promise.all([ready, accepted])` rejects promptly and the session abandons the turn,
+  emits `turn_failed`, rejects the handle, and removes its registry entry. Both
+  promises have rejection handlers, and the separate readiness-settlement observer
+  absorbs its later rejection. Waiting for an outstanding readiness before draining the
+  next operation prevents concurrent reconnects when the provider eventually answers;
+  the committed regression checks exactly one reconnect and a queued prompt completing
+  after release. Permanent-hold cleanup remains the P1 issue above.
+- **Regression sensitivity:** copied only the new test and its updated offline fixture
+  into a separate `b74658d` archive. The test fails on prior source at its 2s bound
+  waiting for the refused prompt (0 pass / 1 fail, 2.17s). The same test passes at
+  `1ec6710` (1 pass / 0 fail, 199ms process time). The intentional fixture release in
+  test cleanup allowed the prior-code run to exit.
+- **Original ACP timing:** the implementer reports ten A1-matching boundary scenarios;
+  the fix starts `ensureProvider()` before the `Promise.all` await. The original
+  immediate force-stop test remains in the passing full suite. This is not a proof of
+  every interleaving; no change in baseline behavior is inferred from passing cases.
+- **Ownership, settlement, and snapshots:** no follow-up change to the accepted-message
+  ownership checks or A1 snapshots. Previous follow-up's normal-path registry and
+  malformed-run results still apply. The rejected prompt's entry was independently
+  observed removed during held readiness. No snapshot or normalization file changed
+  from `b74658d` to `1ec6710`.
+
+### Snapshot-order evidence and owner decision
+
+The implementer reports 20 characterization-file runs on each revision: Agent-owned
+internal-command order mismatches **3/20 on A1, 0/20 on `9e0f457`**; managed combined
+steer **1/20 on A1, 3/20 on `9e0f457`**. These are implementer-reported samples, not
+independently rerun in this review. They support that both mismatches can appear in A1,
+but are too small to establish equal rates or prove A2 has no effect on their rate.
+Our earlier independent full follow-up run failed the Agent-owned internal-command
+snapshot once; our earlier managed-steer probes reproduced a mismatch on A1 and A2.
+A prior 30-run filtered A1 internal-command probe passed and does not disprove a rare
+failure. The owner decision on strict ordering remains open; no snapshot was loosened or
+regenerated, and a passing full run is not a resolution of nondeterminism.
+
+### Independent checks
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean |
+| Temporary tsconfig including turn-path tests and lifecycle fixture | clean |
+| Complete offline `bun test` | **1,145 pass / 0 fail, 114 files, 35 snapshots, 93.93s** |
+| New held-reconnect regression, current source | 1 pass / 0 fail; 199ms process time |
+| Same test/fixture on prior `b74658d` source | 0 pass / 1 fail; 2s refused-prompt timeout, 2.17s process time |
+| Snapshot and normalizer diff `b74658d..1ec6710` | empty |
+| Snapshot SHA256 | `d25f05a19cadeb8ff2a310ee85fca41d47323576bec64f39eb6025cc844aca1a` |
+| `git diff --check b74658d..1ec6710` | clean |
+| `agent-session.ts` | 4,634 lines, below the 5,022 hard limit |
+
+The full suite is green in this particular run. The unanswered-reconnect cleanup and
+snapshot-order questions require owner/coordinator disposition before treating the
+brief as passed. All tests used temporary archives and offline fixtures; no source or
+snapshot edits, implementation checkout, live harness, push, merge into beta, or
+protected path/worktree/process change was performed.
