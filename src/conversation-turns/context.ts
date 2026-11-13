@@ -10,6 +10,7 @@ import type { AgentConversationOwnerLifecycle } from "../agent-conversation-owne
 import type { AgentConversationPresentation } from "../agent-conversation-presentation.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { AgentController } from "../controller.ts";
+import type { TurnCause } from "../conversation-controller/contracts.ts";
 import type { Logger } from "../logger.ts";
 import type { ResolvedPart } from "../media/parts.ts";
 import type { OpenOperation } from "../metering/engine.ts";
@@ -27,6 +28,17 @@ import type { PromptHandlers, PromptResult, TokenUsage } from "../types.ts";
 export interface PromptQueueItem extends SteeringPrompt {
   /** How this operation is classified in its metering record. */
   operationKind: MeteredOperationKind;
+}
+
+/**
+ * The turn `runTurn` runs: its id and cause, and, when the session sent it, the originating queued
+ * messages with their handlers (one prompt item; for a combined steer run, the combined item whose
+ * `parts` are the original messages). A turn without `messages` (started by the backend) is Brief B2.
+ */
+export interface TurnContext {
+  readonly turnId: string;
+  readonly cause: TurnCause;
+  readonly messages?: PromptQueueItem;
 }
 
 export interface TurnRunContext {

@@ -31,18 +31,23 @@ import {
   recordedProviderAttachment,
 } from "../persistence/provider-attachment.ts";
 import type { ResponseMessage } from "../types.ts";
-import type { PromptQueueItem, TurnRunContext } from "./context.ts";
+import type { TurnContext, TurnRunContext } from "./context.ts";
 import { createTurnRecording } from "./recording.ts";
 import { legacyTranscriptMessages, legacyTranscriptText, persistenceOperationKind } from "./record-helpers.ts";
 
-export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promise<AgentSessionPromptResult> {
+export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<AgentSessionPromptResult> {
+  const { turnId } = turn;
+  // Today's preparation needs the turn's messages. A turn the backend started has none (Brief B2;
+  // no ACP path reaches it).
+  const item = turn.messages;
+  if (!item) throw new Error(`turn ${turnId} has no messages: backend-started turns are not supported yet`);
   // Phase 1: prepare.
   const targetProviderContextId = ctx.owner.lifecycle
     ? ctx.session.internalSessionId ?? `runtime:${ctx.owner.contextNonce()}`
     : undefined;
   const owned = ctx.owner.lifecycle
     ? await ctx.owner.lifecycle.beforePrompt({
-        operationId: item.turnId,
+        operationId: turnId,
         agentSessionId: ctx.owner.agentSessionId!,
         agentConversationId: ctx.owner.agentConversationId,
         targetProviderContextId,
@@ -63,7 +68,7 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
   for (const participant of owned?.participants ?? (owned?.participant ? [owned.participant] : [])) {
     ctx.session.learnParticipant(participant);
   }
-  ctx.turn.begin(item.turnId);
+  ctx.turn.begin(turnId);
 
   // Phase 2: user records and the metered operation, per persistence mode.
   let operation: OpenOperation;
@@ -73,7 +78,7 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
       // Metering preflight has no provider side effect. Run it before minting durable
       // operation evidence so a strict pricing/policy rejection needs no abort record.
       operation = await ctx.metering.open(item);
-      await ctx.persistence.v2Transcript!.beginOperation(item.turnId, persistenceOperationKind(item.operationKind));
+      await ctx.persistence.v2Transcript!.beginOperation(turnId, persistenceOperationKind(item.operationKind));
       transcriptStarted = true;
       // A combined prompt shows each original message, as it was sent.
       const userTexts = item.parts
@@ -83,17 +88,17 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
       for (const [index, text] of userTexts.entries()) {
         userRecords.push(await ctx.persistence.v2Transcript!.appendPresentationEvent({
           kind: "message",
-          operationId: item.turnId,
+          operationId: turnId,
           role: "user",
           text,
           status: "completed",
-          presentation: { id: `message:${item.turnId}:user${index === 0 ? "" : `:${index + 1}`}`, revision: 1 },
+          presentation: { id: `message:${turnId}:user${index === 0 ? "" : `:${index + 1}`}`, revision: 1 },
         }));
       }
       await ctx.persistence.v2Transcript!.syncBeforeDispatch();
       for (const userRecord of userRecords) ctx.presentation.emitPersistedRecord(userRecord);
     } catch (error) {
-      ctx.turn.end(item.turnId, item.handlers);
+      ctx.turn.end(turnId, item.handlers);
       if (transcriptStarted) {
         await ctx.persistence.v2Transcript!.abortOperation("pre_dispatch_persistence_failure").catch(
           (abortError) => ctx.log.warn("transcript_predispatch_abort_failed", { error: String(abortError) }),
@@ -113,7 +118,7 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
   }
 
   // Phase 3: the recording handlers.
-  const recording = createTurnRecording(ctx, item);
+  const recording = createTurnRecording(ctx, turnId, item.handlers);
   const { chunks, response, messageEnds } = recording;
 
   let closed: OperationMeteringRecord | null = null;
@@ -126,8 +131,8 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
     // Phase 4: dispatch under the supervisor.
     // The prepared turn starts nothing; the supervisor subscribes to its output, then calls its
     // `prompt()` (the attachment barrier).
-    let res = await ctx.supervisedPrompt(ctx.controller, item.turnId, "turn",
-      ctx.controller.prepareTurn(item.turnId, {
+    let res = await ctx.supervisedPrompt(ctx.controller, turnId, "turn",
+      ctx.controller.prepareTurn(turnId, {
         // An owned conversation already resolved the parts and wrapped them with the provider-only
         // text (identity, out-of-band messages); otherwise the client resolves them.
         input: owned?.providerParts
@@ -158,7 +163,7 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
     }
     // Before the assistant msg: `msg` delimits a turn, so anything still open has to
     // land inside those fences.
-    ctx.turn.end(item.turnId, item.handlers);
+    ctx.turn.end(turnId, item.handlers);
     if (!ctx.session.title && item.text.trim()) {
       ctx.session.title = item.text.trim().replace(/\s+/g, " ").slice(0, 60);
     }
@@ -217,16 +222,16 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
     }
     const result = Object.freeze({
       ...res,
-      operationId: item.turnId,
+      operationId: turnId,
       metering: record,
-      ...ctx.steering.resultFields(item.turnId, res.stopReason),
+      ...ctx.steering.resultFields(turnId, res.stopReason),
     });
 
     // Phase 6: Agent-owned afterPrompt.
     await ctx.owner.recordWrite;
     if (ctx.owner.lifecycle) {
       const completed = {
-        operationId: item.turnId,
+        operationId: turnId,
         agentSessionId: ctx.owner.agentSessionId!,
         agentConversationId: ctx.owner.agentConversationId,
         targetProviderContextId,
@@ -265,7 +270,7 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
   } catch (err) {
     // Failure: easy to miss, and the whole point of R4: a turn that died mid-tool still records
     // what it was doing, at its real status.
-    ctx.turn.end(item.turnId, item.handlers);
+    ctx.turn.end(turnId, item.handlers);
     const structured = response.snapshot();
     const text = structured.length > 0 ? response.text : chunks.join("");
     const messages: readonly ResponseMessage[] = structured.length > 0
@@ -278,7 +283,7 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
         ctx.log.warn("owned_runtime_persistence_failed", { error: String(persistenceError) });
       });
       await ctx.owner.lifecycle?.promptFailed({
-        operationId: item.turnId,
+        operationId: turnId,
         agentSessionId: ctx.owner.agentSessionId!,
         agentConversationId: ctx.owner.agentConversationId,
         ...(item.participantId ? { participantId: item.participantId } : {}),
@@ -331,11 +336,11 @@ export async function runTurn(ctx: TurnRunContext, item: PromptQueueItem): Promi
     if (err instanceof OperationStalledError) {
       err.messages = messages;
       err.metering = record;
-      await ctx.owner.lifecycle?.operationFailed?.({ operationId: item.turnId, error: err }).catch((error) => {
+      await ctx.owner.lifecycle?.operationFailed?.({ operationId: turnId, error: err }).catch((error) => {
         ctx.log.warn("operation_failure_recording_failed", { error: String(error) });
       });
       throw err;
     }
-    throw new AgentSessionOperationError(item.turnId, record, err);
+    throw new AgentSessionOperationError(turnId, record, err);
   }
 }

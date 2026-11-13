@@ -7,7 +7,7 @@
 import { transcriptParts, type ResolvedPart } from "../media/parts.ts";
 import { ResponseAccumulator } from "../response.ts";
 import type { PromptHandlers } from "../types.ts";
-import type { PromptQueueItem, TurnRunContext } from "./context.ts";
+import type { TurnRunContext } from "./context.ts";
 import {
   defaultPermissionOutcome,
   permissionRecordOutcome,
@@ -29,7 +29,12 @@ export interface TurnRecording {
   flushAssistantMessage(status: AssistantStatus, stopReason?: string, force?: boolean, ended?: boolean): void;
 }
 
-export function createTurnRecording(ctx: TurnRunContext, item: PromptQueueItem): TurnRecording {
+/** `consumer` are the handlers of the turn's messages, wrapped by the recording handlers. */
+export function createTurnRecording(
+  ctx: TurnRunContext,
+  turnId: string,
+  consumer: PromptHandlers | undefined,
+): TurnRecording {
   const chunks: string[] = [];
   const response = new ResponseAccumulator();
   let assistantOrdinal = 0;
@@ -44,7 +49,7 @@ export function createTurnRecording(ctx: TurnRunContext, item: PromptQueueItem):
   const beginAssistantMessage = (providerMessageId?: string) => {
     assistantOrdinal++;
     assistantMessage = {
-      id: `message:${item.turnId}:assistant:${assistantOrdinal}`,
+      id: `message:${turnId}:assistant:${assistantOrdinal}`,
       ...(providerMessageId === undefined ? {} : { providerMessageId }),
       text: "",
       revision: 0,
@@ -76,18 +81,18 @@ export function createTurnRecording(ctx: TurnRunContext, item: PromptQueueItem):
         agentConversationId: ctx.owner.agentConversationId,
         kind: "message",
         timestamp,
-        operationId: item.turnId,
+        operationId: turnId,
         role: "assistant",
         logicalMessageId: message.id,
         content: message.text,
         status: ended ? "completed" : "in_progress",
-        metadata: JSON.stringify({ operationId: item.turnId,
+        metadata: JSON.stringify({ operationId: turnId,
           ...(message.providerMessageId ? { providerMessageId: message.providerMessageId } : {}) }),
       }, message.parts);
     }
     if (ctx.persistence.v2Transcript) ctx.presentation.queuePresentation({
       kind: "message",
-      operationId: item.turnId,
+      operationId: turnId,
       role: "assistant",
       text: message.parts ? transcriptParts(message.parts) : message.text,
       ...(message.providerMessageId === undefined ? {} : { providerMessageId: message.providerMessageId }),
@@ -109,19 +114,19 @@ export function createTurnRecording(ctx: TurnRunContext, item: PromptQueueItem):
     assistantMessage = null;
   };
   const handlers: PromptHandlers = {
-    ...item.handlers,
+    ...consumer,
     // Fired from here, from the one aggregator this session owns — nothing below needs
     // to know the handler exists, and two places firing it would be two folds.
     onRecord: undefined,
     onChunk: (chunk) => {
       chunks.push(chunk);
-      item.handlers?.onChunk?.(chunk);
+      consumer?.onChunk?.(chunk);
     },
     onResponseChunk: (chunk) => {
       const settledReasoning = ctx.presentation.closeReasoningBoundary();
       if (settledReasoning) {
-        ctx.turn.queueActivityRecords(item.turnId, [settledReasoning]);
-        item.handlers?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
+        ctx.turn.queueActivityRecords(turnId, [settledReasoning]);
+        consumer?.onRecord?.({ current: null, delta: null, emitted: [settledReasoning] });
       }
       response.append(chunk);
       if (ctx.persistence.v2Transcript || ctx.owner.lifecycle) {
@@ -140,21 +145,21 @@ export function createTurnRecording(ctx: TurnRunContext, item: PromptQueueItem):
         // an interleaving item, a new message, or the operation boundary.
         if (current.revision === 0) flushAssistantMessage("in_progress");
       }
-      item.handlers?.onResponseChunk?.(chunk);
+      consumer?.onResponseChunk?.(chunk);
     },
     onActivity: (event) => {
       // The message snapshot must enter the shared queue before an activity first seen
       // after it. Later activity revisions keep their original presentation position.
       if (event.kind === "tool") endAssistantMessage();
       else flushAssistantMessage("in_progress");
-      if (!ctx.supervising) ctx.steering.observeActivity(item.turnId, event);
+      if (!ctx.supervising) ctx.steering.observeActivity(turnId, event);
       const result = ctx.presentation.applyActivity(event);
-      ctx.turn.queueActivityRecords(item.turnId, result.emitted);
-      item.handlers?.onRecord?.(result);
-      item.handlers?.onActivity?.(event);
+      ctx.turn.queueActivityRecords(turnId, result.emitted);
+      consumer?.onRecord?.(result);
+      consumer?.onActivity?.(event);
     },
     onPermissionRequest: async (request, signal) => {
-      const permissionBase = `${item.turnId}:permission:${request.toolCallId}`;
+      const permissionBase = `${turnId}:permission:${request.toolCallId}`;
       if (ctx.owner.agentSessionId) {
         await ctx.owner.recordNow({
           recordId: `${permissionBase}:requested`,
@@ -162,7 +167,7 @@ export function createTurnRecording(ctx: TurnRunContext, item: PromptQueueItem):
           agentConversationId: ctx.owner.agentConversationId,
           kind: "permission",
           timestamp: new Date().toISOString(),
-          operationId: item.turnId,
+          operationId: turnId,
           permissionId: request.toolCallId,
           state: "requested",
           request: toPersistenceJsonValue({
@@ -173,8 +178,8 @@ export function createTurnRecording(ctx: TurnRunContext, item: PromptQueueItem):
           }),
         });
       }
-      const outcome = item.handlers?.onPermissionRequest
-        ? await permissionWithAbort(() => item.handlers!.onPermissionRequest!(request, signal), signal)
+      const outcome = consumer?.onPermissionRequest
+        ? await permissionWithAbort(() => consumer!.onPermissionRequest!(request, signal), signal)
         : defaultPermissionOutcome(request, ctx.session.defaultPermission);
       if (ctx.owner.agentSessionId) {
         await ctx.owner.recordNow({
@@ -183,7 +188,7 @@ export function createTurnRecording(ctx: TurnRunContext, item: PromptQueueItem):
           agentConversationId: ctx.owner.agentConversationId,
           kind: "permission",
           timestamp: new Date().toISOString(),
-          operationId: item.turnId,
+          operationId: turnId,
           permissionId: request.toolCallId,
           state: "resolved",
           outcome: permissionRecordOutcome(request, outcome),

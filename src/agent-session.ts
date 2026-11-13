@@ -179,7 +179,15 @@ import {
   normalizeContinuationStrategies,
   stageOpeningContinuation,
 } from "./agent-conversation-continuation.ts";
-import { runTurn, type PromptQueueItem, type TurnRunContext } from "./conversation-turns/index.ts";
+import {
+  checkTurnRun,
+  runTurn,
+  turnRunOf,
+  type PromptQueueItem,
+  type TurnContext,
+  type TurnRunContext,
+} from "./conversation-turns/index.ts";
+import type { TurnCause, TurnEvent, TurnRun } from "./conversation-controller/contracts.ts";
 import {
   persistenceOperationKind,
   toPersistenceJsonValue,
@@ -463,6 +471,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
   >;
   private detachControllerCommands: (() => void) | null = null;
   private detachControllerUsage: (() => void) | null = null;
+  private detachControllerTurns: (() => void) | null = null;
+  /**
+   * Runs the session sent and whose turn is running or about to (registered before `send`, since
+   * a session-scheduled controller reports `turn_started` inside the call). Keyed by turn id.
+   */
+  private readonly sentRuns = new Map<string, { readonly run: TurnRun; cause?: TurnCause }>();
   private readonly sessions?: SessionManager;
   private readonly _transcriptPath?: string;
   private readonly persistence: false | ResolvedAgentSessionPersistence;
@@ -720,6 +734,32 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this.detachControllerUsage = controller.subscribeUsageUpdate((update, sessionId) => {
       if (this.controller === controller) this.applyUsageUpdate(update, sessionId);
     });
+    this.detachControllerTurns?.();
+    this.detachControllerTurns = controller.subscribeTurns((event) => {
+      if (this.controller === controller) this.onControllerTurnEvent(controller, event);
+    });
+  }
+
+  /** A turn the controller reports. The session announces it; completion stays the session's. */
+  private onControllerTurnEvent(controller: AgentController, event: TurnEvent): void {
+    if (event.kind === "turn_took") {
+      // Only backend-scheduled controllers fold items into a running turn (Brief B2).
+      this.log.warn("controller_turn_took_ignored", { turnId: event.turnId });
+      return;
+    }
+    if (!event.sentBySession) {
+      // Turns the backend starts on its own join the queue in Brief B2; no ACP path reports one.
+      this.log.warn("controller_backend_turn_ignored", { turnId: event.turnId });
+      controller.abandonTurn(event.turnId, new Error("backend-started turns are not supported yet"));
+      return;
+    }
+    const sent = this.sentRuns.get(event.turnId);
+    if (!sent) {
+      this.log.warn("controller_turn_unknown", { turnId: event.turnId });
+      return;
+    }
+    sent.cause = event.cause;
+    this.emit({ kind: "turn_started", turnId: event.turnId, cause: event.cause });
   }
 
   private queueOwnedRecord(record: NewConversationRecord, parts?: readonly ResolvedPart[]): void {
@@ -2245,12 +2285,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
           }) as PromptQueueItem;
           this.runningOperationId = prompt.turnId;
           this.steering.turnStarted(prompt);
-          this.emit({ kind: "turn_started", turnId: prompt.turnId });
+          const run = turnRunOf(prompt);
+          const controller = this.controller;
           let stopReason: string | undefined;
           try {
+            checkTurnRun(run, (id) => run.messageIds.includes(id));
+            // Registered before `send`: this controller reports `turn_started` inside the call, and
+            // the session emits it then (with its cause), at the same moment as before.
+            this.sentRuns.set(prompt.turnId, { run });
+            await controller.send(run);
+            const cause = this.sentRuns.get(prompt.turnId)?.cause;
+            if (!cause) throw new Error(`the controller did not report turn ${prompt.turnId}`);
             await this.ensureProvider();
             reportDelivery?.();
-            const result = await this.runPrompt(prompt);
+            const result = await this.runPrompt({ turnId: prompt.turnId, cause, messages: prompt });
             stopReason = result.stopReason;
             this.emit({
               kind: "turn_completed",
@@ -2259,6 +2307,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
             });
             prompt.resolve(result);
           } catch (err) {
+            // A turn that never reached its prepared turn's `prompt()` is released; for one that did,
+            // this does nothing (abandonTurn is idempotent and never stops provider work).
+            controller.abandonTurn(prompt.turnId, err);
             // A prompt that never reached the provider (blocked, rejected, no provider) holds nothing.
             const failure = err instanceof OperationStalledError ? "stalled" : "error";
             const providerFailed = this.providerFailedTurnId === prompt.turnId;
@@ -2271,6 +2322,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             this.emit({ kind: "turn_failed", turnId: prompt.turnId, error: String(err) });
             prompt.reject(err);
           } finally {
+            this.sentRuns.delete(prompt.turnId);
             this.steering.turnEnded(stopReason);
             this.providerFailedTurnId = null;
           }
@@ -3303,8 +3355,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   /** Runs one prompt turn; the turn itself lives in `src/conversation-turns/run-turn.ts`. */
-  private runPrompt(item: PromptQueueItem): Promise<AgentSessionPromptResult> {
-    return runTurn(this.turnRunContext(), item);
+  private runPrompt(turn: TurnContext): Promise<AgentSessionPromptResult> {
+    return runTurn(this.turnRunContext(), turn);
   }
 
   /** What a turn reads and changes in this session (`TurnRunContext`), read live through getters. */
