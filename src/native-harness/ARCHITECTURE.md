@@ -1,7 +1,9 @@
 # Native harness architecture
 
-Status: agreed target architecture; implementation has not started. The initial
-learning milestone is described in [README.md](README.md). The detailed
+Status: target architecture, implemented incrementally. An initial in-memory
+REPL and tool loop exist; current behavior is described in [README.md](README.md).
+The grouped layout below is a target; existing code has not yet been relocated.
+The detailed
 [project spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-project.md)
 and [v1 spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-v1.md)
 define the broader work.
@@ -15,7 +17,7 @@ and locks one session; its channels can run concurrently.
 A channel is one conversation with its own context and inbox. Each channel is a
 sequential actor. The inner loop calls the model, executes requested tools and
 appends their results until the model answers without tools. The outer loop
-starts turns on inbox events, including messages and worker replies. Steering
+starts turns on inbox events, including messages and consumer-supplied events. Steering
 items join a running turn at its next context-building boundary.
 
 The turn state machine is pure:
@@ -43,7 +45,6 @@ it. Judgment goes to inference; policy goes to code.
 | Guards | Limit calls, unattended turns and usage |
 | Event sources and lifecycle events | Feed inboxes and report execution |
 | Function registry | Host implementations of configured function tools |
-| Delegation backend | Open, message, check, stop and list workers |
 | History sources | Search and read past conversations |
 | Execution port | Prepare every command-tool and stdio MCP process |
 
@@ -75,36 +76,43 @@ v1 does not guarantee confidentiality of the text the model sends across channel
 
 ## Intended layout
 
-Create folders as their implementation begins. All folders below are siblings;
-`kernel/` and the feature modules are not nested inside `contracts/`.
+Create folders as their implementation begins. Related modules are grouped under
+`src/`; groups organize files without introducing additional abstraction layers.
+The kernel and feature modules remain separate from contracts. Grouping does not
+relax the dependency boundaries below.
 
 ```text
 src/native-harness/
   README.md, ARCHITECTURE.md, AGENTS.md
+  package.json, bun.lock, tsconfig.json
   .res/decisions/         decision records, created when needed
   .res/sandbox/          learning experiments
-  index.ts               public session API
-  client.ts              HarnessClient, transports, pure describe(config)
-  testing.ts             scripted model and conformance helpers
-  contracts/             neutral types and documented interfaces
-  kernel/                session, channel, turn machine, runner, lifecycle
-  context/               pipeline, renderers, compactors, context stores
-  model/                 clients, middleware chains, later profiles
-  tools/                 registry, middleware chains, providers
-  permissions/           permission-gate adapters
-  policy/                resolution, permission patterns, presets
-  guards/                execution limits
-  events/                inbox event sources
-  config/                schema, loading, versions
-  identity/              timeline, positions, digests, state, members
-  delegation/            remote host backend; native subagents later
-  history/               own-channel and remote history sources
-  usage/                 usage ledger by purpose
-  execution/             local and prefix execution adapters
-  protocol/              JSON-RPC server/client, stdio and in-process transports
-  storage/               SQLite identity core, export/import bundles
-  cli/                   main.ts and CLI commands
-  testing/               scripted client, golden helpers, conformance suites
+  src/
+    index.ts             public session API
+    contracts/           neutral types and documented interfaces
+    kernel/              session, channel, turn machine, runner, lifecycle
+    capabilities/
+      model/             clients, middleware chains, later profiles
+      tools/             registry, middleware chains, providers
+      context/           pipeline, renderers, compactors, context stores
+    governance/
+      permissions/       permission-gate adapters
+      policy/            resolution, permission patterns, presets
+      guards/            execution limits
+    state/
+      identity/          timeline, positions, digests, state, members
+      history/           own-channel and remote history sources
+      storage/           SQLite identity core, export/import bundles
+    runtime/
+      config/            schema, loading, versions
+      events/            inbox event sources
+      execution/         local and prefix execution adapters
+      usage/             usage ledger by purpose
+    interfaces/
+      cli/               main.ts and CLI commands
+      protocol/          JSON-RPC server/client and transports
+      client.ts          HarnessClient, transports, pure describe(config)
+    testing/             scripted client, golden helpers, conformance suites
   test/                  unit tests, scenarios, golden requests
 ```
 
@@ -112,9 +120,28 @@ Phase 2 adds memory consolidation and the members' MCP server. Dedicated optiona
 entry points such as `openai-compatible.ts` and `mcp.ts` keep heavy dependencies
 out of the core import path.
 
+## Instructions, tools and consumer configuration
+
+Consumers configure the system prompt, tools and policy. Harness-owned
+instructions live beside the capability that uses them, such as context
+construction under `src/capabilities/context/`; there is no separate root
+instructions module. Keep each native tool's definition and implementation
+together in its owning capability. The tool registry exposes the selected
+definitions and routes execution through contracts.
+
+Entry points assemble configuration and implementations. Model adapters translate
+tool definitions into the provider's native tools field; definitions do not need
+to be duplicated in the system prompt. The kernel receives prepared inputs and
+coordinates execution without owning prompt text or specific tools.
+
+Coding workers and their orchestration belong to the consumer, initially
+acp-client. The harness has no built-in delegation subsystem. A consumer can
+expose workers through configured tools and describe their use in its system
+prompt; the harness handles those through its ordinary tool and event contracts.
+
 ## Dependency boundaries
 
-- `contracts/` imports nothing. `kernel/` imports only contracts.
+- `src/contracts/` imports nothing. `src/kernel/` imports only contracts.
 - Feature modules depend on contracts, never another module's internals. Shared
   helpers may live in a small `util/` depending only on contracts. Composition is
   performed at entry points through the contracts.
@@ -122,7 +149,7 @@ out of the core import path.
   package dependencies belong at the appropriate adapter edge and are listed in
   the README.
 - Production acp-client integration belongs in `src/native/` and imports only
-  harness entry points. Hosts use `client.ts`, never kernel internals.
+  public harness entry points. Hosts use the client interface, never kernel internals.
 - Dependency checks must be automated in CI as implementation begins; no such
   checker has been added yet. Files over about 400 lines or modules over about
   2,000 need a documented reason in review.
@@ -131,8 +158,8 @@ out of the core import path.
 
 The harness owns its model calls, tools, credentials and storage. It runs standalone
 or as `harness serve --stdio`, using its own versioned JSON-RPC protocol. Hosts use
-the same API through stdio or in-process transports; function implementations,
-delegation and history cross the process boundary as host callbacks.
+the same API through stdio or in-process transports; configured host functions
+and history sources can cross the process boundary as host callbacks.
 
 V1 stores the identity core in SQLite through `bun:sqlite`; channel contexts are
 in memory with optional JSONL snapshots. Export/import moves the whole entity.
@@ -143,6 +170,8 @@ compaction. Conformance suites check each adapter. Golden files check neutral
 requests and provider JSON. Live model evals are separate and opt-in; tests need
 no provider credentials. Both transports must pass the same scenarios.
 
-The full foundation builds contracts, conformance skeletons, the kernel and golden
-requests before independent feature work. The initial learning slice exercises
-the basic loop first; it does not claim these broader milestones are complete.
+Build working behavior incrementally rather than completing modules one by one.
+Each increment introduces only the contracts and implementations it needs, with
+appropriate offline checks. Contract decisions precede dependent implementations;
+bounded feature work can be delegated once its direction and contracts are clear.
+Use the detailed specs later to check gaps and complete the intended system.

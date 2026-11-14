@@ -6,8 +6,10 @@ is intended to become a separate package: it must not import acp-client modules.
 
 ## Current state
 
-The architecture is agreed; implementation has not started. There is no runnable
-harness CLI or public API yet. Experiments live in [.res/sandbox/](.res/sandbox/).
+An initial in-memory REPL and tool loop are implemented. It uses OpenRouter native
+tool calls, retains messages between prompts and includes one harmless
+`current_time` tool. There is no public session API or stdio protocol yet.
+Experiments live in [.res/sandbox/](.res/sandbox/).
 
 We are starting with a small, hands-on learning milestone before delegating the
 broader implementation:
@@ -25,13 +27,33 @@ tool execution separate from the beginning.
 
 ## Development
 
-The repository uses TypeScript and Bun (currently Bun >= 1.3.5). No additional
-harness dependencies have been introduced. Record new runtime and development
-dependencies here until the harness has its own package manifest.
+This directory is an independent TypeScript and Bun project (Bun >= 1.3.5), with
+its own package manifest, lockfile and TypeScript configuration. It does not
+depend on the parent acp-client package. Development dependencies are TypeScript
+and Bun types; there are no runtime dependencies.
 
-Once implemented, the standalone CLI entry point will be `cli/main.ts`, and
-harness tests will live in `test/`. Add verified run and test commands here when
-those entry points exist.
+From this directory:
+
+```sh
+bun install
+bun run typecheck
+bun run test
+OPENROUTER_API_KEY=your-key bun run start
+```
+
+The REPL entry point is `cli/main.ts`. Its `systemPrompt` variable and `messages`
+array are the initial configuration and history. Type `/exit` to quit. Ask for
+the current time to exercise tool use. The default model is
+`deepseek/deepseek-v4.1-flash`; override it with `OPENROUTER_MODEL`.
+
+`kernel/loop.ts` coordinates turns; `model/openrouter.ts` translates provider
+messages. Tool definitions and execution are configured in the REPL. Only
+`current_time` is permitted. Offline tests cover loop continuation, history and
+provider request mapping. No runtime dependencies were added.
+
+This first slice has no call limit, streaming, persistence, cancellation or
+timeout. API failures stop the REPL; tool errors are returned to the model.
+Terminal output here is for interactive use, not a stdio server protocol.
 
 ## Documents
 

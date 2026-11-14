@@ -1,0 +1,27 @@
+/** One requested tool invocation; arguments remain JSON until execution. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/** Neutral history. Provider state is opaque to the loop. */
+export type Message =
+  | { role: "system" | "user"; content: string }
+  | { role: "assistant"; content: string | null; calls: ToolCall[]; providerState?: unknown }
+  | { role: "tool"; content: string; callId: string };
+
+/** JSON schema describing the arguments accepted by a configured tool. */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** Returns one complete assistant response, without executing tools. */
+export type Model = (
+  messages: readonly Message[], tools: readonly ToolDefinition[],
+) => Promise<Extract<Message, { role: "assistant" }>>;
+
+/** Executes only permitted tools; returns serialized successes or errors. */
+export type ExecuteTool = (call: ToolCall) => Promise<string>;
