@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createInspection } from "../src/interfaces/inspector/state.ts";
 import { serveInspector } from "../src/interfaces/inspector/server.ts";
-import type { Message } from "../contracts/loop.ts";
+import type { Message } from "../src/contracts/loop.ts";
 
 test("inspection snapshots do not alias live history or inference requests", () => {
   const inspection = createInspection("system");

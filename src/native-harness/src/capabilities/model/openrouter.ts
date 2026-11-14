@@ -1,4 +1,4 @@
-import type { Model } from "../contracts/loop.ts";
+import type { Model } from "../../contracts/loop.ts";
 
 /** Non-streaming adapter. Opaque assistant fields stay with OpenRouter. */
 export function openRouter(apiKey: string, model: string, onRequest?: (body: string) => void): Model {

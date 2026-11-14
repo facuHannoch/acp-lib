@@ -1,4 +1,4 @@
-import type { Agent, ChannelInput } from "../../../contracts/agent.ts";
+import type { Agent, ChannelInput } from "../../contracts/agent.ts";
 
 /** Experimental local HTTP interface; caller identity is self-reported. */
 export function serveLocal(agent: Agent, socketPath: string) {

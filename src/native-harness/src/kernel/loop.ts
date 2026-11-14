@@ -11,6 +11,8 @@ export async function runTurn(
   messages.push({ role: "user", content: prompt });
   while (true) {
     const answer = await model(messages, tools);
+    // Record the requesting assistant before its results, preserving the order
+    // required to pair every tool result with the call that produced it.
     messages.push(answer);
     if (answer.calls.length === 0) return answer.content ?? "";
 

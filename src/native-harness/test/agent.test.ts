@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createAgent } from "../kernel/agent.ts";
-import { runTurn } from "../kernel/loop.ts";
-import type { Message } from "../contracts/loop.ts";
+import { createAgent } from "../src/kernel/agent.ts";
+import { runTurn } from "../src/kernel/loop.ts";
+import type { Message } from "../src/contracts/loop.ts";
 import { sendLocal, serveLocal } from "../src/interfaces/protocol/local.ts";
 
 test("channels run concurrently, preserve separate histories, and queue their own turns", async () => {

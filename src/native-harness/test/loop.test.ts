@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import type { Message, Model } from "../contracts/loop.ts";
-import { runTurn } from "../kernel/loop.ts";
-import { openRouter } from "../model/openrouter.ts";
+import type { Message, Model } from "../src/contracts/loop.ts";
+import { runTurn } from "../src/kernel/loop.ts";
+import { openRouter } from "../src/capabilities/model/openrouter.ts";
 
 test("continues through multiple tools and retains history for the next turn", async () => {
   const messages: Message[] = [{ role: "system", content: "Test" }];

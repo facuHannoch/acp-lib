@@ -12,6 +12,10 @@ Detailed scope and acceptance criteria live in the linked research specs.
   from outside it. Record external dependencies in the README.
 - Keep the kernel limited to coordination. Rendering, provider formats, tools,
   permission rules, retries and compaction belong behind contracts.
+- Use the grouped `src/` layout in ARCHITECTURE.md. Create folders only as needed;
+  do not add feature modules beside the package manifest.
+- Entry points assemble and dispatch. Tool behavior, transport handling and
+  observation logic belong in their owning modules, not in the CLI entry point.
 - `contracts/` imports nothing; `kernel/` imports only contracts. Feature modules
   communicate through contracts, never another module's internals. A small
   `util/` may import only contracts. Assemble implementations at entry points.
@@ -37,6 +41,8 @@ Detailed scope and acceptance criteria live in the linked research specs.
 
 ## Implementation and verification
 
+- Add comments explaining non-obvious ownership, sequencing and design decisions.
+  Do not merely restate function names. Keep comments current when behavior moves.
 - Keep data provider-neutral; translate provider shapes only inside model clients.
   Preserve reasoning data unchanged and return it only to its originating provider.
 - Enforce rights in code. Tool placement and prompt text do not replace a gate.

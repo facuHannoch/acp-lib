@@ -1,4 +1,4 @@
-import type { Message } from "../../../contracts/loop.ts";
+import type { Message } from "../../contracts/loop.ts";
 
 export interface InspectedChannel {
   id: string;
@@ -38,6 +38,8 @@ export function createInspection(systemPrompt: string) {
     },
     running(id: string, running: boolean) { channel(id).running = running; publish(); },
     history(id: string, messages: readonly Message[]) {
+      // A shallow array copy would still share message objects with the agent.
+      // Deep-copy at capture time so subsequent mutations cannot rewrite a view.
       channel(id).messages = structuredClone([...messages]); publish();
     },
     request(id: string, body: string) {

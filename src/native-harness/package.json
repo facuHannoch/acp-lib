@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun run cli/main.ts start",
-    "chat": "bun run cli/main.ts chat",
+    "start": "bun run src/interfaces/cli/main.ts start",
+    "chat": "bun run src/interfaces/cli/main.ts chat",
     "typecheck": "tsc --noEmit",
     "test": "bun test ./test"
   },

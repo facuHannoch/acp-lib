@@ -3,7 +3,8 @@
 Status: target architecture, implemented incrementally. An initial in-memory
 agent with channel queues, terminal clients and a tool loop exists; current
 behavior is described in [README.md](README.md).
-The grouped layout below is a target; existing code has not yet been relocated.
+Existing modules follow the grouped layout below; future folders are created
+only as their implementation begins.
 The detailed
 [project spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-project.md)
 and [v1 spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-v1.md)

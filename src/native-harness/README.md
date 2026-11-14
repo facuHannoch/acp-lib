@@ -69,7 +69,9 @@ Ctrl+C in the agent terminal stops it and loses all histories. Ask for the curre
 time to exercise tool use. Tools and results are logged in the agent terminal;
 chat clients receive the final answer.
 
-`cli/main.ts` assembles the agent with a `systemPrompt` variable, model and tools.
+`src/interfaces/cli/main.ts` dispatches commands; `start.ts` beside it assembles
+the agent and servers, and `chat.ts` owns terminal interaction. Development
+defaults, including `systemPrompt`, live in `src/runtime/config/development.ts`.
 The default model is `deepseek/deepseek-v4.1-flash`; override it with
 `OPENROUTER_MODEL` on the agent process. Each input includes a participant ID,
 which is labeled in model context. This is caller-supplied identity, not
@@ -82,11 +84,13 @@ it; the parent directory must exist. A second agent cannot use an occupied socke
 The Unix socket transport targets Linux/macOS. Its `/messages` endpoint is an
 experimental local interface, not the eventual host protocol.
 
-`kernel/agent.ts` owns channels and queues; `kernel/loop.ts` coordinates turns;
-`model/openrouter.ts` translates provider messages. Tool definitions and execution
-are configured at the CLI entry point. Only `current_time` is permitted. New
-transport code follows the grouped layout at `src/interfaces/protocol/local.ts`;
-earlier files have not been relocated yet.
+`src/kernel/agent.ts` owns channels and queues; `src/kernel/loop.ts` coordinates
+turns; `src/capabilities/model/openrouter.ts` translates provider messages. The
+time tool owns its definition, validation and execution in
+`src/capabilities/tools/current-time.ts`; the startup command selects it. Only
+`current_time` is permitted. Transport code lives in
+`src/interfaces/protocol/local.ts`. Inspection wrappers live in
+`src/interfaces/inspector/observe.ts`, keeping observation out of the kernel.
 
 Offline tests cover loop continuation, provider request mapping, channel
 concurrency and ordering, history separation, failure isolation and Unix HTTP
