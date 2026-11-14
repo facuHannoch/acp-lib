@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harness context inspector</title>
+<style>
+  :root { color-scheme: light dark; font: 15px system-ui; }
+  body { margin: 0; background: light-dark(#f7f8fa,#15171b); }
+  header { padding: 18px 24px; border-bottom: 1px solid #8885; display: flex; gap: 24px; align-items: baseline; }
+  h1 { font-size: 19px; margin: 0; } h2 { font-size: 18px; }
+  #connection, .muted { color: light-dark(#586174,#aab3c3); }
+  .layout { display: grid; grid-template-columns: 230px minmax(0,1fr); min-height: 85vh; }
+  nav { padding: 16px; border-right: 1px solid #8885; }
+  button { display: block; width: 100%; text-align: left; padding: 12px; margin-bottom: 8px; border: 1px solid #8885; border-radius: 7px; cursor: pointer; overflow-wrap: anywhere; }
+  button[aria-current=true] { border-color: #688def; background: light-dark(#e5edff,#253352); }
+  main { padding: 12px 24px 40px; min-width: 0; }
+  article, details.request { border: 1px solid #8885; border-radius: 8px; margin: 12px 0; padding: 14px; background: light-dark(white,#1d2026); }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace,monospace; }
+  summary { cursor: pointer; } .error { color: light-dark(#ac2525,#ff9999); }
+  @media(max-width:650px) { .layout { grid-template-columns: 1fr; } nav { border-right: 0; } }
+</style>
+<header><h1>Harness context inspector</h1><span id="connection">Connecting…</span></header>
+<div class="layout"><nav id="channels"></nav><main id="content">Send a message from a chat terminal to create a channel.</main></div>
+<script>
+  let channels = [], selected = null;
+  const nav = document.querySelector('#channels'), main = document.querySelector('#content');
+  function node(tag, text, className) {
+    const element = document.createElement(tag);
+    if (text !== undefined) element.textContent = text;
+    if (className) element.className = className;
+    return element;
+  }
+  function json(value) { return node('pre', JSON.stringify(value, null, 2)); }
+  function render() {
+    nav.replaceChildren();
+    if (!selected && channels.length) selected = channels[0].id;
+    for (const channel of channels) {
+      const status = channel.error ? 'failed' : channel.running ? 'running' : channel.pending ? 'queued' : 'idle';
+      const button = node('button', channel.id + ' · ' + status);
+      button.setAttribute('aria-current', String(channel.id === selected));
+      button.onclick = () => { selected = channel.id; render(); };
+      nav.append(button);
+    }
+    const channel = channels.find(c => c.id === selected);
+    if (!channel) return;
+    // Preserve expanded snapshots when a live update replaces the view.
+    const expanded = new Set([...main.querySelectorAll('details[data-key][open]')].map(e => e.dataset.key));
+    main.replaceChildren(node('h2', 'Channel ' + channel.id));
+    main.append(node('p', 'Participants: ' + channel.participants.join(', ') + ' · Pending turns: ' + channel.pending, 'muted'));
+    if (channel.error) main.append(node('p', channel.error, 'error'));
+    main.append(node('h2', 'Live history'));
+    for (const [index, message] of channel.messages.entries()) {
+      const card = node('article');
+      card.append(node('strong', (index + 1) + ' · ' + message.role), node('pre', message.content ?? ''));
+      if (message.calls?.length) card.append(node('p', 'Tool calls'), json(message.calls));
+      if (message.callId) card.append(node('p', 'Call ID: ' + message.callId, 'muted'));
+      if (message.providerState) {
+        const raw = node('details'); raw.dataset.key = channel.id + ':message:' + index;
+        raw.open = expanded.has(raw.dataset.key);
+        raw.append(node('summary', 'Provider response'), json(message.providerState)); card.append(raw);
+      }
+      main.append(card);
+    }
+    main.append(node('h2', 'Inference requests'), node('p', 'Exact JSON body sent to OpenRouter, including context and tool definitions. Authorization headers are excluded.', 'muted'));
+    for (const request of channel.requests) {
+      const details = node('details', undefined, 'request');
+      details.dataset.key = channel.id + ':request:' + request.number;
+      details.open = expanded.has(details.dataset.key);
+      details.append(node('summary', '#' + request.number + ' · ' + request.at), json(request.body));
+      main.append(details);
+    }
+  }
+  const events = new EventSource('/events');
+  events.onopen = () => { document.querySelector('#connection').textContent = 'Live · read only'; };
+  events.onerror = () => { document.querySelector('#connection').textContent = 'Disconnected · reconnecting…'; };
+  events.onmessage = event => { channels = JSON.parse(event.data); render(); };
+</script>
+</html>

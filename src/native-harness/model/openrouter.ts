@@ -1,12 +1,9 @@
 import type { Model } from "../contracts/loop.ts";
 
 /** Non-streaming adapter. Opaque assistant fields stay with OpenRouter. */
-export function openRouter(apiKey: string, model: string): Model {
+export function openRouter(apiKey: string, model: string, onRequest?: (body: string) => void): Model {
   return async (messages, tools) => {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
+    const body = JSON.stringify({
         model,
         messages: messages.map((message) => {
           if (message.role === "assistant") return message.providerState ?? {
@@ -22,7 +19,12 @@ export function openRouter(apiKey: string, model: string): Model {
           return message;
         }),
         ...(tools.length ? { tools: tools.map((tool) => ({ type: "function", function: tool })) } : {}),
-      }),
+      });
+    onRequest?.(body);
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body,
     });
     if (!response.ok) throw new Error(`OpenRouter HTTP ${response.status}: ${await response.text()}`);
     const payload = await response.json() as {

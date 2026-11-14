@@ -40,7 +40,8 @@ test("OpenRouter maps neutral messages and preserves opaque assistant state", as
     return Response.json({ choices: [{ finish_reason: "tool_calls", message: raw }] });
   }) as typeof fetch;
   try {
-    const model = openRouter("fake-key", "test-model");
+    const observed: unknown[] = [];
+    const model = openRouter("fake-key", "test-model", (body) => observed.push(JSON.parse(body)));
     const tools = [{ name: "clock", description: "Time", parameters: { type: "object" } }];
     const first = await model([{ role: "user", content: "Time?" }], tools);
     expect(first.calls).toEqual([{ id: "a", name: "clock", arguments: "{}" }]);
@@ -50,5 +51,7 @@ test("OpenRouter maps neutral messages and preserves opaque assistant state", as
       messages: [raw, { role: "tool", tool_call_id: "a", content: "now" }],
       tools: [{ type: "function", function: tools[0] }],
     });
+    expect(observed).toEqual(bodies);
+    expect(JSON.stringify(observed)).not.toContain("fake-key");
   } finally { globalThis.fetch = original; }
 });

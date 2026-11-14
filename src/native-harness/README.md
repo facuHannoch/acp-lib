@@ -49,6 +49,20 @@ bun run chat channel1 alice
 bun run chat channel2 bob
 ```
 
+Open `http://127.0.0.1:3000` for the read-only context inspector. It starts with
+the agent and shows channels, participants, pending turns, execution status and
+live message history, including tool calls and results. Expand an inference
+request to see the exact JSON body sent to OpenRouter, including context and tool
+definitions. Authorization headers are not captured. Snapshots remain unchanged
+as later turns run. Provider response details can also be expanded in history.
+
+The page receives live updates over Server-Sent Events and reconnects with a
+fresh snapshot. Set `HARNESS_INSPECTOR_PORT` on the agent to override port 3000
+(use 0 to choose an available port); the actual URL is printed at startup.
+The inspector binds only to `127.0.0.1` and stops with the agent. Inspection
+history is in memory, grows during the run, and is lost on restart. It is a local
+development view, without participant access controls or editing capabilities.
+
 The chat clients do not need provider credentials. Type `/exit` to disconnect.
 Reconnecting to the same channel continues its history while the agent is alive.
 Ctrl+C in the agent terminal stops it and loses all histories. Ask for the current
@@ -76,7 +90,8 @@ earlier files have not been relocated yet.
 
 Offline tests cover loop continuation, provider request mapping, channel
 concurrency and ordering, history separation, failure isolation and Unix HTTP
-requests. Socket tests require permission to open a local listener. No runtime
+requests, immutable inspection snapshots and SSE updates/reconnection. Socket
+and inspector tests require permission to open local listeners. No runtime
 dependencies were added.
 
 This first slice has no call limit, streaming, persistence, cancellation or
