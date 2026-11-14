@@ -1,14 +1,16 @@
 # Native harness
 
-One agent entity, with a stable identity, talking on many channels and delegating
-environment work to existing harnesses. This directory lives inside acp-client but
+One agent entity, with a stable identity, talking on many channels. Consumers
+configure its instructions, tools and policy. This directory lives inside acp-client but
 is intended to become a separate package: it must not import acp-client modules.
 
 ## Current state
 
-An initial in-memory REPL and tool loop are implemented. It uses OpenRouter native
-tool calls, retains messages between prompts and includes one harmless
-`current_time` tool. There is no public session API or stdio protocol yet.
+An initial in-memory agent, channel queues, terminal clients and tool loop are
+implemented. A separate agent process accepts messages over HTTP on a Unix socket.
+Each channel has its own history and sequential queue; different channels execute
+concurrently. It uses OpenRouter native tool calls and includes one harmless
+`current_time` tool. There is no complete public session API or stdio protocol yet.
 Experiments live in [.res/sandbox/](.res/sandbox/).
 
 We are starting with a small, hands-on learning milestone before delegating the
@@ -20,10 +22,9 @@ broader implementation:
 3. Show requests, tool calls, results and stop reasons; enforce a call limit.
 4. Reproduce the behavior offline with a scripted model before expanding it.
 
-This milestone is a slice of the design, not completion of v1 part 1. Sessions,
-multiple channels, policies, persistence, MCP, delegation and server mode follow
-the existing specs as implementation progresses. Keep the loop, model client and
-tool execution separate from the beginning.
+This milestone is a slice of the design, not completion of v1 part 1. Richer
+sessions, participant policies, shared identity context, persistence, MCP and the
+host protocol remain to be built. Coding-worker integration belongs to acp-client.
 
 ## Development
 
@@ -41,19 +42,48 @@ bun run test
 OPENROUTER_API_KEY=your-key bun run start
 ```
 
-The REPL entry point is `cli/main.ts`. Its `systemPrompt` variable and `messages`
-array are the initial configuration and history. Type `/exit` to quit. Ask for
-the current time to exercise tool use. The default model is
-`deepseek/deepseek-v4.1-flash`; override it with `OPENROUTER_MODEL`.
+Leave the agent running. In separate terminals, from this directory:
 
-`kernel/loop.ts` coordinates turns; `model/openrouter.ts` translates provider
-messages. Tool definitions and execution are configured in the REPL. Only
-`current_time` is permitted. Offline tests cover loop continuation, history and
-provider request mapping. No runtime dependencies were added.
+```sh
+bun run chat channel1 alice
+bun run chat channel2 bob
+```
+
+The chat clients do not need provider credentials. Type `/exit` to disconnect.
+Reconnecting to the same channel continues its history while the agent is alive.
+Ctrl+C in the agent terminal stops it and loses all histories. Ask for the current
+time to exercise tool use. Tools and results are logged in the agent terminal;
+chat clients receive the final answer.
+
+`cli/main.ts` assembles the agent with a `systemPrompt` variable, model and tools.
+The default model is `deepseek/deepseek-v4.1-flash`; override it with
+`OPENROUTER_MODEL` on the agent process. Each input includes a participant ID,
+which is labeled in model context. This is caller-supplied identity, not
+authentication or a participant policy system.
+
+The default socket is `native-harness-<uid>/agent.sock` under the OS temporary
+directory. Its directory and socket are restricted to the current user. Set
+`HARNESS_SOCKET` to an absolute socket path on both server and clients to override
+it; the parent directory must exist. A second agent cannot use an occupied socket.
+The Unix socket transport targets Linux/macOS. Its `/messages` endpoint is an
+experimental local interface, not the eventual host protocol.
+
+`kernel/agent.ts` owns channels and queues; `kernel/loop.ts` coordinates turns;
+`model/openrouter.ts` translates provider messages. Tool definitions and execution
+are configured at the CLI entry point. Only `current_time` is permitted. New
+transport code follows the grouped layout at `src/interfaces/protocol/local.ts`;
+earlier files have not been relocated yet.
+
+Offline tests cover loop continuation, provider request mapping, channel
+concurrency and ordering, history separation, failure isolation and Unix HTTP
+requests. Socket tests require permission to open a local listener. No runtime
+dependencies were added.
 
 This first slice has no call limit, streaming, persistence, cancellation or
-timeout. API failures stop the REPL; tool errors are returned to the model.
-Terminal output here is for interactive use, not a stdio server protocol.
+model timeout. A model or unexpected execution failure blocks that channel until
+agent restart, avoiding reuse of an incomplete tool exchange; other channels keep
+working. Tool errors are returned to the model. Disconnecting a client does not
+cancel an accepted turn. Channels do not yet share experience or memory.
 
 ## Documents
 

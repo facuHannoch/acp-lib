@@ -1,7 +1,8 @@
 # Native harness architecture
 
 Status: target architecture, implemented incrementally. An initial in-memory
-REPL and tool loop exist; current behavior is described in [README.md](README.md).
+agent with channel queues, terminal clients and a tool loop exists; current
+behavior is described in [README.md](README.md).
 The grouped layout below is a target; existing code has not yet been relocated.
 The detailed
 [project spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-project.md)
