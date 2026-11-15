@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `5e01135` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Metering observer fixes; owner decisions received | Beta `5e01135` includes `0013b0f` resolving metering questions 4–5. Reviewer incorporated it at `2d9ca84`; implementer remains at `c33f5b6` with watcher/report edits uncommitted and must incorporate beta. Independent review and coordinator gate pending. |
+| A2 | Metering observer independent review | Implementation `9273d4a` includes beta `5e01135` and consolidated exception `e3c65e6`; reviewer assigned. Study 6 has three checkpoint timestamp failures on A1/A2 with suspected clock drift; cause and gate impact under review. Coordinator gate pending. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
