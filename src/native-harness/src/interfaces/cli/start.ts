@@ -4,51 +4,70 @@ import { mkdir } from "node:fs/promises";
 import { createChannelScheduler } from "../../kernel/channels.ts";
 import { runTurn } from "../../kernel/loop.ts";
 import { openRouter } from "../../capabilities/model/openrouter.ts";
-import { currentTimeDefinition, executeCurrentTime } from "../../capabilities/tools/current-time.ts";
+import { createDashboardWork } from "../../capabilities/tools/dashboard.ts";
+import { createScenarioTools, scenarioDefinitions } from "../../capabilities/tools/scenario.ts";
+import type { Agent } from "../../contracts/agent.ts";
 import { agentConfiguration, systemPrompt } from "../../runtime/config/development.ts";
 import { createInspection } from "../inspector/state.ts";
 import { observeAgent, observeContext, observeModel, observeTurn } from "../inspector/observe.ts";
 import { serveInspector } from "../inspector/server.ts";
-import { serveLocal } from "../protocol/local.ts";
+import { createChannelHandler, serveLocal } from "../protocol/local.ts";
+import { createChannelOutputs, deliverTurnOutput } from "../protocol/output.ts";
+import { serveWebChat } from "../web-chat/server.ts";
 
 export async function start() {
   const config = agentConfiguration();
   if (config.managedDirectory) await mkdir(config.managedDirectory, { recursive: true, mode: 0o700 });
-  const inspection = createInspection(systemPrompt, [currentTimeDefinition]);
+  const inspection = createInspection(systemPrompt, scenarioDefinitions);
   const store = createSharedContextStore();
   const stopObserving = observeContext(store, inspection,
     (entries) => buildSharedContext(entries, systemPrompt));
-  const turn = observeTurn((input) => {
+  const dashboard = createDashboardWork();
+  const outputs = createChannelOutputs();
+  let agent: Agent;
+  const observedTurn = observeTurn((input, mailbox) => {
+    const scenario = createScenarioTools(input, dashboard, notice => agent.notify(notice));
     const model = observeModel(inspection, input.channelId,
-      (onRequest) => openRouter(config.apiKey, config.model, onRequest), input.turnId);
+      (onRequest) => {
+        const provider = openRouter(config.apiKey, config.model, onRequest);
+        return (messages, tools) => { scenario.beginInference(); return provider(messages, tools); };
+      }, input.turnId);
     return runTurn({
+      drainNotices: mailbox.drain,
+      finish: mailbox.finish,
       append(message) {
         store.append({ channelId: input.channelId, turnId: input.turnId,
           from: message.role === "tool" ? "tool" : "agent", message });
       },
       // Read immediately before each inference, including calls after tool use.
       build: () => buildContext(store.snapshot(), systemPrompt, input),
-    }, model, [currentTimeDefinition], executeCurrentTime);
+    }, model, scenarioDefinitions, scenario.execute);
   }, inspection);
-  const agent = observeAgent(createChannelScheduler(store, turn), inspection);
+  const turn = deliverTurnOutput(observedTurn, outputs);
+  agent = observeAgent(createChannelScheduler(store, turn), inspection);
 
   // Restrict the socket itself as well as the default parent directory.
   process.umask(0o077);
-  const server = serveLocal(agent, config.socketPath);
-  let inspector: ReturnType<typeof serveInspector>;
+  const server = serveLocal(agent, config.socketPath, outputs);
+  let inspector: ReturnType<typeof serveInspector> | undefined;
+  let webChat: ReturnType<typeof serveWebChat>;
   try {
     const port = config.inspectorPort;
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid HARNESS_INSPECTOR_PORT");
+    if (!Number.isInteger(config.webChatPort) || config.webChatPort < 0 || config.webChatPort > 65535) throw new Error("Invalid HARNESS_CHAT_PORT");
     inspector = serveInspector(inspection, port);
+    webChat = serveWebChat(createChannelHandler(agent, outputs), config.webChatPort);
   } catch (error) {
     // Startup is all-or-nothing: do not leave an agent listening if the inspector
     // could not bind its port and the command reports a startup failure.
     await server.stop(true);
+    await inspector?.stop(true);
     throw error;
   }
   console.log(`Agent listening at ${config.socketPath}. Ctrl+C stops it and clears all history.`);
   console.log(`Context inspector: ${inspector.url}`);
-  const stop = () => { stopObserving(); server.stop(true); inspector.stop(true); };
+  for (const url of webChat.urls) console.log(`Web chat pairing link: ${url}`);
+  const stop = () => { stopObserving(); server.stop(true); inspector?.stop(true); webChat.server.stop(true); };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
 }

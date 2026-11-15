@@ -12,7 +12,11 @@
   .layout { display: grid; grid-template-columns: 230px minmax(0,1fr); min-height: 85vh; }
   nav { padding: 16px; border-right: 1px solid #8885; }
   button { display: block; width: 100%; text-align: left; padding: 12px; margin-bottom: 8px; border: 1px solid #8885; border-radius: 7px; cursor: pointer; overflow-wrap: anywhere; }
-  button[aria-current=true] { border-color: #688def; background: light-dark(#e5edff,#253352); }
+  button[aria-current=true] { border-color: #888a; font-weight: 600; background: light-dark(#e5edff,#253352); }
+  #channels button.working { border-color: #548deb; box-shadow: 0 0 5px #548deb33; animation: working-glow 2s ease-in-out infinite alternate; }
+  #channels button.working::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: #548deb; box-shadow: 0 0 6px #548deb; }
+  @keyframes working-glow { to { box-shadow: 0 0 9px #548deb55; } }
+  @media(prefers-reduced-motion: reduce) { #channels button.working { animation: none; } }
   .tabs { display: flex; gap: 8px; padding: 12px 24px; border-bottom: 1px solid #8885; }
   .tabs button { width: auto; margin: 0; }
   .tabs button[aria-selected=true] { border-color: #688def; background: light-dark(#e5edff,#253352); }
@@ -23,6 +27,7 @@
   article.context-card { border: 2px solid #df8a27; }
   article.result-card { border: 2px solid #548deb; }
   .prompt-highlight { color: light-dark(#934100,#ffc078); background: light-dark(#fff0dc,#593615); border-radius: 3px; }
+  .notice-highlight { color: light-dark(#6d28a1,#ddb4ff); background: light-dark(#f2e6ff,#43205e); border-radius: 3px; }
   .turn-divider { display: flex; gap: 16px; align-items: center; margin: 32px 0 16px; }
   .turn-divider::before, .turn-divider::after { content: ''; flex: 1; border-top: 1px solid #8888; }
   .iteration { margin-bottom: 28px; }
@@ -41,6 +46,7 @@
 <script>
   let channels = [], selected = null, tab = "live";
   let liveContext = { systemPrompt: "", tools: [], entries: [] };
+  let connectionStatus = 'connecting';
   const nav = document.querySelector('#channels'), main = document.querySelector('#content');
   function node(tag, text, className) {
     const element = document.createElement(tag);
@@ -62,6 +68,10 @@
     return card;
   }
   function render() {
+    const working = channels.filter(channel => channel.running).length;
+    document.querySelector('#connection').textContent = connectionStatus === 'live'
+      ? 'Live · working in ' + working + ' ' + (working === 1 ? 'channel' : 'channels') + ' · read only'
+      : connectionStatus === 'connecting' ? 'Connecting…' : 'Disconnected · reconnecting…';
     const expanded = new Set([...main.querySelectorAll('details[data-key][open]')].map(e => e.dataset.key));
     document.querySelector('.layout').classList.toggle('single', tab !== 'channels');
     main.setAttribute('aria-labelledby', 'tab-' + tab);
@@ -73,15 +83,22 @@
       main.append(node('p', 'Shared base context · ' + liveContext.entries.length + ' events', 'muted'));
       // Use the same rendered base as inference construction, without inventing
       // an active channel or prompt. Exact requests remain in Channels.
-      const text = (liveContext.base ?? []).map(message => message.content ?? '').join('\n\n')
-        + '\n\nTools\n' + JSON.stringify(liveContext.tools, null, 2);
-      main.append(node('pre', text, 'context-text'));
+      const text = (liveContext.base ?? []).map(message => message.content ?? '').join('\n\n');
+      const container = node('div', undefined, 'context-text');
+      container.append(node('pre', text));
+      const tools = node('details');
+      tools.dataset.key = 'live:tools';
+      tools.open = expanded.has(tools.dataset.key);
+      tools.append(node('summary', 'Tools'), json(liveContext.tools));
+      container.append(tools);
+      main.append(container);
       return;
     }
     if (!selected && channels.length) selected = channels[0].id;
     for (const channel of channels) {
       const status = channel.error ? 'failed' : channel.running ? 'running' : channel.pending ? 'queued' : 'idle';
       const button = node('button', channel.id + ' · ' + status);
+      button.classList.toggle('working', channel.running && connectionStatus === 'live');
       button.setAttribute('aria-current', String(channel.id === selected));
       button.onclick = () => { selected = channel.id; render(); };
       nav.append(button);
@@ -104,7 +121,10 @@
     for (const [turnId, requests] of turns) {
       main.append(node('h2', turnId === 'unknown' ? 'New turn' : 'Turn ' + turnId, 'turn-divider'));
       const entries = liveContext.entries.filter(e => e.channelId === channel.id && e.turnId === turnId);
-      const prompt = entries.find(e => e.message.role === 'user')?.message.content;
+      const prompt = entries.find(e => e.kind !== 'channel_notice' && e.message.role === 'user')?.message.content;
+      const notices = entries.filter(e => e.kind === 'channel_notice').map(e =>
+        'Internal notice from channel ' + JSON.stringify(e.sourceChannelId) + ' to channel ' + JSON.stringify(e.channelId)
+        + ' (another execution of this same agent):\n' + e.message.content);
       if (!requests.length) main.append(node('p', channel.error ? 'Turn stopped before inference.' : 'Waiting for inference…', 'muted'));
       for (const [index, request] of requests.entries()) {
         const iteration = node('section', undefined, 'iteration');
@@ -116,13 +136,20 @@
           if (message.content != null) {
             const content = node('span', typeof message.content === 'string' ? message.content : JSON.stringify(message.content, null, 2));
             if (message.role === 'user' && message.content === prompt) content.className = 'prompt-highlight';
+            if (message.role === 'user' && notices.includes(message.content)) content.className = 'notice-highlight';
             text.append(content, document.createTextNode('\n\n'));
           }
           const { role, content, ...fields } = message;
           if (Object.keys(fields).length) text.append(document.createTextNode(JSON.stringify(fields, null, 2) + '\n\n'));
         }
-        if (request.body.tools?.length) text.append(document.createTextNode('Tools\n' + JSON.stringify(request.body.tools, null, 2)));
         context.append(node('strong', 'Context'), text);
+        if (request.body.tools?.length) {
+          const tools = node('details');
+          tools.dataset.key = channel.id + ':tools:' + request.number;
+          tools.open = expanded.has(tools.dataset.key);
+          tools.append(node('summary', 'Tools'), json(request.body.tools));
+          context.append(tools);
+        }
         const raw = node('details');
         raw.dataset.key = channel.id + ':request:' + request.number;
         raw.open = expanded.has(raw.dataset.key);
@@ -150,8 +177,8 @@
     button.onclick = () => { tab = button.dataset.tab; render(); };
   });
   const events = new EventSource('/events');
-  events.onopen = () => { document.querySelector('#connection').textContent = 'Live · read only'; };
-  events.onerror = () => { document.querySelector('#connection').textContent = 'Disconnected · reconnecting…'; };
+  events.onopen = () => { connectionStatus = 'live'; render(); };
+  events.onerror = () => { connectionStatus = 'disconnected'; render(); };
   events.onmessage = event => { const state = JSON.parse(event.data); channels = state.channels; liveContext = state.liveContext; render(); };
 </script>
 </html>

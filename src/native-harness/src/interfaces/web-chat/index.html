@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content">
+<title>Harness chat</title>
+<style>
+  :root { color-scheme: dark; font: 16px system-ui; background: #11151d; color: #edf1fa; }
+  * { box-sizing: border-box; } body { margin: 0; }
+  .app { max-width: 800px; margin: auto; height: 100dvh; display: flex; flex-direction: column; }
+  header { padding: 20px; border-bottom: 1px solid #30394b; } h1 { font-size: 20px; margin: 0 0 6px; }
+  #status { font-size: 13px; color: #a3b4d1; } form { display: flex; gap: 8px; }
+  #connect { margin-top: 16px; flex-wrap: wrap; align-items: end; }
+  label { font-size: 12px; color: #a3b4d1; flex: 1; min-width: 120px; }
+  input, textarea, button { font: inherit; padding: 10px 12px; border: 1px solid #3a4962; border-radius: 9px; }
+  input, textarea { color: inherit; background: #1b2230; width: 100%; } input { margin-top: 5px; }
+  button { background: #365f9e; color: white; cursor: pointer; } button:disabled { opacity: .45; cursor: default; }
+  #messages { flex: 1; overflow-y: auto; padding: 20px; } .message { margin-bottom: 16px; padding: 14px; border-radius: 12px; background: #1d2737; }
+  .message.you { background: #253c5b; margin-left: 30px; } .message.error { border: 1px solid #c76464; }
+  .message small { display: block; color: #a3b4d1; margin-bottom: 7px; }
+  .message div { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+  #compose { padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid #30394b; }
+  textarea { resize: none; min-height: 48px; max-height: 180px; flex: 1; }
+  #waiting { min-height: 20px; color: #a3b4d1; font-size: 13px; padding: 0 20px; }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid #4c6384; border-top-color: #a4c5ff; border-radius: 50%; animation: spin .8s linear infinite; margin-right: 7px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media(prefers-reduced-motion:reduce) { .spin { animation:none; } }
+</style>
+<div class="app">
+  <header><h1>Harness chat</h1><div id="status" role="status">Choose a channel and participant.</div>
+    <form id="connect">
+      <label>Channel<input id="channel" value="channel1" required autocomplete="off"></label>
+      <label>Your name<input id="participant" value="alice" required autocomplete="nickname"></label>
+      <button>Connect</button>
+    </form>
+  </header>
+  <main id="messages" role="log" aria-live="polite"></main>
+  <div id="waiting" role="status"></div>
+  <form id="compose"><textarea id="text" rows="2" placeholder="Message the agent…" aria-label="Message" disabled></textarea><button id="send" disabled>Send</button></form>
+</div>
+<script>
+  const $ = id => document.getElementById(id);
+  const token = new URL(location.href).searchParams.get('token') || sessionStorage.getItem('harness-token') || '';
+  if (token) sessionStorage.setItem('harness-token', token);
+  history.replaceState(null, '', location.pathname);
+  let source, channelId, participantId, connected = false, pending = 0, generation = 0;
+  function status(text) { $('status').textContent = text; }
+  function waiting() {
+    $('waiting').replaceChildren();
+    if (pending) { const spin = document.createElement('span'); spin.className = 'spin'; $('waiting').append(spin, 'Waiting for reply…'); }
+  }
+  function add(label, text, type = '') {
+    const card = document.createElement('article'); card.className = 'message ' + type;
+    const name = document.createElement('small'); name.textContent = label;
+    const content = document.createElement('div'); content.textContent = text;
+    card.append(name, content); $('messages').append(card); $('messages').scrollTop = $('messages').scrollHeight;
+  }
+  $('connect').onsubmit = event => {
+    event.preventDefault(); source?.close(); generation++; pending = 0; waiting();
+    channelId = $('channel').value.trim(); participantId = $('participant').value.trim();
+    if (!channelId || !participantId) return;
+    connected = false; $('send').disabled = $('text').disabled = true; $('messages').replaceChildren();
+    status('Connecting…');
+    source = new EventSource('/events?channelId=' + encodeURIComponent(channelId) + '&token=' + encodeURIComponent(token));
+    source.addEventListener('ready', () => {
+      connected = true; $('send').disabled = $('text').disabled = false;
+      status('Connected · ' + channelId + ' · ' + participantId);
+    });
+    source.onmessage = event => { const output = JSON.parse(event.data); add('Agent', output.text, output.type === 'error' ? 'error' : ''); };
+    source.onerror = () => {
+      connected = false; $('send').disabled = $('text').disabled = true;
+      source.close(); status('Connection lost. Use the startup pairing link and press Connect to reconnect.');
+    };
+  };
+  $('compose').onsubmit = async event => {
+    event.preventDefault(); const text = $('text').value.trim();
+    if (!connected || !text) return;
+    const submittedGeneration = generation;
+    add(participantId, text, 'you'); $('text').value = ''; pending++; waiting();
+    try {
+      const response = await fetch('/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({channelId, participantId, text}) });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || 'Request failed (' + response.status + ')');
+      // The answer arrives on SSE; printing this HTTP response would duplicate it.
+    } catch (error) { if (generation === submittedGeneration) add('Error', String(error), 'error'); }
+    finally { if (generation === submittedGeneration) { pending--; waiting(); } }
+  };
+  $('text').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('compose').requestSubmit(); } };
+  if (!token) status('Open the pairing link printed by bun run start.');
+</script>
+</html>

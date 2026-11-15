@@ -5,6 +5,17 @@ import type { Inspection } from "./state.ts";
 
 export function observeAgent(agent: Agent, inspection: Inspection): Agent {
   return {
+    notify(notice) {
+      const receipt = agent.notify(notice);
+      if (receipt.accepted && receipt.completion) {
+        inspection.accepted(notice.channelId, `channel:${notice.fromChannelId}`);
+        void receipt.completion.then(
+          () => inspection.finished(notice.channelId),
+          error => inspection.finished(notice.channelId, String(error)),
+        );
+      }
+      return receipt;
+    },
     async send(input) {
       // Count at submission, before the channel queue starts executing the turn.
       inspection.accepted(input.channelId, input.participantId);
@@ -21,10 +32,10 @@ export function observeAgent(agent: Agent, inspection: Inspection): Agent {
 }
 
 export function observeTurn(run: TurnRunner, inspection: Inspection): TurnRunner {
-  return async (input) => {
+  return async (input, mailbox) => {
     // The kernel invokes this only when the turn leaves its channel queue.
     inspection.running(input.channelId, true);
-    try { return await run(input); }
+    try { return await run(input, mailbox); }
     finally {
       inspection.running(input.channelId, false);
     }

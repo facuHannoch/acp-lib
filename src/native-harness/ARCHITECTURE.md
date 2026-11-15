@@ -18,7 +18,11 @@ and locks one session; its channels can run concurrently.
 
 A channel is one conversation with a derived context view and its own inbox. Each channel is a
 sequential actor. The inner loop calls the model, executes requested tools and
-appends their results until the model answers without tools. The outer loop
+appends their results until the model answers without tools and no notices remain.
+Explicit notices are accepted into a busy turn's inbox or start a new turn when
+the channel is idle or has closed admission. The final inbox check and admission
+close are synchronous; notices are drained before inference after any tool results.
+Ordinary shared events alone do not trigger continuation. The outer loop
 starts turns on inbox events, including messages and consumer-supplied events. Steering
 items join a running turn at its next context-building boundary.
 

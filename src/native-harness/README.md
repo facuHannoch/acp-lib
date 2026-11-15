@@ -10,7 +10,7 @@ An initial in-memory agent, channel queues, terminal clients and tool loop are
 implemented. A separate agent process accepts messages over HTTP on a Unix socket.
 All channels use one shared in-memory context store. Each channel has a sequential
 queue; different channels execute concurrently. It uses OpenRouter native tool calls and includes one harmless
-`current_time` tool. There is no complete public session API or stdio protocol yet.
+`current_time`, `dashboard_work` and `notify_channel` tools. There is no complete public session API or stdio protocol yet.
 Experiments live in [.res/sandbox/](.res/sandbox/).
 
 We are starting with a small, hands-on learning milestone before delegating the
@@ -23,7 +23,7 @@ broader implementation:
 4. Reproduce the behavior offline with a scripted model before expanding it.
 
 This milestone is a slice of the design, not completion of v1 part 1. Richer
-sessions, participant policies, notices, persistence, MCP and the
+sessions, participant policies, persistence, MCP and the
 host protocol remain to be built. Coding-worker integration belongs to acp-client.
 
 ## Development
@@ -49,6 +49,20 @@ bun run chat channel1 alice
 bun run chat channel2 bob
 ```
 
+`bun run start` also starts a browser chat on port 3001, bound to the LAN. Open
+one of the printed Web chat pairing links on a phone connected to the same Wi-Fi
+(choose the computer's LAN address, not `127.0.0.1`). Select a channel and name,
+press Connect and send a message. It uses the same agent as the terminal clients
+and receives notice-triggered replies through the same output subscriptions.
+The pairing link changes on restart; it grants access to this development chat,
+not a verified participant identity. No provider key is sent to the browser.
+
+Set `HARNESS_CHAT_PORT` to change port 3001, or use 0 for an available port. The
+phone needs network access to that port. The inspector stays local-only on port
+3000; the LAN chat does not expose its snapshots. Web chat currently shows future
+replies, without replay or persistent browser history. Browser connections do not
+automatically reconnect after a network loss; press Connect again.
+
 Open `http://127.0.0.1:3000` for the read-only context inspector. It starts with
 the agent and opens on Live context, showing the rendered shared base and tool
 definitions in one plain-text container. The system prompt and tools are visible
@@ -70,7 +84,19 @@ The inspector binds only to `127.0.0.1` and stops with the agent. Inspection
 history is in memory, grows during the run, and is lost on restart. It is a local
 development view, without participant access controls or editing capabilities.
 
-The chat clients do not need provider credentials. Type `/exit` to disconnect.
+The chat clients do not need provider credentials. Type `/exit` to disconnect,
+or `/clear` to clear the terminal screen and scrollback without resetting history.
+Clients subscribe to future channel replies before accepting input, so turns
+started by notices also reach connected terminals. Each answer prints once,
+independently of the HTTP response. You can type while work runs; incoming replies
+redraw the prompt and preserve your draft. A lost subscription closes the chat
+with a reconnect instruction. Subscriptions do not replay old answers.
+An animated spinner appears beside the terminal prompt while a submitted request
+is pending. It clears on completion or error and does not print animation frames
+to non-interactive output.
+Replies render common Markdown as terminal emphasis, readable bullets and code
+blocks, rather than printing prose delimiters. Non-TTY output and `NO_COLOR`
+disable ANSI styling; code contents retain their literal Markdown symbols.
 Reconnecting to the same channel continues its history while the agent is alive.
 Ctrl+C in the agent terminal stops it and loses all histories. Ask for the current
 time to exercise tool use. Tools and results are logged in the agent terminal;
@@ -94,8 +120,8 @@ experimental local interface, not the eventual host protocol.
 `src/kernel/channels.ts` owns channels and queues; `src/kernel/loop.ts` coordinates
 turns; `src/capabilities/model/openrouter.ts` translates provider messages. The
 time tool owns its definition, validation and execution in
-`src/capabilities/tools/current-time.ts`; the startup command selects it. Only
-`current_time` is permitted. Transport code lives in
+`src/capabilities/tools/current-time.ts`. The startup command selects the
+development tools in `src/capabilities/tools/scenario.ts`. Transport code lives in
 `src/interfaces/protocol/local.ts`. Inspection wrappers live in
 `src/interfaces/inspector/observe.ts`, keeping observation out of the kernel.
 
@@ -128,8 +154,41 @@ model timeout. A model or unexpected execution failure blocks that channel until
 agent restart, avoiding reuse of an incomplete tool exchange; other channels keep
 working. Tool errors are returned to the model. Disconnecting a client does not
 cancel an accepted turn. New shared events are visible at the next ordinary
-inference; they do not wake idle channels or extend a turn. Notices are not yet
-implemented. Stopping the agent loses the shared store.
+inference; ordinary shared events do not wake idle channels or extend a turn.
+Explicit notices do. Stopping the agent loses the shared store and dashboard job.
+
+## Startup scenario and notices
+
+The development system prompt describes a startup preparing its dashboard and
+launch. `dashboard_work({})` advances a single shared dashboard job by one of five
+steps. Each step waits five seconds in code, not in model narration. Only one
+dashboard call per inference can advance work. Concurrent attempts return busy;
+after five steps, additional calls report completion without advancing. No work
+runs between calls. A running step is not interrupted; the model decides whether
+to request another step after reading updated context.
+
+`notify_channel({ channelId, text })` requests attention from an existing channel.
+The source channel is supplied by the executor. A busy accepting turn queues the
+notice and drains it before its next inference. If the model returns no tools
+while notices remain, the loop continues. An idle or finishing channel schedules
+a new turn. Inbox checking and finish admission are synchronous, avoiding a gap
+where an accepted notice could be missed. There is no notice-pass limit.
+
+The receipt acknowledges acceptance and delivery mode, not completed action.
+Notices have a distinct `channel_notice` kind and source channel in the shared
+store. Busy and idle delivery use the same internal-notice renderer; neither
+impersonates a human participant. The API role remains `user`. In channel context
+cards, notices are highlighted violet and participant prompts orange. Tool
+definitions are collapsed under Tools in both Live context and Channels.
+Notice-generated idle responses appear in the inspector and in subscribed
+terminal clients for the target channel.
+Unknown or failed channels reject notices with an actionable tool result.
+
+To try the scenario, open `channel1 alice` and ask Alice's channel to finish the
+dashboard for launch. During a step, tell `channel2 bob` that the design is not
+approved, work must stop, and it should notify channel1. Inspect the notice and
+subsequent iterations. Whether the model recognizes the update and chooses to
+stop is behavior to evaluate, not hard-coded cancellation.
 
 ## Documents
 

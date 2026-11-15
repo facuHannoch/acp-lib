@@ -7,6 +7,8 @@ export interface ContextEntry {
   channelId: string;
   turnId: number;
   from: string;
+  kind?: "participant_message" | "channel_notice";
+  sourceChannelId?: string;
   message: Message;
 }
 
@@ -21,4 +23,6 @@ export interface SharedContextStore {
 export interface TurnContext {
   append(message: Message): void;
   build(): Message[];
+  drainNotices?(): void;
+  finish?(): boolean;
 }
