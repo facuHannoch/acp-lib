@@ -16,7 +16,7 @@ import { OperationSupervisor, type SupervisedProvider } from "./operations/super
 import type { HarnessController, AgentControllerConfig, ControllerStartEvent, AgentMode } from "./controller.ts";
 import {
   acpCapabilitiesOf, availableCommandsOf, createController, harnessControllerOf, isDegradedController, listAgentSessions,
-  reloadProviderSession, requireMember,
+  reloadProviderSession, requireMember, stallLimitsFor,
   type ConversationCapabilities, type ConversationController,
 } from "./conversation-controller/index.ts";
 import type * as schema from "@agentclientprotocol/sdk";
@@ -3731,7 +3731,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       sessionId: controller.currentSessionId,
       cancelGraceMs: controller.cancelGraceMs,
       // A screen-scraped harness cannot report tools or permissions, so silence explains nothing.
-      limits: isDegradedController(controller) ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits,
+      limits: stallLimitsFor(controller, provider, limits),
       onStageChanged: (activity) => {
         this.emit({ kind: "operation_stage_changed", activity });
         this.emitStateIfChanged();

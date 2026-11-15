@@ -30,10 +30,15 @@ export interface FakeScript {
   readonly hold?: Promise<void>;
   /** `prompt()` rejects with it instead of replaying. */
   readonly fail?: Error;
+  /** Provider signals emitted to this turn's supervisor the instant `prompt()` is called, before anything else. */
+  readonly signals?: readonly ProviderOutput[];
+  /** The backend already finished this turn: its prepared turn replays held output and is not `live`. */
+  readonly ended?: boolean;
 }
 
 interface Entry {
   readonly script: FakeScript;
+  handlers?: TurnContent["handlers"];
   prepared: boolean;
   prompted: boolean;
   abandoned: boolean;
@@ -48,7 +53,10 @@ export class FakeController implements ConversationController {
   /** Turns whose `prompt()` was called, in order. */
   readonly prompted: string[] = [];
   /** The script a session-scheduled `send` uses for each run (default: a one-chunk echo). */
-  sendScript: (run: TurnRun) => FakeScript = (run) => ({ chunks: [`echo ${run.turnId}`] });
+  sendScript: (run: TurnRun) => FakeScript = (run) => this.#scripts.shift() ?? { chunks: [`echo ${run.turnId}`] };
+  readonly #scripts: FakeScript[] = [];
+  /** The next session-scheduled `send` that has no other script uses this one (in call order). */
+  queueScript(script: FakeScript): void { this.#scripts.push(script); }
   forceStopped = 0;
   /** `send` resolves only when this does (backend-scheduled: the backend has not accepted the message yet). */
   acceptGate: Promise<void> | null = null;
@@ -64,8 +72,9 @@ export class FakeController implements ConversationController {
   readonly #usageListeners = new Set<UsageListener>();
   readonly #open = new Set<(error: Error) => void>();
 
-  constructor(options: { scheduling?: "session" | "backend" } = {}) {
+  constructor(options: { scheduling?: "session" | "backend"; configOptions?: ConversationController["configOptions"] } = {}) {
     this.scheduling = options.scheduling ?? "session";
+    this.configOptions = options.configOptions ?? (new Map() as ConversationController["configOptions"]);
   }
 
   // --- test control ------------------------------------------------------------------------
@@ -80,6 +89,13 @@ export class FakeController implements ConversationController {
   /** The backend folds more into a turn already running (native steering): `turn_took`. */
   foldInto(turnId: string, cause: TurnCause): void {
     this.#report({ kind: "turn_took", turnId, cause });
+  }
+
+  /** Output arriving for a turn after the fact (late output after a forced stop): delivered to the handlers it was prepared with. */
+  deliverLate(turnId: string, text: string): void {
+    const handlers = this.#entries.get(turnId)?.handlers;
+    handlers?.onChunk?.(text);
+    handlers?.onResponseChunk?.({ text, startsMessage: false });
   }
 
   /** Turns reported and neither prepared nor abandoned: their output is still held. */
@@ -115,14 +131,17 @@ export class FakeController implements ConversationController {
     const entry = this.#entries.get(turnId);
     if (!entry || entry.abandoned) throw new Error(`unknown turn ${turnId}`);
     entry.prepared = true;
+    entry.handlers = content.handlers;
     const listeners = new Set<OutputListener>();
     const signal = (output: ProviderOutput) => { for (const listener of [...listeners]) listener(output); };
     let cancelled = false;
+    let onCancel!: () => void;
+    const cancelSignal = new Promise<void>((resolve) => { onCancel = resolve; });
     const prepared: PreparedTurn = {
       turnId,
-      live: true,
+      live: !entry.script.ended,
       subscribeOutput: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-      cancel: () => { cancelled = true; },
+      cancel: () => { cancelled = true; onCancel(); },
       forceStop: () => this.forceStop(),
       prompt: async () => {
         entry.prompted = true;
@@ -132,10 +151,11 @@ export class FakeController implements ConversationController {
         forcedStop.catch(() => undefined);
         this.#open.add(forced);
         const run = async (): Promise<PromptResult> => {
-          if (entry.script.hold) await entry.script.hold;
+          for (const output of entry.script.signals ?? []) signal(output);
+          if (entry.script.hold) await Promise.race([entry.script.hold, cancelSignal]); // a cancel ends a held turn
           if (entry.script.fail) throw entry.script.fail;
           const chunks = entry.script.chunks ?? [];
-          signal({ kind: "update", sessionId: this.currentSessionId });
+          if (!entry.script.signals) signal({ kind: "update", sessionId: this.currentSessionId });
           chunks.forEach((text, index) => {
             content.handlers.onChunk?.(text);
             content.handlers.onResponseChunk?.({ text, startsMessage: index === 0 });
@@ -174,18 +194,26 @@ export class FakeController implements ConversationController {
 
   cancel(): void { /* each prepared turn's own cancel is what the supervisor uses */ }
 
+  /** Stops the backend: every open prepared turn rejects. The fake backend restarts at once (it stays connected). */
   async forceStop(): Promise<void> {
     this.forceStopped += 1;
     for (const reject of [...this.#open]) reject(new Error("forced stop"));
     this.#open.clear();
+  }
+
+  /** The backend becomes unreachable: the next start fails with `error` (a turn that never reaches the provider). */
+  breakBackend(error: Error): void {
     this.#connected = false;
+    this.#startError = error;
     for (const listener of [...this.#connectionListeners]) listener();
   }
+  #startError: Error | null = null;
 
   // --- lifecycle ---------------------------------------------------------------------------
 
   async start(onProgress?: (event: never) => void): Promise<StartResult> {
     void onProgress;
+    if (this.#startError) throw this.#startError;
     this.#connected = true;
     for (const listener of [...this.#connectionListeners]) listener();
     return { sessionId: "fake-session", resumed: false };
@@ -204,7 +232,8 @@ export class FakeController implements ConversationController {
 
   // --- settings and usage ------------------------------------------------------------------
 
-  readonly configOptions = new Map() as ConversationController["configOptions"];
+  /** Known before `start` (a native controller has its options at once). */
+  readonly configOptions: ConversationController["configOptions"];
   async setConfig(): Promise<void> { /* no options */ }
   subscribeUsageUpdate(listener: UsageListener): () => void {
     this.#usageListeners.add(listener);

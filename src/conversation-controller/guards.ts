@@ -7,6 +7,7 @@ import type { Capabilities } from "../capabilities.ts";
 import { HarnessController } from "../controller.ts";
 import { ProviderSessionReloadUnsupportedError, UnsupportedError } from "../errors.ts";
 import type { ConnectResult } from "../client.ts";
+import type { StaleLimits } from "../operations/contracts.ts";
 import type { InternalSessionCommand, SessionListEntry } from "../types.ts";
 import type { ConversationController } from "./contracts.ts";
 
@@ -66,4 +67,15 @@ export function acpCapabilitiesOf(controller: ConversationController): Capabilit
 export function reloadProviderSession(controller: ConversationController, sessionId: string): Promise<ConnectResult> {
   if (!controller.reconnect) throw new ProviderSessionReloadUnsupportedError();
   return controller.reconnect(sessionId);
+}
+
+/**
+ * The stall limits a provider request runs under. A screen-scraped (PTY) harness can't report tools or permissions, so
+ * silence explains nothing: no limit by default (a configured one still applies). A prepared turn that isn't `live` is
+ * replaying output the backend already produced (controller-interface spec: the stall check applies from the point the
+ * turn is live), so no stall limit applies to it at all.
+ */
+export function stallLimitsFor(controller: ConversationController, provider: object, limits: StaleLimits | undefined): StaleLimits | undefined {
+  if ((provider as { live?: boolean }).live === false) return { ...limits, firstOutputMs: false, nextOutputMs: false };
+  return isDegradedController(controller) ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits;
 }
