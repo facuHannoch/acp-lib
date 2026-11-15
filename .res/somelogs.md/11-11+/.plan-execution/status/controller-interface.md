@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `5e01135` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Gate pending owner decisions | Coordinator clean-copy suite 1,215/0 and typecheck clean on `6619cfa`; review `8f769a8` no blocking usage finding. `11-15-GATE-A2.md` records evidence. Checkpoint triage and controller-file growth/updated-plan reconciliation await owner; B1 held. |
+| A2 | Gate pending owner decisions | Coordinator clean-copy suite 1,215/0 and typecheck clean on `6619cfa`; report-only follow-up `09b7258`, review `8f769a8` no blocking usage finding. `11-15-GATE-A2.md` records evidence. Checkpoint triage and controller-file growth/updated-plan reconciliation await owner; B1 held. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
