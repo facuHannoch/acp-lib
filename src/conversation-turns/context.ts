@@ -9,8 +9,7 @@ import type { AggregatedRecord } from "../activity.ts";
 import type { AgentConversationOwnerLifecycle } from "../agent-conversation-owner.ts";
 import type { AgentConversationPresentation } from "../agent-conversation-presentation.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
-import type { HarnessController } from "../controller.ts";
-import type { TurnCause } from "../conversation-controller/contracts.ts";
+import type { ConversationController, TurnCause } from "../conversation-controller/contracts.ts";
 import type { Logger } from "../logger.ts";
 import type { ResolvedPart } from "../media/parts.ts";
 import type { OpenOperation } from "../metering/engine.ts";
@@ -45,10 +44,10 @@ export interface TurnRunContext {
   readonly log: Logger;
 
   /** The provider controller (replaced by handoffs and mode switches). */
-  readonly controller: HarnessController;
+  readonly controller: ConversationController;
   /** Runs one provider call under the operation supervisor, with the stall limits of `kind`. */
   supervisedPrompt(
-    controller: HarnessController,
+    controller: ConversationController,
     operationId: string,
     kind: "turn",
     provider: SupervisedProvider,

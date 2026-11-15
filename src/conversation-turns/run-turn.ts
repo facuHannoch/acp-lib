@@ -31,6 +31,7 @@ import {
   recordedProviderAttachment,
 } from "../persistence/provider-attachment.ts";
 import { mediaCapabilitiesOf } from "../conversation-controller/capabilities.ts";
+import { isDegradedController } from "../conversation-controller/guards.ts";
 import type { ResponseMessage } from "../types.ts";
 import type { TurnContext, TurnRunContext } from "./context.ts";
 import { createTurnRecording } from "./recording.ts";
@@ -60,7 +61,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
         attachments: item.attachments,
         mediaContext: {
           cwd: ctx.session.cwd ?? process.cwd(),
-          ...(ctx.controller.isDegraded
+          ...(isDegradedController(ctx.controller)
             ? { degraded: true }
             : { capabilities: mediaCapabilitiesOf(ctx.controller.conversationCapabilities.backend) }),
         },

@@ -11,4 +11,7 @@ export type {
   TurnRun,
   TurnStarted,
   TurnTook,
+  UsageListener,
 } from "./contracts.ts";
+export { createController } from "./factory.ts";
+export { harnessControllerOf, isDegradedController } from "./guards.ts";

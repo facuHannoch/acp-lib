@@ -31,8 +31,9 @@ function setup(mode: Mode, sources: { transcriptPath?: string; committed?: Item[
   const listeners: Array<(notification: { event: Item & { kind: string } }) => unknown> = [];
   let opening: () => Promise<unknown> = () => Promise.resolve({});
   const ownerLifecycle = { afterPrompt: (_input: { operationId: string }) => Promise.resolve({}) };
+  const connection = { prompt: (..._args: unknown[]) => respond() };
   const conversation = {
-    connection: { prompt: (..._args: unknown[]) => respond() },
+    harnessConnection: () => connection,
     metering: { open: (_input: { operationId: string }) => opening() },
     subscribe(listener: (notification: { event: Item & { kind: string } }) => unknown) { listeners.push(listener); },
     ownerLifecycle,
@@ -42,7 +43,7 @@ function setup(mode: Mode, sources: { transcriptPath?: string; committed?: Item[
   return {
     contract,
     emit,
-    provider: conversation.connection,
+    provider: connection,
     respondWith(next: () => Promise<unknown>) { respond = next; },
     openWith(next: () => Promise<unknown>) { opening = next; },
     /** The session opening the turn's metered operation (as `runTurn` does before dispatch). */
@@ -718,8 +719,9 @@ describe("opened but not dispatched, on real sessions (today's behaviour)", () =
       if (event.kind === "metering_recorded") records.push(event.record as unknown as Item);
     });
     let providerCalls = 0;
-    const prompt = conversation.connection.prompt.bind(conversation.connection);
-    conversation.connection.prompt = ((...args: Parameters<typeof prompt>) => { providerCalls += 1; return prompt(...args); }) as typeof prompt;
+    const harness = conversation.harnessConnection()!;
+    const prompt = harness.prompt.bind(harness);
+    harness.prompt = ((...args: Parameters<typeof prompt>) => { providerCalls += 1; return prompt(...args); }) as typeof prompt;
     let outcome = "resolved";
     try { await conversation.prompt("hello"); } catch (error) { outcome = String(error); }
     const metering = kinds.filter((kind) => kind === "metering_recorded").length;

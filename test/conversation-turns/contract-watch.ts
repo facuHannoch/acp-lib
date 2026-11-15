@@ -8,7 +8,7 @@
  * - `turn_completed` comes only after metering, the transcript and `afterPrompt` are done.
  * They are observed on a separate timeline that is never snapshotted.
  *
- * Typed structurally (a conversation with a `connection` whose `prompt` is wrapped, and
+ * Typed structurally (a conversation whose `harnessConnection()` has a `prompt` to wrap, and
  * `subscribe`), so `contract-watch.test.ts` can drive it with synthetic conversations.
  */
 import { expect } from "bun:test";
@@ -21,7 +21,8 @@ type Item = Record<string, any>;
 
 /** What the watcher needs from a conversation. `AgentSession` satisfies it. */
 export interface WatchedConversation {
-  readonly connection: { prompt(...args: any[]): Promise<unknown> };
+  /** The live controller's provider call (the `HarnessController`); null for a backend without one. */
+  harnessConnection(): { prompt(...args: any[]): Promise<unknown> } | null;
   subscribe(listener: (notification: { readonly event: { readonly kind: string } }) => unknown): unknown;
 }
 
@@ -193,7 +194,8 @@ export function watchContract(
   // wrapper returns the same promise, or rethrows the same error, so the turn path gains no
   // scheduling point.
   const wrapped = new WeakSet<object>();
-  const wrap = (controller: WatchedConversation["connection"]) => {
+  const wrap = (controller: { prompt(...args: any[]): Promise<unknown> } | null) => {
+    if (!controller) return;
     if (wrapped.has(controller)) return;
     wrapped.add(controller);
     const prompt = controller.prompt.bind(controller);
@@ -212,7 +214,7 @@ export function watchContract(
       return result;
     };
   };
-  wrap(conversation.connection);
+  wrap(conversation.harnessConnection());
 
   // The metered-operation boundary, observed directly: the session's metering engine `open`
   // settling (resolved: opened; rejected or thrown: not opened), keyed by the operation id it was
@@ -328,7 +330,7 @@ export function watchContract(
       timeline.push(`presentation:${presentationTurn({ id })}`);
     } else if (event.kind === "turn_started") {
       openTurn = e.turnId;
-      wrap(conversation.connection);
+      wrap(conversation.harnessConnection());
       wrapEngine();
       if (mode === "detached") transcriptOffsets.set(e.turnId, transcriptSize());
       timeline.push(`turn_started:${e.turnId}`);

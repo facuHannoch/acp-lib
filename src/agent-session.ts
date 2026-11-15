@@ -3,7 +3,7 @@
 // refer to the same class while the new agent-level owner is introduced.
 //
 // It owns identity (our `agentSessionId`, adapter, mode, internalSessionId, title) and persistence, and
-// HOLDS an HarnessController for the live connection (the control plane). It implements
+// HOLDS a ConversationController (today a HarnessController) for the live connection. It implements
 // AgentClient, so the REPL and any caller can prompt it directly.
 //
 // Adapter ownership remains here during the compatibility tranche. The later Agent owner
@@ -13,12 +13,16 @@ import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
 import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
-import {
+import type {
   HarnessController,
-  type AgentControllerConfig,
-  type ControllerStartEvent,
-  type AgentMode,
+  AgentControllerConfig,
+  ControllerStartEvent,
+  AgentMode,
 } from "./controller.ts";
+import type { ConversationController } from "./conversation-controller/contracts.ts";
+import { createController } from "./conversation-controller/factory.ts";
+import { UnsupportedError } from "./errors.ts";
+import { harnessControllerOf, isDegradedController } from "./conversation-controller/guards.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
 import type { ActivitySnapshot, AggregatedRecord } from "./activity.ts";
@@ -281,8 +285,10 @@ interface HandoffQueueItem {
  * source, so the seed cannot use the live controller: the live conversation is still the
  * source until the seed confirms the target.
  */
+const NO_INTERNAL_SESSION_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([]);
+
 interface InternalPromptTarget {
-  readonly controller: HarnessController;
+  readonly controller: ConversationController;
   readonly metering: MeteringEngine;
   readonly adapterId: string;
 }
@@ -465,7 +471,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private _adapterId: string;
   private activeAdapter: Adapter;
 
-  private controller: HarnessController;
+  private controller: ConversationController;
   private readonly controllerDefaults: Omit<
     AgentControllerConfig,
     "adapter" | "adapterId" | "mode" | "sessionId" | "sessionLoadFailure"
@@ -715,8 +721,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     adapterId: string,
     mode: AgentMode,
     startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure" | "onSessionReplay"> = {},
-  ): HarnessController {
-    return new HarnessController({
+  ): ConversationController {
+    return createController({
       ...this.controllerDefaults,
       adapter,
       adapterId,
@@ -725,16 +731,17 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
-  private bindController(controller: HarnessController): void {
+  private bindController(controller: ConversationController): void {
     this.detachControllerConnection?.();
     this.detachControllerConnection = controller.subscribeConnection(() => this.emitStateIfChanged());
     this.detachControllerCommands?.();
     this.detachControllerUsage?.();
-    this.detachControllerCommands = controller.subscribeAvailableCommands((commands) => {
+    // Only a controller that offers commands has any to observe.
+    this.detachControllerCommands = controller.subscribeAvailableCommands?.((commands) => {
       if (this.controller === controller) {
         this.emit({ kind: "internal_session_commands_changed", commands });
       }
-    });
+    }) ?? null;
     this.detachControllerUsage = controller.subscribeUsageUpdate((update, sessionId) => {
       if (this.controller === controller) this.applyUsageUpdate(update, sessionId);
     });
@@ -745,7 +752,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   /** A turn the controller reports. The session announces it; completion stays the session's. */
-  private onControllerTurnEvent(controller: HarnessController, event: TurnEvent): void {
+  private onControllerTurnEvent(controller: ConversationController, event: TurnEvent): void {
     if (event.kind === "turn_took") {
       // Only backend-scheduled controllers fold items into a running turn (Brief B2).
       this.log.warn("controller_turn_took_ignored", { turnId: event.turnId });
@@ -1189,7 +1196,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
             policy: persistence.sessionConfiguration,
             observedAt: now,
           }),
-          protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
+          protocol: isDegradedController(this.controller) ? { name: "pty" } : { name: "acp", version: 1 },
         };
         const staged = await this.managedCreation.stageContinuation(observed);
           const primary = new RegistryPersistenceRuntime(createAgentSessionCheckpoint({
@@ -1267,7 +1274,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           internalSessionActivatedAt: this._internalSessionId ? now : null,
           model: this.model,
           sessionConfiguration,
-          protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
+          protocol: isDegradedController(this.controller) ? { name: "pty" } : { name: "acp", version: 1 },
         };
         const stagedContinuation = this.managedCreation
           ? await this.managedCreation.stageContinuation(observedContinuation)
@@ -1382,7 +1389,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
           if (loaded.sessionId !== checkpoint.internalSessionId) {
             throw new Error("adapter loaded a different internal session than requested");
           }
-          this._mode = this.controller.currentMode;
+          this._mode = this.controller.currentMode ?? this._mode;
           this.installProviderAttachment(loaded.sessionId, "recorded", false);
           await stageOpeningContinuation(
             this.openBootstrap.stageContinuation,
@@ -1594,7 +1601,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (!created.sessionId) {
         throw new Error("harness returned no session id for an unattached conversation");
       }
-      this._mode = this.controller.currentMode;
+      this._mode = this.controller.currentMode ?? this._mode;
       this.installProviderAttachment(created.sessionId, "runtime_only", true);
       this._configurationRestore = this.snapshotReconstructedConfiguration([]).status;
       this.continuationAcquired = true;
@@ -1906,8 +1913,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return () => this.listeners.delete(listener);
   }
   /** Escape hatch to the live control plane (config, caps, getCommands, login, …). */
-  get connection(): HarnessController {
+  get connection(): ConversationController {
     return this.controller;
+  }
+  /** The live controller as a `HarnessController` (an external harness over ACP or a PTY), or null for any other backend. */
+  harnessConnection(): HarnessController | null {
+    return harnessControllerOf(this.controller);
   }
 
   // --- AgentClient -------------------------------------------------------------
@@ -2519,7 +2530,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let toDescriptor: InternalSessionDescriptor | undefined;
     let summary: string | undefined;
     let targetResult: PromptResult | undefined;
-    let targetController: HarnessController | null = null;
+    let targetController: ConversationController | null = null;
     let resolvedTargetAdapter: Adapter | null = null;
     let targetMetering: MeteringEngine | null = null;
     let targetActivated = false;
@@ -2563,7 +2574,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
 
     try {
-      if (continuation.kind !== "none" && this.controller.isDegraded) {
+      if (continuation.kind !== "none" && isDegradedController(this.controller)) {
         throw new Error("handoff continuation requires ACP (normal) mode");
       }
 
@@ -2571,7 +2582,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         // A supplied summary removes the generation operation entirely, so no
         // `:summary` record is ever minted for it.
         summary = continuation.content;
-      } else if (continuation.kind === "generated") {
+      } else if (continuation.kind === "generated" && this.controller.prepareInternalPrompt) {
         const generated = await this.meteredInternalPrompt(
           `${item.handoffId}:summary`,
           "handoff_summary",
@@ -3277,12 +3288,18 @@ export class AgentConversation implements AgentClient, Bridgeable {
     }
   }
 
+  /** The controller's mode switch; callers check `setMode` first (the public `setMode`), so absence is a bug. */
+  private async switchControllerMode(mode: AgentMode): Promise<ConnectResult> {
+    if (!this.controller.setMode) throw new UnsupportedError("this conversation's controller does not support switching modes");
+    return await this.controller.setMode(mode);
+  }
+
   private async runSetMode(item: ModeQueueItem): Promise<ConnectResult> {
     await this.ensureProvider();
-    if (item.mode === this._mode) return await this.controller.setMode(item.mode);
+    if (item.mode === this._mode) return await this.switchControllerMode(item.mode);
     if (!this.v2Transcript) {
-      const result = await this.controller.setMode(item.mode);
-      this._mode = this.controller.currentMode;
+      const result = await this.switchControllerMode(item.mode);
+      this._mode = this.controller.currentMode ?? this._mode;
       const nextInternalSessionId = result.sessionId || null;
       if (nextInternalSessionId) {
         if (
@@ -3314,8 +3331,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       reasonCode: "mode_change",
     });
     try {
-      const result = await this.controller.setMode(item.mode);
-      const targetMode = this.controller.currentMode;
+      const result = await this.switchControllerMode(item.mode);
+      const targetMode = this.controller.currentMode ?? item.mode;
       const targetInternalSessionId = result.sessionId || null;
       const transitionAt = new Date().toISOString();
       to = this.v2Descriptor(targetInternalSessionId, transitionAt, targetMode);
@@ -3466,7 +3483,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       internalSessionId: this._internalSessionId,
       providerId: this.providerId,
       model: this.model,
-      degraded: this.controller.isDegraded,
+      degraded: isDegradedController(this.controller),
     });
   }
 
@@ -3591,8 +3608,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let via: "loaded" | "recovered" | "fresh" = "loaded";
     try {
       try {
-        if (sessionId) await this.controller.reconnect(sessionId);
-        else await this.controller.startFresh();
+        if (sessionId) {
+          // A controller that can't reconnect fails here, so the recovery path below takes over.
+          if (!this.controller.reconnect) throw new UnsupportedError("this conversation's controller cannot reconnect");
+          await this.controller.reconnect(sessionId);
+        } else await this.controller.startFresh();
       } catch (error) {
         if (!sessionId) throw error;
         via = await this.continueWithoutProviderSession(sessionId, error);
@@ -3706,7 +3726,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   /** Run one provider request under its own supervisor: stage, stale conditions, cancel escalation. */
   private async supervisedPrompt(
-    controller: HarnessController,
+    controller: ConversationController,
     operationId: string,
     kind: "turn" | "internal_inference" | "recap",
     provider: SupervisedProvider,
@@ -3720,7 +3740,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       sessionId: controller.currentSessionId,
       cancelGraceMs: controller.cancelGraceMs,
       // A screen-scraped harness cannot report tools or permissions, so silence explains nothing.
-      limits: controller.isDegraded ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits,
+      limits: isDegradedController(controller) ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits,
       onStageChanged: (activity) => {
         this.emit({ kind: "operation_stage_changed", activity });
         this.emitStateIfChanged();
@@ -3759,6 +3779,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     target?: InternalPromptTarget,
   ): Promise<PromptResult> {
     const controller = target?.controller ?? this.controller;
+    // Fails before any metered or durable operation is opened; callers that can do without skip it.
+    if (!controller.prepareInternalPrompt) throw new UnsupportedError("this controller does not support internal prompts");
     if (!target && !this.reconnecting) await this.ensureProvider();
     const metering = target?.metering ?? this.metering;
     const advertised = target ? activeModel(target.controller.configOptions) : this.advertisedModel;
@@ -3769,7 +3791,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       internalSessionId: target ? controller.currentSessionId : this._internalSessionId,
       providerId: target ? reference?.providerId ?? null : this.providerId,
       model: target ? reference?.modelId ?? advertised : this.model,
-      degraded: controller.isDegraded,
+      degraded: isDegradedController(controller),
     });
     let transcriptStarted = false;
     if (this.v2Transcript) {
@@ -3888,7 +3910,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         : internalSessionId
           ? observedAt
           : null,
-      protocol: this.controller.isDegraded ? { name: "pty" } : { name: "acp", version: 1 },
+      protocol: isDegradedController(this.controller) ? { name: "pty" } : { name: "acp", version: 1 },
     };
   }
 
@@ -4049,6 +4071,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   async setMode(mode: AgentMode): Promise<ConnectResult> {
     if (this.phase === "stopped") throw new Error("AgentSession is stopped");
     this.assertPromptable();
+    // Fails before any durable or metered operation is opened for it.
+    if (!this.controller.setMode) throw new UnsupportedError("this conversation's controller does not support switching modes");
     return await new Promise<ConnectResult>((resolve, reject) => {
       this.operations.enqueue({
         kind: "set_mode",
@@ -4064,7 +4088,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   // --- thin proxies to the live connection -------------------------------------
   get capabilities(): Capabilities {
-    return this.controller.capabilities;
+    const harness = this.harnessConnection();
+    if (!harness) throw new UnsupportedError("this conversation's controller has no ACP capabilities; use conversationCapabilities");
+    return harness.capabilities;
   }
   /** What the backend offers, in neutral terms; safe to read before connecting and in PTY mode. */
   get conversationCapabilities(): ConversationCapabilities {
@@ -4155,18 +4181,20 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
   /** Immutable snapshot of commands advertised by the active ACP harness. */
   get internalSessionCommands(): readonly InternalSessionCommand[] {
-    return this.controller.availableCommands;
+    return this.controller.availableCommands ?? NO_INTERNAL_SESSION_COMMANDS;
   }
   get isDegraded(): boolean {
-    return this.controller.isDegraded;
+    return isDegradedController(this.controller);
   }
   bridge(options?: BridgeOptions): Promise<void> {
+    if (!this.controller.bridge) throw new UnsupportedError("this conversation's controller does not support a terminal bridge");
     return this.controller.bridge(options);
   }
   authenticate(
     methodId: string,
     handlers?: { onOutput?: (line: string) => void },
   ): Promise<unknown> {
+    if (!this.controller.authenticate) throw new UnsupportedError("this conversation's controller does not support authentication");
     return this.controller.authenticate(methodId, handlers);
   }
 
@@ -4183,12 +4211,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
    */
   async listSessions(): Promise<MergedSession[]> {
     let agentEntries: SessionListEntry[] = [];
-    if (!this.controller.isDegraded) {
+    if (!isDegradedController(this.controller)) {
       const backend = this.controller.conversationCapabilities.backend;
       // An unknown backend (not connected yet) is not an unsupported one: the ACP getter throws
       // `NotConnectedError`, as it always did here.
-      if (!backend) void this.controller.capabilities;
-      if (backend?.listSessions) agentEntries = (await this.controller.listSessions()).sessions;
+      if (!backend) void this.harnessConnection()?.capabilities;
+      if (backend?.listSessions && this.controller.listSessions) agentEntries = (await this.controller.listSessions()).sessions;
     }
     if (this.sessions) return this.sessions.listMerged(agentEntries, this.adapterId);
     return agentEntries.map((e) => ({
