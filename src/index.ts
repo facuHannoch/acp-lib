@@ -173,6 +173,8 @@ export type {
 } from "./persistence/backend.ts";
 
 export {
+  HarnessController,
+  /** @deprecated Renamed `HarnessController`. */
   AgentController,
   parseConfigValue,
   parseBoolean,
@@ -182,8 +184,11 @@ export {
 export type { CommandArgumentDescriptor, CommandDescriptor } from "./command-descriptors.ts";
 export type {
   AgentControllerConfig,
+  /** @deprecated Renamed `ControllerStartEvent`. */
+  AgentControllerStartEvent,
   AgentMode,
   ControllerCommand,
+  ControllerStartEvent,
   ControllerCommandId,
   ConfigValueParseResult,
   SetConfigFromStringResult,

@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent } from "../../src/agent.ts";
 import { AgentSession, type AgentSessionConfig } from "../../src/agent-session.ts";
-import { AgentController, type AgentControllerStartEvent } from "../../src/controller.ts";
+import { HarnessController, type ControllerStartEvent } from "../../src/controller.ts";
 import { PtyClient } from "../../src/degraded/index.ts";
 import type { AgentSessionNotification } from "../../src/agent-conversation-contracts.ts";
 import type { OperationLifecycleConfig } from "../../src/operations/contracts.ts";
@@ -469,14 +469,14 @@ describe("characterization, once", () => {
 
   test("a PTY start resolves with an empty session id and no internal_session_acquired (controller)", async () => {
     const directory = await tempDir();
-    const controller = new AgentController({
+    const controller = new HarnessController({
       adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY] },
       adapterId: "fixture",
       mode: "degraded",
       cwd: directory,
     });
     cleanups.push(() => controller.stop());
-    const progress: AgentControllerStartEvent[] = [];
+    const progress: ControllerStartEvent[] = [];
     const result = await controller.start((event) => progress.push(event));
     const again = await controller.start((event) => progress.push(event));
     const state = {
@@ -491,13 +491,13 @@ describe("characterization, once", () => {
 
   test("session creation refused for authentication: start resolves without a context, connection usable (controller)", async () => {
     const directory = await tempDir();
-    const controller = new AgentController({
+    const controller = new HarnessController({
       adapter: { command: ["bun", AUTH_REQUIRED] },
       adapterId: "fixture",
       cwd: directory,
     });
     cleanups.push(() => controller.stop());
-    const progress: AgentControllerStartEvent[] = [];
+    const progress: ControllerStartEvent[] = [];
     const result = await controller.start((event) => progress.push(event));
     const afterStart = {
       isConnected: controller.isConnected,
@@ -556,7 +556,7 @@ describe("characterization, once", () => {
 
     // Degraded: the live PTY of the conversation is bridged; no other PTY starts.
     const directory = await tempDir();
-    const degraded = new AgentController({
+    const degraded = new HarnessController({
       adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY], displayName: "fixture" },
       adapterId: "fixture",
       mode: "degraded",
@@ -593,7 +593,7 @@ describe("characterization, once", () => {
 
   test("capabilities.agent.promptCapabilities before and after start", async () => {
     const directory = await tempDir();
-    const controller = new AgentController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture", cwd: directory });
+    const controller = new HarnessController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture", cwd: directory });
     cleanups.push(() => controller.stop());
     const controllerBeforeStart = read(() => controller.capabilities.agent.promptCapabilities);
     await controller.start();

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AgentSession } from "../../src/agent-session.ts";
 import { parseCapabilities } from "../../src/capabilities.ts";
-import { AgentController } from "../../src/controller.ts";
+import { HarnessController } from "../../src/controller.ts";
 import { NotConnectedError, UnsupportedError } from "../../src/errors.ts";
 import {
   conversationCapabilitiesFromAcp,
@@ -94,7 +94,7 @@ describe("conversationCapabilities of an ACP controller", () => {
   test("a real controller: null before start (the ACP getter still throws, unchanged), known after, the raw ACP shape preserved", async () => {
     const directory = await mkdtemp(join(tmpdir(), "acp-capabilities-"));
     cleanups.push(() => rm(directory, { recursive: true, force: true }));
-    const controller = new AgentController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture", cwd: directory });
+    const controller = new HarnessController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture", cwd: directory });
     cleanups.push(() => controller.stop());
     expect(controller.conversationCapabilities).toEqual({ nativeSteering: false, backend: null });
     expect(() => controller.capabilities).toThrow();
@@ -110,7 +110,7 @@ describe("conversationCapabilities of an ACP controller", () => {
   test("PTY mode: safe to read, backend null, and the ACP getter still throws as before", async () => {
     const directory = await mkdtemp(join(tmpdir(), "acp-capabilities-"));
     cleanups.push(() => rm(directory, { recursive: true, force: true }));
-    const controller = new AgentController({
+    const controller = new HarnessController({
       adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY] },
       adapterId: "fixture",
       mode: "degraded",

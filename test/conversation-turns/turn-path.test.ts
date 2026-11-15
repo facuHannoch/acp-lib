@@ -12,7 +12,7 @@ import { Agent } from "../../src/agent.ts";
 import { AgentSession } from "../../src/agent-session.ts";
 import type { AgentSessionNotification } from "../../src/agent-conversation-contracts.ts";
 import type { AgentConversationOwnerLifecycle } from "../../src/agent-conversation-owner.ts";
-import { AgentController } from "../../src/controller.ts";
+import { HarnessController } from "../../src/controller.ts";
 import type { TurnEvent } from "../../src/conversation-controller/contracts.ts";
 import { checkTurnRun, turnRunOf, type RunMessageState } from "../../src/conversation-turns/index.ts";
 
@@ -413,7 +413,7 @@ describe("runs that are not valid", () => {
   });
 
   test("the controller rejects a run without a turn id or with a repeated message id, and reports turn_started inside send", async () => {
-    const controller = new AgentController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture" });
+    const controller = new HarnessController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture" });
     const reported: TurnEvent[] = [];
     controller.subscribeTurns((event) => reported.push(event));
     expect(() => controller.send({ messageIds: ["m1"], operationKind: "prompt" })).toThrow("requires its turnId");

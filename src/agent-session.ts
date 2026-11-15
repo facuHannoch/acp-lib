@@ -3,7 +3,7 @@
 // refer to the same class while the new agent-level owner is introduced.
 //
 // It owns identity (our `agentSessionId`, adapter, mode, internalSessionId, title) and persistence, and
-// HOLDS an AgentController for the live connection (the control plane). It implements
+// HOLDS an HarnessController for the live connection (the control plane). It implements
 // AgentClient, so the REPL and any caller can prompt it directly.
 //
 // Adapter ownership remains here during the compatibility tranche. The later Agent owner
@@ -14,9 +14,9 @@ import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./op
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
 import {
-  AgentController,
+  HarnessController,
   type AgentControllerConfig,
-  type AgentControllerStartEvent,
+  type ControllerStartEvent,
   type AgentMode,
 } from "./controller.ts";
 import type * as schema from "@agentclientprotocol/sdk";
@@ -282,7 +282,7 @@ interface HandoffQueueItem {
  * source until the seed confirms the target.
  */
 interface InternalPromptTarget {
-  readonly controller: AgentController;
+  readonly controller: HarnessController;
   readonly metering: MeteringEngine;
   readonly adapterId: string;
 }
@@ -465,7 +465,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private _adapterId: string;
   private activeAdapter: Adapter;
 
-  private controller: AgentController;
+  private controller: HarnessController;
   private readonly controllerDefaults: Omit<
     AgentControllerConfig,
     "adapter" | "adapterId" | "mode" | "sessionId" | "sessionLoadFailure"
@@ -715,8 +715,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     adapterId: string,
     mode: AgentMode,
     startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure" | "onSessionReplay"> = {},
-  ): AgentController {
-    return new AgentController({
+  ): HarnessController {
+    return new HarnessController({
       ...this.controllerDefaults,
       adapter,
       adapterId,
@@ -725,7 +725,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
-  private bindController(controller: AgentController): void {
+  private bindController(controller: HarnessController): void {
     this.detachControllerConnection?.();
     this.detachControllerConnection = controller.subscribeConnection(() => this.emitStateIfChanged());
     this.detachControllerCommands?.();
@@ -745,7 +745,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   /** A turn the controller reports. The session announces it; completion stays the session's. */
-  private onControllerTurnEvent(controller: AgentController, event: TurnEvent): void {
+  private onControllerTurnEvent(controller: HarnessController, event: TurnEvent): void {
     if (event.kind === "turn_took") {
       // Only backend-scheduled controllers fold items into a running turn (Brief B2).
       this.log.warn("controller_turn_took_ignored", { turnId: event.turnId });
@@ -851,7 +851,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
-  private reportManagedControllerProgress(event: AgentControllerStartEvent): void {
+  private reportManagedControllerProgress(event: ControllerStartEvent): void {
     if (!this.managedOpenProgress) return;
     // A continuation policy may restart the same adapter after a failed load. The
     // managed lifecycle reports capability discovery once, while the successful
@@ -1906,7 +1906,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return () => this.listeners.delete(listener);
   }
   /** Escape hatch to the live control plane (config, caps, getCommands, login, …). */
-  get connection(): AgentController {
+  get connection(): HarnessController {
     return this.controller;
   }
 
@@ -2519,7 +2519,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let toDescriptor: InternalSessionDescriptor | undefined;
     let summary: string | undefined;
     let targetResult: PromptResult | undefined;
-    let targetController: AgentController | null = null;
+    let targetController: HarnessController | null = null;
     let resolvedTargetAdapter: Adapter | null = null;
     let targetMetering: MeteringEngine | null = null;
     let targetActivated = false;
@@ -3706,7 +3706,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   /** Run one provider request under its own supervisor: stage, stale conditions, cancel escalation. */
   private async supervisedPrompt(
-    controller: AgentController,
+    controller: HarnessController,
     operationId: string,
     kind: "turn" | "internal_inference" | "recap",
     provider: SupervisedProvider,

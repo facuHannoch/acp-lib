@@ -84,13 +84,13 @@ export interface ControllerCommandHandlerDeps {
   adapterId?: string;
 }
 
-/** Local command handlers for the low-level AgentController REPL. */
+/** Local command handlers for the low-level HarnessController REPL. */
 export interface ControllerCommandHandlers {
   onSlashCommand: (command: string, args: string[]) => Promise<boolean>;
 }
 
 /**
- * Create the legacy low-level AgentController command set. It changes ACP provider
+ * Create the legacy low-level HarnessController command set. It changes ACP provider
  * sessions directly (/new, /load, /resume, /fork); it does not manage AgentSessions.
  */
 export function createControllerCommands(

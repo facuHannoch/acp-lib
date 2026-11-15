@@ -35,7 +35,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Build a `WireEntry` sink for `wire` on `AgentSession`/`AgentController`/`AcpClient`.
+ * Build a `WireEntry` sink for `wire` on `AgentSession`/`HarnessController`/`AcpClient`.
  *
  * Writes are chained rather than awaited by the caller: the tap sits in the middle of the
  * protocol stream, so blocking it on disk would stall the conversation. Ordering is

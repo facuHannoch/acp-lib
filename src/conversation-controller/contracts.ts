@@ -8,15 +8,18 @@
  * ends; the session prepares each reported turn with `prepareTurn`, runs it under its supervisor,
  * and announces its completion or failure after finalization.
  *
- * This file declares the turn path (Brief A2). The lifecycle, settings and capability members of the
- * full interface, and `HarnessController implements ConversationController`, come with Brief B1.
+ * The turn members (Brief A2), then the lifecycle, settings and capability members and the optional
+ * members (Brief B1). `HarnessController implements ConversationController`; a native controller
+ * (later) implements the core and leaves the optional members absent.
  */
 import type { ClientPrompt } from "../agent-client.ts";
 import type { ConnectResult } from "../client.ts";
-import type { AgentControllerStartEvent } from "../controller.ts";
+import type { AgentMode, ControllerStartEvent, HarnessController } from "../controller.ts";
+import type { ConfigOptions } from "../config-options.ts";
+import type { ConversationCapabilities } from "./capabilities.ts";
 import type { MeteredOperationKind } from "../metering/record.ts";
 import type { OutputListener, SupervisedProvider } from "../operations/contracts.ts";
-import type { PromptHandlers } from "../types.ts";
+import type { InternalSessionCommand, PromptHandlers, SessionListPage } from "../types.ts";
 
 /** The turn path of a conversation's backend. */
 export interface ConversationController {
@@ -68,7 +71,48 @@ export interface ConversationController {
    * limits. Absent when the controller type doesn't support internal prompts.
    */
   prepareInternalPrompt?(content: TurnContent): SupervisedProvider;
+
+  // --- lifecycle --------------------------------------------------------------------------------
+  /**
+   * Starts the backend (resuming its context when it can). Resolves with `{ sessionId, resumed }`:
+   * `resumed: true` means the backend reattached an existing context. A start can succeed without a
+   * context (PTY mode; a working connection whose session creation failed, e.g. for authentication):
+   * `{ sessionId: "", resumed: false }`. `onProgress` gets `initialized` once the backend answered its
+   * handshake, and `internal_session_acquired` only when a context actually exists.
+   */
+  start(onProgress?: (event: ControllerStartEvent) => void): Promise<StartResult>;
+  /** Starts with a fresh context, never resuming. Same result and progress as `start`. */
+  startFresh(onProgress?: (event: ControllerStartEvent) => void): Promise<StartResult>;
+  stop(): Promise<void>;
+  readonly isConnected: boolean;
+  subscribeConnection(listener: () => void): () => void;
+  /** How long a cancelled turn gets before the supervisor escalates; undefined when the adapter sets none. */
+  readonly cancelGraceMs: number | undefined;
+
+  // --- settings and usage -----------------------------------------------------------------------
+  /** May be non-empty before `start`, and change after it. */
+  readonly configOptions: ConfigOptions;
+  setConfig(id: string, value: unknown): Promise<void>;
+  subscribeUsageUpdate(listener: UsageListener): () => void;
+  readonly currentSessionId: string | null;
+  /** What the backend offers, in neutral terms. Safe to read before connecting and in PTY mode. */
+  readonly conversationCapabilities: ConversationCapabilities;
+
+  // --- optional: absent when the controller type doesn't support them ---------------------------
+  // Paired members are present together or not at all. A present member says the controller type
+  // can do it; whether it can right now depends on the connection (`conversationCapabilities`).
+  readonly availableCommands?: readonly InternalSessionCommand[];
+  subscribeAvailableCommands?(listener: (commands: readonly InternalSessionCommand[]) => void): () => void;
+  readonly currentMode?: AgentMode;
+  setMode?(mode: AgentMode): Promise<StartResult>;
+  reconnect?(sessionId: string): Promise<StartResult>;
+  listSessions?(): Promise<SessionListPage>;
+  bridge?(...args: Parameters<HarnessController["bridge"]>): ReturnType<HarnessController["bridge"]>;
+  authenticate?(...args: Parameters<HarnessController["authenticate"]>): ReturnType<HarnessController["authenticate"]>;
 }
+
+/** A listener for raw usage updates (`usage_update` for ACP) with the session they came from. */
+export type UsageListener = (update: unknown, sessionId: string | null) => void;
 
 /** A run of messages put in by the session. */
 export interface TurnRun {
@@ -127,5 +171,4 @@ export type TurnEvent = TurnStarted | TurnTook;
 /** A start's result: `{ sessionId, resumed }`, as today. */
 export type StartResult = ConnectResult;
 
-/** A start's progress events, as today (`AgentControllerStartEvent`; B1 renames it). */
-export type ControllerStartEvent = AgentControllerStartEvent;
+export type { ControllerStartEvent };

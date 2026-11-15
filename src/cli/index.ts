@@ -25,7 +25,7 @@
 //   --wire=FILE  : the same as ndjson in FILE (truncated per run) instead of stderr
 
 import {
-  AgentController,
+  HarnessController,
   createConsoleLogger,
   createWireLog,
   type Adapter,
@@ -116,7 +116,7 @@ async function chat(args: Args): Promise<void> {
     displayName: args.adapterName,
   });
   const adapter: Adapter = resolved.adapter;
-  const controller = new AgentController({
+  const controller = new HarnessController({
     adapter,
     adapterId: resolved.adapterId,
     mode: args.degraded ? "degraded" : "normal",

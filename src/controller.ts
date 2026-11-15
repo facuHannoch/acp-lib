@@ -1,10 +1,12 @@
 import { ForcedStopError } from "./operations/errors.ts";
 import type { OperationLifecycleConfig, OutputListener, SupervisedProvider } from "./operations/contracts.ts";
 import type {
+  ConversationController,
   PreparedTurn,
   TurnContent,
   TurnEvent,
   TurnRun,
+  UsageListener,
 } from "./conversation-controller/contracts.ts";
 import {
   AcpClient,
@@ -85,7 +87,7 @@ export interface AgentControllerConfig {
 }
 
 /** @internal Startup observations used by the managed AgentSession coordinator. */
-export type AgentControllerStartEvent =
+export type ControllerStartEvent =
   | { readonly stage: "initialized"; readonly capabilities: Capabilities }
   | {
       readonly stage: "internal_session_acquired";
@@ -126,7 +128,7 @@ export interface SetConfigFromStringResult {
  * mutable "current client" behavior such as adapter switching and config validation,
  * so CLIs and app UIs do not have to reimplement it.
  */
-export class AgentController implements AgentClient {
+export class HarnessController implements AgentClient, ConversationController {
   // `current` is the universal leaf (prompt/interrupt/stop) — an AcpClient in normal
   // mode, a PtyClient in degraded mode. `acp` is the SAME object only in normal mode,
   // typed for the rich ACP surface; it is null when degraded (that surface genuinely
@@ -250,7 +252,7 @@ export class AgentController implements AgentClient {
    *
    * Degraded (pty) mode has no ACP notifications, so this simply never fires there.
    */
-  subscribeUsageUpdate(listener: (update: unknown, sessionId: string | null) => void): () => void {
+  subscribeUsageUpdate(listener: UsageListener): () => void {
     this.usageUpdateListeners.add(listener);
     return () => this.usageUpdateListeners.delete(listener);
   }
@@ -260,7 +262,7 @@ export class AgentController implements AgentClient {
     return () => this.outputListeners.delete(listener);
   }
 
-  async start(onProgress?: (event: AgentControllerStartEvent) => void): Promise<ConnectResult> {
+  async start(onProgress?: (event: ControllerStartEvent) => void): Promise<ConnectResult> {
     await this.stopping;
     if (this.current && !this.isConnected) await this.stop();
     if (this.current) {
@@ -274,7 +276,7 @@ export class AgentController implements AgentClient {
   }
 
   /** Explicitly create a fresh provider thread, ignoring any startup load target. */
-  async startFresh(onProgress?: (event: AgentControllerStartEvent) => void): Promise<ConnectResult> {
+  async startFresh(onProgress?: (event: ControllerStartEvent) => void): Promise<ConnectResult> {
     await this.stopping;
     if (this.current && !this.isConnected) await this.stop();
     if (this.current) {
@@ -626,7 +628,7 @@ export class AgentController implements AgentClient {
   private async bringUp(
     mode: AgentMode,
     sessionId?: string,
-    onProgress?: (event: AgentControllerStartEvent) => void,
+    onProgress?: (event: ControllerStartEvent) => void,
     loadFailure = this.config.sessionLoadFailure,
   ): Promise<{ client: AgentClient; acp: AcpClient | null; result: ConnectResult }> {
     const adapter = this.config.adapter;
@@ -702,8 +704,8 @@ export class AgentController implements AgentClient {
   }
 
   private reportStartProgress(
-    listener: ((event: AgentControllerStartEvent) => void) | undefined,
-    event: AgentControllerStartEvent,
+    listener: ((event: ControllerStartEvent) => void) | undefined,
+    event: ControllerStartEvent,
   ): void {
     if (!listener) return;
     try {
@@ -774,6 +776,13 @@ export class AgentController implements AgentClient {
     }
   }
 }
+
+/** @deprecated Renamed `HarnessController`; the old name stays exported. */
+export const AgentController = HarnessController;
+/** @deprecated Renamed `HarnessController`. */
+export type AgentController = HarnessController;
+/** @deprecated Renamed `ControllerStartEvent`. */
+export type AgentControllerStartEvent = ControllerStartEvent;
 
 export function parseConfigValue(
   option: ConfigOption,
