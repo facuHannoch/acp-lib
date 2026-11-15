@@ -1217,3 +1217,65 @@ remain attributed but were not repeated here.
 - Tests used a temporary archive and offline fixture agents. No source edit, implementation
   checkout, live harness, push, or merge into beta. Green suites do not settle the shape
   finding, checkpoint triage or coordinator gate.
+
+## Usage-shape follow-up: `6619cfa`, exception `6e46e40`
+
+**Verdict: the `5305c43` no-usage counterexamples are resolved.** The independent
+full and focused numerical gates and applicable typechecks pass. One P3 validation and
+documentation limitation is recorded below; it does not by itself show attributed usage
+or a production defect. B1 remains held pending owner checkpoint triage and the separate
+coordinator gate.
+
+### Finding
+
+**P3 — Pricing metadata is not completely shape-validated despite the report's broad
+claim.** `test/conversation-turns/contract-watch.ts:132`–`:134` checks a pricing object's
+zero `ratedCost` but does not check its required `unitPrice`
+(`src/metering/rating.ts:30`–`:40`). A synthetic otherwise-zero record with
+`input.pricing = {ratedCost: {amount: "0", currency: "USD"}}` is accepted. The report
+says every missing or ill-typed required field fails, which is broader than the actual
+check. The operation's reported and priced token counts and rated cost still must be
+zero, so this missing metadata alone does not demonstrate positive usage; no current
+production invalid record was shown. Treat as an informational validation/documentation
+limitation for coordinator triage, or narrow the claim; no broader schema validation or
+production change is inferred. See
+`$AGENTS_COMMON_ARTIFACTS_DIR/errors/11-15-a2-pricing-metadata-shape.md`.
+
+### Independent evidence
+
+The previous synthetic undispatched unknown status with 999 attributed tokens, empty
+attributable object and incomplete rated total now fail. Independently tested through
+`assertRun` as well as the helper. The three recognized unavailable/reset/baseline
+variants with a string reason pass; adding an `attributable` property to any is rejected,
+including positive hidden attribution. A zero-metered record with a large session
+cumulative count passes. Positive total, delta, category, rated amount and nonempty
+per-model line items fail. Empty line items and empty amounts pass; the latter is the
+library's `EMPTY_MONEY_TOTAL`. Required `TokenUsage` counters, required input/output
+amounts, optional counters and categories, and `MoneyTotal` match the inspected library
+types and construction. The real detached `prepareTurn` fault remains pinned to one
+`usage_unavailable` error record; managed pre-dispatch failure remains zero records.
+The relevant focused test suite covers declared/undeclared and dispatched variants. The
+implementer reports three mutation checks; their cases were inspected but mutations were
+not independently rerun.
+
+Only the helper changed in `contract-watch.ts` relative to `5676ce6`; it is invoked by
+`assertRun` after capture, and event observation is unchanged. Study 6 therefore remains
+relevant with the prior caveat: its watcher predates a synchronous metering-record map
+push, so identical observation points do not prove no timing effect or equal rates. The
+three checkpoint-failed comparison cases remain failures, excluded only from the affected
+complete-case counts independently recorded in the preceding review. Root cause is
+unknown, and owner triage remains open. No new comparison or historical raw-artifact
+recheck is claimed.
+
+### Independent gates and scope
+
+- Full offline suite **1,215 pass / 0 fail**, 116 files, 35 snapshots, 91.32s.
+- Focused characterization, turn-path, pair-rule and watcher **118 pass / 0 fail**,
+  35 snapshots, 14.28s. Source and relevant test/fixture typechecks clean.
+- `6e46e40` has parent `83114f1`; `cffce98` remains separate, beta `5e01135` is an
+  ancestor, and `controller-interface-pre-usage-shape-937de8a` preserves the old head.
+  Relative to `5676ce6`, only watcher and watcher tests changed; source, snapshot and
+  pair rules match `5eeb54c`. Snapshot SHA-256 remains
+  `47686d4ca0451cf89802c9df52d22d453c238f811b9864cd72358663bfd971e6`; diff check clean.
+- Tests used a temporary archive and offline fixture agents. No snapshot regeneration,
+  source edit, implementation checkout, live harness, push, or merge into beta.
