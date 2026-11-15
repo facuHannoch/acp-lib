@@ -50,6 +50,10 @@ export class FakeController implements ConversationController {
   /** The script a session-scheduled `send` uses for each run (default: a one-chunk echo). */
   sendScript: (run: TurnRun) => FakeScript = (run) => ({ chunks: [`echo ${run.turnId}`] });
   forceStopped = 0;
+  /** `send` resolves only when this does (backend-scheduled: the backend has not accepted the message yet). */
+  acceptGate: Promise<void> | null = null;
+  /** The next `send` rejects with this (the backend refused the message). */
+  rejectNextSend: Error | null = null;
 
   #connected = true;
   #sequence = 0;
@@ -73,6 +77,11 @@ export class FakeController implements ConversationController {
     return turnId;
   }
 
+  /** The backend folds more into a turn already running (native steering): `turn_took`. */
+  foldInto(turnId: string, cause: TurnCause): void {
+    this.#report({ kind: "turn_took", turnId, cause });
+  }
+
   /** Turns reported and neither prepared nor abandoned: their output is still held. */
   get held(): string[] {
     return [...this.#entries].filter(([, entry]) => !entry.prepared && !entry.abandoned).map(([turnId]) => turnId);
@@ -80,15 +89,21 @@ export class FakeController implements ConversationController {
 
   // --- turns -------------------------------------------------------------------------------
 
-  send(run: TurnRun): Promise<void> {
+  async send(run: TurnRun): Promise<void> {
     this.sent.push(run);
+    if (this.rejectNextSend) {
+      const error = this.rejectNextSend;
+      this.rejectNextSend = null;
+      throw error;
+    }
+    if (this.acceptGate) await this.acceptGate;
     if (this.scheduling === "session") {
-      if (!run.turnId) return Promise.reject(new Error("a run without a turn id"));
+      if (!run.turnId) throw new Error("a run without a turn id");
       this.#entries.set(run.turnId, { script: this.sendScript(run), prepared: false, prompted: false, abandoned: false });
       this.#report({ kind: "turn_started", turnId: run.turnId, cause: { kind: "messages", messageIds: run.messageIds }, sentBySession: true });
-      return Promise.resolve();
+      return;
     }
-    return Promise.resolve(); // backend-scheduled: accepted; the backend starts turns as it decides
+    // backend-scheduled: accepted; the backend starts turns as it decides
   }
 
   subscribeTurns(listener: (event: TurnEvent) => void): () => void {

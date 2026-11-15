@@ -180,7 +180,7 @@ import {
   stageOpeningContinuation,
 } from "./agent-conversation-continuation.ts";
 import {
-  checkTurnRun, reportBackendTurn, runBackendTurn, runTurn, settleClearedBackendTurns, turnRunOf,
+  BackendTurns, checkTurnRun, reportBackendTurn, reportTurnTook, runBackendTurn, runTurn, sendToBackend, settleClearedBackendTurns, steerIntoRunningTurn, turnRunOf,
   type BackendTurnHost, type BackendTurnItem, type PromptQueueItem, type TurnContext, type TurnRunContext,
 } from "./conversation-turns/index.ts";
 import type { TurnCause, TurnEvent, TurnRun } from "./conversation-controller/contracts.ts";
@@ -475,6 +475,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
    */
   private readonly sentRuns = new Map<string, { readonly run: TurnRun; cause?: TurnCause }>();
   /** Ids of the messages (queued prompts) the session accepted and has not settled yet. */
+  private readonly backendTurns = new BackendTurns();
   private readonly acceptedMessages = new Map<string, { readonly order: number; dispatched: boolean }>();
   private acceptedMessageCount = 0;
   private readonly sessions?: SessionManager;
@@ -743,6 +744,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private backendTurnHost(): BackendTurnHost {
     const session = this;
     return {
+      turns: this.backendTurns,
+      log: this.log,
+      markSent: (id) => { this.acceptedMessages.get(id)!.dispatched = true; },
       get stopped() { return session.stopPromise !== null; }, // `phase` is rewritten by each queue item
       emit: (event) => this.emit(event),
       enqueue: (item) => { this.operations.enqueue(item); this.emitStateIfChanged(); void this.pump(); },
@@ -752,11 +756,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   /** A turn the controller reports. The session announces it; completion stays the session's. */
   private onControllerTurnEvent(controller: ConversationController, event: TurnEvent): void {
-    if (event.kind === "turn_took") {
-      // Only backend-scheduled controllers fold items into a running turn (Brief B2).
-      this.log.warn("controller_turn_took_ignored", { turnId: event.turnId });
-      return;
-    }
+    if (event.kind === "turn_took") return reportTurnTook(this.backendTurnHost(), event);
     if (!event.sentBySession) return reportBackendTurn(this.backendTurnHost(), controller, event);
     const sent = this.sentRuns.get(event.turnId);
     if (!sent) {
@@ -2030,6 +2030,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         },
       };
       this.acceptedMessages.set(id, { order: ++this.acceptedMessageCount, dispatched: false });
+      if (steerIntoRunningTurn(this.backendTurnHost(), this.controller, item)) return;
       this.operations.enqueue(item);
       this.steering.accepted(item);
       this.emitStateIfChanged();
@@ -2291,7 +2292,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
           : item.kind === "set_config" ? item.operationId
           : item.kind === "set_mode" ? item.transitionId
           : null;
-        if (item.kind === "prompt") {
+        if (item.kind === "prompt" && this.controller.conversationCapabilities.nativeSteering) {
+          // Backend-scheduled: the session never combines or cancels to steer; the message settles with the turn that takes it.
+          const message = this.steering.prepareRun({ ...item, delivery: "queue" }) as PromptQueueItem;
+          this.backendTurnHost().markSent(message.turnId);
+          await sendToBackend(this.backendTurnHost(), this.controller, message);
+        } else if (item.kind === "prompt") {
           // A run of steer messages at the head of the queue goes out as one prompt.
           let reportDelivery: (() => void) | undefined;
           const prompt = this.steering.prepareRun(item, (event) => {
@@ -3981,7 +3987,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const dropped = settleClearedBackendTurns(this.operations.clear(), reason === "stop", (turn) => this.operations.enqueue(turn));
       // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
       // metering record is minted (§16).
-      this.steering.dropped(dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"));
+      // On stop, messages already handed to a backend-scheduled controller, still waiting for their turn, are dropped too.
+      this.steering.dropped([...dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"), ...(reason === "stop" ? this.backendTurns.clear() : [])]);
       for (const item of dropped) {
         if (item.kind === "prompt") continue;
         const label = item.kind === "handoff"
