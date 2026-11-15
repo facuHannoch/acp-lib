@@ -107,6 +107,29 @@ Mutation checks were run for every step (shared log): the user record for backen
 replacement check, the native steering, the id tracking, the settled result, the abandon on failure, the replay and tool-deadline
 handling, and the fake's signals each fail their targeted tests.
 
+## Final checks (after the step reviews)
+
+- **Full check on the head:** typecheck clean (and the temp test tsconfig); `git diff --check 09b7258 HEAD` clean; full suite x3
+  (before the auto-review fixes) 1,316 pass / 0 fail each (105.9 s, 108.0 s, 105.6 s), each run's output kept; snapshot
+  byte-identical to A2's.
+- **Auto-review** of the whole B1+B2 source diff (`09b7258..HEAD`, the code-review skill, medium): nine findings, each checked
+  against the code. Four small hardening fixes made (the supervisor's replay floor used `0` as "never skipped"; `markSent` asserted
+  a possibly-gone entry; a requeued backend turn did not wake the pump; double casts in the clear handling). Two were false
+  positives (an owned backend turn's `afterPrompt`, shown working by the Agent-owned test; stop settlement, which always resolves
+  waiting messages). Three are by design or already recorded (a steer handed straight to the backend skips `message_pending`; a
+  controller without `currentMode` is not degraded; the unbounded wait). After the fixes: focused x3 226/0 and full x2
+  1,316/0, outputs kept.
+- **Manual end-to-end test** (offline fixtures only; no live harness): a script on the public API with the lifecycle fixture
+  agent: the `AgentController` alias is the `HarnessController`; a prompt completes with `cause { kind: "messages" }`;
+  `harnessConnection()`, `conversationCapabilities` and the raw ACP `capabilities` read correctly; a handoff with a generated summary
+  replaces the controller through the factory and emits no turn events for the summary; a prompt after the handoff works; an
+  interrupt of a running tool turn ends `cancelled` with `endedBy: interrupt`; then, with the controller swapped for the core-only
+  fake, a turn the backend starts on its own (an `items` cause) runs end to end (`turn_started`, `turn_completed`, its result, metered
+  once), `harnessConnection()` is `null`, raw `capabilities` throws `UnsupportedError`, and the `bridge` guard throws
+  `UnsupportedError`; `stop` and `agent.close()` finish. The CLI entry loads and the public exports include `HarnessController`,
+  `AgentController` and `UnsupportedError`. **Not covered by the manual test:** content delivery to a backend-scheduled controller
+  (no payload contract yet), a live provider, the managed and detached modes.
+
 ## Open questions for the spec owner (each has an error file in the common errors folder)
 
 1. **`TurnRun` carries no message content** (`errors/11-15-spec-turnrun-no-message-payload.md`): `send` hands over only ids and a
