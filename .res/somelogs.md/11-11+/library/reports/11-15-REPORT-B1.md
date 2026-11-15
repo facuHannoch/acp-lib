@@ -148,7 +148,7 @@ through the session's private `createController`). The tests (`factory.test.ts`,
 | focused (`test/conversation-turns` + `test/conversation-controller`), three runs | 160 pass each; snapshot SHA unchanged |
 | A1 snapshot | byte-identical to A2's (SHA-256 `47686d4ca0451cf8…`); the A1 capability case unchanged |
 | test count | 1,215 at the A2 gate → 1,257 (+42: capabilities 12, rename 6, session-interface 13, reload-unsupported 6, factory 5) |
-| line counts | `agent-session.ts` 4,634 → 4,634 (limit < 5,022); `controller.ts` 825 → 840 (+15: the capability getter, imports and the deprecated aliases; the rename is line-neutral); `contracts.ts` 131 → 174; new: `capabilities.ts` 72, `guards.ts` 69, `factory.ts` 11 |
+| line counts | `agent-session.ts` 4,634 → 4,634 (limit < 5,022); `controller.ts` 825 → 840 (+15: the capability getter and its import, the interface import, the three deprecated aliases and their comments; the rename is line-neutral). **Not covered by the A2 exception; escalated, see Open questions**; `contracts.ts` 131 → 174; new: `capabilities.ts` 72, `guards.ts` 69, `factory.ts` 11 |
 | `HarnessController` in the session and the turn code | only the `harnessConnection` signature, its import and comments |
 | `src/` changed since A2 | 17 files, +340/−78 |
 
@@ -168,7 +168,7 @@ preservation, the classifier branch and the factory's adapter id each fail their
   (`summary = ""`, like "none").
 - **`session.capabilities`** throws `UnsupportedError` for a non-harness controller; the spec turns it into
   `Capabilities | null` in stage 2a.
-- **`controller.ts` grew 15 lines** (the exception above), the minimum for a new member and the aliases.
+- **`controller.ts` grew 15 lines in B1 (825 → 840).** The owner's decision above accepts A2's growth and says the no-growth rule applies from B1, so **this growth is not covered by that exception**. It is the smallest I found for the required members (the `conversationCapabilities` getter, which the interface requires on the class, and the deprecated aliases the brief requires), but I am not treating it as accepted: it is escalated for owner disposition (Open questions).
 
 ## Limits
 
@@ -190,4 +190,15 @@ preservation, the classifier branch and the factory's adapter id each fail their
 
 1. **For the spec owner:** correct the spec's `cancelGraceMs: number` to `number | undefined`, or define the default
    (30 s) in the interface (error file above).
-2. None of the owner's earlier questions is waiting on B1.
+2. **For the owner: `src/controller.ts` grew 15 lines in B1 (825 → 840), against the plan's no-growth rule.**
+   Not covered by the A2 exception. Where the 15 lines are: the `conversationCapabilities` getter and its import (about 4), the
+   `ConversationController` import and `implements` (about 3), the three deprecated aliases with their comments
+   (about 7), the rest in the start-event rename. Options:
+   - **(a)** accept it as the minimum for members the brief requires;
+   - **(b)** move the deprecated aliases to a new module (`src/conversation-controller/aliases.ts`, exported from
+     `src/index.ts`; the public API is unchanged, but `AgentController` would no longer be importable from
+     `src/controller.ts` itself), which brings the growth to about +8; the getter and the interface import must
+     stay on the class;
+   - **(c)** another extraction the owner prefers.
+   I recommend (a), because (b) leaves growth anyway and changes an import path, but this is the owner's call. **B2 waits on
+   this disposition** (the status the reviewer set).
