@@ -1024,3 +1024,107 @@ the decision and grounded behavior, preserving attempt history without inventing
 broader prohibition. This update is documentation and branch integration only; no test
 suite was run for the merge. Awaiting the completed fix assignment; B1 and the A2
 coordinator gate remain held.
+
+## Metering-open follow-up: `9273d4a`, exception `e3c65e6`
+
+**Verdict: return the no-usage assertion gap for follow-up; B1 and coordinator gate stay
+held.** Independently completed full and focused suites and the applicable typechecks are
+green, but the watcher does not enforce the owner's no-usage condition. The two earlier
+pending/open-history findings are addressed. The checkpoint failures below need coordinator
+triage and cannot be relabeled as green runs.
+
+### Findings
+
+1. **P2 — Opened but undispatched metering does not check the no-usage condition.**
+   `test/conversation-turns/contract-watch.ts:247`–`:250` retains only the event count;
+   `:289`–`:306` and `:387`–`:416` accept one based on count, order and error text,
+   without inspecting its usage. `contract-watch.test.ts:162`–`:195` emits only an ID;
+   the real detached failure test at `:613`–`:632` pins one event but not its usage.
+   Independent offline synthetic injection of a record with attributable 999 tokens after
+   an open and no provider call passes `assertRun`, including with declared metering 1.
+   Owner decision `0013b0f` allows none or **one no-usage record**. Check the actual
+   attributed usage (taking its representation into account), pin the real detached outcome
+   and include a negative positive-usage case. This is a watcher coverage gap; the probe
+   does not demonstrate that current production records positive usage. See
+   `$AGENTS_COMMON_ARTIFACTS_DIR/errors/11-15-a2-undispatched-metering-usage.md`.
+2. **P2 — Pre-existing managed checkpoint validation failures need triage.** The retained
+   A1 run 28 and A2 runs 23 and 26 each failed; raw captures contain
+   `CheckpointValidationError: internalSessionActivatedAt must not be after updatedAt`
+   (`src/persistence/checkpoint.ts:141`). In A2 run 23 the logged immediate failure is the
+   old watcher's undeclared-open assertion; the captured handoff and next turn show the
+   checkpoint error. The final watcher's changed policy would remove that assertion, but
+   the recorded failed handoff/turn would still differ from the success snapshot. The A1
+   occurrence establishes that the symptom predates A2; a machine clock explanation is a
+   hypothesis, not a proven cause. These are 3 failed runs, not green characterization
+   evidence. Coordinator/owner should triage under the current plan; fixing source is not
+   authorized in this review. See
+   `$AGENTS_COMMON_ARTIFACTS_DIR/errors/11-15-managed-checkpoint-activation-timestamp.md`.
+3. **P3 — Failure timing in report conflicts with retained file timestamps.** The report's
+   “Pre-existing intermittent checkpoint failure” section says all three Study 6 failures
+   were on November 15 and none occurred in 300+ runs on November 13. The three retained
+   log mtimes are November 13, 15:04–15:06 UTC; the study was resumed after restart for
+   later runs. File mtimes are not conclusive wall-clock evidence given the suspected
+   clock problem, but they conflict with that assertion. Verify/correct the chronology;
+   it cannot establish environment correlation or root cause as stated.
+
+### Observer and owner-decision checks
+
+An independent synthetic probe confirms the original pending promise is returned unchanged,
+a terminal event while pending is rejected even after late settlement, and a rejected
+open followed by a successful one is retained and rejected unless the exact ordered
+history is declared; a reversed declaration fails. Committed tests cover late rejection,
+synchronous throws preserving error identity, single failed open, and the real managed
+begin-operation failure (zero events), detached prepare-turn failure (one event), and
+before-open failure (zero). The observer adds no new promise reaction relative to the
+preceding watcher, but still attaches an observation reaction and is a private seam; its
+presence can affect scheduling. These cases do not establish a general `open()` retry
+policy. Case declarations check observed history, not permission for production behavior.
+
+Decision `0013b0f` permits in-process retry of the same record, requires idempotence and
+at most one durable record, surfaces write failures and permits no durable retry. The
+watcher's declared close/record write-failure branches are synthetic expectations, not
+proof of all backend failure paths. SQLite's keys are `(agent_conversation_id,
+operation_id)` and `(agent_session_id, operation_id)` in
+`src/persistence/sqlite-schema.ts:292`–`:325`; existing persistence-failure test at
+`test/agent-session-metering-records.test.ts:926` checks no double close. Custom backend
+idempotence is an obligation, not independently demonstrated here. The final watcher
+currently checks event/durable counts where supplied, not every write-attempt history.
+
+### Study 6
+
+Independently checked all 100 exits, logs and 3,500 captured runs (35 per file): A1 49/50
+exit zero, A2 48/50; no unhandled diagnostics in those logs. All three failures and their
+raw checkpoint symptoms are identified above. The runner alternates version first per
+pair; A1 and A2 study copies contain byte-identical watcher instrumentation. The final
+watcher differs in case declarations/assertions and classification, not the recorded open
+boundary. Affected runs supply useful but incomplete order evidence; they do not constitute
+100 successful characterization gates. In particular, the A2 failed handoff lacks the
+second turn.
+
+Independent selected recount, managed combined-steer first turn, all three positions
+`M→P1→P2 / P1→M→P2 / P1→P2→M`: A1 **0/46/4**, A2 **0/49/1**. Agent-owned internal
+command, snapshot→meter / meter→snapshot: A1 **0/50**, A2 **1/49**. The report lists
+other cases and positions separately, including the 49 A2 handoff second turns. Compared
+with prior independently recorded Study 5 (first-turn A1 0/45/5, A2 0/46/4), both
+versions remain shifted relative to earlier studies; the final instrumentation itself may
+influence timing. The study overlaps other work for its last portion and finite samples
+cannot prove equal timing, no effect, or a root cause. Earlier raw study files lost on
+restart were not rechecked; previous review's independently recorded evidence stands.
+
+### Independent gates and scope
+
+- Full offline suite: **1,204 pass, 0 fail**, 116 files, 35 snapshots, 99.01s.
+- Focused characterization, turn-path, pair-rule and watcher: **107 pass, 0 fail**,
+  35 snapshots, 14.69s. `bun run typecheck` and test/fixture-scoped typecheck clean.
+  A deliberately broader, nonstandard typecheck of all repository tests reports existing
+  type errors; it is not the project's typecheck gate.
+- Initial sandboxed full/focused attempts suffered fixture connection timeouts and were
+  interrupted; completed runs above used offline fixtures with local connections outside
+  the sandbox. No errors from those aborted attempts are counted as green runs.
+- `5e01135` is an ancestor of both branches. Relative to `8ac866e`, `e3c65e6` changes
+  only watcher and watcher tests; `src`, pair rules and snapshot match `5eeb54c`.
+  SHA-256 of snapshot: `47686d4ca0451cf89802c9df52d22d453c238f811b9864cd72358663bfd971e6`.
+  `cffce98` remains a separate snapshot-only cause commit. Diff check clean.
+- No snapshot regeneration, source edit, implementation branch checkout, live harness,
+  push or merge into beta. The numerical suite green does not settle the coverage finding
+  or the checkpoint issue.
