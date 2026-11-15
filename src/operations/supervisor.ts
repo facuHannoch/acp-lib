@@ -197,7 +197,8 @@ export class OperationSupervisor {
     const floor = this.replayCheckedAt;
     const activity = this.activity;
     const counted = floor === 0 ? activity : { ...activity, startedAt: Math.max(activity.startedAt, floor), lastOutputAt: activity.lastOutputAt === null ? null : Math.max(activity.lastOutputAt, floor) };
-    const decision = stalePolicy(counted, this.permissions, this.tools.oldestStartedAt, limits, this.timers.now());
+    const oldestTool = this.tools.oldestStartedAt;
+    const decision = stalePolicy(counted, this.permissions, oldestTool === null ? null : Math.max(oldestTool, floor), limits, this.timers.now());
     if (!decision || this.finished) return;
     this.staleHandle = this.timers.setTimeout(() => {
       if (this.options.isReplaying?.()) {
