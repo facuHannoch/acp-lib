@@ -175,15 +175,15 @@ describe("a core-only controller: each optional member's guard", () => {
     expect(result.text).toContain("hello");
   }, 20_000);
 
-  test("reconnect: a disconnected session whose controller can't reconnect takes the recovery path and fails the prompt cleanly (no hang, no crash)", async () => {
+  test("reconnect: a core-only controller (no reconnect) is handled as a lost provider session: the default rule starts a fresh one", async () => {
+    // The managed, owned and strict variants are in reload-unsupported.test.ts; this is the fully core-only controller.
     const session = await openSession();
     await session.connection.forceStop();
     swapController(session, (current) => coreOnly(current));
-    const events: string[] = [];
-    session.subscribe(({ event }) => { events.push(event.kind); });
-    await expect(session.prompt("again")).rejects.toThrow("provider session could not be loaded");
-    expect(events).toContain("turn_failed");
-    expect(events).not.toContain("provider_reconnected");
+    const events: Array<{ kind: string; via?: string }> = [];
+    session.subscribe(({ event }) => { events.push(event as never); });
+    expect((await session.prompt("again")).status).toBe("completed");
+    expect(events.some((event) => event.kind === "provider_reconnected" && event.via === "fresh")).toBe(true);
   }, 30_000);
 
   test("an internal prompt without prepareInternalPrompt fails with UnsupportedError before any operation is opened", async () => {

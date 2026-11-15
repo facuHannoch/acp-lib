@@ -14,4 +14,4 @@ export type {
   UsageListener,
 } from "./contracts.ts";
 export { createController } from "./factory.ts";
-export { harnessControllerOf, isDegradedController } from "./guards.ts";
+export { acpCapabilitiesOf, availableCommandsOf, harnessControllerOf, isDegradedController, listAgentSessions, reloadProviderSession, requireMember } from "./guards.ts";

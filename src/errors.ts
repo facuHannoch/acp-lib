@@ -38,3 +38,14 @@ export class UnsupportedError extends Error {
     this.name = "UnsupportedError";
   }
 }
+
+/**
+ * The controller has no way to reload a provider session (it has no `reconnect`). Recovery treats it as a
+ * session the provider no longer has, so the conversation's continuation rule applies (never a raw failure).
+ */
+export class ProviderSessionReloadUnsupportedError extends UnsupportedError {
+  constructor() {
+    super("this conversation's controller cannot reload a provider session");
+    this.name = "ProviderSessionReloadUnsupportedError";
+  }
+}
