@@ -6,9 +6,9 @@ release: bob-b, `controller-interface-status` at `14f56c4`.
 
 **State: steps 1–4 done; review findings fixed in `e7f2d79`, `f54dc05` and `9e0f457`; the owner's
 decisions (beta `fd9ec24`, `95e9cf2`) merged in `174200e` and `83114f1` and applied in the one
-dedicated snapshot-exception commit `8ac866e` (which replaces `1ad325d` after the final review, then
-`5eeb54c` and `2f3b073` after the two watcher reviews). Gate: full suite 1,196 pass / 0 fail (two
-runs).**
+dedicated snapshot-exception commit `e3c65e6` (which replaces `1ad325d` after the final review, then
+`5eeb54c`, `2f3b073` and `8ac866e` after the three watcher reviews); the metering decisions (beta
+`0013b0f`, in `5e01135`) merged in `e1c0f1b`. Gate: full suite 1,204 pass / 0 fail (two runs).**
 The accepted connect/reconnect hang (spec, "A known hang, accepted for now") is unchanged and
 represented as accepted (open question 3, answered). The spec correction (beta
 `fcd1fd4`) was merged in `efe6ebe`; steps 2–4 were released at status `6992179`. The spec question
@@ -402,7 +402,7 @@ On `f54dc05` it fails at its 2 s bound and cleans up (the cleanup always release
 - **The samples are too small** to say whether rates differ.
 - **Nothing was changed for them;** they stay with the owner (open question 1).
 
-## Owner decisions and the snapshot exception (`8ac866e`, replacing `1ad325d`, `5eeb54c` and `2f3b073`)
+## Owner decisions and the snapshot exception (`e3c65e6`, replacing `1ad325d`, `5eeb54c`, `2f3b073` and `8ac866e`)
 
 Tasks: `.plan-execution/tasks/controller-interface-A2-owner-decisions.md` and
 `controller-interface-A2-managed-decision.md`.
@@ -415,11 +415,12 @@ Tasks: `.plan-execution/tasks/controller-interface-A2-owner-decisions.md` and
 Both are documentation only, and neither conflicted. The uncommitted candidate was preserved through
 the second merge (byte-identical to its backup).
 
-**The one dedicated commit: `8ac866e`** (was `5eeb54c` until the watcher fixes, then `2f3b073`
-until the boundary fixes; see "Watcher follow-up fixes" and "Watcher boundary fixes"). It contains `test/conversation-turns/characterization.test.ts`, its snapshot,
+**The one dedicated commit: `e3c65e6`** (was `5eeb54c` until the watcher fixes, `2f3b073` until the
+boundary fixes, then `8ac866e` until the open-observer fixes; see "Watcher follow-up fixes",
+"Watcher boundary fixes" and "Metering-open observer fixes"). It contains `test/conversation-turns/characterization.test.ts`, its snapshot,
 `pair-rule.ts`, `pair-rule.test.ts`, `contract-watch.ts` and `contract-watch.test.ts`; nothing else.
 The text below describes the exception as first consolidated in `5eeb54c`; the watcher checks are
-described as they are now, in `8ac866e`.
+described as they are now, in `e3c65e6`.
 - **How it replaced `1ad325d`:** after the final review (`11-12-REVIEW-A2.md` at `72406be`), the
   first exception commit `1ad325d` and its report commit `d7303d8` were replaced so that the
   corrected exception is still a single commit.
@@ -679,7 +680,7 @@ Cases not listed have no such pair, or a single order in every run.
 
 ## Watcher follow-up fixes (in `2f3b073`, replacing `5eeb54c`)
 
-> **Superseded in part by "Watcher boundary fixes" (`8ac866e`):**
+> **Superseded in part by "Watcher boundary fixes" (`8ac866e`) and "Metering-open observer fixes" (`e3c65e6`):**
 > - the failed-turn classification below is no longer read from error text; it comes from
 >   observing the metered-operation open;
 > - the detached check is no longer positional; it uses the turn's own transcript segment.
@@ -816,6 +817,13 @@ The cause-only snapshot commit `cffce98` is still separate and unchanged.
 | `agent-session.ts` | 4,634 lines (unchanged) |
 
 ## Watcher boundary fixes (in `8ac866e`, replacing `2f3b073`)
+
+> **Superseded in part by "Metering-open observer fixes" (`e3c65e6`):**
+> - the open is recorded when called, and its whole history is kept;
+> - opened-but-not-dispatched no longer needs a declaration (the owner decided none or one,
+>   `0013b0f`).
+>
+> This section is kept as it was reviewed at `5dacc7a`.
 
 Task: `.plan-execution/tasks/controller-interface-A2-watcher-boundaries.md`. Review:
 `11-12-REVIEW-A2.md` at `a54cad2`, watcher-fixes section, against `120210f`. Both findings were
@@ -960,6 +968,192 @@ separate and unchanged.
 | study 5 | 100/100 runs exit 0 (above) |
 | `agent-session.ts` | 4,634 lines (unchanged) |
 
+## Metering-open observer fixes (in `e3c65e6`, replacing `8ac866e`)
+
+Tasks: `.plan-execution/tasks/controller-interface-A2-open-observer.md`, then
+`controller-interface-A2-metering-decision.md` (status `1bc4c70`). Review: `11-12-REVIEW-A2.md` at
+`5dacc7a`, boundary follow-up, against `c33f5b6`. Both findings were in the observation itself;
+nothing in `src/` changed.
+
+**Beta `5e01135` merged in `e1c0f1b`** (clean; only `.res/` documents changed, including the spec's
+metering decision `0013b0f`, which answers open questions 4 and 5). The merge is after the exception
+commit, so the exception stays a single commit on `83114f1`.
+
+**Finding 1: a pending open looked like "never called".** The watcher now records each open
+attempt **when the call is made** (`pending`), and updates that same entry when it settles
+(`opened`, or `rejected` with its error).
+- **When a turn ends with an attempt still pending:** a violation is recorded at that moment, at
+  `turn_failed` or `turn_completed` ("ended with its metering open still pending"). It stays a
+  violation even if the open settles later, so a late success or late rejection can't slip into
+  another class.
+- **At `assertRun`:** an attempt still pending fails as "boundary unknown". No metering expectation
+  is inferred for that state; it fails, and nothing else.
+
+**Finding 2: a second open overwrote the first.** Attempts are kept as a list in call order. Before
+classifying, every completed or failed turn must have a history the watcher can classify:
+- **at most one attempt.** Two or more fail, with the history ("opened 2 times (rejected,
+  opened); a repeated open is not a decided behaviour"). This holds whether both succeeded, or a
+  rejection was followed by a success that dispatched and completed (the reviewer's probe);
+- **nothing continued after a single rejected attempt:** a provider call, a metering event or a
+  completion after it fails.
+
+This does not assert a retry policy for `open()` either way.
+- **What the decision does and doesn't cover:** the owner's decision allows an in-process retry of
+  the same metering *record* write, idempotent by operation id. That says nothing about retrying
+  `open()`, and I don't read it as doing so.
+- **How a repeated open is handled:** a repeated or continued open is reported as observed, and a
+  case can accept one only by declaring the exact history it expects (`expectOpenAttempts(turn,
+  [...states])`); any other history fails. The reviewer's rejected-then-opened probe fails
+  undeclared, and passes only when declared exactly so.
+- **Real cases:** none has one. Every completed and failed turn in all 35 characterization cases
+  has exactly one settled attempt (the cases pass with the check on).
+
+**The owner's decisions, applied (spec `0013b0f`):**
+- **Opened, not dispatched:** none or one no-usage metering record is accepted. The watcher no
+  longer requires a declaration. Undeclared, it accepts none, or exactly one (before `turn_failed`,
+  with a record-carrying error, and the mode's record once); two fail.
+  - The real-session tests pin today's outcome on each path, so a later change shows. Managed
+    `beginOperation` failing after the open: 0. Detached `prepareTurn` failing after the open: 1.
+    Each also checks that declaring the other count fails.
+  - The modes are not required to agree.
+- **Metering write failure:** the turn may end without a durable record, as today. The watcher
+  can't tell such a failure from other errors by itself, so a case that produces one declares it
+  (`expectMeteringWriteFailure`, `close` or `record`); undeclared, the record is still required.
+  No case has one.
+- **At most one record per operation:** checked as before (one `metering_recorded` event, one
+  `<turn>:metering` record or `metering_reference`).
+  - **The in-process record retry:** the success-path `meteringRecorded` failure re-attempts the
+    same record on the failure path. That is a write retry, not a second event, so it is compatible
+    with the check.
+
+**Tests (44 in `contract-watch.test.ts`, 8 more than in `8ac866e`; the undecided-class tests were
+rewritten for the decision):**
+- **Pending:** an open pending when the turn fails (the reviewer's probe); a late success after
+  the end; a late rejection after the end, all failing. Positive: a pending open settled before the
+  end (a preflight rejection) passes.
+- **History:** rejected then opened, dispatched and completed (the reviewer's probe, failing with
+  the history); two successful opens on a completed turn; rejected then opened on an undispatched
+  turn, even when declared.
+- **Continuing after a single rejected open:** to the provider, or to metering, both failing.
+- **Declared history:** exactly `rejected, opened` passes; `opened`, or one attempt too many, fails;
+  undeclared fails.
+- **Opened, not dispatched (decision):** none passes for three error texts; one passes with a
+  record-carrying error and fails with a plain one; two fail.
+
+**Mutation check:** in a temporary copy, each fix was reverted on its own, and the tests failed:
+- recording an attempt only once it settles (the old behaviour): 3 failed (all pending cases);
+- replacing the history with the latest attempt: 2 failed (both repeated-open cases);
+- ignoring the declared history: 1 failed (the declared-history test).
+
+The file was restored byte for byte.
+
+**Study 5 heading corrected:** it now says 50 runs each (first 20, then extended). Its data was
+already the 50-run data.
+
+**Retained study files lost:** the machine restarted at 14:12 on 2026-11-13 and cleared `/tmp`.
+- **What was lost:** the retained logs, exit files and raw captures of studies 1–5
+  (`/tmp/a2-fix/…`, `/tmp/a2-s3-*`), my temporary tooling, and a study 6 run in progress.
+- **What remains of them:** their counts in this report, which the reviewer independently
+  rechecked for studies 3 and 5 (review `54ced2e` and `5dacc7a`) while the files existed.
+- **What was rebuilt:** the tooling, with the same logic, under `/tmp/a2-fix/tools/`:
+  - the dump hook (`instrument.py`) and the analyzer (`analyze.py`);
+  - the A1 snapshot derivation (`derive_a1_snap.py`): 39 `cause` blocks removed, 4 error `cause`
+    keys left, as before.
+- **Study 6 was rerun from the start.** A later session end cut off one run (A1 run 42). It was
+  rerun, and the interrupted run's single partial capture (one line at the head of its dump) was
+  discarded. The original file is kept as `dump-a1-42.with-interrupted-partial.jsonl.bak`.
+
+**Instrumentation effects and comparative evidence:**
+- **What changed since study 5:** at the same call site, the watcher now pushes one entry into an
+  array, synchronously, when `open` is called. It changes that entry in the same single settle
+  reaction as before, so there is no additional promise reaction and no `await`.
+- **Study 6** (the `e3c65e6` watcher's instrumentation, before the decision's assertion-only
+  change; A1 `9de0ca3` and A2 (`git archive 5eeb54c`, `src/` identical to the head); 50 runs each,
+  alternating per pair; logs, exit codes and raw captures in `/tmp/a2-fix/s6/`):
+  - **Runs:** A1 49/50 and A2 48/50 exit 0, 3,500 raw captures, no unhandled error. Every failure
+    is classified:
+    - **A1 run 28, A2 run 26:** `CheckpointValidationError: internalSessionActivatedAt must not be
+      after updatedAt`, a turn failing in managed mode. Pre-existing (on A1 too), not A2; see
+      "Pre-existing intermittent checkpoint failure" below;
+    - **A2 run 23:** the same error, raised in the managed handoff case after a turn's metering
+      open, so before dispatch. The watcher of that study (before the owner's decision) refused the
+      opened-not-dispatched turn as undeclared. Under the final watcher that turn (none metered) is
+      accepted. The same root cause, not an A2 or watcher regression.
+  - **Positions (A1 / A2):**
+    - managed combined-steer turn 1: `P1 → M → P2` 46/49, `P1 → P2 → M` 4/1;
+    - stalled `P1 → P2 → M` 50/50; interrupt `P1 → M → P2` 50/50;
+    - every other managed turn `M → P1 → P2` (the handoff's second turn 50/49: the A2 run 23
+      handoff failed, so it had no second turn);
+    - Agent-owned internal command: metering first 50/49 (snapshot first 0/1); all others snapshot
+      first.
+  - **Assessment:**
+    - **Against study 5 (the `8ac866e` watcher):** the managed combined-steer position stays
+      raised: A1 5/50 (study 5) and 4/50 (study 6); A2 4/50 and 1/50; against 0–2 in
+      studies 1–3. The A1/A2 difference is within 3 in 50.
+    - **The Agent-owned internal-command 0/1** is within the range of studies 1 and 2 (2–4 in 50).
+    - **The observer change** (an array entry, no new reaction) shows no effect beyond sampling
+      noise.
+    - **For the A1/A2 comparison:** the final tests have no noticeable A1/A2 difference. The
+      earlier studies' counts understate the combined-steer alternative under the final watcher,
+      as reported for study 5. Finite samples cannot establish equal rates.
+- **Repetition in the worktree** (20 runs of characterization + watcher tests, the
+  pre-decision watcher): 18 passed (78 tests each); 2 failed in the managed plain prompt with the
+  same `CheckpointValidationError`.
+- **Concurrency note:** the decision's watcher edits and their focused runs overlapped the end of
+  study 6, part of its last 17 runs (the ones resumed after the session end). Load can shift interleavings; the positions in those runs match
+  the rest.
+
+**Pre-existing intermittent checkpoint failure (not A2; escalated as information):**
+- **What fails:** managed-mode turns and handoffs occasionally fail with `CheckpointValidationError:
+  internalSessionActivatedAt must not be after updatedAt` (`src/persistence/checkpoint.ts:141`).
+- **Where seen:** A1 (study 6 run 28) and A2 (runs 23 and 26; two worktree repetitions), all on
+  2026-11-15. Never in the 300+ study runs on 2026-11-13. Neither of today's two full-suite runs
+  hit it.
+- **Likely mechanism:** the checkpoint takes `internalSessionActivatedAt` from an observation time
+  read separately from `updatedAt` (`src/agent-session.ts` around 3870–3890). So two clock reads
+  can come out in either order.
+- **The clock here is unstable:** the machine has been up about 40 hours, and a probe
+  (`/tmp/a2-fix/tools/clock-probe.ts`) showed the wall clock gaining 3.5 s on the monotonic clock
+  in 90 s. No backward step was seen in that window.
+- **Conclusion:** environment-correlated and pre-existing. A src fix would be a behaviour change
+  outside A2; not attempted.
+
+**Consolidation:** the head `c33f5b6` (with the uncommitted work also saved as a
+patch outside the repo) was kept as branch `controller-interface-pre-metering-decision-c33f5b6`. No
+other branch contained `8ac866e` or `c33f5b6`, and nothing was pushed. Then:
+- `git reset --soft 83114f1`;
+- the exception's six test files committed by explicit path as `e3c65e6`;
+- the report as at `c33f5b6` with the Study 5 heading fix as `2963fd8`;
+- beta `5e01135` merged as `e1c0f1b`;
+- this report update after it.
+
+`git diff 8ac866e e3c65e6` touches only `contract-watch.ts` and `contract-watch.test.ts`. The
+snapshot (SHA-256 `47686d4ca0451cf8…`), `characterization.test.ts`, `pair-rule*.ts` and `src/` are
+byte-identical. `cffce98` is still separate and unchanged.
+
+**Limits:**
+- **The pending check fires at the turn's end event.** An open still pending then is reported even
+  if the code legitimately settles it later. Today no turn ends with an open in flight, because
+  `runTurn` awaits the open.
+- **The observer is still the private seam** (the session's `metering` engine, re-wrapped at each
+  `turn_started`).
+- **`/tmp` is not durable.** The study 6 files can be lost the same way; their counts are recorded
+  here.
+- **The decision's watcher edits** change only assertions, not the observation, so study 6's
+  instrumentation equals the final one.
+
+**Gate (`e3c65e6`, merged as `e1c0f1b`):**
+Run on the merged head `e1c0f1b`.
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean; test files clean under the temporary tsconfig (rebuilt); `git diff --check` clean |
+| contract-watch tests | 44 pass |
+| characterization + turn-path + pair-rule + contract-watch, three runs without update | 107 pass each (15.6 s, 14.2 s, 14.2 s); snapshot unchanged (SHA-256 `47686d4ca0451cf8…`) |
+| full suite `bun test`, two runs | **1,204 pass, 0 fail; 116 files**, exit 0; 92.2 s and 95.5 s (1,196 + 8) |
+| study 6 | 97/100 exit 0; the 3 failures are the pre-existing checkpoint error (above) |
+| `agent-session.ts` | 4,634 lines (unchanged) |
+
 ## Open questions
 
 1. **Answered (owner, beta `fd9ec24`, `95e9cf2`): the two non-contractual orders are accepted; see
@@ -1012,7 +1206,10 @@ separate and unchanged.
    question for the owner. The new regression test releases the held load before stopping;
    without a release, its cleanup would hit this hang. (Probe: `/tmp/a2-fix/held-reconnect-probe.ts`.)
 
-4. **New, for the owner: a turn whose metering write fails.** If closing the metered operation
+4. **Answered (owner, beta `0013b0f`): the error is surfaced and the turn ends as today, possibly
+   without a durable record; no durable retry; at most one record per operation, idempotent by
+   operation id; an in-process retry of the same record is allowed.** Original text: **A turn whose
+   metering write fails.** If closing the metered operation
    throws (`MeteringEngine.close` never throws for usage problems, but a persistence or resolver
    failure could), or the Agent-owned `meteringRecorded` write or managed `finishV2Prompt` fails,
    the turn ends without its metering record. On the failure path, a managed write
@@ -1026,7 +1223,9 @@ separate and unchanged.
    - **Question:** should such a turn be a contract violation (the case must fail), or a named
      exception like the preflight rejection? Until decided, it stays declared-only.
 
-5. **New, for the owner: a turn that opened its metered operation and failed before dispatch.**
+5. **Answered (owner, beta `0013b0f`): none or one no-usage record is accepted; the tests assert each
+   mode's current outcome without requiring agreement. Applied in `e3c65e6`.** Original text: **A turn
+   that opened its metered operation and failed before dispatch.**
    Today it is metered once when the failure is inside the dispatch phase (`prepareTurn`, the
    supervisor before the provider call: the failure path closes the operation). It is not metered
    when a managed pre-dispatch write fails after the open (`beginOperation`, user records,
