@@ -4183,11 +4183,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
    */
   async listSessions(): Promise<MergedSession[]> {
     let agentEntries: SessionListEntry[] = [];
-    if (
-      !this.controller.isDegraded &&
-      this.controller.conversationCapabilities.backend?.listSessions
-    ) {
-      agentEntries = (await this.controller.listSessions()).sessions;
+    if (!this.controller.isDegraded) {
+      const backend = this.controller.conversationCapabilities.backend;
+      // An unknown backend (not connected yet) is not an unsupported one: the ACP getter throws
+      // `NotConnectedError`, as it always did here.
+      if (!backend) void this.controller.capabilities;
+      if (backend?.listSessions) agentEntries = (await this.controller.listSessions()).sessions;
     }
     if (this.sessions) return this.sessions.listMerged(agentEntries, this.adapterId);
     return agentEntries.map((e) => ({

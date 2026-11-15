@@ -142,6 +142,37 @@ describe("on a session", () => {
     expect(session.conversationCapabilities.backend?.listSessions).toBe(false);
     expect(await session.listSessions()).toEqual([]);
   }, 20_000);
+
+  test("listSessions before the agent is connected still throws NotConnectedError (an unknown backend is not an unsupported one)", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-capabilities-"));
+    cleanups.push(() => rm(directory, { recursive: true, force: true }));
+    const session = await AgentSession.create({
+      adapter: { command: ["bun", ECHO] },
+      adapterId: "fixture",
+      agentSessionId: "capabilities-before-connect",
+      cwd: directory,
+    });
+    cleanups.push(() => session.stop());
+    await session.connection.stop(); // the connection is gone: not connected, as before the first start
+    expect(session.conversationCapabilities.backend).toBeNull();
+    await expect(session.listSessions()).rejects.toThrow(NotConnectedError);
+    await expect(session.listSessions()).rejects.toThrow("AgentController is not started");
+  }, 20_000);
+
+  test("listSessions in PTY mode returns the catalog half only, with no error (a known mode without listing)", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-capabilities-"));
+    cleanups.push(() => rm(directory, { recursive: true, force: true }));
+    const session = await AgentSession.create({
+      adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY], displayName: "fixture" },
+      adapterId: "fixture",
+      agentSessionId: "capabilities-pty",
+      mode: "degraded",
+      cwd: directory,
+    });
+    cleanups.push(() => session.stop());
+    expect(session.conversationCapabilities.backend).toBeNull();
+    expect(await session.listSessions()).toEqual([]);
+  }, 20_000);
 });
 
 describe("UnsupportedError", () => {
