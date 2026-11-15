@@ -1,5 +1,6 @@
 import type { Agent, TurnRunner } from "../../contracts/agent.ts";
-import type { ExecuteTool, Message, Model } from "../../contracts/loop.ts";
+import type { Message, Model } from "../../contracts/loop.ts";
+import type { ContextEntry, SharedContextStore } from "../../contracts/context.ts";
 import type { Inspection } from "./state.ts";
 
 export function observeAgent(agent: Agent, inspection: Inspection): Agent {
@@ -20,12 +21,11 @@ export function observeAgent(agent: Agent, inspection: Inspection): Agent {
 }
 
 export function observeTurn(run: TurnRunner, inspection: Inspection): TurnRunner {
-  return async (messages, input) => {
+  return async (input) => {
     // The kernel invokes this only when the turn leaves its channel queue.
     inspection.running(input.channelId, true);
-    try { return await run(messages, input); }
+    try { return await run(input); }
     finally {
-      inspection.history(input.channelId, messages);
       inspection.running(input.channelId, false);
     }
   };
@@ -34,30 +34,29 @@ export function observeTurn(run: TurnRunner, inspection: Inspection): TurnRunner
 export function observeModel(
   inspection: Inspection,
   channelId: string,
-  messages: Message[],
   createModel: (onRequest: (body: string) => void) => Model,
+  turnId?: number,
 ): Model {
   const model = createModel((body) => {
     // Capture the actual serialized request at the provider boundary, before
     // fetch, rather than reconstructing it later from changing channel history.
-    inspection.history(channelId, messages);
-    inspection.request(channelId, body);
+    inspection.request(channelId, body, turnId);
   });
-  return async (history, definitions) => {
-    const answer = await model(history, definitions);
-    // The loop appends after this returns. Show the response now without
-    // modifying the loop's array or mixing inspection metadata into context.
-    inspection.history(channelId, [...history, answer]);
-    return answer;
+  return async (messages, tools) => {
+    const response = await model(messages, tools);
+    inspection.response(channelId, response);
+    return response;
   };
 }
 
-export function observeTool(
-  inspection: Inspection, channelId: string, messages: Message[], execute: ExecuteTool,
-): ExecuteTool {
-  return async (call) => {
-    const content = await execute(call);
-    inspection.history(channelId, [...messages, { role: "tool", callId: call.id, content }]);
-    return content;
+// Channel history is a projection of the shared store, not an independent log.
+export function observeContext(store: SharedContextStore, inspection: Inspection,
+  renderBase: (entries: readonly ContextEntry[]) => Message[],
+) {
+  const update = () => {
+    const entries = store.snapshot();
+    inspection.sharedContext(entries, renderBase(entries));
   };
+  update();
+  return store.subscribe(update);
 }

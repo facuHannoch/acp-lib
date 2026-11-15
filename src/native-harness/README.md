@@ -8,8 +8,8 @@ is intended to become a separate package: it must not import acp-client modules.
 
 An initial in-memory agent, channel queues, terminal clients and tool loop are
 implemented. A separate agent process accepts messages over HTTP on a Unix socket.
-Each channel has its own history and sequential queue; different channels execute
-concurrently. It uses OpenRouter native tool calls and includes one harmless
+All channels use one shared in-memory context store. Each channel has a sequential
+queue; different channels execute concurrently. It uses OpenRouter native tool calls and includes one harmless
 `current_time` tool. There is no complete public session API or stdio protocol yet.
 Experiments live in [.res/sandbox/](.res/sandbox/).
 
@@ -23,7 +23,7 @@ broader implementation:
 4. Reproduce the behavior offline with a scripted model before expanding it.
 
 This milestone is a slice of the design, not completion of v1 part 1. Richer
-sessions, participant policies, shared identity context, persistence, MCP and the
+sessions, participant policies, notices, persistence, MCP and the
 host protocol remain to be built. Coding-worker integration belongs to acp-client.
 
 ## Development
@@ -50,11 +50,18 @@ bun run chat channel2 bob
 ```
 
 Open `http://127.0.0.1:3000` for the read-only context inspector. It starts with
-the agent and shows channels, participants, pending turns, execution status and
-live message history, including tool calls and results. Expand an inference
-request to see the exact JSON body sent to OpenRouter, including context and tool
-definitions. Authorization headers are not captured. Snapshots remain unchanged
-as later turns run. Provider response details can also be expanded in history.
+the agent and opens on Live context, showing the rendered shared base and tool
+definitions in one plain-text container. The system prompt and tools are visible
+immediately, before any inference. Shared history updates as events are recorded;
+the view excludes channel routing and active-turn additions. The same shared-base
+builder is used to construct inference contexts.
+Timeline is an empty placeholder. Channels shows participants, pending turns,
+execution status and turns separated by their IDs. Each turn groups inference
+iterations into an orange context card (with the initiating prompt highlighted)
+and a blue result card, including tool calls and results. Expand Inference request
+under its context for the exact JSON sent, or Provider response under its result
+for the original assistant message. Authorization headers are not captured.
+Snapshots remain unchanged as later turns run.
 
 The page receives live updates over Server-Sent Events and reconnects with a
 fresh snapshot. Set `HARNESS_INSPECTOR_PORT` on the agent to override port 3000
@@ -84,13 +91,31 @@ it; the parent directory must exist. A second agent cannot use an occupied socke
 The Unix socket transport targets Linux/macOS. Its `/messages` endpoint is an
 experimental local interface, not the eventual host protocol.
 
-`src/kernel/agent.ts` owns channels and queues; `src/kernel/loop.ts` coordinates
+`src/kernel/channels.ts` owns channels and queues; `src/kernel/loop.ts` coordinates
 turns; `src/capabilities/model/openrouter.ts` translates provider messages. The
 time tool owns its definition, validation and execution in
 `src/capabilities/tools/current-time.ts`; the startup command selects it. Only
 `current_time` is permitted. Transport code lives in
 `src/interfaces/protocol/local.ts`. Inspection wrappers live in
 `src/interfaces/inspector/observe.ts`, keeping observation out of the kernel.
+
+The shared store is `src/state/storage/shared-context.ts`. It records inputs on
+acceptance, including queued inputs, then assistant responses and tool results
+with channel, turn and sender attribution. It copies entries on append and read.
+There are no independent per-channel history arrays in the agent.
+
+Before every inference, `src/capabilities/context/build.ts` renders a fresh store
+snapshot with the unchanged system prompt. Other turns are attributed JSON
+history; the active turn preserves native assistant/tool exchanges. Opaque
+provider state is not exposed in shared text. Tools remain a separate request
+field. All channels currently see all shared events; there is no scope filtering,
+summary, compaction or context budget. Rebuilding shared history also changes the
+request prefix; caching optimization is deferred.
+
+Live context shows the current shared base; Channels provides per-channel
+projections and exact inference snapshots. Those requests show how `context.build()`
+rendered a store snapshot for a particular turn. The live view is not a currently
+running model's hidden state.
 
 Offline tests cover loop continuation, provider request mapping, channel
 concurrency and ordering, history separation, failure isolation and Unix HTTP
@@ -102,7 +127,9 @@ This first slice has no call limit, streaming, persistence, cancellation or
 model timeout. A model or unexpected execution failure blocks that channel until
 agent restart, avoiding reuse of an incomplete tool exchange; other channels keep
 working. Tool errors are returned to the model. Disconnecting a client does not
-cancel an accepted turn. Channels do not yet share experience or memory.
+cancel an accepted turn. New shared events are visible at the next ordinary
+inference; they do not wake idle channels or extend a turn. Notices are not yet
+implemented. Stopping the agent loses the shared store.
 
 ## Documents
 

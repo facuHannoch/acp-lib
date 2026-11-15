@@ -23,8 +23,11 @@ test("continues through multiple tools and retains history for the next turn", a
     return { role: "assistant", content: "Done", calls: [] };
   };
   const execute = async (call: { name: string }) => call.name === "clock" ? "time" : "not allowed";
-  expect(await runTurn(messages, "First", model, [], execute)).toBe("Done");
-  expect(await runTurn(messages, "Second", model, [], execute)).toBe("Done");
+  const context = { build: () => structuredClone(messages), append: (message: Message) => { messages.push(message); } };
+  messages.push({ role: "user", content: "First" });
+  expect(await runTurn(context, model, [], execute)).toBe("Done");
+  messages.push({ role: "user", content: "Second" });
+  expect(await runTurn(context, model, [], execute)).toBe("Done");
   expect(calls).toBe(3);
 });
 

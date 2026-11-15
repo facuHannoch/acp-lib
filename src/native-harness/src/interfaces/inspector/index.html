@@ -13,16 +13,34 @@
   nav { padding: 16px; border-right: 1px solid #8885; }
   button { display: block; width: 100%; text-align: left; padding: 12px; margin-bottom: 8px; border: 1px solid #8885; border-radius: 7px; cursor: pointer; overflow-wrap: anywhere; }
   button[aria-current=true] { border-color: #688def; background: light-dark(#e5edff,#253352); }
+  .tabs { display: flex; gap: 8px; padding: 12px 24px; border-bottom: 1px solid #8885; }
+  .tabs button { width: auto; margin: 0; }
+  .tabs button[aria-selected=true] { border-color: #688def; background: light-dark(#e5edff,#253352); }
+  .layout.single { grid-template-columns: minmax(0,1fr); }
+  .layout.single nav { display: none; }
   main { padding: 12px 24px 40px; min-width: 0; }
   article, details.request { border: 1px solid #8885; border-radius: 8px; margin: 12px 0; padding: 14px; background: light-dark(white,#1d2026); }
+  article.context-card { border: 2px solid #df8a27; }
+  article.result-card { border: 2px solid #548deb; }
+  .prompt-highlight { color: light-dark(#934100,#ffc078); background: light-dark(#fff0dc,#593615); border-radius: 3px; }
+  .turn-divider { display: flex; gap: 16px; align-items: center; margin: 32px 0 16px; }
+  .turn-divider::before, .turn-divider::after { content: ''; flex: 1; border-top: 1px solid #8888; }
+  .iteration { margin-bottom: 28px; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace,monospace; }
   summary { cursor: pointer; } .error { color: light-dark(#ac2525,#ff9999); }
+  .context-text { border: 1px solid #8885; border-radius: 8px; padding: 20px; min-height: 60vh; background: light-dark(white,#1d2026); }
   @media(max-width:650px) { .layout { grid-template-columns: 1fr; } nav { border-right: 0; } }
 </style>
 <header><h1>Harness context inspector</h1><span id="connection">Connecting…</span></header>
-<div class="layout"><nav id="channels"></nav><main id="content">Send a message from a chat terminal to create a channel.</main></div>
+<div class="tabs" role="tablist" aria-label="Inspector views">
+  <button id="tab-live" role="tab" aria-controls="content" aria-selected="true" data-tab="live">Live context</button>
+  <button id="tab-timeline" role="tab" aria-controls="content" aria-selected="false" data-tab="timeline">Timeline</button>
+  <button id="tab-channels" role="tab" aria-controls="content" aria-selected="false" data-tab="channels">Channels</button>
+</div>
+<div class="layout single"><nav id="channels"></nav><main id="content" role="tabpanel" aria-labelledby="tab-live">Connecting to the agent…</main></div>
 <script>
-  let channels = [], selected = null;
+  let channels = [], selected = null, tab = "live";
+  let liveContext = { systemPrompt: "", tools: [], entries: [] };
   const nav = document.querySelector('#channels'), main = document.querySelector('#content');
   function node(tag, text, className) {
     const element = document.createElement(tag);
@@ -31,8 +49,35 @@
     return element;
   }
   function json(value) { return node('pre', JSON.stringify(value, null, 2)); }
+  function messageCard(message, label, key, expanded) {
+    const card = node('article');
+    card.append(node('strong', label), node('pre', message.content ?? ''));
+    if (message.calls?.length) card.append(node('p', 'Tool calls'), json(message.calls));
+    if (message.callId) card.append(node('p', 'Call ID: ' + message.callId, 'muted'));
+    if (message.providerState) {
+      const raw = node('details'); raw.dataset.key = key;
+      raw.open = expanded.has(key);
+      raw.append(node('summary', 'Provider response'), json(message.providerState)); card.append(raw);
+    }
+    return card;
+  }
   function render() {
+    const expanded = new Set([...main.querySelectorAll('details[data-key][open]')].map(e => e.dataset.key));
+    document.querySelector('.layout').classList.toggle('single', tab !== 'channels');
+    main.setAttribute('aria-labelledby', 'tab-' + tab);
+    document.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
     nav.replaceChildren();
+    main.replaceChildren();
+    if (tab === 'timeline') return;
+    if (tab === 'live') {
+      main.append(node('p', 'Shared base context · ' + liveContext.entries.length + ' events', 'muted'));
+      // Use the same rendered base as inference construction, without inventing
+      // an active channel or prompt. Exact requests remain in Channels.
+      const text = (liveContext.base ?? []).map(message => message.content ?? '').join('\n\n')
+        + '\n\nTools\n' + JSON.stringify(liveContext.tools, null, 2);
+      main.append(node('pre', text, 'context-text'));
+      return;
+    }
     if (!selected && channels.length) selected = channels[0].id;
     for (const channel of channels) {
       const status = channel.error ? 'failed' : channel.running ? 'running' : channel.pending ? 'queued' : 'idle';
@@ -42,37 +87,71 @@
       nav.append(button);
     }
     const channel = channels.find(c => c.id === selected);
-    if (!channel) return;
-    // Preserve expanded snapshots when a live update replaces the view.
-    const expanded = new Set([...main.querySelectorAll('details[data-key][open]')].map(e => e.dataset.key));
-    main.replaceChildren(node('h2', 'Channel ' + channel.id));
+    if (!channel) { main.append(node('p', 'No channels yet.', 'muted')); return; }
+    main.append(node('h2', 'Channel ' + channel.id));
     main.append(node('p', 'Participants: ' + channel.participants.join(', ') + ' · Pending turns: ' + channel.pending, 'muted'));
     if (channel.error) main.append(node('p', channel.error, 'error'));
-    main.append(node('h2', 'Live history'));
-    for (const [index, message] of channel.messages.entries()) {
-      const card = node('article');
-      card.append(node('strong', (index + 1) + ' · ' + message.role), node('pre', message.content ?? ''));
-      if (message.calls?.length) card.append(node('p', 'Tool calls'), json(message.calls));
-      if (message.callId) card.append(node('p', 'Call ID: ' + message.callId, 'muted'));
-      if (message.providerState) {
-        const raw = node('details'); raw.dataset.key = channel.id + ':message:' + index;
-        raw.open = expanded.has(raw.dataset.key);
-        raw.append(node('summary', 'Provider response'), json(message.providerState)); card.append(raw);
-      }
-      main.append(card);
+    const turns = new Map();
+    // Recorded turn IDs distinguish real prompts from user-role context blocks.
+    for (const entry of liveContext.entries.filter(e => e.channelId === channel.id)) {
+      if (!turns.has(entry.turnId)) turns.set(entry.turnId, []);
     }
-    main.append(node('h2', 'Inference requests'), node('p', 'Exact JSON body sent to OpenRouter, including context and tool definitions. Authorization headers are excluded.', 'muted'));
     for (const request of channel.requests) {
-      const details = node('details', undefined, 'request');
-      details.dataset.key = channel.id + ':request:' + request.number;
-      details.open = expanded.has(details.dataset.key);
-      details.append(node('summary', '#' + request.number + ' · ' + request.at), json(request.body));
-      main.append(details);
+      const id = request.turnId ?? 'unknown';
+      if (!turns.has(id)) turns.set(id, []);
+      turns.get(id).push(request);
+    }
+    for (const [turnId, requests] of turns) {
+      main.append(node('h2', turnId === 'unknown' ? 'New turn' : 'Turn ' + turnId, 'turn-divider'));
+      const entries = liveContext.entries.filter(e => e.channelId === channel.id && e.turnId === turnId);
+      const prompt = entries.find(e => e.message.role === 'user')?.message.content;
+      if (!requests.length) main.append(node('p', channel.error ? 'Turn stopped before inference.' : 'Waiting for inference…', 'muted'));
+      for (const [index, request] of requests.entries()) {
+        const iteration = node('section', undefined, 'iteration');
+        iteration.append(node('p', 'Iteration ' + (index + 1) + ' · ' + request.at, 'muted'));
+        const context = node('article', undefined, 'context-card');
+        const text = node('pre');
+        // Preserve content as literal text, highlighting the active prompt only.
+        for (const message of request.body.messages ?? []) {
+          if (message.content != null) {
+            const content = node('span', typeof message.content === 'string' ? message.content : JSON.stringify(message.content, null, 2));
+            if (message.role === 'user' && message.content === prompt) content.className = 'prompt-highlight';
+            text.append(content, document.createTextNode('\n\n'));
+          }
+          const { role, content, ...fields } = message;
+          if (Object.keys(fields).length) text.append(document.createTextNode(JSON.stringify(fields, null, 2) + '\n\n'));
+        }
+        if (request.body.tools?.length) text.append(document.createTextNode('Tools\n' + JSON.stringify(request.body.tools, null, 2)));
+        context.append(node('strong', 'Context'), text);
+        const raw = node('details');
+        raw.dataset.key = channel.id + ':request:' + request.number;
+        raw.open = expanded.has(raw.dataset.key);
+        raw.append(node('summary', 'Inference request'), json(request.body));
+        context.append(raw);
+        iteration.append(context);
+        if (request.response) {
+          const result = messageCard(request.response, 'Result', channel.id + ':response:' + request.number, expanded);
+          result.classList.add('result-card');
+          const callIds = new Set((request.response.calls ?? []).map(call => call.id));
+          for (const entry of entries.filter(e => e.message.role === 'tool' && callIds.has(e.message.callId))) {
+            result.append(node('p', 'Tool result · ' + entry.message.callId, 'muted'), node('pre', entry.message.content));
+          }
+          iteration.append(result);
+        } else {
+          const result = node('article', undefined, 'result-card');
+          result.append(node('strong', 'Result'), node('p', channel.error ? 'Inference failed: ' + channel.error : 'Waiting for response…', 'muted'));
+          iteration.append(result);
+        }
+        main.append(iteration);
+      }
     }
   }
+  document.querySelectorAll('[data-tab]').forEach(button => {
+    button.onclick = () => { tab = button.dataset.tab; render(); };
+  });
   const events = new EventSource('/events');
   events.onopen = () => { document.querySelector('#connection').textContent = 'Live · read only'; };
   events.onerror = () => { document.querySelector('#connection').textContent = 'Disconnected · reconnecting…'; };
-  events.onmessage = event => { channels = JSON.parse(event.data); render(); };
+  events.onmessage = event => { const state = JSON.parse(event.data); channels = state.channels; liveContext = state.liveContext; render(); };
 </script>
 </html>

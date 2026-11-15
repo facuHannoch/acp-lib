@@ -1,22 +1,18 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createAgent } from "../src/kernel/agent.ts";
-import { runTurn } from "../src/kernel/loop.ts";
-import type { Message } from "../src/contracts/loop.ts";
+import { createChannelScheduler } from "../src/kernel/channels.ts";
+import { createSharedContextStore } from "../src/state/storage/shared-context.ts";
 import { sendLocal, serveLocal } from "../src/interfaces/protocol/local.ts";
 
 test("channels run concurrently, preserve separate histories, and queue their own turns", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const started: string[] = [];
-  const histories = new Map<string, Message[]>();
-  const agent = createAgent("system", async (messages, input) => {
-    histories.set(input.channelId, messages);
+  const store = createSharedContextStore();
+  const agent = createChannelScheduler(store, async (input) => {
     started.push(input.text);
     if (input.text === "hold") await gate;
-    return runTurn(messages, input.text, async () => ({
-      role: "assistant", content: input.text, calls: [],
-    }), [], async () => "unused");
+    return input.text;
   });
   const first = agent.send({ channelId: "a", participantId: "alice", text: "hold" });
   const second = agent.send({ channelId: "a", participantId: "bob", text: "next" });
@@ -26,12 +22,12 @@ test("channels run concurrently, preserve separate histories, and queue their ow
   } finally { release(); }
   await Promise.all([first, second]);
   expect(started).toEqual(["hold", "independent", "next"]);
-  expect(histories.get("a")?.filter((m) => m.role === "user").map((m) => m.content)).toEqual(["hold", "next"]);
-  expect(histories.get("b")?.map((m) => m.content)).toEqual(["system", "independent", "independent"]);
+  expect(store.snapshot().filter((e) => e.channelId === "a").map((e) => e.message.content?.split("\n\n")[1])).toEqual(["hold", "next"]);
+  expect(store.snapshot().filter((e) => e.channelId === "b")).toHaveLength(1);
 });
 
 test("a failed channel stops without blocking another channel", async () => {
-  const agent = createAgent("system", async (_messages, input) => {
+  const agent = createChannelScheduler(createSharedContextStore(), async (input) => {
     if (input.channelId === "a") throw new Error("model failed");
     return "ok";
   });
@@ -43,10 +39,10 @@ test("a failed channel stops without blocking another channel", async () => {
 test("Unix HTTP clients reconnect to channel state and malformed input is rejected", async () => {
   const directory = await mkdtemp("/tmp/harness-test-");
   const socket = `${directory}/agent.sock`;
-  const agent = createAgent("system", async (messages, input) => {
-    messages.push({ role: "user", content: `${input.participantId}:${input.text}` });
-    return messages.filter((m) => m.role === "user").map((m) => m.content).join("|");
-  });
+  const store = createSharedContextStore();
+  const agent = createChannelScheduler(store, async (input) => store.snapshot()
+    .filter((e) => e.channelId === input.channelId && e.message.role === "user")
+    .map((e) => `${e.from}:${e.message.content?.split("\n\n")[1]}`).join("|"));
   const server = serveLocal(agent, socket);
   try {
     expect(await sendLocal(socket, { channelId: "a", participantId: "alice", text: "one" })).toBe("alice:one");

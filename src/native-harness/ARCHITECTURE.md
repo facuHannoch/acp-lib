@@ -16,7 +16,7 @@ A session is one agent entity: configuration, system prompt, policies, timeline,
 shared state and channels. Two sessions are separate entities. One process opens
 and locks one session; its channels can run concurrently.
 
-A channel is one conversation with its own context and inbox. Each channel is a
+A channel is one conversation with a derived context view and its own inbox. Each channel is a
 sequential actor. The inner loop calls the model, executes requested tools and
 appends their results until the model answers without tools. The outer loop
 starts turns on inbox events, including messages and consumer-supplied events. Steering
@@ -63,9 +63,17 @@ model-client edge. Preserve opaque reasoning data unchanged for the same provide
 The consumer's system prompt stays verbatim. Sender tags, digests and tool hints
 are conversation content.
 
-Append changing content at the end to preserve prefix caching. A channel's context
-is an append-only event log; compaction is an event and the current context a
-projection. V1 compaction clears old tool results, then summarizes old turns.
+The current foundation uses one agent-owned append-only context store. Inputs,
+responses and tool results carry channel, turn and sender attribution. Before
+every inference a pure builder combines a fresh store snapshot with the system
+prompt and current channel. Native tool exchanges stay together within the active
+turn; other turns are rendered as attributed data. No channel's last snapshot
+overwrites the shared record. Tool definitions remain separate request data.
+
+This initial rendering includes all events and rebuilds the shared-history prefix;
+scope filtering, context budgets, compaction and cache-friendly delivery remain
+future work. The older spec's per-channel positions and digest delivery below are
+a reference design, not implemented behavior or a final rendering decision.
 
 The entity has a shared append-only timeline, with provenance and policy scope on
 each event. Channels keep positions in it and receive scoped digests of what

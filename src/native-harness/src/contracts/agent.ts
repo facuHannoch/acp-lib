@@ -1,4 +1,3 @@
-import type { Message } from "./loop.ts";
 
 /** Caller-provided routing and sender identity; not authentication. */
 export interface ChannelInput {
@@ -12,5 +11,10 @@ export interface Agent {
   send(input: ChannelInput): Promise<string>;
 }
 
-/** Executes one turn against the channel's mutable history. */
-export type TurnRunner = (messages: Message[], input: ChannelInput) => Promise<string>;
+/** Identifies the active turn in the shared record. */
+export interface TurnInput extends ChannelInput {
+  turnId: number;
+}
+
+/** Executes one accepted input; context is supplied by composition. */
+export type TurnRunner = (input: TurnInput) => Promise<string>;

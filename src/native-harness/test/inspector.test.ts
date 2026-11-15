@@ -2,6 +2,27 @@ import { expect, test } from "bun:test";
 import { createInspection } from "../src/interfaces/inspector/state.ts";
 import { serveInspector } from "../src/interfaces/inspector/server.ts";
 import type { Message } from "../src/contracts/loop.ts";
+import { createSharedContextStore } from "../src/state/storage/shared-context.ts";
+import { observeContext } from "../src/interfaces/inspector/observe.ts";
+import { buildSharedContext } from "../src/capabilities/context/build.ts";
+
+test("live context follows the shared store across channels, including before first inference", () => {
+  const store = createSharedContextStore();
+  const tools = [{ name: "clock", description: "Time", parameters: {} }];
+  const inspection = createInspection("system", tools);
+  const unsubscribe = observeContext(store, inspection, entries => buildSharedContext(entries, "system"));
+  expect(inspection.snapshot().liveContext.base).toEqual(buildSharedContext([], "system"));
+  expect(inspection.snapshot().liveContext.request).toBeNull();
+  store.append({ channelId: "a", turnId: 1, from: "alice", message: { role: "user", content: "one" } });
+  store.append({ channelId: "b", turnId: 2, from: "bob", message: { role: "user", content: "two" } });
+  const state = inspection.snapshot();
+  expect(state.liveContext).toEqual({ systemPrompt: "system", tools, entries: store.snapshot(),
+    base: buildSharedContext(store.snapshot(), "system"), request: null });
+  expect(state.channels.map((channel) => channel.id)).toEqual(["a", "b"]);
+  state.liveContext.entries[0]!.message.content = "changed";
+  expect(inspection.snapshot().liveContext.entries[0]?.message.content).toBe("one");
+  unsubscribe();
+});
 
 test("inspection snapshots do not alias live history or inference requests", () => {
   const inspection = createInspection("system");
@@ -12,13 +33,34 @@ test("inspection snapshots do not alias live history or inference requests", () 
   inspection.request("a", JSON.stringify({ messages: history, tools: [] }));
   history[0]!.content = "changed";
   const first = inspection.snapshot();
-  expect(first[0]?.messages[0]?.content).toBe("original");
-  expect(first[0]?.requests[0]?.body).toEqual({ messages: [{ role: "user", content: "original" }], tools: [] });
-  first[0]!.messages.length = 0;
-  expect(inspection.snapshot()[0]?.messages.length).toBe(1);
+  expect(first.channels[0]?.messages[0]?.content).toBe("original");
+  expect(first.channels[0]?.requests[0]?.body).toEqual({ messages: [{ role: "user", content: "original" }], tools: [] });
+  expect(first.liveContext.request).toMatchObject({ channelId: "a", number: 1,
+    body: { messages: [{ role: "user", content: "original" }], tools: [] } });
+  inspection.request("b", JSON.stringify({ messages: [{ role: "user", content: "new" }] }));
+  expect(inspection.snapshot().liveContext.request?.channelId).toBe("b");
+  expect(first.liveContext.request?.channelId).toBe("a");
+  first.channels[0]!.messages.length = 0;
+  expect(inspection.snapshot().channels[0]?.messages.length).toBe(1);
   inspection.running("a", false);
   inspection.finished("a", "failed");
-  expect(inspection.snapshot()[0]).toMatchObject({ pending: 0, running: false, error: "failed" });
+  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 0, running: false, error: "failed" });
+});
+
+test("iteration responses stay paired with their channel and turn", () => {
+  const inspection = createInspection("system");
+  const body = JSON.stringify({ messages: [], tools: [] });
+  inspection.request("a", body, 1);
+  inspection.request("b", body, 2);
+  const answer = { role: "assistant" as const, content: "B answer", calls: [] };
+  inspection.response("b", answer);
+  answer.content = "mutated";
+  inspection.response("a", { role: "assistant", content: "A tool call", calls: [] });
+  inspection.request("a", body, 1);
+  inspection.response("a", { role: "assistant", content: "A final", calls: [] });
+  const channels = inspection.snapshot().channels;
+  expect(channels[0]?.requests.map(r => [r.turnId, r.response?.content])).toEqual([[1, "A tool call"], [1, "A final"]]);
+  expect(channels[1]?.requests[0]).toMatchObject({ turnId: 2, response: { content: "B answer" } });
 });
 
 test("inspector serves a read-only page, streams changes, and reconnects with current state", async () => {
@@ -34,7 +76,7 @@ test("inspector serves a read-only page, streams changes, and reconnects with cu
     const reader = events.body!.getReader();
     cancel = () => reader.cancel();
     const initial = await reader.read();
-    expect(new TextDecoder().decode(initial.value)).toContain("data: []");
+    expect(new TextDecoder().decode(initial.value)).toContain('"channels":[]');
     inspection.accepted("a", "<script>untrusted</script>");
     const update = await reader.read();
     expect(new TextDecoder().decode(update.value)).toContain('"id":"a"');
