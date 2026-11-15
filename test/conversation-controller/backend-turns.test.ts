@@ -107,7 +107,7 @@ describe("a turn the backend starts on its own", () => {
     const prompt = session.prompt("one");
     await until(() => events.some((event) => event.kind === "turn_started"));
     const id = fake.startTurn({ chunks: ["backend"] });
-    await Bun.sleep(50);
+    await until(() => fake.prompted.length === 1); // the prompt's turn is in flight, held by its script
     expect(fake.held).toEqual([id]); // reported, output held, not yet prepared
     expect(kinds(events)).toHaveLength(1); // only the prompt's turn_started so far
     release();
@@ -127,8 +127,7 @@ describe("a turn the backend starts on its own", () => {
     const first = fake.startTurn({ chunks: ["a"], hold });
     const second = fake.startTurn({ chunks: ["b"] });
     await until(() => fake.prompted.length === 1);
-    await Bun.sleep(30);
-    expect(fake.prompted).toEqual([first]); // the second waits for the first to finish
+    expect(fake.prompted).toEqual([first]); // the second hasn't been prepared; the ordering below proves it waited
     release();
     await until(() => events.filter((event) => event.kind === "turn_completed").length === 2);
     expect(kinds(events)).toEqual([`turn_started:${first}`, `turn_completed:${first}`, `turn_started:${second}`, `turn_completed:${second}`]);
@@ -211,7 +210,7 @@ describe("lifecycle across a handoff and in an Agent-owned conversation", () => 
     release();
     await prompt;
     await handoff;
-    await Bun.sleep(100); // the turn's queue item runs right after the handoff
+    await until(() => fake.abandoned.length > 0); // the turn's queue item runs right after the handoff
     const live = (session as unknown as { controller: ConversationController }).controller;
     expect(live).not.toBe(fake); // the handoff replaced the controller
     expect(fake.abandoned.map((entry) => entry.turnId)).toEqual([id]);
@@ -265,7 +264,10 @@ describe("lifecycle across a handoff and in an Agent-owned conversation", () => 
     expect(mine.filter((record) => record.kind === "metering").map((record) => record.recordId)).toEqual([`${id}:metering`]);
     // Completion comes after the final assistant record, the metering record and afterPrompt.
     const at = (entry: string) => timeline.indexOf(entry);
-    expect(at(`record:${id}:assistant:1`)).toBeGreaterThanOrEqual(0);
+    // Each event must be present before its position means anything (-1 would make an ordering check pass).
+    for (const entry of [`turn_started:${id}`, `record:${id}:assistant:1`, `record:${id}:metering`, `afterPrompt:${id}`, `turn_completed:${id}`]) {
+      expect({ entry, present: at(entry) >= 0 }).toEqual({ entry, present: true });
+    }
     expect(at(`turn_completed:${id}`)).toBeGreaterThan(at(`record:${id}:assistant:1`));
     expect(at(`turn_completed:${id}`)).toBeGreaterThan(at(`record:${id}:metering`));
     expect(at(`turn_completed:${id}`)).toBeGreaterThan(at(`afterPrompt:${id}`));
