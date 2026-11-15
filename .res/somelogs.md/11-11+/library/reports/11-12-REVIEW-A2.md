@@ -1004,3 +1004,23 @@ no snapshots were regenerated.
   These are fault injections, not production regression demonstrations.
 - Tests used a temporary archive and offline fixtures; no implementation branch checkout,
   source/snapshot edit, live harness, push, or beta merge was performed.
+
+## Owner metering decision and beta update
+
+Merged beta `5e01135` into `controller-interface-reviews` at
+`67232610ecbf0bd4fb9478a6af28bf08c8d49140`, without conflicts. Prior review commit
+`5dacc7a` and beta `5e01135` are both ancestors. Read the updated execution plan and
+controller-interface specification, including owner decision `0013b0f`: a durable
+metering record is at most once per operation and writes are idempotent by operation ID,
+including custom backends; in-process retry of the same record is allowed. A metering
+write failure surfaces and can leave no durable record; no durable retry is promised.
+An opened operation that never reaches the provider may leave zero or one no-usage
+record; characterization asserts each mode's existing outcome.
+
+The preceding pending-open and overwritten-attempt findings concern observation gaps;
+they do not establish a prohibition on retrying `open()`. The write-retry decision does
+not itself define an `open()` retry rule. The follow-up review will evaluate fixes against
+the decision and grounded behavior, preserving attempt history without inventing a
+broader prohibition. This update is documentation and branch integration only; no test
+suite was run for the merge. Awaiting the completed fix assignment; B1 and the A2
+coordinator gate remain held.
