@@ -233,3 +233,47 @@ test("reports a cancel once when requested and once with how it ended", async ()
   expect(await run("stalled", (finish) => finish(cancelled)))
     .toEqual(["requested:stalled", "resolved:stalled:acknowledged"]);
 });
+
+test("a replaying provider is not stalled; once it stops replaying the stall deadline applies again (bounded)", async () => {
+  const clock = new Clock();
+  let replaying = true;
+  const calls: string[] = [];
+  const provider: SupervisedProvider = {
+    prompt: () => new Promise(() => {}),
+    subscribeOutput: () => () => undefined,
+    cancel: () => { calls.push("cancel"); },
+    forceStop: async () => {},
+  };
+  const supervisor = new OperationSupervisor(provider, {
+    operationId: "replay",
+    kind: "turn",
+    timers: clock,
+    limits: { firstOutputMs: 100 },
+    isReplaying: () => replaying,
+  });
+  void supervisor.run().catch(() => undefined);
+  await Promise.resolve();
+  clock.advance(1000); // ten intervals while replaying: never stalled
+  expect(calls).toEqual([]);
+  replaying = false; // the replay is over and the turn is live, but silent
+  clock.advance(100); // one interval later at most: stalled
+  expect(calls).toEqual(["cancel"]);
+});
+
+test("a provider that never replays keeps today's deadline exactly", async () => {
+  const clock = new Clock();
+  const calls: string[] = [];
+  const provider: SupervisedProvider = {
+    prompt: () => new Promise(() => {}),
+    subscribeOutput: () => () => undefined,
+    cancel: () => { calls.push("cancel"); },
+    forceStop: async () => {},
+  };
+  const supervisor = new OperationSupervisor(provider, { operationId: "live", kind: "turn", timers: clock, limits: { firstOutputMs: 100 }, isReplaying: () => false });
+  void supervisor.run().catch(() => undefined);
+  await Promise.resolve();
+  clock.advance(99);
+  expect(calls).toEqual([]);
+  clock.advance(1);
+  expect(calls).toEqual(["cancel"]);
+});

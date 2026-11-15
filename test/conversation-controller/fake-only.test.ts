@@ -94,6 +94,21 @@ describe("per-turn supervision", () => {
     expect(events.find((event) => event.kind === "turn_completed")).toMatchObject({ turnId: id });
   }, 20_000);
 
+  test("a turn that replays, then becomes live, then goes silent stalls: its deadline is not lost, and the queue is not stuck", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { events } = await sessionWith(fake, { stale: true });
+    const startedAt = Date.now();
+    const id = fake.startTurn({ chunks: ["replayed"], ended: true, goLive: delay(150), hold: new Promise<void>(() => undefined) });
+    await until(() => events.some((event) => event.kind === "turn_failed"));
+    const failedAfter = Date.now() - startedAt;
+    expect(events.find((event) => event.kind === "turn_failed")).toMatchObject({ turnId: id });
+    expect(String(events.find((event) => event.kind === "turn_failed")!.error)).toContain("stalled");
+    expect(failedAfter).toBeGreaterThanOrEqual(120); // not stalled while it replayed (a 30 ms limit)...
+    expect(failedAfter).toBeLessThan(2000); // ...and stalled soon after it became live: bounded
+    const next = fake.startTurn({ chunks: ["queue still moves"] });
+    await until(() => events.some((event) => event.kind === "turn_completed" && event.turnId === next));
+  }, 20_000);
+
   test("the same slow turn, live, does stall (the stall check applies from the point a turn is live)", async () => {
     const fake = new FakeController({ scheduling: "backend" });
     const { events } = await sessionWith(fake, { stale: true });

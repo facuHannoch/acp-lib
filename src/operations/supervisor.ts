@@ -29,6 +29,12 @@ export interface SupervisorOptions {
   readonly cancelGraceMs?: number;
   readonly timers?: Timers;
   readonly limits?: StaleLimits;
+  /**
+   * Whether the provider is replaying output the backend already produced (a held turn that is not `live`). Read each
+   * time a stall deadline is reached, not once: a replaying turn is never stalled, and one that has become live since
+   * gets its stall deadline back (a controller-interface turn is not live while its held output replays).
+   */
+  readonly isReplaying?: () => boolean;
   readonly onStageChanged?: (activity: OperationActivity) => void;
   /** The last running tool settled. */
   readonly onToolBoundary?: () => void;
@@ -61,6 +67,8 @@ export class OperationSupervisor {
   private finished = false;
   private started = false;
   private forced = false;
+  /** The last time a stall deadline was skipped because the provider was replaying: silence counts from then. */
+  private replayCheckedAt = 0;
   private finishForced?: (result: PromptResult) => void;
 
   constructor(private readonly provider: SupervisedProvider, private readonly options: SupervisorOptions) {
@@ -185,9 +193,19 @@ export class OperationSupervisor {
   private armStaleTimer(): void {
     this.timers.clearTimeout(this.staleHandle);
     const limits = this.options.limits ?? {};
-    const decision = stalePolicy(this.activity, this.permissions, this.tools.oldestStartedAt, limits, this.timers.now());
+    // Silence is counted from the last skipped deadline too, so a turn that stopped replaying gets a full interval.
+    const floor = this.replayCheckedAt;
+    const activity = this.activity;
+    const counted = floor === 0 ? activity : { ...activity, startedAt: Math.max(activity.startedAt, floor), lastOutputAt: activity.lastOutputAt === null ? null : Math.max(activity.lastOutputAt, floor) };
+    const decision = stalePolicy(counted, this.permissions, this.tools.oldestStartedAt, limits, this.timers.now());
     if (!decision || this.finished) return;
     this.staleHandle = this.timers.setTimeout(() => {
+      if (this.options.isReplaying?.()) {
+        // Still replaying held output: no stall now; look again after another interval.
+        this.replayCheckedAt = this.timers.now();
+        this.armStaleTimer();
+        return;
+      }
       this.stallPhase = decision.phase;
       this.cancel("stalled");
     }, Math.max(0, decision.deadline - this.timers.now()));

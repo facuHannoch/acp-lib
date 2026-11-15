@@ -71,11 +71,9 @@ export function reloadProviderSession(controller: ConversationController, sessio
 
 /**
  * The stall limits a provider request runs under. A screen-scraped (PTY) harness can't report tools or permissions, so
- * silence explains nothing: no limit by default (a configured one still applies). A prepared turn that isn't `live` is
- * replaying output the backend already produced (controller-interface spec: the stall check applies from the point the
- * turn is live), so no stall limit applies to it at all.
+ * silence explains nothing: no limit by default (a configured one still applies). A turn that is replaying held output
+ * is handled by the supervisor itself (`isReplaying`), which reads `live` as time goes on.
  */
-export function stallLimitsFor(controller: ConversationController, provider: object, limits: StaleLimits | undefined): StaleLimits | undefined {
-  if ((provider as { live?: boolean }).live === false) return { ...limits, firstOutputMs: false, nextOutputMs: false };
+export function stallLimitsFor(controller: ConversationController, limits: StaleLimits | undefined): StaleLimits | undefined {
   return isDegradedController(controller) ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits;
 }

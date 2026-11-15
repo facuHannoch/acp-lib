@@ -34,6 +34,8 @@ export interface FakeScript {
   readonly signals?: readonly ProviderOutput[];
   /** The backend already finished this turn: its prepared turn replays held output and is not `live`. */
   readonly ended?: boolean;
+  /** With `ended`: the turn becomes `live` when this settles (the replay is over, but the turn still runs). */
+  readonly goLive?: Promise<void>;
 }
 
 interface Entry {
@@ -135,11 +137,13 @@ export class FakeController implements ConversationController {
     const listeners = new Set<OutputListener>();
     const signal = (output: ProviderOutput) => { for (const listener of [...listeners]) listener(output); };
     let cancelled = false;
+    let replaying = entry.script.ended === true;
+    void entry.script.goLive?.then(() => { replaying = false; });
     let onCancel!: () => void;
     const cancelSignal = new Promise<void>((resolve) => { onCancel = resolve; });
     const prepared: PreparedTurn = {
       turnId,
-      live: !entry.script.ended,
+      get live() { return !replaying; },
       subscribeOutput: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
       cancel: () => { cancelled = true; onCancel(); },
       forceStop: () => this.forceStop(),

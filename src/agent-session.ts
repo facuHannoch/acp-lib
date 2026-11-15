@@ -3731,7 +3731,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       sessionId: controller.currentSessionId,
       cancelGraceMs: controller.cancelGraceMs,
       // A screen-scraped harness cannot report tools or permissions, so silence explains nothing.
-      limits: stallLimitsFor(controller, provider, limits),
+      limits: stallLimitsFor(controller, limits),
+      isReplaying: () => (provider as { live?: boolean }).live === false,
       onStageChanged: (activity) => {
         this.emit({ kind: "operation_stage_changed", activity });
         this.emitStateIfChanged();

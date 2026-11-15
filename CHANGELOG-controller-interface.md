@@ -46,8 +46,10 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 - `turn_took` extends a turn's cause; a message the session sent settles with the turn that takes it. A controller with
   `nativeSteering` receives each message separately (never combined, no cancel-to-steer), the queue operation ends when
   `send` resolves, and a `steer` message sent while a backend turn runs is handed over at once.
-- A prepared turn that isn't `live` (replaying output the backend already produced) isn't subject to the stall limits.
-- **Open, for the spec owner:** the interface has no message payload yet, so a backend-scheduled controller cannot read
+- A prepared turn that isn't `live` (replaying output the backend already produced) isn't stalled while it replays; the
+  supervisor re-reads `live` each stall interval, so a turn that becomes live and goes silent is stalled (no later than its
+  limit after the change; the interface has no change notification, see `errors/11-15-spec-live-transition-no-notification.md`).
+- **Open, for the spec owner:** a prepared turn's `live` has no change notification (interval-granularity check for now); the interface has no message payload yet, so a backend-scheduled controller cannot read
   what the user wrote; an accepted message the backend never takes waits until stop; a mixed-kind `turn_took` cause keeps
   the first kind. See `errors/11-15-spec-*.md`.
 
