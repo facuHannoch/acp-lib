@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `5e01135` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | No-usage assertion fix and checkpoint triage | Review `cc854a2` found undispatched metering no-usage assertion gap; implementer assigned. Three A1/A2 comparison runs failed checkpoint timestamp validation: `11-15-ISSUE-A2-checkpoint-timestamps.md` awaits owner triage. Coordinator gate pending. |
+| A2 | No-usage follow-up review and checkpoint triage | Fix `5676ce6`, report `937de8a`; reviewer assigned. Three A1/A2 comparison runs failed checkpoint timestamp validation: `11-15-ISSUE-A2-checkpoint-timestamps.md` awaits owner triage. Coordinator gate pending. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
