@@ -5,7 +5,6 @@ exports[`characterization, agent-owned a plain prompt 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -226,7 +225,6 @@ exports[`characterization, agent-owned a second prompt queued behind a running o
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -253,7 +251,6 @@ exports[`characterization, agent-owned a second prompt queued behind a running o
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:2>",
         ],
@@ -668,7 +665,6 @@ exports[`characterization, agent-owned two steer messages combined into one run 
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -700,7 +696,6 @@ exports[`characterization, agent-owned two steer messages combined into one run 
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:2>",
           "<id:3>",
@@ -1365,7 +1360,6 @@ exports[`characterization, agent-owned an interrupt of the running turn 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -1617,7 +1611,6 @@ exports[`characterization, agent-owned a stalled prompt 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -1898,7 +1891,6 @@ exports[`characterization, agent-owned a permission request answered through the
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -2179,7 +2171,6 @@ exports[`characterization, agent-owned an internal command 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -2441,7 +2432,6 @@ exports[`characterization, agent-owned a handoff with a summary 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -2486,7 +2476,6 @@ exports[`characterization, agent-owned a handoff with a summary 1`] = `
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:4>",
         ],
@@ -3373,7 +3362,6 @@ exports[`characterization, managed a plain prompt 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -3906,7 +3894,6 @@ exports[`characterization, managed a second prompt queued behind a running one 1
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -3954,7 +3941,6 @@ exports[`characterization, managed a second prompt queued behind a running one 1
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:2>",
         ],
@@ -4827,7 +4813,6 @@ exports[`characterization, managed two steer messages combined into one run 1`] 
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -4878,7 +4863,6 @@ exports[`characterization, managed two steer messages combined into one run 1`] 
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:2>",
           "<id:3>",
@@ -6002,7 +5986,6 @@ exports[`characterization, managed an interrupt of the running turn 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -6551,7 +6534,6 @@ exports[`characterization, managed a stalled prompt 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -7116,7 +7098,6 @@ exports[`characterization, managed a permission request answered through the han
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -7676,7 +7657,6 @@ exports[`characterization, managed an internal command 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -8258,7 +8238,6 @@ exports[`characterization, managed a handoff with a summary 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -8324,7 +8303,6 @@ exports[`characterization, managed a handoff with a summary 1`] = `
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:4>",
         ],
@@ -10474,7 +10452,6 @@ exports[`characterization, detached a plain prompt 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -10649,7 +10626,6 @@ exports[`characterization, detached a second prompt queued behind a running one 
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -10676,7 +10652,6 @@ exports[`characterization, detached a second prompt queued behind a running one 
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:2>",
         ],
@@ -10993,7 +10968,6 @@ exports[`characterization, detached two steer messages combined into one run 1`]
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -11025,7 +10999,6 @@ exports[`characterization, detached two steer messages combined into one run 1`]
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:2>",
           "<id:3>",
@@ -11546,7 +11519,6 @@ exports[`characterization, detached an interrupt of the running turn 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -11715,7 +11687,6 @@ exports[`characterization, detached a stalled prompt 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -11893,7 +11864,6 @@ exports[`characterization, detached a permission request answered through the ha
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -12095,7 +12065,6 @@ exports[`characterization, detached an internal command 1`] = `
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -12315,7 +12284,6 @@ exports[`characterization, once a queued message withdrawn, its promise awaited 
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -12563,7 +12531,6 @@ exports[`characterization, once an interrupt that drops queued messages, their p
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -12859,7 +12826,6 @@ exports[`characterization, once a provider that fails to start: the prompt rejec
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -12881,7 +12847,6 @@ exports[`characterization, once a provider that fails to start: the prompt rejec
     },
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:2>",
         ],
@@ -13641,7 +13606,6 @@ exports[`characterization, once an internal prompt (handoff summary) that stalls
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -14270,7 +14234,6 @@ exports[`characterization, once an internal prompt (handoff summary) that stalls
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -14893,7 +14856,6 @@ exports[`characterization, once a permission request sent the instant the prompt
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
@@ -15165,7 +15127,6 @@ exports[`characterization, once a tool start sent the instant the prompt reaches
   "events": [
     {
       "cause": {
-        "kind": "messages",
         "messageIds": [
           "<id:1>",
         ],
