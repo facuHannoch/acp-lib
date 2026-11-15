@@ -26,3 +26,15 @@ export class TimeoutError extends Error {
     this.name = "TimeoutError";
   }
 }
+
+/**
+ * A controller was asked for something it can't do (an optional member it doesn't have, or a feature
+ * its backend doesn't offer). Callers guard first (the controller's optional methods, the backend's
+ * capabilities), so this signals a bug.
+ */
+export class UnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsupportedError";
+  }
+}

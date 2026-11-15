@@ -30,6 +30,7 @@ import type {
   WireEntry,
 } from "./types.ts";
 import { NotConnectedError } from "./errors.ts";
+import { conversationCapabilitiesOf, type ConversationCapabilities } from "./conversation-controller/capabilities.ts";
 import type { ClientPrompt } from "./agent-client.ts";
 
 const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([]);
@@ -215,6 +216,11 @@ export class AgentController implements AgentClient {
 
   get capabilities(): Capabilities {
     return this.requireAcp().capabilities;
+  }
+
+  /** What the backend offers, in neutral terms; `backend` is null before connecting and in PTY mode. */
+  get conversationCapabilities(): ConversationCapabilities {
+    return conversationCapabilitiesOf(this.acp);
   }
 
   get configOptions(): ConfigOptions {

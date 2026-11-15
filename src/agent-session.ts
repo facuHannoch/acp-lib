@@ -48,6 +48,7 @@ import {
 } from "./persistence/provider-attachment.ts";
 import type { AgentClient, Bridgeable, BridgeOptions, InterruptOptions } from "./agent-client.ts";
 import type { Capabilities } from "./capabilities.ts";
+import type { ConversationCapabilities } from "./conversation-controller/capabilities.ts";
 import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
@@ -4065,6 +4066,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
   get capabilities(): Capabilities {
     return this.controller.capabilities;
   }
+  /** What the backend offers, in neutral terms; safe to read before connecting and in PTY mode. */
+  get conversationCapabilities(): ConversationCapabilities {
+    return this.controller.conversationCapabilities;
+  }
   get configOptions(): ConfigOptions {
     return this.controller.configOptions;
   }
@@ -4180,7 +4185,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     let agentEntries: SessionListEntry[] = [];
     if (
       !this.controller.isDegraded &&
-      this.controller.capabilities.agent.sessionCapabilities.list
+      this.controller.conversationCapabilities.backend?.listSessions
     ) {
       agentEntries = (await this.controller.listSessions()).sessions;
     }
