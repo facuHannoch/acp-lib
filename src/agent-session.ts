@@ -180,15 +180,12 @@ import {
   stageOpeningContinuation,
 } from "./agent-conversation-continuation.ts";
 import {
-  checkTurnRun,
-  runTurn,
-  turnRunOf,
-  type PromptQueueItem,
-  type TurnContext,
-  type TurnRunContext,
+  checkTurnRun, reportBackendTurn, runBackendTurn, runTurn, settleClearedBackendTurns, turnRunOf,
+  type BackendTurnHost, type BackendTurnItem, type PromptQueueItem, type TurnContext, type TurnRunContext,
 } from "./conversation-turns/index.ts";
 import type { TurnCause, TurnEvent, TurnRun } from "./conversation-controller/contracts.ts";
 import {
+  copyPromptResult,
   persistenceOperationKind,
   toPersistenceJsonValue,
 } from "./conversation-turns/record-helpers.ts";
@@ -317,7 +314,7 @@ interface RecoveryResolutionQueueItem {
   reject: (error: unknown) => void;
 }
 
-type QueueItem = PromptQueueItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem | ConfigResolutionQueueItem | RecoveryResolutionQueueItem;
+type QueueItem = PromptQueueItem | BackendTurnItem | HandoffQueueItem | ConfigQueueItem | ModeQueueItem | ConfigResolutionQueueItem | RecoveryResolutionQueueItem;
 
 export interface AgentSessionOpenResult {
   readonly session: AgentConversation;
@@ -743,6 +740,16 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
   }
 
+  private backendTurnHost(): BackendTurnHost {
+    const session = this;
+    return {
+      get stopped() { return session.stopPromise !== null; }, // `phase` is rewritten by each queue item
+      emit: (event) => this.emit(event),
+      enqueue: (item) => { this.operations.enqueue(item); this.emitStateIfChanged(); void this.pump(); },
+      run: (turn) => this.runPrompt(turn),
+    };
+  }
+
   /** A turn the controller reports. The session announces it; completion stays the session's. */
   private onControllerTurnEvent(controller: ConversationController, event: TurnEvent): void {
     if (event.kind === "turn_took") {
@@ -750,12 +757,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.log.warn("controller_turn_took_ignored", { turnId: event.turnId });
       return;
     }
-    if (!event.sentBySession) {
-      // Turns the backend starts on its own join the queue in Brief B2; no ACP path reports one.
-      this.log.warn("controller_backend_turn_ignored", { turnId: event.turnId });
-      controller.abandonTurn(event.turnId, new Error("backend-started turns are not supported yet"));
-      return;
-    }
+    if (!event.sentBySession) return reportBackendTurn(this.backendTurnHost(), controller, event);
     const sent = this.sentRuns.get(event.turnId);
     if (!sent) {
       this.log.warn("controller_turn_unknown", { turnId: event.turnId });
@@ -2274,7 +2276,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (this.operations.isDraining) return;
     try {
       await this.operations.drain(async (item) => {
-        this.phase = item.kind === "prompt"
+        this.phase = item.kind === "prompt" || item.kind === "backend_turn"
           ? "prompting"
           : item.kind === "handoff"
             ? "handoff"
@@ -2284,7 +2286,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
                 ? "recovering"
               : "switching_mode";
         this.emitStateIfChanged();
-        this.runningOperationId = item.kind === "prompt" ? item.turnId
+        this.runningOperationId = item.kind === "prompt" || item.kind === "backend_turn" ? item.turnId
           : item.kind === "handoff" ? item.handoffId
           : item.kind === "set_config" ? item.operationId
           : item.kind === "set_mode" ? item.transitionId
@@ -2369,6 +2371,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
           // would have without the failure, so the next operation does not start a second one.
           // Bounded like any reconnect: by the provider answering or the process ending.
           if (readiness) await readiness;
+        } else if (item.kind === "backend_turn") {
+          await runBackendTurn(this.backendTurnHost(), this.controller, item);
         } else if (item.kind === "handoff") {
           try {
             item.resolve(await this.runHandoff(item));
@@ -3974,7 +3978,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // A stop closes the connection, so its turn fails and `endedBy` is never reported for it.
     this.steering.interrupted();
     if (options?.clearQueue) {
-      const dropped = this.operations.clear();
+      const dropped = settleClearedBackendTurns(this.operations.clear(), this.controller, reason === "stop", (turn) => this.operations.enqueue(turn));
       // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
       // metering record is minted (§16).
       this.steering.dropped(dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"));
@@ -4619,16 +4623,4 @@ function protocolMethod(message: PersistenceJsonValue): string | undefined {
   if (message === null || Array.isArray(message) || typeof message !== "object") return undefined;
   const method = (message as { readonly method?: unknown }).method;
   return typeof method === "string" ? method : undefined;
-}
-
-/** Do not let one notification observer mutate the PromptResult another observer sees. */
-function copyPromptResult(result: PromptResult): PromptResult {
-  const messages = result.messages ?? (result.text ? [{ text: result.text }] : []);
-  return Object.freeze({
-    ...result,
-    messages: Object.freeze(
-      messages.map((message) => Object.freeze({ ...message })),
-    ),
-    usage: result.usage ? Object.freeze({ ...result.usage }) : null,
-  });
 }

@@ -12,6 +12,7 @@ import type {
   PermissionOutcome,
   PermissionRequest,
   ResponseMessage,
+  PromptResult,
 } from "../types.ts";
 
 /** The older JSONL transcript has no media store: a message with parts keeps a line per part. */
@@ -89,4 +90,16 @@ export async function permissionWithAbort(
   } finally {
     signal?.removeEventListener("abort", abort);
   }
+}
+
+/** Do not let one notification observer mutate the PromptResult another observer sees. */
+export function copyPromptResult(result: PromptResult): PromptResult {
+  const messages = result.messages ?? (result.text ? [{ text: result.text }] : []);
+  return Object.freeze({
+    ...result,
+    messages: Object.freeze(
+      messages.map((message) => Object.freeze({ ...message })),
+    ),
+    usage: result.usage ? Object.freeze({ ...result.usage }) : null,
+  });
 }

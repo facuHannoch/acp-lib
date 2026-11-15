@@ -32,7 +32,8 @@ export interface PromptQueueItem extends SteeringPrompt {
 /**
  * The turn `runTurn` runs: its id and cause, and, when the session sent it, the originating queued
  * messages with their handlers (one prompt item; for a combined steer run, the combined item whose
- * `parts` are the original messages). A turn without `messages` (started by the backend) is Brief B2.
+ * `parts` are the original messages). A turn the backend started has no `messages`: it runs without the
+ * ACP content phase, writes no user record and uses the session's own recording handlers.
  */
 export interface TurnContext {
   readonly turnId: string;

@@ -33,21 +33,22 @@ import {
 import { mediaCapabilitiesOf } from "../conversation-controller/capabilities.ts";
 import { isDegradedController } from "../conversation-controller/guards.ts";
 import type { ResponseMessage } from "../types.ts";
+import { backendTurnItem } from "./backend-turns.ts";
 import type { TurnContext, TurnRunContext } from "./context.ts";
 import { createTurnRecording } from "./recording.ts";
 import { legacyTranscriptMessages, legacyTranscriptText, persistenceOperationKind } from "./record-helpers.ts";
 
 export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<AgentSessionPromptResult> {
   const { turnId } = turn;
-  // Today's preparation needs the turn's messages. A turn the backend started has none (Brief B2;
-  // no ACP path reaches it).
-  const item = turn.messages;
-  if (!item) throw new Error(`turn ${turnId} has no messages: backend-started turns are not supported yet`);
+  // Today's preparation needs the turn's messages. A turn the backend started has none: it is metered and
+  // recorded like any turn, but has no user message, no ACP content and only the session's own handlers.
+  const sent = turn.messages !== undefined;
+  const item = turn.messages ?? backendTurnItem(turnId);
   // Phase 1: prepare.
   const targetProviderContextId = ctx.owner.lifecycle
     ? ctx.session.internalSessionId ?? `runtime:${ctx.owner.contextNonce()}`
     : undefined;
-  const owned = ctx.owner.lifecycle
+  const owned = ctx.owner.lifecycle && sent
     ? await ctx.owner.lifecycle.beforePrompt({
         operationId: turnId,
         agentSessionId: ctx.owner.agentSessionId!,
@@ -82,8 +83,8 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
       operation = await ctx.metering.open(item);
       await ctx.persistence.v2Transcript!.beginOperation(turnId, persistenceOperationKind(item.operationKind));
       transcriptStarted = true;
-      // A combined prompt shows each original message, as it was sent.
-      const userTexts = item.parts
+      // A combined prompt shows each original message, as it was sent; a backend-started turn has none.
+      const userTexts = !sent ? [] : item.parts
         ? item.parts.map((part) => legacyTranscriptText(part.text, part.messageParts, part.attachments))
         : [legacyTranscriptText(item.text, item.messageParts, item.attachments)];
       const userRecords = [];
@@ -109,13 +110,15 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
       throw error;
     }
   } else {
-    await ctx.persistence.appendTranscript({
-      v: 1,
-      t: "msg",
-      role: "user",
-      text: legacyTranscriptText(item.text, item.messageParts, item.attachments),
-      ts: Date.now(),
-    });
+    if (sent) {
+      await ctx.persistence.appendTranscript({
+        v: 1,
+        t: "msg",
+        role: "user",
+        text: legacyTranscriptText(item.text, item.messageParts, item.attachments),
+        ts: Date.now(),
+      });
+    }
     operation = await ctx.metering.open(item);
   }
 
@@ -137,11 +140,13 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
       ctx.controller.prepareTurn(turnId, {
         // An owned conversation already resolved the parts and wrapped them with the provider-only
         // text (identity, out-of-band messages); otherwise the client resolves them.
-        input: owned?.providerParts
-          ? { parts: unresolvedParts(owned.providerParts) }
-          : item.messageParts
-            ? { parts: item.messageParts, attachments: item.attachments }
-            : { text: item.text, attachments: item.attachments },
+        ...(!sent ? {} : {
+          input: owned?.providerParts
+            ? { parts: unresolvedParts(owned.providerParts) }
+            : item.messageParts
+              ? { parts: item.messageParts, attachments: item.attachments }
+              : { text: item.text, attachments: item.attachments },
+        }),
         handlers: recording.handlers,
       }));
     if (res.cancel === "forced") {
