@@ -1312,8 +1312,9 @@ shape of the library's own types: `MeteringUsageResult` (`src/metering/record.ts
 (`src/types.ts`), and `MoneyTotal` / `Money` (`src/metering/money.ts`).
 - **Not metered:** only `usage_unavailable`, `baseline_required` and `counter_reset` are
   recognized. They need a string `reason` and no `attributable` (that shape has none).
-- **Metered,** with every required field present and zero, and every optional one zero when
-  present:
+- **Metered,** with every count and amount field listed here present and zero, and every
+  optional one zero when present. This is not every required field of the types; see "Not
+  validated" below:
   - `attributable.totalTokens`;
   - `reportedDelta`: a `TokenUsage` with `totalTokens`, `inputTokens` and `outputTokens`, the
     optional `cached*` / `thought` counters, and no other key;
@@ -1324,8 +1325,29 @@ shape of the library's own types: `MeteringUsageResult` (`src/metering/record.ts
     string and a string currency) and `unaccounted` 0;
   - `lineItems` absent or empty (the type makes it optional). Non-empty line items fail, because
     they aren't interpreted.
-- **Anything else fails** as "not established": an unrecognized status, a missing or ill-typed
-  field, or a non-metered result carrying `attributable`.
+- **Fails** as "not established": an unrecognized status; a missing or ill-typed field *among
+  those listed above*; or a non-metered result carrying `attributable`.
+- **Not validated** (corrected after review `8f769a8`, P3; error file
+  `errors/11-15-a2-pricing-metadata-shape.md`). The rule checks what can carry usage: the counts,
+  the rated costs and the totals. It is not a full schema validation.
+  - **Pricing metadata:** a `pricing` object's `unitPrice`, a required `TokenUnitPrice`
+    (`src/metering/rating.ts:30`–`:40`), is not checked; only its `ratedCost` must be a zero
+    `Money`. The reviewer's synthetic, otherwise-zero record with `input.pricing = {ratedCost:
+    {amount: "0", currency: "USD"}}` is accepted.
+  - **Other `AttributableUsage` metadata:** `pricingSource`, `pricingKey` and
+    `cacheInputConvention` are not checked.
+  - **Contents not checked:** the text of a non-metered `reason`; `reportedCumulative` (never
+    read, by design); currency consistency across amounts; and the record's other fields
+    (operation id, outcome, provenance, …). Only the real detached record pins some of those.
+  - **What this means:** a record missing such metadata still needs zero reported and priced
+    token counts and a zero rated cost to pass. The omission alone doesn't show attributed usage,
+    and no current production record with it was shown. It is a validation and documentation
+    limit, not a demonstrated defect.
+  - **Earlier wording:** the exception commit message (`6e46e40`, "a recognized, complete
+    MeteringUsageResult shape") and my earlier summaries (the shared log, the messages) said that
+    every missing or ill-typed required field fails. That overstated it, and should be read as
+    narrowed here. The commit message was not rewritten, because the task changes only the
+    report.
 - **`reportedCumulative` is still never read,** in either shape. It is the provider's
   session-cumulative counter, and the type makes it optional when not metered.
 - **The real detached record still passes,** pinned exactly as before (`usage_unavailable` with
