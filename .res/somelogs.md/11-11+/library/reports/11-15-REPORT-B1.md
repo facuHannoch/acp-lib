@@ -190,7 +190,7 @@ preservation, the classifier branch and the factory's adapter id each fail their
 
 1. **For the spec owner:** correct the spec's `cancelGraceMs: number` to `number | undefined`, or define the default
    (30 s) in the interface (error file above).
-2. **For the owner: `src/controller.ts` grew 15 lines in B1 (825 → 840), against the plan's no-growth rule.**
+2. **Answered (owner, 2026-11-15): option (a), accepted as the minimum for the required members; B2 released.** Original text: **`src/controller.ts` grew 15 lines in B1 (825 → 840), against the plan's no-growth rule.**
    Not covered by the A2 exception. Where the 15 lines are: the `conversationCapabilities` getter and its import (about 4), the
    `ConversationController` import and `implements` (about 3), the three deprecated aliases with their comments
    (about 7), the rest in the start-event rename. Options:
@@ -200,5 +200,5 @@ preservation, the classifier branch and the factory's adapter id each fail their
      `src/controller.ts` itself), which brings the growth to about +8; the getter and the interface import must
      stay on the class;
    - **(c)** another extraction the owner prefers.
-   I recommend (a), because (b) leaves growth anyway and changes an import path, but this is the owner's call. **B2 waits on
-   this disposition** (the status the reviewer set).
+   I recommend (a), because (b) leaves growth anyway and changes an import path, but this is the owner's call. B2 waited on
+   this disposition.
