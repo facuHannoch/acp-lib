@@ -64,7 +64,7 @@ describe("sending to a backend-scheduled controller", () => {
     expect(session.conversationCapabilities.nativeSteering).toBe(true);
     const handle = session.prompt("hello");
     await until(() => fake.sent.length === 1);
-    expect(fake.sent[0]).toEqual({ messageIds: [handle.id], operationKind: "prompt" });
+    expect(fake.sent[0]).toMatchObject({ messageIds: [handle.id], operationKind: "prompt" });
     expect("turnId" in fake.sent[0]!).toBe(false);
   }, 20_000);
 
@@ -100,14 +100,14 @@ describe("sending to a backend-scheduled controller", () => {
     const outcome = track(handle);
     await until(() => fake.sent.length === 1);
     expect(outcome.settled).toBe(false); // accepted, but no turn has taken it yet
-    const turnId = fake.startTurn({ chunks: ["the reply"] }, { kind: "messages", messageIds: [handle.id] });
+    const turnId = fake.startTurn({ chunks: ["the reply"] }, { messageIds: [handle.id] });
     const result = await handle;
     expect(result.status).toBe("completed");
     expect(result.messages.map((message) => message.text)).toEqual(["the reply"]);
     expect(result.operationId).toBe(turnId);
     expect(turnId).not.toBe(handle.id);
     const started = events.find((event) => event.kind === "turn_started")!;
-    expect(started).toMatchObject({ turnId, cause: { kind: "messages", messageIds: [handle.id] } });
+    expect(started).toMatchObject({ turnId, cause: { messageIds: [handle.id] } });
     expect(events.find((event) => event.kind === "turn_completed")!.result.operationId).toBe(turnId);
   }, 20_000);
 
@@ -118,11 +118,11 @@ describe("sending to a backend-scheduled controller", () => {
     const hold = new Promise<void>((resolve) => { release = resolve; });
     const first = session.prompt("one");
     await until(() => fake.sent.length === 1);
-    const turnId = fake.startTurn({ chunks: ["both answered"], hold }, { kind: "messages", messageIds: [first.id] });
+    const turnId = fake.startTurn({ chunks: ["both answered"], hold }, { messageIds: [first.id] });
     await until(() => fake.prompted.includes(turnId)); // running
     const second = session.prompt({ text: "two", delivery: "steer" });
     await until(() => fake.sent.length === 2);
-    fake.foldInto(turnId, { kind: "messages", messageIds: [second.id] });
+    fake.foldInto(turnId, { messageIds: [second.id] });
     release();
     const [one, two] = await Promise.all([first, second]);
     expect(one.operationId).toBe(turnId);
@@ -137,7 +137,7 @@ describe("sending to a backend-scheduled controller", () => {
     const hold = new Promise<void>((resolve) => { release = resolve; });
     const first = session.prompt("one");
     await until(() => fake.sent.length === 1);
-    const turnId = fake.startTurn({ chunks: ["A"], hold }, { kind: "messages", messageIds: [first.id] });
+    const turnId = fake.startTurn({ chunks: ["A"], hold }, { messageIds: [first.id] });
     await until(() => fake.prompted.includes(turnId));
     const queued = session.prompt({ text: "later", delivery: "queue" });
     const sentWhileRunning = fake.sent.length;
@@ -155,13 +155,13 @@ describe("sending to a backend-scheduled controller", () => {
     const hold = new Promise<void>((resolve) => { release = resolve; });
     const a = session.prompt("a");
     await until(() => fake.sent.length === 1);
-    const running = fake.startTurn({ chunks: ["A"], hold }, { kind: "messages", messageIds: [a.id] });
+    const running = fake.startTurn({ chunks: ["A"], hold }, { messageIds: [a.id] });
     await until(() => fake.prompted.includes(running));
     const b = session.prompt("b");
     const c = session.prompt("c");
     await until(() => fake.sent.length === 3);
-    const waiting = fake.startTurn({ chunks: ["B and C"] }, { kind: "messages", messageIds: [b.id] }); // queued behind the running turn
-    fake.foldInto(waiting, { kind: "messages", messageIds: [c.id] });
+    const waiting = fake.startTurn({ chunks: ["B and C"] }, { messageIds: [b.id] }); // queued behind the running turn
+    fake.foldInto(waiting, { messageIds: [c.id] });
     release();
     const [, two, three] = await Promise.all([a, b, c]);
     expect(two.operationId).toBe(waiting);
@@ -173,17 +173,17 @@ describe("sending to a backend-scheduled controller", () => {
     const { session } = await sessionWith(fake);
     const first = session.prompt("one");
     await until(() => fake.sent.length === 1);
-    const turnId = fake.startTurn({ chunks: ["done"] }, { kind: "messages", messageIds: [first.id] });
+    const turnId = fake.startTurn({ chunks: ["done"] }, { messageIds: [first.id] });
     await first; // the turn has ended
     const second = session.prompt("two");
     const outcome = track(second);
     await until(() => fake.sent.length === 2);
-    fake.foldInto(turnId, { kind: "messages", messageIds: [second.id] }); // ended turn
-    fake.foldInto("never-reported", { kind: "messages", messageIds: [second.id] }); // unknown turn
+    fake.foldInto(turnId, { messageIds: [second.id] }); // ended turn
+    fake.foldInto("never-reported", { messageIds: [second.id] }); // unknown turn
     // A later valid turn settles its own message; had the ignored reports settled `second`, it would be done by now.
     const third = session.prompt("three");
     await until(() => fake.sent.length === 3);
-    fake.startTurn({ chunks: ["third"] }, { kind: "messages", messageIds: [third.id] });
+    fake.startTurn({ chunks: ["third"] }, { messageIds: [third.id] });
     await third;
     expect(outcome.settled).toBe(false);
   }, 20_000);
@@ -194,7 +194,7 @@ describe("sending to a backend-scheduled controller", () => {
     const handle = session.prompt("will fail");
     const outcome = track(handle);
     await until(() => fake.sent.length === 1);
-    fake.startTurn({ fail: new Error("backend failed") }, { kind: "messages", messageIds: [handle.id] });
+    fake.startTurn({ fail: new Error("backend failed") }, { messageIds: [handle.id] });
     await until(() => outcome.settled);
     expect(String(outcome.error)).toContain("backend failed");
     expect(events.some((event) => event.kind === "turn_failed")).toBe(true);
@@ -206,7 +206,7 @@ describe("sending to a backend-scheduled controller", () => {
     const mine = session.prompt("mine");
     const outcome = track(mine);
     await until(() => fake.sent.length === 1);
-    fake.startTurn({ chunks: ["theirs"] }, { kind: "messages", messageIds: ["not-mine"] });
+    fake.startTurn({ chunks: ["theirs"] }, { messageIds: ["not-mine"] });
     await until(() => events.some((event) => event.kind === "turn_completed"));
     expect(outcome.settled).toBe(false); // the turn ran, but it did not take my message
   }, 20_000);
@@ -218,7 +218,7 @@ describe("sending to a backend-scheduled controller", () => {
     await expect(session.prompt("refused")).rejects.toThrow("backend refused");
     const next = session.prompt("accepted");
     await until(() => fake.sent.length === 2);
-    fake.startTurn({ chunks: ["ok"] }, { kind: "messages", messageIds: [fake.sent[1]!.messageIds[0]!] });
+    fake.startTurn({ chunks: ["ok"] }, { messageIds: [fake.sent[1]!.messageIds[0]!] });
     expect((await next).status).toBe("completed");
   }, 20_000);
 
@@ -249,5 +249,156 @@ describe("a session-scheduled controller is unchanged", () => {
     await Promise.all([first, second, third]);
     expect(fake.sent[0]!.turnId).toBe(first.id);
     expect(fake.sent.some((run) => run.messageIds.length === 2 && run.messageIds[0] === second.id && run.messageIds[1] === third.id)).toBe(true);
+  }, 20_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Owner decisions of 2026-11-15 (spec questions 1–3): the run carries the messages, a cause can hold
+// messages and items together, and the wait after acceptance is cancellable.
+// ---------------------------------------------------------------------------------------------
+
+describe("the run carries the messages themselves", () => {
+  test("a backend-scheduled controller receives what the user wrote: text, attachments and its own id, in the run", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session } = await sessionWith(fake);
+    const attachment = { data: new Uint8Array([1, 2, 3]).buffer, mimeType: "image/png" };
+    const handle = session.prompt({ text: "look at this", attachments: [attachment] });
+    await until(() => fake.sent.length === 1);
+    const run = fake.sent[0]!;
+    expect(run.messageIds).toEqual([handle.id]);
+    expect(run.messages).toHaveLength(1);
+    expect(run.messages[0]).toMatchObject({ id: handle.id, text: "look at this" });
+    expect(run.messages[0]!.attachments).toEqual([attachment]);
+    expect(run.messages.map((message) => message.id)).toEqual([...run.messageIds]); // the same messages, in the same order
+  }, 20_000);
+
+  test("end to end: the backend answers from the content it was sent, and the prompt resolves with that reply", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session } = await sessionWith(fake);
+    const handle = session.prompt("what is the word?");
+    await until(() => fake.sent.length === 1);
+    const message = fake.sent[0]!.messages[0]!; // all the backend has is the run
+    fake.startTurn({ chunks: [`you asked: ${message.text}`] }, { messageIds: [message.id] });
+    const result = await handle;
+    expect(result.messages.map((entry) => entry.text)).toEqual(["you asked: what is the word?"]);
+  }, 20_000);
+
+  test("queued messages are handed over one at a time, each with its own content", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    let accept!: () => void;
+    fake.acceptGate = new Promise<void>((resolve) => { accept = resolve; });
+    const { session } = await sessionWith(fake);
+    session.prompt("one");
+    await until(() => fake.sent.length === 1);
+    session.prompt({ text: "two", delivery: "steer" });
+    session.prompt({ text: "three", delivery: "steer" });
+    accept();
+    await until(() => fake.sent.length === 3);
+    expect(fake.sent.map((run) => run.messages.map((message) => message.text))).toEqual([["one"], ["two"], ["three"]]);
+  }, 20_000);
+
+  test("a session-scheduled combined steer run lists each original message with its content", async () => {
+    const fake = new FakeController({ scheduling: "session" });
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    fake.sendScript = () => (fake.sent.length === 1 ? { chunks: ["first"], hold } : { chunks: ["combined"] });
+    const { session } = await sessionWith(fake);
+    session.prompt("one");
+    await until(() => fake.sent.length === 1);
+    const second = session.prompt({ text: "two", delivery: "steer" });
+    const third = session.prompt({ text: "three", delivery: "steer" });
+    release();
+    await Promise.all([second, third]);
+    const combined = fake.sent.find((run) => run.messageIds.length === 2)!;
+    expect(combined.messages.map((message) => [message.id, message.text])).toEqual([[second.id, "two"], [third.id, "three"]]);
+  }, 20_000);
+});
+
+describe("a cause can hold messages and items together", () => {
+  test("a turn started by a message that also took a backend item reports both in turn_started", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session, events } = await sessionWith(fake);
+    const handle = session.prompt("hello");
+    await until(() => fake.sent.length === 1);
+    const item = { from: "worker", reply: "done" };
+    const turnId = fake.startTurn({ chunks: ["both"] }, { messageIds: [handle.id], items: [item] });
+    await handle;
+    expect(events.find((event) => event.kind === "turn_started" && event.turnId === turnId)!.cause).toEqual({ messageIds: [handle.id], items: [item] });
+  }, 20_000);
+
+  test("turn_took of an item into a messages turn, and of messages into an items turn, extends the cause: neither kind is lost", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session, events } = await sessionWith(fake);
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const blocker = session.prompt("blocker");
+    await until(() => fake.sent.length === 1);
+    const running = fake.startTurn({ chunks: ["A"], hold }, { messageIds: [blocker.id] });
+    await until(() => fake.prompted.includes(running));
+    // Two turns reported while the first runs: they wait, and the backend folds more into each before they run.
+    const one = session.prompt({ text: "one", delivery: "steer" });
+    const two = session.prompt({ text: "two", delivery: "steer" });
+    await until(() => fake.sent.length === 3);
+    const messagesTurn = fake.startTurn({ chunks: ["M"] }, { messageIds: [one.id] });
+    const itemsTurn = fake.startTurn({ chunks: ["I"] }, { items: [{ n: 1 }] });
+    fake.foldInto(messagesTurn, { items: [{ n: 2 }] });
+    fake.foldInto(itemsTurn, { messageIds: [two.id] });
+    release();
+    const [, , twoResult] = await Promise.all([blocker, one, two]);
+    const cause = (turnId: string) => events.find((event) => event.kind === "turn_started" && event.turnId === turnId)!.cause;
+    expect(cause(messagesTurn)).toEqual({ messageIds: [one.id], items: [{ n: 2 }] });
+    expect(cause(itemsTurn)).toEqual({ messageIds: [two.id], items: [{ n: 1 }] });
+    expect(twoResult.operationId).toBe(itemsTurn); // the message taken into the items turn still settles with it
+  }, 20_000);
+});
+
+describe("the wait after acceptance is cancellable (stop, withdraw, interrupt) and has no time limit", () => {
+  test("withdraw: a message the backend accepted and no turn has taken resolves as cancelled, and a turn that names it later is ignored", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session, events } = await sessionWith(fake);
+    const handle = session.prompt("changed my mind");
+    await until(() => fake.sent.length === 1);
+    expect(handle.withdraw()).toBe(true);
+    const result = await handle;
+    expect(result.status).toBe("cancelled");
+    expect(result.metering).toBeNull();
+    expect(handle.withdraw()).toBe(false); // already gone
+    // The backend, not told, later names it: unknown id, ignored: the turn runs, nothing settles twice, nothing throws.
+    fake.startTurn({ chunks: ["late"] }, { messageIds: [handle.id] });
+    await until(() => events.some((event) => event.kind === "turn_completed"));
+    expect(events.filter((event) => event.kind === "turn_failed")).toHaveLength(0);
+  }, 20_000);
+
+  test("interrupt with clearQueue drops the waiting messages as cancelled, like queued ones; a plain interrupt does not", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session } = await sessionWith(fake);
+    const waiting = session.prompt("waits for a turn");
+    const outcome = track(waiting);
+    await until(() => fake.sent.length === 1);
+    session.interrupt();
+    await Bun.sleep(0);
+    expect(outcome.settled).toBe(false); // a plain interrupt leaves it waiting
+    session.interrupt({ clearQueue: true });
+    expect((await waiting).status).toBe("cancelled");
+  }, 20_000);
+
+  test("it has no time limit: a message waiting behind a long turn is not failed by waiting", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session } = await sessionWith(fake);
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const first = session.prompt("one");
+    await until(() => fake.sent.length === 1);
+    const running = fake.startTurn({ chunks: ["long"], hold }, { messageIds: [first.id] });
+    await until(() => fake.prompted.includes(running));
+    const later = session.prompt({ text: "accepted while the long turn runs", delivery: "steer" });
+    const outcome = track(later);
+    await until(() => fake.sent.length === 2);
+    await Bun.sleep(150); // waits through a stretch of time without being failed or cancelled
+    expect(outcome.settled).toBe(false);
+    release();
+    await first;
+    fake.startTurn({ chunks: ["next turn"] }, { messageIds: [later.id] }); // taken by the next turn
+    expect((await later).status).toBe("completed");
   }, 20_000);
 });

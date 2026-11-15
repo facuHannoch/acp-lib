@@ -180,7 +180,7 @@ import {
   stageOpeningContinuation,
 } from "./agent-conversation-continuation.ts";
 import {
-  BackendTurns, checkTurnRun, reportBackendTurn, reportTurnTook, runBackendTurn, runTurn, sendToBackend, settleClearedBackendTurns, steerIntoRunningTurn, turnRunOf,
+  BackendTurns, checkTurnRun, reportBackendTurn, reportTurnTook, runBackendTurn, runTurn, sendToBackend, settleClearedBackendTurns, steerIntoRunningTurn, turnRunOf, withdrawWaiting,
   type BackendTurnHost, type BackendTurnItem, type PromptQueueItem, type TurnContext, type TurnRunContext,
 } from "./conversation-turns/index.ts";
 import type { TurnCause, TurnEvent, TurnRun } from "./conversation-controller/contracts.ts";
@@ -2036,7 +2036,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.emitStateIfChanged();
       void this.pump();
     });
-    return Object.assign(promise, { id, withdraw: () => this.steering.withdraw(id) });
+    return Object.assign(promise, { id, withdraw: () => this.steering.withdraw(id) || withdrawWaiting(this.backendTurns, id, (messages) => this.steering.dropped(messages)) });
   }
 
   /**
@@ -3989,7 +3989,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
       // metering record is minted (§16).
       // On stop, messages already handed to a backend-scheduled controller, still waiting for their turn, are dropped too.
-      this.steering.dropped([...dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"), ...(reason === "stop" ? this.backendTurns.clear() : [])]);
+      this.steering.dropped([...dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"), ...this.backendTurns.clear(reason === "stop")]);
       for (const item of dropped) {
         if (item.kind === "prompt") continue;
         const label = item.kind === "handoff"

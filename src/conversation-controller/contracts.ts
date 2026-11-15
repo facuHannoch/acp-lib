@@ -19,6 +19,7 @@ import type { ConfigOptions } from "../config-options.ts";
 import type { ConversationCapabilities } from "./capabilities.ts";
 import type { MeteredOperationKind } from "../metering/record.ts";
 import type { OutputListener, SupervisedProvider } from "../operations/contracts.ts";
+import type { CombinedMessage } from "../steering/contracts.ts";
 import type { InternalSessionCommand, PromptHandlers, SessionListPage } from "../types.ts";
 
 /** The turn path of a conversation's backend. */
@@ -123,6 +124,12 @@ export interface TurnRun {
   readonly turnId?: string;
   /** Every message the run carries, in queue order: one, or several for a combined steer run. */
   readonly messageIds: readonly string[];
+  /**
+   * The messages themselves, in `messageIds` order: the objects the queue holds (a combined steer run lists each original
+   * message), so a backend-scheduled controller gets what the user wrote without reaching back into the session. ACP
+   * controllers ignore it: the session builds their content and passes it in `prepareTurn`.
+   */
+  readonly messages: readonly CombinedMessage[];
   readonly operationKind: MeteredOperationKind;
 }
 
@@ -146,10 +153,16 @@ export interface PreparedTurn extends SupervisedProvider {
   readonly live: boolean;
 }
 
-/** Why a turn started: the messages it carries, or backend items (for a turn nobody prompted). */
+/** A reference to one backend item that started or joined a turn (a worker reply, another channel's message...). */
+export type ItemRef = unknown;
+
+/**
+ * Why a turn started: the messages it carries, the backend items it took, or both (a native backend takes everything
+ * waiting at a model call, so a worker reply and a user message often land in one turn). At least one is present.
+ */
 export type TurnCause =
-  | { readonly kind: "messages"; readonly messageIds: readonly string[] }
-  | { readonly kind: "items"; readonly items: readonly unknown[] };
+  | { readonly messageIds: readonly string[]; readonly items?: readonly ItemRef[] }
+  | { readonly messageIds?: readonly string[]; readonly items: readonly ItemRef[] };
 
 /** A turn started. `sentBySession` is true for a turn started by the session's `send`. */
 export interface TurnStarted {

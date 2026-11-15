@@ -14,16 +14,21 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 
 ## Added
 
-- **`cause` on `turn_started`:** `{ kind: "messages", messageIds }` (the messages the turn carries; a combined steer run
-  lists each original message) or `{ kind: "items", items }` (a turn nobody prompted). Record and presentation ids are
-  unchanged: a run's turn id is its first message's id.
+- **`cause` on `turn_started`:** `{ messageIds?, items? }`, at least one present: the messages the turn carries (a
+  combined steer run lists each original message) and/or the backend items it took (a turn nobody prompted; a native
+  backend often takes a worker reply and a user message into one turn, so a cause can hold both). Record and
+  presentation ids are unchanged: a run's turn id is its first message's id.
+- **`TurnRun.messages`:** `send` receives the messages themselves (`{ id, text, messageParts?, attachments?,
+  participantId?, consumerMetadata? }`, the objects the queue holds, in `messageIds` order; a combined steer run lists each
+  original message), so a backend-scheduled controller gets what the user wrote without reaching into the session. ACP
+  controllers ignore it: the session builds their content and passes it in `prepareTurn`.
 - **`harnessConnection()`** on `AgentSession` / `AgentConversation`: the live controller as a `HarnessController`, or
   `null` for a backend that isn't an external harness.
 - **`conversationCapabilities`** on `HarnessController` and `AgentSession`: what the backend offers in neutral terms
   (`nativeSteering`, `backend: BackendCapabilities | null`; `backend` is `null` before the agent's `initialize` and in
   PTY mode). Safe to read before connecting.
 - **New types and exports:** `ConversationController`, `TurnRun`, `TurnContent`, `PreparedTurn`, `TurnStarted`,
-  `TurnTook`, `TurnEvent`, `TurnCause`, `StartResult`, `UsageListener`, `ConversationCapabilities`,
+  `TurnTook`, `TurnEvent`, `TurnCause`, `ItemRef`, `StartResult`, `UsageListener`, `ConversationCapabilities`,
   `BackendCapabilities` and `UnsupportedError` (package entry). The factory `createController` and `fromAcp` are
   internal (`src/conversation-controller`).
 - **`UnsupportedError`:** thrown by a controller or session asked for something its backend can't do (an optional member
@@ -43,15 +48,21 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 
 - A reported `turn_started` with `sentBySession: false` joins the conversation's operation queue and runs in order
   (no user record, no ACP input; supervised and metered like any turn).
-- `turn_took` extends a turn's cause; a message the session sent settles with the turn that takes it. A controller with
-  `nativeSteering` receives each message separately (never combined, no cancel-to-steer), the queue operation ends when
-  `send` resolves, and a `steer` message sent while a backend turn runs is handed over at once.
+- `turn_took` extends a turn's cause (messages and items both kept); a message the session sent settles with the turn that
+  takes it. A controller with `nativeSteering` receives each message separately (never combined, no cancel-to-steer), the
+  queue operation ends when `send` resolves, and a `steer` message sent while a backend turn runs is handed over at once.
+- **The wait after acceptance** (a message a backend-scheduled controller accepted and no turn has taken) is cancellable:
+  `stop` drops it as cancelled, `handle.withdraw()` withdraws it locally (resolves cancelled; the backend is not told, and a
+  turn that later names it is ignored), and `interrupt({ clearQueue: true })` drops it like a queued message. It has no
+  time limit: it is the normal case (a message accepted while a long turn runs waits for the next turn). A backend that never
+  starts a turn is a backend bug.
 - A prepared turn that isn't `live` (replaying output the backend already produced) isn't stalled while it replays; the
-  supervisor re-reads `live` each stall interval, so a turn that becomes live and goes silent is stalled (no later than its
-  limit after the change; the interface has no change notification, see `errors/11-15-spec-live-transition-no-notification.md`).
-- **Open, for the spec owner:** a prepared turn's `live` has no change notification (interval-granularity check for now); the interface has no message payload yet, so a backend-scheduled controller cannot read
-  what the user wrote; an accepted message the backend never takes waits until stop; a mixed-kind `turn_took` cause keeps
-  the first kind. See `errors/11-15-spec-*.md`.
+  supervisor re-reads `live` each stall interval, so a turn that becomes live and goes silent is stalled no later than its
+  limit after the change, and possibly up to one limit earlier. Accepted behaviour (owner, 2026-11-15): stall limits are
+  minutes long, so an explicit "now live" signal would add an interface member for no practical gain. It applies only when a
+  stall limit is enabled and no permission exemption applies.
+- **Cancel grace:** `ConversationController.cancelGraceMs` is `number | undefined`; the supervisor defaults an undefined value
+  to 30 s (the code was right; the spec text said `number`).
 
 ## Behaviour notes (unchanged for ACP unless stated)
 

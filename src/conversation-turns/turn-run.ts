@@ -5,13 +5,15 @@
  * new ids are minted.
  */
 import type { TurnRun } from "../conversation-controller/contracts.ts";
+import { partOf } from "../steering/combine.ts";
 import type { PromptQueueItem } from "./context.ts";
 
 export function turnRunOf(prompt: PromptQueueItem): TurnRun {
-  const messageIds = prompt.parts?.map((part) => part.id) ?? [prompt.turnId];
+  const messages = prompt.parts ?? [partOf(prompt)];
   return Object.freeze({
     turnId: prompt.turnId,
-    messageIds: Object.freeze([...messageIds]),
+    messageIds: Object.freeze(messages.map((message) => message.id)),
+    messages: Object.freeze([...messages]),
     operationKind: prompt.operationKind,
   });
 }
@@ -45,6 +47,9 @@ export function checkTurnRun(run: TurnRun, lookup: (messageId: string) => RunMes
     if (message.queued) throw new Error(`a run names message id ${id}, which is still queued`);
     if (message.order <= previous) throw new Error(`a run names message id ${id} out of queue order`);
     previous = message.order;
+  }
+  if (run.messages.length !== run.messageIds.length || run.messages.some((message, index) => message.id !== run.messageIds[index])) {
+    throw new Error("a run's messages are not the messages its ids name, in order");
   }
   if (run.turnId !== undefined && run.turnId !== run.messageIds[0]) {
     throw new Error(`a run's turn id ${run.turnId} is not its first message's id ${run.messageIds[0]}`);

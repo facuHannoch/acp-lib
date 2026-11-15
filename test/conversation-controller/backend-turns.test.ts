@@ -63,7 +63,7 @@ describe("a turn the backend starts on its own", () => {
   test("on an idle conversation it runs: turn_started with its cause, metering once, completion with its result", async () => {
     const fake = new FakeController({ scheduling: "backend" });
     const { events } = await sessionWith(fake);
-    const cause = { kind: "items" as const, items: [{ from: "worker" }] };
+    const cause = { items: [{ from: "worker" }] };
     const id = fake.startTurn({ chunks: ["done ", "it"], text: "done it" }, cause);
     await until(() => events.some((event) => event.kind === "turn_completed"));
     expect(kinds(events)).toEqual([`turn_started:${id}`, `turn_completed:${id}`]);
@@ -280,7 +280,7 @@ describe("queue clearing and message bookkeeping (auto-review hardening)", () =>
   test("settleClearedBackendTurns: other items come back untouched, a started turn is requeued, and on stop it is abandoned on its own controller", () => {
     const abandoned: string[] = [];
     const controller = { abandonTurn: (turnId: string) => { abandoned.push(turnId); } } as unknown as ConversationController;
-    const turn = { kind: "backend_turn" as const, turnId: "t1", cause: { kind: "items" as const, items: [] }, messageIds: new Set<string>(), controller };
+    const turn = { kind: "backend_turn" as const, turnId: "t1", cause: { items: [] }, messageIds: new Set<string>(), controller };
     const other = { kind: "prompt" as const, turnId: "m1" };
     const requeued: string[] = [];
     expect(settleClearedBackendTurns([other, turn], false, (item) => requeued.push(item.turnId))).toEqual([other]);

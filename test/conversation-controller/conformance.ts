@@ -59,7 +59,7 @@ export function runConformance(subject: Subject): void {
       const result = await handle;
       const id = result.operationId;
       expect(result.status).toBe("completed");
-      expect(started(events)[0]).toMatchObject({ turnId: id, cause: { kind: "messages", messageIds: [handle.id] } });
+      expect(started(events)[0]).toMatchObject({ turnId: id, cause: { messageIds: [handle.id] } });
       expect(events.filter((event) => event.kind === "metering_recorded").map((event) => event.record.operationId)).toEqual([id]);
       const records = (await agent.persistence.records.list(session.id, { limit: 1000 })).records as unknown as Array<Record<string, any>>;
       expect(records.some((record) => record.recordId === `${id}:user`)).toBe(true);
@@ -86,7 +86,7 @@ export function runConformance(subject: Subject): void {
       const order = turnEvents(open.events);
       const firstEnd = order.findIndex((entry) => entry.startsWith("turn_completed:") || entry.startsWith("turn_failed:"));
       expect(order.indexOf(`turn_started:${secondResult.operationId}`)).toBeGreaterThan(firstEnd);
-      expect(started(open.events)[1]).toMatchObject({ cause: { kind: "messages", messageIds: [second.id] } });
+      expect(started(open.events)[1]).toMatchObject({ cause: { messageIds: [second.id] } });
     }, 30_000);
 
     test("withdraw: a queued message withdrawn before dispatch resolves as cancelled and never starts a turn", async () => {

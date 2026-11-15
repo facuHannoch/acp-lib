@@ -324,7 +324,7 @@ export class HarnessController implements AgentClient, ConversationController {
     const event: TurnEvent = {
       kind: "turn_started",
       turnId,
-      cause: { kind: "messages", messageIds: Object.freeze([...run.messageIds]) },
+      cause: { messageIds: Object.freeze([...run.messageIds]) },
       sentBySession: true,
     };
     for (const listener of [...this.turnListeners]) listener(event);

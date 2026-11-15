@@ -18,6 +18,7 @@ import type { ConversationController, TurnCause, TurnStarted, TurnTook } from ".
 import type { Logger } from "../logger.ts";
 import type { PromptQueueItem, TurnContext } from "./context.ts";
 import { copyPromptResult } from "./record-helpers.ts";
+import { turnRunOf } from "./turn-run.ts";
 
 /**
  * A reported turn waiting in the queue for its turn to run. It remembers the controller that reported it: the
@@ -50,7 +51,7 @@ export class BackendTurns {
   took(event: TurnTook): boolean {
     const turn = this.#turns.get(event.turnId);
     if (!turn) return false;
-    if (event.cause.kind === "messages") for (const id of event.cause.messageIds) turn.messageIds.add(id);
+    for (const id of event.cause.messageIds ?? []) turn.messageIds.add(id);
     turn.cause = mergeCause(turn.cause, event.cause);
     return true;
   }
@@ -70,22 +71,27 @@ export class BackendTurns {
     }
   }
 
-  /** Stop: the waiting messages leave (to be dropped as cancelled) and the turns are forgotten. */
-  clear(): PromptQueueItem[] {
-    this.#turns.clear();
+  /** One waiting message leaves (to be dropped as cancelled); undefined when it isn't waiting. */
+  take(messageId: string): PromptQueueItem | undefined {
+    const message = this.#waiting.get(messageId);
+    this.#waiting.delete(messageId);
+    return message;
+  }
+
+  /** `interrupt({ clearQueue })` and stop: every waiting message leaves (to be dropped as cancelled); on stop the turns are forgotten too. */
+  clear(stopping: boolean): PromptQueueItem[] {
+    if (stopping) this.#turns.clear();
     const waiting = [...this.#waiting.values()];
     this.#waiting.clear();
     return waiting;
   }
 }
 
-/** The turn's cause after `took`: same kind merges, a different kind keeps the original (the ids are tracked separately). */
+/** The turn's cause after `took`: both lists grow (a cause can hold messages and items together). */
 function mergeCause(cause: TurnCause, took: TurnCause): TurnCause {
-  if (cause.kind === "messages" && took.kind === "messages") {
-    return { kind: "messages", messageIds: [...new Set([...cause.messageIds, ...took.messageIds])] };
-  }
-  if (cause.kind === "items" && took.kind === "items") return { kind: "items", items: [...cause.items, ...took.items] };
-  return cause;
+  const messageIds = [...new Set([...(cause.messageIds ?? []), ...(took.messageIds ?? [])])];
+  const items = [...(cause.items ?? []), ...(took.items ?? [])];
+  return { ...(messageIds.length > 0 ? { messageIds } : {}), ...(items.length > 0 ? { items } : {}) } as TurnCause;
 }
 
 /** What the backend-turn path needs from the session. */
@@ -130,7 +136,7 @@ export function reportBackendTurn(host: BackendTurnHost, controller: Conversatio
     kind: "backend_turn",
     turnId: event.turnId,
     cause: event.cause,
-    messageIds: new Set(event.cause.kind === "messages" ? event.cause.messageIds : []),
+    messageIds: new Set(event.cause.messageIds ?? []),
     controller,
   };
   host.turns.report(item);
@@ -151,11 +157,23 @@ export function reportTurnTook(host: BackendTurnHost, event: TurnTook): void {
 export async function sendToBackend(host: BackendTurnHost, controller: ConversationController, message: PromptQueueItem): Promise<void> {
   host.turns.wait(message);
   try {
-    await controller.send({ messageIds: [message.turnId], operationKind: message.operationKind });
+    // No turn id: the backend assigns turn ids. The message goes as the queue holds it.
+    const { turnId: _sessionTurnId, ...run } = turnRunOf(message);
+    await controller.send(run);
   } catch (error) {
     host.turns.unwait(message.turnId);
     message.reject(error);
   }
+}
+
+/**
+ * Withdraws a message the backend accepted and no turn has taken yet: it resolves as cancelled and the wait ends. Local only
+ * (the backend is not told; a turn that later names the id finds it unknown and ignores it). False when it isn't waiting.
+ */
+export function withdrawWaiting(turns: BackendTurns, messageId: string, drop: (messages: PromptQueueItem[]) => void): boolean {
+  const message = turns.take(messageId);
+  if (message) drop([message]);
+  return message !== undefined;
 }
 
 /**

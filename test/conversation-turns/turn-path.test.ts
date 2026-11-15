@@ -108,8 +108,8 @@ describe("the turn path through send", () => {
 
     const started = ofKind(events, "turn_started");
     expect(started).toEqual([
-      { kind: "turn_started", turnId: first.id, cause: { kind: "messages", messageIds: [first.id] } },
-      { kind: "turn_started", turnId: a.id, cause: { kind: "messages", messageIds: [a.id, b.id] } },
+      { kind: "turn_started", turnId: first.id, cause: { messageIds: [first.id] } },
+      { kind: "turn_started", turnId: a.id, cause: { messageIds: [a.id, b.id] } },
     ]);
     const users = (await agent.persistence.records.list(conversation.id, { limit: 1000 })).records
       .filter((record) => record.kind === "message" && record.role === "user")
@@ -392,19 +392,20 @@ describe("runs that are not valid", () => {
       waiting: { order: 4, dispatched: false, queued: true },
     };
     const known = (id: string) => state[id];
-    expect(() => checkTurnRun({ turnId: "m1", messageIds: [], operationKind: "prompt" }, known)).toThrow("at least one");
-    expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "m1"], operationKind: "prompt" }, known)).toThrow("repeats message id m1");
-    expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "zz"], operationKind: "prompt" }, known)).toThrow("does not know");
-    expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "taken"], operationKind: "prompt" }, known)).toThrow("another run already took");
-    expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "waiting"], operationKind: "prompt" }, known)).toThrow("still queued");
-    expect(() => checkTurnRun({ turnId: "m2", messageIds: ["m2", "m1"], operationKind: "prompt" }, known)).toThrow("out of queue order");
-    expect(() => checkTurnRun({ turnId: "m2", messageIds: ["m1", "m2"], operationKind: "prompt" }, known)).toThrow("not its first message");
-    expect(() => checkTurnRun({ turnId: "m1", messageIds: ["m1", "m2"], operationKind: "prompt" }, known)).not.toThrow();
+    const run = (turnId: string, messageIds: string[]) => ({ turnId, messageIds, messages: messageIds.map((id) => ({ id, text: id })), operationKind: "prompt" as const });
+    expect(() => checkTurnRun(run("m1", []), known)).toThrow("at least one");
+    expect(() => checkTurnRun(run("m1", ["m1", "m1"]), known)).toThrow("repeats message id m1");
+    expect(() => checkTurnRun(run("m1", ["m1", "zz"]), known)).toThrow("does not know");
+    expect(() => checkTurnRun(run("m1", ["m1", "taken"]), known)).toThrow("another run already took");
+    expect(() => checkTurnRun(run("m1", ["m1", "waiting"]), known)).toThrow("still queued");
+    expect(() => checkTurnRun(run("m2", ["m2", "m1"]), known)).toThrow("out of queue order");
+    expect(() => checkTurnRun(run("m2", ["m1", "m2"]), known)).toThrow("not its first message");
+    expect(() => checkTurnRun(run("m1", ["m1", "m2"]), known)).not.toThrow();
   });
 
   test("a run's ids come from the queued messages, combined or not", () => {
     const single = turnRunOf({ kind: "prompt", turnId: "m1", operationKind: "prompt", text: "x" } as any);
-    expect(single).toEqual({ turnId: "m1", messageIds: ["m1"], operationKind: "prompt" });
+    expect(single).toEqual({ turnId: "m1", messageIds: ["m1"], messages: [{ id: "m1", text: "x", messageParts: undefined, attachments: undefined }], operationKind: "prompt" });
     const combined = turnRunOf({
       kind: "prompt", turnId: "m1", operationKind: "prompt", text: "x\ny",
       parts: [{ id: "m1", text: "x" }, { id: "m2", text: "y" }],
@@ -416,14 +417,14 @@ describe("runs that are not valid", () => {
     const controller = new HarnessController({ adapter: { command: ["bun", ECHO] }, adapterId: "fixture" });
     const reported: TurnEvent[] = [];
     controller.subscribeTurns((event) => reported.push(event));
-    expect(() => controller.send({ messageIds: ["m1"], operationKind: "prompt" })).toThrow("requires its turnId");
-    expect(() => controller.send({ turnId: "m1", messageIds: ["m1", "m1"], operationKind: "prompt" })).toThrow("repeats");
-    expect(() => controller.send({ turnId: "m1", messageIds: [], operationKind: "prompt" })).toThrow("at least one");
+    expect(() => controller.send({ messageIds: ["m1"], messages: [{ id: "m1", text: "x" }], operationKind: "prompt" })).toThrow("requires its turnId");
+    expect(() => controller.send({ turnId: "m1", messageIds: ["m1", "m1"], messages: [{ id: "m1", text: "x" }, { id: "m1", text: "x" }], operationKind: "prompt" })).toThrow("repeats");
+    expect(() => controller.send({ turnId: "m1", messageIds: [], messages: [], operationKind: "prompt" })).toThrow("at least one");
     expect(reported).toEqual([]);
 
-    const accepted = controller.send({ turnId: "m1", messageIds: ["m1", "m2"], operationKind: "prompt" });
+    const accepted = controller.send({ turnId: "m1", messageIds: ["m1", "m2"], messages: [{ id: "m1", text: "x" }, { id: "m2", text: "y" }], operationKind: "prompt" });
     expect(reported).toEqual([
-      { kind: "turn_started", turnId: "m1", cause: { kind: "messages", messageIds: ["m1", "m2"] }, sentBySession: true },
+      { kind: "turn_started", turnId: "m1", cause: { messageIds: ["m1", "m2"] }, sentBySession: true },
     ]);
     await expect(accepted).resolves.toBeUndefined();
     // Releasing it twice, or releasing a turn never reported, does nothing.

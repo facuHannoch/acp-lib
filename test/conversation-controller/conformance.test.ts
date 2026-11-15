@@ -133,8 +133,8 @@ describe("conformance: HarnessController only", () => {
     const owned = await openOwned({});
     const harness = owned.session.harnessConnection() as HarnessController;
     // `send` checks its run synchronously (as it always has), so it throws rather than returns a rejected promise.
-    expect(() => harness.send({ messageIds: ["m1"], operationKind: "prompt" })).toThrow("requires its turnId");
-    expect(() => harness.send({ turnId: "t1", messageIds: ["m1", "m1"], operationKind: "prompt" })).toThrow(); // a repeated id too
+    expect(() => harness.send({ messageIds: ["m1"], messages: [{ id: "m1", text: "x" }], operationKind: "prompt" })).toThrow("requires its turnId");
+    expect(() => harness.send({ turnId: "t1", messageIds: ["m1", "m1"], messages: [{ id: "m1", text: "x" }, { id: "m1", text: "x" }], operationKind: "prompt" })).toThrow(); // a repeated id too
     expect(owned.events.filter((event) => event.kind === "turn_started")).toHaveLength(0); // neither reported a turn
   }, 30_000);
 

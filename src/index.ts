@@ -717,6 +717,7 @@ export type {
   ConversationController,
   PreparedTurn,
   StartResult,
+  ItemRef,
   TurnCause,
   TurnContent,
   TurnEvent,

@@ -82,7 +82,7 @@ export class FakeController implements ConversationController {
   // --- test control ------------------------------------------------------------------------
 
   /** The backend starts a turn on its own: reported at once, its output held until `prompt()`. */
-  startTurn(script: FakeScript, cause: TurnCause = { kind: "items", items: [] }, turnId = `fake-${++this.#sequence}`): string {
+  startTurn(script: FakeScript, cause: TurnCause = { items: [] }, turnId = `fake-${++this.#sequence}`): string {
     this.#entries.set(turnId, { script, prepared: false, prompted: false, abandoned: false });
     this.#report({ kind: "turn_started", turnId, cause, sentBySession: false });
     return turnId;
@@ -118,7 +118,7 @@ export class FakeController implements ConversationController {
     if (this.scheduling === "session") {
       if (!run.turnId) throw new Error("a run without a turn id");
       this.#entries.set(run.turnId, { script: this.sendScript(run), prepared: false, prompted: false, abandoned: false });
-      this.#report({ kind: "turn_started", turnId: run.turnId, cause: { kind: "messages", messageIds: run.messageIds }, sentBySession: true });
+      this.#report({ kind: "turn_started", turnId: run.turnId, cause: { messageIds: run.messageIds }, sentBySession: true });
       return;
     }
     // backend-scheduled: accepted; the backend starts turns as it decides
