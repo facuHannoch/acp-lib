@@ -118,7 +118,9 @@ handling, and the fake's signals each fail their targeted tests.
   positives (an owned backend turn's `afterPrompt`, shown working by the Agent-owned test; stop settlement, which always resolves
   waiting messages). Three are by design or already recorded (a steer handed straight to the backend skips `message_pending`; a
   controller without `currentMode` is not degraded; the unbounded wait). After the fixes: focused x3 226/0 and full x2
-  1,316/0, outputs kept.
+  1,316/0, outputs kept. agentco-1 noted the hardening commit had no targeted tests; four were then added (a replay check landing
+  exactly at clock zero; `settleClearedBackendTurns` requeue/abandon; a requeue waking the pump; `markSent` on a gone entry), each
+  shown to fail with its fix reverted: tests 1,316 → 1,320, focused 230 pass x3 and full x2 1,320/0, outputs kept.
 - **Manual end-to-end test** (offline fixtures only; no live harness): a script on the public API with the lifecycle fixture
   agent: the `AgentController` alias is the `HarnessController`; a prompt completes with `cause { kind: "messages" }`;
   `harnessConnection()`, `conversationCapabilities` and the raw ACP `capabilities` read correctly; a handoff with a generated summary

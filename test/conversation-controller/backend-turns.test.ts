@@ -11,6 +11,7 @@ import { join, resolve } from "node:path";
 import { Agent } from "../../src/agent.ts";
 import { AgentSession } from "../../src/agent-session.ts";
 import type { ConversationController } from "../../src/conversation-controller/index.ts";
+import { settleClearedBackendTurns } from "../../src/conversation-turns/index.ts";
 import { FakeController, type FakeScript } from "./fake-controller.ts";
 
 const ECHO = resolve(import.meta.dir, "../fixtures/echo-prompt-agent.ts");
@@ -273,6 +274,49 @@ describe("lifecycle across a handoff and in an Agent-owned conversation", () => 
     expect(at(`turn_completed:${id}`)).toBeGreaterThan(at(`afterPrompt:${id}`));
     expect(at(`turn_started:${id}`)).toBeLessThan(at(`record:${id}:assistant:1`));
   }, 30_000);
+});
+
+describe("queue clearing and message bookkeeping (auto-review hardening)", () => {
+  test("settleClearedBackendTurns: other items come back untouched, a started turn is requeued, and on stop it is abandoned on its own controller", () => {
+    const abandoned: string[] = [];
+    const controller = { abandonTurn: (turnId: string) => { abandoned.push(turnId); } } as unknown as ConversationController;
+    const turn = { kind: "backend_turn" as const, turnId: "t1", cause: { kind: "items" as const, items: [] }, messageIds: new Set<string>(), controller };
+    const other = { kind: "prompt" as const, turnId: "m1" };
+    const requeued: string[] = [];
+    expect(settleClearedBackendTurns([other, turn], false, (item) => requeued.push(item.turnId))).toEqual([other]);
+    expect(requeued).toEqual(["t1"]);
+    expect(abandoned).toEqual([]);
+    expect(settleClearedBackendTurns([turn, other], true, (item) => requeued.push(item.turnId))).toEqual([other]);
+    expect(requeued).toEqual(["t1"]); // not requeued again on stop
+    expect(abandoned).toEqual(["t1"]);
+  });
+
+  test("a backend turn requeued by clearQueue wakes the queue (the pump is called again), and then runs", async () => {
+    const fake = new FakeController({ scheduling: "session" });
+    const { session, events } = await sessionWith(fake);
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    fake.sendScript = () => ({ chunks: ["first"], hold });
+    const prompt = session.prompt("one").catch((error) => error);
+    await until(() => events.some((event) => event.kind === "turn_started"));
+    const id = fake.startTurn({ chunks: ["kept"] });
+    const internals = session as unknown as { pump(): Promise<void> };
+    const pump = internals.pump.bind(internals);
+    let wakes = 0;
+    internals.pump = () => { wakes += 1; return pump(); };
+    session.interrupt({ clearQueue: true });
+    expect(wakes).toBeGreaterThan(0); // the requeue itself woke the pump
+    release();
+    await prompt;
+    await until(() => events.some((event) => event.kind === "turn_completed" && event.turnId === id));
+  }, 20_000);
+
+  test("handing over a message whose bookkeeping entry is already gone does not throw", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session } = await sessionWith(fake);
+    const host = (session as unknown as { backendTurnHost(): { markSent(id: string): void } }).backendTurnHost();
+    expect(() => host.markSent("a message that was withdrawn or settled")).not.toThrow();
+  }, 20_000);
 });
 
 describe("the fake controller itself", () => {

@@ -333,3 +333,32 @@ test("a tool in flight on a provider that never replays keeps today's deadline e
   clock.advance(1);
   expect(calls).toEqual(["cancel"]);
 });
+
+test("a replay check that lands exactly at clock zero still floors the deadline (no zero-delay storm)", async () => {
+  const clock = new Clock();
+  clock.time = -100; // a clock whose zero falls inside the operation
+  const arm = clock.setTimeout;
+  let armings = 0;
+  clock.setTimeout = (run: () => void, delay: number) => {
+    if (++armings > 200) throw new Error("timer storm: the floor was lost at clock zero");
+    return arm(run, delay);
+  };
+  let replaying = true;
+  const calls: string[] = [];
+  const provider: SupervisedProvider = {
+    prompt: () => new Promise(() => {}),
+    subscribeOutput: () => () => undefined,
+    cancel: () => { calls.push("cancel"); },
+    forceStop: async () => {},
+  };
+  const supervisor = new OperationSupervisor(provider, { operationId: "zero", kind: "turn", timers: clock, limits: { firstOutputMs: 100 }, isReplaying: () => replaying });
+  void supervisor.run().catch(() => undefined);
+  await Promise.resolve();
+  clock.advance(100); // the first deadline is reached at exactly zero, while replaying: skipped
+  expect(calls).toEqual([]);
+  clock.advance(150);
+  expect(calls).toEqual([]); // still replaying: the next check is a full interval after the skip, not immediately
+  replaying = false;
+  clock.advance(100);
+  expect(calls).toEqual(["cancel"]);
+});
