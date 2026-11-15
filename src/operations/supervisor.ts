@@ -68,7 +68,7 @@ export class OperationSupervisor {
   private started = false;
   private forced = false;
   /** The last time a stall deadline was skipped because the provider was replaying: silence counts from then. */
-  private replayCheckedAt = 0;
+  private replayCheckedAt: number | null = null;
   private finishForced?: (result: PromptResult) => void;
 
   constructor(private readonly provider: SupervisedProvider, private readonly options: SupervisorOptions) {
@@ -194,9 +194,9 @@ export class OperationSupervisor {
     this.timers.clearTimeout(this.staleHandle);
     const limits = this.options.limits ?? {};
     // Silence is counted from the last skipped deadline too, so a turn that stopped replaying gets a full interval.
-    const floor = this.replayCheckedAt;
+    const floor = this.replayCheckedAt ?? 0;
     const activity = this.activity;
-    const counted = floor === 0 ? activity : { ...activity, startedAt: Math.max(activity.startedAt, floor), lastOutputAt: activity.lastOutputAt === null ? null : Math.max(activity.lastOutputAt, floor) };
+    const counted = this.replayCheckedAt === null ? activity : { ...activity, startedAt: Math.max(activity.startedAt, floor), lastOutputAt: activity.lastOutputAt === null ? null : Math.max(activity.lastOutputAt, floor) };
     const oldestTool = this.tools.oldestStartedAt;
     const decision = stalePolicy(counted, this.permissions, oldestTool === null ? null : Math.max(oldestTool, floor), limits, this.timers.now());
     if (!decision || this.finished) return;

@@ -746,7 +746,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     return {
       turns: this.backendTurns,
       log: this.log,
-      markSent: (id) => { this.acceptedMessages.get(id)!.dispatched = true; },
+      markSent: (id) => { const message = this.acceptedMessages.get(id); if (message) message.dispatched = true; },
       get stopped() { return session.stopPromise !== null; }, // `phase` is rewritten by each queue item
       emit: (event) => this.emit(event),
       enqueue: (item) => { this.operations.enqueue(item); this.emitStateIfChanged(); void this.pump(); },
@@ -3985,7 +3985,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // A stop closes the connection, so its turn fails and `endedBy` is never reported for it.
     this.steering.interrupted();
     if (options?.clearQueue) {
-      const dropped = settleClearedBackendTurns(this.operations.clear(), reason === "stop", (turn) => this.operations.enqueue(turn));
+      const dropped = settleClearedBackendTurns(this.operations.clear(), reason === "stop", (turn) => { this.operations.enqueue(turn); void this.pump(); });
       // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
       // metering record is minted (§16).
       // On stop, messages already handed to a backend-scheduled controller, still waiting for their turn, are dropped too.

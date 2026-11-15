@@ -137,6 +137,8 @@ export function reportBackendTurn(host: BackendTurnHost, controller: Conversatio
   host.enqueue(item);
 }
 
+const isBackendTurn = (item: { readonly kind: string }): item is BackendTurnItem => item.kind === "backend_turn";
+
 /** A turn started earlier took more: extend it. One that is unknown to the session, or has ended, is logged and ignored. */
 export function reportTurnTook(host: BackendTurnHost, event: TurnTook): void {
   if (!host.turns.took(event)) host.log.warn("controller_turn_took_ignored", { turnId: event.turnId });
@@ -207,9 +209,9 @@ export function settleClearedBackendTurns<T extends { readonly kind: string }>(
 ): Array<Exclude<T, BackendTurnItem>> {
   const others: Array<Exclude<T, BackendTurnItem>> = [];
   for (const item of cleared) {
-    if (item.kind !== "backend_turn") others.push(item as Exclude<T, BackendTurnItem>);
-    else if (stopping) (item as unknown as BackendTurnItem).controller.abandonTurn((item as unknown as BackendTurnItem).turnId, new Error("the conversation stopped"));
-    else requeue(item as unknown as BackendTurnItem);
+    if (!isBackendTurn(item)) others.push(item as Exclude<T, BackendTurnItem>);
+    else if (stopping) item.controller.abandonTurn(item.turnId, new Error("the conversation stopped"));
+    else requeue(item);
   }
   return others;
 }
