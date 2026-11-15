@@ -1,0 +1,5 @@
+# A2: intermittent managed checkpoint timestamp failure
+
+Independent review `controller-interface-reviews:library/reports/11-12-REVIEW-A2.md` at `cc854a2` checked Study 6 and found three failed runs of 100, A1 28 and A2 23 and 26. Raw captures show `CheckpointValidationError: internalSessionActivatedAt must not be after updatedAt` at `src/persistence/checkpoint.ts:141`; A2 23 also had a watcher failure. Observed on A1, so the symptom predates A2; it can fail managed turns/handoff. No root cause or probability established. Implementer's clock-drift hypothesis is unverified; retained log modification times conflict with the report's chronology and cannot alone settle it.
+
+Per current plan triage, evidence does not yet establish a stuck agent/channel or silent data loss. Ask spec owner through user to decide whether this pre-existing failure should be accepted/documented as a limitation or investigated as a blocking defect; update if evidence changes. Do not hide failed comparison runs or treat them as passing. No source fix authorized. Full per-error record: `$AGENTS_COMMON_ARTIFACTS_DIR/errors/11-15-managed-checkpoint-activation-timestamp.md`.
