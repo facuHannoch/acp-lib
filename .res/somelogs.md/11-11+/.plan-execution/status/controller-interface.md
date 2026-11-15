@@ -5,7 +5,7 @@ Spec: `library/11-11-SPEC-controller-interface.md` on beta `1bda9ef` (updated si
 | Brief | State | Evidence / next action |
 | --- | --- | --- |
 | A1 | Gate passed | `9de0ca3`; review `547b522`; `11-12-GATE-A1.md` records cl-c's independent gate. |
-| A2 | Metering observer fixes | Review `5dacc7a` found pending-open and overwritten-attempt observation gaps; fixes assigned. Metering questions 4–5 remain escalated in `11-13-ISSUE-A2-metering-write-failure.md`; gate pending. |
+| A2 | Metering observer fixes; owner decisions received | Beta `5e01135` includes `0013b0f` resolving metering questions 4–5. Both branches to incorporate; implementer continues observer fixes. Independent review and coordinator gate pending. |
 | B1 | Not started | Await A2 gate. |
 | B2 | Not started | Await B1 gate; after B2 gate tell user ready for spec owner's final review. |
 
