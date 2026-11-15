@@ -41,7 +41,7 @@ describe("the factory", () => {
     expect(createController(config)).not.toBe(createController(config));
   });
 
-  test("nothing in src/ constructs a controller directly except the factory, the internal-inference runtime and the low-level CLI", () => {
+  test("a text scan finds direct controller construction in src/ only in the factory, the internal-inference runtime and the low-level CLI", () => {
     const direct = /new (HarnessController|AgentController)\(/;
     const offenders = sourceFiles(join(ROOT, "src"))
       .filter((path) => direct.test(readFileSync(path, "utf8")))
@@ -54,7 +54,9 @@ describe("the factory", () => {
     ]);
   });
 
-  test("the session and the turn code never construct one (the gate: no direct controller type use outside the factory and harnessConnection)", () => {
+  // A text scan: a narrow guard against `new HarnessController(` / `new AgentController(` in these files. It does not prove
+  // the broader "no concrete controller type" gate (aliases, other syntax and type references are not matched).
+  test("the session and the turn code contain no direct controller construction (narrow text scan)", () => {
     for (const path of [join(ROOT, "src/agent-session.ts"), ...sourceFiles(join(ROOT, "src/conversation-turns"))]) {
       expect(readFileSync(path, "utf8")).not.toMatch(/new (HarnessController|AgentController)\(/);
     }
