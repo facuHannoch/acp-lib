@@ -88,7 +88,8 @@ tool's start, are counted from that check); once it is no longer replaying the n
 provider keeps today's exact deadline. Two review findings shaped it (a one-time sampling lost the deadline for a turn that
 becomes live; the tool deadline also needed flooring). **The interface has no notification for `live` changing**, so the check is
 interval-granular: a turn that becomes live is stalled no later than its limit after the change, and possibly up to one limit
-earlier than the exact point. Escalated below.
+earlier than the exact point. This applies only when an applicable stall limit is enabled and no permission exemption applies:
+a disabled limit (`false`) or a pending permission has no deadline at all, and the replay check changes neither. Escalated below.
 
 ## Gate
 
