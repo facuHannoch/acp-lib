@@ -1279,3 +1279,27 @@ recheck is claimed.
   `47686d4ca0451cf89802c9df52d22d453c238f811b9864cd72358663bfd971e6`; diff check clean.
 - Tests used a temporary archive and offline fixture agents. No snapshot regeneration,
   source edit, implementation checkout, live harness, push, or merge into beta.
+
+## Owner-requested reconciliation, 2026-11-15
+
+Reread the current beta controller-interface spec, execution-plan triage, coordinator status
+and A2 gate. A1 passed; A2 implementation is complete with independent and coordinator
+full-suite 1,215/0 evidence. Latest implementation `09b7258` only narrows report language
+after tested `6619cfa`. No blocking usage finding remains. B1 (capabilities, rename,
+interface typing and factory) and B2 (backend-started turns and conformance) have not
+started, so the whole spec is not complete.
+
+The late review loop disproportionately hardened a test observer against synthetic malformed
+records. The plan fixes findings only for stuck channels, silent normal-operation loss or
+spec contradiction. Further hypothetical metadata validation should not block A2. The P3
+claim is now narrowed; no new implementation/test cycle is warranted for it.
+
+Two actual gate decisions remain: (1) disposition of pre-existing checkpoint timestamp
+failures, with no demonstrated stuck channel or silent loss and no proven cause; (2)
+reconciliation of the later plan's no-growth rule with A2 adding controller methods
+(controller.ts 756 to 825 lines). These need one explicit coordinator/spec-owner disposition,
+not further general watcher hardening. Recommendation: record checkpoint limitation under
+triage unless new qualifying evidence appears; resolve controller growth by explicit scope
+decision or a bounded extraction; coordinator closes A2 gate and releases B1. Reviewer
+cannot grant owner policy or release B1. No new test run: existing evidence applies to the
+unchanged executable tree.
