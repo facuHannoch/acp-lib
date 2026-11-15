@@ -97,10 +97,10 @@ a disabled limit (`false`) or a pending permission has no deadline at all, and t
 | Check | Result |
 | --- | --- |
 | `bun run typecheck` | clean; test files (including `test/conversation-controller/`) clean under the temporary tsconfig; `git diff --check` clean |
-| full suite `bun test` (at the step 6 fixes) | 1,316 pass, 0 fail; 125 files; 103.7 s and 105.3 s. **After the owner decisions: 1,329 pass, 0 fail; 125 files, three runs, outputs kept** |
+| full suite `bun test` (at the step 6 fixes) | 1,316 pass, 0 fail; 125 files; 103.7 s and 105.3 s. **After the owner decisions and the message-state fix: 1,335 pass, 0 fail; 125 files, three runs, outputs kept** |
 | focused (`test/conversation-turns`, `test/conversation-controller`, `test/operation-supervisor.test.ts`) | 226 pass per run (see the unidentified failure below) |
 | A1 snapshot | byte-identical to A2's (`47686d4c…`) until the owner-decided `cause` change; now `fbc6ec2c…` (39 deleted lines, own commit) |
-| test count | 1,257 at the end of B1 → 1,329 (+72: 59 for the steps and fixes, 4 hardening, 9 for the owner decisions) |
+| test count | 1,257 at the end of B1 → 1,335 (+78: 59 for the steps and fixes, 4 hardening, 9 for the owner decisions, 6 for the message-state review) |
 | line counts | `agent-session.ts` 4,634 → 4,634 (its pre-B1 size; limit < 5,022); `controller.ts` 840 (unchanged in B2); new `backend-turns.ts` 215, `guards.ts` 79; `supervisor.ts` 222 |
 | `src/` changed since B1 | 9 files, +323/−59 |
 
@@ -120,7 +120,10 @@ The five open spec questions were answered by the owner (the spec edits themselv
    controllers are unaffected (their content still comes through `prepareTurn`). **The end-to-end content test now exists** against
    the backend-scheduled fake: the backend reads the text and attachments from the run, answers from them, and the prompt resolves
    with that reply; queued messages arrive one at a time with their own content; a combined steer run lists each original.
-2. **The wait after acceptance is accepted, as a cancellable wait with no time limit.** `stop` drops it as cancelled (as before);
+2. **The wait after acceptance is accepted, as a cancellable wait with no time limit.** (Review of `f886637` tightened this: a message is
+   in one of three states: *sending* (`send` not resolved), *waiting* (accepted, no turn has claimed it) or *taken* (a turn's cause or a
+   `turn_took` names it). Only a *waiting* message can be withdrawn or dropped by `clearQueue`; a message in flight or taken stays and
+   its turn settles it; `stop` ends every state. A turn that claims a message before `send` resolves keeps it.) `stop` drops it as cancelled (as before);
    `handle.withdraw()` now withdraws a waiting message locally (resolves cancelled; the backend is not told, and a turn that later
    names it is ignored as an unknown id); `interrupt({ clearQueue: true })` drops waiting messages like queued ones (a plain
    `interrupt()` leaves them waiting). A message waiting behind a long turn is not failed by waiting (tested). Spec edit for the
@@ -141,7 +144,9 @@ The five open spec questions were answered by the owner (the spec edits themselv
 failed there too (run 5 of 5 full runs on a clean copy of A1, received 2,718 ms against the 1,000 ms bound; outputs kept). Its
 bound is widened in its own commit (`81e2fdd`) to 5,000 ms, which still fails if the cancel regresses to the 30 s default
 (the owner suggested about 3,000 ms; A1's 2,718 ms leaves that too close). The unidentified focused-run failure keeps its
-error file (it happened once with no name recorded; every run's output is now kept, so the next occurrence identifies it).
+error file; with outputs kept, a later focused run failed once and the log named it: my own `< 2000 ms` bound in the replay→live→silent
+test (received 3,152 ms), a likely candidate for the original one (that test existed then); widened to 10 s, and the event-wait helpers'
+default bound raised to 15 s.
 
 ## Final checks (after the step reviews)
 

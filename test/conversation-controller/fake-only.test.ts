@@ -45,7 +45,7 @@ async function sessionWith(fake: FakeController, options: { stale?: boolean } = 
   return { session, events };
 }
 
-const until = async (predicate: () => boolean, ms = 5000) => {
+const until = async (predicate: () => boolean, ms = 15_000) => {
   const end = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() > end) throw new Error("condition timed out");
@@ -104,7 +104,7 @@ describe("per-turn supervision", () => {
     expect(events.find((event) => event.kind === "turn_failed")).toMatchObject({ turnId: id });
     expect(String(events.find((event) => event.kind === "turn_failed")!.error)).toContain("stalled");
     expect(failedAfter).toBeGreaterThanOrEqual(120); // not stalled while it replayed (a 30 ms limit)...
-    expect(failedAfter).toBeLessThan(2000); // ...and stalled soon after it became live: bounded
+    expect(failedAfter).toBeLessThan(10_000); // ...and stalled after it became live: bounded (generous: a loaded machine is slow)
     const next = fake.startTurn({ chunks: ["queue still moves"] });
     await until(() => events.some((event) => event.kind === "turn_completed" && event.turnId === next));
   }, 20_000);

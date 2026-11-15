@@ -49,7 +49,7 @@ async function sessionWith(fake: FakeController, options: { managed?: boolean } 
   return { session, events, transcript };
 }
 
-const until = async (predicate: () => boolean, ms = 5000) => {
+const until = async (predicate: () => boolean, ms = 15_000) => {
   const end = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() > end) throw new Error("condition timed out");

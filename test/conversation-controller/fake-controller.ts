@@ -62,6 +62,8 @@ export class FakeController implements ConversationController {
   forceStopped = 0;
   /** `send` resolves only when this does (backend-scheduled: the backend has not accepted the message yet). */
   acceptGate: Promise<void> | null = null;
+  /** How many runs the backend has accepted (`send` resolved). */
+  accepted = 0;
   /** The next `send` rejects with this (the backend refused the message). */
   rejectNextSend: Error | null = null;
 
@@ -115,6 +117,7 @@ export class FakeController implements ConversationController {
       throw error;
     }
     if (this.acceptGate) await this.acceptGate;
+    this.accepted += 1;
     if (this.scheduling === "session") {
       if (!run.turnId) throw new Error("a run without a turn id");
       this.#entries.set(run.turnId, { script: this.sendScript(run), prepared: false, prompted: false, abandoned: false });

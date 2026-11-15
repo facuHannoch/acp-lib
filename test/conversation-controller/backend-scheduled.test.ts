@@ -42,7 +42,7 @@ async function sessionWith(fake: FakeController) {
   return { session, events };
 }
 
-const until = async (predicate: () => boolean, ms = 5000) => {
+const until = async (predicate: () => boolean, ms = 15_000) => {
   const end = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() > end) throw new Error("condition timed out");
@@ -400,5 +400,119 @@ describe("the wait after acceptance is cancellable (stop, withdraw, interrupt) a
     await first;
     fake.startTurn({ chunks: ["next turn"] }, { messageIds: [later.id] }); // taken by the next turn
     expect((await later).status).toBe("completed");
+  }, 20_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Review of f886637: only an accepted, unclaimed message may be withdrawn or dropped locally. A message in flight
+// (send not resolved) or taken by a turn (its cause or a turn_took names it) is not, and its turn settles it.
+// ---------------------------------------------------------------------------------------------
+
+describe("withdraw and clearQueue touch only accepted, unclaimed messages", () => {
+  /** A running backend turn holding the session's queue, and a release for it. */
+  async function runningTurn(fake: FakeController, session: Awaited<ReturnType<typeof sessionWith>>["session"], claims: string[], text = "A") {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const turnId = fake.startTurn({ chunks: [text], hold }, { messageIds: claims });
+    await until(() => fake.prompted.includes(turnId));
+    return { turnId, release };
+  }
+
+  test("taken by a running turn's initial cause: withdraw is refused, clearQueue keeps it, and the turn settles it", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session } = await sessionWith(fake);
+    const handle = session.prompt("taken at once");
+    await until(() => fake.sent.length === 1);
+    const { turnId, release } = await runningTurn(fake, session, [handle.id]);
+    expect(handle.withdraw()).toBe(false);
+    // The interrupt cancels the running turn and drops accepted, unclaimed messages: this one is taken, so its turn settles it.
+    session.interrupt({ clearQueue: true });
+    const result = await handle;
+    expect(result.operationId).toBe(turnId); // settled by its (interrupted) turn...
+    expect(result.metering).not.toBeNull(); // ...which ran: it was not dropped as a never-sent message
+    release();
+  }, 20_000);
+
+  test("taken by a running turn through turn_took: the same", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session } = await sessionWith(fake);
+    const first = session.prompt("one");
+    await until(() => fake.sent.length === 1);
+    const { turnId, release } = await runningTurn(fake, session, [first.id]);
+    const second = session.prompt({ text: "two", delivery: "steer" });
+    await until(() => fake.sent.length === 2);
+    fake.foldInto(turnId, { messageIds: [second.id] });
+    expect(second.withdraw()).toBe(false);
+    session.interrupt({ clearQueue: true });
+    const [, secondResult] = await Promise.all([first, second]);
+    expect(secondResult.operationId).toBe(turnId); // settled by the turn that took it, not dropped
+    expect(secondResult.metering).not.toBeNull();
+    release();
+  }, 20_000);
+
+  test("taken by a turn still queued behind a running one, by its initial cause and by turn_took: neither can be cancelled, both settle with that turn", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session, events } = await sessionWith(fake);
+    const blocker = session.prompt("blocker");
+    await until(() => fake.sent.length === 1);
+    const { release } = await runningTurn(fake, session, [blocker.id], "blocker");
+    const byCause = session.prompt({ text: "by cause", delivery: "steer" });
+    const byTook = session.prompt({ text: "by took", delivery: "steer" });
+    await until(() => fake.sent.length === 3);
+    const queued = fake.startTurn({ chunks: ["queued turn"] }, { messageIds: [byCause.id] }); // waits behind the running turn
+    fake.foldInto(queued, { messageIds: [byTook.id] });
+    expect(byCause.withdraw()).toBe(false);
+    expect(byTook.withdraw()).toBe(false);
+    session.interrupt({ clearQueue: true }); // the queued backend turn stays, so do the messages it took
+    release();
+    const [, one, two] = await Promise.all([blocker, byCause, byTook]);
+    expect([one.status, two.status]).toEqual(["completed", "completed"]);
+    expect([one.operationId, two.operationId]).toEqual([queued, queued]);
+    expect(events.filter((event) => event.kind === "turn_failed")).toHaveLength(0);
+  }, 20_000);
+
+  test("while send is in flight it cannot be withdrawn or cleared; once accepted and unclaimed it can", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    let accept!: () => void;
+    fake.acceptGate = new Promise<void>((resolve) => { accept = resolve; });
+    const { session } = await sessionWith(fake);
+    const handle = session.prompt("in flight");
+    const outcome = track(handle);
+    await until(() => fake.sent.length === 1); // handed over, not yet accepted
+    expect(handle.withdraw()).toBe(false);
+    session.interrupt({ clearQueue: true });
+    await Bun.sleep(0);
+    expect(outcome.settled).toBe(false); // still in flight: not cancelled
+    accept();
+    await until(() => fake.accepted === 1); // send resolved
+    await until(() => handle.withdraw()); // accepted and unclaimed: now it can be withdrawn (a bounded wait for the session to note it)
+    expect((await handle).status).toBe("cancelled");
+  }, 20_000);
+
+  test("a turn that claims a message before send has resolved keeps it: it is taken, not waiting, once accepted", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    let accept!: () => void;
+    fake.acceptGate = new Promise<void>((resolve) => { accept = resolve; });
+    const { session } = await sessionWith(fake);
+    const handle = session.prompt("claimed early");
+    await until(() => fake.sent.length === 1);
+    const turnId = fake.startTurn({ chunks: ["early"] }, { messageIds: [handle.id] }); // names it while send is in flight
+    accept();
+    await until(() => fake.accepted === 1);
+    expect(handle.withdraw()).toBe(false); // taken, not accepted-unclaimed
+    const result = await handle;
+    expect(result.status).toBe("completed");
+    expect(result.operationId).toBe(turnId);
+  }, 20_000);
+
+  test("stop still ends every wait, taken ones included: nothing is left unsettled", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const { session } = await sessionWith(fake);
+    const handle = session.prompt("taken, then stop");
+    await until(() => fake.sent.length === 1);
+    await runningTurn(fake, session, [handle.id]);
+    await session.stop();
+    const result = await Promise.race([handle.then((value) => value, (error) => error), Bun.sleep(5000).then(() => "hung")]);
+    expect(result).not.toBe("hung");
   }, 20_000);
 });

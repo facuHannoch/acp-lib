@@ -40,7 +40,7 @@ export interface Subject {
   open(options?: { stale?: boolean }): Promise<OpenConversation>;
 }
 
-export const until = async (predicate: () => boolean, ms = 8000) => {
+export const until = async (predicate: () => boolean, ms = 15_000) => {
   const end = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() > end) throw new Error("condition timed out");

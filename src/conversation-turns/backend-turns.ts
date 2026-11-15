@@ -35,55 +35,83 @@ export interface BackendTurnItem {
 }
 
 /** The backend-turn path's state: reported turns not yet ended, and messages waiting for the turn that takes them. */
+/**
+ * Where a message handed to a backend-scheduled controller is: `sending` (`send` has not resolved yet), `waiting` (accepted,
+ * no turn has claimed it: the only state a local withdraw or `clearQueue` may cancel), or `taken` (a turn's cause or a
+ * `turn_took` names it: that turn owns its settlement).
+ */
+type MessageState = "sending" | "waiting" | "taken";
+
 export class BackendTurns {
   readonly #turns = new Map<string, BackendTurnItem>();
-  readonly #waiting = new Map<string, PromptQueueItem>();
+  readonly #messages = new Map<string, { readonly item: PromptQueueItem; state: MessageState }>();
   /** The backend turn running now (it holds the session's queue), if any. */
   running: string | null = null;
 
-  /** A message handed to a backend-scheduled controller waits for its turn. */
-  wait(item: PromptQueueItem): void { this.#waiting.set(item.turnId, item); }
-  unwait(messageId: string): void { this.#waiting.delete(messageId); }
+  /** A message is handed to a backend-scheduled controller: `send` is in flight. */
+  wait(item: PromptQueueItem): void { this.#messages.set(item.turnId, { item, state: "sending" }); }
+  /** `send` resolved: the message is accepted (unless a turn already claimed it meanwhile). */
+  accepted(messageId: string): void {
+    const message = this.#messages.get(messageId);
+    if (message?.state === "sending") message.state = "waiting";
+  }
+  unwait(messageId: string): void { this.#messages.delete(messageId); }
 
-  report(item: BackendTurnItem): void { this.#turns.set(item.turnId, item); }
+  report(item: BackendTurnItem): void {
+    this.#turns.set(item.turnId, item);
+    this.#claim(item.messageIds);
+  }
+
+  /** A turn names these messages: they are its to settle now, and no local withdraw or clear may cancel them. */
+  #claim(ids: Iterable<string>): void {
+    for (const id of ids) {
+      const message = this.#messages.get(id);
+      if (message) message.state = "taken";
+    }
+  }
 
   /** `turn_took`: more folded into a turn that has not ended. False for an unknown or ended turn. */
   took(event: TurnTook): boolean {
     const turn = this.#turns.get(event.turnId);
     if (!turn) return false;
     for (const id of event.cause.messageIds ?? []) turn.messageIds.add(id);
+    this.#claim(event.cause.messageIds ?? []);
     turn.cause = mergeCause(turn.cause, event.cause);
     return true;
   }
 
-  /** The turn ended (or was abandoned): its waiting messages settle with `outcome`, and it is forgotten. */
+  /** The turn ended (or was abandoned): the messages it took settle with `outcome`, and it is forgotten. */
   end(turn: BackendTurnItem, outcome: { result: AgentSessionPromptResult } | { error: unknown }, log?: Logger): void {
     this.#turns.delete(turn.turnId);
     for (const id of turn.messageIds) {
-      const message = this.#waiting.get(id);
+      const message = this.#messages.get(id);
       if (!message) {
         log?.warn("backend_turn_names_unknown_message", { turnId: turn.turnId, messageId: id }); // recorded, not trusted for settlement
         continue;
       }
-      this.#waiting.delete(id);
-      if ("result" in outcome) message.resolve(outcome.result);
-      else message.reject(outcome.error);
+      this.#messages.delete(id);
+      if ("result" in outcome) message.item.resolve(outcome.result);
+      else message.item.reject(outcome.error);
     }
   }
 
-  /** One waiting message leaves (to be dropped as cancelled); undefined when it isn't waiting. */
+  /** One accepted, unclaimed message leaves (to be dropped as cancelled); undefined for any other (in flight, taken, unknown). */
   take(messageId: string): PromptQueueItem | undefined {
-    const message = this.#waiting.get(messageId);
-    this.#waiting.delete(messageId);
-    return message;
+    const message = this.#messages.get(messageId);
+    if (message?.state !== "waiting") return undefined;
+    this.#messages.delete(messageId);
+    return message.item;
   }
 
-  /** `interrupt({ clearQueue })` and stop: every waiting message leaves (to be dropped as cancelled); on stop the turns are forgotten too. */
+  /**
+   * `interrupt({ clearQueue })`: the accepted, unclaimed messages leave (to be dropped as cancelled); messages in flight or
+   * taken by a turn stay. Stop: every message leaves and the turns are forgotten.
+   */
   clear(stopping: boolean): PromptQueueItem[] {
+    const leaving = [...this.#messages].filter(([, message]) => stopping || message.state === "waiting");
+    for (const [id] of leaving) this.#messages.delete(id);
     if (stopping) this.#turns.clear();
-    const waiting = [...this.#waiting.values()];
-    this.#waiting.clear();
-    return waiting;
+    return leaving.map(([, message]) => message.item);
   }
 }
 
@@ -160,6 +188,7 @@ export async function sendToBackend(host: BackendTurnHost, controller: Conversat
     // No turn id: the backend assigns turn ids. The message goes as the queue holds it.
     const { turnId: _sessionTurnId, ...run } = turnRunOf(message);
     await controller.send(run);
+    host.turns.accepted(message.turnId);
   } catch (error) {
     host.turns.unwait(message.turnId);
     message.reject(error);
