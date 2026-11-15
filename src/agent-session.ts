@@ -3978,7 +3978,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     // A stop closes the connection, so its turn fails and `endedBy` is never reported for it.
     this.steering.interrupted();
     if (options?.clearQueue) {
-      const dropped = settleClearedBackendTurns(this.operations.clear(), this.controller, reason === "stop", (turn) => this.operations.enqueue(turn));
+      const dropped = settleClearedBackendTurns(this.operations.clear(), reason === "stop", (turn) => this.operations.enqueue(turn));
       // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
       // metering record is minted (§16).
       this.steering.dropped(dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"));

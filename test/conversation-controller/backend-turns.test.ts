@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Agent } from "../../src/agent.ts";
 import { AgentSession } from "../../src/agent-session.ts";
 import type { ConversationController } from "../../src/conversation-controller/index.ts";
 import { FakeController, type FakeScript } from "./fake-controller.ts";
@@ -193,6 +194,83 @@ describe("a turn the backend starts on its own", () => {
     await until(() => events.some((event) => event.kind === "turn_completed" && event.turnId === id));
     expect(fake.prompted).toContain(id);
   }, 20_000);
+});
+
+describe("lifecycle across a handoff and in an Agent-owned conversation", () => {
+  test("a handoff queued ahead of a reported turn replaces the controller: the turn is abandoned on the controller that reported it, not run on the new one", async () => {
+    const fake = new FakeController({ scheduling: "session" });
+    const { session, events } = await sessionWith(fake);
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    fake.sendScript = () => ({ chunks: ["first"], hold });
+    const prompt = session.prompt("one");
+    await until(() => events.some((event) => event.kind === "turn_started"));
+    const handoff = session.handoff({ continuation: { kind: "none" } }); // queued behind the running prompt
+    const id = fake.startTurn({ chunks: ["held for the old controller"] }); // reported after the handoff was queued
+    expect(fake.held).toContain(id); // its output is held on the controller that reported it
+    release();
+    await prompt;
+    await handoff;
+    await Bun.sleep(100); // the turn's queue item runs right after the handoff
+    const live = (session as unknown as { controller: ConversationController }).controller;
+    expect(live).not.toBe(fake); // the handoff replaced the controller
+    expect(fake.abandoned.map((entry) => entry.turnId)).toEqual([id]);
+    expect(String(fake.abandoned[0]!.reason)).toContain("replaced");
+    expect(fake.held).toEqual([]); // nothing stays held on the old controller
+    expect(fake.prompted).not.toContain(id);
+    expect(events.some((event) => event.turnId === id)).toBe(false); // it never started
+    // The conversation goes on, on the new controller.
+    expect((await session.prompt("after the handoff")).status).toBe("completed");
+  }, 30_000);
+
+  test("Agent-owned: assistant and metering are persisted, no user record is written, and completion follows afterPrompt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-backend-turns-owned-"));
+    cleanups.push(() => rm(directory, { recursive: true, force: true }));
+    const agent = await Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { fixture: { command: ["bun", ECHO] } },
+      defaultAdapterId: "fixture",
+      capture: { message: "content", error: "raw" },
+      checkpointing: { enabled: false },
+      conversationDefaults: { metering: { pricing: false }, cwd: directory },
+    });
+    cleanups.push(() => agent.close());
+    const timeline: string[] = [];
+    agent.events.subscribe((notification) => {
+      const record = notification.event.record as unknown as { kind: string; recordId: string };
+      timeline.push(`record:${record.recordId}`);
+    });
+    const conversation = await agent.conversations.create();
+    const fake = new FakeController({ scheduling: "backend" });
+    const internals = conversation as unknown as { controller: ConversationController; bindController(controller: ConversationController): void; ownerLifecycle: { afterPrompt: (input: any) => Promise<unknown> } };
+    const real = internals.controller;
+    internals.controller = fake;
+    internals.bindController(fake);
+    cleanups.push(() => real.stop());
+    const afterPrompt = internals.ownerLifecycle.afterPrompt.bind(internals.ownerLifecycle);
+    internals.ownerLifecycle.afterPrompt = async (input: { operationId: string }) => {
+      const result = await afterPrompt(input);
+      timeline.push(`afterPrompt:${input.operationId}`);
+      return result;
+    };
+    conversation.subscribe(({ event }) => { if (event.kind.startsWith("turn_")) timeline.push(`${event.kind}:${(event as { turnId: string }).turnId}`); });
+    const id = fake.startTurn({ chunks: ["owned reply"] });
+    await until(() => timeline.includes(`turn_completed:${id}`));
+    const records = (await agent.persistence.records.list(conversation.id, { limit: 1000 })).records as unknown as Array<Record<string, any>>;
+    const mine = records.filter((record) => record.operationId === id);
+    expect(mine.some((record) => record.role === "user" || String(record.recordId).endsWith(":user"))).toBe(false);
+    const finalAssistant = mine.find((record) => record.recordId === `${id}:assistant:1`);
+    expect(finalAssistant?.content).toBe("owned reply");
+    expect(finalAssistant?.status).toBe("completed");
+    expect(mine.filter((record) => record.kind === "metering").map((record) => record.recordId)).toEqual([`${id}:metering`]);
+    // Completion comes after the final assistant record, the metering record and afterPrompt.
+    const at = (entry: string) => timeline.indexOf(entry);
+    expect(at(`record:${id}:assistant:1`)).toBeGreaterThanOrEqual(0);
+    expect(at(`turn_completed:${id}`)).toBeGreaterThan(at(`record:${id}:assistant:1`));
+    expect(at(`turn_completed:${id}`)).toBeGreaterThan(at(`record:${id}:metering`));
+    expect(at(`turn_completed:${id}`)).toBeGreaterThan(at(`afterPrompt:${id}`));
+    expect(at(`turn_started:${id}`)).toBeLessThan(at(`record:${id}:assistant:1`));
+  }, 30_000);
 });
 
 describe("the fake controller itself", () => {
