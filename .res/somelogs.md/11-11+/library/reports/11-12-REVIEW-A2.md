@@ -1128,3 +1128,92 @@ restart were not rechecked; previous review's independently recorded evidence st
 - No snapshot regeneration, source edit, implementation branch checkout, live harness,
   push or merge into beta. The numerical suite green does not settle the coverage finding
   or the checkpoint issue.
+
+## No-usage follow-up: `937de8a`, exception `5676ce6`
+
+**Verdict: return the no-usage shape validation gap for follow-up; B1 remains held.**
+Independent full/focused numerical gates and the applicable typechecks are green. The
+original 999-token probe is fixed for the recognized metered representation and the real
+mode-specific case is pinned. The owner still needs to triage the pre-existing checkpoint
+failure; the coordinator gate is separate.
+
+### Finding
+
+**P2 — Unrecognized or incomplete usage is silently classified as no usage.**
+`test/conversation-turns/contract-watch.ts:85`–`:104` returns success for *any* status
+other than `metered` at `:88`, although the documented known alternatives are
+`usage_unavailable`, `baseline_required` and `counter_reset`. For `metered`, `:91`–`:100`
+treat missing required counts and rated totals as zero by accepting `undefined` and
+missing objects. The helper's own comment says other shapes cannot be established as no
+usage, and the report says incomplete totals fail. An independent offline synthetic
+undispatched turn passes the full `assertRun` with either
+`{status: "unknown_future_status", attributable: {totalTokens: 999}}`,
+`{status: "metered", attributable: {}}`, or an incomplete `ratedTotal: {}`. These are
+fault-injected malformed/future records, not a demonstrated current production record.
+Only known non-metered variants should be recognized and a metered result must supply
+sufficient required fields to establish zero; add negative tests for unknown status and
+missing required usage/rated-total fields, while continuing to ignore session-cumulative
+counters. See `$AGENTS_COMMON_ARTIFACTS_DIR/errors/11-15-a2-unknown-usage-shapes.md`.
+
+### No-usage and finalization evidence
+
+Independent helper probes confirmed the known unavailable/reset/baseline statuses and a
+zero-metered record with a large cumulative session counter pass; positive attributed
+totals, reported deltas, category counts, rated amounts and per-model line items fail.
+The committed tests exercise declared and undeclared undispatched outcomes, and allow
+usage after dispatch. The real detached injected prepare failure pins one record with
+`usage_unavailable`, error outcome, `not_attributable` pricing and `none` source; managed
+begin-operation failure pins zero. The previous `cc854a2` positive-token counterexample
+now fails as intended. Existing completion, order, count, error and transcript checks
+remain; the change adds the usage check instead of removing them. The implementer's two
+mutation scripts target dropping the check and wrongly including cumulative usage, and
+its reported failures match the inspected tests; I did not rerun those mutations. They do
+not cover the unknown/incomplete counterexamples above. This is a watcher limitation, not
+proof of a production behavior change.
+
+### Study 6 and checkpoint triage
+
+I rechecked all 100 retained exits, logs and 3,500 raw captures, excluding the three
+*failed case captures* from the comparison rather than pretending their runs passed.
+A1 28, A2 23 and A2 26 remain failed; logs and captures identify checkpoint validation
+symptoms (A2 23 also has the prior undeclared-open assertion). The two additional
+worktree failure logs and the three study failure logs have November 13 mtimes in the
+reported 14:51–15:06 UTC sequence. File timestamps alone are not definitive chronology;
+the prior November 15/clock-cause claim is withdrawn, and root cause remains unknown.
+The status issue asks the owner to decide whether to accept or investigate the existing
+symptom. It can fail managed turns/handoff; the present evidence does not establish a
+stuck channel or silent data loss. No source fix or policy decision is authorized here.
+
+Independent complete-case recount confirms every listed managed and Agent-owned pair has
+at least 49 observations per version. Managed combined steer turn 1, positions
+`M→P1→P2 / P1→M→P2 / P1→P2→M`: A1 **0/45/4** (49), A2 **0/49/1** (50).
+Turn 2 `M→P1→P2` is **49/50**; the other two positions are **0/0** each. Managed
+permission is **50/49**, handoff first and second turn **50/49** each in the first
+position; their other positions are zero. Other managed pairs have 50/50, with all three
+positions separately checked. Agent-owned internal command snapshot→meter / meter→snapshot
+is A1 **0/50**, A2 **1/49**; other listed Agent-owned pairs were 50 snapshot-first / 0
+meter-first in each version. Zero is an observed count, not proof an ordering is
+impossible; failed cases and unobserved events are excluded, not counted as zeros.
+
+The comparison used identical then-current instrumentation for both versions. The final
+watcher adds a synchronous record-map write and a later assertion; this may affect timing,
+so the observation point similarity is useful but does not prove distribution equality or
+absence of a material shift. Both versions show more combined-steer alternate ordering
+than historical studies 1–3; finite samples, incomplete cases and overlapping work limit
+inference. Historical raw artifacts from studies 1–5 were lost; earlier review rechecks
+remain attributed but were not repeated here.
+
+### Independent gates and scope
+
+- Complete offline suite: **1,209 pass / 0 fail**, 116 files, 35 snapshots, 94.01s.
+- Focused characterization, turn-path, pair-rule and watcher: **112 pass / 0 fail**,
+  35 snapshots, 15.03s. Source typecheck and relevant test/fixture typecheck clean.
+- `5676ce6` has parent `83114f1`; `cffce98` remains separate, beta `5e01135` is an
+  ancestor, and old head is retained as `controller-interface-pre-usage-check-9273d4a`.
+  Across the three reconstructed commit pairs only watcher and watcher-test files differ;
+  source, pair rule and snapshot match `5eeb54c`. Snapshot SHA-256 remains
+  `47686d4ca0451cf89802c9df52d22d453c238f811b9864cd72358663bfd971e6`.
+  Diff check clean; no snapshot regeneration.
+- Tests used a temporary archive and offline fixture agents. No source edit, implementation
+  checkout, live harness, push, or merge into beta. Green suites do not settle the shape
+  finding, checkpoint triage or coordinator gate.
