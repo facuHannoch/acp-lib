@@ -6,10 +6,10 @@ release: bob-b, `controller-interface-status` at `14f56c4`.
 
 **State: steps 1–4 done; review findings fixed in `e7f2d79`, `f54dc05` and `9e0f457`; the owner's
 decisions (beta `fd9ec24`, `95e9cf2`) merged in `174200e` and `83114f1` and applied in the one
-dedicated snapshot-exception commit `5676ce6` (which replaces `1ad325d` after the final review, then
-`5eeb54c`, `2f3b073`, `8ac866e` and `e3c65e6` after the four watcher reviews); the metering
-decisions (beta `0013b0f`, in `5e01135`) merged in `162784d`. Gate: full suite 1,209 pass / 0 fail
-(two runs). Open for the owner: triage of the pre-existing managed checkpoint failure.**
+dedicated snapshot-exception commit `6e46e40` (which replaces `1ad325d` after the final review, then
+`5eeb54c`, `2f3b073`, `8ac866e`, `e3c65e6` and `5676ce6` after the five watcher reviews); the
+metering decisions (beta `0013b0f`, in `5e01135`) merged in `7e6a43b`. Gate: full suite 1,215 pass
+/ 0 fail (two runs). Open for the owner: triage of the pre-existing managed checkpoint failure.**
 The accepted connect/reconnect hang (spec, "A known hang, accepted for now") is unchanged and
 represented as accepted (open question 3, answered). The spec correction (beta
 `fcd1fd4`) was merged in `efe6ebe`; steps 2–4 were released at status `6992179`. The spec question
@@ -403,7 +403,7 @@ On `f54dc05` it fails at its 2 s bound and cleans up (the cleanup always release
 - **The samples are too small** to say whether rates differ.
 - **Nothing was changed for them;** they stay with the owner (open question 1).
 
-## Owner decisions and the snapshot exception (`5676ce6`, replacing `1ad325d`, `5eeb54c`, `2f3b073`, `8ac866e` and `e3c65e6`)
+## Owner decisions and the snapshot exception (`6e46e40`, replacing `1ad325d`, `5eeb54c`, `2f3b073`, `8ac866e`, `e3c65e6` and `5676ce6`)
 
 Tasks: `.plan-execution/tasks/controller-interface-A2-owner-decisions.md` and
 `controller-interface-A2-managed-decision.md`.
@@ -416,12 +416,13 @@ Tasks: `.plan-execution/tasks/controller-interface-A2-owner-decisions.md` and
 Both are documentation only, and neither conflicted. The uncommitted candidate was preserved through
 the second merge (byte-identical to its backup).
 
-**The one dedicated commit: `5676ce6`** (was `5eeb54c` until the watcher fixes, `2f3b073` until the
-boundary fixes, `8ac866e` until the open-observer fixes, then `e3c65e6` until the no-usage check; see "Watcher follow-up fixes",
+**The one dedicated commit: `6e46e40`** (was `5eeb54c` until the watcher fixes, `2f3b073` until the
+boundary fixes, `8ac866e` until the open-observer fixes, `e3c65e6` until the no-usage check, then
+`5676ce6` until the usage-shape fix; see "Watcher follow-up fixes",
 "Watcher boundary fixes" and "Metering-open observer fixes"). It contains `test/conversation-turns/characterization.test.ts`, its snapshot,
 `pair-rule.ts`, `pair-rule.test.ts`, `contract-watch.ts` and `contract-watch.test.ts`; nothing else.
 The text below describes the exception as first consolidated in `5eeb54c`; the watcher checks are
-described as they are now, in `5676ce6`.
+described as they are now, in `6e46e40`.
 - **How it replaced `1ad325d`:** after the final review (`11-12-REVIEW-A2.md` at `72406be`), the
   first exception commit `1ad325d` and its report commit `d7303d8` were replaced so that the
   corrected exception is still a single commit.
@@ -1157,6 +1158,11 @@ Run on the merged head `e1c0f1b`.
 
 ## No-usage check, comparison triage and corrected chronology (in `5676ce6`, replacing `e3c65e6`)
 
+> **Superseded in part by "Usage shapes" (`6e46e40`):** the no-usage rule now accepts only
+> recognized, complete shapes. The rule described below accepted any non-metered status and
+> missing fields. Kept as it was reviewed at `5305c43`; its chronology and comparison triage still
+> stand.
+
 Task: `.plan-execution/tasks/controller-interface-A2-usage-check.md`. Review: `11-12-REVIEW-A2.md`
 at `cc854a2`, metering-open follow-up, against `9273d4a`. Common errors:
 - `errors/11-15-a2-undispatched-metering-usage.md` (finding 1);
@@ -1282,6 +1288,105 @@ byte-identical):**
 | contract-watch tests | 49 pass |
 | characterization + turn-path + pair-rule + contract-watch, three runs without update | 112 pass each (15.9 s, 14.5 s, 15.8 s); snapshot unchanged (SHA-256 `47686d4ca0451cf8…`) |
 | full suite `bun test`, two runs | **1,209 pass, 0 fail; 116 files**, exit 0; 94.3 s and 92.9 s (1,204 + 5); no checkpoint error |
+| `agent-session.ts` | 4,634 lines (unchanged) |
+
+## Usage shapes (in `6e46e40`, replacing `5676ce6`)
+
+Task: `.plan-execution/tasks/controller-interface-A2-usage-shape.md`. Review: `11-12-REVIEW-A2.md`
+at `5305c43`, no-usage follow-up, against `937de8a`. Error file:
+`errors/11-15-a2-unknown-usage-shapes.md`. Nothing in `src/` changed. The snapshot exception is
+unchanged.
+
+**Finding: unknown or incomplete usage shapes were accepted as no usage.**
+- **The old rule:** `attributedUsageProblem` accepted any status other than `metered`, and treated
+  missing counts and totals as zero.
+- **The reviewer's probes**, all fault-injected records (not demonstrated production records),
+  passed `assertRun` on an undispatched turn:
+  - `{status: "unknown_future_status", attributable: {totalTokens: 999}}`;
+  - `{status: "metered", attributable: {}}`;
+  - a `ratedTotal: {}`.
+
+**The rule now** (in `contract-watch.ts`). It establishes no usage only from a recognized, complete
+shape of the library's own types: `MeteringUsageResult` (`src/metering/record.ts`),
+`AttributableUsage` and `PricedTokenAmount` (`src/metering/rating.ts`), `TokenUsage`
+(`src/types.ts`), and `MoneyTotal` / `Money` (`src/metering/money.ts`).
+- **Not metered:** only `usage_unavailable`, `baseline_required` and `counter_reset` are
+  recognized. They need a string `reason` and no `attributable` (that shape has none).
+- **Metered,** with every required field present and zero, and every optional one zero when
+  present:
+  - `attributable.totalTokens`;
+  - `reportedDelta`: a `TokenUsage` with `totalTokens`, `inputTokens` and `outputTokens`, the
+    optional `cached*` / `thought` counters, and no other key;
+  - `input` and `output` (required), and `cachedRead`, `cachedWrite` and `thought` (optional):
+    `PricedTokenAmount`s with `reportedTokens` 0, `pricedTokens` null or 0, and `pricing` null or
+    with a zero `ratedCost`;
+  - `ratedTotal`: a `MoneyTotal` with an `amounts` array of zero `Money` (a numeric zero decimal
+    string and a string currency) and `unaccounted` 0;
+  - `lineItems` absent or empty (the type makes it optional). Non-empty line items fail, because
+    they aren't interpreted.
+- **Anything else fails** as "not established": an unrecognized status, a missing or ill-typed
+  field, or a non-metered result carrying `attributable`.
+- **`reportedCumulative` is still never read,** in either shape. It is the provider's
+  session-cumulative counter, and the type makes it optional when not metered.
+- **The real detached record still passes,** pinned exactly as before (`usage_unavailable` with
+  a string reason).
+- **Where the rule is permissive:** it accepts an empty `lineItems` array and an empty `amounts`
+  array.
+  - The empty `amounts` array is the library's own `EMPTY_MONEY_TOTAL`.
+  - An empty `lineItems` array is allowed by the type, though the type's comment says it is
+    present only for multi-model operations.
+  - Neither can carry usage, so I accept both rather than invent a stricter rule. Not escalated:
+    no spec text bears on it.
+
+**Tests (55 in `contract-watch.test.ts`, 6 more):**
+- **The reviewer's three probes:** at helper level, and through `assertRun` on an undispatched
+  turn, all failing. Also an unknown status with only a reason.
+- **Non-metered results:** without a reason, or carrying `attributable`, fail.
+- **Missing required fields:** each of `totalTokens`, `reportedDelta`, `input`, `output` and
+  `ratedTotal` fails; so does a missing `reportedDelta.outputTokens`, `ratedTotal.unaccounted` or
+  `output.reportedTokens`.
+- **Ill-typed or non-zero fields** fail: a string `totalTokens`; an unknown `reportedDelta` key;
+  `pricedTokens` 5; a non-zero or malformed `pricing`; a `thought` count; a non-numeric amount or
+  missing currency; line items.
+- **Positives:** all three non-metered statuses, with and without a cumulative counter. A metered
+  zero record, minimal or with every optional part present: zero pricing with a `TokenUnitPrice`,
+  `pricedTokens` 0, empty `amounts` and `lineItems`.
+- **Mutation check:** in a temporary copy, each rule was reverted in turn, and tests failed. Then
+  the copy was restored byte for byte:
+  - accepting any status: 2 failed;
+  - missing counts treated as zero: 1 failed;
+  - skipping the rated-total check: 3 failed.
+
+**The comparison is unaffected (no rerun):**
+- **Why the instrumentation is unchanged:** the helper runs only inside `assertRun`, after
+  everything is captured, and the observation code is unchanged since study 6.
+- **Study 6 stays as reported:** 97 of 100 runs passed. The three failed runs (A1 28, A2 23, A2
+  26) remain failed, with the complete-case recount already given.
+- **The checkpoint failure:** still with the owner (open question 6). Its cause is unknown; no
+  clock cause is claimed.
+
+**Consolidation:**
+- **Backup:** the head `937de8a` was kept as branch `controller-interface-pre-usage-shape-937de8a`,
+  and the uncommitted work was saved as a patch outside the repo. No other branch contained
+  `5676ce6`, and nothing was pushed.
+- **The chain was rebuilt with `git commit-tree`, as before:**
+  - exception `6e46e40` on `83114f1`, replacing `5676ce6`;
+  - report `82140ee` (as `47cbcb0`);
+  - merge `7e6a43b`, with parents `82140ee` and beta `5e01135`, replacing `162784d`;
+  - report `8632fb7` (as `937de8a`);
+  - then `git reset --mixed 8632fb7` (working tree untouched), and this report committed after
+    it.
+- **Verified:** each rebuilt commit differs from the one it replaces only in `contract-watch.ts`
+  and `contract-watch.test.ts`. `cffce98` is unchanged, and beta is still an ancestor.
+
+**Gate (`6e46e40`, merged as `7e6a43b`):**
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | clean; test files clean under the temporary tsconfig; `git diff --check` clean |
+| contract-watch tests | 55 pass |
+| characterization + turn-path + pair-rule + contract-watch, three runs without update | 118 pass each (15.7 s, 14.4 s, 15.9 s); snapshot unchanged (SHA-256 `47686d4ca0451cf8…`); once more on the rebuilt head: 118 pass |
+| full suite `bun test`, two runs | **1,215 pass, 0 fail; 116 files**, exit 0; 91.6 s and 96.0 s (1,209 + 6); no checkpoint error |
 | `agent-session.ts` | 4,634 lines (unchanged) |
 
 ## Open questions
