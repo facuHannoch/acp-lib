@@ -1,15 +1,17 @@
 import { expect, test } from "bun:test";
 import { serveWebChat } from "../src/interfaces/web-chat/server.ts";
 import { createChannelHandler } from "../src/interfaces/protocol/local.ts";
-import { createChannelOutputs, deliverTurnOutput } from "../src/interfaces/protocol/output.ts";
-import { createChannelScheduler } from "../src/kernel/channels.ts";
-import { createSharedContextStore } from "../src/state/storage/shared-context.ts";
+import { createChannelOutputs, publishChannelEvent } from "../src/interfaces/protocol/output.ts";
+import { createSession } from "../src/index.ts";
 
 test("LAN chat uses the same agent, requires pairing and delivers notice-started output", async () => {
   const outputs = createChannelOutputs();
-  const agent = createChannelScheduler(createSharedContextStore(), deliverTurnOutput(async (input, mailbox) => {
-    mailbox.drain(); mailbox.finish(); return input.text;
-  }, outputs));
+  const session = createSession({ systemPrompt: "test", configureTurn: input => ({
+    model: async () => ({ role: "assistant", content: input.text, calls: [] }),
+    tools: [], executeTool: async () => "unused",
+  }) });
+  session.subscribe(event => publishChannelEvent(outputs, event));
+  const agent = session.agent;
   const chat = serveWebChat(createChannelHandler(agent, outputs), 0, "test-pairing");
   const base = `http://127.0.0.1:${chat.server.port}`;
   let reader: { cancel(): Promise<void> } | undefined;

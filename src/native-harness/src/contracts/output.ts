@@ -1,4 +1,4 @@
-/** One final result per turn, including turns started by notices. */
+/** One completed assistant message or turn failure, including notice turns. */
 export interface ChannelOutput {
   channelId: string;
   turnId: number;

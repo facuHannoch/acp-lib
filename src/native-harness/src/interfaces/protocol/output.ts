@@ -1,17 +1,12 @@
 import type { ChannelOutput, ChannelOutputs } from "../../contracts/output.ts";
-import type { TurnRunner } from "../../contracts/agent.ts";
+import type { ChannelEvent } from "../../contracts/events.ts";
 
-export function deliverTurnOutput(run: TurnRunner, outputs: ChannelOutputs): TurnRunner {
-  return async (input, mailbox) => {
-    try {
-      const text = await run(input, mailbox);
-      outputs.publish({ channelId: input.channelId, turnId: input.turnId, type: "reply", text });
-      return text;
-    } catch (error) {
-      outputs.publish({ channelId: input.channelId, turnId: input.turnId, type: "error", text: String(error) });
-      throw error;
-    }
-  };
+/** Development clients consume completed messages, never a second final return. */
+export function publishChannelEvent(outputs: ChannelOutputs, { channel, event }: ChannelEvent) {
+  if (event.type === "message_completed") outputs.publish({ channelId: channel, turnId: Number(event.turnId),
+    type: "reply", text: event.parts.map(part => part.text).join("") });
+  if (event.type === "turn_ended" && event.outcome === "failed") outputs.publish({ channelId: channel,
+    turnId: Number(event.turnId), type: "error", text: event.error ?? "Turn failed" });
 }
 
 export function createChannelOutputs(): ChannelOutputs {

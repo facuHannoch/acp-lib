@@ -4,10 +4,12 @@ export interface ChannelInput {
   channelId: string;
   participantId: string;
   text: string;
+  itemId?: string;
 }
 
 /** Shared entity accepting independent, sequential-per-channel turns. */
 export interface Agent {
+  idle(): boolean;
   send(input: ChannelInput): Promise<string>;
   /** Accept without waiting for target inference, avoiding cross-channel deadlocks. */
   notify(notice: ChannelNotice): NoticeReceipt;

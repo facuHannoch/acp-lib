@@ -1,20 +1,21 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createChannelOutputs, deliverTurnOutput } from "../src/interfaces/protocol/output.ts";
+import { createChannelOutputs, publishChannelEvent } from "../src/interfaces/protocol/output.ts";
 import { serveLocal, sendLocal } from "../src/interfaces/protocol/local.ts";
 import { subscribeLocal } from "../src/interfaces/protocol/subscribe.ts";
-import { createChannelScheduler } from "../src/kernel/channels.ts";
-import { createSharedContextStore } from "../src/state/storage/shared-context.ts";
+import { createSession } from "../src/index.ts";
 import type { ChannelOutput } from "../src/contracts/output.ts";
 
 test("channel subscription delivers own and notice-started replies once, isolated by channel", async () => {
   const directory = await mkdtemp("/tmp/harness-output-");
   const socket = `${directory}/agent.sock`;
   const outputs = createChannelOutputs();
-  const agent = createChannelScheduler(createSharedContextStore(), deliverTurnOutput(async (input, mailbox) => {
-    mailbox.drain(); mailbox.finish();
-    return `Answer: ${input.text}`;
-  }, outputs));
+  const session = createSession({ systemPrompt: "test", configureTurn: input => ({
+    model: async () => ({ role: "assistant", content: `Answer: ${input.text}`, calls: [] }),
+    tools: [], executeTool: async () => "unused",
+  }) });
+  session.subscribe(event => publishChannelEvent(outputs, event));
+  const agent = session.agent;
   const server = serveLocal(agent, socket, outputs);
   const received: ChannelOutput[] = [];
   let resolve!: () => void;

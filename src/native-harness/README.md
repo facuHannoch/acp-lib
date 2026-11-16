@@ -10,7 +10,8 @@ An initial in-memory agent, channel queues, terminal clients and tool loop are
 implemented. A separate agent process accepts messages over HTTP on a Unix socket.
 All channels use one shared in-memory context store. Each channel has a sequential
 queue; different channels execute concurrently. It uses OpenRouter native tool calls and includes one harmless
-`current_time`, `dashboard_work` and `notify_channel` tools. There is no complete public session API or stdio protocol yet.
+`current_time`, `dashboard_work` and `notify_channel` tools. An experimental
+in-process client/protocol subset is implemented; stdio is not implemented yet.
 Experiments live in [.res/sandbox/](.res/sandbox/).
 
 We are starting with a small, hands-on learning milestone before delegating the
@@ -242,6 +243,82 @@ result reached the next captured request. No inference or API calls occur.
 Each scripted instance has its own sequential position; use separate instances
 when independent channel scripts are needed. No channel routing, delays or
 conditional script steps are implemented yet.
+
+## Experimental in-process protocol
+
+Run the acceptance scenarios with `bun test test/protocol.test.ts`. They use the
+real session assembly with one independent scripted model per channel and no API
+keys. A host can drive the same setup through public entry points:
+
+```ts
+import { createInProcessHarness } from "./src/testing.ts";
+
+const harness = createInProcessHarness();
+const { client } = harness;
+try {
+  await client.initialize();
+  await client.createSession({
+    sessionId: "example",
+    config: {
+      version: 1,
+      system: "You are a test assistant.",
+      model: { protocol: "scripted", script: "test/fixtures/echo-scenario.json" },
+    },
+    participants: [{ id: "alice", kind: "person" }],
+    channels: {},
+  });
+  const done = new Promise<void>(resolve => {
+    client.onChannelEvent(({ channel, event }) => {
+      console.log(channel, event);
+      if (event.type === "turn_ended") resolve();
+    });
+  });
+  await client.push({ channel: "channel1", item: {
+    id: "message-1", kind: "user_message", sender: "alice",
+    content: [{ type: "text", text: "Echo hello" }],
+  } });
+  await done;
+  console.log(await client.idle());
+} finally { harness.close(); }
+```
+
+`src/client.ts` exports `HarnessClient`, `HarnessClientError`, the in-process
+transport factory and host types. `src/index.ts` exports host-independent
+`createSession`, with injected model/tool implementations. Development startup
+uses the same session assembly with OpenRouter, its tools and inspector wrappers.
+
+The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
+requests are `initialize`, `session/create`, `channel/push` and `session/idle`.
+Initialize explicitly reports an experimental subset, memory-only acceptance and
+no persistence. It supports final text and none/summary/full tool events; no
+callbacks or other subscription fields yet. Full tool events retain JSON argument
+and result strings; a completed tool event means execution returned, which can
+include an actionable `{ ok: false }` result. Thrown execution errors emit failed.
+
+Supported config is `{ version: 1, system, model: { protocol: "scripted", script } }`.
+Participants support IDs and kinds, without labels or policy. Initial `channels`
+must be empty; channels are created on push. Push supports text-only user messages
+with queue delivery and wake=true. Unsupported fields, configurations and methods
+fail explicitly. IDs deduplicate within the in-memory session; reusing an item ID
+for different input fails with `item_conflict`. Unknown senders are recorded as IDs.
+
+Events are `turn_started`, `turn_took`, `tool_call`, `message_completed`, and
+`turn_ended`. Completed assistant text is published immediately after recording,
+including text before tool calls, even if notices extend the turn. Each message
+has an ID and is delivered once; clients no longer republish the final return.
+Only turn lifecycle IDs are strings at the protocol boundary; the experimental
+store still uses numeric turn IDs internally. Per-channel order is guaranteed,
+not ordering across channels. Subscriptions deliver future events, without replay.
+
+Client requests time out after 30 seconds by default (configurable in its
+constructor); closing a client rejects pending requests and removes subscriptions.
+It does not cancel already accepted work. Model exhaustion produces a failed turn
+event after acceptance, not a failed push. Idle includes queued and running work.
+
+This is not full protocol v1 conformance: durable acceptance, session loading and
+restart reconciliation, holds, steering, interruption, permissions, usage,
+streaming, progress heartbeats and stdio remain unimplemented. Protocol version 1
+identifies these experimental message shapes, not a full compatibility claim.
 
 ## Documents
 

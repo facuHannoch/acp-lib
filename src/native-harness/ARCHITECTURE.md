@@ -5,6 +5,9 @@ agent with channel queues, terminal clients and a tool loop exists; current
 behavior is described in [README.md](README.md).
 Existing modules follow the grouped layout below; future folders are created
 only as their implementation begins.
+An experimental in-process protocol subset and typed client now reuse the same
+session assembly as development startup. Its acceptance is memory-only; the
+README lists supported operations and differences from the full protocol spec.
 The detailed
 [project spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-project.md)
 and [v1 spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-v1.md)
@@ -36,6 +39,12 @@ The kernel coordinates extension points, pairs tool results with calls, saves
 progress, emits lifecycle events and honors abort signals. Rendering, provider
 formats, retries, permission rules, compaction and specific tools belong outside
 it. Judgment goes to inference; policy goes to code.
+
+Completed assistant text is a message event independent of turn completion. A
+notice that extends a turn does not suppress an already produced answer. The
+current loop emits messages and tool activity through contracts; the scheduler
+emits turn lifecycle events. Hosts and protocol adapters subscribe outside the
+kernel. `src/index.ts` assembles sessions without starting servers or reading input.
 
 | Extension point | Responsibility |
 | --- | --- |

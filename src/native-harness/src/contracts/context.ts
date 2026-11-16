@@ -1,4 +1,5 @@
 import type { Message } from "./loop.ts";
+import type { LoopEvent } from "./events.ts";
 
 /** Attributed agent experience; system instructions are configuration, not events. */
 export interface ContextEntry {
@@ -25,4 +26,5 @@ export interface TurnContext {
   build(): Message[];
   drainNotices?(): void;
   finish?(): boolean;
+  emit?(event: LoopEvent): void;
 }

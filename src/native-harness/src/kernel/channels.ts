@@ -1,9 +1,12 @@
 import type { Agent, ChannelInput, ChannelNotice, TurnInput, TurnRunner } from "../contracts/agent.ts";
+import type { EventSink } from "../contracts/events.ts";
 import type { SharedContextStore } from "../contracts/context.ts";
 
 /** Channels survive client disconnection, but not process restart. */
-export function createChannelScheduler(store: SharedContextStore, run: TurnRunner): Agent {
+export function createChannelScheduler(store: SharedContextStore, run: TurnRunner, emit: EventSink = () => {}): Agent {
   let nextTurnId = 0;
+  let pending = 0;
+  let nextNoticeId = 0;
   const channels = new Map<string, {
     queue: Promise<void>;
     failed: boolean;
@@ -29,13 +32,24 @@ export function createChannelScheduler(store: SharedContextStore, run: TurnRunne
       message: { role: "user", content: notice ? notice.text : `Participant: ${JSON.stringify(input.participantId)}\n\n${input.text}` } });
     // Chain work per channel, not per agent: other channels can advance while
     // this one awaits a model or tool. Copy input before it enters the queue.
+    pending++;
     const result = current.queue.then(async () => {
-      if (current.failed) throw new Error("Channel stopped after a failed turn; restart the agent to reset it");
+      const turnId = String(accepted.turnId);
+      emit({ channel: accepted.channelId, event: { type: "turn_started", turnId, items: [accepted.itemId ?? `input:${turnId}`] } });
+      if (current.failed) {
+        pending--;
+        const error = "Channel stopped after a failed turn; restart the agent to reset it";
+        emit({ channel: accepted.channelId, event: { type: "turn_ended", turnId, outcome: "failed", error } });
+        throw new Error(error);
+      }
       const active = { input: accepted, notices: [] as ChannelNotice[], accepting: true };
       current.active = active;
-      try { return await run(accepted, {
+      try { const answer = await run(accepted, {
         drain() {
-          for (const notice of active.notices.splice(0)) {
+          const notices = active.notices.splice(0);
+          if (notices.length) emit({ channel: accepted.channelId, event: { type: "turn_took", turnId,
+            items: notices.map(() => `notice:${++nextNoticeId}`) } });
+          for (const notice of notices) {
             store.append({ channelId: accepted.channelId, turnId: accepted.turnId,
               from: `channel:${notice.fromChannelId}`, kind: "channel_notice", sourceChannelId: notice.fromChannelId,
               message: { role: "user", content: notice.text } });
@@ -48,10 +62,19 @@ export function createChannelScheduler(store: SharedContextStore, run: TurnRunne
           active.accepting = false;
           return true;
         },
-      }); }
+      });
+        pending--;
+        emit({ channel: accepted.channelId, event: { type: "turn_ended", turnId, outcome: "completed" } });
+        return answer;
+      }
       // History may contain an unfinished tool exchange. Replaying or rolling
       // back could duplicate side effects, so this channel stops on failure.
-      catch (error) { current.failed = true; throw error; }
+      catch (error) {
+        current.failed = true;
+        pending--;
+        emit({ channel: accepted.channelId, event: { type: "turn_ended", turnId, outcome: "failed", error: String(error) } });
+        throw error;
+      }
       finally { current.active = undefined; }
     });
     // Keep the queue settled after either outcome so queued callers reach the
@@ -61,6 +84,7 @@ export function createChannelScheduler(store: SharedContextStore, run: TurnRunne
   }
 
   const agent: Agent = {
+    idle: () => pending === 0,
     send: input => enqueue(input),
     notify(notice) {
       if (![notice.channelId, notice.fromChannelId, notice.text].every(

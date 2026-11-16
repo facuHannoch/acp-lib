@@ -5,6 +5,7 @@ import type { Inspection } from "./state.ts";
 
 export function observeAgent(agent: Agent, inspection: Inspection): Agent {
   return {
+    idle: () => agent.idle(),
     notify(notice) {
       const receipt = agent.notify(notice);
       if (receipt.accepted && receipt.completion) {
