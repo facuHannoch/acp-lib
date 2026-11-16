@@ -190,6 +190,59 @@ approved, work must stop, and it should notify channel1. Inspect the notice and
 subsequent iterations. Whether the model recognizes the update and chooses to
 stop is behavior to evaluate, not hard-coded cancellation.
 
+## Offline scripted model
+
+Run the real in-memory store, context builder, scheduler and tool loop without a
+model provider or API key:
+
+```sh
+bun run test:scenario test/fixtures/echo-scenario.json "Echo hello"
+```
+
+The command prints JSON containing the final answer, captured model requests,
+recorded context entries and count of unused responses. It starts no servers.
+This is the first test-mode increment, not the stdio protocol implementation.
+Normal `start` still uses the live model and does not register `echo`.
+
+Scenario format:
+
+```json
+{
+  "version": 1,
+  "responses": [
+    {
+      "content": "I'll echo that.",
+      "calls": [
+        { "id": "echo-1", "name": "echo", "arguments": { "text": "hello" } }
+      ]
+    },
+    { "content": "The tool returned hello.", "calls": [] }
+  ]
+}
+```
+
+Each response consumes one model invocation. `content` is a required string or
+null; `calls` defaults to an empty array when omitted. Calls require nonempty
+names, IDs unique within that response, and JSON object arguments. The adapter
+serializes those arguments to the existing neutral tool-call contract. Unknown
+fields and malformed scripts fail before execution. Tool arguments are still
+validated by the executor: for example, `{ "text": 42 }` reaches `echo` and
+returns a tool error that the next model invocation can inspect.
+
+`createScriptedModel(script)` in `src/capabilities/model/scripted.ts` returns
+`{ model, requests(), remaining() }`. `loadScriptedModel(path)` loads the same
+format from disk. Both use the existing `Model` interface. Captured messages and
+tool definitions are copied at invocation time; inspection returns fresh copies.
+Exhausted invocations are captured too. Script errors carry stable codes:
+`invalid_script`, `script_load_failed`, or `script_exhausted`.
+
+Responses are predetermined: the final answer does not prove the model interpreted
+a tool result. Offline tests separately assert that `echo` executed and its actual
+result reached the next captured request. No inference or API calls occur.
+Each scripted instance has its own sequential position; use separate instances
+when independent channel scripts are needed. No channel routing, delays or
+conditional script steps are implemented yet.
+
 ## Documents
 
 - [Architecture](ARCHITECTURE.md): boundaries, extension points and intended layout.

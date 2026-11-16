@@ -7,7 +7,8 @@
     "start": "bun run src/interfaces/cli/main.ts start",
     "chat": "bun run src/interfaces/cli/main.ts chat",
     "typecheck": "tsc --noEmit",
-    "test": "bun test ./test"
+    "test": "bun test ./test",
+    "test:scenario": "bun run src/interfaces/cli/scenario.ts"
   },
   "engines": {
     "bun": ">=1.3.5"
