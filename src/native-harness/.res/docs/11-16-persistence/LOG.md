@@ -236,5 +236,77 @@ acceptance gates.
 
 ## Closure and retrospective
 
-Record the accepted revision, review outcome, verification, follow-ups and
-lessons from the coordination and review cycle here at completion.
+**Accepted behavior revision: `9d9de35417ea43d79387dd272dbc1576ac766868` on
+`aiagent/native-persistence`** (base `93939c3`; parents `7a355ea`, then
+`291abf8`). The closure commit that records this changes only this file.
+
+**Review outcome.** Independent reviewer gro1a-o approved every stage:
+
+| Stage | Approved | Review rounds |
+| --- | --- | --- |
+| 1 contracts | `6fddbe6` | 3 (nine findings, then export/import preconditions) |
+| 2 storage | `f2e7873` | 1 |
+| 3 delivery and recovery | `44fd9d5` | 2 (receipt ordering, message paging) |
+| 4 suspension | `5c61d7b` | 1 |
+| 5 portability | `291abf8` | 3 (transfer failure paths, stalled download) |
+| 6 development integration | `9d9de35` | 1 |
+
+At Stage 6 the reviewer re-ran the gate, not the implementer's claim:
+`bun run typecheck` clean; `bun test ./test` 134 pass, 0 fail, 2020 `expect()`
+calls, 21 files, 31.95 s; checked against SPEC criteria 1 to 14 and both named
+end-to-end scenarios.
+
+**Verification.** All automated checks run offline with scripted models and
+controlled tools, no provider key. Process-level checks use real children
+(`serve --stdio --home`) killed with SIGKILL at exact commit boundaries.
+`test/e2e.test.ts` runs the spec's clean relocation and crash recovery
+scenarios through the public client. The manual inspector exercise is recorded
+above under "Manual development exercise".
+
+**Known limits and follow-ups.**
+- The manual exercise read the inspector through its JSON state and a page
+  fetch, not in a browser; no run used a live provider; the terminal chat and
+  LAN web chat were exercised only by automated tests.
+- Events are not durable and there is no output replay. After a crash, load is
+  the recovery path for committed replies the client missed.
+- A model or tool call in flight at a crash has an uncertain outcome. It is
+  reported, never retried, and never reconciled automatically.
+- Ctrl+C and SIGTERM on `bun run start` are stop, not suspend: running turns
+  are recorded interrupted. Suspension is explicit.
+- The simulated dashboard job is process state and restarts with each process.
+- `session/load` returns turns and items unpaged and fails `transfer_limit`
+  when they exceed one 1 MiB frame; only messages are paged. Archives are
+  capped at 256 MiB.
+- One local owner per session file; no PostgreSQL or multi-server scheduling.
+  Archive import makes a copy, so a host relocating a session must stop the
+  source before resuming the destination.
+- Item signatures cover joined message text, not part boundaries. Participant
+  roles and access rules remain outside persistence.
+- Not in scope and unchanged: historical inspector request snapshots, advanced
+  recall and compaction, policy enforcement, consumer-owned workers.
+
+**Retrospective.**
+- *What helped.* Deciding the contract first (0013) and getting it reviewed
+  alone meant Stages 2 to 6 never reopened a contract question. One storage
+  engine over a small row interface kept the memory and SQLite adapters
+  identical, so one conformance suite found real bugs once. Tests that kill a
+  real process after a named commit made the three crash windows concrete
+  instead of argued. A reviewer who re-ran the gate and probed failure paths
+  (late receipts, stop during suspension, a stalled download) caught defects
+  tests I wrote around the happy path had missed.
+- *Where work stalled or was redone.* Stage 1 took three rounds because the
+  suspension and export rules were stated in prose before they were decidable;
+  the finish-boundary rule changed the loop, the port and two storage methods.
+  Stage 3 recorded Seen before the reply, a window the reviewer found. Stage 5
+  took three rounds on error paths in the transfer file: each fix opened the
+  next hole (an exact read, then a loop on an empty read), because failure
+  handling was added without a test per failure. Two tests raced suspend
+  against releasing a tool and failed once in six runs; repeated full-suite
+  runs found it, not a single green run.
+- *Next cycle.* Write the failure-path test list from the contract before
+  implementing each stage, including "what ends or frees this resource when
+  the operation throws". Run the full suite repeatedly before submitting any
+  process-level stage. State ordering guarantees (reply before receipt, commit
+  before event) as testable assertions in the decision record. Ask for the
+  reviewer's reading of ambiguous contract text before building on it, as was
+  done for the archive bytes.
