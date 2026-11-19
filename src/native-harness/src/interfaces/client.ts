@@ -82,6 +82,9 @@ export class HarnessClient {
       for (let offset = 0, eof = bytes === 0; !eof;) {
         const chunk = await this.request("transfer/read", { transferId: transferId!, offset });
         const part = Buffer.from(chunk.data, "base64");
+        // No progress and no end means the bytes are not there: fail rather
+        // than ask for the same offset forever.
+        if ((!part.length && !chunk.eof) || offset + part.length > bytes) throw new HarnessClientError("invalid_archive", `Archive transfer ended at ${offset} of ${bytes} bytes`);
         archive.set(part, offset); offset += part.length; eof = chunk.eof;
       }
     } finally { await this.request("transfer/close", { transferId: transferId! }).catch(() => {}); }

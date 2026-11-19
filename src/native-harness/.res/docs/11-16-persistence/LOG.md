@@ -171,6 +171,11 @@ acceptance gates.
   read and reports the end only at the announced length; startup cleanup
   removes a transfer file only when its process does not exist (ESRCH), not
   when it cannot be signalled (EPERM).
+- **Stage 5 re-review (reviewer gro1a-o), `9068698`: not approved, one finding.**
+  Fixed next: `exportArchive` fails `invalid_archive` when a read returns no
+  bytes without reaching the end (or more bytes than announced) instead of
+  repeating the offset, and closing a transfer frees its slot before removing
+  its file.
 
 ## Closure and retrospective
 

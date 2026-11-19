@@ -63,7 +63,11 @@ export function createTransfers(directory: string, limits: TransferLimits = TRAN
   let open: { id: string; path: string; upload: boolean; bytes: number; sha256: string; received: number; timer?: ReturnType<typeof setTimeout> } | undefined;
   function close() {
     if (!open) return;
-    clearTimeout(open.timer); rmSync(open.path, { force: true }); open = undefined;
+    // Free the slot first: a failing unlink must not leave the connection
+    // unable to open another transfer.
+    const { path, timer } = open;
+    open = undefined; clearTimeout(timer);
+    rmSync(path, { force: true });
   }
   function begin(upload: boolean, bytes: number, digest: string) {
     if (open) throw new TransferFault("transfer_limit", "Only one transfer may be open per connection");

@@ -3,6 +3,8 @@ import { chmodSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTransfers, TransferFault } from "../src/interfaces/protocol/transfers.ts";
+import { HarnessClient } from "../src/client.ts";
+import type { ClientTransport, RpcRequest, RpcResponse } from "../src/contracts/protocol.ts";
 
 const root = mkdtempSync(join(tmpdir(), "harness-transfers-test-"));
 afterAll(() => { chmodSync(root, 0o700); rmSync(root, { recursive: true, force: true }); });
@@ -71,4 +73,22 @@ test("startup removes only transfer files whose process is gone", () => {
   writeFileSync(join(directory, "session.sqlite"), "x");
   createTransfers(directory, limits).dispose();
   expect(readdirSync(directory).sort()).toEqual([`.transfer-1-left`, `.transfer-${process.pid}-left`, "session.sqlite"].sort());
+});
+
+test("a download that stops making progress fails the export instead of reading the same offset again", async () => {
+  for (const stalled of [{ data: "", eof: false }, { data: Buffer.from("too many bytes").toString("base64"), eof: false }]) {
+    const requests: RpcRequest[] = [];
+    let deliver!: (message: RpcResponse) => void;
+    const transport: ClientTransport = { subscribe(listener) { deliver = listener as typeof deliver; return () => {}; }, onClose: () => () => {}, close() {},
+      send(request) {
+        requests.push(request);
+        const result = request.method === "session/export" ? { bytes: 8, sha256: hash, transferId: "t" } : request.method === "transfer/read" ? stalled : {};
+        queueMicrotask(() => deliver({ jsonrpc: "2.0", id: request.id, result }));
+      } };
+    const client = new HarnessClient(transport, 500);
+    await expect(client.exportArchive()).rejects.toMatchObject({ code: "invalid_archive" });
+    // One read, then the transfer was closed.
+    expect(requests.map(request => request.method)).toEqual(["session/export", "transfer/read", "transfer/close"]);
+    client.close();
+  }
 });
