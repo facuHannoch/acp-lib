@@ -392,8 +392,9 @@ leaves pending input pending, and makes this process refuse further work with
 one UTF-8 JSON document of the logical session (metadata, channels, turns,
 timeline, pending input, deduplication records, checkpoints and ID counters),
 versioned separately from the SQLite schema. It is allowed only when the
-session is cleanly suspended, or running with nothing active or pending;
-otherwise it fails `busy`. The reported length and SHA-256 are those of the
+session is cleanly suspended, or running with no active or checkpointed turn,
+no pending input, and no channel suspending; otherwise it fails `busy`. The
+reported length and SHA-256 are those of the
 file bytes. `session/import` validates the whole document and then publishes
 it atomically as a new session, optionally under a new session ID, without
 opening or resuming it; an existing destination or an invalid archive leaves
