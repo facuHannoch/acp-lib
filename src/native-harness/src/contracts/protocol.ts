@@ -11,7 +11,7 @@ export interface InitializeParams {
 export interface ProtocolConfig {
   version: 1;
   system: string;
-  model: { protocol: "scripted"; script: string };
+  model: import("./config-permissions.ts").ManagedModel;
   defaultPolicy?: string;
   policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }

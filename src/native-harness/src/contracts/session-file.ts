@@ -4,7 +4,7 @@
 export interface PortableSessionConfig {
   version: 1;
   system: string;
-  model: { protocol: "scripted"; script: string };
+  model: import("./config-permissions.ts").ManagedModel;
   /** Present on session files produced after decision 0016. */
   defaultPolicy?: string;
   policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;

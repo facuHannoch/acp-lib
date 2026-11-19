@@ -1,11 +1,13 @@
-/** Decision 0016: a validated, portable scripted session configuration. The
- * script is a destination-side file reference; policy names are exact strings. */
+/** Decisions 0016 and 0017: a validated portable session configuration.
+ * Script files and credential environment variables are destination resources. */
 export type ToolDecision = "allow" | "ask" | "deny";
 export interface ToolPolicy { fallback: ToolDecision; tools: Record<string, ToolDecision> }
+export type ManagedModel = { protocol: "scripted"; script: string }
+  | { protocol: "openrouter"; model: string; apiKeyEnv: string };
 export interface ManagedConfig {
   version: 1;
   system: string;
-  model: { protocol: "scripted"; script: string };
+  model: ManagedModel;
   defaultPolicy: string;
   policies: Record<string, ToolPolicy>;
 }
