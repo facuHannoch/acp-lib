@@ -119,3 +119,25 @@ backlog. The follow-up keeps the resumed turn's executor without setting that
 flag. A reopen regression checks existing and newly accepted inputs remain
 untaken until `start()`, then run exactly once. Implementer handoff: cod1a-m on
 branch `aiagent/cod1a-native-channel-controls`, based on `9cc6892`.
+
+Gro approved Stage 3 at `b7894f0`: independent full suite 173 pass, 0 fail;
+the three Stage 4 type errors remained as agreed.
+
+## Stage 4: protocol and client
+
+The typed client and both transports expose all seven controls and channel
+state. The stdio decoder accepts the two new turn-less event types. The server
+validates requests and translates storage outcomes and IDs; lifecycle decisions
+remain in the scheduler and storage. README and architecture describe the API.
+The shared storage conformance and scheduler tests cover transaction order,
+compatibility and session composition. Public-client tests exercise controls,
+durable reopen, interruption, another channel continuing, and individual
+suspension crash recovery through SQLite stdio as well as in-process parity.
+The scripted public server does not provide a notice tool or a deliberately
+late-returning tool: those cases are covered by the scheduler's controlled rig.
+Existing fault hooks and storage conformance exercise commit boundaries; the
+public tests do not add separate process barriers for every ordering.
+
+Gate submitted for independent review: `bun run typecheck` passes; `bun test
+./test` passes 178 tests, 0 failures, 2569 assertions (22 files, 48.50s), with
+local IPC access for child processes. Review and final acceptance are pending.

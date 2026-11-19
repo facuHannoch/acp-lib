@@ -16,6 +16,9 @@ contract with memory and SQLite adapters; the README lists supported operations
 and differences from the full protocol spec.
 Both in-process and newline-delimited stdio transports are implemented. Stdio
 adds no listeners or execution features; the host retains process ownership.
+Channel lifecycle and targeted turn controls compose with session lifecycle in
+the scheduler and storage; protocol adapters expose those decisions without
+owning them. See [decision 0014](.res/decisions/0014-channel-controls-contract.md).
 The detailed
 [project spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-project.md)
 and [v1 spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-v1.md)

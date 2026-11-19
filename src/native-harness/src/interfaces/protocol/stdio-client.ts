@@ -7,9 +7,13 @@ function message(value: any): value is RpcResponse | RpcNotification | RpcSessio
   if (value.method === "session/event") return value.params?.type === "lifecycle" && Number.isSafeInteger(value.params.revision)
     && ["running", "suspending", "suspended"].includes(value.params.lifecycle);
   if (value.method === "channel/event") {
-    if (typeof value.params?.channel !== "string" || typeof value.params?.event?.turnId !== "string") return false;
+    if (typeof value.params?.channel !== "string" || !value.params?.event) return false;
     if (value.params.revision !== undefined && !Number.isSafeInteger(value.params.revision)) return false;
     const event = value.params.event;
+    if (event.type === "channel_state") return ["open", "suspending", "suspended", "retired"].includes(event.lifecycle)
+      && (event.displayName === undefined || typeof event.displayName === "string");
+    if (event.type === "item_withdrawn") return typeof event.item === "string";
+    if (typeof event.turnId !== "string") return false;
     switch (event.type) {
       case "turn_started": case "turn_took": return strings(event.items);
       case "items_receipt": return strings(event.items) && ["delivered", "seen"].includes(event.milestone);

@@ -345,6 +345,8 @@ The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
 requests are `initialize`, `session/create`, `session/load` (durable servers
 only), `session/messages`, `session/status`, `session/suspend`,
 `session/resume`, `session/stop`, `channel/push` and `session/idle`, plus
+`channel/create`, `channel/edit`, `channel/suspend`, `channel/resume`,
+`channel/delete`, `channel/withdraw` and `channel/interrupt`, plus
 `session/export`, `session/import` and `transfer/{open,write,read,close}` on
 durable servers.
 Initialize reports an experimental subset and whether this server's acceptance
@@ -405,7 +407,16 @@ session, stop the source before resuming the copy: import makes a copy, and
 both would otherwise run the same pending work.
 
 Events are `turn_started`, `turn_took`, `items_receipt`, `tool_call`,
-`message_completed`, `turn_suspended`, `turn_resumed` and `turn_ended`. `turn_started` and `turn_took` list the
+`message_completed`, `turn_suspended`, `turn_resumed`, `channel_state`,
+`item_withdrawn` and `turn_ended`. Channel controls are available as
+`createChannel`, `editChannel`, `suspendChannel`, `resumeChannel`,
+`deleteChannel`, `withdrawItem` and `interruptTurn` on `HarnessClient`. Channel
+suspension closes admission and waits for the current iteration; resume preserves
+its checkpoint. Interrupt targets a turn and does not wait for a tool. Withdrawal
+is durable and reports the owning turn if the input was already taken. Deletion
+requires no pending input or unfinished turn and permanently reserves the ID.
+Status reports channel lifecycle, pending input and `waitingForResume` separately.
+`turn_started` and `turn_took` list the
 item IDs that turn took, which is how an accepted input is matched to its
 outcome. `turn_ended` reports `completed`, `failed` or `interrupted`. Completed assistant text is published immediately after recording,
 including text before tool calls, even if notices extend the turn. Each message

@@ -1,7 +1,7 @@
 import type { ProtocolEndpoint, RpcRequest, RpcResponse, RpcNotification, RpcSessionNotification, ProtocolConfig, Description, Subscription, DurableErrorCode } from "../../contracts/protocol.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import type { SessionArchive, StorageResult, StoredSession } from "../../contracts/storage.ts";
-import { FrameLimit, loadView, pageMessages, wireStatus } from "./load.ts";
+import { FrameLimit, loadView, pageMessages, turnStatus, wireStatus } from "./load.ts";
 import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
 import type { TransferLimits } from "../../contracts/protocol.ts";
 
@@ -64,9 +64,9 @@ export function describe(durable: boolean, archives = false): Description {
     configOptions: [], commands: [], policies: [],
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable,
       methods: ["initialize", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
-        "session/suspend", "session/resume", "session/stop", "channel/push", "session/idle",
+        "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : [])],
-      events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "session/event"] },
+      events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "session/event"] },
   };
 }
 
@@ -206,6 +206,39 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { bytes: bytes.length, sha256, transferId: transfers.offer(bytes, sha256) };
     }
     const session = current.session;
+    if (method.startsWith("channel/") && method !== "channel/push") {
+      const channel = text(p.channel);
+      let result;
+      if (method === "channel/create") {
+        keys(p, ["channel", "displayName"]);
+        result = session.channels.create({ channelId: channel, ...(p.displayName === undefined ? {} : { displayName: text(p.displayName) }) });
+      } else if (method === "channel/edit") {
+        keys(p, ["channel", "displayName"]);
+        result = session.channels.edit(channel, p.displayName === null ? null : text(p.displayName));
+      } else if (method === "channel/suspend") {
+        keys(p, ["channel"]); result = await session.channels.suspend(channel);
+      } else if (method === "channel/resume") {
+        keys(p, ["channel"]); result = session.channels.resume(channel);
+      } else if (method === "channel/delete") {
+        keys(p, ["channel"]); result = session.channels.delete(channel);
+      } else if (method === "channel/withdraw") {
+        keys(p, ["channel", "item"]); const outcome = session.channels.withdraw(channel, text(p.item));
+        if (!outcome.ok) throw new Fault(outcome.error.code, outcome.error.message);
+        const { item } = outcome.value;
+        return { outcome: outcome.value.outcome, item: { id: item.itemId, channel: item.channelId, kind: item.kind, sender: item.senderId, milestone: item.milestone,
+          ...(item.turnId === undefined ? {} : { turnId: String(item.turnId) }) },
+          ...(outcome.value.outcome === "withdrawn" ? { repeated: outcome.value.repeated } : {}) };
+      } else {
+        keys(p, ["channel", "turn", "reason"]); const rawTurn = text(p.turn), turn = Number(rawTurn);
+        if (!Number.isSafeInteger(turn) || turn < 1 || String(turn) !== rawTurn) bad("Expected a turn ID");
+        const outcome = session.channels.interrupt(channel, turn, p.reason === undefined ? undefined : text(p.reason));
+        if (!outcome.ok) throw new Fault(outcome.error.code, outcome.error.message);
+        return { interrupted: outcome.value.interrupted, turn: turnStatus(outcome.value.turn) };
+      }
+      if (!result.ok) throw new Fault(result.error.code, result.error.message);
+      const status = wireStatus(session.status(), session.snapshot()).channels.find(value => value.channel === channel)!;
+      return { channel: status, ...(method === "channel/create" ? { created: (result.value as { created: boolean }).created } : {}) };
+    }
     if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() }; }
     if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.snapshot()); }
     if (method === "session/suspend" || method === "session/resume") {

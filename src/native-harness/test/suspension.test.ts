@@ -37,6 +37,72 @@ function place(transport: "in-process" | "stdio") {
     open: () => transport === "stdio" ? spawnHarness({ home, effects }) : createInProcessHarness({ adapter, effects }) };
 }
 
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: channel controls persist and expose independent state`, async () => {
+  const { effects, release, open } = place(transport);
+  const first = open();
+  try {
+    const init = await first.client.initialize();
+    expect(init.description.capabilities.methods).toContain("channel/interrupt");
+    await first.client.createSession(setup);
+    const seen = watch(first.client);
+    expect(await first.client.createChannel({ channel: "idle", displayName: "Idle" })).toMatchObject({ created: true, channel: { lifecycle: "open", displayName: "Idle" } });
+    expect(await first.client.editChannel({ channel: "idle", displayName: "Renamed" })).toMatchObject({ channel: { displayName: "Renamed" } });
+    expect(await first.client.deleteChannel({ channel: "idle" })).toMatchObject({ channel: { lifecycle: "retired" } });
+    await expect(first.client.createChannel({ channel: "idle" })).rejects.toMatchObject({ code: "channel_retired" });
+    await first.client.push(push("a", "a1", "start"));
+    await until(() => lines(effects).includes("start:k"), "alice tool");
+    await first.client.push(push("a", "withdraw", "remove"));
+    await first.client.push(push("a", "a2", "pending"));
+    expect(await first.client.withdrawItem({ channel: "a", item: "withdraw" })).toMatchObject({ outcome: "withdrawn", item: { milestone: "withdrawn" } });
+    const suspended = first.client.suspendChannel({ channel: "a" });
+    await until(async () => (await first.client.status()).channels.find(c => c.channel === "a")?.lifecycle === "suspending", "channel suspension");
+    await expect(first.client.push(push("a", "late", "late"))).rejects.toMatchObject({ code: "channel_suspended" });
+    await expect(first.client.deleteChannel({ channel: "a" })).rejects.toMatchObject({ code: "channel_busy" });
+    await first.client.push(push("b", "b1", "bob"));
+    await until(() => lines(effects).filter(line => line === "start:k").length === 2, "bob tool");
+    await first.client.interruptTurn({ channel: "b", turn: "2" });
+    await first.client.push(push("b", "b2", "bob continues"));
+    await until(() => seen.channel.some(e => e.channel === "b" && e.event.type === "turn_ended" && e.event.outcome === "completed"), "bob completes while alice suspends");
+    release();
+    expect(await suspended).toMatchObject({ channel: { lifecycle: "suspended", waitingForResume: true, pending: ["a2"] } });
+    expect(seen.types("a")).toContain("item_withdrawn");
+  } finally { await first.close(); }
+  const second = open();
+  try {
+    await second.client.initialize();
+    const loaded = await second.client.loadSession({ sessionId: "paused", config });
+    expect(loaded.status.channels).toEqual(expect.arrayContaining([expect.objectContaining({ channel: "a", lifecycle: "suspended", waitingForResume: true }), expect.objectContaining({ channel: "idle", lifecycle: "retired" })]));
+    expect(await second.client.push(push("a", "withdraw", "remove"))).toMatchObject({ duplicate: true, item: { milestone: "withdrawn" } });
+    expect(await second.client.interruptTurn({ channel: "a", turn: "1" })).toMatchObject({ interrupted: false, turn: { state: "suspended" } });
+    const seen = watch(second.client);
+    await second.client.resumeChannel({ channel: "a" });
+    await until(() => seen.types("a").includes("turn_ended"), "resumed turn");
+    const after = await second.client.loadSession({ sessionId: "paused", config });
+    expect(after.turns[0]).toMatchObject({ state: "completed", items: ["a1", "a2"] });
+    expect(lines(effects).filter(line => line === "start:k")).toHaveLength(2);
+    expect(await second.client.withdrawItem({ channel: "a", item: "a2" })).toMatchObject({ outcome: "taken", item: { turnId: "1" } });
+    await expect(second.client.push(push("idle", "new", "no"))).rejects.toMatchObject({ code: "channel_retired" });
+  } finally { await second.close(); }
+}, 20000);
+
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: targeted interruption leaves a later turn alone`, async () => {
+  const { effects, release, open } = place(transport), harness = open();
+  try {
+    await harness.client.initialize(); await harness.client.createSession(setup);
+    const seen = watch(harness.client);
+    await harness.client.push(push("a", "a1", "first"));
+    await until(() => lines(effects).includes("start:k"), "first tool");
+    await harness.client.push(push("a", "a2", "second"));
+    expect(await harness.client.interruptTurn({ channel: "a", turn: "1" })).toMatchObject({ interrupted: true, turn: { state: "interrupted", uncertainCalls: ["hold-1"] } });
+    await until(() => seen.channel.some(e => e.event.type === "turn_started" && e.event.turnId === "2"), "second turn");
+    expect(await harness.client.interruptTurn({ channel: "a", turn: "1" })).toMatchObject({ interrupted: false });
+    release();
+    await until(() => seen.channel.some(e => e.event.type === "turn_ended" && e.event.turnId === "2"), "second turn completion");
+    const loaded = await harness.client.loadSession({ sessionId: "paused", config });
+    expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted" }, { turnId: "2", state: "completed", items: ["a2"] }]);
+  } finally { await harness.close(); }
+}, 20000);
+
 for (const transport of ["in-process", "stdio"] as const) test(`${transport}: two active channels suspend at their iteration boundary, stay paused across reopen, and resume without repeating work`, async () => {
   const { effects, release, open } = place(transport);
   const first = open();

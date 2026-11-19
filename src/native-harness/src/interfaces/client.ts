@@ -103,6 +103,13 @@ export class HarnessClient {
   /** Resolves when the input is accepted (Received), never with a reply. Follow
    * `turn_started`/`turn_took` for the item ID to find the turn that took it. */
   push(params: PushParams) { return this.request("channel/push", params); }
+  createChannel(params: Calls["channel/create"]["params"]) { return this.request("channel/create", params); }
+  editChannel(params: Calls["channel/edit"]["params"]) { return this.request("channel/edit", params); }
+  suspendChannel(params: Calls["channel/suspend"]["params"]) { return this.request("channel/suspend", params); }
+  resumeChannel(params: Calls["channel/resume"]["params"]) { return this.request("channel/resume", params); }
+  deleteChannel(params: Calls["channel/delete"]["params"]) { return this.request("channel/delete", params); }
+  withdrawItem(params: Calls["channel/withdraw"]["params"]) { return this.request("channel/withdraw", params); }
+  interruptTurn(params: Calls["channel/interrupt"]["params"]) { return this.request("channel/interrupt", params); }
   idle() { return this.request("session/idle", {}); }
   onChannelEvent(listener: EventSink) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   onSessionEvent(listener: SessionEventSink) { this.sessionListeners.add(listener); return () => { this.sessionListeners.delete(listener); }; }

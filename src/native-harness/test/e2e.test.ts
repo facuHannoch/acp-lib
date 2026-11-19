@@ -23,7 +23,29 @@ function watch(harness: ReturnType<typeof spawnHarness>) {
   return events;
 }
 const texts = (events: ChannelEvent[]) => events.flatMap(event => event.event.type === "message_completed" ? [event.event.parts[0]!.text] : []);
-const taken = (events: ChannelEvent[]) => events.flatMap(event => event.event.type === "turn_started" || event.event.type === "turn_took" ? event.event.items.map(item => `${item}@${event.event.turnId}`) : []);
+const taken = (events: ChannelEvent[]) => events.flatMap(({ event }) => event.type === "turn_started" || event.type === "turn_took" ? event.items.map(item => `${item}@${event.turnId}`) : []);
+
+test("crash during individual suspension reopens the channel and preserves pending input", async () => {
+  const config: ProtocolConfig = { version: 1, system: "Crash during channel suspension", model: { protocol: "scripted", script: fixture("hold-scenario.json") } };
+  const home = mkdtempSync(join(root, "channel-crash-")), effects = join(home, "effects.log");
+  const first = spawnHarness({ home, effects, fault: "beginChannelSuspend:1" });
+  await first.client.initialize(); await first.client.createSession({ sessionId: "crash", config, participants: [], channels: {} });
+  await first.client.push(push("a", "a1", "start"));
+  await until(() => lines(effects).includes("start:k"), "tool start");
+  await first.client.push(push("a", "a2", "pending"));
+  void first.client.suspendChannel({ channel: "a" }).catch(() => {});
+  expect(await first.child.exited).not.toBe(0);
+  first.client.close();
+  const second = spawnHarness({ home, effects });
+  try {
+    await second.client.initialize();
+    const loaded = await second.client.loadSession({ sessionId: "crash", config });
+    expect(loaded.status.channels).toMatchObject([{ channel: "a", lifecycle: "open", pending: ["a2"] }]);
+    expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", items: ["a1"], uncertainCalls: ["hold-1"] }]);
+    expect(loaded.items.find(item => item.id === "a2")).toMatchObject({ milestone: "received" });
+    await second.client.push(push("a", "a3", "new work"));
+  } finally { await second.close(); }
+}, 20000);
 
 test("clean relocation: suspend with a tool running, export, import into a fresh home, verify, then resume exactly once", async () => {
   const config: ProtocolConfig = { version: 1, system: "Relocation system", model: { protocol: "scripted", script: fixture("hold-scenario.json") } };
