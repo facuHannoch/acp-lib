@@ -37,7 +37,8 @@ checkpoint survival from the two states. Chosen: (b), no owner marker.
 - **Withdraw.** Pending `received` becomes terminal `withdrawn` (new
   `ItemMilestone`): not pending, no turn, no timeline entry, kept for dedup, so a
   retry with the same ID and payload returns it withdrawn. If take committed first
-  the result is `taken` with the turn ID and nothing changes. Messages only.
+  the result is `taken` with the turn ID and nothing changes. Messages and notices
+  alike (a pending notice would otherwise block delete).
 - **Interrupt** names `(channelId, turnId)`. Only `running` is interrupted; a
   checkpointed or ended turn returns `interrupted: false` and is untouched, so a
   stale ID cannot reach a newer turn. A `suspending` channel is `suspended` in the
@@ -52,8 +53,10 @@ checkpoint survival from the two states. Chosen: (b), no owner marker.
   Pending work on a suspended channel is `waitingForResume` and does not make
   `execution` `working`.
 - **Export/import.** Running-session export also requires no checkpointed turn
-  and no `suspending` channel. Import rejects `suspending` channels and other
-  states `open` would interrupt.
+  and no `suspending` channel. Import rejects `suspending` channels, a running or
+  checkpointed turn on a retired channel, and other states `open` would interrupt;
+  `resume()` and `resumeChannel` never run a retired channel's turn. Interrupt
+  without a reason stores `"interrupted by request"`.
 
 ## Compatibility and verification
 

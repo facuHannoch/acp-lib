@@ -40,3 +40,11 @@ no owner marker has to be kept consistent.
 Format 2 databases open and are upgraded in the recovery transaction; archive
 version 1 imports; existing channels are `open` with no individual suspension;
 session-wide suspension and its checkpoints resume as before. See decision 0014.
+
+### Stage 1 review round 1 (gro1a-o, `1f90c97` not approved)
+
+Fixed in the next commit: withdraw covers notices; snapshot items include withdrawn
+items; retired channels' turns are rejected on import and never resumed
+(`resume()`, `resumeChannel`); wire export and stop comments match storage; omitted
+interrupt reason is `"interrupted by request"`. The red full typecheck is accepted
+until Stage 4's gate.

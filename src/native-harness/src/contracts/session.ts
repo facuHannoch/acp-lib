@@ -74,11 +74,12 @@ export interface ChannelControls {
   /** Retire the channel when it has no active or checkpointed turn and nothing
    * pending (`channel_busy` otherwise). The ID is reserved; history is kept. */
   delete(channelId: string): ControlResult<ChannelStatus>;
-  /** Withdraw an untaken message. `taken` names the owning turn when take won. */
+  /** Withdraw an untaken message or notice. `taken` names the owning turn when take won. */
   withdraw(channelId: string, itemId: string): ControlResult<WithdrawOutcome>;
   /** Interrupt exactly this turn, aborting its signal and ending it without
    * waiting for its inference or tools; late results are fenced. `interrupted:
-   * false` for a checkpointed or ended turn, which is left untouched. */
+   * false` for a checkpointed or ended turn, which is left untouched. When
+   * `reason` is omitted the stored reason is exactly `"interrupted by request"`. */
   interrupt(channelId: string, turnId: number, reason?: string): ControlResult<InterruptOutcome>;
 }
 

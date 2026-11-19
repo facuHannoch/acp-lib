@@ -185,7 +185,9 @@ export interface StorageSnapshot {
   participants: StoredParticipant[];
   /** Ordered by turn ID. */
   turns: StoredTurn[];
-  /** Pending and taken items, ordered by acceptedSeq. Retained for deduplication. */
+  /** Pending, taken and withdrawn items, ordered by acceptedSeq. Retained for
+   * deduplication. A withdrawn item has no turn link and no timeline entry; it
+   * survives export, import and reopen so a retry cannot revive it. */
   items: StoredItem[];
   /** All entries in increasing seq order, suitable for the context builder. */
   timeline: TimelineEntry[];
@@ -332,11 +334,12 @@ export interface SessionStorage {
    * neither delay nor are changed by this call. */
   completeSuspend(): StorageResult<StoredSession>;
 
-  /** suspended -> running; every suspended turn whose channel is not itself
-   * `suspended` returns to running in the same transaction and is returned for
+  /** suspended -> running; every suspended turn whose channel is neither itself
+   * `suspended` nor `retired` returns to running in the same transaction and is returned for
    * continuation. Turns of individually suspended channels stay checkpointed:
    * they wait for `resumeChannel`, and a key mismatch on them does not block
-   * this call. `incompatible`, writing nothing (lifecycle, checkpoints and
+   * this call. A turn on a retired channel (only possible in unvalidated data)
+   * is left unchanged and never blocks this call. `incompatible`, writing nothing (lifecycle, checkpoints and
    * pending items all unchanged), if any turn being resumed has a
    * compatibilityKey different from the key passed to this open. Already running
    * returns no turns; `suspending` is `invalid_state`. */
@@ -384,7 +387,9 @@ export interface SessionStorage {
   beginChannelSuspend(channelId: string): StorageResult<StoredChannel>;
 
   /** Clear the channel's individual suspension. `open` returns unchanged;
-   * `suspending` is `invalid_state` (retry after it settles). `suspended` becomes
+   * `suspending` is `invalid_state` (retry after it settles). A retired ID is
+   * `channel_retired` and `not_found` an unknown one, both writing nothing.
+   * `suspended` becomes
    * `open`; if the channel holds a checkpointed turn and the session lifecycle
    * is `running`, that turn returns to running in the same transaction and is
    * returned, under its original ID, for continuation: `incompatible`, writing
@@ -405,15 +410,15 @@ export interface SessionStorage {
    * session lifecycle and from `suspended`. */
   deleteChannel(channelId: string): StorageResult<StoredChannel>;
 
-  /** Withdraw a pending participant message of this channel. Competes with
+  /** Withdraw a pending input of this channel, message or notice alike. Competes with
    * `beginTurn`/`takePending` by commit order. Pending (`received`) becomes
    * `withdrawn`: out of pending delivery and out of the timeline, durable across
    * reopen, and a later `acceptItem` retry of the same ID returns it still
    * withdrawn. An item already taken (or later) returns `taken` with its turn ID
    * and changes nothing. Repeating a withdrawal returns `repeated: true`.
-   * `not_found` if the item is unknown or belongs to another channel; a notice
-   * is `invalid_input`. Allowed in every lifecycle state, so a suspended
-   * channel's backlog can be cleared. */
+   * `not_found` if the item is unknown or belongs to another channel. Allowed in
+   * every lifecycle state, so a suspended channel's backlog (which blocks
+   * deletion) can be cleared. */
   withdrawItem(channelId: string, itemId: string): StorageResult<WithdrawOutcome>;
 
   /** Interrupt this specific turn, unconditionally and without waiting for its
@@ -482,7 +487,8 @@ export interface SessionStorageAdapter {
    * `invalid_archive`: open would interrupt its checkpoints as an unclean exit.
    * So is a `suspending` channel, a checkpointed turn on a non-`suspended`
    * channel while the session is `running`, a withdrawn item with a turn link,
-   * and a pending item on a retired channel. Version 1 archives (the persistence
+   * a pending item on a retired channel, and, in every session lifecycle, a
+   * running or checkpointed turn on a retired channel. Version 1 archives (the persistence
    * revision) import as channels `open` and unnamed; version 2 preserves
    * channel lifecycle, names, withdrawn items and retired IDs.
    * Any failure leaves no partial session. The result is not opened or owned. */

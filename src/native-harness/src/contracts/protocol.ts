@@ -124,10 +124,14 @@ export interface DurableMethods {
   "session/suspend": { params: Record<string, never>; result: StatusResult };
   /** Explicit; fails `incompatible` without consuming input or checkpoints. */
   "session/resume": { params: Record<string, never>; result: StatusResult };
-  /** Immediate stop; active turns, including turns checkpointed by an
-   * unfinished suspension, are reported interrupted. Stdin EOF does the same. */
+  /** Immediate stop; running turns and checkpoints from an unfinished session
+   * suspension are reported interrupted. A checkpoint committed by an individual
+   * channel suspension is kept, and a still-suspending channel returns to
+   * `open`. Stdin EOF does the same. */
   "session/stop": { params: Record<string, never>; result: StatusResult };
-  /** Allowed when idle with nothing pending, or suspended; else `busy`. For
+  /** Allowed when suspended, or when running with no running turn, nothing
+   * pending, no checkpointed turn and no suspending channel; else `busy`. A
+   * suspended channel with neither checkpoint nor backlog does not block. For
    * `transfer` the result names a readable transfer. */
   "session/export": { params: { to: ArchiveLocation }; result: { bytes: number; sha256: string; transferId?: string } };
   /** Validate fully, then publish atomically into a fresh home. Does not load,
@@ -152,13 +156,15 @@ export interface DurableMethods {
   /** Retires the ID. `channel_busy` while a turn is active or checkpointed or
    * input is pending. */
   "channel/delete": { params: { channel: string }; result: { channel: ChannelStatusResult } };
-  /** `taken` is the other side of the race with take and names the turn. */
+  /** `taken` is the other side of the race with take and names the turn.
+   * Messages and notices alike. */
   "channel/withdraw": { params: { channel: string; item: string };
     result: { outcome: "withdrawn" | "taken"; item: ItemStatus; repeated?: boolean } };
   /** Targets one turn. `interrupted: false` for a checkpointed or ended turn,
    * which is left as it is; `turn` is its current status. */
   "channel/interrupt": { params: { channel: string; turn: string; reason?: string };
     result: { interrupted: boolean; turn: TurnStatus } };
+  // `reason` omitted: the stored reason is exactly "interrupted by request".
   "transfer/open": { params: { bytes: number; sha256: string }; result: { transferId: string; limits: TransferLimits } };
   /** Offsets are sequential; a gap, overrun or oversize chunk is `transfer_limit`. */
   "transfer/write": { params: { transferId: string; offset: number; data: string }; result: { received: number } };
