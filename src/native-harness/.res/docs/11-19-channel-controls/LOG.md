@@ -78,3 +78,35 @@ of the new records, archive v1 import, invalid archives. SQLite only: format 2
 fixture built from the verbatim old schema (suspended and unclean), failed
 upgrade leaves the file byte-identical, retired channel holding a checkpoint is
 left by `resume()`.
+
+## Stage 3: scheduler
+
+`kernel/channels.ts` gains `ChannelControls` (create, edit, suspend, resume,
+delete, withdraw, interrupt) and `index.ts` exposes it as `session.channels`.
+Storage still decides every race; the scheduler only reacts to commits.
+- A channel suspension is a pending promise per channel, settled by the commit that
+  checkpoints, completes, fails or interrupts its turn (`settleChannel`), which is
+  also when `channel_state` is published. `checkpoint()` now stops a turn at its
+  boundary for either suspension.
+- Interrupt commits first, then aborts the turn's signal and frees its slot, so the
+  channel's pending input can start the next turn while the old tool is still
+  running; the old turn's late result is refused by storage (`invalid_state`) and
+  unwinds. A stale interrupt is a storage no-op.
+- Session `resume()` re-reads the pending set from open channels only; an
+  individually suspended channel keeps its checkpoint and backlog and does not keep
+  the session from reporting idle. `resumeChannel` starts a returned checkpoint
+  turn even before `start()` (storage already marked it running).
+- `stop` returns an uncommitted channel suspension to `open` and answers its caller
+  `stopped`.
+- Status adds `lifecycle`, `displayName`, `waitingForResume`; a backlog on a
+  suspended channel does not make `execution` `working`.
+
+Gate: `test/channel-controls.test.ts` (8 tests, 8 clean repeats): Alice suspends
+with Bob running, rejects input and notices, survives a reopen and takes her
+backlog once with the recorded tool not rerun; interrupt with a late-returning
+tool and stale retries; interrupt vs checkpoint on both sides during suspension;
+session suspend/resume around a suspended channel and channel resume during
+session suspension; withdraw vs take; create/edit/suspend/delete and retired IDs
+across reopen; stop during channel suspension. `bun test ./test`: 172 pass, 0
+fail. Typecheck errors remain only in `interfaces/protocol/load.ts`,
+`test/agent.test.ts`, `test/e2e.test.ts` (Stage 4).

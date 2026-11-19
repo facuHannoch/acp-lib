@@ -64,7 +64,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   const scheduler = createChannelScheduler(store, options.wrapTurn?.(run) ?? run, emit, lifecycle.publish);
   agent = scheduler.agent;
   return {
-    agent,
+    agent, channels: scheduler.channels,
     store: { snapshot: () => read().timeline, subscribe: listener => changes.subscribe(listener) },
     snapshot: read, status: scheduler.status, start: scheduler.start,
     suspend: scheduler.suspend, resume: scheduler.resume, stop: scheduler.stop,

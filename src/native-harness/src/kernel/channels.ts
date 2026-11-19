@@ -1,10 +1,11 @@
 import type { ActiveTurn, ChannelInput, ChannelNotice, SendResult, SessionAgent, TurnExecutor, TurnPort } from "../contracts/agent.ts";
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
-import type { LifecycleResult, SessionStatus } from "../contracts/session.ts";
-import type { AcceptItem, SessionLifecycle, SessionStorage, StorageSnapshot, StoredTurn } from "../contracts/storage.ts";
+import type { ChannelControls, ChannelStatus, ControlResult, LifecycleResult, SessionStatus } from "../contracts/session.ts";
+import type { AcceptItem, SessionLifecycle, SessionStorage, StorageError, StorageResult, StorageSnapshot, StoredTurn } from "../contracts/storage.ts";
 
 export interface ChannelScheduler {
   agent: SessionAgent;
+  channels: ChannelControls;
   start(): void;
   suspend(): Promise<LifecycleResult>;
   resume(): LifecycleResult;
@@ -15,17 +16,24 @@ export interface ChannelScheduler {
 /** Status is a pure reading of one snapshot plus this process's own state. */
 export function sessionStatus(view: StorageSnapshot, stopped: boolean): SessionStatus {
   const working = view.turns.some(turn => turn.state.status === "running");
-  const pending = view.items.some(item => item.milestone === "received");
+  // Input pending on a channel that cannot run (suspended, suspending) is waiting
+  // for a resume, not execution.
+  const open = new Set(view.channels.filter(channel => channel.lifecycle === "open").map(channel => channel.channelId));
+  const pending = view.items.some(item => item.milestone === "received" && open.has(item.channelId));
+  const sessionRuns = view.session.lifecycle === "running";
   return {
     sessionId: view.session.sessionId, revision: view.revision, lifecycle: view.session.lifecycle,
     execution: stopped ? "stopped" : view.session.lifecycle !== "running" ? view.session.lifecycle : working || pending ? "working" : "idle",
-    channels: view.channels.map(({ channelId }) => {
+    channels: view.channels.map(({ channelId, displayName, lifecycle }) => {
       const turns = view.turns.filter(turn => turn.channelId === channelId), last = turns.at(-1);
       const live = turns.find(turn => turn.state.status === "running" || turn.state.status === "suspended");
+      const pendingItemIds = view.items.filter(item => item.channelId === channelId && item.milestone === "received").map(item => item.itemId);
       return {
-        channelId,
+        channelId, ...(displayName === undefined ? {} : { displayName }), lifecycle,
         ...(live ? { activeTurn: { turnId: live.turnId, status: live.state.status as "running" | "suspended" } } : {}),
-        pendingItemIds: view.items.filter(item => item.channelId === channelId && item.milestone === "received").map(item => item.itemId),
+        pendingItemIds,
+        waitingForResume: (pendingItemIds.length > 0 || live?.state.status === "suspended")
+          && (lifecycle === "suspending" || lifecycle === "suspended" || !sessionRuns),
         ...(last && (last.state.status === "failed" || last.state.status === "interrupted")
           ? { unresolvedInterruption: { turnId: last.turnId, ...last.state } } : {}),
       };
@@ -47,12 +55,38 @@ export function createChannelScheduler(
   let started = false, stopped = false;
   let lifecycle: SessionLifecycle = "running";
   let suspension: { promise: Promise<LifecycleResult>; settle(result: LifecycleResult): void } | undefined;
+  // Individual channel suspensions begun by this process and not yet committed
+  // as `suspended`. Storage holds the truth; this holds the waiting callers.
+  const channelSuspensions = new Map<string, { promise: Promise<ControlResult<ChannelStatus>>; settle(result: ControlResult<ChannelStatus>): void }>();
   const view = () => { const read = storage.snapshot(); if (!read.ok) throw new Error(read.error.message); return read.value; };
   const status = () => sessionStatus(view(), stopped);
-  {
-    const initial = view();
-    lifecycle = initial.session.lifecycle;
-    for (const item of initial.items) if (item.milestone === "received") waiting.add(item.channelId);
+  /** Channels whose pending input this process may start: open ones only. A
+   * suspended channel's backlog waits for its own resume and is not "waiting"
+   * here, so it never keeps the session from reporting idle. */
+  function rescan() {
+    const current = view();
+    lifecycle = current.session.lifecycle;
+    waiting.clear();
+    const open = new Set(current.channels.filter(channel => channel.lifecycle === "open").map(channel => channel.channelId));
+    for (const item of current.items) if (item.milestone === "received" && open.has(item.channelId)) waiting.add(item.channelId);
+  }
+  rescan();
+  const channelStatus = (channelId: string): ChannelStatus => status().channels.find(channel => channel.channelId === channelId)!;
+  const emitState = (channelId: string, revision: number) => {
+    const channel = channelStatus(channelId);
+    // A channel that is not open has no input this process may start.
+    if (channel.lifecycle !== "open") waiting.delete(channelId);
+    emit({ channel: channelId, revision, event: { type: "channel_state", lifecycle: channel.lifecycle,
+      ...(channel.displayName === undefined ? {} : { displayName: channel.displayName }) } });
+  };
+  /** A commit just ended or checkpointed this channel's turn: if its individual
+   * suspension completed in that same transaction, announce it and answer the caller. */
+  function settleChannel(channelId: string, revision: number) {
+    const waiter = channelSuspensions.get(channelId);
+    if (!waiter || channelStatus(channelId).lifecycle === "suspending") return;
+    channelSuspensions.delete(channelId);
+    emitState(channelId, revision);
+    waiter.settle({ ok: true, value: channelStatus(channelId), revision });
   }
   const ended = (turn: StoredTurn, revision: number) => {
     if (turn.state.status !== "failed" && turn.state.status !== "interrupted") return;
@@ -64,6 +98,9 @@ export function createChannelScheduler(
   function pump(channelId: string) {
     if (!started || stopped || lifecycle !== "running" || live.has(channelId)) return;
     const begun = storage.beginTurn(channelId);
+    // A suspended or retired channel is not ours to start; its backlog stays
+    // pending until its own resume re-queues it.
+    if (!begun.ok && (begun.error.code === "channel_suspended" || begun.error.code === "channel_retired")) { waiting.delete(channelId); return; }
     if (!begun.ok || !begun.value) { if (begun.ok) waiting.delete(channelId); return; }
     waiting.delete(channelId);
     emit({ channel: channelId, revision: begun.revision, event: { type: "turn_started", turnId: String(begun.value.turn.turnId),
@@ -83,7 +120,7 @@ export function createChannelScheduler(
       signal: abort.signal,
       take() {
         const taken = storage.takePending(turnId);
-        if (!taken.ok) { if (taken.error.code !== "not_running") fenced(taken.error.message); return; }
+        if (!taken.ok) { if (taken.error.code !== "not_running" && taken.error.code !== "channel_suspended") fenced(taken.error.message); return; }
         waiting.delete(channelId);
         if (taken.value.items.length) emit({ channel: channelId, revision: taken.revision,
           event: { type: "turn_took", turnId: String(turnId), items: taken.value.items.map(item => item.itemId) } });
@@ -101,14 +138,18 @@ export function createChannelScheduler(
         if (!finished.value.finished) return false;
         release();
         emit({ channel: channelId, revision: finished.revision, event: { type: "turn_ended", turnId: String(turnId), outcome: "completed" } });
+        settleChannel(channelId, finished.revision);
         return true;
       },
       checkpoint() {
-        if (lifecycle !== "suspending") return false;
+        // Either suspension stops the turn at this boundary; storage completes the
+        // channel's own suspension in the same commit as the checkpoint.
+        if (lifecycle !== "suspending" && !channelSuspensions.has(channelId)) return false;
         const saved = storage.checkpointTurn(turnId);
         if (!saved.ok) return fenced(saved.error.message);
         release();
         emit({ channel: channelId, revision: saved.revision, event: { type: "turn_suspended", turnId: String(turnId) } });
+        settleChannel(channelId, saved.revision);
         return true;
       },
     };
@@ -119,7 +160,7 @@ export function createChannelScheduler(
       // channel stays usable.
       const failed = storage.finishTurn(turnId, { status: "failed", reason: String(error) });
       release();
-      if (failed.ok && failed.value.finished) ended(failed.value.turn, failed.revision);
+      if (failed.ok && failed.value.finished) { ended(failed.value.turn, failed.revision); settleChannel(channelId, failed.revision); }
     }).then(() => {
       release();
       settleSuspension();
@@ -141,7 +182,7 @@ export function createChannelScheduler(
     if (!result.ok) {
       const code = result.error.code;
       return { accepted: false, error: result.error.message, code: code === "invalid_input" || code === "item_conflict"
-        || code === "not_running" || code === "not_found" ? code : "storage_failure" };
+        || code === "not_running" || code === "not_found" || code === "channel_suspended" || code === "channel_retired" ? code : "storage_failure" };
     }
     const { item: stored, duplicate } = result.value;
     if (!duplicate) {
@@ -153,7 +194,98 @@ export function createChannelScheduler(
       ...(stored.turnId === undefined ? {} : { turnId: stored.turnId }) };
   }
 
+  const stoppedResult = { ok: false as const, error: { code: "stopped" as const, message: "Session is stopped" } };
+  const failedWith = (error: StorageError) => ({ ok: false as const, error });
+  /** Run one storage control; `after` publishes its effects once it committed. */
+  function control<T, R>(act: () => StorageResult<T>, after: (value: T, revision: number) => R): ControlResult<R> {
+    if (stopped) return stoppedResult;
+    const result = act();
+    if (!result.ok) return failedWith(result.error);
+    return { ok: true, value: after(result.value, result.revision), revision: result.revision };
+  }
+  const lifecycleOf = (channelId: string) => view().channels.find(channel => channel.channelId === channelId)?.lifecycle;
+
+  const channels: ChannelControls = {
+    create: input => {
+      const result = control(() => storage.createChannel(input), ({ created }, revision) => {
+        if (created) emitState(input.channelId, revision);
+        return { channel: channelStatus(input.channelId), created };
+      });
+      return result;
+    },
+    edit: (channelId, displayName) => {
+      const before = view().channels.find(channel => channel.channelId === channelId)?.displayName;
+      return control(() => storage.editChannel(channelId, displayName), ({ displayName: now }, revision) => {
+        if (now !== before) emitState(channelId, revision);
+        return channelStatus(channelId);
+      });
+    },
+    suspend(channelId) {
+      if (stopped) return Promise.resolve(stoppedResult);
+      const waiter = channelSuspensions.get(channelId);
+      if (waiter) return waiter.promise;
+      const before = lifecycleOf(channelId);
+      const begun = storage.beginChannelSuspend(channelId);
+      if (!begun.ok) return Promise.resolve(failedWith(begun.error));
+      if (begun.value.lifecycle === "suspended") {
+        if (before !== "suspended") emitState(channelId, begun.revision);
+        return Promise.resolve({ ok: true, value: channelStatus(channelId), revision: begun.revision });
+      }
+      let settle!: (result: ControlResult<ChannelStatus>) => void;
+      const promise = new Promise<ControlResult<ChannelStatus>>(resolve => { settle = resolve; });
+      channelSuspensions.set(channelId, { promise, settle });
+      emitState(channelId, begun.revision);
+      // The channel's turn reaches its boundary on its own and settles this at
+      // the commit that checkpoints, completes or interrupts it.
+      return promise;
+    },
+    resume: channelId => {
+      const before = lifecycleOf(channelId);
+      if (stopped) return stoppedResult;
+      const resumed = storage.resumeChannel(channelId);
+      if (!resumed.ok) return failedWith(resumed.error);
+      // Resuming a checkpoint starts it even before `start`: storage already
+      // moved the turn to running, so it must have an executor.
+      if (before !== "open") emitState(channelId, resumed.revision);
+      if (resumed.value.turn) {
+        started = true;
+        emit({ channel: channelId, revision: resumed.revision, event: { type: "turn_resumed", turnId: String(resumed.value.turn.turnId) } });
+        run({ channelId, turnId: resumed.value.turn.turnId, resumed: true });
+      } else if (before !== "open") {
+        rescan();
+        pump(channelId);
+      }
+      return { ok: true, value: channelStatus(channelId), revision: resumed.revision };
+    },
+    delete: channelId => {
+      const before = lifecycleOf(channelId);
+      return control(() => storage.deleteChannel(channelId), (_channel, revision) => {
+        waiting.delete(channelId);
+        if (before !== "retired") emitState(channelId, revision);
+        return channelStatus(channelId);
+      });
+    },
+    withdraw: (channelId, itemId) => control(() => storage.withdrawItem(channelId, itemId), (outcome, revision) => {
+      if (outcome.outcome === "withdrawn" && !outcome.repeated)
+        emit({ channel: channelId, revision, event: { type: "item_withdrawn", item: itemId } });
+      return outcome;
+    }),
+    interrupt: (channelId, turnId, reason = "interrupted by request") => control(
+      () => storage.interruptTurn(channelId, turnId, reason), (outcome, revision) => {
+        if (!outcome.interrupted) return outcome;
+        // Commit first, then cancel: whatever the aborted work returns is already fenced.
+        const handle = live.get(channelId);
+        if (handle?.turnId === turnId) { live.delete(channelId); handle.abort.abort(new Error(reason)); }
+        ended(outcome.turn, revision);
+        settleChannel(channelId, revision);
+        // Untaken input may start the next turn; the old turn's late result cannot reach it.
+        queueMicrotask(() => pump(channelId));
+        return outcome;
+      }),
+  };
+
   return {
+    channels,
     agent: {
       idle: () => live.size === 0 && (!started || stopped || lifecycle !== "running" || waiting.size === 0),
       send: (input: ChannelInput) => accept({ kind: "participant_message", channelId: input?.channelId, senderId: input?.participantId,
@@ -186,7 +318,10 @@ export function createChannelScheduler(
       const resumed = storage.resume();
       if (!resumed.ok) return { ok: false, error: resumed.error };
       if (lifecycle !== "running") emitSession({ type: "lifecycle", lifecycle: "running", revision: resumed.revision });
-      lifecycle = "running"; started = true;
+      started = true;
+      // Storage returned only turns of channels that are not individually
+      // suspended; those channels keep their checkpoint and backlog.
+      rescan();
       for (const turn of resumed.value.turns) {
         emit({ channel: turn.channelId, revision: resumed.revision, event: { type: "turn_resumed", turnId: String(turn.turnId) } });
         run({ channelId: turn.channelId, turnId: turn.turnId, resumed: true });
@@ -197,6 +332,7 @@ export function createChannelScheduler(
     stop(reason) {
       if (stopped) return status();
       stopped = true;
+      const suspending = [...channelSuspensions.keys()];
       // Commit the interruption first so nothing a cancelled call returns can be recorded.
       const interrupted = storage.interruptActive(reason);
       for (const { abort } of live.values()) abort.abort(new Error(reason));
@@ -207,6 +343,13 @@ export function createChannelScheduler(
       }
       suspension?.settle({ ok: false, error: { code: "stopped", message: "Session was stopped before suspension completed" } });
       suspension = undefined;
+      // A channel suspension that had not committed returned to `open`; committed ones are untouched.
+      for (const channelId of suspending) {
+        const waiter = channelSuspensions.get(channelId);
+        channelSuspensions.delete(channelId);
+        if (interrupted.ok) emitState(channelId, interrupted.revision);
+        waiter?.settle({ ok: false, error: { code: "stopped", message: "Session was stopped before the channel suspension completed" } });
+      }
       return status();
     },
     status,
