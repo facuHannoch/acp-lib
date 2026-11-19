@@ -1,5 +1,6 @@
 import type { ClientTransport, Methods, DurableMethods, InitializeParams, CreateParams, PushParams } from "../contracts/protocol.ts";
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
+import { createHash } from "node:crypto";
 
 type Calls = Methods & DurableMethods;
 
@@ -68,6 +69,34 @@ export class HarnessClient {
   resume() { return this.request("session/resume", {}); }
   /** Immediate: cancels inference and tools and reports active turns interrupted. */
   stop() { return this.request("session/stop", {}); }
+  /** Write the session's archive to a path the harness can reach. */
+  exportTo(path: string) { return this.request("session/export", { to: { type: "path", path } }); }
+  /** Import an archive file the harness can reach, as a new session. */
+  importFrom(path: string, sessionId?: string) { return this.request("session/import", { from: { type: "path", path }, ...(sessionId === undefined ? {} : { sessionId }) }); }
+  /** Fetch the archive bytes over the connection in bounded chunks. The bytes
+   * are checked against the length and SHA-256 the harness reported. */
+  async exportArchive(): Promise<Uint8Array> {
+    const { bytes, sha256, transferId } = await this.request("session/export", { to: { type: "transfer" } });
+    const archive = new Uint8Array(bytes);
+    try {
+      for (let offset = 0, eof = bytes === 0; !eof;) {
+        const chunk = await this.request("transfer/read", { transferId: transferId!, offset });
+        const part = Buffer.from(chunk.data, "base64");
+        archive.set(part, offset); offset += part.length; eof = chunk.eof;
+      }
+    } finally { await this.request("transfer/close", { transferId: transferId! }).catch(() => {}); }
+    if (createHash("sha256").update(archive).digest("hex") !== sha256) throw new HarnessClientError("invalid_archive", "Received archive does not match its SHA-256");
+    return archive;
+  }
+  /** Send archive bytes over the connection in bounded chunks, then import them as a new session. */
+  async importArchive(archive: Uint8Array, sessionId?: string) {
+    const { transferId, limits } = await this.request("transfer/open", { bytes: archive.length, sha256: createHash("sha256").update(archive).digest("hex") });
+    try {
+      for (let offset = 0; offset < archive.length; offset += limits.chunkBytes)
+        await this.request("transfer/write", { transferId, offset, data: Buffer.from(archive.subarray(offset, offset + limits.chunkBytes)).toString("base64") });
+    } catch (error) { await this.request("transfer/close", { transferId }).catch(() => {}); throw error; }
+    return this.request("session/import", { from: { type: "transfer", transferId }, ...(sessionId === undefined ? {} : { sessionId }) });
+  }
   /** Resolves when the input is accepted (Received), never with a reply. Follow
    * `turn_started`/`turn_took` for the item ID to find the turn that took it. */
   push(params: PushParams) { return this.request("channel/push", params); }

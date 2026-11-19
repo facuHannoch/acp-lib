@@ -136,6 +136,34 @@ acceptance gates.
   as running with that turn interrupted. One correction during the stage: the
   loop no longer publishes a failed tool event for a turn that stop already
   ended. Stdin EOF still drains, as agreed with the reviewer.
+- **Stage 4 approved (reviewer gro1a-o): `5c61d7b`.** Archive bytes decided by
+  the reviewer for Stage 5: one UTF-8 JSON document of the SessionArchive with
+  nothing in front of it; length and SHA-256 are those of the file bytes.
+- **Stage 5, portability (implementer).** `session/export`, `session/import`
+  and `transfer/{open,write,read,close}` on the server
+  (`src/interfaces/protocol/transfers.ts`), `exportTo`, `importFrom`,
+  `exportArchive` and `importArchive` on the client. `validateArchive` now also
+  rejects a duplicate `acceptedSeq`, with a shared conformance case. Gate:
+  `bun run typecheck` clean; `bun test ./test` 123 pass, 0 fail, run three
+  times. `test/portability.test.ts`, on both transports unless noted: a
+  suspended session with a checkpoint and five 300 KB pending messages exports
+  as a 1.5 MB archive (more than one frame), imports into a fresh home, loads
+  identically to the source, keeps deduplication, and after resume the pending
+  input joins turn 1 while the hold log still shows the tool once; a second
+  import is `already_exists`; a path import under a new session ID keeps the
+  inner IDs. Truncated, non-JSON, non-UTF-8, edited, `suspending`,
+  duplicate-`acceptedSeq` and wrong-version archives, a missing or junk path,
+  an incomplete upload and a wrong hash are each refused with the destination
+  directory listing unchanged and the session still `not_found`. Transfer
+  rules: second open, offset gap, oversize chunk, overrun, repeat offset and
+  size over the limit are `transfer_limit` and write nothing. Export is `busy`
+  with active or pending work and for the whole `suspending` state, and an
+  existing export path is `already_exists` with the file untouched.
+  In-process only (small injected limits): an over-limit export leaves no
+  file; an idle transfer and one open at connection end are removed. Stdio
+  only: a transfer file left by a killed process is removed when the next
+  process starts. Transfer files are named with the owning PID and only files
+  of dead processes are cleaned at startup, because two servers can share a home.
 
 ## Closure and retrospective
 

@@ -1,6 +1,9 @@
 import type { ProtocolEndpoint, RpcRequest, RpcResponse, RpcNotification, RpcSessionNotification, ProtocolConfig, Description, Subscription, DurableErrorCode } from "../../contracts/protocol.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
+import type { SessionArchive, StorageResult, StoredSession } from "../../contracts/storage.ts";
 import { FrameLimit, loadView, pageMessages, wireStatus } from "./load.ts";
+import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
+import type { TransferLimits } from "../../contracts/protocol.ts";
 
 class Fault extends Error {
   constructor(readonly tag: string, message: string, readonly rpc = -32602) { super(message); }
@@ -12,7 +15,20 @@ export class SessionOpenError extends Error {
 export interface SessionRequest { mode: "create" | "open"; sessionId: string; config: ProtocolConfig }
 /** `close` releases storage ownership; the endpoint calls it when it is disposed
  * or when a load cannot be answered. */
-export interface OpenedSession { session: PersistentSession; close(): void }
+export interface OpenedSession {
+  session: PersistentSession; close(): void;
+  /** One consistent logical copy, or `busy`. */
+  exportArchive?(): StorageResult<SessionArchive>;
+}
+export interface ProtocolServerOptions {
+  durable?: boolean;
+  /** Publish a validated archive as a new session with this ID. Enables import. */
+  importArchive?(archive: SessionArchive, sessionId: string): StorageResult<StoredSession>;
+  /** Where transfer files live while a transfer is open. Enables transfers. */
+  transferDirectory?: string;
+  /** Smaller limits for tests; defaults are the contract's. */
+  limits?: Partial<{ chunkBytes: number; maxBytes: number; idleMs: number }>;
+}
 
 const bad = (message: string): never => { throw new Fault("invalid_params", message); };
 function obj(value: unknown): Record<string, any> {
@@ -43,18 +59,21 @@ function config(raw: unknown) {
 
 /** Capabilities describe this server instance: durable acceptance and load are
  * advertised only when its sessions are opened from durable storage. */
-export function describe(durable: boolean): Description {
+export function describe(durable: boolean, archives = false): Description {
   return {
     configOptions: [], commands: [], policies: [],
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable,
       methods: ["initialize", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
-        "session/suspend", "session/resume", "session/stop", "channel/push", "session/idle"],
+        "session/suspend", "session/resume", "session/stop", "channel/push", "session/idle",
+        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : [])],
       events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "session/event"] },
   };
 }
 
-export function createProtocolServer(open: (request: SessionRequest) => Promise<OpenedSession>, options: { durable?: boolean } = {}): ProtocolEndpoint & { dispose(): void } {
-  const description = describe(!!options.durable);
+export function createProtocolServer(open: (request: SessionRequest) => Promise<OpenedSession>, options: ProtocolServerOptions = {}): ProtocolEndpoint & { dispose(): void } {
+  const limits = { ...TRANSFER_LIMITS, ...options.limits } as TransferLimits;
+  const transfers = options.importArchive && options.transferDirectory ? createTransfers(options.transferDirectory, limits) : undefined;
+  const description = describe(!!options.durable, !!transfers);
   let initialized = false;
   let opening = false;
   let current: OpenedSession | undefined;
@@ -151,7 +170,41 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       // Nothing was started; release the session so no partial load is observable.
       catch (error) { opened.close(); throw error; }
     }
+    if (transfers && method.startsWith("transfer/")) {
+      if (method === "transfer/open") { keys(p, ["bytes", "sha256"]); return { transferId: transfers.openUpload(p.bytes, p.sha256), limits }; }
+      if (method === "transfer/write") { keys(p, ["transferId", "offset", "data"]); return { received: transfers.write(p.transferId, p.offset, p.data) }; }
+      if (method === "transfer/read") { keys(p, ["transferId", "offset"]); return transfers.read(p.transferId, p.offset); }
+      keys(p, ["transferId"]); transfers.close(p.transferId); return {};
+    }
+    if (transfers && method === "session/import") {
+      keys(p, ["from", "sessionId"]);
+      const from = obj(p.from);
+      if (p.sessionId !== undefined) text(p.sessionId);
+      // Whole file first, whole validation next, and only then one atomic publish.
+      let bytes: Uint8Array;
+      if (from.type === "path") { keys(from, ["type", "path"]); bytes = readArchiveFile(text(from.path), limits.maxBytes); }
+      else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
+      else return bad("Import source must be a path or a transfer");
+      const archive = decodeArchive(bytes) as SessionArchive;
+      const sessionId = p.sessionId ?? archive?.snapshot?.session?.sessionId;
+      if (typeof sessionId !== "string" || !sessionId.trim()) throw new Fault("invalid_archive", "Archive does not name a session");
+      const imported = options.importArchive!(archive, sessionId);
+      if (!imported.ok) throw new Fault(imported.error.code === "invalid_input" ? "invalid_params" : imported.error.code, imported.error.message);
+      return { sessionId: imported.value.sessionId, lifecycle: imported.value.lifecycle, revision: imported.revision };
+    }
     if (!current) throw new Fault("not_ready", "Create or load a session first");
+    if (transfers && method === "session/export") {
+      keys(p, ["to"]);
+      const to = obj(p.to);
+      if (to.type === "path") { keys(to, ["type", "path"]); text(to.path); }
+      else if (to.type === "transfer") keys(to, ["type"]);
+      else bad("Export destination must be a path or a transfer");
+      const exported = current.exportArchive?.() ?? { ok: false as const, error: { code: "invalid_state" as const, message: "This session cannot be exported" } };
+      if (!exported.ok) throw new Fault(exported.error.code, exported.error.message);
+      const { bytes, sha256 } = encodeArchive(exported.value, limits.maxBytes);
+      if (to.type === "path") { writeArchiveFile(to.path, bytes); return { bytes: bytes.length, sha256 }; }
+      return { bytes: bytes.length, sha256, transferId: transfers.offer(bytes, sha256) };
+    }
     const session = current.session;
     if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() }; }
     if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.snapshot()); }
@@ -196,13 +249,14 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         const result = await dispatch(request.method, request.params);
         return { jsonrpc: "2.0", id: request.id, result };
       } catch (error) {
-        const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message) : error;
+        const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message)
+          : error instanceof TransferFault ? new Fault(error.code, error.message) : error;
         return { jsonrpc: "2.0", id, error: { code: fault instanceof Fault ? fault.rpc : -32603,
           message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error" } } };
       }
     },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     subscribeSession(listener) { sessionListeners.add(listener); return () => { sessionListeners.delete(listener); }; },
-    dispose() { current?.close(); current = undefined; },
+    dispose() { transfers?.dispose(); current?.close(); current = undefined; },
   };
 }

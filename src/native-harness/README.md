@@ -133,8 +133,8 @@ Execution runs on the storage contract in `src/contracts/storage.ts`
 `src/state/storage/engine.ts` implements it once, over row access provided by
 `memory.ts` (maps) and `sqlite.ts` (`bun:sqlite`, one file per session,
 exclusive ownership through SQLite's file lock, `synchronous=FULL`).
-`archive.ts` validates and restores logical session archives; nothing exports
-or imports them through an interface yet. Both adapters pass the shared suite:
+`archive.ts` validates and restores logical session archives. Both adapters
+pass the shared suite:
 
 ```sh
 bun test test/storage-memory.test.ts test/storage-sqlite.test.ts
@@ -313,7 +313,9 @@ uses the same session assembly with OpenRouter, its tools and inspector wrappers
 The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
 requests are `initialize`, `session/create`, `session/load` (durable servers
 only), `session/messages`, `session/status`, `session/suspend`,
-`session/resume`, `session/stop`, `channel/push` and `session/idle`.
+`session/resume`, `session/stop`, `channel/push` and `session/idle`, plus
+`session/export`, `session/import` and `transfer/{open,write,read,close}` on
+durable servers.
 Initialize reports an experimental subset and whether this server's acceptance
 is `memory` or `durable`. It supports final text and none/summary/full tool events; no
 callbacks or other subscription fields yet. Full tool events retain JSON argument
@@ -353,6 +355,24 @@ leaves pending input pending, and makes this process refuse further work with
 `stopped`. Lifecycle changes arrive as `session/event` notifications
 (`HarnessClient.onSessionEvent`).
 
+`session/export` writes the whole session as a `.harness` archive: exactly
+one UTF-8 JSON document of the logical session (metadata, channels, turns,
+timeline, pending input, deduplication records, checkpoints and ID counters),
+versioned separately from the SQLite schema. It is allowed only when the
+session is cleanly suspended, or running with nothing active or pending;
+otherwise it fails `busy`. The reported length and SHA-256 are those of the
+file bytes. `session/import` validates the whole document and then publishes
+it atomically as a new session, optionally under a new session ID, without
+opening or resuming it; an existing destination or an invalid archive leaves
+nothing behind. Both take a file path when host and harness share a
+filesystem, or a transfer when they do not: `HarnessClient.exportArchive()`
+and `importArchive(bytes)` move the bytes in 512 KiB chunks, so an archive can
+exceed the 1 MiB frame. One transfer may be open per connection, archives are
+limited to 256 MiB, and a transfer's temporary file is removed when it is
+closed, imported, idle for 60 seconds, or its connection ends. To relocate a
+session, stop the source before resuming the copy: import makes a copy, and
+both would otherwise run the same pending work.
+
 Events are `turn_started`, `turn_took`, `items_receipt`, `tool_call`,
 `message_completed`, `turn_suspended`, `turn_resumed` and `turn_ended`. `turn_started` and `turn_took` list the
 item IDs that turn took, which is how an accepted input is matched to its
@@ -368,7 +388,7 @@ constructor); closing a client rejects pending requests and removes subscription
 It does not cancel already accepted work. Model exhaustion produces a failed turn
 event after acceptance, not a failed push. Idle includes pending and running work.
 
-This is not full protocol v1 conformance: export/import, holds, permissions, usage,
+This is not full protocol v1 conformance: holds, permissions, usage,
 streaming and progress heartbeats remain unimplemented. Protocol version 1
 identifies these experimental message shapes, not a full compatibility claim.
 

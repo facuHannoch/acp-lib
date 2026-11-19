@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
 import { createSession } from "./index.ts";
 import type { SessionStorage, SessionStorageAdapter } from "./contracts/storage.ts";
 import type { ExecuteTool } from "./contracts/loop.ts";
@@ -22,6 +24,10 @@ export interface ScriptedServerOptions {
   fault?: string;
   /** File the `record` tool appends to. */
   effects?: string;
+  /** Directory for transfer files when there is no home. */
+  transfers?: string;
+  /** Smaller transfer limits for tests. */
+  limits?: Partial<{ chunkBytes: number; maxBytes: number; idleMs: number }>;
 }
 
 /** Real process death at an exact durable boundary: nothing after the commit
@@ -50,11 +56,14 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
   const durable = !!(options.home || options.adapter);
   const hit = faults(options.fault);
   const memory = createMemoryStorageAdapter();
+  const locate = (sessionId: string) => {
+    if (options.home && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sessionId)) throw new Error("sessionId must be a plain file name for durable sessions");
+    return options.adapter?.(sessionId) ?? (options.home ? createSqliteStorageAdapter(join(options.home, `${sessionId}.sqlite`)) : memory);
+  };
   const server = createProtocolServer(async ({ mode, sessionId, config }) => {
     const script: unknown = await Bun.file(config.model.script).json();
     createScriptedModel(script); // Validate before the session is acknowledged.
-    if (options.home && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sessionId)) throw new Error("sessionId must be a plain file name for durable sessions");
-    const adapter = options.adapter?.(sessionId) ?? (options.home ? createSqliteStorageAdapter(join(options.home, `${sessionId}.sqlite`)) : memory);
+    const adapter = locate(sessionId);
     // Compatible means: same prompt and same script content.
     const compatibilityKey = createHash("sha256").update(JSON.stringify([config.system, script])).digest("hex");
     const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey } });
@@ -79,8 +88,12 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       }
       return { model: scripted.model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
     } });
-    return { session, close() { opened.value.close(); } };
-  }, { durable });
+    return { session, close() { opened.value.close(); }, exportArchive: () => storage.exportArchive() };
+  }, { durable, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
+    importArchive(archive, sessionId) {
+      try { return locate(sessionId).importArchive(archive, { sessionId }); }
+      catch (error) { return { ok: false, error: { code: "invalid_input", message: String(error) } }; }
+    } });
   return { server, models };
 }
 

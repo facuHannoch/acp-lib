@@ -16,7 +16,7 @@ Revision 2 of the contract ([decision 0013](../decisions/0013-durable-delivery-c
 replaces the revision 1 operations below with a durable inbox, take, lifecycle,
 load and archive operations. Memory and SQLite adapters implement it, and the
 scheduler, context builder and scripted stdio server run on it, including
-suspend, resume and stop. Archive transfer is not exposed through an interface yet.
+suspend, resume, stop, and archive export/import by path or bounded transfer.
 
 ### Contract operations, revision 1 (superseded)
 

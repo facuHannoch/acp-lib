@@ -60,10 +60,11 @@ export function validateArchive(value: unknown): SessionArchive {
     previous = entry.seq; entries.set(entry.seq, entry);
   }
 
-  const ids = new Set<string>();
+  const ids = new Set<string>(), accepted = new Set<number>();
   for (const item of [...snapshot.items].sort((a, b) => (a?.entrySeq ?? 0) - (b?.entrySeq ?? 0))) {
     if (!item || !str(item.itemId) || ids.has(item.itemId) || !channels.has(item.channelId) || !MILESTONES.includes(item.milestone)
-      || !int(item.acceptedSeq) || item.acceptedSeq > revision || !str(item.acceptedAt)) bad("Invalid or duplicate item");
+      || !int(item.acceptedSeq) || item.acceptedSeq > revision || accepted.has(item.acceptedSeq) || !str(item.acceptedAt)) bad("Invalid or duplicate item");
+    accepted.add(item.acceptedSeq);
     if (![item.kind, item.senderId, item.text].every(str) || item.signature !== signatureOf(item)) bad(`Item ${item.itemId} does not match its signature`);
     ids.add(item.itemId);
     const auto = /^auto:(0|[1-9]\d*)$/.exec(item.itemId);

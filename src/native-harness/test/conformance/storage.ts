@@ -463,6 +463,9 @@ export function storageConformance(name: string, location: () => SessionStorageA
         a => { a.snapshot.items[0].text = "edited"; },
         a => { a.snapshot.items[0].turnId = 9; },
         a => { a.snapshot.items.push({ ...a.snapshot.items[0] }); },
+        // A second item at an existing acceptance position, otherwise self-consistent.
+        a => { const copy = { ...a.snapshot.items[0], itemId: "twin" }; delete copy.turnId; delete copy.entrySeq; copy.milestone = "received";
+          a.snapshot.session.lifecycle = "suspended"; a.snapshot.items.push(copy); },
         a => { a.snapshot.timeline.reverse(); },
         a => { a.snapshot.timeline[0].turnId = 4; },
         a => { a.snapshot.turns[0].itemIds = []; },
