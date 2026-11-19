@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { SessionStorage, SessionStorageAdapter, StorageErrorCode, StorageResult } from "../../src/contracts/storage.ts";
 
-/** Shared executable contract for storage revision 2 (decision 0013). Each call
+/** Shared executable contract for storage revision 3 (decisions 0013, 0014). Each call
  * to `location` returns an adapter for a fresh, empty location; reusing that
  * adapter reopens the same session. */
 export function storageConformance(name: string, location: () => SessionStorageAdapter) {
@@ -50,7 +50,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       // A different key opens normally and is never written.
       const again = ok(adapter.open({ mode: "open", identity: id("k2") }));
       const view = snap(again);
-      expect(view.session).toMatchObject({ sessionId: "s1", formatVersion: 2, lifecycle: "running", compatibilityKey: "k1" });
+      expect(view.session).toMatchObject({ sessionId: "s1", formatVersion: 3, lifecycle: "running", compatibilityKey: "k1" });
       expect(view.items.map(item => item.text)).toEqual(["hello"]);
       ok(again.close());
       expect(snap(ok(adapter.open({ mode: "open", identity: id() }))).session.compatibilityKey).toBe("k1");
@@ -72,7 +72,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       const view = snap(s);
       // Accepted work is outside the timeline and creates no turn.
       expect(view.timeline).toEqual([]); expect(view.turns).toEqual([]);
-      expect(view.channels).toEqual([{ channelId: "c1", participantIds: [] }]);
+      expect(view.channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: [] }]);
       expect(view.participants).toEqual([{ participantId: "ana" }]);
       expect(view.items.map(item => item.acceptedSeq)).toEqual([1, 2, 3, 4, 5, 6]);
       expect(view.revision).toBe(6);
@@ -104,7 +104,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
     test("beginTurn takes every pending item once, in acceptance order", () => {
       const { s } = create();
       ok(msg(s, "a", "c1", "a")); ok(msg(s, "other", "c2", "z")); ok(notice(s, "n")); ok(msg(s, "b", "c1", "b"));
-      expect(ok(s.beginTurn("empty"))).toBeNull();
+      refused(s.beginTurn("empty"), "not_found");
       const taken = begin(s);
       expect(taken.turn).toMatchObject({ turnId: 1, channelId: "c1", itemIds: ["a", "auto:1", "b"], compatibilityKey: "k1", state: { status: "running" } });
       expect(taken.items.map(item => [item.milestone, item.turnId])).toEqual([["taken", 1], ["taken", 1], ["taken", 1]]);
@@ -118,7 +118,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       unchanged(s, () => expect(ok(s.beginTurn("c1"))).toBeNull());
       expect(begin(s, "c2").turn).toMatchObject({ turnId: 2, itemIds: ["z"] });
       const view = snap(s);
-      expect(view.channels).toEqual([{ channelId: "c1", participantIds: ["ana"] }, { channelId: "c2", participantIds: ["ana"] }]);
+      expect(view.channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }, { channelId: "c2", lifecycle: "open", participantIds: ["ana"] }]);
       expect(view.items.find(item => item.itemId === "c")).toMatchObject({ milestone: "received" });
       const seqs = view.timeline.map(entry => entry.seq);
       expect(seqs).toEqual([...seqs].sort((x, y) => x - y)); expect(new Set(seqs).size).toBe(seqs.length);
@@ -405,7 +405,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
 
     test("export needs an idle or cleanly suspended session", () => {
       const { s } = create();
-      expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 1, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });
+      expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 2, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });
       ok(msg(s, "a"));
       unchanged(s, () => refused(s.exportArchive(), "busy"));
       const t = begin(s).turn.turnId;
@@ -417,6 +417,374 @@ export function storageConformance(name: string, location: () => SessionStorageA
       unchanged(s, () => expect(ok(s.exportArchive()).snapshot).toEqual(snap(s)));
       ok(s.resume()); say(s, t, "x"); ok(s.finishTurn(t, { status: "completed" }));
       expect(ok(s.exportArchive()).snapshot.session.lifecycle).toBe("running");
+    });
+
+    // ---- Channel controls, decision 0014.
+    const lifecycleOf = (s: SessionStorage, channelId: string) => snap(s).channels.find(c => c.channelId === channelId)?.lifecycle;
+    const stateOf = (s: SessionStorage, turnId: number) => snap(s).turns.find(t => t.turnId === turnId)!.state.status;
+    /** Turn on `c1` that took "a", ran one tool call and recorded its result: at an inference boundary. */
+    function atBoundary(s: SessionStorage, channelId = "c1") {
+      ok(msg(s, "a", channelId, `a-${channelId}`));
+      const turn = begin(s, channelId).turn.turnId;
+      call(s, turn, "k"); ok(s.appendMessage(turn, { role: "tool", callId: "k", content: "done" }));
+      return turn;
+    }
+
+    test("channel suspension closes admission, checkpoints with the backlog kept, and survives reopen", () => {
+      const { adapter, s: first } = create();
+      let s = first;
+      const t = atBoundary(s); ok(msg(s, "other", "c2", "o2"));
+      ok(msg(s, "p", "c1", "p"));
+      const other = begin(s, "c2").turn.turnId;
+      expect(ok(s.beginChannelSuspend("c1"))).toMatchObject({ lifecycle: "suspending" });
+      expect(ok(s.beginChannelSuspend("c1")).lifecycle).toBe("suspending");
+      // Closed to new input and to taking, for messages and notices alike; retries of accepted input answer.
+      unchanged(s, () => {
+        refused(msg(s, "new"), "channel_suspended"); refused(notice(s, "new"), "channel_suspended");
+        refused(s.takePending(t), "channel_suspended"); refused(s.resumeChannel("c1"), "invalid_state");
+        refused(s.deleteChannel("c1"), "channel_busy");
+        expect(ok(msg(s, "p", "c1", "p"))).toMatchObject({ duplicate: true, item: { milestone: "received" } });
+        refused(msg(s, "different", "c1", "p"), "item_conflict");
+      });
+      // Another channel keeps running, and the finishing turn may notify an open channel.
+      expect(ok(s.acceptItem({ kind: "channel_notice", channelId: "c2", senderId: "channel:c1", sourceChannelId: "c1", text: "hi" })).duplicate).toBe(false);
+      say(s, other, "ok");
+      expect(ok(s.finishTurn(other, { status: "completed" })).finished).toBe(false); // the notice arrived first
+      // A pending item blocks completion: the turn must checkpoint, and the channel suspends with it.
+      say(s, t, "answer");
+      expect(ok(s.finishTurn(t, { status: "completed" }))).toEqual({ finished: false, pending: 1 });
+      expect(lifecycleOf(s, "c1")).toBe("suspending");
+      const saved = ok(s.checkpointTurn(t));
+      expect(saved.state).toMatchObject({ status: "suspended" });
+      expect(lifecycleOf(s, "c1")).toBe("suspended");
+      refused(s.exportArchive(), "busy");
+      s = reopen(adapter, s); // the session was never suspended: only the channel's commit holds the checkpoint
+      expect(lifecycleOf(s, "c1")).toBe("suspended");
+      expect(stateOf(s, t)).toBe("suspended");
+      expect(snap(s).items.find(item => item.itemId === "p")!.milestone).toBe("received");
+      refused(msg(s, "new"), "channel_suspended");
+      refused(s.beginTurn("c1"), "channel_suspended");
+      const resumed = ok(s.resumeChannel("c1"));
+      expect(resumed.channel.lifecycle).toBe("open");
+      expect(resumed.turn).toMatchObject({ turnId: t, state: { status: "running" } });
+      expect(ok(s.takePending(t)).items.map(item => item.itemId)).toEqual(["p"]);
+      expect(ok(s.takePending(t)).items).toEqual([]);
+      expect(snap(s).turns.filter(turn => turn.channelId === "c1")).toHaveLength(1);
+    });
+
+    test("an idle or already checkpointed channel suspends at once; resume of an open channel is a no-op", () => {
+      const { s } = create();
+      ok(s.createChannel({ channelId: "idle" }));
+      expect(ok(s.beginChannelSuspend("idle")).lifecycle).toBe("suspended");
+      unchanged(s, () => expect(ok(s.beginChannelSuspend("idle")).lifecycle).toBe("suspended"));
+      refused(msg(s, "x", "idle"), "channel_suspended");
+      expect(ok(s.resumeChannel("idle"))).toMatchObject({ channel: { lifecycle: "open" } });
+      unchanged(s, () => expect(ok(s.resumeChannel("idle")).turn).toBeUndefined());
+      ok(msg(s, "x", "idle"));
+      refused(s.beginChannelSuspend("nope"), "not_found");
+    });
+
+    test("interrupt competes with checkpoint, completion and late results by commit order", () => {
+      const { s } = create();
+      // Interrupt first: the channel suspends with no checkpoint, the backlog stays, late results are fenced.
+      const t = atBoundary(s); call(s, t, "late"); ok(msg(s, "p", "c1", "p"));
+      ok(s.beginChannelSuspend("c1"));
+      const first = ok(s.interruptTurn("c1", t, "stop it"));
+      expect(first).toMatchObject({ interrupted: true, turn: { turnId: t, state: { status: "interrupted", reason: "stop it", uncertainCallIds: ["late"] } } });
+      expect(lifecycleOf(s, "c1")).toBe("suspended");
+      unchanged(s, () => {
+        refused(s.appendMessage(t, { role: "tool", callId: "late", content: "x" }), "invalid_state");
+        refused(s.checkpointTurn(t), "invalid_state"); refused(s.confirmReceipts(t, "seen"), "invalid_state");
+        expect(ok(s.interruptTurn("c1", t, "again"))).toMatchObject({ interrupted: false, turn: { state: { status: "interrupted" } } });
+      });
+      expect(snap(s).items.find(item => item.itemId === "p")!.milestone).toBe("received");
+      expect(ok(s.resumeChannel("c1")).turn).toBeUndefined();
+      // A stale interrupt never reaches the newer turn that took the backlog.
+      const next = begin(s).turn.turnId;
+      expect(next).toBe(t + 1);
+      unchanged(s, () => expect(ok(s.interruptTurn("c1", t, "stale")).interrupted).toBe(false));
+      expect(stateOf(s, next)).toBe("running");
+      refused(s.interruptTurn("c2", next, "wrong channel"), "not_found");
+      refused(s.interruptTurn("c1", 99, "unknown"), "not_found");
+      refused(s.interruptTurn("c1", next, " "), "invalid_input");
+      // Checkpoint first: the turn is no longer active and the checkpoint stays.
+      ok(s.beginChannelSuspend("c1"));
+      ok(s.checkpointTurn(next));
+      unchanged(s, () => expect(ok(s.interruptTurn("c1", next, "late")).interrupted).toBe(false));
+      expect(stateOf(s, next)).toBe("suspended");
+      // A turn that can finish completes and the channel suspends without a checkpoint.
+      ok(s.resumeChannel("c1"));
+      say(s, next, "done");
+      ok(s.beginChannelSuspend("c1"));
+      expect(ok(s.finishTurn(next, { status: "completed" })).finished).toBe(true);
+      expect(lifecycleOf(s, "c1")).toBe("suspended");
+      expect(snap(s).turns.some(turn => turn.state.status === "suspended")).toBe(false);
+    });
+
+    test("withdraw competes with take; withdrawn items stay out of the timeline and cannot be revived", () => {
+      const { adapter, s: first } = create();
+      let s = first;
+      ok(msg(s, "m", "c1", "m")); ok(msg(s, "kept", "c1", "k"));
+      ok(s.createChannel({ channelId: "c2" }));
+      ok(notice(s, "n", "c2"));
+      const noticeId = snap(s).items.find(item => item.kind === "channel_notice")!.itemId;
+      const w = ok(s.withdrawItem("c1", "m"));
+      expect(w).toMatchObject({ outcome: "withdrawn", repeated: false, item: { itemId: "m", milestone: "withdrawn" } });
+      expect(w.outcome === "withdrawn" && w.item.withdrawnAt).toBeTruthy();
+      expect(ok(s.withdrawItem("c1", "m"))).toMatchObject({ outcome: "withdrawn", repeated: true });
+      expect(ok(s.withdrawItem("c2", noticeId))).toMatchObject({ outcome: "withdrawn", repeated: false });
+      refused(s.withdrawItem("c2", "k"), "not_found"); refused(s.withdrawItem("c1", "none"), "not_found");
+      // Retry cannot make it pending again, in any lifecycle and after reopen.
+      s = reopen(adapter, s);
+      expect(ok(msg(s, "m", "c1", "m"))).toMatchObject({ duplicate: true, item: { milestone: "withdrawn" } });
+      refused(msg(s, "changed", "c1", "m"), "item_conflict");
+      expect(ok(s.withdrawItem("c1", "m")).outcome).toBe("withdrawn");
+      expect(ok(s.beginTurn("c2"))).toBeNull();
+      const taken = begin(s);
+      expect(taken.items.map(item => item.itemId)).toEqual(["k"]);
+      expect(snap(s).timeline.some(entry => entry.itemId === "m")).toBe(false);
+      expect(snap(s).items.map(item => item.itemId)).toContain("m");
+      expect(snap(s).channels[0]!.participantIds).toEqual(["ana"]);
+      // Take won: the owning turn is reported and nothing changes, also after the turn ended.
+      unchanged(s, () => expect(ok(s.withdrawItem("c1", "k"))).toMatchObject({ outcome: "taken", turnId: taken.turn.turnId, item: { milestone: "taken" } }));
+      say(s, taken.turn.turnId, "x"); ok(s.finishTurn(taken.turn.turnId, { status: "completed" }));
+      expect(ok(s.withdrawItem("c1", "k")).outcome).toBe("taken");
+      // Withdrawal works while suspended, so a backlog can be cleared.
+      ok(msg(s, "later", "c1", "l")); ok(s.beginChannelSuspend("c1"));
+      expect(ok(s.withdrawItem("c1", "l")).outcome).toBe("withdrawn");
+    });
+
+    test("create, edit, delete and retired IDs", () => {
+      const { adapter, s: first } = create();
+      let s = first;
+      const made = ok(s.createChannel({ channelId: "c1", displayName: "  Alice  " }));
+      expect(made).toMatchObject({ created: true, channel: { channelId: "c1", displayName: "Alice", lifecycle: "open" } });
+      unchanged(s, () => {
+        expect(ok(s.createChannel({ channelId: "c1", displayName: "Alice" })).created).toBe(false);
+        refused(s.createChannel({ channelId: "c1", displayName: "Other" }), "already_exists");
+        refused(s.createChannel({ channelId: "c1" }), "already_exists");
+        refused(s.createChannel({ channelId: " " }), "invalid_input");
+        refused(s.createChannel({ channelId: "x", displayName: "" }), "invalid_input");
+        refused(s.createChannel({ channelId: "x", displayName: "n".repeat(201) }), "invalid_input");
+        refused(s.editChannel("c1", "  "), "invalid_input"); refused(s.editChannel("nope", "n"), "not_found");
+        expect(ok(s.editChannel("c1", "Alice")).displayName).toBe("Alice");
+      });
+      expect(snap(s).turns).toEqual([]); // creating starts nothing
+      expect(ok(notice(s, "hi", "c1")).duplicate).toBe(false); // an explicit create is a record
+      expect(ok(s.editChannel("c1", "Alicia"))).toMatchObject({ displayName: "Alicia", lifecycle: "open" });
+      expect(ok(s.editChannel("c1", null)).displayName).toBeUndefined();
+      ok(s.editChannel("c1", "Named"));
+      // First send still creates an unused channel.
+      ok(msg(s, "first", "fresh", "f")); expect(lifecycleOf(s, "fresh")).toBe("open");
+      // Delete: acceptance first blocks it; every unfinished state blocks it.
+      refused(s.deleteChannel("fresh"), "channel_busy");
+      const t = begin(s, "fresh").turn.turnId;
+      refused(s.deleteChannel("fresh"), "channel_busy");
+      ok(s.beginChannelSuspend("fresh")); ok(s.checkpointTurn(t));
+      refused(s.deleteChannel("fresh"), "channel_busy"); // a checkpoint blocks, resolved or not
+      ok(s.resumeChannel("fresh")); say(s, t, "x"); ok(s.finishTurn(t, { status: "completed" }));
+      ok(s.beginChannelSuspend("fresh")); // deletion from suspended is allowed once nothing is unresolved
+      const gone = ok(s.deleteChannel("fresh"));
+      expect(gone).toMatchObject({ lifecycle: "retired", participantIds: ["ana"] });
+      unchanged(s, () => {
+        expect(ok(s.deleteChannel("fresh")).lifecycle).toBe("retired");
+        refused(msg(s, "again", "fresh"), "channel_retired"); refused(notice(s, "again", "fresh"), "channel_retired");
+        refused(s.createChannel({ channelId: "fresh" }), "channel_retired"); refused(s.editChannel("fresh", "n"), "channel_retired");
+        refused(s.beginChannelSuspend("fresh"), "channel_retired"); refused(s.resumeChannel("fresh"), "channel_retired");
+        refused(s.beginTurn("fresh"), "channel_retired");
+        expect(ok(msg(s, "first", "fresh", "f")).duplicate).toBe(true); // a duplicate answers before the retirement check
+      });
+      s = reopen(adapter, s);
+      expect(lifecycleOf(s, "fresh")).toBe("retired");
+      refused(msg(s, "again", "fresh"), "channel_retired");
+      expect(snap(s).timeline.filter(entry => entry.channelId === "fresh").length).toBeGreaterThan(0);
+      // Delete wins over a later send; withdrawing the backlog first makes delete possible.
+      ok(msg(s, "x", "c9", "x9")); refused(s.deleteChannel("c9"), "channel_busy");
+      ok(s.withdrawItem("c9", "x9")); expect(ok(s.deleteChannel("c9")).lifecycle).toBe("retired");
+      // Allowed while the session is suspended too, and retirement survives.
+      ok(s.beginSuspend()); ok(s.completeSuspend());
+      expect(ok(s.createChannel({ channelId: "late", displayName: "L" })).created).toBe(true);
+      expect(ok(s.deleteChannel("late")).lifecycle).toBe("retired");
+      refused(msg(s, "x", "late"), "channel_retired"); // retired is reported before the session check
+      refused(msg(s, "x", "open-one"), "not_running");
+    });
+
+    test("session resume skips an individually suspended channel and never checks its key", () => {
+      const { adapter, s: first } = create();
+      let s = first;
+      const a = atBoundary(s, "c1"); ok(msg(s, "p", "c1", "p")); ok(msg(s, "q", "c2", "q"));
+      ok(s.beginChannelSuspend("c1")); ok(s.checkpointTurn(a));
+      ok(s.beginSuspend());
+      refused(msg(s, "x", "c1"), "not_running"); // both closed: the session answers first
+      refused(s.takePending(a), "invalid_state");
+      ok(s.completeSuspend());
+      // Another configuration resumes the session; the old checkpoint is neither resumed nor blocking.
+      s = reopen(adapter, s, "k2");
+      expect(lifecycleOf(s, "c1")).toBe("suspended");
+      expect(ok(s.resume()).turns).toEqual([]);
+      expect(stateOf(s, a)).toBe("suspended");
+      expect(snap(s).session.lifecycle).toBe("running");
+      unchanged(s, () => refused(s.resumeChannel("c1"), "incompatible")); // checked only when it would continue the turn
+      expect(begin(s, "c2").items.map(item => item.itemId)).toEqual(["q"]); // other work runs
+      s = reopen(adapter, s, "k1");
+      expect(ok(s.resumeChannel("c1")).turn).toMatchObject({ turnId: a, state: { status: "running" } });
+      expect(ok(s.takePending(a)).items.map(item => item.itemId)).toEqual(["p"]);
+    });
+
+    test("resuming a channel during session suspension clears only the channel suspension", () => {
+      const { adapter, s: first } = create();
+      let s = first;
+      const a = atBoundary(s); ok(msg(s, "p", "c1", "p"));
+      ok(s.beginChannelSuspend("c1")); ok(s.checkpointTurn(a));
+      ok(s.beginSuspend()); ok(s.completeSuspend());
+      const resumed = ok(s.resumeChannel("c1"));
+      expect(resumed.channel.lifecycle).toBe("open");
+      expect(resumed.turn).toBeUndefined(); // starts no work
+      expect(stateOf(s, a)).toBe("suspended"); // the checkpoint now sits under the session suspension
+      refused(s.beginTurn("c1"), "not_running"); refused(msg(s, "x", "c1"), "not_running");
+      refused(s.deleteChannel("c1"), "channel_busy");
+      s = reopen(adapter, s); // a clean session suspension keeps it
+      expect(stateOf(s, a)).toBe("suspended");
+      const back = ok(s.resume());
+      expect(back.turns.map(turn => turn.turnId)).toEqual([a]);
+      expect(ok(s.takePending(a)).items.map(item => item.itemId)).toEqual(["p"]);
+      // Suspending the channel again while the session is suspended keeps the checkpoint.
+      ok(s.beginSuspend()); ok(s.checkpointTurn(a)); ok(s.completeSuspend());
+      expect(lifecycleOf(s, "c1")).toBe("open");
+      expect(ok(s.beginChannelSuspend("c1")).lifecycle).toBe("suspended");
+      expect(ok(s.resume()).turns).toEqual([]);
+      expect(stateOf(s, a)).toBe("suspended");
+    });
+
+    test("stop and crash keep committed channel suspensions and interrupt everything else", () => {
+      for (const crash of [false, true]) {
+        const { adapter, s: first } = create();
+        let s = first;
+        const a = atBoundary(s, "c1"), b = atBoundary(s, "c2"), c = atBoundary(s, "c3"), d = atBoundary(s, "c4");
+        ok(msg(s, "p", "c1", "p")); ok(msg(s, "r", "c3", "r"));
+        ok(s.beginChannelSuspend("c1")); ok(s.checkpointTurn(a)); // committed individually
+        ok(s.beginChannelSuspend("c3")); // still suspending: its suspension never commits
+        ok(s.beginSuspend()); ok(s.checkpointTurn(b)); // c2's checkpoint belongs to the unfinished session suspension
+        call(s, d, "open-call"); // c4 is mid-iteration
+        let ended: number[];
+        if (crash) { s = reopen(adapter, s); ended = snap(s).turns.filter(t => t.state.status === "interrupted").map(t => t.turnId); }
+        else ended = ok(s.interruptActive("stop")).map(t => t.turnId);
+        expect(ended.sort()).toEqual([b, c, d]);
+        const view = snap(s);
+        expect(view.session.lifecycle).toBe("running");
+        expect(stateOf(s, a)).toBe("suspended");
+        expect(lifecycleOf(s, "c1")).toBe("suspended");
+        expect(lifecycleOf(s, "c3")).toBe("open"); // back to open, its turn interrupted
+        expect(view.turns.find(t => t.turnId === d)!.state).toMatchObject({ status: "interrupted", uncertainCallIds: ["open-call"] });
+        expect(view.items.find(item => item.itemId === "r")!.milestone).toBe("received"); // backlog preserved
+        // The interrupted channel accepts new work; the suspended one still waits for its resume.
+        ok(msg(s, "again", "c3", "again")); expect(begin(s, "c3").items.map(item => item.itemId)).toEqual(["r", "again"]);
+        refused(msg(s, "x", "c1"), "channel_suspended");
+        expect(ok(s.resumeChannel("c1")).turn).toMatchObject({ turnId: a });
+      }
+    });
+
+    test("a crash during a channel suspension, before it commits, interrupts the turn and keeps the backlog", () => {
+      const { adapter, s: first } = create();
+      const t = atBoundary(first); call(first, t, "inflight"); ok(msg(first, "p", "c1", "p"));
+      ok(first.beginChannelSuspend("c1"));
+      const s = reopen(adapter, first);
+      expect(lifecycleOf(s, "c1")).toBe("open");
+      expect(snap(s).turns[0]!.state).toMatchObject({ status: "interrupted", uncertainCallIds: ["inflight"] });
+      expect(snap(s).items.find(item => item.itemId === "p")!.milestone).toBe("received");
+      ok(msg(s, "new", "c1", "n"));
+      expect(begin(s).items.map(item => item.itemId)).toEqual(["p", "n"]);
+    });
+
+    test("export of a running session needs no checkpoint and no suspending channel", () => {
+      const { s } = create();
+      const t = atBoundary(s); say(s, t, "done");
+      ok(s.beginChannelSuspend("c1"));
+      refused(s.exportArchive(), "busy"); // suspending
+      ok(s.finishTurn(t, { status: "completed" }));
+      expect(ok(s.exportArchive()).snapshot.channels[0]!.lifecycle).toBe("suspended"); // no checkpoint, no backlog
+      ok(s.resumeChannel("c1"));
+      const u = atBoundary(s, "c2"); ok(s.beginChannelSuspend("c2")); ok(s.checkpointTurn(u));
+      refused(s.exportArchive(), "busy"); // a checkpoint on a suspended channel
+      ok(s.beginSuspend()); ok(s.completeSuspend());
+      expect(ok(s.exportArchive()).snapshot.turns.some(turn => turn.state.status === "suspended")).toBe(true);
+    });
+
+    /** A suspended-session archive carrying every new record kind. */
+    function richArchive() {
+      const { s } = create();
+      ok(s.createChannel({ channelId: "named", displayName: "Named" }));
+      const a = atBoundary(s, "c1"); ok(msg(s, "p", "c1", "p"));
+      ok(msg(s, "w", "c2", "w")); ok(s.withdrawItem("c2", "w"));
+      ok(s.beginChannelSuspend("c1")); ok(s.checkpointTurn(a));
+      ok(msg(s, "gone", "c3", "g")); ok(s.withdrawItem("c3", "g")); ok(s.deleteChannel("c3"));
+      ok(s.beginSuspend()); ok(s.completeSuspend());
+      return { s, a, archive: JSON.parse(JSON.stringify(ok(s.exportArchive()))) };
+    }
+
+    test("an archive round-trips channel state, names, withdrawn items, retired IDs and checkpoints", () => {
+      const { s, a, archive } = richArchive();
+      expect(archive.archiveVersion).toBe(2);
+      const home = location();
+      ok(home.importArchive(archive, { sessionId: "copy" }));
+      const copy = ok(home.open({ mode: "open", identity: { sessionId: "copy", compatibilityKey: "k1" } }));
+      expect(snap(copy)).toEqual({ ...snap(s), session: { ...snap(s).session, sessionId: "copy" } });
+      expect(snap(copy).channels.map(c => [c.channelId, c.lifecycle, c.displayName])).toEqual(
+        [["named", "open", "Named"], ["c1", "suspended", undefined], ["c2", "open", undefined], ["c3", "retired", undefined]]);
+      expect(ok(msg(copy, "w", "c2", "w"))).toMatchObject({ duplicate: true, item: { milestone: "withdrawn" } });
+      refused(msg(copy, "x", "c3"), "channel_retired");
+      // The imported individual suspension survives a session resume and ends only by its own resume.
+      expect(ok(copy.resume()).turns).toEqual([]);
+      expect(ok(copy.resumeChannel("c1")).turn).toMatchObject({ turnId: a });
+    });
+
+    test("import rejects archives that open would interrupt or that would run a retired channel", () => {
+      const { archive } = richArchive();
+      const broken: [string, (archive: any) => void][] = [
+        ["suspending channel", a => { a.snapshot.channels[1].lifecycle = "suspending"; }],
+        ["retired channel holds a checkpoint", a => { a.snapshot.channels[1].lifecycle = "retired"; }],
+        ["unknown channel state", a => { a.snapshot.channels[0].lifecycle = "paused"; }],
+        ["bad name", a => { a.snapshot.channels[0].displayName = ""; }],
+        ["withdrawn with a turn link", a => { const w = a.snapshot.items.find((i: any) => i.milestone === "withdrawn"); w.turnId = 1; w.entrySeq = 1; }],
+        ["withdrawn without a time", a => { delete a.snapshot.items.find((i: any) => i.milestone === "withdrawn").withdrawnAt; }],
+        ["withdrawal time on a pending item", a => { a.snapshot.items.find((i: any) => i.milestone === "received").withdrawnAt = "t"; }],
+        ["pending item on a retired channel", a => { const item = a.snapshot.items.find((i: any) => i.milestone === "received");
+          a.snapshot.channels.find((c: any) => c.channelId === item.channelId).lifecycle = "retired"; }],
+        ["checkpoint nothing holds", a => { a.snapshot.channels[1].lifecycle = "open"; a.snapshot.session.lifecycle = "running"; }],
+      ];
+      for (const [label, damage] of broken) {
+        const copy = JSON.parse(JSON.stringify(archive)); damage(copy);
+        const home = location();
+        expect([label, home.importArchive(copy).ok ? "ok" : "rejected"]).toEqual([label, "rejected"]);
+        refused(home.open({ mode: "open", identity: id() }), "not_found");
+      }
+      // A running turn on a retired channel is rejected in a running session as well.
+      const idle = JSON.parse(JSON.stringify(archive));
+      idle.snapshot.session.lifecycle = "running";
+      for (const channel of idle.snapshot.channels) channel.lifecycle = "open";
+      idle.snapshot.items = idle.snapshot.items.filter((i: any) => i.milestone !== "received");
+      idle.snapshot.turns[0].state = { status: "running" };
+      idle.snapshot.channels[1].lifecycle = "retired";
+      refused(location().importArchive(idle), "invalid_archive");
+    });
+
+    test("archive version 1 from the persistence revision imports with every channel open", () => {
+      const { s } = create();
+      const t = atBoundary(s); ok(msg(s, "p", "c1", "p"));
+      ok(s.beginSuspend()); ok(s.checkpointTurn(t)); ok(s.completeSuspend());
+      const v1 = JSON.parse(JSON.stringify(ok(s.exportArchive())));
+      v1.archiveVersion = 1; v1.snapshot.session.formatVersion = 2;
+      for (const channel of v1.snapshot.channels) { delete channel.lifecycle; delete channel.displayName; }
+      const home = location();
+      ok(home.importArchive(JSON.parse(JSON.stringify(v1))));
+      const copy = ok(home.open({ mode: "open", identity: id() }));
+      expect(snap(copy).session.formatVersion).toBe(3);
+      expect(snap(copy).channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }]);
+      expect(ok(copy.resume()).turns.map(turn => turn.turnId)).toEqual([t]); // session-wide resume, as before
+      expect(ok(copy.takePending(t)).items.map(item => item.itemId)).toEqual(["p"]);
+      // Version 1 cannot carry withdrawn items or newer channel fields it never had.
+      const bad = JSON.parse(JSON.stringify(v1)); bad.snapshot.items[0].milestone = "withdrawn"; bad.snapshot.items[0].withdrawnAt = "t";
+      refused(location().importArchive(bad), "invalid_archive");
     });
 
     test("an archive round-trips a suspended session with IDs, deduplication and counters", () => {
@@ -455,8 +823,8 @@ export function storageConformance(name: string, location: () => SessionStorageA
       const good = JSON.stringify(ok(s.exportArchive()));
       const broken: ((archive: any) => void)[] = [
         a => { a.format = "something-else"; },
-        a => { a.archiveVersion = 2; },
-        a => { a.snapshot.session.formatVersion = 3; },
+        a => { a.archiveVersion = 3; },
+        a => { a.snapshot.session.formatVersion = 4; },
         a => { a.snapshot.session.lifecycle = "suspending"; },
         a => { a.snapshot.turns[0].state = { status: "running" }; },
         a => { a.snapshot.turns[0].state = { status: "suspended", checkpoint: { nextStep: "inference", afterSeq: 1 } }; },

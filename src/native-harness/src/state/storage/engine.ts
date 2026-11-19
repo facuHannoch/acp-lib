@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
-  AcceptItem, SessionArchive, SessionLifecycle, SessionStorage, StorageErrorCode, StorageResult,
-  StorageSnapshot, StoredItem, StoredSession, StoredTurn, TimelineEntry, TurnTake,
+  AcceptItem, ChannelLifecycle, SessionArchive, SessionLifecycle, SessionStorage, StorageErrorCode, StorageResult,
+  StorageSnapshot, StoredChannel, StoredItem, StoredSession, StoredTurn, TimelineEntry, TurnTake,
 } from "../../contracts/storage.ts";
 
 /** Session-wide scalars. `revision` is also the last allocated global seq. */
@@ -9,6 +9,8 @@ export interface Meta {
   sessionId: string; formatVersion: number; createdAt: string; compatibilityKey: string;
   lifecycle: SessionLifecycle; revision: number; nextTurnId: number; nextItemNumber: number;
 }
+/** A channel as stored; `participantIds` is derived from the timeline. */
+export type ChannelRow = Omit<StoredChannel, "participantIds">;
 /** A turn as stored; `itemIds` is derived from the items linked to it. */
 export type TurnRow = Omit<StoredTurn, "itemIds">;
 
@@ -19,16 +21,18 @@ export interface Tables {
   transaction<T>(run: () => T): T;
   getMeta(): Meta;
   setMeta(meta: Meta): void;
-  hasChannel(channelId: string): boolean;
-  addChannel(channelId: string): void;
-  channels(): string[];
+  channel(channelId: string): ChannelRow | undefined;
+  /** Insert, or update name/lifecycle of an existing channel (position is kept). */
+  putChannel(channel: ChannelRow): void;
+  /** In creation order. */
+  channels(): ChannelRow[];
   /** Idempotent. */
   addParticipant(participantId: string): void;
   participants(): string[];
   item(itemId: string): StoredItem | undefined;
   /** Insert, or update milestone/turn link of an existing item. */
   putItem(item: StoredItem): void;
-  /** Milestone `received`, in acceptedSeq order. */
+  /** Milestone `received` (never `withdrawn`), in acceptedSeq order. */
   pendingItems(channelId: string): StoredItem[];
   /** In take (entrySeq) order. */
   itemsOfTurn(turnId: number): StoredItem[];
@@ -54,7 +58,14 @@ export function failure<T>(error: unknown): StorageResult<T> {
 }
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const AUTO = /^auto:(0|[1-9]\d*)$/;
-const RANK = { received: 0, taken: 1, delivered: 2, seen: 3 } as const;
+const RANK = { received: 0, taken: 1, delivered: 2, seen: 3, withdrawn: 4 } as const;
+const NAME_MAX = 200;
+/** A display name as stored: trimmed, 1..200 characters. */
+function cleanName(name: unknown): string {
+  if (typeof name !== "string" || !name.trim() || name.trim().length > NAME_MAX)
+    fail("invalid_input", `Display name must be 1..${NAME_MAX} characters`);
+  return (name as string).trim();
+}
 
 /** The contract's exact signature; identical for both adapters and archives. */
 export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text">): string {
@@ -98,7 +109,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 2, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: 3, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -113,24 +124,38 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
   }
   return {
     revision: meta.revision, session: session(meta),
-    channels: tables.channels().map(channelId => ({ channelId, participantIds: [...spoke.get(channelId) ?? []] })),
+    channels: tables.channels().map(row => ({ channelId: row.channelId, ...(row.displayName === undefined ? {} : { displayName: row.displayName }),
+      lifecycle: row.lifecycle, participantIds: [...spoke.get(row.channelId) ?? []] })),
     participants: tables.participants().map(participantId => ({ participantId })),
     turns: tables.turns().map(row => ({ ...row, itemIds: tables.itemsOfTurn(row.turnId).map(item => item.itemId) })),
     items: tables.items(), timeline,
   };
 }
 
-/** Reopen recovery, one transaction, executes nothing. A cleanly suspended
- * session, or a running one with no unfinished turn, is left unwritten. */
-export function recover(tables: Tables): void {
+/** Reopen recovery, one transaction, executes nothing. `upgrade` (format 2 data,
+ * decision 0014) runs first in the same transaction, so a failure leaves the
+ * data untouched. Interrupted: every running turn, and every checkpointed turn
+ * whose channel is not individually `suspended` (a committed channel suspension
+ * and its checkpoint survive, in every lifecycle); a clean session suspension
+ * keeps all. A `suspending` channel never committed and returns to `open`. A
+ * clean state with nothing to change is left unwritten. */
+export function recover(tables: Tables, upgrade?: () => void): void {
   tables.transaction(() => {
+    if (upgrade) upgrade();
     const meta = tables.getMeta();
-    if (meta.lifecycle === "suspended") return;
-    const live = tables.turns().filter(turn => turn.state.status === "running" || turn.state.status === "suspended");
-    if (!live.length && meta.lifecycle === "running") return;
-    for (const turn of live) tables.putTurn({ ...turn, state: { status: "interrupted",
-      reason: "The owning process exited before this turn finished", uncertainCallIds: unanswered(tables, turn.turnId) } });
-    tables.setMeta({ ...meta, lifecycle: "running", revision: meta.revision + 1 });
+    let changed = !!upgrade;
+    if (upgrade) meta.formatVersion = 3;
+    if (meta.lifecycle !== "suspended") {
+      const kept = (turn: TurnRow) => turn.state.status === "suspended"
+        && tables.channel(turn.channelId)?.lifecycle === "suspended";
+      const live = tables.turns().filter(turn => (turn.state.status === "running" || turn.state.status === "suspended") && !kept(turn));
+      for (const turn of live) tables.putTurn({ ...turn, state: { status: "interrupted",
+        reason: "The owning process exited before this turn finished", uncertainCallIds: unanswered(tables, turn.turnId) } });
+      const reopened = tables.channels().filter(channel => channel.lifecycle === "suspending");
+      for (const channel of reopened) tables.putChannel({ ...channel, lifecycle: "open" });
+      if (live.length || reopened.length || meta.lifecycle !== "running") { meta.lifecycle = "running"; changed = true; }
+    }
+    if (changed) tables.setMeta({ ...meta, revision: meta.revision + 1 });
   });
 }
 
@@ -184,8 +209,25 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
   function interrupt(turn: TurnRow, status: "failed" | "interrupted", reason: string): TurnRow {
     const ended: TurnRow = { ...turn, state: { status, reason, uncertainCallIds: unanswered(tables, turn.turnId) } };
     tables.putTurn(ended);
+    settle(turn.channelId);
     return ended;
   }
+  /** The channel's running turn just left `running` (end or checkpoint): a
+   * `suspending` channel becomes `suspended` in this same transaction. */
+  function settle(channelId: string): void {
+    const channel = tables.channel(channelId);
+    if (channel?.lifecycle === "suspending") tables.putChannel({ ...channel, lifecycle: "suspended" });
+  }
+  const channelOf = (channelId: unknown): ChannelRow => {
+    const channel = typeof channelId === "string" ? tables.channel(channelId) : undefined;
+    if (!channel) return fail("not_found", `Unknown channel: ${String(channelId)}`);
+    if (channel.lifecycle === "retired") return fail("channel_retired", `Channel ${channel.channelId} is retired`);
+    return channel;
+  };
+  const view = (channel: ChannelRow): StoredChannel => {
+    const spoke = new Set(tables.entries().filter(entry => entry.channelId === channel.channelId && entry.kind === "participant_message").map(entry => entry.from));
+    return { ...channel, participantIds: [...spoke] };
+  };
 
   return {
     acceptItem: input => run(meta => {
@@ -204,9 +246,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         || (input.itemId !== undefined && !text(input.itemId))
         || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
         fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
-      if (notice && !tables.hasChannel(input.channelId)) fail("not_found", `Unknown channel: ${input.channelId}`);
+      const target = tables.channel(input.channelId);
+      if (notice && !target) fail("not_found", `Unknown channel: ${input.channelId}`);
+      if (target?.lifecycle === "retired") fail("channel_retired", `Channel ${input.channelId} is retired`);
       if (meta.lifecycle === "suspended" || (meta.lifecycle === "suspending" && !notice))
         fail("not_running", `Session is ${meta.lifecycle}; new work is not admitted`);
+      if (target && target.lifecycle !== "open") fail("channel_suspended", `Channel ${input.channelId} is ${target.lifecycle}; new work is not admitted`);
       let itemId = input.itemId;
       if (itemId === undefined) itemId = `auto:${meta.nextItemNumber++}`;
       else {
@@ -221,7 +266,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), text: input.text,
         signature: signatureOf(input), acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
       if (!notice) {
-        if (!tables.hasChannel(item.channelId)) tables.addChannel(item.channelId);
+        if (!target) tables.putChannel({ channelId: item.channelId, lifecycle: "open" });
         tables.addParticipant(item.senderId);
       }
       tables.putItem(item);
@@ -230,7 +275,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
 
     beginTurn: channelId => run(meta => {
       if (meta.lifecycle !== "running") fail("not_running", `Session is ${meta.lifecycle}; no turn can begin`);
-      if (typeof channelId !== "string" || tables.liveTurn(channelId)) return null;
+      const channel = channelOf(channelId);
+      if (channel.lifecycle !== "open") fail("channel_suspended", `Channel ${channel.channelId} is ${channel.lifecycle}; no turn can begin`);
+      if (tables.liveTurn(channel.channelId)) return null;
       const pending = tables.pendingItems(channelId);
       if (!pending.length) return null;
       const turn: TurnRow = { turnId: meta.nextTurnId++, channelId, startedSeq: seq(meta), startedAt: now(),
@@ -242,6 +289,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     takePending: turnId => run(meta => {
       const turn = running(turnId);
       if (meta.lifecycle !== "running") fail("not_running", `Session is ${meta.lifecycle}; input stays pending`);
+      const channel = channelOf(turn.channelId);
+      if (channel.lifecycle !== "open") fail("channel_suspended", `Channel ${channel.channelId} is ${channel.lifecycle}; input stays pending`);
       return take(meta, turn, tables.pendingItems(turn.channelId));
     }),
 
@@ -282,7 +331,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         const pending = tables.pendingItems(turn.channelId).length;
         if (pending) return { finished: false as const, pending };
         const done: TurnRow = { ...turn, state: { status: "completed" } };
-        tables.putTurn(done); seq(meta);
+        tables.putTurn(done); settle(turn.channelId); seq(meta);
         return { finished: true as const, turn: full(done) };
       }
       if (!outcome || (outcome.status !== "failed" && outcome.status !== "interrupted") || !text(outcome.reason))
@@ -294,14 +343,15 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
 
     checkpointTurn: turnId => run(meta => {
       const turn = running(turnId);
-      if (meta.lifecycle !== "suspending") fail("invalid_state", "Checkpoints are saved only while suspending");
+      if (meta.lifecycle !== "suspending" && tables.channel(turn.channelId)?.lifecycle !== "suspending")
+        fail("invalid_state", "Checkpoints are saved only while the session or the channel is suspending");
       if (unanswered(tables, turnId).length) fail("invalid_state", "A tool call in this turn has no recorded result");
       const last = tables.entriesOfTurn(turnId).at(-1);
       if (last?.message.role === "assistant" && !last.message.calls.length && !tables.pendingItems(turn.channelId).length)
         fail("invalid_state", "This turn is finished; complete it instead of checkpointing");
       const saved: TurnRow = { ...turn, state: { status: "suspended",
         checkpoint: { nextStep: "inference", afterSeq: last?.seq ?? turn.startedSeq } } };
-      tables.putTurn(saved); seq(meta);
+      tables.putTurn(saved); settle(turn.channelId); seq(meta);
       return full(saved);
     }),
 
@@ -321,7 +371,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     resume: () => run(meta => {
       if (meta.lifecycle === "running") return { session: session(meta), turns: [] };
       if (meta.lifecycle !== "suspended") fail("invalid_state", "Session is still suspending");
-      const saved = tables.turns().filter(turn => turn.state.status === "suspended");
+      // Turns of individually suspended (or retired) channels are not ours to resume.
+      const saved = tables.turns().filter(turn => turn.state.status === "suspended"
+        && ["open", "suspending"].includes(tables.channel(turn.channelId)?.lifecycle ?? "retired"));
       const foreign = saved.find(turn => turn.compatibilityKey !== ownerKey);
       if (foreign) fail("incompatible", `Turn ${foreign.turnId} was checkpointed under a different configuration`);
       const turns = saved.map(turn => { const live: TurnRow = { ...turn, state: { status: "running" } }; tables.putTurn(live); return full(live); });
@@ -333,21 +385,106 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (!text(reason)) fail("invalid_input", "Interruption needs a reason");
       if (meta.lifecycle === "suspended") return [];
       const suspending = meta.lifecycle === "suspending";
-      const ended = tables.turns().filter(turn => turn.state.status === "running" || (suspending && turn.state.status === "suspended"))
+      const held = (turn: TurnRow) => tables.channel(turn.channelId)?.lifecycle === "suspended";
+      // A `suspending` channel never committed: it returns to `open`, not to
+      // `suspended`, so settle it only after the turns below have ended.
+      const reopened = tables.channels().filter(channel => channel.lifecycle === "suspending");
+      for (const channel of reopened) tables.putChannel({ ...channel, lifecycle: "open" });
+      const ended = tables.turns().filter(turn => turn.state.status === "running" || (suspending && turn.state.status === "suspended" && !held(turn)))
         .map(turn => full(interrupt(turn, "interrupted", reason)));
       if (suspending) meta.lifecycle = "running";
-      if (ended.length || suspending) seq(meta);
+      if (ended.length || suspending || reopened.length) seq(meta);
       return ended;
+    }),
+
+    createChannel: input => run(meta => {
+      if (!input || typeof input !== "object" || !text(input.channelId)) fail("invalid_input", "Channel needs a channelId");
+      const name = input.displayName === undefined ? undefined : cleanName(input.displayName);
+      const known = tables.channel(input.channelId);
+      if (known?.lifecycle === "retired") fail("channel_retired", `Channel ${input.channelId} is retired`);
+      if (known) {
+        if (known.displayName !== name) fail("already_exists", `Channel ${input.channelId} already exists with a different name`);
+        return { channel: view(known), created: false };
+      }
+      const row: ChannelRow = { channelId: input.channelId, ...(name === undefined ? {} : { displayName: name }), lifecycle: "open" };
+      tables.putChannel(row); seq(meta);
+      return { channel: view(row), created: true };
+    }),
+
+    editChannel: (channelId, displayName) => run(meta => {
+      const channel = channelOf(channelId);
+      const name = displayName === null ? undefined : cleanName(displayName);
+      if (channel.displayName === name) return view(channel);
+      const { displayName: _old, ...rest } = channel;
+      const row: ChannelRow = { ...rest, ...(name === undefined ? {} : { displayName: name }) };
+      tables.putChannel(row); seq(meta);
+      return view(row);
+    }),
+
+    beginChannelSuspend: channelId => run(meta => {
+      const channel = channelOf(channelId);
+      if (channel.lifecycle !== "open") return view(channel);
+      // A checkpointed turn is not running: nothing to wait for.
+      const row: ChannelRow = { ...channel, lifecycle: tables.liveTurn(channel.channelId)?.state.status === "running" ? "suspending" : "suspended" };
+      tables.putChannel(row); seq(meta);
+      return view(row);
+    }),
+
+    resumeChannel: channelId => run(meta => {
+      const channel = channelOf(channelId);
+      if (channel.lifecycle === "open") return { channel: view(channel) };
+      if (channel.lifecycle === "suspending") fail("invalid_state", `Channel ${channel.channelId} is still suspending`);
+      const saved = tables.liveTurn(channel.channelId);
+      const cont = saved?.state.status === "suspended" && meta.lifecycle === "running" ? saved : undefined;
+      if (cont && cont.compatibilityKey !== ownerKey)
+        fail("incompatible", `Turn ${cont.turnId} was checkpointed under a different configuration`);
+      const row: ChannelRow = { ...channel, lifecycle: "open" };
+      tables.putChannel(row);
+      let turn: StoredTurn | undefined;
+      if (cont) { const live: TurnRow = { ...cont, state: { status: "running" } }; tables.putTurn(live); turn = full(live); }
+      seq(meta);
+      return { channel: view(row), ...(turn ? { turn } : {}) };
+    }),
+
+    deleteChannel: channelId => run(meta => {
+      const channel = tables.channel(channelId as string) ?? fail("not_found", `Unknown channel: ${String(channelId)}`);
+      if (channel.lifecycle === "retired") return view(channel);
+      if (tables.liveTurn(channel.channelId)) fail("channel_busy", `Channel ${channel.channelId} has an active or checkpointed turn`);
+      if (tables.pendingItems(channel.channelId).length) fail("channel_busy", `Channel ${channel.channelId} has pending input`);
+      const row: ChannelRow = { ...channel, lifecycle: "retired" };
+      tables.putChannel(row); seq(meta);
+      return view(row);
+    }),
+
+    withdrawItem: (channelId, itemId) => run(meta => {
+      const known = typeof itemId === "string" ? tables.item(itemId) : undefined;
+      if (!known || known.channelId !== channelId) fail("not_found", `Unknown item ${String(itemId)} on channel ${String(channelId)}`);
+      const item = known!;
+      if (item.milestone === "withdrawn") return { outcome: "withdrawn" as const, item, repeated: true };
+      if (item.milestone !== "received") return { outcome: "taken" as const, item, turnId: item.turnId! };
+      const withdrawn: StoredItem = { ...item, milestone: "withdrawn", withdrawnAt: now() };
+      tables.putItem(withdrawn); seq(meta);
+      return { outcome: "withdrawn" as const, item: withdrawn, repeated: false };
+    }),
+
+    interruptTurn: (channelId, turnId, reason) => run(meta => {
+      if (!text(reason)) fail("invalid_input", "Interruption needs a reason");
+      const turn = tables.turn(turnId);
+      if (!turn || turn.channelId !== channelId) fail("not_found", `Unknown turn ${String(turnId)} on channel ${String(channelId)}`);
+      if (turn!.state.status !== "running") return { interrupted: false as const, turn: full(turn!) };
+      const ended = interrupt(turn!, "interrupted", reason); seq(meta);
+      return { interrupted: true as const, turn: full(ended) };
     }),
 
     snapshot: () => run(() => readSnapshot(tables)),
 
     exportArchive: () => run(meta => {
       const snapshot = readSnapshot(tables);
-      const idle = meta.lifecycle === "running" && !snapshot.turns.some(turn => turn.state.status === "running")
+      const idle = meta.lifecycle === "running" && !snapshot.turns.some(turn => turn.state.status === "running" || turn.state.status === "suspended")
+        && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: 1, exportedAt: now(), snapshot,
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: 2, exportedAt: now(), snapshot,
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
     }),

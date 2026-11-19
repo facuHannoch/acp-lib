@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { createSqliteStorageAdapter } from "../src/state/storage/sqlite.ts";
 import { storageConformance } from "./conformance/storage.ts";
+import { FORMAT2_SCHEMA } from "./fixtures/format2-schema.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "harness-storage-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -66,7 +67,7 @@ test("unreadable or unsupported files are refused without being modified", () =>
   { const db = new Database(foreign); db.exec("CREATE TABLE notes (body TEXT)"); db.close(); }
   const future = fresh();
   { const first = createSqliteStorageAdapter(future).open({ mode: "create", identity }); if (first.ok) first.value.close(); }
-  { const db = new Database(future); db.exec("UPDATE meta SET value = '3' WHERE key = 'formatVersion'"); db.close(); }
+  { const db = new Database(future); db.exec("UPDATE meta SET value = '4' WHERE key = 'formatVersion'"); db.close(); }
   for (const path of [junk, foreign, future]) {
     const before = readFileSync(path);
     const adapter = createSqliteStorageAdapter(path);
@@ -113,4 +114,91 @@ test("a constraint the engine did not anticipate rolls the whole operation back"
   expect(failed.ok ? "ok" : failed.error.code).toBe("storage_failure");
   expect(JSON.stringify(again.value.snapshot())).toBe(before);
   again.value.close();
+});
+
+/** A database as the persistence revision wrote it: format 2, no channel state.
+ * Channel `c1` has a taken item and a turn in the given state; `c2` has one
+ * pending item. Rows follow the old engine's layout exactly. */
+function format2(path: string, lifecycle: "running" | "suspended", turn: "running" | "suspended") {
+  const db = new Database(path, { create: true, readwrite: true });
+  db.exec(FORMAT2_SCHEMA);
+  const meta = { sessionId: "s1", formatVersion: "2", createdAt: "2026-11-01T00:00:00.000Z", compatibilityKey: "k1", lifecycle,
+    revision: "5", nextTurnId: "2", nextItemNumber: "3" };
+  for (const [key, value] of Object.entries(meta)) db.query("INSERT INTO meta VALUES (?, ?)").run(key, value);
+  db.exec(`INSERT INTO channels VALUES ('c1', 0), ('c2', 1); INSERT INTO participants VALUES ('ana', 0)`);
+  const state = turn === "running" ? { status: "running" } : { status: "suspended", checkpoint: { nextStep: "inference", afterSeq: 3 } };
+  db.query("INSERT INTO turns VALUES (1, 'c1', 2, 't', 'k1', ?, ?)").run(turn, JSON.stringify(state));
+  db.query("INSERT INTO entries VALUES (3, 't', 'c1', 1, 'ana', 'participant_message', NULL, 'i1', ?)")
+    .run(JSON.stringify({ role: "user", content: 'Participant: "ana"\n\nhello' }));
+  const sig = (id: string, channel: string, text: string) => new Bun.CryptoHasher("sha256")
+    .update(JSON.stringify(["participant_message", channel, "ana", null, text])).digest("hex");
+  db.query("INSERT INTO items VALUES ('i1', 'participant_message', 'c1', 'ana', NULL, 'hello', ?, 1, 't', 'taken', 1, 3)").run(sig("i1", "c1", "hello"));
+  db.query("INSERT INTO items VALUES ('i2', 'participant_message', 'c2', 'ana', NULL, 'waiting', ?, 4, 't', 'received', NULL, NULL)").run(sig("i2", "c2", "waiting"));
+  db.close();
+}
+const rawFormat = (path: string) => { const db = new Database(path); const row = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'formatVersion'").get(); db.close(); return row!.value; };
+const must = <T>(result: { ok: true; value: T } | { ok: false; error: { code: string; message: string } }): T => {
+  if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+  return result.value;
+};
+
+test("a format 2 database with a session-wide suspension opens, upgrades once and resumes as before", () => {
+  const path = fresh(); format2(path, "suspended", "suspended");
+  const adapter = createSqliteStorageAdapter(path);
+  const s = must(adapter.open({ mode: "open", identity }));
+  const view = must(s.snapshot());
+  expect(view.session).toMatchObject({ formatVersion: 3, lifecycle: "suspended" });
+  expect(view.channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }, { channelId: "c2", lifecycle: "open", participantIds: [] }]);
+  expect(view.turns[0]!.state.status).toBe("suspended"); // untouched by the upgrade
+  expect(view.items.map(item => [item.itemId, item.milestone])).toEqual([["i1", "taken"], ["i2", "received"]]);
+  expect(must(s.resume()).turns.map(turn => turn.turnId)).toEqual([1]);
+  // New records work on upgraded tables, including the rebuilt items constraints.
+  expect(must(s.withdrawItem("c2", "i2")).outcome).toBe("withdrawn");
+  expect(must(s.beginChannelSuspend("c2")).lifecycle).toBe("suspended");
+  s.close();
+  expect(rawFormat(path)).toBe("3"); // upgraded durably, readable only by this revision from now on
+  const again = must(adapter.open({ mode: "open", identity }));
+  expect(must(again.snapshot()).items.find(item => item.itemId === "i2")!.milestone).toBe("withdrawn");
+  again.close();
+});
+
+test("a format 2 database that was not cleanly suspended is recovered as before the upgrade", () => {
+  const path = fresh(); format2(path, "running", "running");
+  const s = must(createSqliteStorageAdapter(path).open({ mode: "open", identity }));
+  const view = must(s.snapshot());
+  expect(view.turns[0]!.state).toMatchObject({ status: "interrupted" });
+  expect(view.channels.every(channel => channel.lifecycle === "open")).toBe(true);
+  expect(view.items.find(item => item.itemId === "i2")!.milestone).toBe("received");
+  expect(must(s.acceptItem({ kind: "participant_message", channelId: "c1", senderId: "ana", text: "next" })).duplicate).toBe(false);
+  s.close();
+});
+
+test("a failed upgrade leaves the format 2 file untouched", () => {
+  const path = fresh(); format2(path, "suspended", "suspended");
+  { const db = new Database(path); db.exec("CREATE TABLE items_v2 (x)"); db.close(); } // makes the rebuild fail midway
+  const before = readFileSync(path);
+  const opened = createSqliteStorageAdapter(path).open({ mode: "open", identity });
+  expect(opened.ok).toBe(false);
+  expect(readFileSync(path).equals(before)).toBe(true);
+  expect(rawFormat(path)).toBe("2");
+});
+
+test("a retired channel that still holds a checkpoint is left alone by session resume", () => {
+  const path = fresh(), adapter = createSqliteStorageAdapter(path);
+  const s = must(adapter.open({ mode: "create", identity }));
+  s.acceptItem({ kind: "participant_message", channelId: "c1", senderId: "ana", text: "a", itemId: "a" });
+  s.acceptItem({ kind: "participant_message", channelId: "c2", senderId: "ana", text: "b", itemId: "b" });
+  const t1 = must(s.beginTurn("c1"))!.turn.turnId, t2 = must(s.beginTurn("c2"))!.turn.turnId;
+  must(s.beginSuspend()); must(s.checkpointTurn(t1)); must(s.checkpointTurn(t2)); must(s.completeSuspend());
+  s.close();
+  // Only reachable through damaged data: the API never retires a channel with a checkpoint.
+  { const db = new Database(path); db.exec("UPDATE channels SET lifecycle = 'retired' WHERE channel_id = 'c1'"); db.close(); }
+  const again = must(adapter.open({ mode: "open", identity: { ...identity, compatibilityKey: "k1" } }));
+  const resumed = must(again.resume());
+  expect(resumed.turns.map(turn => turn.turnId)).toEqual([t2]); // the retired channel's turn never runs
+  const view = must(again.snapshot());
+  expect(view.turns.find(turn => turn.turnId === t1)!.state.status).toBe("suspended");
+  expect(view.session.lifecycle).toBe("running");
+  // And it does not block resume under another configuration either, so long as it is the only one.
+  again.close();
 });

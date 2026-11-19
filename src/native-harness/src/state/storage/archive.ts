@@ -1,32 +1,42 @@
-import type { SessionArchive, StoredSession } from "../../contracts/storage.ts";
+import type { SessionArchive, SessionArchiveV1, StoredSession } from "../../contracts/storage.ts";
 import { Fail, isJson, signatureOf, type Meta, type Tables } from "./engine.ts";
 
 const bad = (message: string): never => { throw new Fail("invalid_archive", message); };
 const str = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const int = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
-const MILESTONES = ["received", "taken", "delivered", "seen"];
+const MILESTONES = ["received", "taken", "delivered", "seen", "withdrawn"];
+const CHANNEL_STATES = ["open", "suspended", "retired"];
 
-/** Check the whole logical archive before anything is written. Rejects every
- * state a legal export cannot produce, including a `suspending` lifecycle or a
- * running turn, which the next open would treat as an unclean exit. */
+/** Check the whole logical archive before anything is written, and return it
+ * in the current (version 2) shape. Version 1, written by the persistence
+ * revision, reads as every channel `open` and unnamed. Rejects every state a
+ * legal export cannot produce, including a `suspending` lifecycle or channel, a
+ * running turn, a checkpoint nothing holds, or a live turn on a retired channel,
+ * which the next open would treat as an unclean exit or must never run. */
 export function validateArchive(value: unknown): SessionArchive {
   if (!isJson(value) || !value || typeof value !== "object") bad("Archive is not JSON data");
-  const archive = value as SessionArchive;
-  if (archive.format !== "harness-session" || archive.archiveVersion !== 1) bad("Unsupported archive format or version");
+  const raw = value as SessionArchive | SessionArchiveV1;
+  if (raw.format !== "harness-session" || (raw.archiveVersion !== 1 && raw.archiveVersion !== 2)) bad("Unsupported archive format or version");
+  const v1 = raw.archiveVersion === 1;
+  if (!raw.snapshot || !raw.allocation || !raw.snapshot.session || !Array.isArray(raw.snapshot.channels)) bad("Archive is missing its snapshot or allocation state");
+  const archive: SessionArchive = v1 ? { ...raw, archiveVersion: 2, snapshot: { ...raw.snapshot,
+    session: { ...raw.snapshot.session, formatVersion: 3 },
+    channels: raw.snapshot.channels.map(channel => ({ ...channel, lifecycle: "open" as const })) } } as SessionArchive : raw as SessionArchive;
   const snapshot = archive.snapshot, allocation = archive.allocation;
-  if (!snapshot || !allocation || !snapshot.session) bad("Archive is missing its snapshot or allocation state");
   const { session, revision } = snapshot;
-  if (session.formatVersion !== 2 || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
+  if (session.formatVersion !== 3 || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
     bad("Unsupported session format");
   if (session.lifecycle !== "running" && session.lifecycle !== "suspended") bad("Archive was not exported from an idle or suspended session");
   if (!Number.isSafeInteger(revision) || revision < 0 || allocation.nextSeq !== revision + 1 || !int(allocation.nextTurnId) || !int(allocation.nextItemNumber))
     bad("Inconsistent allocation state");
   for (const list of [snapshot.channels, snapshot.participants, snapshot.turns, snapshot.items, snapshot.timeline])
     if (!Array.isArray(list)) bad("Archive lists are malformed");
-  const channels = new Set<string>();
+  const channels = new Map<string, string>();
   for (const channel of snapshot.channels) {
     if (!channel || !str(channel.channelId) || channels.has(channel.channelId)) bad("Invalid or duplicate channel");
-    channels.add(channel.channelId);
+    if (!CHANNEL_STATES.includes(channel.lifecycle) || (channel.displayName !== undefined && !str(channel.displayName)))
+      bad(`Channel ${channel.channelId} has an invalid lifecycle or name`);
+    channels.set(channel.channelId, channel.lifecycle);
   }
   if (snapshot.participants.some(participant => !participant || !str(participant.participantId))) bad("Invalid participant");
 
@@ -39,8 +49,10 @@ export function validateArchive(value: unknown): SessionArchive {
     previous = turn.turnId;
     const state = turn.state;
     if (state.status === "suspended") {
-      if (session.lifecycle !== "suspended" || live.has(turn.channelId) || state.checkpoint?.nextStep !== "inference" || !int(state.checkpoint.afterSeq))
-        bad("Invalid checkpoint");
+      // Held by the session suspension, or by the channel's own committed one.
+      if (channels.get(turn.channelId) === "retired") bad(`Retired channel ${turn.channelId} holds a checkpoint`);
+      if ((session.lifecycle !== "suspended" && channels.get(turn.channelId) !== "suspended") || live.has(turn.channelId)
+        || state.checkpoint?.nextStep !== "inference" || !int(state.checkpoint.afterSeq)) bad("Invalid checkpoint");
       live.add(turn.channelId);
     } else if (state.status === "failed" || state.status === "interrupted") {
       if (!str(state.reason) || !Array.isArray(state.uncertainCallIds) || state.uncertainCallIds.some(id => !str(id))) bad("Invalid turn outcome");
@@ -63,15 +75,18 @@ export function validateArchive(value: unknown): SessionArchive {
   const ids = new Set<string>(), accepted = new Set<number>();
   for (const item of [...snapshot.items].sort((a, b) => (a?.entrySeq ?? 0) - (b?.entrySeq ?? 0))) {
     if (!item || !str(item.itemId) || ids.has(item.itemId) || !channels.has(item.channelId) || !MILESTONES.includes(item.milestone)
-      || !int(item.acceptedSeq) || item.acceptedSeq > revision || accepted.has(item.acceptedSeq) || !str(item.acceptedAt)) bad("Invalid or duplicate item");
+      || !int(item.acceptedSeq) || item.acceptedSeq > revision || accepted.has(item.acceptedSeq) || !str(item.acceptedAt)
+      || (v1 && item.milestone === "withdrawn") || (item.milestone === "withdrawn") !== (item.withdrawnAt !== undefined)
+      || (item.withdrawnAt !== undefined && !str(item.withdrawnAt))) bad("Invalid or duplicate item");
     accepted.add(item.acceptedSeq);
     if (![item.kind, item.senderId, item.text].every(str) || item.signature !== signatureOf(item)) bad(`Item ${item.itemId} does not match its signature`);
     ids.add(item.itemId);
     const auto = /^auto:(0|[1-9]\d*)$/.exec(item.itemId);
     if (auto && Number(auto[1]) >= allocation.nextItemNumber) bad("Item counter would reissue an allocated ID");
-    if (item.milestone === "received") {
-      if (item.turnId !== undefined || item.entrySeq !== undefined) bad("Pending item is linked to a turn");
-      if (session.lifecycle === "running") bad("Archive of a running session holds pending input");
+    if (item.milestone === "received" || item.milestone === "withdrawn") {
+      if (item.turnId !== undefined || item.entrySeq !== undefined) bad(`${item.milestone === "received" ? "Pending" : "Withdrawn"} item is linked to a turn`);
+      if (item.milestone === "received" && channels.get(item.channelId) === "retired") bad("Retired channel holds pending input");
+      if (item.milestone === "received" && session.lifecycle === "running") bad("Archive of a running session holds pending input");
     } else {
       const entry = entries.get(item.entrySeq as number), turn = turns.get(item.turnId as number);
       if (!turn || !entry || entry.itemId !== item.itemId || entry.turnId !== item.turnId) bad(`Item ${item.itemId} has no matching timeline entry`);
@@ -85,7 +100,7 @@ export function validateArchive(value: unknown): SessionArchive {
 
 export function archiveMeta(archive: SessionArchive, sessionId?: string): Meta {
   const { session, revision } = archive.snapshot;
-  return { sessionId: sessionId ?? session.sessionId, formatVersion: 2, createdAt: session.createdAt,
+  return { sessionId: sessionId ?? session.sessionId, formatVersion: 3, createdAt: session.createdAt,
     compatibilityKey: session.compatibilityKey, lifecycle: session.lifecycle, revision,
     nextTurnId: archive.allocation.nextTurnId, nextItemNumber: archive.allocation.nextItemNumber };
 }
@@ -94,7 +109,7 @@ export function archiveMeta(archive: SessionArchive, sessionId?: string): Meta {
 export function restoreArchive(tables: Tables, archive: SessionArchive): void {
   const snapshot = archive.snapshot;
   tables.transaction(() => {
-    for (const channel of snapshot.channels) tables.addChannel(channel.channelId);
+    for (const { participantIds: _derived, ...channel } of snapshot.channels) tables.putChannel(channel);
     for (const participant of snapshot.participants) tables.addParticipant(participant.participantId);
     for (const { itemIds: _derived, ...turn } of snapshot.turns) tables.putTurn(turn);
     for (const entry of snapshot.timeline) tables.addEntry(entry);
@@ -103,5 +118,5 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
 }
 
 export function storedSession(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 2, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
+  return { sessionId: meta.sessionId, formatVersion: 3, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }

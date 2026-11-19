@@ -48,3 +48,33 @@ items; retired channels' turns are rejected on import and never resumed
 (`resume()`, `resumeChannel`); wire export and stop comments match storage; omitted
 interrupt reason is `"interrupted by request"`. The red full typecheck is accepted
 until Stage 4's gate.
+
+## Stage 2: storage and recovery
+
+Both adapters (memory, SQLite) implement revision 3 through the shared engine
+(`engine.ts`, `archive.ts`); SQLite adds format 3 tables and the in-place format 2
+upgrade, which runs inside the recovery transaction (statements are prepared
+lazily so a format 2 file can be read before the upgrade).
+
+Choices the contract left open, all inside what 0014 and the review accepted:
+- `beginTurn` on an unknown channel is now `not_found` (the contract text); it was
+  `null`. One existing conformance expectation changed for that.
+- Channel `participantIds` view and `StoredChannel` carry `displayName` only when set.
+- Create stores the trimmed name. Interrupt and withdraw take their channel ID and
+  answer `not_found` for a mismatch.
+- `engine.ts` is 501 lines: every rule of the contract lives there by design (one
+  engine for both backends); splitting it is deferred to avoid churn mid-review.
+
+Gate: `bun run typecheck` has errors only in `index.ts`, `kernel/channels.ts`,
+`interfaces/protocol/load.ts`, `test/agent.test.ts` (Stage 3 and 4 own them).
+`bun test ./test`: 164 pass, 0 fail (134 before; 30 new storage cases).
+New conformance (memory and SQLite, SQLite reopens the real file): suspension and
+admission, checkpoint survival, idle suspend, interrupt vs checkpoint/finish/late
+results, stale interrupt, withdraw (message, notice, take-first, retry, reopen),
+create/edit/delete/retired IDs, session resume skipping a suspended channel
+(including an incompatible key), channel resume during session suspension, stop
+and crash recovery, interrupted channel suspend, export rules, archive round trip
+of the new records, archive v1 import, invalid archives. SQLite only: format 2
+fixture built from the verbatim old schema (suspended and unclean), failed
+upgrade leaves the file byte-identical, retired channel holding a checkpoint is
+left by `resume()`.

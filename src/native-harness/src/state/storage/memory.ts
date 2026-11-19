@@ -1,13 +1,13 @@
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
-import { Fail, createEngine, failure, recover, type Meta, type Tables, type TurnRow } from "./engine.ts";
+import { Fail, createEngine, failure, recover, type ChannelRow, type Meta, type Tables, type TurnRow } from "./engine.ts";
 import { archiveMeta, restoreArchive, storedSession, validateArchive } from "./archive.ts";
 
 interface Data {
   meta: Meta;
-  channels: Set<string>; participants: Set<string>;
+  channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[];
 }
-const empty = (meta: Meta): Data => ({ meta, channels: new Set(), participants: new Set(), items: new Map(), turns: new Map(), entries: [] });
+const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [] });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -26,9 +26,13 @@ function memoryTables(data: Data): Tables {
     },
     getMeta: () => ({ ...data.meta }),
     setMeta(meta) { const old = data.meta; log(() => { data.meta = old; }); data.meta = { ...meta }; },
-    hasChannel: id => data.channels.has(id),
-    addChannel(id) { if (!data.channels.has(id)) { data.channels.add(id); log(() => data.channels.delete(id)); } },
-    channels: () => [...data.channels],
+    channel: id => copy(data.channels.get(id)),
+    putChannel(channel) {
+      const old = data.channels.get(channel.channelId);
+      log(() => { if (old) data.channels.set(channel.channelId, old); else data.channels.delete(channel.channelId); });
+      data.channels.set(channel.channelId, copy(channel));
+    },
+    channels: () => copy([...data.channels.values()]),
     addParticipant(id) { if (!data.participants.has(id)) { data.participants.add(id); log(() => data.participants.delete(id)); } },
     participants: () => [...data.participants],
     item: id => copy(data.items.get(id)),
@@ -73,7 +77,7 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
         if (owned) throw new Fail("owner_conflict", "Session storage already has an owner");
         if (options.mode === "create") {
           if (data) throw new Fail("already_exists", "A session already exists at this location");
-          data = empty({ sessionId: identity.sessionId, formatVersion: 2, createdAt: new Date().toISOString(),
+          data = empty({ sessionId: identity.sessionId, formatVersion: 3, createdAt: new Date().toISOString(),
             compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         } else {
           if (!data) throw new Fail("not_found", "No session exists at this location");

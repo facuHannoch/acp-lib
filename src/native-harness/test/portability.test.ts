@@ -65,7 +65,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     // One JSON document of the SessionArchive and nothing else.
     const document = JSON.parse(new TextDecoder().decode(archive));
     expect(Object.keys(document).sort()).toEqual(["allocation", "archiveVersion", "exportedAt", "format", "snapshot"]);
-    expect(document).toMatchObject({ format: "harness-session", archiveVersion: 1, snapshot: { revision: before.status.revision, session: { sessionId: "moved", lifecycle: "suspended" } } });
+    expect(document).toMatchObject({ format: "harness-session", archiveVersion: 2, snapshot: { revision: before.status.revision, session: { sessionId: "moved", lifecycle: "suspended" } } });
     // Export by path writes the same document; its reported length and hash are those of the file.
     const path = join(source.directory, "moved.harness");
     const byPath = await first.client.exportTo(path);
@@ -147,7 +147,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: in
     await refused(client.importArchive(edited(document => { document.snapshot.items[1].text = "tampered"; })), "invalid_archive");
     await refused(client.importArchive(edited(document => { document.snapshot.session.lifecycle = "suspending"; })), "invalid_archive");
     await refused(client.importArchive(edited(document => { document.snapshot.items[2].acceptedSeq = document.snapshot.items[1].acceptedSeq; })), "invalid_archive");
-    await refused(client.importArchive(edited(document => { document.archiveVersion = 2; })), "invalid_archive");
+    await refused(client.importArchive(edited(document => { document.archiveVersion = 3; })), "invalid_archive");
     // Path sources: missing file, junk file.
     await refused(client.importFrom(join(destination.directory, "absent.harness")), "not_found");
     const junk = join(mkdtempSync(join(root, "junk-")), "junk.harness"); writeFileSync(junk, "{\"format\":");
