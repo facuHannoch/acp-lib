@@ -88,7 +88,8 @@ export interface PersistentSessionOptions {
   systemPrompt: string;
   /** Validated open-session policy; absent means legacy allow. */
   config?: import("./config-permissions.ts").ManagedConfig;
-  /** Default 600000 ms. An optional barrier allows deterministic gate tests. */
+  /** Default 600000 ms. An optional barrier resolves before the final check of
+   * both lifecycle signals, allowing deterministic gate tests. */
   approvalTimeoutMs?: number;
   beforeToolDispatch?: () => Promise<void>;
   /** Opened and later closed by the caller. Recovery already ran in open. */

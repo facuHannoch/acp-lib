@@ -248,8 +248,10 @@ export type InterruptOutcome =
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
 export interface SessionStorage {
-  /** Commit that an outstanding call is being dispatched. After success its
-   * external effect is uncertain until its result commits. */
+  /** Commit that a running turn's own unanswered, not-yet-marked call is being
+   * dispatched. Invalid or duplicate marks write nothing; failure cannot invoke
+   * the tool or emit started. After success its effect is uncertain until its
+   * result commits. This evidence is never an approval grant. */
   markToolDispatched(turnId: number, callId: string): StorageResult<void>;
   /** False when stored policy references cannot be resolved by this owner. */
   executionCompatible(): StorageResult<boolean>;

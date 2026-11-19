@@ -65,7 +65,8 @@ export interface ActiveTurn { channelId: string; turnId: number; resumed: boolea
 
 /** The scheduler's durable boundary operations for one running turn. */
 export interface TurnPort {
-  /** Aborts once session or channel suspension begins; distinct from interrupt. */
+  /** Aborts on session suspension or this turn's channel suspension only. It is
+   * never passed to ExecuteTool; already-dispatched calls keep running. */
   suspensionSignal: AbortSignal;
   /** Take pending items into this turn before building the next inference. */
   take(): void;

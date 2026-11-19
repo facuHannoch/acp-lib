@@ -25,8 +25,9 @@ export interface TurnContext {
   append(message: Message): void;
   build(): Message[];
   /** The sole dispatch boundary. It records dispatch before invoking the tool,
-   * emits started only for a dispatch, and returns a paired skipped result for
-   * denial or closed approval. */
+   * invokes before publishing started to prevent reentrant cancellation, and
+   * returns a paired skipped result for denial or closed approval. A test
+   * barrier resolves before the last cancellation check. */
   dispatchTool(call: ToolCall, execute: ExecuteTool): Promise<{ content: string; dispatched: boolean }>;
   /** Take pending inbox items (messages and notices) into this turn. */
   drainNotices?(): void;
