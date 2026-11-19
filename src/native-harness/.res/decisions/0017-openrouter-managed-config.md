@@ -19,6 +19,8 @@ this amends decision 0016 without adding a configured tool adapter.
   is portable, its nonempty value is a runtime secret. Unknown fields and raw
   credential values fail validation. Do not include credential values in the
   saved config, SQLite session, session file, events, errors or logs.
+  The default model is `deepseek/deepseek-v4.1-flash`, and the default reference
+  is `OPENROUTER_API_KEY`. Ports and socket paths remain process settings.
 - `config/validate` and session-file import validate the reference without
   requiring its value. The execution host resolves it from its own environment
   at open, before enabling execution; a missing or empty value produces an
@@ -26,13 +28,14 @@ this amends decision 0016 without adding a configured tool adapter.
   saved config. Import does not require the credential; managed execution and
   reopen need the destination to provide it. The endpoint remains the existing
   OpenRouter adapter endpoint.
-- New OpenRouter turn compatibility uses SHA-256 of
-  `JSON.stringify([system,{protocol:"openrouter",model,apiKeyEnv}])`, plus
-  decision 0016's canonical contributing policy definitions. Provider, model,
-  and environment reference changes make a checkpoint incompatible; a change
-  to an unrelated policy does not. Credential values are not fingerprinted, so
-  rotating the destination secret under the same variable permits resume.
-  Scripted compatibility remains SHA-256 of `[system,parsedScriptContent]`.
+- OpenRouter compatibility remains exactly the existing development key:
+  SHA-256 of `JSON.stringify([systemPrompt,modelId,scenarioToolNames])`, plus
+  decision 0016's canonical contributing policy definitions. Neither the key
+  value nor its environment-variable name enters either fingerprint. A change
+  to a credential reference alone does not block a checkpoint; a model or
+  system change does. An unchanged pre-managed OpenRouter checkpoint resumes
+  with the same key and needs no legacy marker. Scripted compatibility remains
+  SHA-256 of `JSON.stringify([system,parsedScriptContent])`.
 - Preserve existing `openDevelopment` provider options and the CLI's
   `OPENROUTER_MODEL` and `OPENROUTER_API_KEY` behavior. A newly created managed
   OpenRouter database saves the selected model and an environment-variable
@@ -43,14 +46,13 @@ this amends decision 0016 without adding a configured tool adapter.
   and model on a later open without a sidecar or inline config. Caller-supplied
   legacy `provider.apiKey` remains usable for that current development open;
   it is never saved and a later saved-config reopen requires the named env var.
-- Pre-0017 development checkpoints used SHA-256 of
-  `JSON.stringify([system,model,scenarioToolNames])`. Migration records a
-  legacy compatibility marker for those turns. Only those marked checkpoints
-  may compare against the original legacy key; new turns use the new key. This
-  preserves a compatible pre-managed checkpoint while avoiding a permanent
-  fallback for new checkpoints. Legacy comparison did not bind a credential
-  reference, so changing that reference cannot be detected for a legacy turn.
-  No tool or approval is replayed merely because the config migrated.
+- At open, sidecar wins over inline config, then saved config is used. The
+  `OPENROUTER_MODEL` environment value supplies the model only if no saved model
+  exists, including a format 2/3 development database. It never overrides a
+  saved model. The referenced credential variable, defaulting to
+  `OPENROUTER_API_KEY`, is resolved at every OpenRouter open. A missing key
+  fails before inference and leaves an existing database unchanged. `--script`
+  continues to require no key. No tool or approval is replayed by migration.
 
 ## Compatibility and verification
 
@@ -60,6 +62,8 @@ OpenRouter tag and reference as data. A fresh destination must supply the named
 credential; import does not need it. Verify create/export/import/reopen with no
 sidecar and a fake or injected provider, assert the selected model and secret
 are used only at dispatch, and assert the secret is absent from persisted bytes,
-wire data and logs. Exercise missing environment, sidecar precedence, model or
-reference changes, legacy checkpoint resume, and unrelated policy changes.
+wire data and logs. Exercise missing environment, sidecar precedence, model
+changes, reference changes that preserve compatibility, legacy checkpoint resume,
+and unrelated policy changes. Scripted saved-config reopen remains an offline
+acceptance gate and never needs a provider key.
 No live provider keys or network are used in automated tests.
