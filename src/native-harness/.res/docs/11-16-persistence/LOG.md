@@ -59,6 +59,10 @@ acceptance gates.
   existing notification union breaks `src/interfaces/client.ts` at typecheck,
   which a contract-only stage may not edit, so `session/event` is delivered
   through a `subscribeSession` member on the transport and endpoint contracts.
+- **Stage 1 re-review (reviewer gro1a-o), `5514934`: not approved, one finding.**
+  The eight other fixes and the `subscribeSession` deviation were accepted.
+  Fixed next: `exportArchive` is `busy` for the whole `suspending` state, and
+  `importArchive` rejects a `suspending` archive as `invalid_archive`.
 
 ## Closure and retrospective
 

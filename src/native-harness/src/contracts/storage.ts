@@ -286,9 +286,11 @@ export interface SessionStorage {
    * leaks through this interface. Reading does not start or resume any work. */
   snapshot(): StorageResult<StorageSnapshot>;
 
-  /** One consistent logical copy. Allowed when no turn is running and either the
-   * lifecycle is `suspended` or nothing is pending; otherwise `busy`. Leaves the
-   * session unchanged. */
+  /** One consistent logical copy. Allowed only when the lifecycle is
+   * `suspended`, or it is `running` with no running turn and nothing pending.
+   * `suspending` is always `busy`, even when every turn is already checkpointed
+   * or completed, because that state is not yet a clean suspension. Any other
+   * case is `busy`. Leaves the session unchanged. */
   exportArchive(): StorageResult<SessionArchive>;
 
   /** Release ownership/resources, never erase history. Idempotent after success.
@@ -319,6 +321,8 @@ export interface SessionStorageAdapter {
   /** Validate the whole archive, then publish it atomically at this adapter's
    * location, which must not already hold a session (`already_exists`). IDs
    * inside the session are preserved; `sessionId` may replace the session's own.
+   * An archive whose lifecycle is `suspending`, or that holds a running turn, is
+   * `invalid_archive`: open would interrupt its checkpoints as an unclean exit.
    * Any failure leaves no partial session. The result is not opened or owned. */
   importArchive(archive: SessionArchive, options?: { sessionId?: string }): StorageResult<StoredSession>;
 }
