@@ -12,7 +12,7 @@ precedes implementation.
 
 Gro reviewed `818ffc5` and requested explicit decoder validation order and
 legacy database/config-read guarantees. The follow-up locks both, and records
-the agreed serialization and whitespace-path outcomes. Awaiting re-review.
+the agreed serialization and whitespace-path outcomes.
 
 Gro approved the contract at `277d095`; their typecheck passed. The binary codec
 implements the approved definite-length CBOR profile and header validation.
