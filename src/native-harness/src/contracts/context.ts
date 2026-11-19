@@ -1,4 +1,4 @@
-import type { Message } from "./loop.ts";
+import type { Message, ToolCall, ExecuteTool } from "./loop.ts";
 import type { LoopEvent } from "./events.ts";
 
 /** Attributed agent experience; system instructions are configuration, not events. */
@@ -24,6 +24,10 @@ export interface SharedContextStore {
 export interface TurnContext {
   append(message: Message): void;
   build(): Message[];
+  /** The sole dispatch boundary. It records dispatch before invoking the tool,
+   * emits started only for a dispatch, and returns a paired skipped result for
+   * denial or closed approval. */
+  dispatchTool(call: ToolCall, execute: ExecuteTool): Promise<{ content: string; dispatched: boolean }>;
   /** Take pending inbox items (messages and notices) into this turn. */
   drainNotices?(): void;
   finish?(): boolean;

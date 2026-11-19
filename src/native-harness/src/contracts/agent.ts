@@ -65,6 +65,8 @@ export interface ActiveTurn { channelId: string; turnId: number; resumed: boolea
 
 /** The scheduler's durable boundary operations for one running turn. */
 export interface TurnPort {
+  /** Aborts once session or channel suspension begins; distinct from interrupt. */
+  suspensionSignal: AbortSignal;
   /** Take pending items into this turn before building the next inference. */
   take(): void;
   /** Record provider evidence after a valid model response for this turn. */

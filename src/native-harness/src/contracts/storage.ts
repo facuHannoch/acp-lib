@@ -162,8 +162,8 @@ export interface TurnCheckpoint {
  * `uncertainCallIds` lists recorded calls with no recorded result: their
  * external effect is unknown and they are never executed again by the harness. */
 export type StoredTurnState =
-  | { status: "running" }
-  | { status: "suspended"; checkpoint: TurnCheckpoint }
+  | { status: "running"; dispatchedCallIds?: string[] }
+  | { status: "suspended"; checkpoint: TurnCheckpoint; dispatchedCallIds?: string[] }
   | { status: "completed" }
   | { status: "failed"; reason: string; uncertainCallIds: string[] }
   | { status: "interrupted"; reason: string; uncertainCallIds: string[] };
@@ -248,6 +248,9 @@ export type InterruptOutcome =
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
 export interface SessionStorage {
+  /** Commit that an outstanding call is being dispatched. After success its
+   * external effect is uncertain until its result commits. */
+  markToolDispatched(turnId: number, callId: string): StorageResult<void>;
   /** False when stored policy references cannot be resolved by this owner. */
   executionCompatible(): StorageResult<boolean>;
   /** Imported configuration, or undefined for sessions not imported from a file. */

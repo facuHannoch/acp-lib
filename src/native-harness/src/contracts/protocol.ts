@@ -6,6 +6,7 @@ export interface InitializeParams {
   protocolVersion: number;
   host: { name: string; version: string };
   callbacks: string[];
+  approval?: boolean;
   subscription: Subscription;
 }
 export interface ProtocolConfig {
@@ -181,6 +182,7 @@ export interface Methods {
   initialize: { params: InitializeParams; result: { protocolVersion: 1; harness: { version: string }; description: Description } };
   /** Validate without opening a session or starting execution. */
   "config/validate": { params: { config: unknown }; result: { valid: true } };
+  "approval/respond": { params: { requestId: string; decision: import("./config-permissions.ts").ApprovalAnswer }; result: { accepted: true } };
   "session/create": { params: CreateParams; result: { sessionId: string } };
   /** With durable acceptance the response is sent only after the inbox commit
    * and includes `item` (Received, or the original item's current state for a
@@ -214,6 +216,8 @@ export interface StdioConnection {
   exited?: Promise<number>;
 }
 export interface ProtocolEndpoint {
+  /** Close this connection's outstanding consumer approvals. */
+  disconnect?(): void;
   request(request: RpcRequest): Promise<RpcResponse>;
   subscribe(listener: (notification: RpcNotification) => void): () => void;
   /** Lifecycle notifications, published after their commit. See ClientTransport. */

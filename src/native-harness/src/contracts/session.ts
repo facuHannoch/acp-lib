@@ -86,6 +86,11 @@ export interface ChannelControls {
 
 export interface PersistentSessionOptions {
   systemPrompt: string;
+  /** Validated open-session policy; absent means legacy allow. */
+  config?: import("./config-permissions.ts").ManagedConfig;
+  /** Default 600000 ms. An optional barrier allows deterministic gate tests. */
+  approvalTimeoutMs?: number;
+  beforeToolDispatch?: () => Promise<void>;
   /** Opened and later closed by the caller. Recovery already ran in open. */
   storage: SessionStorage;
   configureTurn(turn: ActiveTurn, notify: SessionAgent["notify"]): TurnServices;
@@ -95,6 +100,12 @@ export interface PersistentSessionOptions {
 /** Creating the session executes nothing: it can be inspected, loaded and
  * exported first. Opening, starting and resuming are separate actions. */
 export interface PersistentSession {
+  /** Approval requests belong to this connection; disconnect closes them. */
+  approvals: {
+    setConsumer(enabled: boolean): void;
+    respond(requestId: string, answer: import("./config-permissions.ts").ApprovalAnswer): boolean;
+    disconnect(): void;
+  };
   agent: SessionAgent;
   /** Channel controls (decision 0014). */
   channels: ChannelControls;
