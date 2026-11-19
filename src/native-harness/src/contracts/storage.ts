@@ -248,6 +248,8 @@ export type InterruptOutcome =
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
 export interface SessionStorage {
+  /** False when stored policy references cannot be resolved by this owner. */
+  executionCompatible(): StorageResult<boolean>;
   /** Imported configuration, or undefined for sessions not imported from a file. */
   importedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
   /** Persist the validated configuration used by this owner. */

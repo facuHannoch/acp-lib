@@ -67,7 +67,7 @@ export interface TurnStatus {
 export interface StatusResult {
   sessionId: string; revision: number;
   lifecycle: "running" | "suspending" | "suspended";
-  execution: "idle" | "working" | "suspending" | "suspended" | "stopped";
+  execution: "idle" | "working" | "suspending" | "suspended" | "stopped" | "incompatible";
   channels: ChannelStatusResult[];
 }
 /** Decision 0014: channel lifecycle, turn status and pending input are

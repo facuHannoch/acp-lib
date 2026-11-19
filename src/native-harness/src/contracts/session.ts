@@ -21,7 +21,7 @@ export interface SessionStatus {
   revision: number;
   lifecycle: SessionLifecycle;
   /** `stopped`: this process has closed admission and will start no more work. */
-  execution: "idle" | "working" | "suspending" | "suspended" | "stopped";
+  execution: "idle" | "working" | "suspending" | "suspended" | "stopped" | "incompatible";
   channels: ChannelStatus[];
 }
 
