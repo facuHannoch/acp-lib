@@ -28,8 +28,8 @@ outstanding requests. No model-supplied text or tool argument grants rights.
   wins when supplied; otherwise the per-session `config.json` is required.
   On open a present sidecar wins; otherwise the saved config is required. The
   open session owns a defensive copy, saved atomically with successful open;
-  invalid sidecar, missing resource, invalid stored references, or failed open
-  leaves the previous saved config and session unchanged. Edits are read only
+  invalid sidecar, missing resource, incompatible stored references, or failed
+  open leaves the previous saved config and session unchanged. Edits are read only
   at the next open. `session/load` needs no inline config for managed sessions.
   Managed path is `<home>/<sessionId>/{config.json,session.sqlite}`; IDs cannot
   escape the home. Default home is `~/.harness`, `--home` overrides it. The
@@ -47,8 +47,11 @@ outstanding requests. No model-supplied text or tool argument grants rights.
   and archive 3. Existing standalone JSON files remain rejected.
 - On reopen validate every stored channel, item and inherited policy reference
   against the candidate config before enabling execution. Missing references
-  refuse open without changing saved state. The config may change rules for
-  future turns. A checkpoint stores an execution fingerprint of the system,
+  produce an `incompatible` execution state without changing saved config or
+  starting work; the session remains open for status, timeline and checkpoint
+  inspection. Resume and other execution attempts report `incompatible`, and
+  pending inputs and checkpoints remain untouched. The config may change rules
+  for future turns. A checkpoint stores an execution fingerprint of the system,
   model/script content and tool setup plus the definitions of all policy names
   that contributed to that turn. A mismatch on resume is `incompatible` and
   leaves the checkpoint and pending items untouched. Changes to unrelated
