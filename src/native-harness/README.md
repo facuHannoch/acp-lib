@@ -388,10 +388,14 @@ leaves pending input pending, and makes this process refuse further work with
 `stopped`. Lifecycle changes arrive as `session/event` notifications
 (`HarnessClient.onSessionEvent`).
 
-`session/export` writes the whole session as a `.harness` archive: exactly
-one UTF-8 JSON document of the logical session (metadata, channels, turns,
-timeline, pending input, deduplication records, checkpoints and ID counters),
-versioned separately from the SQLite schema. It is allowed only when the
+`session/export` writes a binary `.harness` file: a versioned `HARNSESS`
+header and CBOR payload containing the logical session (metadata, channels,
+turns, timeline, pending input, deduplication records, checkpoints and ID
+counters) and the exact active portable configuration. Its version is separate
+from the SQLite schema. Old standalone JSON exports are not accepted. The
+scripted model path is preserved as a reference; the destination must supply
+the script at that path when opening the session. Import stores the config with
+the snapshot, but opening still requires the caller to supply config. It is allowed only when the
 session is cleanly suspended, or running with no active or checkpointed turn,
 no pending input, and no channel suspending; otherwise it fails `busy`. The
 reported length and SHA-256 are those of the

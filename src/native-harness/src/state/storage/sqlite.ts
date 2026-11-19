@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, linkSync, rmSync } from "node:fs";
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
 import { Fail, createEngine, failure, recover, type ChannelRow, type Meta, type Tables, type TurnRow } from "./engine.ts";
-import { archiveMeta, restoreArchive, storedSession, validateArchive } from "./archive.ts";
+import { archiveMeta, restoreArchive, storedSession, validateArchive, validateSessionPayload } from "./archive.ts";
 
 /** Query keys are typed columns; structured payloads are JSON text. The partial
  * unique index is the durable form of "one live turn per channel". */
@@ -111,6 +111,8 @@ function sqliteTables(db: Database): Tables {
   };
   let depth = 0;
   return {
+    getConfig() { const row = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'importedConfig'").get(); return row ? JSON.parse(row.value) : undefined; },
+    setConfig(config) { s.setMeta.run("importedConfig", JSON.stringify(config)); },
     // Short and synchronous: nothing awaits between BEGIN and COMMIT.
     transaction(run) {
       if (depth) return run();
@@ -173,6 +175,15 @@ function publish(path: string, meta: Meta, fill?: (tables: Tables) => void): voi
  * fails immediately, and the operating system releases it if the owner dies. */
 export function createSqliteStorageAdapter(path: string): SessionStorageAdapter {
   return {
+    importSessionFile(payload, options) {
+      try {
+        const { archive, config } = validateSessionPayload(payload);
+        if (options?.sessionId !== undefined && (typeof options.sessionId !== "string" || !options.sessionId.trim())) throw new Fail("invalid_input", "sessionId must be a nonempty string");
+        const meta = archiveMeta(archive, options?.sessionId);
+        publish(path, meta, tables => { restoreArchive(tables, archive); tables.setConfig(config); });
+        return { ok: true, value: storedSession(meta), revision: meta.revision };
+      } catch (error) { return failure(error); }
+    },
     open(options) {
       let db: Database | undefined;
       try {

@@ -234,6 +234,8 @@ export type InterruptOutcome =
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
 export interface SessionStorage {
+  /** Imported configuration, or undefined for sessions not imported from a file. */
+  importedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
   /** Durable acceptance (the Received milestone). In order:
    * 1. A known itemId with the same signature returns the original item with
    *    `duplicate: true` and commits nothing, in every lifecycle state, for a
@@ -461,6 +463,8 @@ export interface SessionStorage {
  * Commit notifications/output are wired by composition after success, never
  * from inside a transaction. No durable event replay is promised. */
 export interface SessionStorageAdapter {
+  /** Atomically publish the logical archive and validated portable config. */
+  importSessionFile(payload: import("./session-file.ts").SessionFilePayload<SessionArchive>, options?: { sessionId?: string }): StorageResult<StoredSession>;
   /** Acquire exclusive ownership, then check format and session ID, before any
    * write. A second owner (`owner_conflict`), unreadable or unsupported format
    * and a different session ID (`incompatible`) leave the data untouched.

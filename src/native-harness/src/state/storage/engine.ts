@@ -18,6 +18,8 @@ export type TurnRow = Omit<StoredTurn, "itemIds">;
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables {
+  getConfig(): import("../../contracts/session-file.ts").PortableSessionConfig | undefined;
+  setConfig(config: import("../../contracts/session-file.ts").PortableSessionConfig): void;
   transaction<T>(run: () => T): T;
   getMeta(): Meta;
   setMeta(meta: Meta): void;
@@ -476,6 +478,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return { interrupted: true as const, turn: full(ended) };
     }),
 
+    importedConfig: () => run(() => tables.getConfig()),
     snapshot: () => run(() => readSnapshot(tables)),
 
     exportArchive: () => run(meta => {

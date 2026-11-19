@@ -1,3 +1,4 @@
+import { decodeSessionFile, encodeSessionFile } from "../src/state/storage/session-file.ts";
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -6,6 +7,7 @@ import { join } from "node:path";
 import { createInProcessHarness } from "../src/testing.ts";
 import type { HarnessClient } from "../src/client.ts";
 import { createMemoryStorageAdapter } from "../src/state/storage/memory.ts";
+import { createSqliteStorageAdapter } from "../src/state/storage/sqlite.ts";
 import type { ChannelEvent } from "../src/contracts/events.ts";
 import type { CreateParams, ProtocolConfig } from "../src/contracts/protocol.ts";
 import type { SessionStorageAdapter } from "../src/contracts/storage.ts";
@@ -38,6 +40,47 @@ function home(transport: "in-process" | "stdio", effects: string, limits?: { max
 }
 const big = (i: number) => `${i}:${"p".repeat(300_000)}`;
 
+test("stdio: active config and individual checkpoint survive path import after source config removal", async () => {
+  const source = mkdtempSync(join(root, "source-config-")), dest = mkdtempSync(join(root, "dest-config-"));
+  const effects = join(source, "effects.log"), configPath = join(source, "config.json"), path = join(source, "copy.harness"), scriptPath = join(source, "script.json");
+  const script = readFileSync(config.model.script); writeFileSync(scriptPath, script);
+  writeFileSync(configPath, JSON.stringify({ ...config, model: { ...config.model, script: scriptPath } }));
+  const active = JSON.parse(readFileSync(configPath, "utf8"));
+  const first = spawnHarness({ home: source, effects });
+  try {
+    await first.client.initialize(); await first.client.createSession({ ...setup, config: active });
+    rmSync(configPath);
+    await first.client.push(push("a", "a1", "start"));
+    await until(() => lines(effects).includes("start:k"), "tool start");
+    await first.client.push(push("a", "a2", "pending"));
+    const suspended = first.client.suspendChannel({ channel: "a" });
+    await until(async () => (await first.client.status()).channels[0]?.lifecycle === "suspending", "channel suspending");
+    writeFileSync(`${effects}.release-k`, ""); await suspended;
+    await expect(first.client.exportTo(path)).rejects.toMatchObject({ code: "busy" });
+    await first.client.suspend();
+    await first.client.exportTo(path);
+    expect((decodeSessionFile(readFileSync(path), 268435456) as any).config).toEqual(active);
+  } finally { await first.close(); }
+  rmSync(scriptPath);
+  const second = spawnHarness({ home: dest, effects });
+  try {
+    await second.client.initialize(); await second.client.importFrom(path);
+    await expect(second.client.loadSession({ sessionId: "moved", config: active })).rejects.toMatchObject({ code: "invalid_config" });
+    writeFileSync(scriptPath, script);
+    const loaded = await second.client.loadSession({ sessionId: "moved", config: active });
+    expect(loaded.status.channels[0]).toMatchObject({ lifecycle: "suspended", pending: ["a2"], waitingForResume: true });
+    await second.client.resume();
+    expect((await second.client.status()).channels[0]).toMatchObject({ lifecycle: "suspended", pending: ["a2"] });
+    const events = watch(second.client); await second.client.resumeChannel({ channel: "a" });
+    await until(() => events.some(e => e.event.type === "turn_ended"), "resumed channel");
+    expect(lines(effects)).toEqual(["start:k", "done:k"]);
+  } finally { await second.close(); }
+  const adapter = createSqliteStorageAdapter(join(dest, "moved.sqlite"));
+  const db = adapter.open({ mode: "open", identity: { sessionId: "moved", compatibilityKey: "inspection" } });
+  if (!db.ok) throw new Error(db.error.message);
+  expect(db.value.importedConfig()).toMatchObject({ ok: true, value: active }); db.value.close();
+}, 30000);
+
 /** A suspended session holding a checkpointed turn and pending input larger than one frame in total. */
 async function suspendedSource(client: HarnessClient, effects: string) {
   await client.initialize(); await client.createSession(setup);
@@ -63,7 +106,9 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     // Larger than one 1 MiB frame, so it can only have crossed in chunks.
     expect(archive.length).toBeGreaterThan(1024 * 1024);
     // One JSON document of the SessionArchive and nothing else.
-    const document = JSON.parse(new TextDecoder().decode(archive));
+    const payload = decodeSessionFile(archive, 268435456) as any;
+    const document = payload.archive;
+    expect(payload.config).toEqual(config);
     expect(Object.keys(document).sort()).toEqual(["allocation", "archiveVersion", "exportedAt", "format", "snapshot"]);
     expect(document).toMatchObject({ format: "harness-session", archiveVersion: 2, snapshot: { revision: before.status.revision, session: { sessionId: "moved", lifecycle: "suspended" } } });
     // Export by path writes the same document; its reported length and hash are those of the file.
@@ -71,7 +116,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     const byPath = await first.client.exportTo(path);
     const file = readFileSync(path);
     expect(byPath).toEqual({ bytes: file.length, sha256: sha(file) });
-    expect(JSON.parse(file.toString()).snapshot).toEqual(document.snapshot);
+    expect((decodeSessionFile(file, 268435456) as any).archive.snapshot).toEqual(document.snapshot);
     await expect(first.client.exportTo(path)).rejects.toMatchObject({ code: "already_exists" });
     expect(readFileSync(path).equals(file)).toBe(true);
     // Export leaves the session as it was, and no transfer file behind.
@@ -140,7 +185,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: in
       expect(destination.files()).toEqual(baseline);
     };
     // Damaged documents: truncated, not JSON, edited content, illegal lifecycle.
-    const edited = (change: (document: any) => void) => { const document = JSON.parse(new TextDecoder().decode(archive)); change(document); return new TextEncoder().encode(JSON.stringify(document)); };
+    const edited = (change: (document: any) => void) => { const payload = decodeSessionFile(archive, 268435456) as any; change(payload.archive); return encodeSessionFile(payload, 268435456); };
     await refused(client.importArchive(archive.subarray(0, archive.length - 10)), "invalid_archive");
     await refused(client.importArchive(new TextEncoder().encode("not an archive")), "invalid_archive");
     await refused(client.importArchive(new Uint8Array([0xff, 0xfe, 0x00])), "invalid_archive");
@@ -148,6 +193,12 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: in
     await refused(client.importArchive(edited(document => { document.snapshot.session.lifecycle = "suspending"; })), "invalid_archive");
     await refused(client.importArchive(edited(document => { document.snapshot.items[2].acceptedSeq = document.snapshot.items[1].acceptedSeq; })), "invalid_archive");
     await refused(client.importArchive(edited(document => { document.archiveVersion = 3; })), "invalid_archive");
+    const invalidConfig = decodeSessionFile(archive, 268435456) as any;
+    invalidConfig.config.model.script = "  ";
+    await refused(client.importArchive(encodeSessionFile(invalidConfig, 268435456)), "invalid_archive");
+    const wrongVersion = Uint8Array.from(archive); wrongVersion[9] = 2;
+    await refused(client.importArchive(wrongVersion), "invalid_archive");
+    await refused(client.importArchive(Uint8Array.from([...archive, 0])), "invalid_archive");
     // Path sources: missing file, junk file.
     await refused(client.importFrom(join(destination.directory, "absent.harness")), "not_found");
     const junk = join(mkdtempSync(join(root, "junk-")), "junk.harness"); writeFileSync(junk, "{\"format\":");
@@ -182,6 +233,8 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: in
     await refused(client.request("transfer/open", { bytes: 0, sha256: sha(archive) }), "invalid_archive");
     // After all of that, the real archive still imports.
     expect(await client.importArchive(archive)).toMatchObject({ sessionId: "moved", lifecycle: "suspended" });
+    await expect(client.importArchive(encodeSessionFile(invalidConfig, 268435456))).rejects.toMatchObject({ code: "invalid_archive" });
+    expect((await client.loadSession({ sessionId: "moved", config })).status.lifecycle).toBe("suspended");
     expect(destination.files().filter(name => name.includes("transfer") || name.includes("draft"))).toEqual([]);
   } finally { await second.close(); }
 }, 30000);
@@ -198,7 +251,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: ex
     await client.createSession(setup);
     const events = watch(client);
     // Idle with nothing pending: a running-lifecycle archive.
-    const empty = JSON.parse(new TextDecoder().decode(await client.exportArchive()));
+    const empty = (decodeSessionFile(await client.exportArchive(), 268435456) as any).archive;
     expect(empty.snapshot).toMatchObject({ session: { lifecycle: "running" }, turns: [], items: [] });
     await client.push(push("a", "a1", "start"));
     await until(() => lines(effects).includes("start:k"), "tool to start");
@@ -227,7 +280,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: ex
     await client.resume();
     await until(() => events.some(event => event.event.type === "turn_ended"), "turn to finish");
     // Completed, idle, running: exportable again.
-    expect(JSON.parse(new TextDecoder().decode(await client.exportArchive())).snapshot).toMatchObject({ session: { lifecycle: "running" }, turns: [{ state: { status: "completed" } }] });
+    expect((decodeSessionFile(await client.exportArchive(), 268435456) as any).archive.snapshot).toMatchObject({ session: { lifecycle: "running" }, turns: [{ state: { status: "completed" } }] });
   } finally { await harness.close(); }
 }, 30000);
 

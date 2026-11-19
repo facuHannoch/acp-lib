@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DurableErrorCode, TransferLimits } from "../../contracts/protocol.ts";
-import type { SessionArchive } from "../../contracts/storage.ts";
+import { decodeSessionFile, encodeSessionFile } from "../../state/storage/session-file.ts";
 
 export const TRANSFER_LIMITS: TransferLimits = { chunkBytes: 524288, maxBytes: 268435456, idleMs: 60000 };
 export class TransferFault extends Error {
@@ -11,16 +11,13 @@ export class TransferFault extends Error {
 const PREFIX = ".transfer-";
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-/** A `.harness` file is exactly one UTF-8 JSON document of the SessionArchive.
- * Its length and SHA-256 are those of these bytes, by path or by transfer. */
-export function encodeArchive(archive: SessionArchive, maxBytes: number) {
-  const bytes = new TextEncoder().encode(JSON.stringify(archive));
-  if (bytes.length > maxBytes) throw new TransferFault("transfer_limit", `Archive is ${bytes.length} bytes; the limit is ${maxBytes}`);
+/** Hash the complete session-file envelope, including its header. */
+export function encodeArchive(archive: unknown, maxBytes: number) {
+  const bytes = encodeSessionFile(archive, maxBytes);
   return { bytes, sha256: sha256(bytes) };
 }
-export function decodeArchive(bytes: Uint8Array): unknown {
-  try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
-  catch (error) { throw new TransferFault("invalid_archive", `Archive is not a JSON document: ${String(error)}`); }
+export function decodeArchive(bytes: Uint8Array, maxBytes = TRANSFER_LIMITS.maxBytes): unknown {
+  return decodeSessionFile(bytes, maxBytes);
 }
 
 /** Write beside the destination, then publish with a hard link, which refuses
@@ -40,7 +37,13 @@ export function writeArchiveFile(path: string, bytes: Uint8Array) {
 export function readArchiveFile(path: string, maxBytes: number): Uint8Array {
   let size: number;
   try { size = statSync(path).size; } catch { throw new TransferFault("not_found", `No archive at ${path}`); }
-  if (size > maxBytes) throw new TransferFault("transfer_limit", `Archive is ${size} bytes; the limit is ${maxBytes}`);
+  if (size > maxBytes) {
+    const header = Buffer.alloc(14), fd = openSync(path, "r"); let n: number;
+    try { n = readSync(fd, header, 0, 14, 0); } finally { closeSync(fd); }
+    if (n !== 14 || header.subarray(0, 8).toString() !== "HARNSESS" || header.readUInt16BE(8) !== 1 || size !== 14 + header.readUInt32BE(10))
+      throw new TransferFault("invalid_archive", "Invalid session file header or length");
+    throw new TransferFault("transfer_limit", `Archive is ${size} bytes; the limit is ${maxBytes}`);
+  }
   return readFileSync(path);
 }
 

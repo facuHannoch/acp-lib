@@ -1,8 +1,9 @@
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
 import { Fail, createEngine, failure, recover, type ChannelRow, type Meta, type Tables, type TurnRow } from "./engine.ts";
-import { archiveMeta, restoreArchive, storedSession, validateArchive } from "./archive.ts";
+import { archiveMeta, restoreArchive, storedSession, validateArchive, validateSessionPayload } from "./archive.ts";
 
 interface Data {
+  config?: import("../../contracts/session-file.ts").PortableSessionConfig;
   meta: Meta;
   channels: Map<string, ChannelRow>; participants: Set<string>;
   items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[];
@@ -17,6 +18,8 @@ function memoryTables(data: Data): Tables {
   let undo: (() => void)[] | undefined;
   const log = (step: () => void) => { undo?.push(step); };
   return {
+    getConfig: () => copy(data.config),
+    setConfig(config) { const old = data.config; log(() => { data.config = old; }); data.config = copy(config); },
     transaction(run) {
       if (undo) return run();
       undo = [];
@@ -69,6 +72,17 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
   let data: Data | undefined;
   let owned = false;
   return {
+    importSessionFile(payload, options) {
+      try {
+        const { archive, config } = validateSessionPayload(payload);
+        if (options?.sessionId !== undefined && (typeof options.sessionId !== "string" || !options.sessionId.trim())) throw new Fail("invalid_input", "sessionId must be a nonempty string");
+        if (data) throw new Fail("already_exists", "A session already exists at this location");
+        const next = empty(archiveMeta(copy(archive), options?.sessionId));
+        const tables = memoryTables(next); tables.transaction(() => { restoreArchive(tables, archive); tables.setConfig(config); });
+        data = next;
+        return { ok: true, value: storedSession(next.meta), revision: next.meta.revision };
+      } catch (error) { return failure(error); }
+    },
     open(options) {
       try {
         const identity = options?.identity;

@@ -90,8 +90,8 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     } });
     return { session, close() { opened.value.close(); }, exportArchive: () => storage.exportArchive() };
   }, { durable, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
-    importArchive(archive, sessionId) {
-      try { return locate(sessionId).importArchive(archive, { sessionId }); }
+    importArchive(payload, sessionId) {
+      try { return locate(sessionId).importSessionFile(payload, { sessionId }); }
       catch (error) { return { ok: false, error: { code: "invalid_input", message: String(error) } }; }
     } });
   return { server, models };

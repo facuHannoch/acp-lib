@@ -1,11 +1,23 @@
 import type { SessionArchive, SessionArchiveV1, StoredSession } from "../../contracts/storage.ts";
 import { Fail, isJson, signatureOf, type Meta, type Tables } from "./engine.ts";
+import { validateConfig } from "./session-file.ts";
 
 const bad = (message: string): never => { throw new Fail("invalid_archive", message); };
 const str = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const int = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 const MILESTONES = ["received", "taken", "delivered", "seen", "withdrawn"];
 const CHANNEL_STATES = ["open", "suspended", "retired"];
+
+/** Validate both records before a destination is created or modified. */
+export function validateSessionPayload(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "archive,config") bad("Invalid session file payload");
+  const payload = value as { archive: SessionArchive; config: unknown };
+  if (payload.archive?.archiveVersion !== 2) bad("Invalid session file archive version");
+  const archive = validateArchive(payload.archive);
+  let config: ReturnType<typeof validateConfig>;
+  try { config = validateConfig(payload.config); } catch (error) { return bad(String(error)); }
+  return { archive, config };
+}
 
 /** Check the whole logical archive before anything is written, and return it
  * in the current (version 2) shape. Version 1, written by the persistence

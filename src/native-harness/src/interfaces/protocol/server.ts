@@ -1,6 +1,8 @@
 import type { ProtocolEndpoint, RpcRequest, RpcResponse, RpcNotification, RpcSessionNotification, ProtocolConfig, Description, Subscription, DurableErrorCode } from "../../contracts/protocol.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import type { SessionArchive, StorageResult, StoredSession } from "../../contracts/storage.ts";
+import type { SessionFilePayload } from "../../contracts/session-file.ts";
+import { SessionFileError, validateConfig } from "../../state/storage/session-file.ts";
 import { FrameLimit, loadView, pageMessages, turnStatus, wireStatus } from "./load.ts";
 import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
 import type { TransferLimits } from "../../contracts/protocol.ts";
@@ -23,7 +25,7 @@ export interface OpenedSession {
 export interface ProtocolServerOptions {
   durable?: boolean;
   /** Publish a validated archive as a new session with this ID. Enables import. */
-  importArchive?(archive: SessionArchive, sessionId: string): StorageResult<StoredSession>;
+  importArchive?(payload: SessionFilePayload<SessionArchive>, sessionId: string): StorageResult<StoredSession>;
   /** Where transfer files live while a transfer is open. Enables transfers. */
   transferDirectory?: string;
   /** Smaller limits for tests; defaults are the contract's. */
@@ -77,6 +79,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   let initialized = false;
   let opening = false;
   let current: OpenedSession | undefined;
+  let activeConfig: ProtocolConfig | undefined;
   let subscription: Subscription = { text: "final", tools: "full" };
   const listeners = new Set<(notification: RpcNotification) => void>();
   const sessionListeners = new Set<(notification: RpcSessionNotification) => void>();
@@ -104,6 +107,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const message: RpcSessionNotification = { jsonrpc: "2.0", method: "session/event", params: event };
       publish(() => { for (const listener of sessionListeners) { try { listener(structuredClone(message)); } catch { /* Isolate clients. */ } } });
     });
+    activeConfig = structuredClone(request.config);
     return opened;
   }
 
@@ -185,10 +189,13 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       if (from.type === "path") { keys(from, ["type", "path"]); bytes = readArchiveFile(text(from.path), limits.maxBytes); }
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
-      const archive = decodeArchive(bytes) as SessionArchive;
-      const sessionId = p.sessionId ?? archive?.snapshot?.session?.sessionId;
+      const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || payload.archive?.archiveVersion !== 2)
+        throw new Fault("invalid_archive", "Invalid session file payload");
+      try { validateConfig(payload.config); } catch (error) { throw new Fault("invalid_archive", String(error)); }
+      const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;
       if (typeof sessionId !== "string" || !sessionId.trim()) throw new Fault("invalid_archive", "Archive does not name a session");
-      const imported = options.importArchive!(archive, sessionId);
+      const imported = options.importArchive!(payload, sessionId);
       if (!imported.ok) throw new Fault(imported.error.code === "invalid_input" ? "invalid_params" : imported.error.code, imported.error.message);
       return { sessionId: imported.value.sessionId, lifecycle: imported.value.lifecycle, revision: imported.revision };
     }
@@ -201,7 +208,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else bad("Export destination must be a path or a transfer");
       const exported = current.exportArchive?.() ?? { ok: false as const, error: { code: "invalid_state" as const, message: "This session cannot be exported" } };
       if (!exported.ok) throw new Fault(exported.error.code, exported.error.message);
-      const { bytes, sha256 } = encodeArchive(exported.value, limits.maxBytes);
+      const { bytes, sha256 } = encodeArchive({ archive: exported.value, config: activeConfig! }, limits.maxBytes);
       if (to.type === "path") { writeArchiveFile(to.path, bytes); return { bytes: bytes.length, sha256 }; }
       return { bytes: bytes.length, sha256, transferId: transfers.offer(bytes, sha256) };
     }
@@ -283,7 +290,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { jsonrpc: "2.0", id: request.id, result };
       } catch (error) {
         const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message)
-          : error instanceof TransferFault ? new Fault(error.code, error.message) : error;
+          : error instanceof TransferFault || error instanceof SessionFileError ? new Fault(error.code, error.message) : error;
         return { jsonrpc: "2.0", id, error: { code: fault instanceof Fault ? fault.rpc : -32603,
           message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error" } } };
       }
