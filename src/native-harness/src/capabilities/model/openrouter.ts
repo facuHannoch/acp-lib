@@ -21,12 +21,25 @@ export function openRouter(apiKey: string, model: string, onRequest?: (body: str
         ...(tools.length ? { tools: tools.map((tool) => ({ type: "function", function: tool })) } : {}),
       });
     onRequest?.(body);
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body, signal,
-    });
-    if (!response.ok) throw new Error(`OpenRouter HTTP ${response.status}: ${await response.text()}`);
+    let response: Response;
+    try {
+      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body, signal,
+      });
+    } catch (error) {
+      // Transport failures can also contain remote or injected diagnostics.
+      const detail = String(error);
+      throw new Error(apiKey ? detail.replaceAll(apiKey, "[REDACTED]") : detail);
+    }
+    if (!response.ok) {
+      // Provider diagnostics are not trusted to keep request credentials out
+      // of their body; never let an echoed secret enter events or logs.
+      const body = await response.text();
+      const detail = apiKey ? body.replaceAll(apiKey, "[REDACTED]") : body;
+      throw new Error(`OpenRouter HTTP ${response.status}: ${detail}`);
+    }
     const payload = await response.json() as {
       choices?: { finish_reason: string; message: {
         role: "assistant"; content: string | null;

@@ -18,7 +18,7 @@ import { lastInput, turnsEnd } from "./helpers/session.ts";
 const root = mkdtempSync(join(tmpdir(), "harness-persist-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const setup: CreateParams = { sessionId: "kept", participants: [], channels: {}, config: {
-  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.json", import.meta.url).pathname } } };
+  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }] } });
 function ended(client: HarnessClient, count: number) {
   const events: ChannelEvent[] = [];

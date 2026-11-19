@@ -1,4 +1,5 @@
-import type { ProtocolEndpoint } from "../../contracts/protocol.ts";
+import { DuplicateJsonField, parseUniqueJson } from "../../util/json.ts";
+import type { ProtocolEndpoint, RpcRequest } from "../../contracts/protocol.ts";
 import { LineDecoder, LineWriter } from "./framing.ts";
 
 /** Serve until EOF. EOF is stop (decision 0013): admission closes, inference
@@ -29,8 +30,14 @@ export async function serveProtocolStdio(endpoint: ProtocolEndpoint, input: Read
       for (const line of decoder.push(chunk.value)) {
         if (failure) throw failure;
         let request;
-        try { request = JSON.parse(line); }
-        catch {
+        try { request = parseUniqueJson(line) as RpcRequest; }
+        catch (error) {
+          if (error instanceof DuplicateJsonField && error.field.startsWith("params.config.")) {
+            const envelope = JSON.parse(line) as { id?: unknown };
+            const id = Number.isSafeInteger(envelope.id) ? envelope.id as number : null;
+            send({ jsonrpc: "2.0", id, error: { code: -32602, message: error.message, data: { code: "invalid_config" } } });
+            continue;
+          }
           send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Invalid JSON", data: { code: "parse_error" } } });
           continue;
         }

@@ -14,7 +14,7 @@ import { lastInput } from "./helpers/session.ts";
 
 const root = mkdtempSync(join(tmpdir(), "harness-suspend-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.json", import.meta.url).pathname } };
+const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
 const setup: CreateParams = { sessionId: "paused", participants: [], channels: {}, config };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }] } });
 const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];

@@ -37,7 +37,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   const emit: EventSink = event => { changes.publish(); events.publish(event); };
   let agent: SessionAgent;
   const run: TurnExecutor = (turn, port) => {
-    const services = options.configureTurn(turn, notice => agent.notify(notice));
+    const services = options.configureTurn(turn, notice => agent.notify({ ...notice, fromChannelId: turn.channelId, sourceTurnId: turn.turnId }));
     let recorded: { seq: number; revision: number } | undefined;
     return runTurn({
       signal: port.signal, drainNotices: port.take, finish: port.finish, checkpoint: port.checkpoint, confirm: port.confirm,

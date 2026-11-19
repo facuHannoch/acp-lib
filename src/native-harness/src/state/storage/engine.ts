@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import type { ManagedConfig } from "../../contracts/config-permissions.ts";
+import { policyItemSignature, contributingPolicies, fingerprint } from "./policy-metadata.ts";
+import { validateManagedConfig } from "../../util/config.ts";
 import type {
   AcceptItem, ChannelLifecycle, SessionArchive, SessionLifecycle, SessionStorage, StorageErrorCode, StorageResult,
   StorageSnapshot, StoredChannel, StoredItem, StoredSession, StoredTurn, TimelineEntry, TurnTake,
@@ -50,6 +52,16 @@ export interface Tables {
   entries(): TimelineEntry[];
 }
 
+/** Check persisted names before recovery or config replacement. A changed
+ * definition is permitted here; checkpoint compatibility is checked only when
+ * that particular checkpoint would actually resume. */
+export function referencesCompatible(tables: Tables, config?: ManagedConfig): boolean {
+  if (!config) return true;
+  const names = [...tables.channels().flatMap(channel => channel.policy ? [channel.policy] : []),
+    ...tables.items().flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"])];
+  return names.every(name => Object.hasOwn(config.policies, name));
+}
+
 export class Fail extends Error {
   constructor(readonly code: StorageErrorCode, message: string) { super(message); }
 }
@@ -70,9 +82,8 @@ function cleanName(name: unknown): string {
 }
 
 /** The contract's exact signature; identical for both adapters and archives. */
-export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text">): string {
-  return createHash("sha256").update(JSON.stringify(
-    [item.kind, item.channelId, item.senderId, item.sourceChannelId ?? null, item.text]), "utf8").digest("hex");
+export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy">): string {
+  return policyItemSignature(item);
 }
 
 /** Strict JSON data: what survives a JSON round trip unchanged. */
@@ -111,7 +122,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 3, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: 4, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -126,7 +137,7 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
   }
   return {
     revision: meta.revision, session: session(meta),
-    channels: tables.channels().map(row => ({ channelId: row.channelId, ...(row.displayName === undefined ? {} : { displayName: row.displayName }),
+    channels: tables.channels().map(row => ({ channelId: row.channelId, ...(row.displayName === undefined ? {} : { displayName: row.displayName }), ...(row.policy === undefined ? {} : { policy: row.policy }),
       lifecycle: row.lifecycle, participantIds: [...spoke.get(row.channelId) ?? []] })),
     participants: tables.participants().map(participantId => ({ participantId })),
     turns: tables.turns().map(row => ({ ...row, itemIds: tables.itemsOfTurn(row.turnId).map(item => item.itemId) })),
@@ -146,7 +157,7 @@ export function recover(tables: Tables, upgrade?: () => void): void {
     if (upgrade) upgrade();
     const meta = tables.getMeta();
     let changed = !!upgrade;
-    if (upgrade) meta.formatVersion = 3;
+    if (upgrade) meta.formatVersion = 4;
     if (meta.lifecycle !== "suspended") {
       const kept = (turn: TurnRow) => turn.state.status === "suspended"
         && tables.channel(turn.channelId)?.lifecycle === "suspended";
@@ -171,12 +182,13 @@ function unanswered(tables: Tables, turnId: number): string[] {
 }
 
 /** The contract over any backend. `ownerKey` is the key passed to this open. */
-export function createEngine(tables: Tables, ownerKey: string, release: () => void): SessionStorage {
+export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false): SessionStorage {
   let closed = false;
   const now = () => new Date().toISOString();
 
-  function run<T>(work: (meta: Meta) => T): StorageResult<T> {
+  function run<T>(work: (meta: Meta) => T, readOnly = false): StorageResult<T> {
     if (closed) return failure(new Fail("closed", "Storage handle is closed"));
+    if (incompatibleViewOnly && !readOnly) return failure(new Fail("incompatible", "Stored policy is not available in the open configuration"));
     try {
       return tables.transaction(() => {
         const meta = tables.getMeta(), before = JSON.stringify(meta);
@@ -230,12 +242,32 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     const spoke = new Set(tables.entries().filter(entry => entry.channelId === channel.channelId && entry.kind === "participant_message").map(entry => entry.from));
     return { ...channel, participantIds: [...spoke] };
   };
+  const legacy = "__legacy_allow";
+  const activeConfig = config ?? { version: 1 as const, system: "", model: { protocol: "scripted" as const, script: "legacy" }, defaultPolicy: legacy,
+    policies: { [legacy]: { fallback: "allow" as const, tools: {} } } };
+  const requireCompatible = () => {
+    if (!referencesCompatible(tables, activeConfig)) fail("incompatible", "A stored policy no longer exists");
+  };
+  const turnFingerprint = (turn: TurnRow) => fingerprint(activeConfig, contributingPolicies(tables.itemsOfTurn(turn.turnId)
+    .map(item => item.policy ?? { resolved: legacy, inherited: [] })));
+  const compatible = (turn: TurnRow) => {
+    try { return turn.compatibilityKey === ownerKey && turn.state.status === "suspended" && turn.state.checkpoint.policyFingerprint === turnFingerprint(turn); }
+    catch { return false; }
+  };
+  const resolve = (explicit?: string | null, channel?: string) => {
+    const selected = explicit ?? channel ?? config?.defaultPolicy ?? legacy;
+    if (config && !Object.hasOwn(config.policies, selected)) fail("invalid_policy", `Unknown policy: ${selected}`);
+    if (!config && selected !== legacy) fail("invalid_policy", `Unknown policy: ${selected}`);
+    return selected;
+  };
 
   return {
     acceptItem: input => run(meta => {
+      requireCompatible();
       const shaped = !!input && typeof input === "object"
         && [input.kind, input.channelId, input.senderId, input.text].every(value => typeof value === "string")
-        && (input.sourceChannelId === undefined || typeof input.sourceChannelId === "string");
+        && (input.sourceChannelId === undefined || typeof input.sourceChannelId === "string")
+        && (input.explicitPolicy === undefined || input.explicitPolicy === null || typeof input.explicitPolicy === "string");
       if (shaped && typeof input.itemId === "string") {
         const known = tables.item(input.itemId);
         if (known) {
@@ -249,6 +281,15 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
         fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
       const target = tables.channel(input.channelId);
+      if (notice && input.explicitPolicy != null) fail("invalid_input", "Notices cannot override policy");
+      if (notice && config && input.sourceTurnId === undefined) fail("invalid_input", "A notice needs its executing source turn");
+      const resolved = resolve(input.explicitPolicy, target?.policy);
+      let inherited: string[] = [];
+      if (notice && input.sourceTurnId !== undefined) {
+        const source = tables.turn(input.sourceTurnId);
+        if (!source || source.channelId !== input.sourceChannelId || source.state.status !== "running") fail("invalid_input", "Invalid notice source turn");
+        inherited = contributingPolicies(tables.itemsOfTurn(input.sourceTurnId).map(item => item.policy ?? { resolved: legacy, inherited: [] }));
+      }
       if (notice && !target) fail("not_found", `Unknown channel: ${input.channelId}`);
       if (target?.lifecycle === "retired") fail("channel_retired", `Channel ${input.channelId} is retired`);
       if (meta.lifecycle === "suspended" || (meta.lifecycle === "suspending" && !notice))
@@ -265,8 +306,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         }
       }
       const item: StoredItem = { itemId, kind: input.kind, channelId: input.channelId, senderId: input.senderId,
-        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), text: input.text,
-        signature: signatureOf(input), acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
+        ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text,
+        signature: signatureOf(input), policy: { ...(input.explicitPolicy == null ? {} : { explicit: input.explicitPolicy }), resolved, inherited },
+        acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
       if (!notice) {
         if (!target) tables.putChannel({ channelId: item.channelId, lifecycle: "open" });
         tables.addParticipant(item.senderId);
@@ -276,6 +318,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }),
 
     beginTurn: channelId => run(meta => {
+      requireCompatible();
       if (meta.lifecycle !== "running") fail("not_running", `Session is ${meta.lifecycle}; no turn can begin`);
       const channel = channelOf(channelId);
       if (channel.lifecycle !== "open") fail("channel_suspended", `Channel ${channel.channelId} is ${channel.lifecycle}; no turn can begin`);
@@ -352,7 +395,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (last?.message.role === "assistant" && !last.message.calls.length && !tables.pendingItems(turn.channelId).length)
         fail("invalid_state", "This turn is finished; complete it instead of checkpointing");
       const saved: TurnRow = { ...turn, state: { status: "suspended",
-        checkpoint: { nextStep: "inference", afterSeq: last?.seq ?? turn.startedSeq } } };
+        checkpoint: { nextStep: "inference", afterSeq: last?.seq ?? turn.startedSeq, policyFingerprint: turnFingerprint(turn) } } };
       tables.putTurn(saved); settle(turn.channelId); seq(meta);
       return full(saved);
     }),
@@ -371,12 +414,13 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }),
 
     resume: () => run(meta => {
+      requireCompatible();
       if (meta.lifecycle === "running") return { session: session(meta), turns: [] };
       if (meta.lifecycle !== "suspended") fail("invalid_state", "Session is still suspending");
       // Turns of individually suspended (or retired) channels are not ours to resume.
       const saved = tables.turns().filter(turn => turn.state.status === "suspended"
         && ["open", "suspending"].includes(tables.channel(turn.channelId)?.lifecycle ?? "retired"));
-      const foreign = saved.find(turn => turn.compatibilityKey !== ownerKey);
+      const foreign = saved.find(turn => !compatible(turn));
       if (foreign) fail("incompatible", `Turn ${foreign.turnId} was checkpointed under a different configuration`);
       const turns = saved.map(turn => { const live: TurnRow = { ...turn, state: { status: "running" } }; tables.putTurn(live); return full(live); });
       meta.lifecycle = "running"; seq(meta);
@@ -402,23 +446,26 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     createChannel: input => run(meta => {
       if (!input || typeof input !== "object" || !text(input.channelId)) fail("invalid_input", "Channel needs a channelId");
       const name = input.displayName === undefined ? undefined : cleanName(input.displayName);
+      if (input.policy !== undefined) resolve(input.policy);
       const known = tables.channel(input.channelId);
       if (known?.lifecycle === "retired") fail("channel_retired", `Channel ${input.channelId} is retired`);
       if (known) {
-        if (known.displayName !== name) fail("already_exists", `Channel ${input.channelId} already exists with a different name`);
+        if (known.displayName !== name || known.policy !== input.policy) fail("already_exists", `Channel ${input.channelId} already exists with different settings`);
         return { channel: view(known), created: false };
       }
-      const row: ChannelRow = { channelId: input.channelId, ...(name === undefined ? {} : { displayName: name }), lifecycle: "open" };
+      const row: ChannelRow = { channelId: input.channelId, ...(name === undefined ? {} : { displayName: name }), ...(input.policy === undefined ? {} : { policy: input.policy }), lifecycle: "open" };
       tables.putChannel(row); seq(meta);
       return { channel: view(row), created: true };
     }),
 
-    editChannel: (channelId, displayName) => run(meta => {
+    editChannel: (channelId, displayName, policy) => run(meta => {
       const channel = channelOf(channelId);
       const name = displayName === null ? undefined : cleanName(displayName);
-      if (channel.displayName === name) return view(channel);
-      const { displayName: _old, ...rest } = channel;
-      const row: ChannelRow = { ...rest, ...(name === undefined ? {} : { displayName: name }) };
+      if (policy != null) resolve(policy);
+      const nextPolicy = policy === undefined ? channel.policy : policy ?? undefined;
+      if (channel.displayName === name && channel.policy === nextPolicy) return view(channel);
+      const { displayName: _old, policy: _previous, ...rest } = channel;
+      const row: ChannelRow = { ...rest, ...(name === undefined ? {} : { displayName: name }), ...(nextPolicy === undefined ? {} : { policy: nextPolicy }) };
       tables.putChannel(row); seq(meta);
       return view(row);
     }),
@@ -433,12 +480,13 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     }),
 
     resumeChannel: channelId => run(meta => {
+      requireCompatible();
       const channel = channelOf(channelId);
       if (channel.lifecycle === "open") return { channel: view(channel) };
       if (channel.lifecycle === "suspending") fail("invalid_state", `Channel ${channel.channelId} is still suspending`);
       const saved = tables.liveTurn(channel.channelId);
       const cont = saved?.state.status === "suspended" && meta.lifecycle === "running" ? saved : undefined;
-      if (cont && cont.compatibilityKey !== ownerKey)
+      if (cont && !compatible(cont))
         fail("incompatible", `Turn ${cont.turnId} was checkpointed under a different configuration`);
       const row: ChannelRow = { ...channel, lifecycle: "open" };
       tables.putChannel(row);
@@ -478,8 +526,15 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return { interrupted: true as const, turn: full(ended) };
     }),
 
-    importedConfig: () => run(() => tables.getConfig()),
-    snapshot: () => run(() => readSnapshot(tables)),
+    executionCompatible: () => run(() => !incompatibleViewOnly && referencesCompatible(tables, activeConfig), true),
+    importedConfig: () => run(() => tables.getConfig(), true),
+    saveConfig: value => run(() => {
+      let checked: ManagedConfig;
+      try { checked = validateManagedConfig(value); } catch (error) { return fail("invalid_input", String(error)); }
+      if (!referencesCompatible(tables, checked)) fail("incompatible", "A stored policy no longer exists");
+      tables.setConfig(checked);
+    }),
+    snapshot: () => run(() => readSnapshot(tables), true),
 
     exportArchive: () => run(meta => {
       const snapshot = readSnapshot(tables);
@@ -487,7 +542,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: 2, exportedAt: now(), snapshot,
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: 3, exportedAt: now(), snapshot,
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
     }),

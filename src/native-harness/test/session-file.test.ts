@@ -35,7 +35,8 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: imported config
     expect(opened.value.importedConfig()).toMatchObject({ ok: true, value: undefined });
     const exported = opened.value.exportArchive(); if (!exported.ok) throw new Error(exported.error.message);
     opened.value.close();
-    const config = { version: 1 as const, system: "exact", model: { protocol: "scripted" as const, script: "relative.json" } };
+    const config = { version: 1 as const, system: "exact", model: { protocol: "scripted" as const, script: "relative.json" },
+      defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow" as const, tools: {} } } };
     const destination = make("dest");
     expect(destination.importSessionFile({ archive: exported.value, config: { ...config, model: { ...config.model, script: "  " } } }).ok).toBe(false);
     expect(destination.importSessionFile({ archive: exported.value, config }).ok).toBe(true);

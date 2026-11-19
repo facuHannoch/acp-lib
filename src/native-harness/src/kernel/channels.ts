@@ -14,7 +14,7 @@ export interface ChannelScheduler {
 }
 
 /** Status is a pure reading of one snapshot plus this process's own state. */
-export function sessionStatus(view: StorageSnapshot, stopped: boolean): SessionStatus {
+export function sessionStatus(view: StorageSnapshot, stopped: boolean, incompatible = false): SessionStatus {
   const working = view.turns.some(turn => turn.state.status === "running");
   // Input pending on a channel that cannot run (suspended, suspending) is waiting
   // for a resume, not execution.
@@ -23,13 +23,13 @@ export function sessionStatus(view: StorageSnapshot, stopped: boolean): SessionS
   const sessionRuns = view.session.lifecycle === "running";
   return {
     sessionId: view.session.sessionId, revision: view.revision, lifecycle: view.session.lifecycle,
-    execution: stopped ? "stopped" : view.session.lifecycle !== "running" ? view.session.lifecycle : working || pending ? "working" : "idle",
-    channels: view.channels.map(({ channelId, displayName, lifecycle }) => {
+    execution: stopped ? "stopped" : incompatible ? "incompatible" : view.session.lifecycle !== "running" ? view.session.lifecycle : working || pending ? "working" : "idle",
+    channels: view.channels.map(({ channelId, displayName, policy, lifecycle }) => {
       const turns = view.turns.filter(turn => turn.channelId === channelId), last = turns.at(-1);
       const live = turns.find(turn => turn.state.status === "running" || turn.state.status === "suspended");
       const pendingItemIds = view.items.filter(item => item.channelId === channelId && item.milestone === "received").map(item => item.itemId);
       return {
-        channelId, ...(displayName === undefined ? {} : { displayName }), lifecycle,
+        channelId, ...(displayName === undefined ? {} : { displayName }), ...(policy === undefined ? {} : { policy }), lifecycle,
         ...(live ? { activeTurn: { turnId: live.turnId, status: live.state.status as "running" | "suspended" } } : {}),
         pendingItemIds,
         waitingForResume: (pendingItemIds.length > 0 || live?.state.status === "suspended")
@@ -59,7 +59,8 @@ export function createChannelScheduler(
   // as `suspended`. Storage holds the truth; this holds the waiting callers.
   const channelSuspensions = new Map<string, { promise: Promise<ControlResult<ChannelStatus>>; settle(result: ControlResult<ChannelStatus>): void }>();
   const view = () => { const read = storage.snapshot(); if (!read.ok) throw new Error(read.error.message); return read.value; };
-  const status = () => sessionStatus(view(), stopped);
+  const compatible = () => { const result = storage.executionCompatible(); if (!result.ok) throw new Error(result.error.message); return result.value; };
+  const status = () => sessionStatus(view(), stopped, !compatible());
   /** Channels whose pending input this process may start: open ones only. A
    * suspended channel's backlog waits for its own resume and is not "waiting"
    * here, so it never keeps the session from reporting idle. */
@@ -77,7 +78,7 @@ export function createChannelScheduler(
     // A channel that is not open has no input this process may start.
     if (channel.lifecycle !== "open") waiting.delete(channelId);
     emit({ channel: channelId, revision, event: { type: "channel_state", lifecycle: channel.lifecycle,
-      ...(channel.displayName === undefined ? {} : { displayName: channel.displayName }) } });
+      ...(channel.displayName === undefined ? {} : { displayName: channel.displayName }), ...(channel.policy === undefined ? {} : { policy: channel.policy }) } });
   };
   /** A commit just ended or checkpointed this channel's turn: if its individual
    * suspension completed in that same transaction, announce it and answer the caller. */
@@ -182,7 +183,7 @@ export function createChannelScheduler(
     if (!result.ok) {
       const code = result.error.code;
       return { accepted: false, error: result.error.message, code: code === "invalid_input" || code === "item_conflict"
-        || code === "not_running" || code === "not_found" || code === "channel_suspended" || code === "channel_retired" ? code : "storage_failure" };
+        || code === "invalid_policy" || code === "incompatible" || code === "not_running" || code === "not_found" || code === "channel_suspended" || code === "channel_retired" ? code : "storage_failure" };
     }
     const { item: stored, duplicate } = result.value;
     if (!duplicate) {
@@ -213,10 +214,10 @@ export function createChannelScheduler(
       });
       return result;
     },
-    edit: (channelId, displayName) => {
-      const before = view().channels.find(channel => channel.channelId === channelId)?.displayName;
-      return control(() => storage.editChannel(channelId, displayName), ({ displayName: now }, revision) => {
-        if (now !== before) emitState(channelId, revision);
+    edit: (channelId, displayName, policy) => {
+      const before = view().channels.find(channel => channel.channelId === channelId);
+      return control(() => storage.editChannel(channelId, displayName, policy), (now, revision) => {
+        if (now.displayName !== before?.displayName || now.policy !== before?.policy) emitState(channelId, revision);
         return channelStatus(channelId);
       });
     },
@@ -286,11 +287,11 @@ export function createChannelScheduler(
   return {
     channels,
     agent: {
-      idle: () => live.size === 0 && (!started || stopped || lifecycle !== "running" || waiting.size === 0),
+      idle: () => live.size === 0 && (!compatible() || !started || stopped || lifecycle !== "running" || waiting.size === 0),
       send: (input: ChannelInput) => accept({ kind: "participant_message", channelId: input?.channelId, senderId: input?.participantId,
-        text: input?.text, ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }),
+        text: input?.text, ...(input?.policy == null ? {} : { explicitPolicy: input.policy }), ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }),
       notify: (notice: ChannelNotice) => accept({ kind: "channel_notice", channelId: notice?.channelId,
-        senderId: `channel:${notice?.fromChannelId}`, sourceChannelId: notice?.fromChannelId, text: notice?.text }),
+        senderId: `channel:${notice?.fromChannelId}`, sourceChannelId: notice?.fromChannelId, sourceTurnId: notice?.sourceTurnId, text: notice?.text }),
     },
     start() {
       if (started || stopped) return;

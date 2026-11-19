@@ -15,11 +15,14 @@ class Fault extends Error {
 export class SessionOpenError extends Error {
   constructor(readonly code: DurableErrorCode, message: string) { super(message); }
 }
-export interface SessionRequest { mode: "create" | "open"; sessionId: string; config: ProtocolConfig }
+export interface SessionRequest { mode: "create" | "open"; sessionId: string; config?: ProtocolConfig }
 /** `close` releases storage ownership; the endpoint calls it when it is disposed
  * or when a load cannot be answered. */
 export interface OpenedSession {
   session: PersistentSession; close(): void;
+  config?: ProtocolConfig;
+  /** Persist the chosen config only after the response can be produced. */
+  commitConfig?(): void;
   /** One consistent logical copy, or `busy`. */
   exportArchive?(): StorageResult<SessionArchive>;
 }
@@ -50,16 +53,6 @@ function count(value: unknown, fallback: number): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 1000) bad("Expected a limit between 1 and 1000");
   return value as number;
 }
-function config(raw: unknown) {
-  try {
-    const value = obj(raw); keys(value, ["version", "system", "model"]);
-    if (value.version !== 1 || typeof value.system !== "string") bad("Expected version 1 and a system string");
-    const model = obj(value.model); keys(model, ["protocol", "script"]);
-    if (model.protocol !== "scripted") bad("Only scripted model configuration is supported by this subset");
-    text(model.script);
-  } catch (error) { throw new Fault("invalid_config", String(error)); }
-}
-
 /** Capabilities describe this server instance: durable acceptance and load are
  * advertised only when its sessions are opened from durable storage. */
 export function describe(durable: boolean, archives = false): Description {
@@ -108,7 +101,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const message: RpcSessionNotification = { jsonrpc: "2.0", method: "session/event", params: event };
       publish(() => { for (const listener of sessionListeners) { try { listener(structuredClone(message)); } catch { /* Isolate clients. */ } } });
     });
-    activeConfig = structuredClone(request.config);
+    activeConfig = structuredClone(opened.config ?? request.config);
     return opened;
   }
 
@@ -119,6 +112,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   function load(opened: OpenedSession, limit: number, start: boolean) {
     const view = opened.session.snapshot();
     const result = loadView(opened.session.status(), view, limit);
+    if (start) opened.commitConfig?.();
     held ??= [];
     setTimeout(() => {
       const waiting = held ?? []; held = undefined;
@@ -153,7 +147,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       keys(p, ["sessionId", "config", "participants", "channels"]);
       const sessionId = text(p.sessionId);
       if (current || opening) throw new Fault("already_exists", "One session per endpoint");
-      config(p.config);
+      if (p.config !== undefined) { try { validateManagedConfig(p.config); } catch (error) { throw new Fault("invalid_config", String(error)); } }
       if (!Array.isArray(p.participants)) bad("participants must be an array");
       const ids = new Set<string>();
       for (const value of p.participants) {
@@ -163,13 +157,13 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       }
       if (Object.keys(obj(p.channels)).length) bad("Initial channel settings are not supported; channels are created on push");
       current = await attach({ mode: "create", sessionId, config: p.config });
+      try { current.commitConfig?.(); } catch (error) { current.close(); current = undefined; throw error; }
       current.session.start();
       return { sessionId };
     }
     if (method === "session/load") {
       keys(p, ["sessionId", "config", "messagesLimit"]);
       const sessionId = text(p.sessionId), limit = count(p.messagesLimit, 100);
-      config(p.config);
       // A repeated load of the open session is a fresh view of it, nothing more.
       if (current) {
         if (current.session.snapshot().session.sessionId !== sessionId) throw new Fault("already_exists", "One session per endpoint");
@@ -196,9 +190,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || payload.archive?.archiveVersion !== 2)
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
-      try { validateConfig(payload.config); } catch (error) { throw new Fault("invalid_archive", String(error)); }
+      try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;
       if (typeof sessionId !== "string" || !sessionId.trim()) throw new Fault("invalid_archive", "Archive does not name a session");
       const imported = options.importArchive!(payload, sessionId);
@@ -223,11 +217,11 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const channel = text(p.channel);
       let result;
       if (method === "channel/create") {
-        keys(p, ["channel", "displayName"]);
-        result = session.channels.create({ channelId: channel, ...(p.displayName === undefined ? {} : { displayName: text(p.displayName) }) });
+        keys(p, ["channel", "displayName", "policy"]);
+        result = session.channels.create({ channelId: channel, ...(p.displayName === undefined ? {} : { displayName: text(p.displayName) }), ...(p.policy === undefined ? {} : { policy: text(p.policy) }) });
       } else if (method === "channel/edit") {
-        keys(p, ["channel", "displayName"]);
-        result = session.channels.edit(channel, p.displayName === null ? null : text(p.displayName));
+        keys(p, ["channel", "displayName", "policy"]);
+        result = session.channels.edit(channel, p.displayName === null ? null : text(p.displayName), p.policy === undefined || p.policy === null ? p.policy : text(p.policy));
       } else if (method === "channel/suspend") {
         keys(p, ["channel"]); result = await session.channels.suspend(channel);
       } else if (method === "channel/resume") {
@@ -239,6 +233,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         if (!outcome.ok) throw new Fault(outcome.error.code, outcome.error.message);
         const { item } = outcome.value;
         return { outcome: outcome.value.outcome, item: { id: item.itemId, channel: item.channelId, kind: item.kind, sender: item.senderId, milestone: item.milestone,
+          ...(item.policy === undefined ? {} : { policy: item.policy }),
           ...(item.turnId === undefined ? {} : { turnId: String(item.turnId) }) },
           ...(outcome.value.outcome === "withdrawn" ? { repeated: outcome.value.repeated } : {}) };
       } else {
@@ -272,7 +267,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     }
     keys(p, ["channel", "item"]);
     const channel = text(p.channel), item = obj(p.item);
-    keys(item, ["id", "kind", "sender", "content", "delivery", "wake"]);
+    keys(item, ["id", "kind", "sender", "content", "policy", "delivery", "wake"]);
     const id = text(item.id), sender = text(item.sender);
     // One delivery behavior: the two legacy fields are checked, then ignored.
     if (item.kind !== "user_message" || (item.delivery !== undefined && item.delivery !== "queue") || (item.wake !== undefined && item.wake !== true)) bad("Only waking, queued user messages are supported");
@@ -281,10 +276,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       if (part.type !== "text") bad("Only text parts are supported"); return { type: "text", text: text(part.text) }; });
     // send returns once the item is committed to the inbox (Received) or
     // refused. It never waits for inference; the outcome arrives as events.
-    const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id,
+    const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id, ...(item.policy == null ? {} : { policy: text(item.policy) }),
       text: parts.map((part: { text: string }) => part.text).join("\n") });
     if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
+    const policy = session.snapshot().items.find(value => value.itemId === id)?.policy;
     return { accepted: true, duplicate: result.duplicate, item: { id, channel, kind: "participant_message", sender, milestone: result.milestone,
+      ...(policy === undefined ? {} : { policy }),
       ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };
   }
   return {

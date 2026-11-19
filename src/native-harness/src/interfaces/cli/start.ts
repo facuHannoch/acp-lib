@@ -5,16 +5,36 @@ import { createChannelHandler, serveLocal } from "../protocol/local.ts";
 import { createChannelOutputs, publishChannelEvent } from "../protocol/output.ts";
 import { serveWebChat } from "../web-chat/server.ts";
 import { openDevelopment } from "./development.ts";
+import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { createSqliteStorageAdapter } from "../../state/storage/sqlite.ts";
+import { chooseManagedConfig } from "../../runtime/config/paths.ts";
 
 export interface StartOptions { database?: string; create?: boolean; resume?: boolean; script?: string }
 
 export async function start(options: StartOptions = {}) {
-  // A scripted run is offline: it needs no provider key.
-  const config = options.script ? { ...localConnection(), apiKey: "", model: "",
+  let managedConfig;
+  if (options.script && options.database) managedConfig = { version: 1 as const, system: systemPrompt,
+    model: { protocol: "scripted" as const, script: options.script }, defaultPolicy: "__legacy_allow",
+    policies: { __legacy_allow: { fallback: "allow" as const, tools: {} } } };
+  if (options.database && options.create && !managedConfig) {
+    const sidecar = join(dirname(options.database), "config.json");
+    if (existsSync(sidecar)) managedConfig = chooseManagedConfig({ mode: "create", sidecar });
+  }
+  if (options.database && !options.create) {
+    const saved = createSqliteStorageAdapter(options.database).readSavedConfig();
+    const sidecar = join(dirname(options.database), "config.json");
+    if (existsSync(sidecar) || managedConfig || (saved.ok && saved.value))
+      managedConfig = chooseManagedConfig({ mode: "open", sidecar, inline: managedConfig, saved: saved.ok ? saved.value : undefined });
+  }
+  const script = managedConfig ? (managedConfig.model.protocol === "scripted" ? managedConfig.model.script : undefined) : options.script;
+  // Managed OpenRouter resolves its named credential inside openDevelopment;
+  // scripted runs do not need a provider key at all.
+  const config = (script || managedConfig) ? { ...localConnection(), apiKey: "", model: "",
     inspectorPort: Number(process.env.HARNESS_INSPECTOR_PORT ?? 3000), webChatPort: Number(process.env.HARNESS_CHAT_PORT ?? 3001) } : agentConfiguration();
   if (config.managedDirectory) await mkdir(config.managedDirectory, { recursive: true, mode: 0o700 });
-  const development = await openDevelopment({ systemPrompt, database: options.database, create: options.create, script: options.script,
-    provider: options.script ? undefined : { apiKey: config.apiKey, model: config.model } });
+  const development = await openDevelopment({ systemPrompt, database: options.database, create: options.create, script, managedConfig,
+    provider: script || managedConfig ? undefined : { apiKey: config.apiKey, model: config.model } });
   const { session, inspection, local } = development;
   const outputs = createChannelOutputs();
   const stopOutput = session.subscribe(event => publishChannelEvent(outputs, event));

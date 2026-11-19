@@ -4,6 +4,9 @@ import { HarnessClient, createStdioTransport } from "../src/client.ts";
 import { serveProtocolStdio } from "../src/interfaces/protocol/stdio-server.ts";
 import { spawnHarness } from "./helpers/stdio.ts";
 import { createInProcessTransport } from "../src/client.ts";
+import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 test("framing handles byte-fragmented UTF-8, CRLF, multiple lines and bounded incomplete frames", () => {
   const decoder = new LineDecoder(); const lines: string[] = [];
@@ -48,7 +51,8 @@ test("child death rejects pending requests without waiting for the request timeo
 }, 5000);
 
 test("server recovers from a malformed JSON line, keeps stdout clean and exits on EOF", async () => {
-  const child = Bun.spawn([process.execPath, new URL("../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const home = mkdtempSync(join(tmpdir(), "harness-stdio-test-"));
+  const child = Bun.spawn([process.execPath, new URL("../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio", "--home", home], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const output = new Response(child.stdout).text(), errors = new Response(child.stderr).text();
   const timer = setTimeout(() => child.kill("SIGKILL"), 2000);
   try {
@@ -60,7 +64,20 @@ test("server recovers from a malformed JSON line, keeps stdout clean and exits o
     expect(messages[0]).toMatchObject({ id: null, error: { code: -32700 } });
     expect(messages[1]).toMatchObject({ id: 1, result: { protocolVersion: 1 } });
     expect(await errors).toBe("");
-  } finally { clearTimeout(timer); child.kill(); }
+  } finally { clearTimeout(timer); child.kill(); rmSync(home, { recursive: true, force: true }); }
+}, 5000);
+
+test("stdio rejects duplicate config fields with a field-specific validation error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "harness-stdio-test-"));
+  const child = Bun.spawn([process.execPath, new URL("../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio", "--home", home], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const output = new Response(child.stdout).text(), timer = setTimeout(() => child.kill("SIGKILL"), 2000);
+  try {
+    child.stdin.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"host":{"name":"test","version":"0"},"callbacks":[],"subscription":{"text":"final","tools":"full"}}}\n');
+    child.stdin.write('{"jsonrpc":"2.0","id":2,"method":"config/validate","params":{"config":{"version":1,"version":1}}}\n');
+    await child.stdin.end(); expect(await child.exited).toBe(0);
+    const replies = (await output).trim().split("\n").map(line => JSON.parse(line));
+    expect(replies.find(reply => reply.id === 2)).toMatchObject({ error: { data: { code: "invalid_config" }, message: expect.stringContaining("config.version") } });
+  } finally { clearTimeout(timer); child.kill(); rmSync(home, { recursive: true, force: true }); }
 }, 5000);
 
 test("EOF shutdown fails within its grace period when a request already read never settles", async () => {
@@ -101,7 +118,8 @@ test("EOF stops the session instead of draining it, and flushes the interruption
 });
 
 test("unterminated stdin frame produces a nonzero exit with diagnostics only on stderr", async () => {
-  const child = Bun.spawn([process.execPath, new URL("../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const home = mkdtempSync(join(tmpdir(), "harness-stdio-test-"));
+  const child = Bun.spawn([process.execPath, new URL("../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio", "--home", home], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const output = new Response(child.stdout).text(), errors = new Response(child.stderr).text();
   const timer = setTimeout(() => child.kill("SIGKILL"), 2000);
   try {
@@ -109,5 +127,5 @@ test("unterminated stdin frame produces a nonzero exit with diagnostics only on 
     expect(await child.exited).toBe(1);
     expect(await output).toBe("");
     expect(await errors).toContain("Incomplete protocol frame");
-  } finally { clearTimeout(timer); child.kill(); }
+  } finally { clearTimeout(timer); child.kill(); rmSync(home, { recursive: true, force: true }); }
 }, 5000);

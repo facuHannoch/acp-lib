@@ -1,6 +1,7 @@
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
-import { Fail, createEngine, failure, recover, type ChannelRow, type Meta, type Tables, type TurnRow } from "./engine.ts";
+import { Fail, createEngine, failure, recover, referencesCompatible, type ChannelRow, type Meta, type Tables, type TurnRow } from "./engine.ts";
 import { archiveMeta, restoreArchive, storedSession, validateArchive, validateSessionPayload } from "./archive.ts";
+import { validateManagedConfig } from "../../util/config.ts";
 
 interface Data {
   config?: import("../../contracts/session-file.ts").PortableSessionConfig;
@@ -72,6 +73,11 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
   let data: Data | undefined;
   let owned = false;
   return {
+    readSavedConfig() {
+      if (!data) return failure(new Fail("not_found", "No session exists at this location"));
+      if (owned) return failure(new Fail("owner_conflict", "Session storage already has an owner"));
+      return { ok: true, value: copy(data.config), revision: data.meta.revision };
+    },
     importSessionFile(payload, options) {
       try {
         const { archive, config } = validateSessionPayload(payload);
@@ -88,19 +94,20 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
         const identity = options?.identity;
         if (!identity || typeof identity.sessionId !== "string" || !identity.sessionId.trim() || typeof identity.compatibilityKey !== "string"
           || (options.mode !== "create" && options.mode !== "open")) throw new Fail("invalid_input", "Open needs a mode, sessionId and compatibilityKey");
+        let config; try { config = options.config === undefined ? undefined : validateManagedConfig(options.config); } catch (error) { throw new Fail("invalid_input", String(error)); }
         if (owned) throw new Fail("owner_conflict", "Session storage already has an owner");
         if (options.mode === "create") {
           if (data) throw new Fail("already_exists", "A session already exists at this location");
-          data = empty({ sessionId: identity.sessionId, formatVersion: 3, createdAt: new Date().toISOString(),
+          data = empty({ sessionId: identity.sessionId, formatVersion: 4, createdAt: new Date().toISOString(),
             compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         } else {
           if (!data) throw new Fail("not_found", "No session exists at this location");
           if (data.meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "Location holds a different session");
         }
         const tables = memoryTables(data);
-        recover(tables);
+        if (referencesCompatible(tables, config)) recover(tables);
         owned = true;
-        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { owned = false; }), revision: data.meta.revision };
+        return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { owned = false; }, config), revision: data.meta.revision };
       } catch (error) { return failure(error); }
     },
     importArchive(raw, options) {

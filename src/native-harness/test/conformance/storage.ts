@@ -1,3 +1,4 @@
+import { legacyItemSignature } from "../../src/state/storage/policy-metadata.ts";
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { SessionStorage, SessionStorageAdapter, StorageErrorCode, StorageResult } from "../../src/contracts/storage.ts";
@@ -50,7 +51,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       // A different key opens normally and is never written.
       const again = ok(adapter.open({ mode: "open", identity: id("k2") }));
       const view = snap(again);
-      expect(view.session).toMatchObject({ sessionId: "s1", formatVersion: 3, lifecycle: "running", compatibilityKey: "k1" });
+      expect(view.session).toMatchObject({ sessionId: "s1", formatVersion: 4, lifecycle: "running", compatibilityKey: "k1" });
       expect(view.items.map(item => item.text)).toEqual(["hello"]);
       ok(again.close());
       expect(snap(ok(adapter.open({ mode: "open", identity: id() }))).session.compatibilityKey).toBe("k1");
@@ -62,9 +63,9 @@ export function storageConformance(name: string, location: () => SessionStorageA
       expect(first).toMatchObject({ duplicate: false, item: { itemId: "auto:1", milestone: "received", acceptedSeq: 1 } });
       expect(first.item.turnId).toBeUndefined();
       expect(first.item.signature).toBe(createHash("sha256")
-        .update(JSON.stringify(["participant_message", "c1", "ana", null, "one"]), "utf8").digest("hex"));
+        .update(JSON.stringify(["participant_message", "c1", "ana", null, "one", null]), "utf8").digest("hex"));
       expect(ok(notice(s, "ping")).item).toMatchObject({ itemId: "auto:2", sourceChannelId: "c2",
-        signature: createHash("sha256").update(JSON.stringify(["channel_notice", "c1", "channel:c2", "c2", "ping"])).digest("hex") });
+        signature: createHash("sha256").update(JSON.stringify(["channel_notice", "c1", "channel:c2", "c2", "ping", null])).digest("hex") });
       expect(ok(msg(s, "reserved", "c1", "auto:7")).item.itemId).toBe("auto:7");
       expect(ok(msg(s, "next")).item.itemId).toBe("auto:8");
       expect(ok(msg(s, "low", "c1", "auto:3")).item.itemId).toBe("auto:3");
@@ -304,7 +305,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       // An unanswered call cannot be checkpointed; after its result the next step is inference.
       unchanged(s, () => refused(s.checkpointTurn(tools), "invalid_state"));
       const result = ok(s.appendMessage(tools, { role: "tool", callId: "t1", content: "r" }));
-      expect(ok(s.checkpointTurn(tools)).state).toEqual({ status: "suspended", checkpoint: { nextStep: "inference", afterSeq: result.seq } });
+      expect(ok(s.checkpointTurn(tools)).state).toMatchObject({ status: "suspended", checkpoint: { nextStep: "inference", afterSeq: result.seq } });
       // A notice that won the finish race keeps its turn open: checkpoint, do not take.
       say(s, noticed, "final?");
       ok(notice(s, "wait for me", "c3"));
@@ -405,7 +406,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
 
     test("export needs an idle or cleanly suspended session", () => {
       const { s } = create();
-      expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 2, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });
+      expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 3, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });
       ok(msg(s, "a"));
       unchanged(s, () => refused(s.exportArchive(), "busy"));
       const t = begin(s).turn.turnId;
@@ -724,7 +725,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
 
     test("an archive round-trips channel state, names, withdrawn items, retired IDs and checkpoints", () => {
       const { s, a, archive } = richArchive();
-      expect(archive.archiveVersion).toBe(2);
+      expect(archive.archiveVersion).toBe(3);
       const home = location();
       ok(home.importArchive(archive, { sessionId: "copy" }));
       const copy = ok(home.open({ mode: "open", identity: { sessionId: "copy", compatibilityKey: "k1" } }));
@@ -774,11 +775,12 @@ export function storageConformance(name: string, location: () => SessionStorageA
       ok(s.beginSuspend()); ok(s.checkpointTurn(t)); ok(s.completeSuspend());
       const v1 = JSON.parse(JSON.stringify(ok(s.exportArchive())));
       v1.archiveVersion = 1; v1.snapshot.session.formatVersion = 2;
+      for (const item of v1.snapshot.items) { item.signature = legacyItemSignature(item); delete item.policy; delete item.explicitPolicy; }
       for (const channel of v1.snapshot.channels) { delete channel.lifecycle; delete channel.displayName; }
       const home = location();
       ok(home.importArchive(JSON.parse(JSON.stringify(v1))));
       const copy = ok(home.open({ mode: "open", identity: id() }));
-      expect(snap(copy).session.formatVersion).toBe(3);
+      expect(snap(copy).session.formatVersion).toBe(4);
       expect(snap(copy).channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }]);
       expect(ok(copy.resume()).turns.map(turn => turn.turnId)).toEqual([t]); // session-wide resume, as before
       expect(ok(copy.takePending(t)).items.map(item => item.itemId)).toEqual(["p"]);
@@ -823,8 +825,8 @@ export function storageConformance(name: string, location: () => SessionStorageA
       const good = JSON.stringify(ok(s.exportArchive()));
       const broken: ((archive: any) => void)[] = [
         a => { a.format = "something-else"; },
-        a => { a.archiveVersion = 3; },
-        a => { a.snapshot.session.formatVersion = 4; },
+        a => { a.archiveVersion = 4; },
+        a => { a.snapshot.session.formatVersion = 5; },
         a => { a.snapshot.session.lifecycle = "suspending"; },
         a => { a.snapshot.turns[0].state = { status: "running" }; },
         a => { a.snapshot.turns[0].state = { status: "suspended", checkpoint: { nextStep: "inference", afterSeq: 1 } }; },

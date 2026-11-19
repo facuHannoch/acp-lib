@@ -13,7 +13,7 @@ const root = mkdtempSync(join(tmpdir(), "harness-crash-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 let n = 0;
 const setup: CreateParams = { sessionId: "crash", participants: [], channels: {}, config: {
-  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.json", import.meta.url).pathname } } };
+  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
 const push = (id: string, text: string, channel = "a") => ({ channel, item: { id, kind: "user_message" as const, sender: "ana", content: [{ type: "text" as const, text }] } });
 const effects = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
 const events = (wire: unknown[]) => (wire as RpcNotification[]).filter(message => "method" in message).map(message => message.params as ChannelEvent);

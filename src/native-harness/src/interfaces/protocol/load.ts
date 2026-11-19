@@ -20,6 +20,7 @@ export function wireStatus(status: SessionStatus, view: StorageSnapshot): Status
       const unresolved = channel.unresolvedInterruption && view.turns.find(turn => turn.turnId === channel.unresolvedInterruption!.turnId);
       return { channel: channel.channelId, pending: channel.pendingItemIds, lifecycle: channel.lifecycle, waitingForResume: channel.waitingForResume,
         ...(channel.displayName === undefined ? {} : { displayName: channel.displayName }),
+        ...(channel.policy === undefined ? {} : { policy: channel.policy }),
         ...(channel.activeTurn ? { activeTurn: { turnId: String(channel.activeTurn.turnId), state: channel.activeTurn.status } } : {}),
         ...(unresolved ? { unresolved: turnStatus(unresolved) } : {}) };
     }) };
@@ -50,7 +51,7 @@ export function loadView(status: SessionStatus, view: StorageSnapshot, limit: nu
   const fixed = {
     status: wireStatus(status, view), turns: view.turns.map(turnStatus),
     items: view.items.map((item): ItemStatus => ({ id: item.itemId, channel: item.channelId, kind: item.kind, sender: item.senderId,
-      milestone: item.milestone, ...(item.turnId === undefined ? {} : { turnId: String(item.turnId) }) })),
+      milestone: item.milestone, ...(item.policy === undefined ? {} : { policy: item.policy }), ...(item.turnId === undefined ? {} : { turnId: String(item.turnId) }) })),
   };
   const used = size(fixed);
   if (used > BUDGET) throw new FrameLimit("Session turns and items do not fit in one protocol frame");

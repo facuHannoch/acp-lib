@@ -1,5 +1,8 @@
 import { HarnessClient, createStdioTransport } from "../../src/client.ts";
 import type { ClientTransport, RpcNotification, RpcResponse } from "../../src/contracts/protocol.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /** Record everything the transport delivers, in wire order. A client resolves
  * responses a microtask after listeners run, so only this log shows the order
@@ -12,8 +15,9 @@ export function recordWire(transport: ClientTransport) {
 
 export interface SpawnOptions { home?: string; fault?: string; effects?: string }
 export function spawnHarness(options: SpawnOptions = {}) {
+  const temporaryHome = options.home ? undefined : mkdtempSync(join(tmpdir(), "harness-stdio-"));
   const child = Bun.spawn([process.execPath, new URL("../../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio",
-    ...(options.home ? ["--home", options.home] : [])], {
+    "--home", options.home ?? temporaryHome!], {
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
     env: { ...process.env, OPENROUTER_API_KEY: undefined, HARNESS_TEST_FAULT: options.fault, HARNESS_TEST_EFFECTS: options.effects },
   });
@@ -26,6 +30,7 @@ export function spawnHarness(options: SpawnOptions = {}) {
   });
   const wire = recordWire(transport);
   const client = new HarnessClient(transport, 2000);
+  if (temporaryHome) void child.exited.then(() => rmSync(temporaryHome, { recursive: true, force: true }));
   return {
     client, child, stdout, stderr, wire,
     async close() {

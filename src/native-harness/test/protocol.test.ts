@@ -10,7 +10,7 @@ import type { CreateParams, ClientTransport } from "../src/contracts/protocol.ts
 import { lastInput } from "./helpers/session.ts";
 
 const setup: CreateParams = { sessionId: "test", participants: [], channels: {}, config: {
-  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.json", import.meta.url).pathname },
+  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } },
 } };
 const push = (channel: string, id: string, text = "hello") => ({ channel, item: {
   id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }],
@@ -30,11 +30,11 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: pu
   const harness = transport === "in-process" ? createInProcessHarness() : spawnHarness(); const { client } = harness;
   try {
     const init = await client.initialize();
-    expect(init.description.capabilities).toMatchObject({ experimental: true, persistence: false, acceptance: "memory" });
+    expect(init.description.capabilities).toMatchObject({ experimental: true, persistence: transport === "stdio", acceptance: transport === "stdio" ? "durable" : "memory" });
     await client.createSession(setup);
     const log = collect(client, 2);
     const acks = await Promise.all([client.push(push("a", "a1")), client.push(push("b", "b1"))]);
-    expect(acks[0]).toEqual({ accepted: true, duplicate: false, item: { id: "a1", channel: "a", kind: "participant_message", sender: "a", milestone: "received" } });
+    expect(acks[0]).toEqual({ accepted: true, duplicate: false, item: { id: "a1", channel: "a", kind: "participant_message", sender: "a", milestone: "received", policy: { resolved: "__legacy_allow", inherited: [] } } });
     await log.done;
     expect(await client.idle()).toEqual({ idle: true });
     expect(await client.status()).toMatchObject({ sessionId: "test", lifecycle: "running", execution: "idle",
@@ -53,7 +53,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: pu
     const before = log.events.length;
     // A retry is answered from storage with the original item's current state.
     expect(await client.push(push("a", "a1"))).toEqual({ accepted: true, duplicate: true,
-      item: { id: "a1", channel: "a", kind: "participant_message", sender: "a", milestone: "seen", turnId: expect.any(String) } });
+      item: { id: "a1", channel: "a", kind: "participant_message", sender: "a", milestone: "seen", turnId: expect.any(String), policy: { resolved: "__legacy_allow", inherited: [] } } });
     expect(log.events).toHaveLength(before);
     await expect(client.push(push("b", "a1"))).rejects.toMatchObject({ code: "item_conflict" });
     const failure = collect(client);
@@ -126,7 +126,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: pr
     await expect(harness.client.createSession(invalid)).rejects.toMatchObject({ code: "invalid_config" });
     await harness.client.createSession(setup);
     await expect(harness.client.createSession(setup)).rejects.toMatchObject({ code: "already_exists" });
-    await expect(harness.client.request("session/load" as any, {})).rejects.toMatchObject({ code: "method_not_found" });
+    await expect(harness.client.request("session/load" as any, {})).rejects.toMatchObject({ code: transport === "stdio" ? "invalid_params" : "method_not_found" });
     if ("server" in harness) expect(await harness.server.request(null as any)).toMatchObject({ error: { code: -32600, data: { code: "invalid_request" } } });
     await expect(harness.client.push({ ...push("a", "1"), item: { ...push("a", "1").item, delivery: "steer" } } as any)).rejects.toMatchObject({ code: "invalid_params" });
   } finally { await harness.close(); }

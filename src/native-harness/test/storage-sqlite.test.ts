@@ -67,7 +67,7 @@ test("unreadable or unsupported files are refused without being modified", () =>
   { const db = new Database(foreign); db.exec("CREATE TABLE notes (body TEXT)"); db.close(); }
   const future = fresh();
   { const first = createSqliteStorageAdapter(future).open({ mode: "create", identity }); if (first.ok) first.value.close(); }
-  { const db = new Database(future); db.exec("UPDATE meta SET value = '4' WHERE key = 'formatVersion'"); db.close(); }
+  { const db = new Database(future); db.exec("UPDATE meta SET value = '5' WHERE key = 'formatVersion'"); db.close(); }
   for (const path of [junk, foreign, future]) {
     const before = readFileSync(path);
     const adapter = createSqliteStorageAdapter(path);
@@ -147,7 +147,7 @@ test("a format 2 database with a session-wide suspension opens, upgrades once an
   const adapter = createSqliteStorageAdapter(path);
   const s = must(adapter.open({ mode: "open", identity }));
   const view = must(s.snapshot());
-  expect(view.session).toMatchObject({ formatVersion: 3, lifecycle: "suspended" });
+  expect(view.session).toMatchObject({ formatVersion: 4, lifecycle: "suspended" });
   expect(view.channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }, { channelId: "c2", lifecycle: "open", participantIds: [] }]);
   expect(view.turns[0]!.state.status).toBe("suspended"); // untouched by the upgrade
   expect(view.items.map(item => [item.itemId, item.milestone])).toEqual([["i1", "taken"], ["i2", "received"]]);
@@ -156,7 +156,7 @@ test("a format 2 database with a session-wide suspension opens, upgrades once an
   expect(must(s.withdrawItem("c2", "i2")).outcome).toBe("withdrawn");
   expect(must(s.beginChannelSuspend("c2")).lifecycle).toBe("suspended");
   s.close();
-  expect(rawFormat(path)).toBe("3"); // upgraded durably, readable only by this revision from now on
+  expect(rawFormat(path)).toBe("4"); // upgraded durably, readable only by this revision from now on
   const again = must(adapter.open({ mode: "open", identity }));
   expect(must(again.snapshot()).items.find(item => item.itemId === "i2")!.milestone).toBe("withdrawn");
   again.close();

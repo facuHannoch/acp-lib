@@ -44,3 +44,28 @@ The user approved extending managed config for OpenRouter. Contract amendment
 0017 and its types are submitted separately before provider implementation.
 It preserves the existing OpenRouter compatibility key, records only the
 environment variable name, and leaves key values in the destination process.
+
+Gro approved amendment `6cac6d2`: a custom `apiKeyEnv` is resolved only by
+that name, without falling back to `OPENROUTER_API_KEY`. The key value and
+variable name are deliberately excluded from checkpoint fingerprints; changing
+the referenced credential therefore does not block resume. A legacy direct
+`provider.apiKey` can be used for the current open only when no saved config
+exists, and is never persisted. The destination must supply the saved reference
+on later opens. Provider tests use injected offline models and fake secrets.
+
+The Stage 2 implementation supports scripted and OpenRouter managed configs,
+keeps the original provider checkpoint key, resolves the selected environment
+reference on open, and does not persist credential values. Fake-provider tests
+cover fresh-home import/reopen, custom environment selection, missing keys,
+sidecar/model precedence, model and reference checkpoint compatibility, and a
+pre-managed provider checkpoint. Provider error text is redacted if it echoes
+the credential. SQLite statement cleanup was tightened after a migrated-session
+reopen exposed a lock retained by prepared statements. `engine.ts` remains over
+400 lines because both adapters share its transactional lifecycle and policy
+rules; splitting that engine is deferred to a dedicated change.
+
+Stage 2 gate: `bun run typecheck` passed; `bun test ./test` passed 209 tests,
+0 failures, 2753 assertions across 25 files (52.39s), using local IPC access.
+The gate includes both-adapter migration and inherited-notice tests, managed and
+explicit-db reopen, fresh-home session-file import, and offline fake-provider
+credential and checkpoint tests. Stage 2 independent review is pending.

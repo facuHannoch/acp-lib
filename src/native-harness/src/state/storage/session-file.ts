@@ -1,17 +1,13 @@
 import type { PortableSessionConfig } from "../../contracts/session-file.ts";
+import { validateManagedConfig } from "../../util/config.ts";
 
 /** Narrow, definite-length CBOR profile for JSON-compatible session data. */
 export class SessionFileError extends Error {
   constructor(readonly code: "invalid_archive" | "transfer_limit" | "serialization_error", message: string) { super(message); }
 }
 const bad = (message: string): never => { throw new Error(message); };
-export function validateConfig(value: unknown): PortableSessionConfig {
-  const v = value as any;
-  if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).sort().join() !== "model,system,version"
-    || v.version !== 1 || typeof v.system !== "string" || !v.model || typeof v.model !== "object" || Array.isArray(v.model)
-    || Object.keys(v.model).sort().join() !== "protocol,script" || v.model.protocol !== "scripted"
-    || typeof v.model.script !== "string" || !v.model.script.trim()) bad("Invalid portable configuration");
-  return structuredClone(v);
+export function validateConfig(value: unknown, legacy = false): PortableSessionConfig {
+  return validateManagedConfig(value, legacy);
 }
 function cborEncode(value: unknown): Uint8Array {
   const chunks: Uint8Array[] = [];

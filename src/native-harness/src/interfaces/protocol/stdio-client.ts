@@ -11,7 +11,7 @@ function message(value: any): value is RpcResponse | RpcNotification | RpcSessio
     if (value.params.revision !== undefined && !Number.isSafeInteger(value.params.revision)) return false;
     const event = value.params.event;
     if (event.type === "channel_state") return ["open", "suspending", "suspended", "retired"].includes(event.lifecycle)
-      && (event.displayName === undefined || typeof event.displayName === "string");
+      && (event.displayName === undefined || typeof event.displayName === "string") && (event.policy === undefined || typeof event.policy === "string");
     if (event.type === "item_withdrawn") return typeof event.item === "string";
     if (typeof event.turnId !== "string") return false;
     switch (event.type) {

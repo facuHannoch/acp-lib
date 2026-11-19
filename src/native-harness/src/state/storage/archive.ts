@@ -1,6 +1,7 @@
 import type { SessionArchive, SessionArchiveV1, StoredSession } from "../../contracts/storage.ts";
 import { Fail, isJson, signatureOf, type Meta, type Tables } from "./engine.ts";
 import { validateConfig } from "./session-file.ts";
+import { legacyItemSignature, policyItemSignature } from "./policy-metadata.ts";
 
 const bad = (message: string): never => { throw new Fail("invalid_archive", message); };
 const str = (value: unknown): value is string => typeof value === "string" && value.length > 0;
@@ -12,10 +13,10 @@ const CHANNEL_STATES = ["open", "suspended", "retired"];
 export function validateSessionPayload(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "archive,config") bad("Invalid session file payload");
   const payload = value as { archive: SessionArchive; config: unknown };
-  if (payload.archive?.archiveVersion !== 2) bad("Invalid session file archive version");
+  if (![2, 3].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
   const archive = validateArchive(payload.archive);
   let config: ReturnType<typeof validateConfig>;
-  try { config = validateConfig(payload.config); } catch (error) { return bad(String(error)); }
+  try { config = validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { return bad(String(error)); }
   return { archive, config };
 }
 
@@ -27,16 +28,23 @@ export function validateSessionPayload(value: unknown) {
  * which the next open would treat as an unclean exit or must never run. */
 export function validateArchive(value: unknown): SessionArchive {
   if (!isJson(value) || !value || typeof value !== "object") bad("Archive is not JSON data");
-  const raw = value as SessionArchive | SessionArchiveV1;
-  if (raw.format !== "harness-session" || (raw.archiveVersion !== 1 && raw.archiveVersion !== 2)) bad("Unsupported archive format or version");
+  const raw = value as any;
+  if (raw.format !== "harness-session" || ![1, 2, 3].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
   const v1 = raw.archiveVersion === 1;
+  const legacy = raw.archiveVersion !== 3;
   if (!raw.snapshot || !raw.allocation || !raw.snapshot.session || !Array.isArray(raw.snapshot.channels)) bad("Archive is missing its snapshot or allocation state");
-  const archive: SessionArchive = v1 ? { ...raw, archiveVersion: 2, snapshot: { ...raw.snapshot,
-    session: { ...raw.snapshot.session, formatVersion: 3 },
-    channels: raw.snapshot.channels.map(channel => ({ ...channel, lifecycle: "open" as const })) } } as SessionArchive : raw as SessionArchive;
+  const archive: SessionArchive = legacy ? { ...raw, archiveVersion: 3, snapshot: { ...raw.snapshot,
+    session: { ...raw.snapshot.session, formatVersion: 4 },
+    channels: v1 ? raw.snapshot.channels.map((channel: any) => ({ ...channel, lifecycle: "open" as const })) : raw.snapshot.channels,
+    turns: Array.isArray(raw.snapshot.turns) ? raw.snapshot.turns.map((turn: any) => turn?.state?.status === "suspended"
+      ? { ...turn, state: { ...turn.state, checkpoint: { ...turn.state.checkpoint, policyFingerprint: JSON.stringify([["__legacy_allow", "allow", []]]) } } } : turn) : raw.snapshot.turns,
+    items: Array.isArray(raw.snapshot.items) ? raw.snapshot.items.map((item: any) => {
+      if (!item || item.signature !== legacyItemSignature(item)) bad("Invalid legacy item signature");
+      return { ...item, signature: policyItemSignature(item), policy: { resolved: "__legacy_allow", inherited: [] } };
+    }) : raw.snapshot.items } } : raw as SessionArchive;
   const snapshot = archive.snapshot, allocation = archive.allocation;
   const { session, revision } = snapshot;
-  if (session.formatVersion !== 3 || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
+  if (session.formatVersion !== 4 || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
     bad("Unsupported session format");
   if (session.lifecycle !== "running" && session.lifecycle !== "suspended") bad("Archive was not exported from an idle or suspended session");
   if (!Number.isSafeInteger(revision) || revision < 0 || allocation.nextSeq !== revision + 1 || !int(allocation.nextTurnId) || !int(allocation.nextItemNumber))
@@ -48,6 +56,7 @@ export function validateArchive(value: unknown): SessionArchive {
     if (!channel || !str(channel.channelId) || channels.has(channel.channelId)) bad("Invalid or duplicate channel");
     if (!CHANNEL_STATES.includes(channel.lifecycle) || (channel.displayName !== undefined && !str(channel.displayName)))
       bad(`Channel ${channel.channelId} has an invalid lifecycle or name`);
+    if (channel.policy !== undefined && !str(channel.policy)) bad(`Channel ${channel.channelId} has invalid policy`);
     channels.set(channel.channelId, channel.lifecycle);
   }
   if (snapshot.participants.some(participant => !participant || !str(participant.participantId))) bad("Invalid participant");
@@ -64,7 +73,7 @@ export function validateArchive(value: unknown): SessionArchive {
       // Held by the session suspension, or by the channel's own committed one.
       if (channels.get(turn.channelId) === "retired") bad(`Retired channel ${turn.channelId} holds a checkpoint`);
       if ((session.lifecycle !== "suspended" && channels.get(turn.channelId) !== "suspended") || live.has(turn.channelId)
-        || state.checkpoint?.nextStep !== "inference" || !int(state.checkpoint.afterSeq)) bad("Invalid checkpoint");
+        || state.checkpoint?.nextStep !== "inference" || !int(state.checkpoint.afterSeq) || typeof state.checkpoint.policyFingerprint !== "string") bad("Invalid checkpoint");
       live.add(turn.channelId);
     } else if (state.status === "failed" || state.status === "interrupted") {
       if (!str(state.reason) || !Array.isArray(state.uncertainCallIds) || state.uncertainCallIds.some(id => !str(id))) bad("Invalid turn outcome");
@@ -92,6 +101,8 @@ export function validateArchive(value: unknown): SessionArchive {
       || (item.withdrawnAt !== undefined && !str(item.withdrawnAt))) bad("Invalid or duplicate item");
     accepted.add(item.acceptedSeq);
     if (![item.kind, item.senderId, item.text].every(str) || item.signature !== signatureOf(item)) bad(`Item ${item.itemId} does not match its signature`);
+    if (!item.policy || !str(item.policy.resolved) || !Array.isArray(item.policy.inherited) || item.policy.inherited.some(name => !str(name))
+      || (item.policy.explicit !== undefined && !str(item.policy.explicit)) || (item.policy.explicit ?? null) !== (item.explicitPolicy ?? null)) bad(`Item ${item.itemId} has invalid policy metadata`);
     ids.add(item.itemId);
     const auto = /^auto:(0|[1-9]\d*)$/.exec(item.itemId);
     if (auto && Number(auto[1]) >= allocation.nextItemNumber) bad("Item counter would reissue an allocated ID");
@@ -112,7 +123,7 @@ export function validateArchive(value: unknown): SessionArchive {
 
 export function archiveMeta(archive: SessionArchive, sessionId?: string): Meta {
   const { session, revision } = archive.snapshot;
-  return { sessionId: sessionId ?? session.sessionId, formatVersion: 3, createdAt: session.createdAt,
+  return { sessionId: sessionId ?? session.sessionId, formatVersion: 4, createdAt: session.createdAt,
     compatibilityKey: session.compatibilityKey, lifecycle: session.lifecycle, revision,
     nextTurnId: archive.allocation.nextTurnId, nextItemNumber: archive.allocation.nextItemNumber };
 }
@@ -130,5 +141,5 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
 }
 
 export function storedSession(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 3, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
+  return { sessionId: meta.sessionId, formatVersion: 4, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
