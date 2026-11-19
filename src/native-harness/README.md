@@ -6,8 +6,9 @@ is intended to become a separate package: it must not import acp-client modules.
 
 ## Current state
 
-An initial in-memory agent, channel queues, terminal clients and tool loop are
-implemented. A separate agent process accepts messages over HTTP on a Unix socket.
+An agent with durable sessions, terminal clients and a tool loop is
+implemented. A session can live in memory or in a SQLite file, survive restarts
+and crashes, be suspended and resumed, and be exported and imported. A separate agent process accepts messages over HTTP on a Unix socket.
 All channels share one session timeline held by a storage adapter. Each channel
 runs one turn at a time; different channels execute concurrently. It uses OpenRouter native tool calls and includes one harmless
 `current_time`, `dashboard_work` and `notify_channel` tools. An experimental
@@ -42,6 +43,29 @@ bun run typecheck
 bun run test
 OPENROUTER_API_KEY=your-key bun run start
 ```
+
+That session lives in memory. To keep it in a SQLite file, name one:
+
+```sh
+bun run start --db ./dev.sqlite --create   # first run: the file must not exist
+bun run start --db ./dev.sqlite            # later runs: the file must exist
+bun run start --db ./dev.sqlite --resume   # also resume a suspended session
+bun run status                             # lifecycle, active turns, pending input
+bun run suspend                            # pause cleanly; waits for running tools
+bun run resume                             # continue a suspended session
+```
+
+Opening a database restores its timeline and never continues work by itself.
+Turns a previous process left unfinished are marked interrupted and are not
+retried; input that was accepted but never taken runs. A suspended session
+stays paused, and refuses new messages, until `bun run resume` or `--resume`.
+Ctrl+C stops at once: running turns are recorded as interrupted, so run
+`bun run suspend` first to pause without losing work in progress. `status`,
+`suspend` and `resume` talk to the running agent over its Unix socket; they are
+not available from the LAN chat. `--script <file>` replaces the provider with
+a scripted model for offline runs without a key; the file is one script, or
+`{ "channels": { "<id>": script }, "default": script }`. The simulated
+dashboard job is process state and starts over in each process.
 
 Leave the agent running. In separate terminals, from this directory:
 
@@ -81,8 +105,13 @@ Snapshots remain unchanged as later turns run.
 The page receives live updates over Server-Sent Events and reconnects with a
 fresh snapshot. Set `HARNESS_INSPECTOR_PORT` on the agent to override port 3000
 (use 0 to choose an available port); the actual URL is printed at startup.
-The inspector binds only to `127.0.0.1` and stops with the agent. Inspection
-history is in memory, grows during the run, and is lost on restart. It is a local
+The inspector binds only to `127.0.0.1` and stops with the agent. Its header
+shows the session's lifecycle and storage, and each channel shows whether a
+turn is running or checkpointed, its pending input, and a latest turn that
+ended failed or interrupted with any tool calls left uncertain. With a
+database, the shared timeline, Live context and channel messages are restored
+at startup, before any new message. Captured inference requests are in memory,
+grow during the run, and are lost on restart. It is a local
 development view, without participant access controls or editing capabilities.
 
 The chat clients do not need provider credentials. Type `/exit` to disconnect,
@@ -101,7 +130,9 @@ disable ANSI styling; code contents retain their literal Markdown symbols.
 Reconnecting to the same channel continues its history while the agent is alive.
 Messages sent to a channel while it is working join the turn in progress, and
 their requests all complete with that turn's last reply.
-Ctrl+C in the agent terminal stops it and loses all histories. Ask for the current
+A request still waiting when its turn is checkpointed by suspension is answered
+with an explanation; the reply arrives through the subscription after resume.
+Ctrl+C in the agent terminal stops it; without `--db` all history is lost. Ask for the current
 time to exercise tool use. Tools and results are logged in the agent terminal;
 chat clients receive the final answer.
 
@@ -147,9 +178,8 @@ them before its next inference, otherwise they start the channel's next turn.
 One turn can hold several inputs. Assistant responses and tool results are
 recorded with channel, turn and sender attribution before their events are
 published. `createSession` uses memory storage unless given a storage handle,
-and runs nothing until `start()`. `bun run start` still uses memory storage:
-its history ends with the process. Durable sessions are currently reachable
-only through the scripted stdio server (`serve --stdio --home <directory>`).
+and runs nothing until `start()`. `bun run start --db <file>` and the scripted
+stdio server (`serve --stdio --home <directory>`) both use the SQLite adapter.
 
 Before every inference, `src/capabilities/context/build.ts` renders a fresh store
 snapshot with the unchanged system prompt. Other turns are attributed JSON
@@ -178,7 +208,8 @@ context, and never executed again by the harness. Tool errors are returned to
 the model. Disconnecting a client does not
 cancel an accepted turn. New shared events are visible at the next ordinary
 inference; ordinary shared events do not wake idle channels or extend a turn.
-Explicit notices do. Stopping the agent loses the shared store and dashboard job.
+Explicit notices do. Stopping the agent loses the dashboard job, and the
+session too unless it was started with `--db`.
 
 ## Startup scenario and notices
 

@@ -1,43 +1,27 @@
 import type { SessionAgent } from "../../contracts/agent.ts";
 import type { Message, Model } from "../../contracts/loop.ts";
 import type { ContextEntry, SharedContextStore } from "../../contracts/context.ts";
-import type { EventSink } from "../../contracts/events.ts";
+import type { PersistentSession } from "../../contracts/session.ts";
 import type { Inspection } from "./state.ts";
 
-/** Count inputs when they are durably accepted, before any turn takes them. */
-export function observeAgent(agent: SessionAgent, inspection: Inspection): SessionAgent {
-  return {
-    idle: () => agent.idle(),
-    notify(notice) {
-      const result = agent.notify(notice);
-      if (result.accepted && !result.duplicate) inspection.accepted(notice.channelId, `channel:${notice.fromChannelId}`);
-      return result;
-    },
-    send(input) {
-      const result = agent.send(input);
-      if (result.accepted && !result.duplicate) inspection.accepted(input.channelId, input.participantId);
-      return result;
-    },
+/** Keep the inspector's session and channel status equal to storage: once at
+ * attach, so restored state is visible before any new message, and again after
+ * every acceptance and every committed event. Reading status never starts,
+ * resumes or changes work. */
+export function observeSession(session: PersistentSession, inspection: Inspection, storage: string) {
+  const refresh = () => {
+    const view = session.snapshot();
+    inspection.status(session.status(), storage, Object.fromEntries(view.channels.map(channel => [channel.channelId,
+      [...new Set(view.items.filter(item => item.channelId === channel.channelId).map(item => item.senderId))]])));
   };
-}
-
-/** Follow turn activity from committed events: an input stays pending until
- * the turn that took it ends, and several inputs may end with one turn. */
-export function observeEvents(subscribe: (listener: EventSink) => () => void, inspection: Inspection) {
-  const taken = new Map<string, number>();
-  return subscribe(({ channel, event }) => {
-    if (event.type === "turn_started" || event.type === "turn_took") {
-      taken.set(event.turnId, (taken.get(event.turnId) ?? 0) + event.items.length);
-      inspection.running(channel, true);
-    } else if (event.type === "turn_resumed") inspection.running(channel, true);
-    else if (event.type === "turn_suspended") inspection.running(channel, false);
-    else if (event.type === "turn_ended") {
-      inspection.running(channel, false);
-      const error = event.outcome === "completed" ? undefined : event.error ?? `Turn ${event.outcome}`;
-      for (let i = taken.get(event.turnId) ?? 0; i > 0; i--) inspection.finished(channel, error);
-      taken.delete(event.turnId);
-    }
-  });
+  refresh();
+  const stopEvents = session.subscribe(refresh), stopLifecycle = session.subscribeSession(refresh);
+  const agent: SessionAgent = {
+    idle: () => session.agent.idle(),
+    send(input) { const result = session.agent.send(input); refresh(); return result; },
+    notify(notice) { const result = session.agent.notify(notice); refresh(); return result; },
+  };
+  return { agent, refresh, stop() { stopEvents(); stopLifecycle(); } };
 }
 
 export function observeModel(

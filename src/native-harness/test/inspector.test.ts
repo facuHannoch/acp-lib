@@ -3,7 +3,7 @@ import { createInspection } from "../src/interfaces/inspector/state.ts";
 import { serveInspector } from "../src/interfaces/inspector/server.ts";
 import type { Message } from "../src/contracts/loop.ts";
 import { createSession } from "../src/index.ts";
-import { observeAgent, observeContext, observeEvents } from "../src/interfaces/inspector/observe.ts";
+import { observeContext, observeSession } from "../src/interfaces/inspector/observe.ts";
 import { turnsEnd } from "./helpers/session.ts";
 import { buildSharedContext } from "../src/capabilities/context/build.ts";
 
@@ -30,23 +30,35 @@ test("live context follows the shared store across channels, including before fi
   unsubscribe();
 });
 
-test("channel activity follows acceptance and committed turn events, including a shared failed turn", async () => {
+test("session and channel status follow storage: acceptance, a shared failed turn, then recovery", async () => {
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
   const session = createSession({ systemPrompt: "system", configureTurn: () => ({ tools: [], executeTool: async () => "unused",
-    model: async () => { await gate; throw new Error("provider down"); } }) });
+    model: async () => { if (++calls === 1) { await gate; throw new Error("provider down"); } return { role: "assistant", content: "ok", calls: [] }; } }) });
   const inspection = createInspection("system");
-  observeEvents(session.subscribe, inspection);
-  const agent = observeAgent(session.agent, inspection);
-  session.start();
+  const { agent } = observeSession(session, inspection, "memory");
+  expect(inspection.snapshot().session).toMatchObject({ storage: "memory", lifecycle: "running", execution: "idle" });
+  // Accepted before start: visible as pending input, with its sender, though nothing has run.
+  agent.send({ channelId: "a", participantId: "alice", text: "one", itemId: "1" });
+  agent.send({ channelId: "a", participantId: "alice", text: "one", itemId: "1" });
+  expect(inspection.snapshot().channels[0]).toMatchObject({ id: "a", pending: 1, pendingItems: ["1"], running: false, participants: ["alice"] });
+  expect(inspection.snapshot().session).toMatchObject({ execution: "working" });
   const log = turnsEnd(session);
-  agent.send({ channelId: "a", participantId: "alice", text: "one", itemId: "1" });
-  agent.send({ channelId: "a", participantId: "alice", text: "one", itemId: "1" });
-  expect(inspection.snapshot().channels[0]).toMatchObject({ id: "a", pending: 1, running: false, participants: ["alice"] });
+  session.start();
   await new Promise(resolve => setTimeout(resolve, 5));
-  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 1, running: true });
+  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 0, running: true, turn: "running" });
   release(); await log.done;
-  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 0, running: false, error: "Error: provider down" });
+  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 0, running: false, error: "Turn 1 failed: Error: provider down",
+    unresolved: { turnId: 1, status: "failed", uncertainCallIds: [] } });
+  // The next completed turn resolves it.
+  const next = turnsEnd(session);
+  agent.send({ channelId: "a", participantId: "bob", text: "two" });
+  await next.done;
+  const channel = inspection.snapshot().channels[0]!;
+  expect(channel.error).toBeUndefined(); expect(channel.unresolved).toBeUndefined();
+  expect(channel.participants).toEqual(["alice", "bob"]);
+  expect(inspection.snapshot().session).toMatchObject({ execution: "idle", revision: session.snapshot().revision });
 });
 
 test("inspection snapshots do not alias live history or inference requests", () => {

@@ -1,0 +1,17 @@
+{
+  "channels": {
+    "channel1": { "version": 1, "responses": [
+      { "content": "I will tell Bob.", "calls": [{ "id": "notify-1", "name": "notify_channel", "arguments": { "channelId": "channel2", "text": "The design is approved." } }] },
+      { "content": "Bob's channel has been notified.", "calls": [] },
+      { "content": "Starting a dashboard step.", "calls": [{ "id": "dash-1", "name": "dashboard_work", "arguments": {} }] },
+      { "content": "One dashboard step is finished.", "calls": [] },
+      { "content": "Alice, the session is running again.", "calls": [] }
+    ] },
+    "channel2": { "version": 1, "responses": [
+      { "content": "Hello Bob.", "calls": [] },
+      { "content": "Noted: the design is approved.", "calls": [] },
+      { "content": "Bob, I received your later message.", "calls": [] },
+      { "content": "Bob, the session is running again.", "calls": [] }
+    ] }
+  }
+}

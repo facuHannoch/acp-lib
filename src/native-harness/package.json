@@ -9,7 +9,10 @@
     "serve": "bun run src/interfaces/cli/main.ts serve",
     "typecheck": "tsc --noEmit",
     "test": "bun test ./test",
-    "test:scenario": "bun run src/interfaces/cli/scenario.ts"
+    "test:scenario": "bun run src/interfaces/cli/scenario.ts",
+    "suspend": "bun run src/interfaces/cli/main.ts suspend",
+    "resume": "bun run src/interfaces/cli/main.ts resume",
+    "status": "bun run src/interfaces/cli/main.ts status"
   },
   "engines": {
     "bun": ">=1.3.5"

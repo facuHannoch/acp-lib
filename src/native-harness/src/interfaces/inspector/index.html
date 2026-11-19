@@ -47,6 +47,7 @@
   let channels = [], selected = null, tab = "live";
   let liveContext = { systemPrompt: "", tools: [], entries: [] };
   let connectionStatus = 'connecting';
+  let session = null;
   const nav = document.querySelector('#channels'), main = document.querySelector('#content');
   function node(tag, text, className) {
     const element = document.createElement(tag);
@@ -71,6 +72,7 @@
     const working = channels.filter(channel => channel.running).length;
     document.querySelector('#connection').textContent = connectionStatus === 'live'
       ? 'Live · working in ' + working + ' ' + (working === 1 ? 'channel' : 'channels') + ' · read only'
+        + (session ? ' · session ' + session.lifecycle + (session.execution === session.lifecycle ? '' : ' (' + session.execution + ')') + ' · ' + session.storage : '')
       : connectionStatus === 'connecting' ? 'Connecting…' : 'Disconnected · reconnecting…';
     const expanded = new Set([...main.querySelectorAll('details[data-key][open]')].map(e => e.dataset.key));
     document.querySelector('.layout').classList.toggle('single', tab !== 'channels');
@@ -96,7 +98,8 @@
     }
     if (!selected && channels.length) selected = channels[0].id;
     for (const channel of channels) {
-      const status = channel.error ? 'failed' : channel.running ? 'running' : channel.pending ? 'queued' : 'idle';
+      const status = channel.turn === 'suspended' ? 'suspended' : channel.running ? 'running' : channel.pending ? 'pending'
+        : channel.unresolved ? channel.unresolved.status : channel.error ? 'failed' : 'idle';
       const button = node('button', channel.id + ' · ' + status);
       button.classList.toggle('working', channel.running && connectionStatus === 'live');
       button.setAttribute('aria-current', String(channel.id === selected));
@@ -106,7 +109,10 @@
     const channel = channels.find(c => c.id === selected);
     if (!channel) { main.append(node('p', 'No channels yet.', 'muted')); return; }
     main.append(node('h2', 'Channel ' + channel.id));
-    main.append(node('p', 'Participants: ' + channel.participants.join(', ') + ' · Pending turns: ' + channel.pending, 'muted'));
+    main.append(node('p', 'Participants: ' + channel.participants.join(', ') + ' · Pending input: ' + channel.pending
+      + (channel.pendingItems?.length ? ' (' + channel.pendingItems.join(', ') + ')' : '')
+      + (channel.turn === 'suspended' ? ' · A checkpointed turn waits for resume' : ''), 'muted'));
+    if (channel.unresolved?.uncertainCallIds.length) main.append(node('p', 'Tool calls with no recorded result (not retried): ' + channel.unresolved.uncertainCallIds.join(', '), 'error'));
     if (channel.error) main.append(node('p', channel.error, 'error'));
     const turns = new Map();
     // Recorded turn IDs distinguish real prompts from user-role context blocks.
@@ -179,6 +185,6 @@
   const events = new EventSource('/events');
   events.onopen = () => { connectionStatus = 'live'; render(); };
   events.onerror = () => { connectionStatus = 'disconnected'; render(); };
-  events.onmessage = event => { const state = JSON.parse(event.data); channels = state.channels; liveContext = state.liveContext; render(); };
+  events.onmessage = event => { const state = JSON.parse(event.data); channels = state.channels; liveContext = state.liveContext; session = state.session ?? null; render(); };
 </script>
 </html>

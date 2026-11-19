@@ -176,6 +176,63 @@ acceptance gates.
   bytes without reaching the end (or more bytes than announced) instead of
   repeating the offset, and closing a transfer frees its slot before removing
   its file.
+- **Stage 5 approved (reviewer gro1a-o): `291abf8`.**
+- **Stage 6, development integration (implementer).** Stdin EOF is now stop,
+  as decision 0013 records, in its own commit (`7a355ea`) with a real-process
+  test. `src/interfaces/cli/development.ts` is the development session that
+  `bun run start` runs: `--db <file>` with `--create`, `--resume`, and
+  `--script <file>` for offline runs; `bun run status|suspend|resume` control
+  the running agent over its Unix socket only. The inspector reads storage at
+  attach and after every commit: lifecycle and storage in the header, and per
+  channel the active or checkpointed turn, pending input, and an unresolved
+  failed or interrupted turn with its uncertain calls. The local chat adapter
+  now answers a request whose turn is checkpointed by suspension instead of
+  holding it open (found when a server could not shut down in a test).
+  Gate: `bun run typecheck` clean; `bun test ./test` 134 pass, 0 fail, run
+  three times. Restored timeline before a new message:
+  `test/development.test.ts` reopens a SQLite session and compares the
+  inspector's entries, rendered base, channel messages and served `/state`
+  with the first process before anything is sent. End-to-end scenarios,
+  public client to real child processes (`test/e2e.test.ts`): clean relocation
+  (two channels, input accepted mid-tool, suspend, export, stop source, import
+  into a fresh home, load equals the source view, resume; the input reaches
+  one turn and the hold log shows each tool once) and crash recovery (five
+  process lifetimes killed after accept, after a tool effect, after a reply
+  commit and after take; load reports the pending item, the uncertain call,
+  the missed reply and the interrupted turns; one effect line at the end).
+- **Manual development exercise (implementer, 2026-11-19).** Two real
+  `bun run start` processes on one database, driven from a terminal with
+  `--script test/fixtures/development-scenario.json` and no provider key;
+  messages sent with curl to the agent's Unix socket, inspector read through
+  its `/state` endpoint on `127.0.0.1`. Observed:
+  1. `start --db dev.sqlite --create` printed the storage path and inspector URL.
+  2. Bob on channel2 got "Hello Bob."; Alice on channel1 asked to tell Bob and
+     got "Bob's channel has been notified."; channel2 answered the notice.
+     Inspector: lifecycle running, execution idle, 8 timeline entries,
+     channel2 participants `bob` and `channel:channel1`.
+  3. Alice started a dashboard step (8 s tool). `status` showed channel1 turn 4
+     running. `suspend` returned after 7 s with lifecycle suspended and turn 4
+     suspended; the held chat request was answered with the suspension notice.
+     Inspector: lifecycle suspended, channel1 turn suspended, 11 entries, the
+     last one the dashboard tool result.
+  4. SIGINT; exit code 0.
+  5. `start --db dev.sqlite` (no `--resume`) printed "Session is suspended and
+     paused". Before any message the inspector showed the same revision (29),
+     11 entries, both channels with their messages, channel1 turn suspended,
+     the shared base containing the notice text, and zero inference requests
+     in this process. The page itself was served.
+  6. A message to channel2 was refused ("Session is suspended; new work is not
+     admitted") and the revision did not change.
+  7. `resume` returned lifecycle running. channel1 finished with "One
+     dashboard step is finished." after one inference; `dashboard_work` appears
+     once, in the first process's log only. A new message on channel2 was
+     answered.
+  8. SIGINT; exit code 0. `--create` on the existing file failed with
+     `already_exists`.
+  Limits of this exercise: the inspector was checked through its JSON state
+  and by fetching the page, not by looking at it in a browser; no run used a
+  live provider; the terminal chat client and the LAN web chat were not used
+  (their adapters are covered by automated tests).
 
 ## Closure and retrospective
 

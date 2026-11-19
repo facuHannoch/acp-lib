@@ -1,8 +1,9 @@
 # Persistence proposal
 
-Status: proposed, updated 2026-11-17. No SQLite implementation or new public contract has
-been approved through this document. The implementation requires a contract
-decision before dependent changes.
+Status: implemented through the persistence slice in
+[docs/11-16-persistence](../docs/11-16-persistence/LOG.md), 2026-11-19. This
+document is kept as the original proposal; the README and decision 0013
+describe current behavior.
 
 The first type-only contract is now defined in
 [`src/contracts/storage.ts`](../../src/contracts/storage.ts), with rationale in

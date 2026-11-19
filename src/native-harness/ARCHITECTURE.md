@@ -5,8 +5,8 @@ implementation and the proposed persistence increments. This document remains
 the target layout and dependency guide; proposals in that documentation are not
 implemented guarantees.
 
-Status: target architecture, implemented incrementally. An initial in-memory
-agent with channel queues, terminal clients and a tool loop exists; current
+Status: target architecture, implemented incrementally. An agent with durable
+sessions (memory or SQLite), terminal clients and a tool loop exists; current
 behavior is described in [README.md](README.md).
 Existing modules follow the grouped layout below; future folders are created
 only as their implementation begins.
