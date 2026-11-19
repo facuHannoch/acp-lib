@@ -12,9 +12,11 @@ Choose evidence in the existing turn state, without a schema-format bump.
 When a running turn first records an assistant message with calls, its state
 contains `dispatchedCallIds` (initially empty) in that same transaction. Before
 the executor is invoked, `markToolDispatched` verifies the call is outstanding
-and adds its ID in a transaction. The gate does this synchronously after its last
-cancellation check and before publishing `tool_call:started` and invoking the
-executor, without an intervening await. Thus a crash after evidence commits but
+and adds its ID in a transaction. After its last cancellation check the gate
+commits that evidence, invokes the executor synchronously, and publishes
+`tool_call:started` before awaiting the returned promise, with no intervening
+await. Invoking before event publication prevents a reentrant event listener
+from interrupting between the started event and the invocation. Thus a crash after evidence commits but
 before invocation can conservatively report an uncertain effect; it never causes
 an automatic replay. A crash or interrupt while awaiting approval has no dispatch
 evidence and does not report that call as uncertain. Skipped calls get paired
