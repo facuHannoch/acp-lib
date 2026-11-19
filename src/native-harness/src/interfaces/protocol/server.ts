@@ -47,8 +47,9 @@ export function describe(durable: boolean): Description {
   return {
     configOptions: [], commands: [], policies: [],
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable,
-      methods: ["initialize", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status", "channel/push", "session/idle"],
-      events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_ended"] },
+      methods: ["initialize", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
+        "session/suspend", "session/resume", "session/stop", "channel/push", "session/idle"],
+      events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "session/event"] },
   };
 }
 
@@ -154,6 +155,15 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const session = current.session;
     if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() }; }
     if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.snapshot()); }
+    if (method === "session/suspend" || method === "session/resume") {
+      keys(p, []);
+      // Suspend answers only once `suspended` is committed, after in-flight
+      // iterations settle; a refusal changes nothing and consumes nothing.
+      const outcome = method === "session/suspend" ? await session.suspend() : session.resume();
+      if (!outcome.ok) throw new Fault(outcome.error.code, outcome.error.message);
+      return wireStatus(outcome.status, session.snapshot());
+    }
+    if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.snapshot()); }
     if (method === "session/messages") {
       keys(p, ["revision", "after", "limit"]);
       const view = session.snapshot(), after = Number(text(p.after));

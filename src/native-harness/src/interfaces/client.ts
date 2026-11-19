@@ -60,6 +60,14 @@ export class HarnessClient {
   loadSession(params: Calls["session/load"]["params"]) { return this.request("session/load", params); }
   messages(params: Calls["session/messages"]["params"]) { return this.request("session/messages", params); }
   status() { return this.request("session/status", {}); }
+  /** Resolves once the session is cleanly suspended: active iterations have
+   * finished and every unfinished turn is checkpointed. May take as long as a
+   * running tool; pass a longer client timeout for long tools. */
+  suspend() { return this.request("session/suspend", {}); }
+  /** Explicit: a loaded suspended session runs nothing until this is called. */
+  resume() { return this.request("session/resume", {}); }
+  /** Immediate: cancels inference and tools and reports active turns interrupted. */
+  stop() { return this.request("session/stop", {}); }
   /** Resolves when the input is accepted (Received), never with a reply. Follow
    * `turn_started`/`turn_took` for the item ID to find the turn that took it. */
   push(params: PushParams) { return this.request("channel/push", params); }

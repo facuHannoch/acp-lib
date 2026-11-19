@@ -38,7 +38,8 @@ export async function runTurn(
         context.append({ role: "tool", callId: call.id, content });
         context.emit?.({ type: "tool_call", id: call.id, name: call.name, status: "completed", output: content });
       } catch (error) {
-        context.emit?.({ type: "tool_call", id: call.id, name: call.name, status: "failed", output: String(error) });
+        // A stopped turn has already reported its interruption; stay silent after it.
+        if (!signal?.aborted) context.emit?.({ type: "tool_call", id: call.id, name: call.name, status: "failed", output: String(error) });
         throw error;
       }
     }

@@ -112,6 +112,30 @@ acceptance gates.
   and the receipt unadvanced (new child-process test at `appendMessage:1`).
   Message paging fails only when the first record of a request cannot fit a
   frame; a fitting page before an oversized message is returned whole.
+- **Stage 3 approved (reviewer gro1a-o): `44fd9d5`.**
+- **Stage 4, suspension (implementer).** `session/suspend`, `session/resume`
+  and `session/stop` on the protocol server and client, lifecycle
+  notifications through `subscribeSession`, and a `hold` scenario tool that a
+  test can keep running. The kernel paths were written in Stage 3; this stage
+  exposes and tests them. Gate: `bun run typecheck` clean; `bun test ./test`
+  115 pass, 0 fail, run six times. `test/suspension.test.ts`, on both
+  transports unless noted: two channels with running tools suspend only after
+  the tools finish, each checkpoints without inferring, and the hold log shows
+  each tool once; after reopen nothing runs or is published for 150 ms and
+  pushes are refused until resume; on resume the pending message joins its
+  channel's resumed turn (one `turn_took`, one turn), no tool call repeats and
+  fresh work runs. A checkpoint under another system prompt loads but fails
+  resume as `incompatible` with the load view byte-identical before and after.
+  Stop during a running tool answers at once, reports the turn interrupted
+  with its uncertain call, keeps pending input, and a late release changes
+  nothing. In-process: stop during suspension resolves the suspend as
+  `stopped` and interrupts the checkpointed turn; suspension during inference
+  completes a tool-free answer and checkpoints a tool-requesting one; a notice
+  accepted during suspension starts no inference until resume. Stdio only: a
+  child killed after a checkpoint commit and before suspension commits reopens
+  as running with that turn interrupted. One correction during the stage: the
+  loop no longer publishes a failed tool event for a turn that stop already
+  ended. Stdin EOF still drains, as agreed with the reviewer.
 
 ## Closure and retrospective
 

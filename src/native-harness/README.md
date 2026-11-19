@@ -312,7 +312,8 @@ uses the same session assembly with OpenRouter, its tools and inspector wrappers
 
 The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
 requests are `initialize`, `session/create`, `session/load` (durable servers
-only), `session/messages`, `session/status`, `channel/push` and `session/idle`.
+only), `session/messages`, `session/status`, `session/suspend`,
+`session/resume`, `session/stop`, `channel/push` and `session/idle`.
 Initialize reports an experimental subset and whether this server's acceptance
 is `memory` or `durable`. It supports final text and none/summary/full tool events; no
 callbacks or other subscription fields yet. Full tool events retain JSON argument
@@ -338,8 +339,22 @@ so live events for recovered work follow it, and every event carries the
 revision of the commit it reports. A view that cannot fit one frame fails with
 `transfer_limit`.
 
+`session/suspend` refuses new messages at once, lets each active turn finish
+its current inference and the tools it requested, then completes turns that are
+naturally finished and checkpoints the rest. It responds when the session is
+`suspended`, which can take as long as a running tool. Notices from finishing
+work are still accepted and wait. A suspended session, including one loaded in
+a new process, runs nothing until `session/resume`; resumed turns take their
+pending input and continue at the next inference without repeating recorded
+tool calls. Resume fails with `incompatible`, changing nothing, if a checkpoint
+was saved under a different system prompt or script. `session/stop` is
+immediate: it cancels inference and tools, reports active turns `interrupted`,
+leaves pending input pending, and makes this process refuse further work with
+`stopped`. Lifecycle changes arrive as `session/event` notifications
+(`HarnessClient.onSessionEvent`).
+
 Events are `turn_started`, `turn_took`, `items_receipt`, `tool_call`,
-`message_completed`, and `turn_ended`. `turn_started` and `turn_took` list the
+`message_completed`, `turn_suspended`, `turn_resumed` and `turn_ended`. `turn_started` and `turn_took` list the
 item IDs that turn took, which is how an accepted input is matched to its
 outcome. `turn_ended` reports `completed`, `failed` or `interrupted`. Completed assistant text is published immediately after recording,
 including text before tool calls, even if notices extend the turn. Each message
@@ -353,8 +368,7 @@ constructor); closing a client rejects pending requests and removes subscription
 It does not cancel already accepted work. Model exhaustion produces a failed turn
 event after acceptance, not a failed push. Idle includes pending and running work.
 
-This is not full protocol v1 conformance: suspend/resume, stop, export/import,
-holds, permissions, usage,
+This is not full protocol v1 conformance: export/import, holds, permissions, usage,
 streaming and progress heartbeats remain unimplemented. Protocol version 1
 identifies these experimental message shapes, not a full compatibility claim.
 
@@ -414,7 +428,8 @@ work. Malformed server output is fatal to its client connection.
 On stdin EOF the server stops accepting requests, allows accepted work to settle,
 and flushes protocol output within a five-second grace period. Failure to settle
 exits nonzero with stderr diagnostics. Immediate stop on EOF (decision 0013) is
-not wired yet. With `--home <directory>` each session is a SQLite file named
+not wired yet; a host that wants interruption calls `session/stop` first. A
+suspended or stopped session counts as settled. With `--home <directory>` each session is a SQLite file named
 after its ID in that directory, and work the process did not finish is reported
 as interrupted when the session is next loaded. Applications should wait for
 idle before closing when they need completed work. Hosts retain a process termination deadline.

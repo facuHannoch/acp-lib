@@ -5,7 +5,7 @@ import type { SessionStorage, SessionStorageAdapter } from "./contracts/storage.
 import type { ExecuteTool } from "./contracts/loop.ts";
 import { createScriptedModel } from "./capabilities/model/scripted.ts";
 import { echoDefinition, executeEcho } from "./capabilities/tools/echo.ts";
-import { createRecordTool, recordDefinition } from "./capabilities/tools/record.ts";
+import { createHoldTool, createRecordTool, holdDefinition, recordDefinition } from "./capabilities/tools/record.ts";
 import { createMemoryStorageAdapter } from "./state/storage/memory.ts";
 import { createSqliteStorageAdapter } from "./state/storage/sqlite.ts";
 import { createProtocolServer, SessionOpenError } from "./interfaces/protocol/server.ts";
@@ -63,9 +63,9 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       throw new SessionOpenError(code === "not_found" || code === "already_exists" || code === "owner_conflict" || code === "incompatible" ? code : "storage_failure", opened.error.message);
     }
     const storage = options.fault ? withFaults(opened.value, hit) : opened.value;
-    const record = createRecordTool(options.effects);
+    const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
     const executeTool: ExecuteTool = async (call, signal) => {
-      const result = await (call.name === "record" ? record(call, signal) : executeEcho(call, signal));
+      const result = await (call.name === "record" ? record(call, signal) : call.name === "hold" ? hold(call, signal) : executeEcho(call, signal));
       hit("tool");
       return result;
     };
@@ -77,7 +77,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         const consumed = session.snapshot().timeline.filter(entry => entry.channelId === turn.channelId && entry.message.role === "assistant").length;
         scripted = createScriptedModel(script, consumed); models.set(turn.channelId, scripted);
       }
-      return { model: scripted.model, tools: [echoDefinition, recordDefinition], executeTool };
+      return { model: scripted.model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
     } });
     return { session, close() { opened.value.close(); } };
   }, { durable });
