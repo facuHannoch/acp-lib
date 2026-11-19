@@ -33,4 +33,9 @@ Transfer preflight retains the existing `transfer/open` rule: a declared upload
 over `maxBytes` is refused before any header bytes are available. Complete files
 and path imports follow the approved header/actual-length/size validation order.
 Managed reopen from saved config is deferred to the configuration integration.
-Independent implementation review is pending.
+Gro approved implementation `7e49bd5` without findings. Their independent gate
+passed `bun run typecheck --pretty false` and `bun test ./test`: 182 pass, 0
+fail, 2631 assertions across 23 files (39.16s). They accepted the transfer/open
+preflight caveat above. Managed reopen remains outside this slice; import saves
+config and callers still supply it when opening. The accepted behavior revision
+is `7e49bd5`; this approval note is log-only.
