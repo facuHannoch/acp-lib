@@ -1,5 +1,10 @@
 # Native harness architecture
 
+The [architecture documentation](.res/architecture/README.md) maps the current
+implementation and the proposed persistence increments. This document remains
+the target layout and dependency guide; proposals in that documentation are not
+implemented guarantees.
+
 Status: target architecture, implemented incrementally. An initial in-memory
 agent with channel queues, terminal clients and a tool loop exists; current
 behavior is described in [README.md](README.md).
