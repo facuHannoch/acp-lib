@@ -445,14 +445,14 @@ lines may span chunks. Blank lines are ignored; a partial line at EOF is an erro
 Malformed client JSON produces a parse-error response and later valid lines still
 work. Malformed server output is fatal to its client connection.
 
-On stdin EOF the server stops accepting requests, allows accepted work to settle,
-and flushes protocol output within a five-second grace period. Failure to settle
-exits nonzero with stderr diagnostics. Immediate stop on EOF (decision 0013) is
-not wired yet; a host that wants interruption calls `session/stop` first. A
-suspended or stopped session counts as settled. With `--home <directory>` each session is a SQLite file named
+Stdin EOF is stop: the server cancels inference and tools, records active turns
+as interrupted, leaves pending input pending, flushes protocol output and exits.
+It does not wait for work to finish. A host that needs completed work waits for
+idle, or suspends, before closing. The five-second grace period only bounds
+requests already read and the final flush; exceeding it exits nonzero with
+stderr diagnostics. With `--home <directory>` each session is a SQLite file named
 after its ID in that directory, and work the process did not finish is reported
-as interrupted when the session is next loaded. Applications should wait for
-idle before closing when they need completed work. Hosts retain a process termination deadline.
+as interrupted when the session is next loaded. Hosts retain a process termination deadline.
 
 Run `bun test test/protocol.test.ts test/stdio.test.ts` for transport parity and
 framing/process lifecycle checks. Child stdin in Bun uses IPC and may require

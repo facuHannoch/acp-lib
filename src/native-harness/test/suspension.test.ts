@@ -336,3 +336,30 @@ test("a process killed after checkpointing but before suspension commits reopens
     expect(seen.channel[0]!.event).toMatchObject({ type: "turn_started", turnId: "2", items: ["a2"] });
   } finally { await next.close(); }
 }, 20000);
+
+test("stdio: closing stdin stops the session at once; the next process finds the turn interrupted and the input pending", async () => {
+  const { effects, open } = place("stdio");
+  const first = open() as ReturnType<typeof spawnHarness>;
+  await first.client.initialize(); await first.client.createSession(setup);
+  await first.client.push(push("a", "a1", "start"));
+  await until(() => lines(effects).includes("start:k"), "tool to start");
+  await first.client.push(push("a", "a2", "pending"));
+  const closing = Date.now();
+  // The tool is never released: a drain would run into the five-second grace and exit nonzero.
+  await first.close();
+  expect(Date.now() - closing).toBeLessThan(2000);
+  // The interruption was committed and published before the process exited.
+  const last = (await first.stdout).trim().split("\n").map(line => JSON.parse(line)).findLast(message => message.method === "channel/event");
+  expect(last.params.event).toMatchObject({ type: "turn_ended", turnId: "1", outcome: "interrupted", uncertainCalls: ["hold-1"] });
+  const second = open();
+  try {
+    await second.client.initialize();
+    const seen = watch(second.client);
+    const loaded = await second.client.loadSession({ sessionId: "paused", config });
+    expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", reason: "Stopped by the host", uncertainCalls: ["hold-1"] }]);
+    expect(loaded.status.channels[0]).toMatchObject({ pending: ["a2"] });
+    await until(() => seen.channel.some(event => event.event.type === "turn_ended"), "pending input to run");
+    expect(seen.channel[0]!.event).toMatchObject({ type: "turn_started", turnId: "2", items: ["a2"] });
+    expect(lines(effects)).toEqual(["start:k"]);
+  } finally { await second.close(); }
+}, 20000);

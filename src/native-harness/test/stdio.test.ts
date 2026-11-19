@@ -63,9 +63,12 @@ test("server recovers from a malformed JSON line, keeps stdout clean and exits o
   } finally { clearTimeout(timer); child.kill(); }
 }, 5000);
 
-test("EOF shutdown fails within its grace period when accepted work never becomes idle", async () => {
-  await expect(serveProtocolStdio({ subscribe: () => () => {}, request: async request => ({ jsonrpc: "2.0", id: request.id, result: { idle: false } }) },
-    new ReadableStream({ start(controller) { controller.close(); } }), async () => {}, 20)).rejects.toThrow("shutdown grace expired");
+test("EOF shutdown fails within its grace period when a request already read never settles", async () => {
+  const input = new ReadableStream<Uint8Array>({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"method":"session/suspend","params":{}}\n')); controller.close(); } });
+  await expect(serveProtocolStdio({ subscribe: () => () => {},
+    request: request => request.method === "session/stop" ? Promise.resolve({ jsonrpc: "2.0" as const, id: request.id, result: {} }) : new Promise(() => {}) },
+    input, async () => {}, 20)).rejects.toThrow("shutdown grace expired");
 });
 
 test("transport closure and writer failure promptly reject outstanding requests", async () => {
@@ -80,20 +83,21 @@ test("transport closure and writer failure promptly reject outstanding requests"
   client.close(); broken.close();
 });
 
-test("server waits for accepted work after EOF and flushes output before returning", async () => {
-  let idle = false;
-  const frames: string[] = [];
-  const endpoint = { subscribe(listener: (message: any) => void) {
-    const timer = setTimeout(() => {
-      listener({ jsonrpc: "2.0", method: "channel/event", params: { channel: "a", event: { type: "turn_ended", turnId: "1", outcome: "completed" } } });
-      idle = true;
-    }, 20);
-    return () => clearTimeout(timer);
-  }, request: async (request: any) => ({ jsonrpc: "2.0" as const, id: request.id, result: { idle } }) };
+test("EOF stops the session instead of draining it, and flushes the interruption before returning", async () => {
+  const frames: string[] = [], methods: string[] = [];
+  let publish!: (message: any) => void;
+  const endpoint = { subscribe(listener: (message: any) => void) { publish = listener; return () => {}; },
+    request: async (request: any) => {
+      methods.push(request.method);
+      // Stop publishes the interruption of the turn that was still running.
+      if (request.method === "session/stop") publish({ jsonrpc: "2.0", method: "channel/event", params: { channel: "a", event: { type: "turn_ended", turnId: "1", outcome: "interrupted" } } });
+      return { jsonrpc: "2.0" as const, id: request.id, result: {} };
+    } };
   await serveProtocolStdio(endpoint, new ReadableStream({ start(c) { c.close(); } }), async bytes => { frames.push(new TextDecoder().decode(bytes)); }, 1000);
-  expect(idle).toBe(true);
+  // No idle polling, and the stop request's own response is not written to the client.
+  expect(methods).toEqual(["session/stop"]);
   expect(frames).toHaveLength(1);
-  expect(JSON.parse(frames[0]!).params.event.type).toBe("turn_ended");
+  expect(JSON.parse(frames[0]!).params.event).toMatchObject({ type: "turn_ended", outcome: "interrupted" });
 });
 
 test("unterminated stdin frame produces a nonzero exit with diagnostics only on stderr", async () => {

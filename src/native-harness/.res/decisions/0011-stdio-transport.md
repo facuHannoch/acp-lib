@@ -17,4 +17,5 @@ shutdown. No persistence, replay, cancellation or restart guarantees are added.
 
 Superseded in part by [0013](0013-durable-delivery-contract.md): once persistent
 stop is wired, EOF is an immediate stop that interrupts active turns, with no
-drain. The current server keeps the five-second drain until then.
+drain. That is now the server's behavior; the five-second deadline remains only
+as a bound on settling requests already read and flushing output.
