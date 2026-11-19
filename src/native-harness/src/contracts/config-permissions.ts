@@ -31,6 +31,9 @@ export interface ApprovalRequest {
   arguments: string;
 }
 export type ApprovalAnswer = "allow_once" | "deny";
+/** Optional initialize field. Only true declares this connection as the
+ * approval consumer; callbacks must remain empty. */
+export interface ApprovalInitialization { approval?: boolean }
 export type ApprovalCloseReason = "approval_denied" | "approval_timeout" | "approval_unhandled"
   | "approval_disconnected" | "approval_cancelled_by_suspension";
 

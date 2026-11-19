@@ -10,3 +10,8 @@ Decision 0016 and the contract types define config provisioning, durable policy
 references, approval wire messages and lifecycle ordering. Contract review is
 required before implementation. Typecheck and the retry, notice/restart and
 suspension/dispatch traces are the gate.
+
+Gro reviewed `92605f3` without approval and requested locks for legacy migration
+and signatures, canonical checkpoint fingerprints, initialization and interrupt
+semantics, and incompatible execution and channel policy edits. The follow-up
+records those requirements; Stage 2 remains blocked on independent approval.

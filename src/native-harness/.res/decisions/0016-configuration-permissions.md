@@ -26,7 +26,10 @@ outstanding requests. No model-supplied text or tool argument grants rights.
   `invalid_config` error with field and message, without opening a session or
   starting inference. The typed client exposes it. On create an inline config
   wins when supplied; otherwise the per-session `config.json` is required.
-  On open a present sidecar wins; otherwise the saved config is required. The
+  On open a present sidecar wins; otherwise an explicitly supplied inline config
+  is used, and otherwise the saved config is required. Both `session/load` and
+  development open use saved config when neither inline config nor sidecar is
+  supplied, for managed directories and explicit `--db` files. The
   open session owns a defensive copy, saved atomically with successful open;
   invalid sidecar, missing resource, incompatible stored references, or failed
   open leaves the previous saved config and session unchanged. Edits are read only
@@ -37,31 +40,46 @@ outstanding requests. No model-supplied text or tool argument grants rights.
 - Save active config with a created or opened session, and export the in-memory
   copy in the session-file payload. Import publishes config and snapshot as one
   unit; imported sessions open from it without a sidecar. SQLite and memory
-  share the same rules. Schema revision 4 and logical archive revision 3 add
-  policy fields; format 2/3 databases and logical archives 1/2 migrate on import
-  or open. For legacy data with no policy metadata, use a defined legacy policy
-  with fallback `allow`, preserving previous execution behavior; legacy notices
-  have no recorded inherited restrictions. The session-file envelope version
-  remains 1. Old scripted configs lacking policy fields upgrade to this same
-  legacy policy when loading older session files. New exports include full config
-  and archive 3. Existing standalone JSON files remain rejected.
+  share the same rules. SQLite formatVersion 4 and logical archive revision 3
+  add policy fields. Opening format 2 or 3 first applies its existing recovery
+  rules, then publishes format 4. Adapter-level import still accepts logical
+  archive 1. A session-file envelope still rejects archive 1; archive 2 and
+  the scripted config without policy fields from `7e49bd5` migrate to archive
+  3 and the legacy policy. The envelope stays version 1; new exports contain
+  archive 3 and full ManagedConfig. Standalone JSON remains `invalid_archive`.
+- Name the legacy policy `__legacy_allow`. An upgraded config sets
+  `defaultPolicy` to that name and defines it with fallback `allow` and empty
+  `tools`. Migrated channels have no channel policy; migrated items have no
+  explicit policy, resolved `__legacy_allow`, and inherited `[]`. Accept the
+  pre-0016 signature `JSON.stringify([kind, channelId, senderId,
+  sourceChannelId ?? null, text])` during migration, then rewrite it to
+  `JSON.stringify([kind, channelId, senderId, sourceChannelId ?? null, text,
+  explicitPolicy ?? null])` under the existing SHA-256 encoding. New acceptance
+  and archive 3 use only the extended signature. Omitted and null explicit
+  policy are the same absence, so an unchanged retry still matches.
 - On reopen validate every stored channel, item and inherited policy reference
   against the candidate config before enabling execution. Missing references
   produce an `incompatible` execution state without changing saved config or
-  starting work; the session remains open for status, timeline and checkpoint
-  inspection. Resume and other execution attempts report `incompatible`, and
-  pending inputs and checkpoints remain untouched. The config may change rules
-  for future turns. A checkpoint stores an execution fingerprint of the system,
-  model/script content and tool setup plus the definitions of all policy names
-  that contributed to that turn. A mismatch on resume is `incompatible` and
-  leaves the checkpoint and pending items untouched. Changes to unrelated
-  policies do not block resume. Inspection of an incompatible checkpoint is
-  allowed; explicit resume remains required.
+  starting work; status, timeline and checkpoint reads still succeed. While
+  incompatible, `acceptItem`, `beginTurn`, `resume`, and `resumeChannel` report
+  `incompatible` and write nothing. Pending inputs and checkpoints remain
+  untouched. The config may change rules for future turns. A checkpoint's
+  fingerprint is the existing compatibility key (SHA-256 of
+  `JSON.stringify([system, parsedScriptContent])`) plus definitions of its
+  contributing policy names, canonically compared by sorted policy names and
+  sorted tool keys within each policy. A changed contributing definition makes
+  resume `incompatible` with no writes; unrelated policy changes do not block it.
+  Compare only when that checkpoint would actually continue: session resume
+  checks the channels it restarts; channel resume checks when the session is
+  running. An individually suspended incompatible channel does not block session
+  resume or change its checkpoint. Migration records the existing turn key and
+  legacy allow definition, so an unchanged upgraded session can resume.
 
 ## Policy and identity
 
-- Channel create/edit accept an optional named policy; null clears it. An
-  unknown name is `invalid_policy`, with no change. Participant input accepts
+- Channel create with an omitted policy stores no channel policy. On edit,
+  omitted leaves it unchanged, null clears it, and a string sets it. An unknown
+  name is `invalid_policy`, with no change. Participant input accepts
   an optional trusted-consumer `policy`, never one derived from its text.
   Resolve explicit, then channel, then session default when accepting. Store
   `explicit` including absence and the resolved name. Dedup identity extends the
@@ -98,7 +116,12 @@ outstanding requests. No model-supplied text or tool argument grants rights.
   `approval_timeout`. Explicit deny produces `approval_denied`. These results
   include `{ok:false,code,message}`, explain no execution, and are recorded as
   the matching tool result before the loop continues. No skipped call emits
-  `started`. An unanswered approval is never durable or executable on restart.
+  `started`. Initialize keeps `callbacks` an empty array, rejecting any
+  nonempty list, and adds optional `approval:boolean`: only `true` declares
+  the connection to be the approval consumer. Without it an ask immediately
+  closes as `approval_unhandled`; with it, disconnect closes its outstanding
+  requests as `approval_disconnected`. An unanswered approval is never durable
+  or executable on restart.
 - Decision, lifecycle cancellation and dispatch are serialized without an await
   between the final cancellation check, grant consumption, `started` emission
   and invoking the executor. The linearization point is that dispatch step.
@@ -113,8 +136,9 @@ outstanding requests. No model-supplied text or tool argument grants rights.
   continues while one turn awaits approval.
 - Interrupt and stop cancel requests for their affected turns, fence grants and
   late answers, abort running tools and fence late results under decision 0014.
-  They do not record a new paired result after a turn has ended; unresolved calls
-  retain existing uncertain-effect semantics. Denial, timeout and disconnect
+  An undispatched request is not added to `uncertainCallIds`: its tool did not
+  run. A call that already emitted `started` retains decision 0014's uncertain
+  effect semantics. No paired result is written after a turn has ended. Denial, timeout and disconnect
   cannot cause a dispatch. No request or grant survives a restart.
 
 ## Traces and verification
