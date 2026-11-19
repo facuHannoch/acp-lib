@@ -56,6 +56,7 @@ export class HarnessClient {
     return this.request("initialize", params);
   }
   createSession(params: CreateParams) { return this.request("session/create", params); }
+  validateConfig(config: unknown) { return this.request("config/validate", { config }); }
   /** Open an existing session. The returned view precedes every live event
    * for work the session recovers; callers reconcile their own records with it. */
   loadSession(params: Calls["session/load"]["params"]) { return this.request("session/load", params); }

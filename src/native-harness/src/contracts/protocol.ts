@@ -176,6 +176,8 @@ export interface DurableMethods {
 export interface RpcSessionNotification { jsonrpc: "2.0"; method: "session/event"; params: SessionEvent }
 export interface Methods {
   initialize: { params: InitializeParams; result: { protocolVersion: 1; harness: { version: string }; description: Description } };
+  /** Validate without opening a session or starting execution. */
+  "config/validate": { params: { config: unknown }; result: { valid: true } };
   "session/create": { params: CreateParams; result: { sessionId: string } };
   /** With durable acceptance the response is sent only after the inbox commit
    * and includes `item` (Received, or the original item's current state for a

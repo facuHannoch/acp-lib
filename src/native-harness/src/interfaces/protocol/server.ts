@@ -3,6 +3,7 @@ import type { PersistentSession } from "../../contracts/session.ts";
 import type { SessionArchive, StorageResult, StoredSession } from "../../contracts/storage.ts";
 import type { SessionFilePayload } from "../../contracts/session-file.ts";
 import { SessionFileError, validateConfig } from "../../state/storage/session-file.ts";
+import { validateManagedConfig } from "../../runtime/config/managed.ts";
 import { FrameLimit, loadView, pageMessages, turnStatus, wireStatus } from "./load.ts";
 import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
 import type { TransferLimits } from "../../contracts/protocol.ts";
@@ -65,7 +66,7 @@ export function describe(durable: boolean, archives = false): Description {
   return {
     configOptions: [], commands: [], policies: [],
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable,
-      methods: ["initialize", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
+      methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
         "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : [])],
       events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "session/event"] },
@@ -143,6 +144,11 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { protocolVersion: 1, harness: { version: "0.0.0" }, description };
     }
     if (!initialized) throw new Fault("not_ready", "Initialize first");
+    if (method === "config/validate") {
+      keys(p, ["config"]);
+      try { validateManagedConfig(p.config); } catch (error) { throw new Fault("invalid_config", String(error)); }
+      return { valid: true };
+    }
     if (method === "session/create") {
       keys(p, ["sessionId", "config", "participants", "channels"]);
       const sessionId = text(p.sessionId);

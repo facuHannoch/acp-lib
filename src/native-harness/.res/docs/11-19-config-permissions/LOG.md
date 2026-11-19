@@ -15,3 +15,10 @@ Gro reviewed `92605f3` without approval and requested locks for legacy migration
 and signatures, canonical checkpoint fingerprints, initialization and interrupt
 semantics, and incompatible execution and channel policy edits. The follow-up
 records those requirements; Stage 2 remains blocked on independent approval.
+
+Gro approved contract revision `d09cb7e`; their independent typecheck passed.
+Stage 2 is in progress. Its first increment provides pure config validation,
+policy precedence, canonical policy fingerprints, signature and inherited
+reference helpers, and `config/validate` over both client transports. These do
+not yet enforce policies at dispatch or provide managed reopen. The focused
+validation and policy tests are separate from the required Stage 2 gate.
