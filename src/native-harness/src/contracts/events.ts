@@ -14,7 +14,12 @@ export type LoopEvent =
  * - `items_receipt` reports Delivered/Seen for items of that turn, and is
  *   published only after a commit that advanced at least one milestone.
  * - `message_completed.messageId` is the stable timeline ID of the message.
- * - `turn_suspended` is a checkpoint, not an end; `turn_resumed` continues it.
+ * - `turn_suspended` is a checkpoint, not an end (session or channel suspension);
+ *   `turn_resumed` continues it under the same turn ID.
+ * - `channel_state` reports a committed change of the channel record: create,
+ *   edit, suspension begun or completed, resume, retirement. It carries the
+ *   resulting lifecycle and name, and no turn ID.
+ * - `item_withdrawn` reports a committed withdrawal of a pending item.
  * - `turn_ended` is terminal for the turn only. `interrupted` and `failed` may
  *   list `uncertainCalls`, which are never replayed. The channel stays usable.
  * Events are live notifications, not a durable replay log. */
@@ -25,6 +30,8 @@ export interface ChannelEvent {
     | { type: "turn_started" | "turn_took"; turnId: string; items: string[] }
     | { type: "items_receipt"; turnId: string; items: string[]; milestone: "delivered" | "seen" }
     | { type: "turn_suspended" | "turn_resumed"; turnId: string }
+    | { type: "channel_state"; lifecycle: "open" | "suspending" | "suspended" | "retired"; displayName?: string }
+    | { type: "item_withdrawn"; item: string }
     | { type: "turn_ended"; turnId: string; outcome: "completed" | "failed" | "interrupted"; error?: string; uncertainCalls?: string[] };
 }
 export type EventSink = (event: ChannelEvent) => void;

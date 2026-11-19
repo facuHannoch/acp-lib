@@ -38,9 +38,16 @@ export interface Description {
 export type DurableErrorCode =
   | "item_conflict" | "not_running" | "stopped" | "invalid_state" | "incompatible"
   | "owner_conflict" | "not_found" | "already_exists" | "busy"
-  | "invalid_archive" | "transfer_limit" | "storage_failure";
+  | "invalid_archive" | "transfer_limit" | "storage_failure"
+  /** Decision 0014. The channel is suspending or suspended; a retry of accepted input still returns its recorded outcome. */
+  | "channel_suspended"
+  /** The channel ID was deleted; it is reserved for good. */
+  | "channel_retired"
+  /** Deletion refused: active or checkpointed turn, or pending input. */
+  | "channel_busy";
 
-/** Wire view of an accepted input. `turnId` is present from `taken` onward. */
+/** Wire view of an accepted input. `turnId` is present from `taken` onward and
+ * absent for `withdrawn`. */
 export interface ItemStatus {
   id: string; channel: string; kind: ItemKind; sender: string;
   milestone: ItemMilestone; turnId?: string;
@@ -58,8 +65,19 @@ export interface StatusResult {
   sessionId: string; revision: number;
   lifecycle: "running" | "suspending" | "suspended";
   execution: "idle" | "working" | "suspending" | "suspended" | "stopped";
-  channels: { channel: string; activeTurn?: { turnId: string; state: "running" | "suspended" };
-    pending: string[]; unresolved?: TurnStatus }[];
+  channels: ChannelStatusResult[];
+}
+/** Decision 0014: channel lifecycle, turn status and pending input are
+ * independent. `pending` excludes withdrawn items. `waitingForResume` is true
+ * when pending items or a checkpoint exist that cannot run until a resume
+ * (channel or session); such work never makes `execution` `working`. A server
+ * from before decision 0014 omits `lifecycle` and `waitingForResume`: read as
+ * `open` and false. */
+export interface ChannelStatusResult {
+  channel: string; displayName?: string;
+  lifecycle: "open" | "suspending" | "suspended" | "retired";
+  activeTurn?: { turnId: string; state: "running" | "suspended" };
+  pending: string[]; waitingForResume: boolean; unresolved?: TurnStatus;
 }
 export interface StoredMessage { messageId: string; channel: string; turnId: string; parts: { type: "text"; text: string }[] }
 
@@ -116,6 +134,31 @@ export interface DurableMethods {
    * start or resume the copy. `from.transfer` names a completed upload. */
   "session/import": { params: { from: { type: "path"; path: string } | { type: "transfer"; transferId: string }; sessionId?: string };
     result: { sessionId: string; lifecycle: "running" | "suspended"; revision: number } };
+  // ---- Channel controls, decision 0014. Each is atomic, independent of the
+  // session lifecycle, and fails with the stable codes in DurableErrorCode.
+  /** Explicit create; starts nothing. Repeating the same request returns
+   * `created: false`; a different name for an existing channel is
+   * `already_exists`; a retired ID is `channel_retired`. */
+  "channel/create": { params: { channel: string; displayName?: string }; result: { channel: ChannelStatusResult; created: boolean } };
+  /** Display name only; `null` clears it. */
+  "channel/edit": { params: { channel: string; displayName: string | null }; result: { channel: ChannelStatusResult } };
+  /** Responds after the channel's `suspended` commits (checkpoint, completed
+   * turn or interrupted turn). Repeating it is harmless. Fails `stopped` if the
+   * session stops first. Meanwhile `channel/push` fails `channel_suspended`. */
+  "channel/suspend": { params: { channel: string }; result: { channel: ChannelStatusResult } };
+  /** Clears the channel suspension; work runs only when the session is
+   * `running`. Fails `incompatible` without touching the checkpoint. */
+  "channel/resume": { params: { channel: string }; result: { channel: ChannelStatusResult } };
+  /** Retires the ID. `channel_busy` while a turn is active or checkpointed or
+   * input is pending. */
+  "channel/delete": { params: { channel: string }; result: { channel: ChannelStatusResult } };
+  /** `taken` is the other side of the race with take and names the turn. */
+  "channel/withdraw": { params: { channel: string; item: string };
+    result: { outcome: "withdrawn" | "taken"; item: ItemStatus; repeated?: boolean } };
+  /** Targets one turn. `interrupted: false` for a checkpointed or ended turn,
+   * which is left as it is; `turn` is its current status. */
+  "channel/interrupt": { params: { channel: string; turn: string; reason?: string };
+    result: { interrupted: boolean; turn: TurnStatus } };
   "transfer/open": { params: { bytes: number; sha256: string }; result: { transferId: string; limits: TransferLimits } };
   /** Offsets are sequential; a gap, overrun or oversize chunk is `transfer_limit`. */
   "transfer/write": { params: { transferId: string; offset: number; data: string }; result: { received: number } };
