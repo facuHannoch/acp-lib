@@ -12,7 +12,11 @@ turns; durable notice admission, protocol deduplication and suspension remain
 subsequent contract work. Integrating existing notice-driven execution must not
 silently drop notices or pretend that this first interface handles them.
 
-### Contract operations, revision 1
+Revision 2 of the contract ([decision 0013](../decisions/0013-durable-delivery-contract.md))
+replaces the revision 1 operations below with a durable inbox, take, lifecycle,
+load and archive operations. It is also type-only until adapters are approved.
+
+### Contract operations, revision 1 (superseded)
 
 An adapter is configured with its location by assembly. `open` explicitly creates
 or opens a session, validates its compatibility key and acquires exclusive ownership.

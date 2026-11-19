@@ -27,4 +27,9 @@ export interface TurnContext {
   drainNotices?(): void;
   finish?(): boolean;
   emit?(event: LoopEvent): void;
+  /** Decision 0013. Throwing from append means the turn was fenced (stopped or
+   * ended); the loop must not continue. The members below mirror TurnPort. */
+  confirm?(milestone: "delivered" | "seen"): void;
+  checkpoint?(): boolean;
+  signal?: AbortSignal;
 }
