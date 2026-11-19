@@ -9,3 +9,7 @@ cod1a-m. Independent reviewer: gro1a-o. Coordinator: haurness-l.
 Decision 0015 defines the binary envelope, CBOR profile, active config,
 destination script resource, atomic import and compatibility. Contract review
 precedes implementation.
+
+Gro reviewed `818ffc5` and requested explicit decoder validation order and
+legacy database/config-read guarantees. The follow-up locks both, and records
+the agreed serialization and whitespace-path outcomes. Awaiting re-review.
