@@ -14,7 +14,9 @@ silently drop notices or pretend that this first interface handles them.
 
 Revision 2 of the contract ([decision 0013](../decisions/0013-durable-delivery-contract.md))
 replaces the revision 1 operations below with a durable inbox, take, lifecycle,
-load and archive operations. It is also type-only until adapters are approved.
+load and archive operations. Memory and SQLite adapters implement it, and the
+scheduler, context builder and scripted stdio server run on it. Suspension,
+stop and archive transfer are not exposed through an interface yet.
 
 ### Contract operations, revision 1 (superseded)
 

@@ -7,46 +7,13 @@ export interface ChannelInput {
   itemId?: string;
 }
 
-/** Memory-only revision: send resolves with the turn's final text. Superseded by
- * SessionAgent (decision 0013) and removed when the scheduler moves to storage. */
-export interface Agent {
-  idle(): boolean;
-  send(input: ChannelInput): Promise<string>;
-  /** Accept without waiting for target inference, avoiding cross-channel deadlocks. */
-  notify(notice: ChannelNotice): NoticeReceipt;
-}
-
 export interface ChannelNotice {
   channelId: string;
   fromChannelId: string;
   text: string;
 }
 
-/** Completion is for host observation; tools return only acceptance/delivery. */
-export type NoticeReceipt = { accepted: false; error: string } | {
-  accepted: true;
-  delivery: "inbox" | "turn";
-  completion?: Promise<string>;
-};
-
-export interface TurnMailbox {
-  /** Consume pending notices before building the next inference context. */
-  drain(): void;
-  /** Atomically stop accepting into this turn if no notices remain. */
-  finish(): boolean;
-}
-
-/** Identifies the active turn in the shared record. */
-export interface TurnInput extends ChannelInput {
-  turnId: number;
-  kind?: "participant_message" | "channel_notice";
-  sourceChannelId?: string;
-}
-
-/** Executes one accepted input; context is supplied by composition. */
-export type TurnRunner = (input: TurnInput, mailbox: TurnMailbox) => Promise<string>;
-
-// ---- Durable delivery, decision 0013. Type-only until the scheduler adopts it.
+// ---- Durable delivery, decision 0013.
 
 export type ItemKind = "participant_message" | "channel_notice";
 

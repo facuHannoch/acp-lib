@@ -11,8 +11,9 @@ behavior is described in [README.md](README.md).
 Existing modules follow the grouped layout below; future folders are created
 only as their implementation begins.
 An experimental protocol subset and typed client now reuse the same
-session assembly as development startup. Its acceptance is memory-only; the
-README lists supported operations and differences from the full protocol spec.
+session assembly as development startup. Execution runs on the session storage
+contract with memory and SQLite adapters; the README lists supported operations
+and differences from the full protocol spec.
 Both in-process and newline-delimited stdio transports are implemented. Stdio
 adds no listeners or execution features; the host retains process ownership.
 The detailed

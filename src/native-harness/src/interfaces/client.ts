@@ -1,5 +1,7 @@
-import type { ClientTransport, Methods, InitializeParams, CreateParams, PushParams } from "../contracts/protocol.ts";
-import type { EventSink } from "../contracts/events.ts";
+import type { ClientTransport, Methods, DurableMethods, InitializeParams, CreateParams, PushParams } from "../contracts/protocol.ts";
+import type { EventSink, SessionEventSink } from "../contracts/events.ts";
+
+type Calls = Methods & DurableMethods;
 
 export class HarnessClientError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = "HarnessClientError"; }
@@ -12,6 +14,8 @@ export class HarnessClient {
   private terminalError = new HarnessClientError("closed", "Client closed");
   private unsubscribeClose = () => {};
   private readonly listeners = new Set<EventSink>();
+  private readonly sessionListeners = new Set<SessionEventSink>();
+  private unsubscribeSession = () => {};
   private readonly waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   private readonly unsubscribe: () => void;
   constructor(private readonly transport: ClientTransport, private readonly timeoutMs = 30000) {
@@ -28,18 +32,21 @@ export class HarnessClient {
         else waiting.resolve(message.result);
       }
     });
+    this.unsubscribeSession = transport.subscribeSession?.(message => {
+      for (const listener of this.sessionListeners) { try { listener(structuredClone(message.params)); } catch { /* Consumer isolation. */ } }
+    }) ?? (() => {});
     this.unsubscribeClose = transport.onClose(error => {
       if (this.closed) return;
       this.terminalError = new HarnessClientError("transport_closed", error?.message ?? "Transport closed");
       this.close();
     });
   }
-  request<K extends keyof Methods>(method: K, params: Methods[K]["params"]): Promise<Methods[K]["result"]> {
+  request<K extends keyof Calls>(method: K, params: Calls[K]["params"]): Promise<Calls[K]["result"]> {
     if (this.closed) return Promise.reject(this.terminalError);
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.waiting.delete(id); reject(new HarnessClientError("timeout", `Request timed out: ${method}`)); }, this.timeoutMs);
-      this.waiting.set(id, { timer, reject, resolve: value => resolve(value as Methods[K]["result"]) });
+      this.waiting.set(id, { timer, reject, resolve: value => resolve(value as Calls[K]["result"]) });
       try { this.transport.send({ jsonrpc: "2.0", id, method, params }); }
       catch (error) { clearTimeout(timer); this.waiting.delete(id); reject(error); }
     });
@@ -48,12 +55,20 @@ export class HarnessClient {
     return this.request("initialize", params);
   }
   createSession(params: CreateParams) { return this.request("session/create", params); }
+  /** Open an existing session. The returned view precedes every live event
+   * for work the session recovers; callers reconcile their own records with it. */
+  loadSession(params: Calls["session/load"]["params"]) { return this.request("session/load", params); }
+  messages(params: Calls["session/messages"]["params"]) { return this.request("session/messages", params); }
+  status() { return this.request("session/status", {}); }
+  /** Resolves when the input is accepted (Received), never with a reply. Follow
+   * `turn_started`/`turn_took` for the item ID to find the turn that took it. */
   push(params: PushParams) { return this.request("channel/push", params); }
   idle() { return this.request("session/idle", {}); }
   onChannelEvent(listener: EventSink) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  onSessionEvent(listener: SessionEventSink) { this.sessionListeners.add(listener); return () => { this.sessionListeners.delete(listener); }; }
   close() {
     if (this.closed) return;
-    this.closed = true; this.unsubscribe(); this.unsubscribeClose(); this.transport.close(); this.listeners.clear();
+    this.closed = true; this.unsubscribe(); this.unsubscribeSession(); this.unsubscribeClose(); this.transport.close(); this.listeners.clear(); this.sessionListeners.clear();
     for (const pending of this.waiting.values()) { clearTimeout(pending.timer); pending.reject(this.terminalError); }
     this.waiting.clear();
   }

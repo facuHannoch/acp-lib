@@ -1,10 +1,9 @@
-import type { TurnInput } from "../../contracts/agent.ts";
 
 /** One process-wide simulated job; nothing runs between explicit tool calls. */
 export function createDashboardWork(wait = () => new Promise<void>(resolve => setTimeout(resolve, 8000))) {
   let completedSteps = 0;
   let working = false;
-  return async (input: TurnInput) => {
+  return async (input: { channelId: string; turnId: number }) => {
     const origin = { channelId: input.channelId, turnId: input.turnId };
     if (working) return { ok: false, status: "busy", completedSteps, totalSteps: 5, ...origin };
     if (completedSteps === 5) return { ok: true, status: "completed", completedSteps, totalSteps: 5, ...origin };

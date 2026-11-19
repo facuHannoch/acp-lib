@@ -8,8 +8,8 @@ is intended to become a separate package: it must not import acp-client modules.
 
 An initial in-memory agent, channel queues, terminal clients and tool loop are
 implemented. A separate agent process accepts messages over HTTP on a Unix socket.
-All channels use one shared in-memory context store. Each channel has a sequential
-queue; different channels execute concurrently. It uses OpenRouter native tool calls and includes one harmless
+All channels share one session timeline held by a storage adapter. Each channel
+runs one turn at a time; different channels execute concurrently. It uses OpenRouter native tool calls and includes one harmless
 `current_time`, `dashboard_work` and `notify_channel` tools. An experimental
 client/protocol subset is implemented over in-process and stdio transports.
 Experiments live in [.res/sandbox/](.res/sandbox/).
@@ -99,6 +99,8 @@ Replies render common Markdown as terminal emphasis, readable bullets and code
 blocks, rather than printing prose delimiters. Non-TTY output and `NO_COLOR`
 disable ANSI styling; code contents retain their literal Markdown symbols.
 Reconnecting to the same channel continues its history while the agent is alive.
+Messages sent to a channel while it is working join the turn in progress, and
+their requests all complete with that turn's last reply.
 Ctrl+C in the agent terminal stops it and loses all histories. Ask for the current
 time to exercise tool use. Tools and results are logged in the agent terminal;
 chat clients receive the final answer.
@@ -126,26 +128,28 @@ development tools in `src/capabilities/tools/scenario.ts`. Transport code lives 
 `src/interfaces/protocol/local.ts`. Inspection wrappers live in
 `src/interfaces/inspector/observe.ts`, keeping observation out of the kernel.
 
-The shared store is `src/state/storage/shared-context.ts`. It records inputs on
-acceptance, including queued inputs, then assistant responses and tool results
-with channel, turn and sender attribution. It copies entries on append and read.
-There are no independent per-channel history arrays in the agent.
-
-Storage revision 2 adapters exist but are not connected to execution yet: the
-running agent still uses the shared store above and keeps nothing across
-restarts. `src/state/storage/engine.ts` implements the contract in
-`src/contracts/storage.ts` once, over row access provided by
-`memory.ts` (maps, for tests and in-memory sessions) and `sqlite.ts`
-(`bun:sqlite`, one file per session, exclusive ownership through SQLite's file
-lock, `synchronous=FULL`). `archive.ts` validates and restores logical session
-archives. Both adapters pass the shared suite in `test/conformance/storage.ts`:
+Execution runs on the storage contract in `src/contracts/storage.ts`
+([decision 0013](.res/decisions/0013-durable-delivery-contract.md)).
+`src/state/storage/engine.ts` implements it once, over row access provided by
+`memory.ts` (maps) and `sqlite.ts` (`bun:sqlite`, one file per session,
+exclusive ownership through SQLite's file lock, `synchronous=FULL`).
+`archive.ts` validates and restores logical session archives; nothing exports
+or imports them through an interface yet. Both adapters pass the shared suite:
 
 ```sh
 bun test test/storage-memory.test.ts test/storage-sqlite.test.ts
 ```
 
-The SQLite file also starts child processes and kills them to check ownership
-and crash recovery. `bun:sqlite` is built into Bun; no dependency was added.
+An accepted message or notice is first committed to a pending inbox and
+acknowledged (`send` returns synchronously; it never waits for a reply). The
+channel takes pending items into its timeline when it can: an active turn takes
+them before its next inference, otherwise they start the channel's next turn.
+One turn can hold several inputs. Assistant responses and tool results are
+recorded with channel, turn and sender attribution before their events are
+published. `createSession` uses memory storage unless given a storage handle,
+and runs nothing until `start()`. `bun run start` still uses memory storage:
+its history ends with the process. Durable sessions are currently reachable
+only through the scripted stdio server (`serve --stdio --home <directory>`).
 
 Before every inference, `src/capabilities/context/build.ts` renders a fresh store
 snapshot with the unchanged system prompt. Other turns are attributed JSON
@@ -166,10 +170,12 @@ requests, immutable inspection snapshots and SSE updates/reconnection. Socket
 and inspector tests require permission to open local listeners. No runtime
 dependencies were added.
 
-This first slice has no call limit, streaming, persistence, cancellation or
-model timeout. A model or unexpected execution failure blocks that channel until
-agent restart, avoiding reuse of an incomplete tool exchange; other channels keep
-working. Tool errors are returned to the model. Disconnecting a client does not
+This slice has no call limit, streaming or model timeout. A model or unexpected
+execution failure ends that turn as failed; its channel accepts and runs new
+work, as do other channels. Tool calls of a failed or interrupted turn that
+have no recorded result are listed as uncertain, described to the model in later
+context, and never executed again by the harness. Tool errors are returned to
+the model. Disconnecting a client does not
 cancel an accepted turn. New shared events are visible at the next ordinary
 inference; ordinary shared events do not wake idle channels or extend a turn.
 Explicit notices do. Stopping the agent loses the shared store and dashboard job.
@@ -185,13 +191,14 @@ runs between calls. A running step is not interrupted; the model decides whether
 to request another step after reading updated context.
 
 `notify_channel({ channelId, text })` requests attention from an existing channel.
-The source channel is supplied by the executor. A busy accepting turn queues the
-notice and drains it before its next inference. If the model returns no tools
-while notices remain, the loop continues. An idle or finishing channel schedules
-a new turn. Inbox checking and finish admission are synchronous, avoiding a gap
-where an accepted notice could be missed. There is no notice-pass limit.
+The source channel is supplied by the executor. Notices and messages share one
+delivery rule: a busy turn takes them before its next inference, and if the
+model returns no tools while items are pending, the loop continues. Otherwise
+they start the channel's next turn. The pending check and the turn's completion
+are one storage transaction, so an item arriving as a turn finishes joins that
+turn or starts the next one, exactly once. There is no notice-pass limit.
 
-The receipt acknowledges acceptance and delivery mode, not completed action.
+The receipt acknowledges acceptance, not completed action.
 Notices have a distinct `channel_notice` kind and source channel in the shared
 store. Busy and idle delivery use the same internal-notice renderer; neither
 impersonates a human participant. The API role remains `user`. In channel context
@@ -199,7 +206,7 @@ cards, notices are highlighted violet and participant prompts orange. Tool
 definitions are collapsed under Tools in both Live context and Channels.
 Notice-generated idle responses appear in the inspector and in subscribed
 terminal clients for the target channel.
-Unknown or failed channels reject notices with an actionable tool result.
+A notice to a channel that has never received a message is refused with an actionable tool result.
 
 To try the scenario, open `channel1 alice` and ask Alice's channel to finish the
 dashboard for launch. During a step, tell `channel2 bob` that the design is not
@@ -304,9 +311,10 @@ transport factory and host types. `src/index.ts` exports host-independent
 uses the same session assembly with OpenRouter, its tools and inspector wrappers.
 
 The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
-requests are `initialize`, `session/create`, `channel/push` and `session/idle`.
-Initialize explicitly reports an experimental subset, memory-only acceptance and
-no persistence. It supports final text and none/summary/full tool events; no
+requests are `initialize`, `session/create`, `session/load` (durable servers
+only), `session/messages`, `session/status`, `channel/push` and `session/idle`.
+Initialize reports an experimental subset and whether this server's acceptance
+is `memory` or `durable`. It supports final text and none/summary/full tool events; no
 callbacks or other subscription fields yet. Full tool events retain JSON argument
 and result strings; a completed tool event means execution returned, which can
 include an actionable `{ ok: false }` result. Thrown execution errors emit failed.
@@ -315,11 +323,25 @@ Supported config is `{ version: 1, system, model: { protocol: "scripted", script
 Participants support IDs and kinds, without labels or policy. Initial `channels`
 must be empty; channels are created on push. Push supports text-only user messages
 with queue delivery and wake=true. Unsupported fields, configurations and methods
-fail explicitly. IDs deduplicate within the in-memory session; reusing an item ID
-for different input fails with `item_conflict`. Unknown senders are recorded as IDs.
+fail explicitly. The push response is sent after the item is committed to the
+inbox and reports it as `received`; it never carries a reply. Storage
+deduplicates item IDs, across restarts on a durable server: the same ID and
+content returns the original item's current milestone and turn, and different
+content fails with `item_conflict`. Unknown senders are recorded as IDs.
 
-Events are `turn_started`, `turn_took`, `tool_call`, `message_completed`, and
-`turn_ended`. Completed assistant text is published immediately after recording,
+`session/load` opens an existing session and returns one view at a storage
+revision: status, turns, items with their last confirmed milestone, and
+committed assistant messages with stable IDs (paged with `session/messages`).
+Opening interrupts turns a previous process left unfinished; it never replays
+them. Pending input becomes eligible only after the load response is written,
+so live events for recovered work follow it, and every event carries the
+revision of the commit it reports. A view that cannot fit one frame fails with
+`transfer_limit`.
+
+Events are `turn_started`, `turn_took`, `items_receipt`, `tool_call`,
+`message_completed`, and `turn_ended`. `turn_started` and `turn_took` list the
+item IDs that turn took, which is how an accepted input is matched to its
+outcome. `turn_ended` reports `completed`, `failed` or `interrupted`. Completed assistant text is published immediately after recording,
 including text before tool calls, even if notices extend the turn. Each message
 has an ID and is delivered once; clients no longer republish the final return.
 Only turn lifecycle IDs are strings at the protocol boundary; the experimental
@@ -329,10 +351,10 @@ not ordering across channels. Subscriptions deliver future events, without repla
 Client requests time out after 30 seconds by default (configurable in its
 constructor); closing a client rejects pending requests and removes subscriptions.
 It does not cancel already accepted work. Model exhaustion produces a failed turn
-event after acceptance, not a failed push. Idle includes queued and running work.
+event after acceptance, not a failed push. Idle includes pending and running work.
 
-This is not full protocol v1 conformance: durable acceptance, session loading and
-restart reconciliation, holds, steering, interruption, permissions, usage,
+This is not full protocol v1 conformance: suspend/resume, stop, export/import,
+holds, permissions, usage,
 streaming and progress heartbeats remain unimplemented. Protocol version 1
 identifies these experimental message shapes, not a full compatibility claim.
 
@@ -391,10 +413,11 @@ work. Malformed server output is fatal to its client connection.
 
 On stdin EOF the server stops accepting requests, allows accepted work to settle,
 and flushes protocol output within a five-second grace period. Failure to settle
-exits nonzero with stderr diagnostics. This differs from the full spec's future
-interrupted-and-persisted shutdown: no suspension, recovery, durable acceptance or
-restart guarantee is implemented. Applications should wait for idle before closing
-when they need completed work. Hosts retain a process termination deadline.
+exits nonzero with stderr diagnostics. Immediate stop on EOF (decision 0013) is
+not wired yet. With `--home <directory>` each session is a SQLite file named
+after its ID in that directory, and work the process did not finish is reported
+as interrupted when the session is next loaded. Applications should wait for
+idle before closing when they need completed work. Hosts retain a process termination deadline.
 
 Run `bun test test/protocol.test.ts test/stdio.test.ts` for transport parity and
 framing/process lifecycle checks. Child stdin in Bun uses IPC and may require

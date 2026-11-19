@@ -7,6 +7,7 @@ import { createProtocolServer } from "../src/interfaces/protocol/server.ts";
 import { publishChannelEvent, createChannelOutputs } from "../src/interfaces/protocol/output.ts";
 import type { ChannelEvent } from "../src/contracts/events.ts";
 import type { CreateParams, ClientTransport } from "../src/contracts/protocol.ts";
+import { lastInput } from "./helpers/session.ts";
 
 const setup: CreateParams = { sessionId: "test", participants: [], channels: {}, config: {
   version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.json", import.meta.url).pathname },
@@ -32,9 +33,12 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: pu
     expect(init.description.capabilities).toMatchObject({ experimental: true, persistence: false, acceptance: "memory" });
     await client.createSession(setup);
     const log = collect(client, 2);
-    await Promise.all([client.push(push("a", "a1")), client.push(push("b", "b1"))]);
+    const acks = await Promise.all([client.push(push("a", "a1")), client.push(push("b", "b1"))]);
+    expect(acks[0]).toEqual({ accepted: true, duplicate: false, item: { id: "a1", channel: "a", kind: "participant_message", sender: "a", milestone: "received" } });
     await log.done;
     expect(await client.idle()).toEqual({ idle: true });
+    expect(await client.status()).toMatchObject({ sessionId: "test", lifecycle: "running", execution: "idle",
+      channels: [{ channel: "a", pending: [] }, { channel: "b", pending: [] }] });
     for (const channel of ["a", "b"]) {
       const events = log.events.filter(e => e.channel === channel).map(e => e.event);
       expect(events[0]).toMatchObject({ type: "turn_started", items: [`${channel}1`] });
@@ -47,7 +51,9 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: pu
       }
     }
     const before = log.events.length;
-    expect(await client.push(push("a", "a1"))).toEqual({ accepted: true });
+    // A retry is answered from storage with the original item's current state.
+    expect(await client.push(push("a", "a1"))).toEqual({ accepted: true, duplicate: true,
+      item: { id: "a1", channel: "a", kind: "participant_message", sender: "a", milestone: "seen", turnId: expect.any(String) } });
     expect(log.events).toHaveLength(before);
     await expect(client.push(push("b", "a1"))).rejects.toMatchObject({ code: "item_conflict" });
     const failure = collect(client);
@@ -69,35 +75,42 @@ test("notice continuation preserves both completed replies and emits turn_took",
   const outputs = createChannelOutputs(); const delivered: string[] = [];
   outputs.subscribe("a", event => delivered.push(event.text));
   session.subscribe(event => publishChannelEvent(outputs, event));
-  const server = createProtocolServer(async () => session);
+  const server = createProtocolServer(async () => ({ session, close() {} }));
   const client = new HarnessClient(createInProcessTransport(server));
   try {
     await client.initialize(); await client.createSession(setup);
     const log = collect(client);
     await client.push(push("a", "item")); await log.done;
     expect(delivered).toEqual(["Activity report", "Greeting received"]);
-    expect(log.events.map(e => e.event.type)).toEqual(["turn_started", "message_completed", "turn_took", "message_completed", "turn_ended"]);
+    expect(log.events.map(e => e.event.type)).toEqual(["turn_started", "items_receipt", "message_completed", "turn_took", "items_receipt", "message_completed", "turn_ended"]);
+    // Every one of these reports a commit, in commit order.
+    const revisions = log.events.map(e => e.revision);
+    expect(revisions.every(revision => Number.isSafeInteger(revision))).toBe(true);
+    expect(revisions).toEqual([...revisions].sort((x, y) => x! - y!));
+    expect(log.events[1]?.event).toMatchObject({ items: ["item"], milestone: "seen" });
     const ids = log.events.map(e => e.event).filter(e => e.type === "message_completed").map(e => e.messageId);
     expect(new Set(ids).size).toBe(2);
   } finally { client.close(); }
 }, 5000);
 
-test("acceptance does not await inference; idle includes queued work and values cross a copy boundary", async () => {
+test("acceptance does not await inference; idle includes pending work and values cross a copy boundary", async () => {
   let release!: () => void;
   const gate = new Promise<void>(r => { release = r; });
-  const session = createSession({ systemPrompt: "test", configureTurn: input => ({ tools: [], executeTool: async () => "unused",
-    model: async () => { await gate; return { role: "assistant", content: input.text, calls: [] }; },
+  const session = createSession({ systemPrompt: "test", configureTurn: () => ({ tools: [], executeTool: async () => "unused",
+    model: async messages => { await gate; return { role: "assistant", content: lastInput(messages), calls: [] }; },
   }) });
-  const client = new HarnessClient(createInProcessTransport(createProtocolServer(async () => session)));
+  const client = new HarnessClient(createInProcessTransport(createProtocolServer(async () => ({ session, close() {} }))));
   try {
     await client.initialize(); await client.createSession(setup);
-    const log = collect(client, 2);
+    // The second message arrives while the first inference is in flight and joins that turn.
+    const log = collect(client, 1);
     const input = push("a", "1");
     const accepted = client.push(input); input.item.content[0]!.text = "mutated";
     await accepted; await client.push(push("a", "2"));
     expect(await client.idle()).toEqual({ idle: false });
     release(); await log.done;
     expect(log.events.map(e => e.event).filter(e => e.type === "message_completed").map(e => e.parts[0]?.text)).toEqual(["hello", "hello"]);
+    expect(log.events.map(e => e.event).flatMap(e => e.type === "turn_started" || e.type === "turn_took" ? [e.items] : [])).toEqual([["1"], ["2"]]);
     expect(await client.idle()).toEqual({ idle: true });
   } finally { release(); client.close(); }
 }, 5000);

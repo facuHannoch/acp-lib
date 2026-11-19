@@ -1,4 +1,3 @@
-import { createSharedContextStore } from "../../state/storage/shared-context.ts";
 import { buildSharedContext } from "../../capabilities/context/build.ts";
 import { mkdir } from "node:fs/promises";
 import { createSession } from "../../index.ts";
@@ -7,7 +6,7 @@ import { createDashboardWork } from "../../capabilities/tools/dashboard.ts";
 import { createScenarioTools, scenarioDefinitions } from "../../capabilities/tools/scenario.ts";
 import { agentConfiguration, systemPrompt } from "../../runtime/config/development.ts";
 import { createInspection } from "../inspector/state.ts";
-import { observeAgent, observeContext, observeModel, observeTurn } from "../inspector/observe.ts";
+import { observeAgent, observeContext, observeEvents, observeModel } from "../inspector/observe.ts";
 import { serveInspector } from "../inspector/server.ts";
 import { createChannelHandler, serveLocal } from "../protocol/local.ts";
 import { createChannelOutputs, publishChannelEvent } from "../protocol/output.ts";
@@ -17,30 +16,31 @@ export async function start() {
   const config = agentConfiguration();
   if (config.managedDirectory) await mkdir(config.managedDirectory, { recursive: true, mode: 0o700 });
   const inspection = createInspection(systemPrompt, scenarioDefinitions);
-  const store = createSharedContextStore();
-  const stopObserving = observeContext(store, inspection,
-    (entries) => buildSharedContext(entries, systemPrompt));
   const dashboard = createDashboardWork();
   const outputs = createChannelOutputs();
   const session = createSession({
-    systemPrompt, store,
-    wrapTurn: run => observeTurn(run, inspection),
+    systemPrompt,
     configureTurn(input, notify) {
       const scenario = createScenarioTools(input, dashboard, notify);
       const model = observeModel(inspection, input.channelId,
         onRequest => {
           const provider = openRouter(config.apiKey, config.model, onRequest);
-          return (messages, tools) => { scenario.beginInference(); return provider(messages, tools); };
+          return (messages, tools, signal) => { scenario.beginInference(); return provider(messages, tools, signal); };
         }, input.turnId);
       return { model, tools: scenarioDefinitions, executeTool: scenario.execute };
     },
   });
+  const stopContext = observeContext(session.store, inspection,
+    (entries) => buildSharedContext(entries, systemPrompt, session.snapshot().turns));
+  const stopEvents = observeEvents(session.subscribe, inspection);
+  const stopObserving = () => { stopContext(); stopEvents(); };
   const stopOutput = session.subscribe(event => publishChannelEvent(outputs, event));
-  const agent = observeAgent(session.agent, inspection);
+  const local = { agent: observeAgent(session.agent, inspection), subscribe: session.subscribe };
+  session.start();
 
   // Restrict the socket itself as well as the default parent directory.
   process.umask(0o077);
-  const server = serveLocal(agent, config.socketPath, outputs);
+  const server = serveLocal(local, config.socketPath, outputs);
   let inspector: ReturnType<typeof serveInspector> | undefined;
   let webChat: ReturnType<typeof serveWebChat>;
   try {
@@ -48,7 +48,7 @@ export async function start() {
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid HARNESS_INSPECTOR_PORT");
     if (!Number.isInteger(config.webChatPort) || config.webChatPort < 0 || config.webChatPort > 65535) throw new Error("Invalid HARNESS_CHAT_PORT");
     inspector = serveInspector(inspection, port);
-    webChat = serveWebChat(createChannelHandler(agent, outputs), config.webChatPort);
+    webChat = serveWebChat(createChannelHandler(local, outputs), config.webChatPort);
   } catch (error) {
     // Startup is all-or-nothing: do not leave an agent listening if the inspector
     // could not bind its port and the command reports a startup failure.

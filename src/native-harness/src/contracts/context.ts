@@ -13,9 +13,9 @@ export interface ContextEntry {
   message: Message;
 }
 
-/** In-memory or durable source of truth. Values never alias caller objects. */
+/** Read-only projection of the storage timeline. Values never alias stored
+ * records. Listeners run after a commit that changed the timeline. */
 export interface SharedContextStore {
-  append(entry: Omit<ContextEntry, "seq" | "at">): void;
   snapshot(): ContextEntry[];
   subscribe(listener: () => void): () => void;
 }
@@ -24,6 +24,7 @@ export interface SharedContextStore {
 export interface TurnContext {
   append(message: Message): void;
   build(): Message[];
+  /** Take pending inbox items (messages and notices) into this turn. */
   drainNotices?(): void;
   finish?(): boolean;
   emit?(event: LoopEvent): void;

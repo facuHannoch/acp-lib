@@ -1,4 +1,4 @@
-import type { Agent, TurnInput } from "../../contracts/agent.ts";
+import type { SessionAgent } from "../../contracts/agent.ts";
 import type { ExecuteTool, ToolDefinition } from "../../contracts/loop.ts";
 import { currentTimeDefinition, executeCurrentTime } from "./current-time.ts";
 import type { createDashboardWork } from "./dashboard.ts";
@@ -9,12 +9,12 @@ export const scenarioDefinitions: ToolDefinition[] = [currentTimeDefinition, {
   parameters: { type: "object", properties: {}, additionalProperties: false },
 }, {
   name: "notify_channel",
-  description: "Ask an existing channel to process important information. Wakes an idle channel or supplies a notice at a busy channel's next inference. Acceptance does not mean the target has acted. Do not repeat a notice already delivered.",
+  description: "Ask an existing channel to process important information. The notice is delivered as soon as that channel can take it. Acceptance does not mean the target has acted. Do not repeat a notice already delivered.",
   parameters: { type: "object", properties: { channelId: { type: "string" }, text: { type: "string" } },
     required: ["channelId", "text"], additionalProperties: false },
 }];
 
-export function createScenarioTools(input: TurnInput, dashboard: ReturnType<typeof createDashboardWork>, notify: Agent["notify"]) {
+export function createScenarioTools(input: { channelId: string; turnId: number }, dashboard: ReturnType<typeof createDashboardWork>, notify: SessionAgent["notify"]) {
   let dashboardCalled = false;
   const execute: ExecuteTool = async call => {
     if (call.name === "current_time") return executeCurrentTime(call);
@@ -33,7 +33,7 @@ export function createScenarioTools(input: TurnInput, dashboard: ReturnType<type
           || typeof args.channelId !== "string" || !args.channelId.trim()
           || typeof args.text !== "string" || !args.text.trim()) throw new Error("notify_channel requires channelId and text");
         const receipt = notify({ channelId: args.channelId, text: args.text, fromChannelId: input.channelId });
-        result = receipt.accepted ? { accepted: true, delivery: receipt.delivery } : receipt;
+        result = receipt.accepted ? { accepted: true } : { accepted: false, error: receipt.error };
       } else throw new Error(`Tool not allowed: ${call.name}`);
     } catch (error) { result = { ok: false, error: String(error) }; }
     const content = JSON.stringify(result);

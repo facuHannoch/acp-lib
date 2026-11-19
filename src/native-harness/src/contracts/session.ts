@@ -1,25 +1,10 @@
-import type { Agent, TurnInput, TurnRunner, SessionAgent, ActiveTurn, TurnExecutor } from "./agent.ts";
+import type { SessionAgent, ActiveTurn, TurnExecutor } from "./agent.ts";
 import type { Model, ExecuteTool, ToolDefinition } from "./loop.ts";
 import type { SharedContextStore } from "./context.ts";
 import type { EventSink, SessionEventSink } from "./events.ts";
 import type { SessionLifecycle, SessionStorage, StorageError, StorageSnapshot } from "./storage.ts";
 
 export interface TurnServices { model: Model; tools: readonly ToolDefinition[]; executeTool: ExecuteTool }
-/** Host composition controls implementations; the kernel sees only contracts. */
-export interface SessionOptions {
-  systemPrompt: string;
-  store?: SharedContextStore;
-  configureTurn(input: TurnInput, notify: Agent["notify"]): TurnServices;
-  wrapTurn?: (run: TurnRunner) => TurnRunner;
-}
-export interface HarnessSession {
-  agent: Agent;
-  store: SharedContextStore;
-  subscribe(listener: EventSink): () => void;
-}
-
-// ---- Storage-backed session, decision 0013. Replaces the types above when wired.
-
 /** Derived from one storage snapshot. `idle`: lifecycle running, no running
  * turn and nothing pending. `unresolvedInterruption` marks a channel whose most
  * recent turn was interrupted (or failed) and has not been followed by another

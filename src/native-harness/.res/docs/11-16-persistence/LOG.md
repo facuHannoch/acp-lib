@@ -81,6 +81,31 @@ acceptance gates.
   an injected mid-transaction failure rolls back the whole take. Deviations:
   none from the contract. Note: the SQLite tests take about 9 s because every
   commit is fsynced.
+- **Stage 2 approved (reviewer gro1a-o): `f2e7873`.**
+- **Stage 3, delivery and recovery (implementer).** The scheduler
+  (`src/kernel/channels.ts`), loop and session assembly now run on storage; the
+  memory-only `Agent`/`TurnRunner`/`HarnessSession` types and
+  `shared-context.ts` are removed. The local chat adapter holds each request by
+  following events to the turn that took its item. The protocol server adds
+  `session/load`, `session/messages`, `session/status`, durable push
+  acknowledgments and `subscribeSession`; the scripted server takes
+  `--home <directory>` for SQLite sessions. Later context states unfinished
+  turns and their uncertain calls. Gate: `bun run typecheck` clean;
+  `bun test ./test` 104 pass, 0 fail, run four times. Real child processes,
+  each killed with SIGKILL from inside immediately after a named commit
+  (`test/crash.test.ts`): before take the input is pending and runs once after
+  reopen; after take it stays on one interrupted turn and is not run again; a
+  tool effect with no committed result is reported uncertain and the effect log
+  still has one line after fresh work; a committed reply the client never
+  received is returned by load; the load response precedes live events, which
+  all carry later revisions; a second process is refused. A message racing
+  completion is swept across 40 interleavings twice (`test/persistence.test.ts`):
+  each item reaches exactly one turn, and all three outcomes occur. Deviations
+  and limits: `suspend`, `resume` and `stop` exist on the session but are not
+  reachable from the protocol and have no end-to-end test until Stage 4; stdin
+  EOF still drains; `bun run start` still uses memory storage until Stage 6.
+  Events are not durable: a killed process may not have flushed events it
+  published, which is why load is the recovery path.
 
 ## Closure and retrospective
 

@@ -1,8 +1,21 @@
 import { HarnessClient, createStdioTransport } from "../../src/client.ts";
+import type { ClientTransport, RpcNotification, RpcResponse } from "../../src/contracts/protocol.ts";
 
-export function spawnHarness() {
-  const child = Bun.spawn([process.execPath, new URL("../../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio"], {
-    stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...process.env, OPENROUTER_API_KEY: undefined },
+/** Record everything the transport delivers, in wire order. A client resolves
+ * responses a microtask after listeners run, so only this log shows the order
+ * in which a response and the notifications around it actually arrived. */
+export function recordWire(transport: ClientTransport) {
+  const wire: (RpcResponse | RpcNotification)[] = [];
+  transport.subscribe(message => { wire.push(message); });
+  return wire;
+}
+
+export interface SpawnOptions { home?: string; fault?: string; effects?: string }
+export function spawnHarness(options: SpawnOptions = {}) {
+  const child = Bun.spawn([process.execPath, new URL("../../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio",
+    ...(options.home ? ["--home", options.home] : [])], {
+    stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, OPENROUTER_API_KEY: undefined, HARNESS_TEST_FAULT: options.fault, HARNESS_TEST_EFFECTS: options.effects },
   });
   const [protocol, capture] = child.stdout.tee();
   const stdout = new Response(capture).text();
@@ -11,9 +24,10 @@ export function spawnHarness() {
     async write(bytes) { child.stdin.write(bytes); await child.stdin.flush(); },
     async end() { await child.stdin.end(); },
   });
+  const wire = recordWire(transport);
   const client = new HarnessClient(transport, 2000);
   return {
-    client, child, stdout, stderr,
+    client, child, stdout, stderr, wire,
     async close() {
       client.close();
       const timer = setTimeout(() => child.kill("SIGKILL"), 2000);

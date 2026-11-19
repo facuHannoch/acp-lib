@@ -2,26 +2,51 @@ import { expect, test } from "bun:test";
 import { createInspection } from "../src/interfaces/inspector/state.ts";
 import { serveInspector } from "../src/interfaces/inspector/server.ts";
 import type { Message } from "../src/contracts/loop.ts";
-import { createSharedContextStore } from "../src/state/storage/shared-context.ts";
-import { observeContext } from "../src/interfaces/inspector/observe.ts";
+import { createSession } from "../src/index.ts";
+import { observeAgent, observeContext, observeEvents } from "../src/interfaces/inspector/observe.ts";
+import { turnsEnd } from "./helpers/session.ts";
 import { buildSharedContext } from "../src/capabilities/context/build.ts";
 
-test("live context follows the shared store across channels, including before first inference", () => {
-  const store = createSharedContextStore();
+test("live context follows the shared store across channels, including before first inference", async () => {
+  const session = createSession({ systemPrompt: "system", configureTurn: () => ({ tools: [], executeTool: async () => "unused",
+    model: () => new Promise(() => {}) }) });
+  const store = session.store;
   const tools = [{ name: "clock", description: "Time", parameters: {} }];
   const inspection = createInspection("system", tools);
   const unsubscribe = observeContext(store, inspection, entries => buildSharedContext(entries, "system"));
   expect(inspection.snapshot().liveContext.base).toEqual(buildSharedContext([], "system"));
   expect(inspection.snapshot().liveContext.request).toBeNull();
-  store.append({ channelId: "a", turnId: 1, from: "alice", message: { role: "user", content: "one" } });
-  store.append({ channelId: "b", turnId: 2, from: "bob", message: { role: "user", content: "two" } });
+  session.start();
+  session.agent.send({ channelId: "a", participantId: "alice", text: "one" });
+  session.agent.send({ channelId: "b", participantId: "bob", text: "two" });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(store.snapshot().map(entry => [entry.channelId, entry.turnId, entry.from])).toEqual([["a", 1, "alice"], ["b", 2, "bob"]]);
   const state = inspection.snapshot();
   expect(state.liveContext).toEqual({ systemPrompt: "system", tools, entries: store.snapshot(),
     base: buildSharedContext(store.snapshot(), "system"), request: null });
   expect(state.channels.map((channel) => channel.id)).toEqual(["a", "b"]);
   state.liveContext.entries[0]!.message.content = "changed";
-  expect(inspection.snapshot().liveContext.entries[0]?.message.content).toBe("one");
+  expect(inspection.snapshot().liveContext.entries[0]?.message.content).toBe('Participant: "alice"\n\none');
   unsubscribe();
+});
+
+test("channel activity follows acceptance and committed turn events, including a shared failed turn", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const session = createSession({ systemPrompt: "system", configureTurn: () => ({ tools: [], executeTool: async () => "unused",
+    model: async () => { await gate; throw new Error("provider down"); } }) });
+  const inspection = createInspection("system");
+  observeEvents(session.subscribe, inspection);
+  const agent = observeAgent(session.agent, inspection);
+  session.start();
+  const log = turnsEnd(session);
+  agent.send({ channelId: "a", participantId: "alice", text: "one", itemId: "1" });
+  agent.send({ channelId: "a", participantId: "alice", text: "one", itemId: "1" });
+  expect(inspection.snapshot().channels[0]).toMatchObject({ id: "a", pending: 1, running: false, participants: ["alice"] });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 1, running: true });
+  release(); await log.done;
+  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 0, running: false, error: "Error: provider down" });
 });
 
 test("inspection snapshots do not alias live history or inference requests", () => {

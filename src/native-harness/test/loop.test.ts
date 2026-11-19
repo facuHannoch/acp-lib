@@ -25,10 +25,31 @@ test("continues through multiple tools and retains history for the next turn", a
   const execute = async (call: { name: string }) => call.name === "clock" ? "time" : "not allowed";
   const context = { build: () => structuredClone(messages), append: (message: Message) => { messages.push(message); } };
   messages.push({ role: "user", content: "First" });
-  expect(await runTurn(context, model, [], execute)).toBe("Done");
+  expect(await runTurn(context, model, [], execute)).toBe("completed");
   messages.push({ role: "user", content: "Second" });
-  expect(await runTurn(context, model, [], execute)).toBe("Done");
+  expect(await runTurn(context, model, [], execute)).toBe("completed");
+  expect(messages.at(-1)).toEqual({ role: "assistant", content: "Done", calls: [] });
   expect(calls).toBe(3);
+});
+
+test("the loop checkpoints at a boundary instead of inferring, and an aborted turn records nothing more", async () => {
+  const recorded: Message[] = [];
+  let boundaries = 0, inferences = 0;
+  const outcome = await runTurn({
+    build: () => [], append: message => { recorded.push(message); },
+    // Suspension is requested while the first iteration's tool is running.
+    checkpoint: () => ++boundaries === 2,
+  }, async () => { inferences++; return { role: "assistant", content: null, calls: [{ id: "a", name: "clock", arguments: "{}" }] }; }, [], async () => "time");
+  expect(outcome).toBe("suspended");
+  expect(inferences).toBe(1);
+  expect(recorded.map(message => message.role)).toEqual(["assistant", "tool"]);
+
+  const abort = new AbortController(), late: Message[] = [];
+  const stopped = runTurn({ build: () => [], append: message => { late.push(message); }, signal: abort.signal },
+    async (_messages, _tools, signal) => { expect(signal).toBe(abort.signal); abort.abort(new Error("stopped")); return { role: "assistant", content: "late", calls: [] }; },
+    [], async () => "unused");
+  await expect(stopped).rejects.toThrow("stopped");
+  expect(late).toEqual([]);
 });
 
 test("OpenRouter maps neutral messages and preserves opaque assistant state", async () => {

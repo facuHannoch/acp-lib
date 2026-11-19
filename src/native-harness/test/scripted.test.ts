@@ -2,21 +2,16 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createScriptedModel, loadScriptedModel } from "../src/capabilities/model/scripted.ts";
 import { echoDefinition, executeEcho } from "../src/capabilities/tools/echo.ts";
-import { createSharedContextStore } from "../src/state/storage/shared-context.ts";
-import { buildContext } from "../src/capabilities/context/build.ts";
-import { createChannelScheduler } from "../src/kernel/channels.ts";
-import { runTurn } from "../src/kernel/loop.ts";
+import { createSession } from "../src/index.ts";
+import { ask } from "./helpers/session.ts";
 import type { Message } from "../src/contracts/loop.ts";
 
 test("file scenario executes echo through the real scheduler/loop and supplies its result to the next call", async () => {
   const scripted = await loadScriptedModel(new URL("./fixtures/echo-scenario.json", import.meta.url).pathname);
-  const store = createSharedContextStore();
-  const agent = createChannelScheduler(store, (input, mailbox) => runTurn({
-    drainNotices: mailbox.drain, finish: mailbox.finish,
-    build: () => buildContext(store.snapshot(), "Test system", input),
-    append(message) { store.append({ channelId: input.channelId, turnId: input.turnId, from: message.role, message }); },
-  }, scripted.model, [echoDefinition], executeEcho));
-  expect(await agent.send({ channelId: "test", participantId: "tester", text: "Echo hello" })).toBe("The tool returned hello.");
+  const session = createSession({ systemPrompt: "Test system", configureTurn: () => ({ model: scripted.model, tools: [echoDefinition], executeTool: executeEcho }) });
+  const store = session.store;
+  session.start();
+  expect(await ask(session, { channelId: "test", participantId: "tester", text: "Echo hello" })).toBe("The tool returned hello.");
   const requests = scripted.requests();
   expect(requests).toHaveLength(2);
   expect(requests[0]?.messages.at(-1)).toEqual({ role: "user", content: 'Participant: "tester"\n\nEcho hello' });
@@ -46,6 +41,10 @@ test("script, returned responses and captured requests do not alias caller data;
   captured[0]!.messages.length = 0;
   expect(first.requests()[0]?.messages).toHaveLength(1);
   expect((await second.model([], [])).content).toBe("original");
+  // A reopened session skips the responses an earlier process already consumed.
+  const continued = createScriptedModel({ version: 1, responses: [{ content: "first" }, { content: "second" }] }, 1);
+  expect((await continued.model([], [])).content).toBe("second");
+  expect(continued.remaining()).toBe(0);
   await expect(first.model([], [])).rejects.toMatchObject({ code: "script_exhausted" });
   expect(first.requests()).toHaveLength(2);
 });

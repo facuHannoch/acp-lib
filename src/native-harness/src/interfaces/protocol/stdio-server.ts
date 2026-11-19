@@ -14,7 +14,10 @@ export async function serveProtocolStdio(endpoint: ProtocolEndpoint, input: Read
   function send(value: unknown) {
     try { void writer.send(value).catch(fail); } catch (error) { fail(error); }
   }
-  const unsubscribe = endpoint.subscribe(send);
+  // One writer for responses and both notification kinds keeps wire order
+  // equal to publication order.
+  const unsubscribeChannel = endpoint.subscribe(send), unsubscribeSession = endpoint.subscribeSession?.(send);
+  const unsubscribe = () => { unsubscribeChannel(); unsubscribeSession?.(); };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     while (true) {

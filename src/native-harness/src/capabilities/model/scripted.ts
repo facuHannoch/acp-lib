@@ -48,8 +48,10 @@ function parseScript(value: unknown): Answer[] {
   });
 }
 
-/** Consume one response per invocation, independently of all other instances. */
-export function createScriptedModel(script: unknown) {
+/** Consume one response per invocation, independently of all other instances.
+ * `startAt` skips responses already consumed by an earlier process, so a
+ * reopened session continues its script instead of replaying it. */
+export function createScriptedModel(script: unknown, startAt = 0) {
   // The JSON round trip enforces file-equivalent data and detaches input objects.
   let answers: Answer[];
   try { answers = parseScript(JSON.parse(JSON.stringify(script))); }
@@ -58,7 +60,7 @@ export function createScriptedModel(script: unknown) {
     invalid(`Script must be JSON-serializable: ${String(error)}`);
   }
   const requests: CapturedRequest[] = [];
-  let position = 0;
+  let position = startAt;
   const model: Model = async (messages, tools) => {
     requests.push(structuredClone({ messages: [...messages], tools: [...tools] }));
     const answer = answers[position];
