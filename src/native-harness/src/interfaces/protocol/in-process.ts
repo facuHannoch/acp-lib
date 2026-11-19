@@ -4,6 +4,7 @@ import type { ClientTransport, ProtocolEndpoint, RpcNotification, RpcResponse } 
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 export function createInProcessTransport(endpoint: ProtocolEndpoint): ClientTransport {
   let closed = false;
+  const closeListeners = new Set<(error?: Error) => void>();
   const listeners = new Set<(message: RpcResponse | RpcNotification) => void>();
   function deliver(message: RpcResponse | RpcNotification) {
     if (closed) return;
@@ -21,6 +22,15 @@ export function createInProcessTransport(endpoint: ProtocolEndpoint): ClientTran
       });
     },
     subscribe(listener) { if (closed) throw new Error("Transport closed"); listeners.add(listener); return () => { listeners.delete(listener); }; },
-    close() { closed = true; unsubscribe(); listeners.clear(); },
+    onClose(listener) {
+      if (closed) listener(); else closeListeners.add(listener);
+      return () => { closeListeners.delete(listener); };
+    },
+    close() {
+      if (closed) return;
+      closed = true; unsubscribe(); listeners.clear();
+      for (const listener of closeListeners) listener();
+      closeListeners.clear();
+    },
   };
 }

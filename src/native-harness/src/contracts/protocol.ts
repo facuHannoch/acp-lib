@@ -40,7 +40,16 @@ export interface RpcNotification { jsonrpc: "2.0"; method: "channel/event"; para
 export interface ClientTransport {
   send(request: RpcRequest): void;
   subscribe(listener: (message: RpcResponse | RpcNotification) => void): () => void;
+  onClose(listener: (error?: Error) => void): () => void;
   close(): void;
+}
+
+/** Host owns process creation and termination; transport owns protocol IO only. */
+export interface StdioConnection {
+  readable: ReadableStream<Uint8Array>;
+  write(bytes: Uint8Array): Promise<void>;
+  end(): void | Promise<void>;
+  exited?: Promise<number>;
 }
 export interface ProtocolEndpoint {
   request(request: RpcRequest): Promise<RpcResponse>;

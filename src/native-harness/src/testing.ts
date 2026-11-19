@@ -5,7 +5,7 @@ import { createProtocolServer } from "./interfaces/protocol/server.ts";
 import { HarnessClient, createInProcessTransport } from "./client.ts";
 
 /** Real in-memory execution, scripted per channel, exposed through the client. */
-export function createInProcessHarness() {
+export function createScriptedServer() {
   const models = new Map<string, ReturnType<typeof createScriptedModel>>();
   const server = createProtocolServer(async config => {
     const script: unknown = await Bun.file(config.model.script).json();
@@ -16,6 +16,11 @@ export function createInProcessHarness() {
       return { model: scripted.model, tools: [echoDefinition], executeTool: executeEcho };
     } });
   });
+  return { server, models };
+}
+
+export function createInProcessHarness() {
+  const { server, models } = createScriptedServer();
   const client = new HarnessClient(createInProcessTransport(server));
   return { client, models, server, close: () => client.close() };
 }

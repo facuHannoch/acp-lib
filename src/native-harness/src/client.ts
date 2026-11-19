@@ -1,4 +1,6 @@
 export { HarnessClient, HarnessClientError } from "./interfaces/client.ts";
 export { createInProcessTransport } from "./interfaces/protocol/in-process.ts";
+export { createStdioTransport } from "./interfaces/protocol/stdio-client.ts";
+export type { StdioConnection } from "./contracts/protocol.ts";
 export type { ChannelEvent } from "./contracts/events.ts";
 export type { InitializeParams, CreateParams, PushParams, ProtocolConfig, ClientTransport } from "./contracts/protocol.ts";

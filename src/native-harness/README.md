@@ -11,7 +11,7 @@ implemented. A separate agent process accepts messages over HTTP on a Unix socke
 All channels use one shared in-memory context store. Each channel has a sequential
 queue; different channels execute concurrently. It uses OpenRouter native tool calls and includes one harmless
 `current_time`, `dashboard_work` and `notify_channel` tools. An experimental
-in-process client/protocol subset is implemented; stdio is not implemented yet.
+client/protocol subset is implemented over in-process and stdio transports.
 Experiments live in [.res/sandbox/](.res/sandbox/).
 
 We are starting with a small, hands-on learning milestone before delegating the
@@ -244,7 +244,7 @@ Each scripted instance has its own sequential position; use separate instances
 when independent channel scripts are needed. No channel routing, delays or
 conditional script steps are implemented yet.
 
-## Experimental in-process protocol
+## Experimental protocol and in-process client
 
 Run the acceptance scenarios with `bun test test/protocol.test.ts`. They use the
 real session assembly with one independent scripted model per channel and no API
@@ -317,8 +317,72 @@ event after acceptance, not a failed push. Idle includes queued and running work
 
 This is not full protocol v1 conformance: durable acceptance, session loading and
 restart reconciliation, holds, steering, interruption, permissions, usage,
-streaming, progress heartbeats and stdio remain unimplemented. Protocol version 1
+streaming and progress heartbeats remain unimplemented. Protocol version 1
 identifies these experimental message shapes, not a full compatibility claim.
+
+## Stdio server and client transport
+
+Start the protocol-only process with:
+
+```sh
+bun run serve --stdio
+```
+
+It waits for JSON-RPC requests, one UTF-8 JSON message per line. It starts no web
+servers or REPL and requires no API key. Select the scripted model in
+`session/create`, exactly as in the in-process example above. Relative script
+paths resolve against the child process's working directory. Stdout contains
+only protocol responses/events; diagnostics go to stderr.
+
+The consumer owns launching and terminating the child. From this package's working
+directory, connect the same public client like this, then use the initialize,
+createSession, push and event methods in the preceding example:
+
+```ts
+import { HarnessClient, createStdioTransport } from "./src/client.ts";
+
+const child = Bun.spawn([
+  process.execPath, "src/interfaces/cli/main.ts", "serve", "--stdio",
+], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+
+const client = new HarnessClient(createStdioTransport({
+  readable: child.stdout,
+  exited: child.exited,
+  async write(bytes) {
+    child.stdin.write(bytes);
+    await child.stdin.flush();
+  },
+  async end() { await child.stdin.end(); },
+}));
+
+// Drive client.initialize(), createSession(), push(), and onChannelEvent().
+// When done:
+client.close(); // rejects pending calls, flushes queued writes, closes stdin
+const deadline = setTimeout(() => child.kill("SIGKILL"), 6000);
+try { await child.exited; } finally { clearTimeout(deadline); }
+```
+
+Unexpected EOF, malformed server messages, write failure or nonzero process exit
+close the connection and reject pending/future calls with `transport_closed`,
+rather than waiting for the normal request timeout. Explicit client close uses
+`closed`. Both transports expose closure notifications. The transport does not
+restart or kill the process, capture stderr, or retry accepted requests.
+
+Frames are limited to 1 MiB and queued writes to 4 MiB. UTF-8 characters and JSON
+lines may span chunks. Blank lines are ignored; a partial line at EOF is an error.
+Malformed client JSON produces a parse-error response and later valid lines still
+work. Malformed server output is fatal to its client connection.
+
+On stdin EOF the server stops accepting requests, allows accepted work to settle,
+and flushes protocol output within a five-second grace period. Failure to settle
+exits nonzero with stderr diagnostics. This differs from the full spec's future
+interrupted-and-persisted shutdown: no suspension, recovery, durable acceptance or
+restart guarantee is implemented. Applications should wait for idle before closing
+when they need completed work. Hosts retain a process termination deadline.
+
+Run `bun test test/protocol.test.ts test/stdio.test.ts` for transport parity and
+framing/process lifecycle checks. Child stdin in Bun uses IPC and may require
+local IPC permissions in sandboxed environments. All scenarios are offline.
 
 ## Documents
 

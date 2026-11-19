@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { spawnHarness } from "./helpers/stdio.ts";
 import { createInProcessHarness } from "../src/testing.ts";
 import { createSession } from "../src/index.ts";
 import { HarnessClient, createInProcessTransport } from "../src/client.ts";
@@ -24,8 +25,8 @@ function collect(client: HarnessClient, count = 1) {
   return { events, done };
 }
 
-test("public client drives two independent scripted channels and idempotent pushes", async () => {
-  const harness = createInProcessHarness(); const { client } = harness;
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: public client drives two independent scripted channels and idempotent pushes`, async () => {
+  const harness = transport === "in-process" ? createInProcessHarness() : spawnHarness(); const { client } = harness;
   try {
     const init = await client.initialize();
     expect(init.description.capabilities).toMatchObject({ experimental: true, persistence: false, acceptance: "memory" });
@@ -40,8 +41,10 @@ test("public client drives two independent scripted channels and idempotent push
       expect(events.at(-1)).toMatchObject({ type: "turn_ended", outcome: "completed" });
       expect(events.filter(e => e.type === "message_completed")).toHaveLength(2);
       expect(events.filter(e => e.type === "tool_call").map(e => e.status)).toEqual(["started", "completed"]);
-      expect(harness.models.get(channel)?.requests()).toHaveLength(2);
-      expect(harness.models.get(channel)?.requests()[1]?.messages.at(-1)).toMatchObject({ role: "tool", content: '{"ok":true,"text":"hello"}' });
+      if ("models" in harness) {
+        expect(harness.models.get(channel)?.requests()).toHaveLength(2);
+        expect(harness.models.get(channel)?.requests()[1]?.messages.at(-1)).toMatchObject({ role: "tool", content: '{"ok":true,"text":"hello"}' });
+      }
     }
     const before = log.events.length;
     expect(await client.push(push("a", "a1"))).toEqual({ accepted: true });
@@ -51,7 +54,7 @@ test("public client drives two independent scripted channels and idempotent push
     await client.push(push("a", "a2")); await failure.done;
     expect(failure.events.at(-1)?.event).toMatchObject({ type: "turn_ended", outcome: "failed" });
     expect(failure.events.filter(e => e.event.type === "turn_ended")).toHaveLength(1);
-  } finally { harness.close(); }
+  } finally { await harness.close(); }
 }, 5000);
 
 test("notice continuation preserves both completed replies and emits turn_took", async () => {
@@ -99,8 +102,8 @@ test("acceptance does not await inference; idle includes queued work and values 
   } finally { release(); client.close(); }
 }, 5000);
 
-test("protocol rejects lifecycle misuse, unsupported methods/options and mismatched versions", async () => {
-  const harness = createInProcessHarness();
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: protocol rejects lifecycle misuse, unsupported methods/options and mismatched versions`, async () => {
+  const harness = transport === "in-process" ? createInProcessHarness() : spawnHarness();
   try {
     await expect(harness.client.idle()).rejects.toMatchObject({ code: "not_ready" });
     await expect(harness.client.initialize({ protocolVersion: 2, host: { name: "test", version: "0" }, callbacks: [], subscription: { text: "final", tools: "none" } })).rejects.toMatchObject({ code: "version_mismatch" });
@@ -110,16 +113,15 @@ test("protocol rejects lifecycle misuse, unsupported methods/options and mismatc
     await expect(harness.client.createSession(invalid)).rejects.toMatchObject({ code: "invalid_config" });
     await harness.client.createSession(setup);
     await expect(harness.client.createSession(setup)).rejects.toMatchObject({ code: "already_exists" });
-    const result = await harness.server.request({ jsonrpc: "2.0", id: 99, method: "session/load", params: {} });
-    expect(result).toMatchObject({ error: { code: -32601, data: { code: "method_not_found" } } });
-    expect(await harness.server.request(null as any)).toMatchObject({ error: { code: -32600, data: { code: "invalid_request" } } });
+    await expect(harness.client.request("session/load" as any, {})).rejects.toMatchObject({ code: "method_not_found" });
+    if ("server" in harness) expect(await harness.server.request(null as any)).toMatchObject({ error: { code: -32600, data: { code: "invalid_request" } } });
     await expect(harness.client.push({ ...push("a", "1"), item: { ...push("a", "1").item, delivery: "steer" } } as any)).rejects.toMatchObject({ code: "invalid_params" });
-  } finally { harness.close(); }
+  } finally { await harness.close(); }
 });
 
-test("subscription tool summaries omit payloads and none omits tool events", async () => {
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: subscription tool summaries omit payloads and none omits tool events`, async () => {
   for (const tools of ["summary", "none"] as const) {
-    const harness = createInProcessHarness();
+    const harness = transport === "in-process" ? createInProcessHarness() : spawnHarness();
     try {
       await harness.client.initialize({ protocolVersion: 1, host: { name: "test", version: "0" }, callbacks: [], subscription: { text: "final", tools } });
       await harness.client.createSession(setup);
@@ -129,12 +131,12 @@ test("subscription tool summaries omit payloads and none omits tool events", asy
       expect(calls).toHaveLength(tools === "none" ? 0 : 2);
       for (const call of calls) { expect(call.input).toBeUndefined(); expect(call.output).toBeUndefined(); }
       expect(log.events.filter(e => e.event.type === "message_completed")).toHaveLength(2);
-    } finally { harness.close(); }
+    } finally { await harness.close(); }
   }
 });
 
 test("client bounds request waits and rejects pending work on close", async () => {
-  const transport: ClientTransport = { send() {}, subscribe: () => () => {}, close() {} };
+  const transport: ClientTransport = { send() {}, subscribe: () => () => {}, onClose: () => () => {}, close() {} };
   const client = new HarnessClient(transport, 5);
   await expect(client.idle()).rejects.toMatchObject({ code: "timeout" });
   const pending = client.idle(); client.close();

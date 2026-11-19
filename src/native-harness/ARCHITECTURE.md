@@ -5,9 +5,11 @@ agent with channel queues, terminal clients and a tool loop exists; current
 behavior is described in [README.md](README.md).
 Existing modules follow the grouped layout below; future folders are created
 only as their implementation begins.
-An experimental in-process protocol subset and typed client now reuse the same
+An experimental protocol subset and typed client now reuse the same
 session assembly as development startup. Its acceptance is memory-only; the
 README lists supported operations and differences from the full protocol spec.
+Both in-process and newline-delimited stdio transports are implemented. Stdio
+adds no listeners or execution features; the host retains process ownership.
 The detailed
 [project spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-project.md)
 and [v1 spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-v1.md)

@@ -9,6 +9,8 @@ export class HarnessClientError extends Error {
 export class HarnessClient {
   private nextId = 0;
   private closed = false;
+  private terminalError = new HarnessClientError("closed", "Client closed");
+  private unsubscribeClose = () => {};
   private readonly listeners = new Set<EventSink>();
   private readonly waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   private readonly unsubscribe: () => void;
@@ -26,9 +28,14 @@ export class HarnessClient {
         else waiting.resolve(message.result);
       }
     });
+    this.unsubscribeClose = transport.onClose(error => {
+      if (this.closed) return;
+      this.terminalError = new HarnessClientError("transport_closed", error?.message ?? "Transport closed");
+      this.close();
+    });
   }
   request<K extends keyof Methods>(method: K, params: Methods[K]["params"]): Promise<Methods[K]["result"]> {
-    if (this.closed) return Promise.reject(new HarnessClientError("closed", "Client closed"));
+    if (this.closed) return Promise.reject(this.terminalError);
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.waiting.delete(id); reject(new HarnessClientError("timeout", `Request timed out: ${method}`)); }, this.timeoutMs);
@@ -37,7 +44,7 @@ export class HarnessClient {
       catch (error) { clearTimeout(timer); this.waiting.delete(id); reject(error); }
     });
   }
-  initialize(params: InitializeParams = { protocolVersion: 1, host: { name: "in-process-host", version: "0" }, callbacks: [], subscription: { text: "final", tools: "full" } }) {
+  initialize(params: InitializeParams = { protocolVersion: 1, host: { name: "harness-client", version: "0" }, callbacks: [], subscription: { text: "final", tools: "full" } }) {
     return this.request("initialize", params);
   }
   createSession(params: CreateParams) { return this.request("session/create", params); }
@@ -46,8 +53,8 @@ export class HarnessClient {
   onChannelEvent(listener: EventSink) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   close() {
     if (this.closed) return;
-    this.closed = true; this.unsubscribe(); this.transport.close(); this.listeners.clear();
-    for (const pending of this.waiting.values()) { clearTimeout(pending.timer); pending.reject(new HarnessClientError("closed", "Client closed")); }
+    this.closed = true; this.unsubscribe(); this.unsubscribeClose(); this.transport.close(); this.listeners.clear();
+    for (const pending of this.waiting.values()) { clearTimeout(pending.timer); pending.reject(this.terminalError); }
     this.waiting.clear();
   }
 }

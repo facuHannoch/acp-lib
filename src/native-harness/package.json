@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun run src/interfaces/cli/main.ts start",
     "chat": "bun run src/interfaces/cli/main.ts chat",
+    "serve": "bun run src/interfaces/cli/main.ts serve",
     "typecheck": "tsc --noEmit",
     "test": "bun test ./test",
     "test:scenario": "bun run src/interfaces/cli/scenario.ts"
