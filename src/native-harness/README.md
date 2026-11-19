@@ -131,6 +131,22 @@ acceptance, including queued inputs, then assistant responses and tool results
 with channel, turn and sender attribution. It copies entries on append and read.
 There are no independent per-channel history arrays in the agent.
 
+Storage revision 2 adapters exist but are not connected to execution yet: the
+running agent still uses the shared store above and keeps nothing across
+restarts. `src/state/storage/engine.ts` implements the contract in
+`src/contracts/storage.ts` once, over row access provided by
+`memory.ts` (maps, for tests and in-memory sessions) and `sqlite.ts`
+(`bun:sqlite`, one file per session, exclusive ownership through SQLite's file
+lock, `synchronous=FULL`). `archive.ts` validates and restores logical session
+archives. Both adapters pass the shared suite in `test/conformance/storage.ts`:
+
+```sh
+bun test test/storage-memory.test.ts test/storage-sqlite.test.ts
+```
+
+The SQLite file also starts child processes and kills them to check ownership
+and crash recovery. `bun:sqlite` is built into Bun; no dependency was added.
+
 Before every inference, `src/capabilities/context/build.ts` renders a fresh store
 snapshot with the unchanged system prompt. Other turns are attributed JSON
 history; the active turn preserves native assistant/tool exchanges. Opaque

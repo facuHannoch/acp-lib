@@ -63,6 +63,24 @@ acceptance gates.
   The eight other fixes and the `subscribeSession` deviation were accepted.
   Fixed next: `exportArchive` is `busy` for the whole `suspending` state, and
   `importArchive` rejects a `suspending` archive as `invalid_archive`.
+- **Stage 1 approved (reviewer gro1a-o): `6fddbe6`.** Export is limited to an
+  idle or cleanly suspended session; import rejects a `suspending` archive or
+  one holding a running turn.
+- **Stage 2, storage (implementer).** `src/state/storage/{engine,memory,sqlite,archive}.ts`,
+  shared suite `test/conformance/storage.ts`, `test/storage-{memory,sqlite}.test.ts`.
+  One engine implements the contract over a small row interface, so both
+  adapters share every rule; SQLite adds the schema, the exclusive file lock
+  and publish-by-hard-link for create and import. Not connected to execution.
+  Gate: `bun run typecheck` clean; `bun test ./test` 86 pass, 0 fail (44
+  existing, 18 conformance per adapter, 6 SQLite-only). SQLite-only checks:
+  another process's live owner is refused and SIGKILL releases it; SIGKILL
+  while running and while suspending leaves taken input on an interrupted
+  turn with its uncertain call, untaken input pending, retries deduplicated
+  and the channel able to begin turn 2; junk, foreign and future-format files
+  are refused byte-for-byte unchanged; failed creates/imports leave no files;
+  an injected mid-transaction failure rolls back the whole take. Deviations:
+  none from the contract. Note: the SQLite tests take about 9 s because every
+  commit is fsynced.
 
 ## Closure and retrospective
 
