@@ -136,6 +136,22 @@ test("a committed reply the client never received is recovered by load, and the 
   } finally { await harness.close(); }
 }, 15000);
 
+test("crash between the reply commit and its receipt: the reply is recorded and the receipt has not advanced", async () => {
+  // The first append is the assistant message that requests the tool. Dying
+  // right after it leaves the output durable and Seen unconfirmed, never the reverse.
+  const crashed = await crashAt("appendMessage:1");
+  expect(effects(crashed.log)).toEqual([]);
+  const harness = await reopen(crashed.home, crashed.log);
+  try {
+    expect(harness.loaded.messages.map(message => message.parts[0]!.text)).toEqual(["Recording."]);
+    expect(harness.loaded.items).toMatchObject([{ id: "m1", milestone: "taken", turnId: "1" }]);
+    // The requested call never ran; it is still reported uncertain and is not started now.
+    expect(harness.loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", uncertainCalls: ["rec-1"] }]);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(effects(crashed.log)).toEqual([]);
+  } finally { await harness.close(); }
+}, 15000);
+
 test("the load response precedes every live event for recovered work, and those events are newer than its revision", async () => {
   const crashed = await crashAt("acceptItem:1");
   const harness = await reopen(crashed.home, crashed.log);

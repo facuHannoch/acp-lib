@@ -144,9 +144,16 @@ test("load views that cannot fit one frame fail whole; message pages respect the
   const rest = pageMessages(view(), before, Number(first.nextMessage), 100);
   expect(rest.messages.map(message => message.parts[0]!.text[0])).toEqual(["3", "4"]);
   expect(rest.nextMessage).toBeUndefined();
-  // One record larger than a frame cannot be delivered at all.
+  // One record larger than a frame cannot be delivered, but the history before it still can.
   storage.appendMessage(turn.value.turn.turnId, { role: "assistant", content: "y".repeat(1024 * 1024), calls: [] });
-  expect(() => pageMessages(view(), view().revision, 0, 100)).toThrow(FrameLimit);
+  const prefix = pageMessages(view(), view().revision, 0, 100);
+  expect(prefix.messages.map(message => message.parts[0]!.text[0])).toEqual(["0", "1", "2"]);
+  const middle = pageMessages(view(), view().revision, Number(prefix.nextMessage), 100);
+  expect(middle.messages.map(message => message.parts[0]!.text)).toEqual([`3${big}`, `4${big}`, "later"]);
+  // The page stops at the last record it could include; it does not skip the oversized one.
+  expect(middle.nextMessage).toBe(middle.messages[2]!.messageId);
+  expect(() => pageMessages(view(), view().revision, Number(middle.nextMessage), 100)).toThrow(FrameLimit);
+  expect(loadView(sessionStatus(view(), false), view(), 100).messages).toEqual(prefix.messages);
   // Unpaged turns and items that outgrow a frame fail the load rather than truncating it.
   for (let i = 0; i < 4; i++) storage.acceptItem({ kind: "participant_message", channelId: "a", senderId: "ana", text: "t", itemId: `${i}${big}` });
   expect(() => loadView(sessionStatus(view(), false), view(), 100)).toThrow("turns and items do not fit");

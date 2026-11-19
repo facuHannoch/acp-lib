@@ -25,8 +25,9 @@ export function wireStatus(status: SessionStatus, view: StorageSnapshot): Status
 }
 
 /** Committed assistant text after `after`, no newer than `revision`, filled
- * until the count or the frame budget is reached. A record that cannot fit a
- * frame by itself fails the whole request rather than being skipped. */
+ * until the count or the frame budget is reached. A page whose own records fit
+ * is complete, whatever follows it. Only a request whose first record cannot
+ * fit a frame by itself fails: that record is never skipped or truncated. */
 export function pageMessages(view: StorageSnapshot, revision: number, after: number, limit: number, used = 0) {
   const messages: StoredMessage[] = [];
   let nextMessage: string | undefined;
@@ -35,11 +36,9 @@ export function pageMessages(view: StorageSnapshot, revision: number, after: num
     const message: StoredMessage = { messageId: String(entry.seq), channel: entry.channelId, turnId: String(entry.turnId),
       parts: [{ type: "text", text: entry.message.content }] };
     const bytes = size(message) + 1;
-    // Checked for every remaining record, not only this page: a view that can
-    // never be completed is refused up front instead of stalling at a later page.
-    if (bytes > BUDGET) throw new FrameLimit(`Message ${message.messageId} does not fit in one protocol frame`);
-    if (nextMessage !== undefined) continue;
-    if (messages.length >= limit || used + bytes > BUDGET) { nextMessage = messages.at(-1)?.messageId ?? String(after); continue; }
+    if (bytes > BUDGET && !messages.length) throw new FrameLimit(`Message ${message.messageId} does not fit in one protocol frame`);
+    // Count reached, or no room left on this page: an ordinary page break.
+    if (messages.length >= limit || used + bytes > BUDGET) { nextMessage = messages.at(-1)?.messageId ?? String(after); break; }
     messages.push(message); used += bytes;
   }
   return { messages, ...(nextMessage === undefined ? {} : { nextMessage }) };

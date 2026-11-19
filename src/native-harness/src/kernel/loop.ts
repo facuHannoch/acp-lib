@@ -19,11 +19,12 @@ export async function runTurn(
     signal?.throwIfAborted();
     // Record the requesting assistant before its results, preserving the order
     // required to pair every tool result with the call that produced it.
-    // A resolved model call is the provider's evidence for this turn's inputs.
-    // It is recorded first so its event precedes the message it enabled.
-    context.confirm?.("seen");
     context.append(answer);
     if (answer.content) context.emit?.({ type: "message_completed", parts: [{ type: "text", text: answer.content }] });
+    // Seen means the harness holds the model's output, so the output is made
+    // durable first. A crash between the two commits leaves the reply recorded
+    // and the receipt unadvanced, never a receipt without its reply.
+    context.confirm?.("seen");
     if (answer.calls.length === 0) {
       if (context.finish?.() ?? true) return "completed";
       continue;

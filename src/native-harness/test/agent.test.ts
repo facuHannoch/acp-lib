@@ -31,8 +31,9 @@ test("channels run concurrently; a message for a busy channel joins its turn at 
   expect(started).toEqual(["hold", "independent", "next"]);
   // Both inputs for channel a share one turn and one outcome.
   const a = events.filter(e => e.channel === "a").map(e => e.event);
-  expect(a.map(e => e.type)).toEqual(["turn_started", "items_receipt", "message_completed", "turn_took", "items_receipt", "message_completed", "turn_ended"]);
+  expect(a.map(e => e.type)).toEqual(["turn_started", "message_completed", "items_receipt", "turn_took", "message_completed", "items_receipt", "turn_ended"]);
   expect(a[0]).toMatchObject({ items: ["hold"] }); expect(a[3]).toMatchObject({ items: ["next"] });
+  expect(a[2]).toMatchObject({ items: ["hold"], milestone: "seen" }); expect(a[5]).toMatchObject({ items: ["next"], milestone: "seen" });
   expect(new Set(a.map(e => e.turnId)).size).toBe(1);
   expect(session.snapshot().turns.find(turn => turn.channelId === "a")).toMatchObject({ itemIds: ["hold", "next"], state: { status: "completed" } });
   expect(session.store.snapshot().filter((e) => e.channelId === "a").map((e) => e.message.content?.split("\n\n").at(-1))).toEqual(["hold", "hold", "next", "next"]);

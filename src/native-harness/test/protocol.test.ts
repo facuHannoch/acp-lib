@@ -82,12 +82,12 @@ test("notice continuation preserves both completed replies and emits turn_took",
     const log = collect(client);
     await client.push(push("a", "item")); await log.done;
     expect(delivered).toEqual(["Activity report", "Greeting received"]);
-    expect(log.events.map(e => e.event.type)).toEqual(["turn_started", "items_receipt", "message_completed", "turn_took", "items_receipt", "message_completed", "turn_ended"]);
+    expect(log.events.map(e => e.event.type)).toEqual(["turn_started", "message_completed", "items_receipt", "turn_took", "message_completed", "items_receipt", "turn_ended"]);
     // Every one of these reports a commit, in commit order.
     const revisions = log.events.map(e => e.revision);
     expect(revisions.every(revision => Number.isSafeInteger(revision))).toBe(true);
     expect(revisions).toEqual([...revisions].sort((x, y) => x! - y!));
-    expect(log.events[1]?.event).toMatchObject({ items: ["item"], milestone: "seen" });
+    expect(log.events[2]?.event).toMatchObject({ items: ["item"], milestone: "seen" });
     const ids = log.events.map(e => e.event).filter(e => e.type === "message_completed").map(e => e.messageId);
     expect(new Set(ids).size).toBe(2);
   } finally { client.close(); }

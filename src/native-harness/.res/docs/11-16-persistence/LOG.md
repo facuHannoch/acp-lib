@@ -106,6 +106,12 @@ acceptance gates.
   EOF still drains; `bun run start` still uses memory storage until Stage 6.
   Events are not durable: a killed process may not have flushed events it
   published, which is why load is the recovery path.
+- **Stage 3 review (reviewer gro1a-o), `1191c4c`: not approved, two findings.**
+  Fixed next. The loop now records the assistant message, publishes it, then
+  confirms Seen, so a crash between the two commits leaves the reply durable
+  and the receipt unadvanced (new child-process test at `appendMessage:1`).
+  Message paging fails only when the first record of a request cannot fit a
+  frame; a fitting page before an oversized message is returned whole.
 
 ## Closure and retrospective
 
