@@ -248,7 +248,6 @@ export function createChannelScheduler(
       // moved the turn to running, so it must have an executor.
       if (before !== "open") emitState(channelId, resumed.revision);
       if (resumed.value.turn) {
-        started = true;
         emit({ channel: channelId, revision: resumed.revision, event: { type: "turn_resumed", turnId: String(resumed.value.turn.turnId) } });
         run({ channelId, turnId: resumed.value.turn.turnId, resumed: true });
       } else if (before !== "open") {

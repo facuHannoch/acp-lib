@@ -108,6 +108,33 @@ test("Alice suspends while her tool runs; Bob continues; her backlog survives a 
   second.session.stop("done");
 });
 
+test("resuming a checkpoint before start does not start other channels or strand their backlog", async () => {
+  const r = rig(), first = r.open();
+  first.session.start();
+  send(first.session, "alice", "hold work", "a1");
+  await until(() => r.held("alice"), "alice's tool");
+  const suspension = first.session.channels.suspend("alice");
+  r.release("alice");
+  ok(await suspension);
+  first.close();
+
+  const preparing = r.open();
+  expect(send(preparing.session, "bob", "pending", "b1").accepted).toBe(true);
+  preparing.close();
+  const reopened = r.open(), session = reopened.session;
+  ok(session.channels.resume("alice"));
+  expect(send(session, "carol", "before start", "c1").accepted).toBe(true);
+  await until(() => turnOf(session, 1).state.status === "completed", "alice's resumed turn");
+  expect(session.snapshot().items.filter(item => ["b1", "c1"].includes(item.itemId)).map(item => item.milestone)).toEqual(["received", "received"]);
+  expect(session.snapshot().turns.filter(turn => turn.channelId === "bob" || turn.channelId === "carol")).toEqual([]);
+
+  session.start();
+  await until(() => session.snapshot().turns.filter(turn => ["bob", "carol"].includes(turn.channelId) && turn.state.status === "completed").length === 2, "pending turns");
+  expect(session.snapshot().turns.filter(turn => turn.channelId === "bob").map(turn => turn.itemIds)).toEqual([["b1"]]);
+  expect(r.requests.filter(line => line.endsWith(":pending"))).toHaveLength(1);
+  reopened.close();
+});
+
 test("interrupting one turn ends it at once; a late tool result and a stale interrupt cannot touch the next turn", async () => {
   const r = rig();
   const { session, events } = r.open();

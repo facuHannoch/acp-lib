@@ -110,3 +110,12 @@ session suspension; withdraw vs take; create/edit/suspend/delete and retired IDs
 across reopen; stop during channel suspension. `bun test ./test`: 172 pass, 0
 fail. Typecheck errors remain only in `interfaces/protocol/load.ts`,
 `test/agent.test.ts`, `test/e2e.test.ts` (Stage 4).
+
+### Stage 3 review (gro1a-o, `9cc6892`, not approved)
+
+Gro found that resuming a checkpoint before `start()` incorrectly set the global
+started flag, enabling other channels and preventing `start()` from pumping their
+backlog. The follow-up keeps the resumed turn's executor without setting that
+flag. A reopen regression checks existing and newly accepted inputs remain
+untaken until `start()`, then run exactly once. Implementer handoff: cod1a-m on
+branch `aiagent/cod1a-native-channel-controls`, based on `9cc6892`.
