@@ -140,4 +140,21 @@ public tests do not add separate process barriers for every ordering.
 
 Gate submitted for independent review: `bun run typecheck` passes; `bun test
 ./test` passes 178 tests, 0 failures, 2569 assertions (22 files, 48.50s), with
-local IPC access for child processes. Review and final acceptance are pending.
+local IPC access for child processes.
+
+### Closure
+
+Gro approved Stage 4 at `4d58629` without findings. Their independent gate:
+`bun run typecheck` passed; `bun test ./test` passed 178 tests, 0 failures,
+2569 assertions across 22 files (48.70s). They accepted the coverage split
+above: scheduler tests exercise notice rejection and abort-ignoring late
+results, and storage and scheduler tests exercise the race orderings, session
+composition, and persistence compatibility. The accepted implementation is
+`4d58629`; this closure note follows it without another implementation review.
+
+Retrospective: contract-first staging and explicit independent gates isolated
+storage, scheduler, and transport behavior. Review caught an early-resume
+scheduling regression before client work began. The stdio event decoder also
+needed updating for turn-less events; transport-parity tests exposed it. Future
+work should plan public test tools and process barriers alongside the acceptance
+scenarios so coverage differences are visible earlier.
