@@ -55,7 +55,10 @@ export function createTransfers(directory: string, limits: TransferLimits = TRAN
   for (const name of readdirSync(directory)) {
     const pid = Number(/^\.transfer-(\d+)-/.exec(name)?.[1]);
     if (!pid || pid === process.pid) continue;
-    try { process.kill(pid, 0); } catch { rmSync(join(directory, name), { force: true }); }
+    // Only "no such process" proves the owner is gone. EPERM means it exists
+    // and merely cannot be signalled from here, so its file is left alone.
+    try { process.kill(pid, 0); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") rmSync(join(directory, name), { force: true }); }
   }
   let open: { id: string; path: string; upload: boolean; bytes: number; sha256: string; received: number; timer?: ReturnType<typeof setTimeout> } | undefined;
   function close() {
@@ -82,7 +85,9 @@ export function createTransfers(directory: string, limits: TransferLimits = TRAN
         throw new TransferFault("invalid_archive", "Expected a positive byte length and a lowercase hex SHA-256");
       if ((bytes as number) > limits.maxBytes) throw new TransferFault("transfer_limit", `Archive is ${bytes} bytes; the limit is ${limits.maxBytes}`);
       const transfer = begin(true, bytes as number, digest);
-      writeFileSync(transfer.path, new Uint8Array(0), { flag: "wx" });
+      // The slot is taken: if its file cannot be created, free it again.
+      try { writeFileSync(transfer.path, new Uint8Array(0), { flag: "wx" }); }
+      catch (error) { close(); throw error; }
       return use(transfer.id, true).id;
     },
     write(id: unknown, offset: unknown, data: unknown) {
@@ -92,7 +97,10 @@ export function createTransfers(directory: string, limits: TransferLimits = TRAN
       // Sequential, bounded and never past the announced length; a refused chunk writes nothing.
       if (offset !== transfer.received || !chunk.length || chunk.length > limits.chunkBytes || transfer.received + chunk.length > transfer.bytes)
         throw new TransferFault("transfer_limit", `Expected at most ${limits.chunkBytes} bytes at offset ${transfer.received} of ${transfer.bytes}`);
-      appendFileSync(transfer.path, chunk);
+      // A failed append may have written part of the chunk, so this offset can
+      // no longer be retried safely: the transfer ends and its file is removed.
+      try { appendFileSync(transfer.path, chunk); }
+      catch (error) { close(); throw error; }
       transfer.received += chunk.length;
       return transfer.received;
     },
@@ -117,9 +125,13 @@ export function createTransfers(directory: string, limits: TransferLimits = TRAN
       const transfer = use(id, false);
       if (!Number.isSafeInteger(offset) || (offset as number) < 0 || (offset as number) > transfer.bytes) throw new TransferFault("transfer_limit", "Offset is outside the transfer");
       const chunk = Buffer.alloc(Math.min(limits.chunkBytes, transfer.bytes - (offset as number)));
-      const file = openSync(transfer.path, "r");
-      try { readSync(file, chunk, 0, chunk.length, offset as number); } finally { closeSync(file); }
-      return { data: chunk.toString("base64"), eof: (offset as number) + chunk.length >= transfer.bytes };
+      let count: number;
+      try {
+        const file = openSync(transfer.path, "r");
+        try { count = readSync(file, chunk, 0, chunk.length, offset as number); } finally { closeSync(file); }
+      } catch (error) { close(); throw error; }
+      // Send only what was read; the end is the announced length, not a short read.
+      return { data: chunk.subarray(0, count).toString("base64"), eof: (offset as number) + count >= transfer.bytes };
     },
     close(id: unknown) { if (!open || open.id !== id) throw new TransferFault("not_found", "Unknown transfer"); close(); },
     dispose: close,

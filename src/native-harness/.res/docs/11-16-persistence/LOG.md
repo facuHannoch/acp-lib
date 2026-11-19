@@ -164,6 +164,13 @@ acceptance gates.
   only: a transfer file left by a killed process is removed when the next
   process starts. Transfer files are named with the owning PID and only files
   of dead processes are cleaned at startup, because two servers can share a home.
+- **Stage 5 review (reviewer gro1a-o), `35912c3`: not approved, two findings.**
+  Fixed next, with `test/transfers.test.ts`: a transfer whose temp file cannot
+  be created or appended to is closed instead of holding the connection's one
+  slot or leaving a half-written offset; a download returns only the bytes
+  read and reports the end only at the announced length; startup cleanup
+  removes a transfer file only when its process does not exist (ESRCH), not
+  when it cannot be signalled (EPERM).
 
 ## Closure and retrospective
 
