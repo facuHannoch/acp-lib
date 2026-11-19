@@ -2,7 +2,7 @@ import type { ItemKind, ItemMilestone } from "./agent.ts";
 import type { ContextEntry } from "./context.ts";
 import type { Message } from "./loop.ts";
 
-/** Storage contract revision 3 (decisions 0013, 0014). Type-only until adapters land.
+/** Storage contract revision 4 (decisions 0013, 0014, 0016).
  * One owner process, one session per location. Every method is synchronous and
  * is one atomic transaction, so the owner's calls are totally ordered: any two
  * operations (for example an acceptance and a finish) commit in one definite
@@ -12,7 +12,7 @@ import type { Message } from "./loop.ts";
 /** Expected failures never require callers to inspect SQLite or exception text. */
 export type StorageErrorCode =
   | "already_exists" | "not_found" | "owner_conflict" | "incompatible"
-  | "invalid_input" | "invalid_state" | "closed"
+  | "invalid_input" | "invalid_state" | "invalid_policy" | "closed"
   /** The item ID was accepted earlier with a different payload signature. */
   | "item_conflict"
   /** The session lifecycle does not admit this work (suspending/suspended). */
@@ -52,6 +52,8 @@ export interface StorageIdentity {
 export interface StorageOpenOptions {
   mode: "create" | "open";
   identity: StorageIdentity;
+  /** Validated policies for this owner; legacy callers use the legacy policy. */
+  config?: import("./config-permissions.ts").ManagedConfig;
 }
 
 /** `suspended` is committed only by completeSuspend; it is the sole state that
@@ -62,10 +64,8 @@ export type SessionLifecycle = "running" | "suspending" | "suspended";
 export interface StoredSession {
   sessionId: string;
   /** Storage contract/data format revision, distinct from RPC and archive versions.
-   * Revision 3 adds channel state, display names, withdrawn items and retired IDs.
-   * `open` accepts format 2 and upgrades it in place (decision 0014); a session
-   * read after open always reports 3. */
-  formatVersion: 3;
+   * Revision 4 stores policy metadata. Formats 2 and 3 upgrade on open. */
+  formatVersion: 4;
   createdAt: string;
   lifecycle: SessionLifecycle;
   /** The key supplied at create. Immutable; open never rewrites it. */
@@ -84,6 +84,7 @@ export type ChannelLifecycle = "open" | "suspending" | "suspended" | "retired";
 /** A channel remains available for new turns after failure or interruption. */
 export interface StoredChannel {
   channelId: string;
+  policy?: string;
   /** Optional label; never an identity. 1..200 characters after trimming. */
   displayName?: string;
   lifecycle: ChannelLifecycle;
@@ -109,6 +110,10 @@ export interface AcceptItem {
   channelId: string;
   senderId: string;
   sourceChannelId?: string;
+  /** Trusted participant override; null and omission are equivalent. */
+  explicitPolicy?: string | null;
+  /** Internal source turn of a notice; never supplied by model arguments. */
+  sourceTurnId?: number;
   /** Original payload, kept unrendered for the life of the item. */
   text: string;
 }
@@ -120,6 +125,7 @@ export interface AcceptItem {
  * is not pending, has no `turnId`/`entrySeq`, never enters the timeline and is
  * retained for deduplication, so a retry cannot make it pending again. */
 export interface StoredItem extends Required<Pick<AcceptItem, "itemId">>, Omit<AcceptItem, "itemId"> {
+  policy?: import("./config-permissions.ts").ItemPolicy;
   /** Lowercase hex SHA-256 of the UTF-8 bytes of
    * `JSON.stringify([kind, channelId, senderId, sourceChannelId ?? null, text])`
    * (a JSON array, no extra whitespace). Identical in every adapter and archive. */
@@ -147,6 +153,8 @@ export interface TurnCheckpoint {
   nextStep: "inference";
   /** Last timeline seq of the turn when it was checkpointed. */
   afterSeq: number;
+  /** Canonical definitions of policies contributed by inputs taken by this turn. */
+  policyFingerprint?: string;
 }
 
 /** A turn exists only from its first take; there is no queued turn. Failed and
@@ -194,11 +202,10 @@ export interface StorageSnapshot {
 }
 
 /** Logical, adapter-independent session copy. JSON-serializable. Versioned
- * independently of `formatVersion`. Byte encoding belongs to the archive module.
- * Version 2 (decision 0014) carries channel lifecycle, names and withdrawn items. */
+ * independently of `formatVersion`. Version 3 adds policy metadata. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 2;
+  archiveVersion: 3;
   exportedAt: string;
   snapshot: StorageSnapshot;
   /** ID allocation state so the copy never reissues a turn ID, seq or item ID. */
@@ -219,6 +226,13 @@ export interface SessionArchiveV1 {
   allocation: SessionArchive["allocation"];
 }
 
+/** Import-only logical format from the channel-controls revision. */
+export interface SessionArchiveV2 {
+  format: "harness-session"; archiveVersion: 2; exportedAt: string;
+  snapshot: Omit<StorageSnapshot, "session"> & { session: Omit<StoredSession, "formatVersion"> & { formatVersion: 3 } };
+  allocation: SessionArchive["allocation"];
+}
+
 /** Result of `withdrawItem`. The two outcomes are the two sides of the race with
  * take; whichever transaction commits first decides, and the decision is final.
  * `withdrawn` also answers a repeat of an earlier successful withdrawal. */
@@ -236,6 +250,8 @@ export type InterruptOutcome =
 export interface SessionStorage {
   /** Imported configuration, or undefined for sessions not imported from a file. */
   importedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
+  /** Persist the validated configuration used by this owner. */
+  saveConfig(config: import("./config-permissions.ts").ManagedConfig): StorageResult<void>;
   /** Durable acceptance (the Received milestone). In order:
    * 1. A known itemId with the same signature returns the original item with
    *    `duplicate: true` and commits nothing, in every lifecycle state, for a
@@ -367,13 +383,13 @@ export interface SessionStorage {
    * is harmless but nothing is silently renamed. A retired ID is
    * `channel_retired`. Invalid ID or name is `invalid_input`. Allowed in every
    * session lifecycle: it admits no input. */
-  createChannel(input: { channelId: string; displayName?: string }): StorageResult<{ channel: StoredChannel; created: boolean }>;
+  createChannel(input: { channelId: string; displayName?: string; policy?: string }): StorageResult<{ channel: StoredChannel; created: boolean }>;
 
   /** Set (string) or clear (null) the display name only. Channel ID, history,
    * lifecycle and execution state are untouched; a repeat is a no-op success.
    * `not_found`, `channel_retired` and `invalid_input` as for create. Allowed in
    * every session and channel lifecycle state. */
-  editChannel(channelId: string, displayName: string | null): StorageResult<StoredChannel>;
+  editChannel(channelId: string, displayName: string | null, policy?: string | null): StorageResult<StoredChannel>;
 
   /** Begin this channel's individual suspension, independent of the session's.
    * - `open` without a running turn: `suspended` in this transaction (an
@@ -463,6 +479,8 @@ export interface SessionStorage {
  * Commit notifications/output are wired by composition after success, never
  * from inside a transaction. No durable event replay is promised. */
 export interface SessionStorageAdapter {
+  /** Read the saved configuration without creating or recovering a session. */
+  readSavedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
   /** Atomically publish the logical archive and validated portable config. */
   importSessionFile(payload: import("./session-file.ts").SessionFilePayload<SessionArchive>, options?: { sessionId?: string }): StorageResult<StoredSession>;
   /** Acquire exclusive ownership, then check format and session ID, before any
@@ -479,9 +497,9 @@ export interface SessionStorageAdapter {
    * - in every case a `suspending` channel (its suspension never committed)
    *   returns to `open`; a committed `suspended` channel and its checkpoint
    *   survive. Retired IDs and withdrawn items are untouched.
-   * - format 2 data (decision 0014) is upgraded in this same transaction: every
-   *   channel `open` and unnamed. The upgrade is one-way; a failed upgrade
-   *   leaves the data untouched. Format 3 is not readable by the earlier revision. */
+   * - formats 2 and 3 upgrade to 4 transactionally; legacy policy references
+   *   and item signatures are migrated. Incompatible old formats can be read
+   *   through an isolated inspection view without modifying the owned file. */
   open(options: StorageOpenOptions): StorageResult<SessionStorage>;
 
   /** Validate the whole archive, then publish it atomically at this adapter's
@@ -496,5 +514,5 @@ export interface SessionStorageAdapter {
    * revision) import as channels `open` and unnamed; version 2 preserves
    * channel lifecycle, names, withdrawn items and retired IDs.
    * Any failure leaves no partial session. The result is not opened or owned. */
-  importArchive(archive: SessionArchive | SessionArchiveV1, options?: { sessionId?: string }): StorageResult<StoredSession>;
+  importArchive(archive: SessionArchive | SessionArchiveV1 | SessionArchiveV2, options?: { sessionId?: string }): StorageResult<StoredSession>;
 }

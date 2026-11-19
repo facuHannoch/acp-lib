@@ -5,6 +5,9 @@ export interface PortableSessionConfig {
   version: 1;
   system: string;
   model: { protocol: "scripted"; script: string };
+  /** Present on session files produced after decision 0016. */
+  defaultPolicy?: string;
+  policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }
 
 /** File version 1 CBOR payload. `archive` is the revision-2 logical archive;

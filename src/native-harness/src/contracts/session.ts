@@ -27,6 +27,7 @@ export interface SessionStatus {
 
 export interface ChannelStatus {
   channelId: string;
+  policy?: string;
   displayName?: string;
   lifecycle: ChannelLifecycle;
   /** A running turn, or a checkpointed one (`suspended`). */
@@ -56,9 +57,9 @@ export interface ChannelControls {
   /** Explicit creation; starts no turn. Repeating the same request returns
    * `created: false`. A different name for an existing channel is `already_exists`;
    * a retired ID is `channel_retired`. */
-  create(input: { channelId: string; displayName?: string }): ControlResult<{ channel: ChannelStatus; created: boolean }>;
+  create(input: { channelId: string; displayName?: string; policy?: string }): ControlResult<{ channel: ChannelStatus; created: boolean }>;
   /** Display name only (null clears). */
-  edit(channelId: string, displayName: string | null): ControlResult<ChannelStatus>;
+  edit(channelId: string, displayName: string | null, policy?: string | null): ControlResult<ChannelStatus>;
   /** Close the channel to input at once, let its active iteration finish, then
    * resolve once `suspended` is committed: with a checkpoint if the turn needs
    * another inference, with a completed turn if it can finish, or with no

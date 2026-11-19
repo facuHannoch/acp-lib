@@ -5,12 +5,15 @@ export interface ChannelInput {
   participantId: string;
   text: string;
   itemId?: string;
+  policy?: string | null;
 }
 
 export interface ChannelNotice {
   channelId: string;
   fromChannelId: string;
   text: string;
+  /** Set by session assembly from the executing turn, never by model input. */
+  sourceTurnId?: number;
 }
 
 // ---- Durable delivery, decision 0013.
@@ -34,7 +37,7 @@ export type ItemMilestone = "received" | "taken" | "delivered" | "seen" | "withd
 export type SendResult =
   | { accepted: true; itemId: string; duplicate: boolean; milestone: ItemMilestone; turnId?: number }
   | { accepted: false; error: string;
-      code: "invalid_input" | "item_conflict" | "not_running" | "stopped" | "not_found" | "storage_failure"
+      code: "invalid_input" | "invalid_policy" | "incompatible" | "item_conflict" | "not_running" | "stopped" | "not_found" | "storage_failure"
         /** Decision 0014: the target channel is suspending or suspended. A retry of
          * an already accepted input never gets this; it returns its recorded outcome. */
         | "channel_suspended"

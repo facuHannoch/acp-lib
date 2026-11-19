@@ -12,16 +12,18 @@ export interface ProtocolConfig {
   version: 1;
   system: string;
   model: { protocol: "scripted"; script: string };
+  defaultPolicy?: string;
+  policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }
 export interface CreateParams {
   sessionId: string;
-  config: ProtocolConfig;
+  config?: ProtocolConfig;
   participants: { id: string; kind: "person" | "agent" | "worker" | "host" }[];
   channels: Record<string, never>;
 }
 export interface PushParams {
   channel: string;
-  item: { id: string; kind: "user_message"; sender: string; content: { type: "text"; text: string }[]; delivery?: "queue"; wake?: true };
+  item: { id: string; kind: "user_message"; sender: string; content: { type: "text"; text: string }[]; policy?: string | null; delivery?: "queue"; wake?: true };
 }
 export interface Description {
   configOptions: unknown[]; commands: unknown[]; policies: string[];
@@ -38,7 +40,7 @@ export interface Description {
 export type DurableErrorCode =
   | "item_conflict" | "not_running" | "stopped" | "invalid_state" | "incompatible"
   | "owner_conflict" | "not_found" | "already_exists" | "busy"
-  | "invalid_archive" | "transfer_limit" | "serialization_error" | "storage_failure"
+  | "invalid_archive" | "invalid_policy" | "transfer_limit" | "serialization_error" | "storage_failure"
   /** Decision 0014. The channel is suspending or suspended; a retry of accepted input still returns its recorded outcome. */
   | "channel_suspended"
   /** The channel ID was deleted; it is reserved for good. */
@@ -51,6 +53,7 @@ export type DurableErrorCode =
 export interface ItemStatus {
   id: string; channel: string; kind: ItemKind; sender: string;
   milestone: ItemMilestone; turnId?: string;
+  policy?: import("./config-permissions.ts").ItemPolicy;
 }
 export interface TurnStatus {
   turnId: string; channel: string; items: string[];
@@ -74,7 +77,7 @@ export interface StatusResult {
  * from before decision 0014 omits `lifecycle` and `waitingForResume`: read as
  * `open` and false. */
 export interface ChannelStatusResult {
-  channel: string; displayName?: string;
+  channel: string; displayName?: string; policy?: string;
   lifecycle: "open" | "suspending" | "suspended" | "retired";
   activeTurn?: { turnId: string; state: "running" | "suspended" };
   pending: string[]; waitingForResume: boolean; unresolved?: TurnStatus;
@@ -114,7 +117,7 @@ export type ArchiveLocation = { type: "path"; path: string } | { type: "transfer
 export interface DurableMethods {
   /** Open an existing session with runtime configuration. Returns the load
    * view; a second load on the same endpoint returns a fresh view only. */
-  "session/load": { params: { sessionId: string; config: ProtocolConfig; messagesLimit?: number }; result: LoadResult };
+  "session/load": { params: { sessionId: string; config?: ProtocolConfig; messagesLimit?: number }; result: LoadResult };
   /** Only records committed at or before `revision`, after message `after`.
    * `not_found` for a revision the session has not reached. */
   "session/messages": { params: { revision: number; after: string; limit?: number }; result: { messages: StoredMessage[]; nextMessage?: string } };
@@ -143,9 +146,9 @@ export interface DurableMethods {
   /** Explicit create; starts nothing. Repeating the same request returns
    * `created: false`; a different name for an existing channel is
    * `already_exists`; a retired ID is `channel_retired`. */
-  "channel/create": { params: { channel: string; displayName?: string }; result: { channel: ChannelStatusResult; created: boolean } };
+  "channel/create": { params: { channel: string; displayName?: string; policy?: string }; result: { channel: ChannelStatusResult; created: boolean } };
   /** Display name only; `null` clears it. */
-  "channel/edit": { params: { channel: string; displayName: string | null }; result: { channel: ChannelStatusResult } };
+  "channel/edit": { params: { channel: string; displayName: string | null; policy?: string | null }; result: { channel: ChannelStatusResult } };
   /** Responds after the channel's `suspended` commits (checkpoint, completed
    * turn or interrupted turn). Repeating it is harmless. Fails `stopped` if the
    * session stops first. Meanwhile `channel/push` fails `channel_suspended`. */

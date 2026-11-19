@@ -30,7 +30,7 @@ export interface ChannelEvent {
     | { type: "turn_started" | "turn_took"; turnId: string; items: string[] }
     | { type: "items_receipt"; turnId: string; items: string[]; milestone: "delivered" | "seen" }
     | { type: "turn_suspended" | "turn_resumed"; turnId: string }
-    | { type: "channel_state"; lifecycle: "open" | "suspending" | "suspended" | "retired"; displayName?: string }
+    | { type: "channel_state"; lifecycle: "open" | "suspending" | "suspended" | "retired"; displayName?: string; policy?: string }
     | { type: "item_withdrawn"; item: string }
     | { type: "turn_ended"; turnId: string; outcome: "completed" | "failed" | "interrupted"; error?: string; uncertainCalls?: string[] };
 }
