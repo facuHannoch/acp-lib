@@ -11,7 +11,8 @@ export type LoopEvent =
  * - `turn_started`/`turn_took` list the item IDs that commit took into `turnId`.
  *   This is how an accepted input is correlated to its turn; several IDs,
  *   across one or more of these events, may name the same turn.
- * - `items_receipt` reports Delivered/Seen for items of that turn.
+ * - `items_receipt` reports Delivered/Seen for items of that turn, and is
+ *   published only after a commit that advanced at least one milestone.
  * - `message_completed.messageId` is the stable timeline ID of the message.
  * - `turn_suspended` is a checkpoint, not an end; `turn_resumed` continues it.
  * - `turn_ended` is terminal for the turn only. `interrupted` and `failed` may

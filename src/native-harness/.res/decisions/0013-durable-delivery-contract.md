@@ -23,28 +23,35 @@ callback; (c) one durable inbox for messages and notices, turns created at take.
   local chat adapter follows these events privately to hold its HTTP request
   until the turn that took its item ends.
 - **Finish.** `finishTurn(completed)` checks the pending inbox in its own
-  transaction and returns `finished: false` if items arrived first.
+  transaction and returns `finished: false` if items arrived first. Running:
+  take and infer again. Suspending: checkpoint; the resumed turn takes them.
 - **Failure.** Failed and interrupted turns are terminal; the channel stays
   usable. Calls without a recorded result become `uncertainCallIds` and are never
   re-executed. `appendMessage` on an ended turn is refused, fencing late results.
 - **Lifecycle.** `beginSuspend`, `checkpointTurn`, `completeSuspend`, `resume`.
-  Only committed `suspended` preserves checkpoints across reopen; any other
-  reopen interrupts unfinished turns. A compatibility-key mismatch no longer
-  fails open; it fails `resume` of a checkpoint without changing it.
+  A naturally finished turn completes and cannot be checkpointed. Only committed
+  `suspended` preserves checkpoints across reopen; any other reopen interrupts
+  unfinished turns. Open never writes the compatibility key; a mismatch fails
+  only `resume`, which then writes nothing.
 - **Load.** `session/load` returns one view at a storage revision. Events carry
   `revision`. Events included in the view precede the response or are dropped;
   pending input becomes eligible only after the response is written.
 - **Receipts.** `confirmReceipts` records Delivered/Seen for the items of the
   turn whose model call resolved; `items_receipt` follows the commit.
-- **Stop.** `Model` and `ExecuteTool` accept an optional abort signal. Stdin EOF
-  becomes stop (interrupt now), replacing 0011's five-second drain when wired.
+- **Stop.** `interruptActive` interrupts running turns; while suspending it also
+  interrupts checkpointed turns and returns the lifecycle to running. `Model` and
+  `ExecuteTool` accept an optional abort signal. Stdin EOF becomes stop,
+  replacing 0011's five-second drain when wired.
 - **Archive.** `exportArchive`/`importArchive` use a logical `SessionArchive`
   (version 1, independent of the storage format). Wire transfer: 512 KiB chunks,
   256 MiB maximum, one transfer per connection, temporary file removed on close,
   import, 60 s idle or connection end.
 - **Wire names.** `session/{load,messages,status,suspend,resume,stop,export,import}`,
-  `transfer/{open,write,read,close}`, notification `session/event`. Error codes:
-  `DurableErrorCode` in `contracts/protocol.ts`.
+  `transfer/{open,write,read,close}`, notification `session/event` through
+  `subscribeSession`. Error codes: `DurableErrorCode` in `contracts/protocol.ts`.
+  Oversized load views and archives fail `transfer_limit` with nothing partial.
+- **Identity.** Signatures are SHA-256 of a fixed JSON array; omitted item IDs
+  are `auto:<n>` from a durable counter.
 
 ## Compatibility and verification
 
@@ -52,6 +59,6 @@ Additive for running code: the memory `Agent`, `TurnRunner` and `HarnessSession`
 remain until Stage 3 replaces them with `SessionAgent`, `TurnExecutor` and
 `PersistentSession`. Capabilities still report memory acceptance. A new turn now
 takes every pending item on its channel, so queued messages can share one reply.
-Item signatures cover joined text, not part boundaries. Load pages messages
-only; turns and items must fit one frame. Verified by typecheck only; no storage
+Item signatures cover joined text, not part boundaries. `channel/push`
+`delivery` and `wake` are ignored. Load pages messages only. Verified by typecheck only; no storage
 behavior is claimed before the adapters pass conformance.

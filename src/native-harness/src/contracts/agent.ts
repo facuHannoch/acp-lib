@@ -91,11 +91,15 @@ export interface TurnPort {
   take(): void;
   /** Record provider evidence after a valid model response for this turn. */
   confirm(milestone: "delivered" | "seen"): void;
-  /** Atomic finish decision: true ends the turn as completed; false means
-   * items arrived first and the loop must take them and infer again. */
+  /** Atomic finish decision after a tool-free response: true ends the turn as
+   * completed; false means items arrived first and the turn stays open. The
+   * loop then returns to the iteration boundary: checkpoint() first, and only
+   * if that is false, take() and another inference. */
   finish(): boolean;
-  /** At an iteration boundary: true when the session is suspending and the turn
-   * was checkpointed; the loop must return "suspended" without another inference. */
+  /** At every iteration boundary, before take(): false while the session is
+   * running. While suspending, checkpoints the turn and returns true; the loop
+   * must return "suspended" without taking or inferring. A naturally finished
+   * turn never reaches this call, because finish() returned true. */
   checkpoint(): boolean;
   /** Aborted on stop. Passed to the model and tools; after abort the turn is
    * already interrupted and nothing further may be recorded for it. */

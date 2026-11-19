@@ -25,8 +25,13 @@ acceptance gates.
     pending on a channel with no live turn, and the scheduler's post-accept
     `beginTurn` starts the next turn with it. `beginTurn` returns null while a
     turn is live, and take moves an item out of pending in the same transaction
-    that links it, so it reaches exactly one turn. While suspending, finish
-    completes the turn and the item stays pending until resume.
+    that links it, so it reaches exactly one turn. While suspending the same
+    check applies but nothing is taken: accept first means finish returns
+    `finished: false`, the turn is checkpointed with the item still pending, and
+    after resume that same turn takes it before its first inference. Finish
+    first means the turn is completed and the item waits for a `beginTurn` after
+    resume. A turn with a final tool-free response and nothing pending completes
+    and cannot be checkpointed.
   - *Crash before take.* The item is committed pending and nothing else changed.
     Reopen keeps it pending with no turn link. If the acknowledgment was lost,
     resending the same ID returns the original item. It becomes eligible when
@@ -42,6 +47,18 @@ acceptance gates.
     recovered work follow it. Events carry their commit revision: those at or
     below R are already in the view and are not sent after the response; those
     above R follow it.
+- **Stage 1 review (reviewer gro1a-o), `9ca6bd4`: not approved.** Accepted the
+  parallel old/new types, shared turns, immediate stop on EOF and the account
+  above. Nine findings, all addressed in the next revision: suspension finish
+  boundary; `confirmReceipts`/`takePending` refused unless the turn is running;
+  `interruptActive` for stop during suspension; open never writes the
+  compatibility key; exact signature and `auto:<n>` item IDs; `session/event`
+  delivery; `transfer_limit` for oversized load views and archives; revision 2
+  conformance list and the 0011 note; `participantIds` wording and ignored push
+  `delivery`/`wake`. One deviation from the wording of finding 6: widening the
+  existing notification union breaks `src/interfaces/client.ts` at typecheck,
+  which a contract-only stage may not edit, so `session/event` is delivered
+  through a `subscribeSession` member on the transport and endpoint contracts.
 
 ## Closure and retrospective
 

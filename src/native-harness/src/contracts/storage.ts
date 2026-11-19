@@ -34,9 +34,11 @@ export type StorageResult<T> = { ok: true; value: T; revision: number } | { ok: 
 export interface StorageIdentity {
   sessionId: string;
   /** Caller-defined identity of compatible prompt, model and tool configuration.
-   * A mismatch no longer fails open: the session stays readable and exportable.
-   * It is recorded on each turn at begin and compared by exact equality when a
-   * suspended checkpoint is resumed. No automatic config migration. */
+   * The key given to `create` is stored once. A different key on `open` does not
+   * fail and is never written by open: the session stays readable and exportable.
+   * This owner's key is recorded on each turn it begins, and compared by exact
+   * equality with every checkpointed turn's key on resume. Items that were never
+   * taken use the key of the owner that later begins their turn. */
   compatibilityKey: string;
 }
 
@@ -57,14 +59,16 @@ export interface StoredSession {
   formatVersion: 2;
   createdAt: string;
   lifecycle: SessionLifecycle;
-  /** The key supplied at this open; used for turns begun and resumed by this owner. */
+  /** The key supplied at create. Immutable; open never rewrites it. */
   compatibilityKey: string;
 }
 
 /** A channel remains available for new turns after failure or interruption. */
 export interface StoredChannel {
   channelId: string;
-  /** Derived from the channel's timeline entries: who has spoken, not access rights. */
+  /** Derived from the channel's timeline entries: senders that have a timeline
+   * entry there, not access rights. A sender whose message is still pending is
+   * not listed until take. */
   participantIds: string[];
 }
 
@@ -74,8 +78,11 @@ export interface StoredParticipant { participantId: string }
 /** New work offered to the durable inbox. `senderId` is a participant ID for a
  * message and `channel:<sourceChannelId>` for a notice. */
 export interface AcceptItem {
-  /** Stable caller ID used for deduplication. Storage allocates one if omitted;
-   * allocated IDs never collide with earlier ones, including after reopen/import. */
+  /** Stable caller ID used for deduplication. If omitted, storage assigns
+   * `auto:<decimal nextItemNumber>` and increments that counter (first value 1).
+   * Accepting a caller ID of the exact form `auto:<n>` with n >= the counter sets
+   * the counter to n + 1. The counter is durable and restored by import, so an
+   * allocated ID is never issued twice. */
   itemId?: string;
   kind: ItemKind;
   channelId: string;
@@ -89,7 +96,9 @@ export interface AcceptItem {
  * inbox, outside the timeline and outside every model context. From take onward
  * `turnId`/`entrySeq` are set and never change; the item is never pending again. */
 export interface StoredItem extends Required<Pick<AcceptItem, "itemId">>, Omit<AcceptItem, "itemId"> {
-  /** Canonical digest of kind, channel, sender, source and text. */
+  /** Lowercase hex SHA-256 of the UTF-8 bytes of
+   * `JSON.stringify([kind, channelId, senderId, sourceChannelId ?? null, text])`
+   * (a JSON array, no extra whitespace). Identical in every adapter and archive. */
   signature: string;
   /** Global sequence position of acceptance; acceptance order within a channel. */
   acceptedSeq: number;
@@ -177,7 +186,8 @@ export interface SessionStorage {
    *    never accepted a message is `not_found`.
    * 3. Lifecycle admission: messages need `running`; notices are also admitted
    *    while `suspending`. Otherwise `not_running`.
-   * 4. Commit the pending item, and for a message its channel/participant.
+   * 4. Commit the pending item. A message also creates its StoredChannel and
+   *    StoredParticipant if new; `participantIds` is unaffected until take.
    * Nothing is added to the timeline and no turn is created or changed. */
   acceptItem(input: AcceptItem): StorageResult<{ item: StoredItem; duplicate: boolean }>;
 
@@ -191,8 +201,11 @@ export interface SessionStorage {
 
   /** Steering: take all items pending on a running turn's channel, exactly as
    * beginTurn does, at the turn's inference boundary. An empty take commits
-   * nothing. Requires `running` lifecycle (`not_running` while suspending, so
-   * suspension never forces an extra inference). */
+   * nothing. A turn that is not running is `invalid_state` and takes nothing, so
+   * a late caller cannot link items to an ended or checkpointed turn. Requires
+   * `running` lifecycle: refused with `not_running` for the whole `suspending`
+   * state, so suspension never forces an extra inference. A resumed turn calls
+   * this before its first inference. */
   takePending(turnId: number): StorageResult<TurnTake>;
 
   /** Append only to a running turn. Storage assigns seq/time/channel/turn/from.
@@ -212,17 +225,19 @@ export interface SessionStorage {
   /** Record provider evidence for every item the running turn has taken so far
    * (no take can occur during the turn's own inference, so these are exactly the
    * items in that request). `seen` implies `delivered`. Returns the items whose
-   * milestone advanced; none advancing commits nothing. Never called for an
+   * milestone advanced; none advancing commits nothing. A turn that is not
+   * running is `invalid_state` and commits nothing, so a model result arriving
+   * after interruption or failure cannot advance a receipt. Never called for an
    * outbound request alone, a rejected call, or another channel's inference. */
   confirmReceipts(turnId: number, milestone: "delivered" | "seen"): StorageResult<StoredItem[]>;
 
   /** End a running turn.
    * - completed: requires a recorded final tool-free assistant response and no
-   *   unanswered calls. While the lifecycle is `running`, the pending-inbox check
-   *   is part of this transaction: if the channel has pending items the turn
-   *   stays running and `{ finished: false }` is returned; the caller takes them
-   *   and continues. While `suspending`, the turn completes and pending items
-   *   stay pending for a later turn.
+   *   unanswered calls. The pending-inbox check is part of this transaction in
+   *   both `running` and `suspending`: if the channel has pending items the turn
+   *   stays running and `{ finished: false }` is returned. While `running` the
+   *   caller then takes them and infers again. While `suspending` the caller
+   *   must checkpoint instead; the items stay pending for the resumed turn.
    * - failed / interrupted: unconditional. Recorded entries, taken items and
    *   receipts are kept; unanswered calls become `uncertainCallIds`; pending
    *   items stay pending; the channel can begin a new turn.
@@ -232,23 +247,40 @@ export interface SessionStorage {
     outcome: { status: "completed" } | { status: "failed" | "interrupted"; reason: string },
   ): StorageResult<{ finished: true; turn: StoredTurn } | { finished: false; pending: number }>;
 
-  /** running -> suspended with a checkpoint at the inference boundary. Requires
-   * `suspending` lifecycle and no unanswered calls. */
+  /** running -> suspended with a checkpoint at the inference boundary, for a
+   * turn that still needs an inference. Requires `suspending` lifecycle and no
+   * unanswered calls. `invalid_state`, changing nothing, when the turn's last
+   * entry is a tool-free assistant response and its channel has nothing
+   * pending: that turn is naturally finished and must be completed instead.
+   * Pending items are not taken; they wait for the resumed turn. */
   checkpointTurn(turnId: number): StorageResult<StoredTurn>;
 
   /** running -> suspending. Already suspending or suspended returns that state
    * unchanged. From this commit, new messages, beginTurn and takePending are refused. */
   beginSuspend(): StorageResult<StoredSession>;
 
-  /** suspending -> suspended. `invalid_state` while any turn is still running.
-   * Already suspended returns unchanged. Pending items and checkpoints persist. */
+  /** suspending -> suspended. `invalid_state` while any turn is still running,
+   * and when the lifecycle is `running` (never suspending, or stopped by
+   * interruptActive). Already suspended returns unchanged. Pending items and
+   * checkpoints persist. */
   completeSuspend(): StorageResult<StoredSession>;
 
   /** suspended -> running; every suspended turn returns to running in the same
-   * transaction and is returned for continuation. `incompatible`, changing
-   * nothing, if any checkpointed turn's compatibilityKey differs from this
-   * owner's. Already running returns no turns; `suspending` is `invalid_state`. */
+   * transaction and is returned for continuation. `incompatible`, writing
+   * nothing (lifecycle, checkpoints and pending items all unchanged), if any
+   * checkpointed turn's compatibilityKey differs from the key passed to this
+   * open. Already running returns no turns; `suspending` is `invalid_state`. */
   resume(): StorageResult<{ session: StoredSession; turns: StoredTurn[] }>;
+
+  /** Stop, in one transaction, by lifecycle:
+   * - `running`: every running turn becomes interrupted.
+   * - `suspending`: every running AND every checkpointed turn becomes
+   *   interrupted and the lifecycle returns to `running`, so this attempt can
+   *   no longer commit `suspended`.
+   * - `suspended`: nothing changes; clean checkpoints are kept.
+   * Unanswered calls become `uncertainCallIds`. Pending items stay pending.
+   * Returns the turns interrupted by this call. */
+  interruptActive(reason: string): StorageResult<StoredTurn[]>;
 
   /** Full neutral read for load/inspection/context. No prompt rendering or SQL
    * leaks through this interface. Reading does not start or resume any work. */

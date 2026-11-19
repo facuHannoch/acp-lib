@@ -29,20 +29,33 @@ execution; closing does not suspend or cancel it. Unfinished turns are preserved
 and classified as interrupted on reopen. Schema migration and portable checkpoint
 formats remain adapter/lifecycle work rather than implied capabilities.
 
-### Required adapter conformance checks
+### Required adapter conformance checks (revision 2)
 
 These become shared executable checks when memory and SQLite adapters are added:
 
-- Explicit create/open, identity mismatch, incompatible format, ownership conflict,
-  close/reopen and operations on closed handles.
-- Atomic input/channel/participant/turn creation, attribution and defensive copies.
-- Monotonic IDs and sequence order after reopen; timestamp-independent ordering.
-- Per-channel start order, independent channels and rejected illegal transitions.
-- Assistant calls recorded before results, pairing validation, serialization failure
-  without partial writes, and completion only after a final tool-free response.
-- Failed/interrupted turns retain history and leave channels usable for new work.
-- Atomic reopen recovery of queued/running turns; incompatible opens leave data
-  untouched. SQLite-specific tests additionally cover real process death/ownership.
+- Explicit create/open, session ID mismatch, unsupported format, ownership
+  conflict, close/reopen and operations on closed handles. A different
+  compatibility key opens normally and open never rewrites the stored key.
+- Acceptance: the exact signature, `auto:<n>` allocation, identical retries
+  returning the original item in every lifecycle state and after reopen,
+  `item_conflict`, lifecycle admission, and no timeline or turn change.
+- Atomic `beginTurn`/`takePending`/`finishTurn`: items taken once in acceptance
+  order, the finish-time pending check, per-channel single live turn,
+  independent channels, attribution and defensive copies.
+- Monotonic turn IDs, seq and revision after reopen; timestamp-independent order.
+- Assistant calls recorded before results, pairing validation, serialization
+  failure without partial writes. `appendMessage`, `confirmReceipts` and
+  `takePending` refuse a turn that is not running.
+- Failed/interrupted turns keep history, items and receipts, list uncertain
+  calls, and leave the channel usable. Nothing replays an uncertain call.
+- Suspension: checkpoint only for turns needing inference, `completeSuspend`
+  preconditions, `interruptActive` in each lifecycle state, and `resume`
+  failing `incompatible` on a key mismatch while writing nothing.
+- Reopen: `suspended` keeps checkpoints and pending items unchanged; any other
+  lifecycle interrupts running and checkpointed turns in one transaction.
+- Illegal transitions, export preconditions and failed imports leave no partial
+  writes; an export/import round trip preserves IDs, deduplication and counters.
+  SQLite-specific tests additionally cover real process death and ownership.
 
 The contract does not itself constitute passing conformance; no adapter has been
 verified against these requirements yet.

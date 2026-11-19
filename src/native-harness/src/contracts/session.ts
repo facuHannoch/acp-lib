@@ -38,7 +38,9 @@ export interface SessionStatus {
   }[];
 }
 
-export type LifecycleResult = { ok: true; status: SessionStatus } | { ok: false; error: StorageError };
+/** `stopped`: stop ended the operation; nothing was suspended or resumed. */
+export type LifecycleResult = { ok: true; status: SessionStatus }
+  | { ok: false; error: StorageError | { code: "stopped"; message: string } };
 
 export interface PersistentSessionOptions {
   systemPrompt: string;
@@ -61,13 +63,17 @@ export interface PersistentSession {
    * that owe a load response deliver it before calling start. Idempotent. */
   start(): void;
   /** Resolves when `suspended` is committed, after in-flight iterations settle.
-   * Concurrent and repeated calls observe the same transition. */
+   * Concurrent and repeated calls observe the same transition. If stop arrives
+   * first, resolves `stopped` and `suspended` is never committed. */
   suspend(): Promise<LifecycleResult>;
   /** Explicit resume: continues checkpointed turns, then starts pending input. */
   resume(): LifecycleResult;
-  /** Immediate: close admission, abort inference and tools, record active turns
-   * interrupted, leave pending items pending. Does not wait for the iteration
-   * and is not suspension. Late results are fenced by storage. */
+  /** Immediate: close admission in this process, abort inference and tools,
+   * and commit storage `interruptActive`. While running that interrupts every
+   * running turn; while suspending it also interrupts turns checkpointed in
+   * this attempt and returns the lifecycle to running; a suspended session keeps
+   * its checkpoints. Pending items stay pending. Does not wait for the
+   * iteration and is not suspension. Late results are fenced by storage. */
   stop(reason: string): SessionStatus;
   subscribe(listener: EventSink): () => void;
   subscribeSession(listener: SessionEventSink): () => void;
