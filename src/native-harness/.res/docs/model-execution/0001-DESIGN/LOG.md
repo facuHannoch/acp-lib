@@ -118,6 +118,31 @@ reopen. README, architecture and business rules document the implementation.
 
 Final implementation gate: `bun run typecheck --pretty false` passed;
 `bun test ./test` passed 290 tests, 0 failures, 3149 assertions across 41 files
-(69.67s), with local IPC access. Independent final review is pending. The test
-stall and stream behavior is supplied by opt-in `HARNESS_TEST_*` hooks around
-the scripted adapter; ordinary scripted files remain complete-response scripts.
+(69.67s), with local IPC access. Gro approved the behavior revision
+`02c96de2ee9b70cad2081e744b67737dc1b58844`; their independent typecheck
+passed and the full suite passed 290 tests, 0 failures, 3149 assertions across
+41 files (68.33s). The test stall and stream behavior is supplied by opt-in
+`HARNESS_TEST_*` hooks around the scripted adapter; ordinary scripted files
+remain complete-response scripts.
+
+## Closure and retrospective
+
+The accepted chain is configuration/permissions closure `28c6faf`, model scope
+`aeac966`, Stage 1 contract `a9b5f84`, Stage 2 `aeb81af`, Stage 3 `19c189e`,
+and Stage 4 behavior `02c96de`. The envelope remains version 1; the durable
+storage format is 5 and logical archive is 4. The default model deadline remains
+120 seconds, while the final stdio test used 1.5 seconds.
+
+Contract review clarified the existing wire completion, recovery ordering and
+attempt reservation before implementation. Independent stage reviews caught a
+final-mode publication error, then a pagination and in-process buffering gap;
+each was fixed and re-reviewed before the next stage. The public gate verified
+timeout and fresh work with a real SQLite stdio child, plus both text modes and
+transports; the inspector was checked across reopen.
+
+Accepted limits: usage recovery was tested across a clean close, not SIGKILL;
+the SIGKILL fixtures do not emit usage. Model metadata is stored as one rewritten
+record and its performance at large call counts has not been benchmarked. The
+shared storage engine exceeds 400 lines because it owns both adapters' common
+transactions. The test-only stall and delta hooks do not extend the ordinary
+script-file format. No merge was requested.
