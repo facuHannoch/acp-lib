@@ -16,8 +16,8 @@ import { OperationSupervisor, type SupervisedProvider } from "./operations/super
 import type { HarnessController, AgentControllerConfig, ControllerStartEvent, AgentMode } from "./controller.ts";
 import {
   acpCapabilitiesOf, availableCommandsOf, createController, harnessControllerOf, isDegradedController, listAgentSessions,
-  reloadProviderSession, requireMember, stallLimitsFor,
-  type ConversationCapabilities, type ConversationController,
+  reloadProviderSession, requireFreshContext, requireMember, stallLimitsFor,
+  type ConversationCapabilities, type ConversationController, type NativeControllerBinding,
 } from "./conversation-controller/index.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import { join } from "node:path";
@@ -334,6 +334,11 @@ export interface AgentSessionConfig {
   mode?: AgentMode;
   /** Runtime-specific launcher shared by normal ACP and degraded PTY modes. */
   launcher?: AgentControllerConfig["launcher"];
+  /**
+   * Binds this conversation to a channel of a shared native harness instead of an external harness
+   * process. Opt-in: absent for every ACP conversation. `adapter` is then display only.
+   */
+  native?: NativeControllerBinding;
   /** @deprecated Use launcher. */
   execPrefix?: string[];
   /** @deprecated Use launcher and its exact spawnEnv. */
@@ -465,7 +470,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly controllerDefaults: Omit<
     AgentControllerConfig,
     "adapter" | "adapterId" | "mode" | "sessionId" | "sessionLoadFailure"
-  >;
+  > & { native?: NativeControllerBinding };
   private detachControllerCommands: (() => void) | null = null;
   private detachControllerUsage: (() => void) | null = null;
   private detachControllerTurns: (() => void) | null = null;
@@ -674,6 +679,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
     this.controllerDefaults = {
       operationLifecycle: this.operationLifecycle,
+      ...(config.native ? { native: config.native } : {}),
       launcher: config.launcher,
       execPrefix: config.execPrefix,
       env: config.env,
@@ -3585,6 +3591,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   /** @internal Acquire a fresh leaf for checkpoint recovery without replacing this conversation. */
   async restartProviderFresh(): Promise<void> {
+    requireFreshContext(this.controller, "restarting on a fresh provider session");
     await this.controller.forceStop();
     const result = await this.controller.startFresh();
     if (!result.sessionId) throw new Error("provider returned no fresh session");

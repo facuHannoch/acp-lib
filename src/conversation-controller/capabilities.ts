@@ -15,6 +15,13 @@ export interface ConversationCapabilities {
   nativeSteering: boolean;
   /** Null when unknown: before the agent's `initialize`, and in PTY mode. */
   backend: BackendCapabilities | null;
+  /**
+   * `false`: the backend cannot start a fresh context, so `startFresh` (and whatever needs it: a context
+   * reset, recovery onto a new provider session) is unsupported and throws `UnsupportedError` before
+   * changing anything. Absent: it can. A native conversation shares its agent's session and timeline,
+   * and has no context reset.
+   */
+  freshContext?: false;
 }
 
 export interface BackendCapabilities {

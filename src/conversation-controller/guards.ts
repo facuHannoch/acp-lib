@@ -61,6 +61,16 @@ export function acpCapabilitiesOf(controller: ConversationController): Capabilit
 }
 
 /**
+ * Checked before anything is torn down for a fresh context: a backend that cannot start one
+ * (`conversationCapabilities.freshContext === false`) is refused here, with its state untouched.
+ */
+export function requireFreshContext(controller: ConversationController, what: string): void {
+  if (controller.conversationCapabilities.freshContext === false) {
+    throw new UnsupportedError(`this conversation's controller cannot start a fresh context, so it does not support ${what}`);
+  }
+}
+
+/**
  * Reloads the provider session, for a controller that can. One that can't throws, so recovery takes over:
  * it is handled as a session the provider no longer has, under the conversation's continuation rule.
  */

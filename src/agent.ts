@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentSessionId,
 } from "./agent-ids.ts";
+import { NativeHarnessHost } from "./native/host.ts";
 import {
   AgentAdapterRegistry,
   type AgentAdapterRegistration,
@@ -97,6 +98,11 @@ export class Agent {
   readonly persistence: PersistenceBackend;
   readonly identity: AgentIdentityRuntime;
   readonly adapters: AgentAdapterRegistry;
+  /**
+   * The shared native harness host, when `harness` is configured: one process and one durable session
+   * for every native conversation of this Agent. Null otherwise.
+   */
+  readonly nativeHarness: NativeHarnessHost | null;
   readonly conversations: AgentConversationManager;
   readonly internalInferences?: InternalInferenceManager;
   readonly checkpointing?: ConversationCheckpointCoordinator;
@@ -136,6 +142,16 @@ export class Agent {
     this.id = id;
     this.persistence = persistence;
     this.adapters = adapters;
+    this.nativeHarness = config.harness
+      ? new NativeHarnessHost({
+        sessionId: id,
+        ...config.harness,
+        ...(config.harness.launcher ?? config.conversationDefaults?.launcher
+          ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
+          : {}),
+        ...(config.conversationDefaults?.logger ? { logger: config.conversationDefaults.logger } : {}),
+      })
+      : null;
     this.audit = audit;
     const logger = config.conversationDefaults?.logger ?? noopLogger;
     this.eventBus = new CommittedRecordEventBus({
@@ -326,6 +342,9 @@ export class Agent {
     const adapters = new AgentAdapterRegistry(registrations);
     if (adapters.list().length === 0) throw new Error("Agent requires at least one adapter");
     if (config.defaultAdapterId) adapters.require(config.defaultAdapterId);
+    if (!config.harness && adapters.list().some((registration) => adapters.native(registration.id))) {
+      throw new Error("a native adapter requires AgentConfig.harness");
+    }
 
     let persistence: PersistenceBackend;
     let id: AgentSessionId;
@@ -415,6 +434,8 @@ export class Agent {
       await this.auditObservationTail;
       const observationError = this.auditObservationError;
       await this.manager.stopAll();
+      // The shared harness process is the Agent's: it stops with it, after its conversations.
+      await this.nativeHarness?.stop();
       // Every authorized shutdown write has finished; nothing may be observed after this.
       this.eventBus.close();
       await this.recordAgentAuditObservation("agent_lifecycle", "closed");

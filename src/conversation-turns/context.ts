@@ -39,6 +39,12 @@ export interface TurnContext {
   readonly turnId: string;
   readonly cause: TurnCause;
   readonly messages?: PromptQueueItem;
+  /**
+   * For a turn the backend started that took messages this session sent: the handlers of the first of
+   * those messages that brought any (the rule a combined steer run uses). They receive the turn's stream
+   * and answer its permission requests; without them the session's defaults apply. Never set with `messages`.
+   */
+  readonly handlers?: PromptHandlers;
 }
 
 export interface TurnRunContext {

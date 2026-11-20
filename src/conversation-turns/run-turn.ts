@@ -43,7 +43,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
   // Today's preparation needs the turn's messages. A turn the backend started has none: it is metered and
   // recorded like any turn, but has no user message, no ACP content and only the session's own handlers.
   const sent = turn.messages !== undefined;
-  const item = turn.messages ?? backendTurnItem(turnId);
+  const item = turn.messages ?? backendTurnItem(turnId, turn.handlers);
   // Phase 1: prepare.
   const targetProviderContextId = ctx.owner.lifecycle
     ? ctx.session.internalSessionId ?? `runtime:${ctx.owner.contextNonce()}`

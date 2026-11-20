@@ -37,6 +37,13 @@ export interface OpenConversation {
 
 export interface Subject {
   readonly name: string;
+  /**
+   * The controller decides which turn takes which message (the native controller). Three assertions
+   * differ for it, by the session's own rules for backend-started turns (`backend-turns.ts`): such a
+   * turn writes no user record under its id, `endedBy` is not reported for it, and a message the
+   * backend never accepted fails without any turn having existed.
+   */
+  readonly backendScheduled?: true;
   open(options?: { stale?: boolean }): Promise<OpenConversation>;
 }
 
@@ -62,7 +69,7 @@ export function runConformance(subject: Subject): void {
       expect(started(events)[0]).toMatchObject({ turnId: id, cause: { messageIds: [handle.id] } });
       expect(events.filter((event) => event.kind === "metering_recorded").map((event) => event.record.operationId)).toEqual([id]);
       const records = (await agent.persistence.records.list(session.id, { limit: 1000 })).records as unknown as Array<Record<string, any>>;
-      expect(records.some((record) => record.recordId === `${id}:user`)).toBe(true);
+      if (!subject.backendScheduled) expect(records.some((record) => record.recordId === `${id}:user`)).toBe(true);
       expect(records.some((record) => record.recordId === `${id}:assistant:1`)).toBe(true);
       expect(records.filter((record) => record.kind === "metering" && record.operationId === id).map((record) => record.recordId)).toEqual([`${id}:metering`]);
       const at = (entry: string) => timeline.indexOf(entry);
@@ -124,7 +131,7 @@ export function runConformance(subject: Subject): void {
       open.session.interrupt();
       const result = await handle;
       expect(result.status).toBe("cancelled");
-      expect(result.endedBy).toBe("interrupt");
+      if (!subject.backendScheduled) expect(result.endedBy).toBe("interrupt");
       slow.release();
       expect((await open.session.prompt("after")).status).toBe("completed");
     }, 30_000);
@@ -157,7 +164,8 @@ export function runConformance(subject: Subject): void {
       const error = await open.session.prompt("cannot reach").catch((caught) => caught);
       expect(error).toBeInstanceOf(Error);
       const failed = open.events.filter((event) => event.kind === "turn_failed");
-      expect(failed).toHaveLength(1);
+      // Backend-scheduled: the message was never accepted, so no turn started and none can fail.
+      expect(failed).toHaveLength(subject.backendScheduled ? 0 : 1);
       if (open.abandoned) expect(open.abandoned()).toContain(failed[0]!.turnId);
       expect(open.session.state.operation).toBeNull();
     }, 30_000);

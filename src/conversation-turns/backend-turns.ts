@@ -16,6 +16,7 @@ import type { AgentSessionPromptResult } from "../agent-conversation-contracts.t
 import type { AgentSessionEvent } from "../agent-conversation-contracts.ts";
 import type { ConversationController, TurnCause, TurnStarted, TurnTook } from "../conversation-controller/contracts.ts";
 import type { Logger } from "../logger.ts";
+import type { PromptHandlers } from "../types.ts";
 import type { PromptQueueItem, TurnContext } from "./context.ts";
 import { copyPromptResult } from "./record-helpers.ts";
 import { turnRunOf } from "./turn-run.ts";
@@ -95,6 +96,18 @@ export class BackendTurns {
     }
   }
 
+  /**
+   * The handlers a turn that took these messages runs with: those of the first message, in the order
+   * given, that brought any. A message folded in later (`turn_took`) does not change them.
+   */
+  handlersOf(ids: Iterable<string>): PromptHandlers | undefined {
+    for (const id of ids) {
+      const handlers = this.#messages.get(id)?.item.handlers;
+      if (handlers) return handlers;
+    }
+    return undefined;
+  }
+
   /** One accepted, unclaimed message leaves (to be dropped as cancelled); undefined for any other (in flight, taken, unknown). */
   take(messageId: string): PromptQueueItem | undefined {
     const message = this.#messages.get(messageId);
@@ -141,7 +154,7 @@ export interface BackendTurnHost {
  * The prompt item a turn without messages is run with: it carries nothing the turn would write or send
  * (no text, no handlers), only what `runTurn`'s metering and persistence need to name the operation.
  */
-export function backendTurnItem(turnId: string): PromptQueueItem {
+export function backendTurnItem(turnId: string, handlers?: PromptHandlers): PromptQueueItem {
   return {
     kind: "prompt",
     turnId,
@@ -149,6 +162,7 @@ export function backendTurnItem(turnId: string): PromptQueueItem {
     delivery: "queue",
     waited: false,
     text: "",
+    ...(handlers ? { handlers } : {}),
     resolve: () => undefined,
     reject: () => undefined,
   };
@@ -232,7 +246,10 @@ export async function runBackendTurn(host: BackendTurnHost, current: Conversatio
   host.turns.running = item.turnId;
   try {
     host.emit({ kind: "turn_started", turnId: item.turnId, cause: item.cause });
-    const result = await host.run({ turnId: item.turnId, cause: item.cause });
+    // The consumer's own handlers, when a message the turn took brought them: its stream and its
+    // permission requests reach the consumer that sent the message, as for a turn the session sends.
+    const handlers = host.turns.handlersOf(item.messageIds);
+    const result = await host.run({ turnId: item.turnId, cause: item.cause, ...(handlers ? { handlers } : {}) });
     host.emit({ kind: "turn_completed", turnId: item.turnId, result: copyPromptResult(result) });
     host.turns.end(item, { result }, host.log);
   } catch (error) {
