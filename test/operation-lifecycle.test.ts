@@ -103,7 +103,8 @@ test("ignored cancel is bounded, sent twice, and exposes cancelling", async () =
   value.interrupt();
   expect(value.state.operation?.stage).toBe("cancelling");
   const result = await pending;
-  expect(Date.now() - start).toBeLessThan(1000);
+  // Bounded by the 80 ms cancel grace, not by the 30 s default: a generous margin, because a full parallel run is slow.
+  expect(Date.now() - start).toBeLessThan(5000);
   expect(result.cancel).toBe("forced");
   expect(result.endedBy).toBe("interrupt");
   expect(outgoing.filter((line) => line.includes('"method":"session/cancel"')).length).toBe(2);

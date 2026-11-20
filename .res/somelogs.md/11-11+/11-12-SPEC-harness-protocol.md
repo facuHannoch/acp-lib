@@ -97,7 +97,8 @@ recovery):
   - **state events (`turn_started`, `turn_took`, `turn_ended`, usage, `messages_dropped`, out-of-turn messages):
     reliable through reconciliation.** The connection only breaks when the process dies (the harness is the host's
     child; Non-goals), so the only gap is around a crash. At start, `session/load` returns each channel's recent
-    turns (their ids, the items each took, how they ended, their usage) and the items still waiting; the host
+    turns (their ids, the items each took, how they ended, their usage), the items still waiting, out-of-turn
+    messages, and the status of each item the host asks about (so a dropped or never-stored item is known); the host
     compares that with its own records and settles what it missed. One comparison at the only moment a gap can
     appear, instead of acknowledging every event.
   - **later, with a network transport** (connections dropping while both sides live): per-channel sequence numbers
@@ -113,7 +114,7 @@ recovery):
 - **The host owns policy and lifecycle; the harness owns the agent's work.** The host starts, stops and restarts the
   process, decides policies and what may happen on each channel; the harness decides when a channel takes a turn and
   what it does in it (overview, decision 41).
-- **Nothing waits forever.** Every request that can wait has a bound (Timeouts, below).
+- **Nothing waits forever.** Every request that can wait is bounded or cancellable by the host (Timeouts, below).
 - **Part 1 and part 2.** Each method is marked with the harness part that implements it (`harness/11-11-SPEC-harness-v1.md`,
   Two parts). Part 1 is what integration stage 2a needs.
 
@@ -199,8 +200,20 @@ interface Usage {
   calls?: number;                // per_turn: how many model calls the record sums
 }
 
+type ItemStatus =
+  | { status: "waiting" | "dropped" | "withdrawn" | "unknown" }
+  | { status: "taken"; turnId: TurnId };
+
+interface OutOfTurnMessage {     // a message placed on a channel outside a turn (part 2)
+  messageId: string;
+  position: number;              // the same sequence as turn positions
+  fromChannel: ChannelId;
+  parts: Part[];
+}
+
 interface TurnRecord {           // for reconciliation at start (Delivery)
   turnId: TurnId;
+  position: number;              // session-wide, increasing, assigned when the turn starts; `since` is the host's contiguous watermark
   items: ItemId[];               // every item the turn took, in order
   outcome: "completed" | "interrupted" | "failed" | "running_at_crash";
   usage: Usage[];
@@ -216,7 +229,7 @@ interface TurnRecord {           // for reconciliation at start (Delivery)
 | --- | --- | --- |
 | `initialize` | `{ protocolVersion, host: { name, version }, callbacks: string[], subscription: Subscription }` (the callbacks the host serves; the connection's default subscription) | `{ protocolVersion, harness: { version }, description: { configOptions, commands, capabilities, policies } }` |
 | `session/create` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState> }` | `{ sessionId }`; fails with `already_exists` |
-| `session/load` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState>, since?: string }` | `{ sessionId, channels: Record<ChannelId, { hasContext, turns: TurnRecord[], waiting: ItemId[] }> }`; fails with `not_found`, `locked` |
+| `session/load` | `{ sessionId, config, participants: Participant[], channels: Record<ChannelId, ChannelState>, since?: number, items?: ItemId[] }` | `{ sessionId, position: number, channels: Record<ChannelId, { hasContext, turns: TurnRecord[], waiting: ItemId[], messages: OutOfTurnMessage[] }>, items: Record<ItemId, ItemStatus> }`; fails with `not_found`, `locked` |
 | `session/idle` | `{}` | `{ idle: boolean }`: no turn running, no inbox holding items, no hold active |
 | `session/export` | `{}` | `{ bundle }` |
 | `session/import` | `{ sessionId, bundle }` (before any create or load on this process) | `{ sessionId }`; fails with `already_exists` |
@@ -225,9 +238,13 @@ interface TurnRecord {           // for reconciliation at start (Delivery)
   harness applies them before it can start any turn, so nothing runs under an old policy or setting (integration
   spec, Channel changes). `channels` lists only channels with changes; each entry carries the latest value of each
   field.
-- **Reconciliation:** `session/load` returns, for every channel with activity after `since` (the host's last known
-  record time), the turns that ended or were running at a crash, and the items still waiting. The host compares them
-  with its records and settles what it missed (Delivery).
+- **Reconciliation:** `session/load` returns, for every channel with turns after `since` (a turn position, not a
+  time: host and harness clocks may differ), the turns that ended or were running at a crash, and the items still
+  waiting; `position` is the session's current highest turn position (a host with no stored position starts from it
+  without reconciling). `items` asks about specific items (the host's unsettled ones); each gets a status:
+  `waiting`, `taken` (with its turn id), `dropped`, `withdrawn` or `unknown` (never stored). `messages` are the
+  out-of-turn messages (`message_participant`) after `since`, numbered in the same position sequence as turns (part
+  2). The host compares all of it with its records and settles what it missed (Delivery).
 - **The session is locked** by `session/create` and `session/load`; a lock whose process is gone is reclaimed.
 
 **Channels (part 1)**
@@ -238,9 +255,9 @@ interface TurnRecord {           // for reconciliation at start (Delivery)
 | `channel/withdraw` | `{ channel, itemId }` | `{ withdrawn: boolean }`: false when the item was already taken (or never stored) |
 | `channel/interrupt` | `{ channel, dropWaiting?: boolean }` | `{ interrupted: boolean, dropped: ItemId[] }` |
 | `channel/update` | `{ channel, state: ChannelState }` | `{}`: policy and label apply from the next item; settings from the next model call; a subscription at once; `reset` and `closed` wait for a running turn unless the channel is held with interrupt. Idempotent |
-| `channel/hold` | `{ channel, leaseMs, interrupt?: boolean }` | `{ holdId }` once no turn runs on the channel (waiting for it, or interrupting it) |
+| `channel/hold` | `{ channel, holdId, leaseMs, interrupt?: boolean }` (the id chosen by the host; idempotent by it) | `{}` once no turn runs on the channel (waiting for it, or interrupting it) |
 | `channel/renew` | `{ holdId, leaseMs }` | `{}`; fails with `hold_expired` |
-| `channel/release` | `{ holdId }` | `{}` (releasing an expired hold is not an error) |
+| `channel/release` | `{ holdId }` | `{}`; valid while the hold is still waiting (it is dropped) or granted (it is released); releasing an expired or unknown hold is not an error |
 
 - **Channels always exist:** a channel is created the first time it is named (in a push, an update or a start's
   `channels`).
@@ -273,7 +290,7 @@ optional events a host gets follows the channel's subscription.
 
 | Event | Fields | When sent | Meaning |
 | --- | --- | --- | --- |
-| `turn_started` | `turnId, items: ItemId[]` | always | the channel started a turn, taking these items |
+| `turn_started` | `turnId, position, items: ItemId[]` | always | the channel started a turn, taking these items; `position` is the turn's session-wide position (the host computes its watermark from it) |
 | `turn_took` | `turnId, items: ItemId[]` | always | more items folded into the running turn (steer) |
 | `progress` | `turnId, stage: "model" \| "tool" \| "waiting"` | always, every few seconds while a turn runs | liveness for stall detection, even when nothing else streams |
 | `text_delta` | `turnId, messageId, text` | `text: stream` or `coalesced` | assistant text, streamed (at most once) |
@@ -323,13 +340,13 @@ JSON-RPC errors with a stable `data.code`:
 
 ## Timeouts
 
-Every wait has a bound (integration spec, Nothing waits forever).
+Every wait is bounded or cancellable (integration spec, Nothing waits forever).
 
 | Who waits | For | Bound |
 | --- | --- | --- |
-| host | `initialize` and `session/load` after launch | the host's start timeout (acp-client: 60 s) |
-| host | any other request | 30 s by default, longer for `session/export` and `session/import` |
-| harness | a `permission/request` reply | the gate timeout (default 10 min), longer than any host's permission timeout; then refused |
+| host | `initialize` and `session/load` after launch | no automatic limit: cancellable by the host (it stops the process); acp-client cancels on `stop()` or close |
+| host | any other request | no automatic failure: after 30 s (longer for `session/export` and `session/import`) the host reports the harness unresponsive and keeps waiting; cancellable by the host |
+| harness | a `permission/request` reply | while the host is connected, none of its own (the host's permission timeout decides); standalone or after the host disconnects, the gate timeout (default 10 min), then refused |
 | harness | other callbacks | per callback (functions: the tool's timeout; delegation: 30 s) |
 | harness | a hold | its lease; expiry releases it |
 
@@ -348,7 +365,8 @@ consumer only wants final messages.
 2. **The consumer calls `prompt({ text: "summarize the repo", participantId: "bob" })`.** acp-client queues it; the
    queue runs it, and the conversation is busy.
 3. **The harness isn't running, so acp-client starts it** through the launcher (`harness serve --stdio`), once: a
-   second conversation needing it now would wait for this start. The start is bounded (60 s).
+   second conversation needing it now would wait for this start. The start is cancellable: stopping or closing the
+   conversation stops it cleanly.
 4. **acp-client → harness: `initialize`** `{ protocolVersion: 1, host, callbacks: ["permission/request"],
    subscription: { text: "final", tools: "summary", reasoning: "none", modelLog: false, usage: "per_call" } }`.
 5. **harness → acp-client:** `{ protocolVersion: 1, harness: { version }, description }`. acp-client compares the
@@ -363,7 +381,7 @@ consumer only wants final messages.
 8. **harness → acp-client:** `{ accepted: true }`: `msg-1` is stored durably. acp-client writes the user record and
    the prompt's queue operation ends; the prompt's promise waits for the turn that takes `msg-1`. Had the answer not
    come in time, acp-client would push `msg-1` again, safely.
-9. **harness: `turn_started`** `{ turnId: "t-1", items: ["msg-1"] }`. acp-client queues turn `t-1` and, with nothing
+9. **harness: `turn_started`** `{ turnId: "t-1", position: 1, items: ["msg-1"] }`. acp-client queues turn `t-1` and, with nothing
    else running, runs it at once: busy again.
 10. **harness: during the turn,** as subscribed: `progress` every few seconds; `tool_call` summaries (name, start,
     end, status); `usage` after each model call. No text deltas, since the subscription is `final`.

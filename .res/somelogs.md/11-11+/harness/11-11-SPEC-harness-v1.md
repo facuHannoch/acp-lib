@@ -101,13 +101,14 @@ specific tool, permission rules, retry logic, knowledge of policies, workers or 
 | Call | Meaning |
 | --- | --- |
 | `createSession({ home?, config })` / `loadSession({ home?, id })` | Create an entity with its config / wake an existing one; locks it |
-| `session.channel(id, { policy?, label? })` | Open or resume a channel (created on first use); `channel.setPolicy(name)` changes it |
-| `channel.push(item, { delivery })` | Add an inbox item. `steer`: folded into the running turn at its next model call (reported as `turn_took`); `queue`: waits for the current turn to end and goes into the next. Either starts a turn if the channel is idle. Items other than messages default per kind (a worker reply: `steer`) |
+| `session.channel(id)` | The channel with that id (channels always exist; created the first time they are named) |
+| `channel.update({ policy?, label?, settings?, subscription?, reset?, closed? })` | One call for whatever changed: policy and label apply from the next item, settings (model, reasoning, temperature) from the next model call, a subscription at once; `reset` starts the channel on a fresh context (a cleared transcript, a handoff in); `closed` closes it (its timeline events stay). Idempotent |
+| `session.participants.update(participants)` | Add or change participants in the session's registry (id, kind, label); items name their sender by id |
+| `channel.push(item, { delivery })` | Add an inbox item; idempotent by item id (a repeated push is acknowledged, not stored twice); returns once the item is stored durably. `steer`: folded into the running turn at its next model call (reported as `turn_took`); `queue`: waits for the current turn to end and goes into the next. Either starts a turn if the channel is idle. Items other than messages default per kind (a worker reply: `steer`) |
 | `channel.withdraw(itemId)` | Remove an item not yet taken; reports whether it was removed |
 | `channel.interrupt()` | Abort the running turn |
-| `channel.reset()` / `channel.close()` | Start the channel on a fresh context (a cleared transcript, a handoff in) / close it; its timeline events stay |
-| `channel.setSettings({ model?, reasoning?, temperature? })` | Per-channel overrides of the session's model settings |
-| `channel.events` | `turn_started` (with the items the turn took), `turn_took` (items folded into the running turn), text deltas, tool calls, usage, model-call log, `turn_ended`; `messages_dropped` (items an interrupt removed from the inbox); `message` for text placed on the channel outside a turn (`message_participant`); `permission_requested` |
+| `channel.events` | As the protocol's `channel/event` (`../11-12-SPEC-harness-protocol.md`): always `turn_started`, `turn_took`, `progress`, `message_completed`, usage, `turn_ended`, `messages_dropped`, `message`, `permission_requested`; text deltas, tool calls, reasoning and the model-call log as the channel's subscription says |
+| `session.recentTurns({ since })` | What reconciliation needs: per channel, the turns that ended or were running at a crash since a time (items taken, outcome, usage, assistant messages) and the items still waiting |
 | `channel.answerPermission(id, option)` | Answer an `ask` from the gate (in process; over the protocol it is the reply to `permission/request`) |
 | `session.member(id, { policy, label })` / `prepare({ member, context })` / `delivered(receipt)` | Managed member channels: a conversation a host runs elsewhere; what it should be told since its position, and the receipt that moves the position |
 | `session.prompt({ channel, from, policy?, content })` | Host shorthand: push a user message with sender and policy |
@@ -171,15 +172,16 @@ only what JSON can't hold: function handlers and backends.
 - **Standalone,** the stored config (`<home>/sessions/<id>/config.json`) is the source of truth.
 - **Hosted,** the host is: it creates the session with its config and saves changes made through the API.
 - **Per-channel settings** (model, reasoning, temperature) override the session's model settings for one channel;
-  they are the channel's, not config edits (`channel.setSettings`). A channel's model must be one of
+  they are the channel's, not config edits (`channel.update({ settings })`). A channel's model must be one of
   `model.allowed` (the default model is always allowed).
 - **`describe(config)`**, exported from `./client`: a pure function returning `{ configOptions, commands,
   capabilities, policies, errors }` for a config without starting anything, so a host can show models, commands and
   capabilities and validate the config before the harness runs (integration spec, Configuration known before start).
   The running harness returns the same through `initialize`, which wins if they differ.
 - **Interrupt and the inbox:** an interrupt ends the running turn; items waiting in the inbox stay unless the
-  interrupt asks to drop them, and dropped items are reported (`messages_dropped`). The permission gate's timeout is
-  longer than any host's permission timeout (default 10 minutes), so the host decides first.
+  interrupt asks to drop them, and dropped items are reported (`messages_dropped`). While a host is connected
+  the permission gate waits for its answer with no limit of its own (the host's timeout decides); the gate's own
+  timeout (default 10 minutes) applies standalone or after the host disconnects.
 
 ```json
 {
@@ -244,7 +246,7 @@ only what JSON can't hold: function handlers and backends.
 - **Three layers, resolved per item:** the item's own policy (asserted by the host for that message; worker replies
   carry the policy of whoever gave the work), else the channel's policy, else the session's `defaultPolicy`. A turn
   triggered by several items takes the most restrictive, capability by capability.
-- **The channel's policy** is set by the host when the channel is opened and can be changed (`channel.setPolicy`);
+- **The channel's policy** is set by the host (at start with the pending channel changes, or with `channel.update`);
   the change is a timeline event.
 - **The agent knows where it is:** each turn renders the channel's label and what its policy allows (with the tool
   hint), so the model can explain a refusal ("I can't do that in this conversation") instead of only hitting the
@@ -253,7 +255,7 @@ only what JSON can't hold: function handlers and backends.
   reach the agent through the back door.
 - **The policy engine is the permission gate.** It decides allow, deny or ask for every call under the turn's
   policy. Ask raises `permission_requested` on the channel (over the protocol, a `permission/request` to the host) and
-  waits for the answer with a timeout, then refuses. The `worker:` rules of the turn's policy travel with each
+  waits for the answer (the host's timeout while a host is connected, else the gate's), then refuses. The `worker:` rules of the turn's policy travel with each
   delegation callback, so the host applies them to that worker's requests; at ask the agent, the request comes back as
   an inbox item and the agent answers with a tool.
 
@@ -362,6 +364,14 @@ delivery      digest(position..now, the turn's policy) → appended to the chann
 
 ## Storage
 
+**What the protocol's delivery rules need stored** (`../11-12-SPEC-harness-protocol.md`, Delivery): the item ids each
+channel has stored, with what became of each (waiting, taken by which turn, dropped, withdrawn), so a repeated push
+is recognized and the host can ask an item's status; out-of-turn messages with their positions; and a record of each
+turn (id, a session-wide position, items taken, outcome, usage,
+assistant messages) kept long enough for reconciliation at start (`session.recentTurns`); a turn running when the
+process died is recorded as `running_at_crash` when the session next loads.
+
+
 | Data | v1 |
 | --- | --- |
 | Identity core: config, timeline, positions, shared-state projection, usage ledger, channel inboxes (items not yet taken) | Required. SQLite through `bun:sqlite` |
@@ -391,9 +401,9 @@ usage. A new kind of call needs only a new purpose name.
 ## Guards
 
 Calls per turn (`limits.callsPerTurn`); the unattended-turn budget (`limits.unattendedTurns`: turns with no human
-input, which stops agent–worker and agent–agent ping-pong); a usage budget (`limits.budget`, set by the host), which
-refuses model calls over the limit, in turns and outside them (the host can't refuse a turn before it starts; overview,
-decision 41).
+input, which stops agent–worker and agent–agent ping-pong). A usage budget (`limits.budget`) that refuses model calls
+over a limit is deferred, with the library's spending cap (`../library/todos/11-13-TODO-spending-cap.md`); in v1 the
+harness reports every call's usage and the host meters it.
 
 **Holds.** A host can hold a channel (`channel/hold`) before an operation that needs it to itself: the harness
 starts no turn on it until the hold is released (`channel/release`); a running turn is waited for, or interrupted when the hold asks for it.

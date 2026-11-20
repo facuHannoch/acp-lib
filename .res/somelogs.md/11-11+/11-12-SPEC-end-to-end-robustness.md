@@ -32,7 +32,8 @@ walkthroughs and the stress runs are where its weak points show.
 - the harness process killed at random points (mid-turn, mid-permission, during start), and restarted, including
   running out of restarts;
 - the connection lost and restored; a slow or failing persistence backend; disk-full style write failures;
-- holds and their lease expiry, including a holder that disappears; a start that hangs;
+- holds and their lease expiry, including a holder that disappears; a start or ACP connect that hangs, then
+  cancelled;
 - idle stop racing new messages; config, policy and setting changes while the harness is stopped; deletes and resets
   while stopped;
 - permission requests answered, timed out, and arriving in held turns;
@@ -42,7 +43,8 @@ walkthroughs and the stress runs are where its weak points show.
 
 - every prompt settles exactly once;
 - no conversation stays busy with nothing running, and no channel stays held;
-- no wait exceeds its bound (integration spec, Nothing waits forever);
+- no wait exceeds its bound, and every cancellable wait ends cleanly when cancelled (integration spec, Nothing waits
+  forever);
 - records and the harness's context agree, except where a surfaced error says why;
 - usage is filed once per model call, under the right turn or at the entity level;
 - a policy or setting changed while stopped is in force before the first turn after start.

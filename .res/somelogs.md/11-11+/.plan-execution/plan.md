@@ -101,9 +101,48 @@ The verdict and the evidence go in the GATE file.
   user authorizes it for that run; tests run offline with the fixture agents.
 - **Snapshots are never loosened or regenerated to make a test pass.** A changed snapshot means order or ids changed;
   the code is fixed. Waits in tests are on events, never fixed delays.
-- **Nothing waits forever** in what we build: every new wait names its bound.
+- **Nothing waits forever** in what we build: every new wait is bounded or cancellable, and names which.
 - **Temporary files outside the repo.**
 - **If a brief doesn't fit one run:** commit what passes its gates, report where it stopped.
+
+## Code quality
+
+- **Reuse first.** Each brief starts with a search for existing code that does the job. The report lists what was
+  reused, and any new helper that resembles existing code, with why it couldn't be reused. The reviewer checks for
+  duplication as a finding category.
+- **Large files don't grow:** `src/agent-session.ts`, `src/client.ts`, `src/agent/conversation-manager.ts`,
+  `src/controller.ts`. Code needed there is extracted into a module first; the report gives their line counts before
+  and after.
+- **One concern per new module.** A new file over about 400 lines is called out in the report, with why.
+- **Existing mechanisms, not parallel ones:** errors in the existing error modules; events added to the existing
+  unions; records through the existing record kinds; storage through the persistence backend (optional repositories
+  with a capability flag), never straight to SQLite.
+- **Grounding before a spec's first brief:** the implementer checks the spec's "code as it is" and reuse points against
+  the code at that moment and reports what moved or doesn't exist; the spec owner corrects the spec before the first
+  brief.
+
+## Triage: what gets fixed
+
+Decided 2026-11-13, to stop the design growing on edge cases. A finding (in a review, a gate check, or while
+implementing) is **fixed** only if it:
+
+- can leave the agent or a channel stuck;
+- silently loses data in normal operation;
+- contradicts another part of a spec (then the wording is fixed, often by stating a limitation).
+
+Anything else is **accepted**: the spec owner records it in the spec's Limitations section, and nobody designs around
+it. An edge case that existed before and wasn't handled stays unhandled unless it meets the rule above.
+
+**Every bug or error found is written down, even when it isn't fixed:** one new Markdown file per error in
+`$AGENTS_COMMON_ARTIFACTS_DIR/errors/`, named `<date>-<short-slug>.md`, with:
+
+- **What:** the behaviour seen, and what was expected;
+- **Where:** files and lines, the commit, the brief;
+- **How it was found,** and how to reproduce it (a test name, steps);
+- **Impact:** what it can break, and how likely;
+- **Status:** fixed (with the commit), accepted (with the triage reason), or left for the owner to decide.
+
+The report or review that found it links the file.
 
 ## Order and readiness
 
@@ -111,13 +150,13 @@ The verdict and the evidence go in the GATE file.
 | --- | --- | --- |
 | Controller interface (`library/11-11-SPEC-controller-interface.md`) | being implemented: A1 gate passed 2026-11-12 (`9de0ca3`); A2 released | 1 |
 | Harness protocol (`11-12-SPEC-harness-protocol.md`) | first design; shared by integration and harness part 1 | (no code of its own) |
-| Native harness integration, stage 2a (`library/11-11-SPEC-native-harness-integration.md`) | reviewed 3 times; implementation plan not written yet | next |
+| Native harness integration, stage 2a (`library/11-11-SPEC-native-harness-integration.md`) | reviewed 5 times plus the final review; plan written (briefs N0–N11); ready | next |
 | Harness project setup and harness part 1 (`harness/11-11-SPEC-harness-project.md`, `harness/11-11-SPEC-harness-v1.md`) | not yet reviewed on their own | next, in parallel |
 | Orchestrator (`library/11-11-SPEC-orchestrator.md`) | not yet reviewed on its own | later |
 | Integration stage 2b, harness part 2 | after 2a and part 1 | later |
 | CLI (`library/11-11-SPEC-cli.md`) | lowest priority | last |
 | End-to-end robustness (`11-12-SPEC-end-to-end-robustness.md`) | after everything that builds is done | last |
-| `billing_required` for native (`library/todos/11-12-TODO-billing-required-native.md`) | after the four main specs | last |
+| `billing_required` for native | moved into integration stage 2a (brief N10) | — |
 
 A spec is ready for a trio when it has its implementation briefs (steps with gates, a test plan, done criteria,
 risks) and has passed the spec owner's reviews.

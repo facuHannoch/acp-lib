@@ -1,4 +1,5 @@
 import type { OperationActivity } from "./operations/contracts.ts";
+import type { TurnCause } from "./conversation-controller/contracts.ts";
 import type { AgentMode } from "./controller.ts";
 import type { MessageEvent, PendingMessageId, PromptEndedBy } from "./steering/contracts.ts";
 import type { Adapter } from "./adapters.ts";
@@ -208,7 +209,12 @@ export type AgentSessionEvent =
   | { kind: "provider_reconnected"; via: "loaded" | "recovered" | "fresh"; internalSessionId: string }
   | { kind: "operation_stage_changed"; activity: OperationActivity }
   | { kind: "state_changed"; state: AgentSessionState }
-  | { kind: "turn_started"; turnId: string }
+  | {
+      kind: "turn_started";
+      turnId: string;
+      /** Why the turn started: the messages it carries (every message of a combined steer run). */
+      cause: TurnCause;
+    }
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
   | { kind: "turn_failed"; turnId: string; error: string }
   | MessageEvent

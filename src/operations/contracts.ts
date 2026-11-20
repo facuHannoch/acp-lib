@@ -2,7 +2,7 @@
 // outside (its stage and timestamps) and what the provider is observed to send while it runs.
 // Spec: .res/somelogs.md/9-22+/10-17-SPEC-operation-lifecycle.md.
 
-import type { ActivityEvent } from "../types.ts";
+import type { ActivityEvent, PromptResult } from "../types.ts";
 
 /**
  * Anything the provider sent for a session: a `session/update`, or a request from the agent to the
@@ -13,6 +13,14 @@ export type ProviderOutput =
   | { readonly kind: "request" | "permission_started" | "permission_ended"; readonly sessionId: string | null };
 
 export type OutputListener = (output: ProviderOutput) => void;
+
+/** The narrow view of a provider the supervisor needs: one request, started by `prompt()`. */
+export interface SupervisedProvider {
+  prompt(): Promise<PromptResult>;
+  subscribeOutput(listener: OutputListener): () => void;
+  cancel(): void;
+  forceStop(): Promise<void>;
+}
 
 /** What a running operation is waiting on. */
 export type OperationStage = "waiting" | "streaming" | "tool_running" | "awaiting_permission" | "cancelling";

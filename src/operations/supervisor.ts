@@ -10,21 +10,15 @@ import type {
   CancelOutcome,
   CancelReason,
   OperationActivity,
-  OutputListener,
   ProviderOutput,
   StaleLimits,
   SupervisedOperationKind,
+  SupervisedProvider,
 } from "./contracts.ts";
 import { ToolTracker } from "./activity-tracker.ts";
 import { realTimers, type Timers } from "./timers.ts";
 
-/** The narrow view of a provider the supervisor needs. */
-export interface SupervisedProvider {
-  prompt(): Promise<PromptResult>;
-  subscribeOutput(listener: OutputListener): () => void;
-  cancel(): void;
-  forceStop(): Promise<void>;
-}
+export type { SupervisedProvider } from "./contracts.ts";
 
 export interface SupervisorOptions {
   readonly operationId: string;
@@ -35,6 +29,12 @@ export interface SupervisorOptions {
   readonly cancelGraceMs?: number;
   readonly timers?: Timers;
   readonly limits?: StaleLimits;
+  /**
+   * Whether the provider is replaying output the backend already produced (a held turn that is not `live`). Read each
+   * time a stall deadline is reached, not once: a replaying turn is never stalled, and one that has become live since
+   * gets its stall deadline back (a controller-interface turn is not live while its held output replays).
+   */
+  readonly isReplaying?: () => boolean;
   readonly onStageChanged?: (activity: OperationActivity) => void;
   /** The last running tool settled. */
   readonly onToolBoundary?: () => void;
@@ -67,6 +67,8 @@ export class OperationSupervisor {
   private finished = false;
   private started = false;
   private forced = false;
+  /** The last time a stall deadline was skipped because the provider was replaying: silence counts from then. */
+  private replayCheckedAt: number | null = null;
   private finishForced?: (result: PromptResult) => void;
 
   constructor(private readonly provider: SupervisedProvider, private readonly options: SupervisorOptions) {
@@ -191,9 +193,20 @@ export class OperationSupervisor {
   private armStaleTimer(): void {
     this.timers.clearTimeout(this.staleHandle);
     const limits = this.options.limits ?? {};
-    const decision = stalePolicy(this.activity, this.permissions, this.tools.oldestStartedAt, limits, this.timers.now());
+    // Silence is counted from the last skipped deadline too, so a turn that stopped replaying gets a full interval.
+    const floor = this.replayCheckedAt ?? 0;
+    const activity = this.activity;
+    const counted = this.replayCheckedAt === null ? activity : { ...activity, startedAt: Math.max(activity.startedAt, floor), lastOutputAt: activity.lastOutputAt === null ? null : Math.max(activity.lastOutputAt, floor) };
+    const oldestTool = this.tools.oldestStartedAt;
+    const decision = stalePolicy(counted, this.permissions, oldestTool === null ? null : Math.max(oldestTool, floor), limits, this.timers.now());
     if (!decision || this.finished) return;
     this.staleHandle = this.timers.setTimeout(() => {
+      if (this.options.isReplaying?.()) {
+        // Still replaying held output: no stall now; look again after another interval.
+        this.replayCheckedAt = this.timers.now();
+        this.armStaleTimer();
+        return;
+      }
       this.stallPhase = decision.phase;
       this.cancel("stalled");
     }, Math.max(0, decision.deadline - this.timers.now()));

@@ -26,3 +26,26 @@ export class TimeoutError extends Error {
     this.name = "TimeoutError";
   }
 }
+
+/**
+ * A controller was asked for something it can't do (an optional member it doesn't have, or a feature
+ * its backend doesn't offer). Callers guard first (the controller's optional methods, the backend's
+ * capabilities), so this signals a bug.
+ */
+export class UnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsupportedError";
+  }
+}
+
+/**
+ * The controller has no way to reload a provider session (it has no `reconnect`). Recovery treats it as a
+ * session the provider no longer has, so the conversation's continuation rule applies (never a raw failure).
+ */
+export class ProviderSessionReloadUnsupportedError extends UnsupportedError {
+  constructor() {
+    super("this conversation's controller cannot reload a provider session");
+    this.name = "ProviderSessionReloadUnsupportedError";
+  }
+}

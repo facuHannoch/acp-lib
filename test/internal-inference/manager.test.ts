@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Agent } from "../../src/agent.ts";
 import { createAgentConversationId } from "../../src/agent-ids.ts";
 import { SqliteAgentPersistence } from "../../src/persistence/sqlite-backend.ts";
+import { SqliteInternalInferenceRepository } from "../../src/internal-inference/persistence/sqlite-repository.ts";
 import type {
   InternalInferenceResult,
   InternalInferenceRuntime,
@@ -154,6 +155,48 @@ describe("internal inference manager", () => {
     expect((await persistence.internalInferences.getAttempt(run.rootId))?.failureCode)
       .toBe("shutdown_interrupted");
     await persistence.close();
+  });
+
+  test("closing stops the heartbeat of an execution it fences", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acp-inference-fenced-heartbeat-"));
+    roots.push(root);
+    const heartbeat = spyOn(SqliteInternalInferenceRepository.prototype, "heartbeat");
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const runtime: InternalInferenceRuntime = {
+        async run() {
+          return await new Promise<InternalInferenceResult>(() => {});
+        },
+      };
+      const agent = await Agent.open({
+        persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
+        adapters: { test: { command: ["unused"] } },
+        defaultAdapterId: "test",
+        internalInference: {
+          runtime,
+          strategies: [testStrategy()],
+          shutdownGraceMs: 0,
+          heartbeatIntervalMs: 250,
+          retry: { maxAttempts: 1, backoffMs: [0] },
+        },
+      });
+      const run = await agent.internalInferences!.enqueue({
+        purpose: "conversation_checkpoint",
+        input: { version: 1, strategyId: "test", payload: { prompt: "never finishes" } },
+      });
+      await waitFor(() => run.activeAttempt.snapshot.status === "running");
+      await agent.close();
+      const beatsAtClose = heartbeat.mock.calls.length;
+      // Absence of a beat needs a window: three heartbeat intervals.
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      expect(heartbeat.mock.calls.length).toBe(beatsAtClose);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      heartbeat.mockRestore();
+    }
   });
 
   test("meters restored background work before its conversation is opened", async () => {
