@@ -204,6 +204,9 @@ not successful suspension. Suspension itself may wait for a long-running tool.
 
 ## Export and import
 
+The [session-file amendment](../persistence/0002-AMENDMENT-session-file/SPEC.md)
+tracks the proposed binary encoding separately from the accepted baseline.
+
 Export a single versioned `.harness` archive containing a manifest and a logical
 session snapshot. Export is available when the session is idle with no active
 or pending work, or when it is cleanly suspended. Export leaves the lifecycle
