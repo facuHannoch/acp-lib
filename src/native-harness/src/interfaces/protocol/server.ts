@@ -7,7 +7,8 @@ import { validateManagedConfig } from "../../runtime/config/managed.ts";
 import { MAX_FRAME_BYTES } from "./framing.ts";
 import { FrameLimit, loadView, pageMessages, turnStatus, wireStatus } from "./load.ts";
 import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
-import type { TransferLimits } from "../../contracts/protocol.ts";
+import type { ChannelChangeResult, PendingChannelChange, TransferLimits } from "../../contracts/protocol.ts";
+import { ChannelChangeFault, applyChannelChanges, checkPolicies, parseChannelChanges, sameBatch } from "./channel-changes.ts";
 
 class Fault extends Error {
   constructor(readonly tag: string, message: string, readonly rpc = -32602) { super(message); }
@@ -59,7 +60,7 @@ function count(value: unknown, fallback: number): number {
 export function describe(durable: boolean, archives = false): Description {
   return {
     configOptions: [], commands: [], policies: [],
-    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable,
+    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true,
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
         "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : [])],
@@ -75,6 +76,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   let approvalConsumer = false;
   let opening = false;
   let current: OpenedSession | undefined;
+  // Decision 0020: the batch this connection's open applied, kept so a repeated
+  // load reports the same results without applying anything again.
+  let startup: { batch: PendingChannelChange[]; results: ChannelChangeResult[] } | undefined;
   let activeConfig: ProtocolConfig | undefined;
   let subscription: Subscription = { text: "final", tools: "full" };
   const listeners = new Set<(notification: RpcNotification) => void>();
@@ -87,9 +91,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     if (current || opening) throw new Fault("already_exists", "One session per endpoint");
     opening = true;
     let opened: OpenedSession;
+    // On success `opening` stays set: the caller clears it once the session is
+    // published as `current` (or abandoned), leaving no gap for a second open.
     try { opened = await open(request); }
-    catch (error) { throw error instanceof SessionOpenError ? new Fault(error.code, error.message) : new Fault("invalid_config", String(error)); }
-    finally { opening = false; }
+    catch (error) { opening = false; throw error instanceof SessionOpenError ? new Fault(error.code, error.message) : new Fault("invalid_config", String(error)); }
     opened.session.subscribe(value => {
       const event = structuredClone(value);
       // Filtering is downstream of inference and its retry cutoff: a final-mode
@@ -113,6 +118,22 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     opened.session.approvals.setConsumer(approvalConsumer);
     activeConfig = structuredClone(opened.config ?? request.config);
     return opened;
+  }
+
+  /** Apply the open's batch to a session that is attached but not started.
+   * `opening` stays set by the caller until the session is published as
+   * `current`, so no other request can reach the session, or open a second
+   * one, while a suspension is awaited. The returned function applies the
+   * resumes and must run in the same synchronous block as the load view. */
+  async function prepare(opened: OpenedSession, batch: PendingChannelChange[]) {
+    checkPolicies(batch, Object.keys(activeConfig?.policies ?? { __legacy_allow: true }));
+    return applyChannelChanges(opened.session, batch);
+  }
+  /** An open that fails after attaching releases the session. With a batch,
+   * stop first: a resume in it may already have handed a turn to an executor. */
+  function abandon(opened: OpenedSession, batch: boolean) {
+    if (batch) { try { opened.session.stop("Open failed"); } catch { /* Storage may be the failure. */ } }
+    opened.close();
   }
 
   /** Read one snapshot, then keep every later notification behind the response.
@@ -155,7 +176,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { valid: true };
     }
     if (method === "session/create") {
-      keys(p, ["sessionId", "config", "participants", "channels"]);
+      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges"]);
       const sessionId = text(p.sessionId);
       if (current || opening) throw new Fault("already_exists", "One session per endpoint");
       if (p.config !== undefined) { try { validateManagedConfig(p.config); } catch (error) { throw new Fault("invalid_config", String(error)); } }
@@ -167,23 +188,50 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         ids.add(id);
       }
       if (Object.keys(obj(p.channels)).length) bad("Initial channel settings are not supported; channels are created on push");
-      current = await attach({ mode: "create", sessionId, config: p.config });
-      try { current.commitConfig?.(); } catch (error) { current.close(); current = undefined; throw error; }
-      current.session.start();
-      return { sessionId };
+      // Reject an invalid batch before the session exists. Policy names are
+      // checked here when the configuration is inline, and again once the
+      // effective configuration is known.
+      const batch = p.channelChanges === undefined ? undefined : parseChannelChanges(p.channelChanges);
+      if (batch && p.config?.policies) checkPolicies(batch, Object.keys(p.config.policies));
+      const opened = await attach({ mode: "create", sessionId, config: p.config });
+      let results: ChannelChangeResult[] | undefined;
+      try {
+        const finish = batch && await prepare(opened, batch);
+        opened.commitConfig?.();
+        results = finish?.();
+        current = opened;
+        if (batch) startup = { batch, results: results! };
+      } catch (error) { abandon(opened, !!batch); throw error; }
+      finally { opening = false; }
+      opened.session.start();
+      return { sessionId, ...(results ? { channelChanges: results } : {}) };
     }
     if (method === "session/load") {
-      keys(p, ["sessionId", "config", "messagesLimit"]);
+      keys(p, ["sessionId", "config", "messagesLimit", "channelChanges"]);
       const sessionId = text(p.sessionId), limit = count(p.messagesLimit, 100);
-      // A repeated load of the open session is a fresh view of it, nothing more.
+      const batch = p.channelChanges === undefined ? undefined : parseChannelChanges(p.channelChanges);
+      // A repeated load of the open session is a fresh view of it, nothing more:
+      // the batch was applied by the open and is only reported again. A new
+      // batch belongs to the live channel API.
       if (current) {
         if (current.session.snapshot().session.sessionId !== sessionId) throw new Fault("already_exists", "One session per endpoint");
-        return load(current, limit, false);
+        if (batch && !sameBatch(startup?.batch ?? [], batch)) throw new Fault("invalid_state", "The session is already open; send newer channel changes through the channel methods");
+        return { ...load(current, limit, false), ...(startup ? { channelChanges: startup.results } : {}) };
       }
       const opened = await attach({ mode: "open", sessionId, config: p.config });
-      try { const result = load(opened, limit, true); current = opened; return result; }
-      // Nothing was started; release the session so no partial load is observable.
-      catch (error) { opened.close(); throw error; }
+      try {
+        const finish = batch && await prepare(opened, batch);
+        // From here to the end of the block nothing is awaited: the resumes, the
+        // view and the hold on later notifications are one synchronous step.
+        const results = finish?.();
+        const result = load(opened, limit, true);
+        current = opened;
+        if (batch) startup = { batch, results: results! };
+        return { ...result, ...(results ? { channelChanges: results } : {}) };
+      }
+      // Work was not started; release the session so no partial load is observable.
+      catch (error) { abandon(opened, !!batch); throw error; }
+      finally { opening = false; }
     }
     if (transfers && method.startsWith("transfer/")) {
       if (method === "transfer/open") { keys(p, ["bytes", "sha256"]); return { transferId: transfers.openUpload(p.bytes, p.sha256), limits }; }
@@ -339,7 +387,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { jsonrpc: "2.0", id: request.id, result };
       } catch (error) {
         const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message)
-          : error instanceof TransferFault || error instanceof SessionFileError ? new Fault(error.code, error.message) : error;
+          : error instanceof TransferFault || error instanceof SessionFileError || error instanceof ChannelChangeFault ? new Fault(error.code, error.message) : error;
         return { jsonrpc: "2.0", id, error: { code: fault instanceof Fault ? fault.rpc : -32603,
           message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error" } } };
       }

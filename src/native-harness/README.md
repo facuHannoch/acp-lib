@@ -434,6 +434,17 @@ so live events for recovered work follow it, and every event carries the
 revision of the commit it reports. A view that cannot fit one frame fails with
 `transfer_limit`.
 
+`session/create` and `session/load` accept `channelChanges`
+([decision 0020](.res/decisions/0020-startup-channel-changes.md)): the newest
+name, policy, suspension, resume or deletion a host decided for each channel
+while the harness was stopped. The batch is validated as a whole, applied
+after recovery and before any pending or recovered work can run, and answered
+with one `applied` or `blocked` result per entry. A deletion that finds pending
+input or a checkpoint suspends that channel instead and reports `channel_busy`.
+A repeated load on the same connection reports the recorded results without
+applying anything; a new connection can resend the same desired state safely.
+Servers advertise this as `capabilities.startupChannelChanges`.
+
 `session/suspend` refuses new messages at once, lets each active turn finish
 its current inference and the tools it requested, then completes turns that are
 naturally finished and checkpoints the rest. It responds when the session is
