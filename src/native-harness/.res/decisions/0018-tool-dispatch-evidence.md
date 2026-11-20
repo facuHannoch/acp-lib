@@ -59,11 +59,20 @@ both signals. The loop receives a gated result and never directly invokes a tool
 `approval_requested` is an always-on channel event; `approval/respond` answers
 once. A connection disconnect closes its requests.
 
-Storage exposes the validated configuration bound to its current owner, or
-absence for a legacy allow-only open. Session assembly takes its gate policy
-from that same owner config, and rejects a separately supplied config or system
-prompt that differs. When assembly creates its own storage it supplies the
-selected config to that open. This prevents a caller from resolving inputs
-under one set of policy definitions and dispatching under a more permissive one.
-Comparison treats object key order as immaterial. No config is read from model
-text or from mutable caller-owned objects after assembly.
+Storage's `ownerConfig()` returns the validated config supplied to this open,
+copied at bind time, or `undefined` for a legacy allow-only open. It is not
+`readSavedConfig()` or `importedConfig()`; `saveConfig()` does not retarget it,
+and later mutation of the caller's object cannot change it. Legacy absence is
+not the internal placeholder with an empty system and script `"legacy"`.
+
+Session assembly takes its gate policy from that owner snapshot. Omitting the
+session config uses the snapshot; legacy allow applies only if `ownerConfig()`
+succeeds with an absent value. A supplied config is accepted only if it deeply
+matches the snapshot, ignoring object key order. If the snapshot exists,
+`systemPrompt` must equal its `system`; when absent, `systemPrompt` is the
+legacy model prompt and is not compared. A failed `ownerConfig()` fails assembly
+before the session starts: failure is not absence and the caller's config is not
+a substitute. When assembly creates storage it passes that same selected config
+into open, omitting it only for a legacy allow-only session. This prevents input
+resolution under one set of policies and dispatch under a looser set. No config
+comes from model text or mutable caller-owned objects after assembly.

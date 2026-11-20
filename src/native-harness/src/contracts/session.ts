@@ -86,7 +86,8 @@ export interface ChannelControls {
 
 export interface PersistentSessionOptions {
   systemPrompt: string;
-  /** Validated open-session policy; absent means legacy allow. */
+  /** Optional assertion of the storage owner's validated config. Omission uses
+   * the owner snapshot; legacy allow applies only when that snapshot is absent. */
   config?: import("./config-permissions.ts").ManagedConfig;
   /** Default 600000 ms. An optional barrier resolves before the final check of
    * both lifecycle signals, allowing deterministic gate tests. */
