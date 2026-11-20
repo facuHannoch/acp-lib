@@ -110,3 +110,11 @@ session suspension; withdraw vs take; create/edit/suspend/delete and retired IDs
 across reopen; stop during channel suspension. `bun test ./test`: 172 pass, 0
 fail. Typecheck errors remain only in `interfaces/protocol/load.ts`,
 `test/agent.test.ts`, `test/e2e.test.ts` (Stage 4).
+
+### Stage 3 review round 1 (`9cc6892` not approved)
+
+`channels.resume` no longer sets `started`: a returned checkpoint turn still gets its
+executor (storage already marked it running), but other channels' pending input waits
+for `start()`, and a later `start()` still pumps `waiting`. New test: reopen with Alice
+suspended and Bob holding pending input; after `resume("alice")` only her turn runs,
+Bob is not taken (nor by a later send) until `start()`, then taken once. 173 pass.

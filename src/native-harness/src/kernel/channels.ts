@@ -244,11 +244,11 @@ export function createChannelScheduler(
       if (stopped) return stoppedResult;
       const resumed = storage.resumeChannel(channelId);
       if (!resumed.ok) return failedWith(resumed.error);
-      // Resuming a checkpoint starts it even before `start`: storage already
-      // moved the turn to running, so it must have an executor.
+      // A returned checkpoint turn gets its executor even before `start`: storage
+      // already moved it to running. That is not `start`: `started` stays as it is,
+      // so other channels' pending input still waits for `start()`.
       if (before !== "open") emitState(channelId, resumed.revision);
       if (resumed.value.turn) {
-        started = true;
         emit({ channel: channelId, revision: resumed.revision, event: { type: "turn_resumed", turnId: String(resumed.value.turn.turnId) } });
         run({ channelId, turnId: resumed.value.turn.turnId, resumed: true });
       } else if (before !== "open") {

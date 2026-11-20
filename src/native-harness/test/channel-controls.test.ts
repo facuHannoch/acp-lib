@@ -293,3 +293,30 @@ test("stop during a channel suspension returns it to open and keeps another chan
   second.session.stop("done");
 });
 const refusedStopped = (result: { ok: boolean; error?: { code: string } }) => result.ok ? "ok" : result.error!.code;
+
+test("resuming a checkpoint before start() runs only that turn; other channels wait for start()", async () => {
+  const r = rig(), first = r.open();
+  first.session.start();
+  send(first.session, "alice", "hold work", "a1"); await until(() => r.held("alice"), "tool");
+  const suspended = first.session.channels.suspend("alice"); r.release("alice"); ok(await suspended);
+  first.close();
+
+  const second = r.open(), { session, events } = second;
+  // Not started: input is accepted durably and nothing begins.
+  expect(send(session, "bob", "bob first", "b1")).toMatchObject({ accepted: true });
+  ok(session.channels.resume("alice"));
+  await until(() => turnOf(session, 1).state.status === "completed", "alice's attached checkpoint turn");
+  expect(send(session, "bob", "bob second", "b2")).toMatchObject({ accepted: true });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(types(events, "bob")).toEqual([]);
+  expect(channel(session, "bob").pendingItemIds).toEqual(["b1", "b2"]);
+  expect(session.status().execution).toBe("working"); // bob has pending input on an open channel; idle() is true only because nothing may start before start()
+  expect(r.requests.some(line => line.startsWith("bob#"))).toBe(false);
+
+  session.start();
+  await until(() => events.some(e => e.channel === "bob" && e.event.type === "turn_ended"), "bob after start");
+  expect(turnOf(session, 2)).toMatchObject({ channelId: "bob", itemIds: ["b1", "b2"], state: { status: "completed" } });
+  expect(r.requests.filter(line => line.startsWith("bob#"))).toHaveLength(1);
+  expect(session.agent.idle()).toBe(true);
+  session.stop("done");
+});
