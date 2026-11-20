@@ -29,7 +29,8 @@ test("writer serializes asynchronous writes and surfaces backpressure failures",
 });
 
 test("malformed server output immediately rejects pending and future requests", async () => {
-  for (const bad of ['not json\n', '{"jsonrpc":"2.0","id":1}\n', '{"jsonrpc":"2.0","method":"channel/event","params":{}}\n']) {
+  for (const bad of ['not json\n', '{"jsonrpc":"2.0","id":1}\n', '{"jsonrpc":"2.0","method":"channel/event","params":{}}\n',
+    '{"jsonrpc":"2.0","method":"channel/event","params":{"channel":"a","event":{"type":"approval_requested","requestId":"r","channel":"a","toolCallId":"c","tool":"t","arguments":"{}"}}}\n']) {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
     const client = new HarnessClient(createStdioTransport({ readable: stream, async write() {}, end() {} }), 1000);

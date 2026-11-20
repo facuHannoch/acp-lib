@@ -13,13 +13,13 @@ export function recordWire(transport: ClientTransport) {
   return wire;
 }
 
-export interface SpawnOptions { home?: string; fault?: string; effects?: string }
+export interface SpawnOptions { home?: string; fault?: string; effects?: string; requests?: string }
 export function spawnHarness(options: SpawnOptions = {}) {
   const temporaryHome = options.home ? undefined : mkdtempSync(join(tmpdir(), "harness-stdio-"));
   const child = Bun.spawn([process.execPath, new URL("../../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio",
     "--home", options.home ?? temporaryHome!], {
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, OPENROUTER_API_KEY: undefined, HARNESS_TEST_FAULT: options.fault, HARNESS_TEST_EFFECTS: options.effects },
+    env: { ...process.env, OPENROUTER_API_KEY: undefined, HARNESS_TEST_FAULT: options.fault, HARNESS_TEST_EFFECTS: options.effects, HARNESS_TEST_REQUESTS: options.requests },
   });
   const [protocol, capture] = child.stdout.tee();
   const stdout = new Response(capture).text();

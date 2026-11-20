@@ -19,6 +19,10 @@ adds no listeners or execution features; the host retains process ownership.
 Channel lifecycle and targeted turn controls compose with session lifecycle in
 the scheduler and storage; protocol adapters expose those decisions without
 owning them. See [decision 0014](.res/decisions/0014-channel-controls-contract.md).
+Managed config, durable policy references, the execution gate and one-time
+approvals follow [decision 0016](.res/decisions/0016-configuration-permissions.md),
+with OpenRouter references in [decision 0017](.res/decisions/0017-openrouter-managed-config.md)
+and durable dispatch evidence in [decision 0018](.res/decisions/0018-tool-dispatch-evidence.md).
 The detailed
 [project spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-project.md)
 and [v1 spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-v1.md)

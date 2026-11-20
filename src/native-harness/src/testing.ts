@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, existsSync, rmdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, rmdirSync, appendFileSync } from "node:fs";
 import { createSession } from "./index.ts";
 import type { SessionStorage, SessionStorageAdapter } from "./contracts/storage.ts";
 import type { ExecuteTool, Model } from "./contracts/loop.ts";
@@ -29,6 +29,8 @@ export interface ScriptedServerOptions {
   fault?: string;
   /** File the `record` tool appends to. */
   effects?: string;
+  /** Offline test-only request capture; one JSON record per inference. */
+  requests?: string;
   /** Directory for transfer files when there is no home. */
   transfers?: string;
   /** Smaller transfer limits for tests. */
@@ -106,7 +108,12 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         const consumed = session.snapshot().timeline.filter(entry => entry.channelId === turn.channelId && entry.message.role === "assistant").length;
         scripted = createScriptedModel(script, consumed); models.set(turn.channelId, scripted);
       }
-      return { model: scripted.model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
+      const selected = scripted.model;
+      const model: Model = (messages, definitions, signal) => {
+        if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages })}\n`);
+        return selected(messages, definitions, signal);
+      };
+      return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
     } });
     return { session, config, close() { opened.value.close(); }, commitConfig() {
       const saved = storage.saveConfig(config);

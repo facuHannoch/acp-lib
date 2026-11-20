@@ -317,6 +317,8 @@ try {
       version: 1,
       system: "You are a test assistant.",
       model: { protocol: "scripted", script: "test/fixtures/echo-scenario.json" },
+      defaultPolicy: "default",
+      policies: { default: { fallback: "allow", tools: {} } },
     },
     participants: [{ id: "alice", kind: "person" }],
     channels: {},
@@ -342,21 +344,56 @@ transport factory and host types. `src/index.ts` exports host-independent
 uses the same session assembly with OpenRouter, its tools and inspector wrappers.
 
 The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
-requests are `initialize`, `session/create`, `session/load` (durable servers
+requests are `initialize`, `config/validate`, `session/create`, `session/load` (durable servers
 only), `session/messages`, `session/status`, `session/suspend`,
 `session/resume`, `session/stop`, `channel/push` and `session/idle`, plus
 `channel/create`, `channel/edit`, `channel/suspend`, `channel/resume`,
-`channel/delete`, `channel/withdraw` and `channel/interrupt`, plus
+`channel/delete`, `channel/withdraw`, `channel/interrupt` and
+`approval/respond`, plus
 `session/export`, `session/import` and `transfer/{open,write,read,close}` on
 durable servers.
 Initialize reports an experimental subset and whether this server's acceptance
-is `memory` or `durable`. It supports final text and none/summary/full tool events; no
-callbacks or other subscription fields yet. Full tool events retain JSON argument
+is `memory` or `durable`. It supports final text and none/summary/full tool events;
+the `callbacks` list must be empty. Full tool events retain JSON argument
 and result strings; a completed tool event means execution returned, which can
 include an actionable `{ ok: false }` result. Thrown execution errors emit failed.
 
-Supported config is `{ version: 1, system, model: { protocol: "scripted", script } }`.
-Participants support IDs and kinds, without labels or policy. Initial `channels`
+Configuration contains `version: 1`, `system`, `model`, `defaultPolicy` and a
+`policies` map. A model is `{ protocol: "scripted", script }` or
+`{ protocol: "openrouter", model, apiKeyEnv }`. The default OpenRouter model is
+`deepseek/deepseek-v4.1-flash` and its default credential reference is
+`OPENROUTER_API_KEY`. `apiKeyEnv` names a variable in the destination process;
+its value is resolved on open and never saved. OpenRouter runs require that
+variable; a custom name does not fall back to `OPENROUTER_API_KEY`. The
+`OPENROUTER_MODEL` environment variable selects a development model only when
+there is no saved model; it does not override saved configuration. Scripted
+runs need no provider key. Ports and the socket remain
+process settings. `client.validateConfig(config)` checks the structure without
+opening a session or starting inference.
+
+Each named policy has a `fallback` of `allow`, `ask` or `deny` and exact tool
+name overrides in `tools`; the default must name a defined policy. A trusted
+consumer can set a policy on a channel or a message. The message policy wins,
+then the channel policy, then the default. The resolved name is saved at
+acceptance, so a retry keeps it after a channel edit. Reusing an ID with a
+different explicit policy fails with `item_conflict`. When a turn takes inputs,
+their policies combine for each tool: deny wins over ask, which wins over allow.
+Notices carry the source turn's restrictions, including inherited restrictions.
+This governs tool execution, not access to shared history.
+
+To handle `ask`, initialize with `approval: true`, listen for the always-on
+`approval_requested` channel event, and pass its `requestId` to
+`client.respondApproval(requestId, "allow_once" | "deny")` after the consumer
+decides. A grant covers only that exact call. Without a declared consumer, or
+after denial, timeout (ten minutes by default) or disconnect, the call is
+skipped with a paired tool result. Suspension closes an undispatched request
+with `approval_cancelled_by_suspension`; interrupt and stop use
+`approval_cancelled_by_interrupt` and `approval_cancelled_by_stop`. A late or
+duplicate answer fails `not_found`. A `tool_call` started event means dispatch
+occurred; it is not emitted for a skipped call. An unanswered request or grant
+cannot be reused after restart.
+
+Participants support IDs and kinds, without labels. Initial `channels`
 must be empty; channels are created on push. Push supports text-only user messages
 with queue delivery and wake=true. Unsupported fields, configurations and methods
 fail explicitly. The push response is sent after the item is committed to the
@@ -382,7 +419,9 @@ work are still accepted and wait. A suspended session, including one loaded in
 a new process, runs nothing until `session/resume`; resumed turns take their
 pending input and continue at the next inference without repeating recorded
 tool calls. Resume fails with `incompatible`, changing nothing, if a checkpoint
-was saved under a different system prompt or script. `session/stop` is
+was saved under incompatible execution settings or contributing policy rules.
+An individually suspended channel is checked only when it is resumed.
+`session/stop` is
 immediate: it cancels inference and tools, reports active turns `interrupted`,
 leaves pending input pending, and makes this process refuse further work with
 `stopped`. Lifecycle changes arrive as `session/event` notifications
@@ -394,8 +433,10 @@ turns, timeline, pending input, deduplication records, checkpoints and ID
 counters) and the exact active portable configuration. Its version is separate
 from the SQLite schema. Old standalone JSON exports are not accepted. The
 scripted model path is preserved as a reference; the destination must supply
-the script at that path when opening the session. Import stores the config with
-the snapshot, but opening still requires the caller to supply config. It is allowed only when the
+the script at that path when opening the session. OpenRouter credentials must
+likewise be supplied through the named destination environment variable. Import
+stores the config with the snapshot; a managed session can reopen from that
+saved config without an inline config or sidecar. It is allowed only when the
 session is cleanly suspended, or running with no active or checkpointed turn,
 no pending input, and no channel suspending; otherwise it fails `busy`. The
 reported length and SHA-256 are those of the
@@ -413,7 +454,7 @@ both would otherwise run the same pending work.
 
 Events are `turn_started`, `turn_took`, `items_receipt`, `tool_call`,
 `message_completed`, `turn_suspended`, `turn_resumed`, `channel_state`,
-`item_withdrawn` and `turn_ended`. Channel controls are available as
+`item_withdrawn`, `approval_requested` and `turn_ended`. Channel controls are available as
 `createChannel`, `editChannel`, `suspendChannel`, `resumeChannel`,
 `deleteChannel`, `withdrawItem` and `interruptTurn` on `HarnessClient`. Channel
 suspension closes admission and waits for the current iteration; resume preserves
@@ -431,11 +472,12 @@ store still uses numeric turn IDs internally. Per-channel order is guaranteed,
 not ordering across channels. Subscriptions deliver future events, without replay.
 
 Client requests time out after 30 seconds by default (configurable in its
-constructor); closing a client rejects pending requests and removes subscriptions.
-It does not cancel already accepted work. Model exhaustion produces a failed turn
+constructor); closing a client rejects pending requests, removes subscriptions,
+and closes that consumer's outstanding approvals. Accepted input remains durable.
+Model exhaustion produces a failed turn
 event after acceptance, not a failed push. Idle includes pending and running work.
 
-This is not full protocol v1 conformance: holds, permissions, usage,
+This is not full protocol v1 conformance: holds, broader permission features, usage,
 streaming and progress heartbeats remain unimplemented. Protocol version 1
 identifies these experimental message shapes, not a full compatibility claim.
 
@@ -448,8 +490,9 @@ bun run serve --stdio
 ```
 
 It waits for JSON-RPC requests, one UTF-8 JSON message per line. It starts no web
-servers or REPL and requires no API key. Select the scripted model in
-`session/create`, exactly as in the in-process example above. Relative script
+servers or REPL. Select the scripted model in `session/create`, exactly as in
+the in-process example above, to run without a provider key; OpenRouter sessions
+use the configured credential environment variable. Relative script
 paths resolve against the child process's working directory. Stdout contains
 only protocol responses/events; diagnostics go to stderr.
 
@@ -497,8 +540,14 @@ as interrupted, leaves pending input pending, flushes protocol output and exits.
 It does not wait for work to finish. A host that needs completed work waits for
 idle, or suspends, before closing. The five-second grace period only bounds
 requests already read and the final flush; exceeding it exits nonzero with
-stderr diagnostics. With `--home <directory>` each session is a SQLite file named
-after its ID in that directory, and work the process did not finish is reported
+stderr diagnostics. The default managed home is `~/.harness`; `--home <directory>`
+overrides it. Each session uses `<home>/<sessionId>/session.sqlite` and an
+optional `config.json` beside it. At creation an inline config wins over the
+sidecar. On open, a present sidecar wins over inline config; otherwise the
+saved config is used when inline config is absent. File edits apply at the next
+open, and an invalid file does not replace the saved config. The old flat
+managed database layout is not migrated; the explicit development `--db` path
+remains supported. Work the process did not finish is reported
 as interrupted when the session is next loaded. Hosts retain a process termination deadline.
 
 Run `bun test test/protocol.test.ts test/stdio.test.ts` for transport parity and

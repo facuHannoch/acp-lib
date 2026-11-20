@@ -89,5 +89,25 @@ cover policy precedence at take, inherited notices, deny/unhandled/timeout/
 disconnect, one-time grants, both suspension/dispatch orders, reentrant
 interrupt and stop, a real crash with approval pending, legacy and invalid
 dispatch evidence, and owner-config mismatch/failure/mutation on both adapters.
-Independent Stage 3 review is pending. Stage 4's public end-to-end scenario and
-documentation remain outstanding.
+Gro approved Stage 3 at `bb171b22fe165eab82837c70432e23a83f0b64e5`; their
+independent typecheck passed and the full suite passed 243 tests, 0 failures,
+2917 assertions across 29 files (63.15s). The reviewer noted that archive
+import rejects duplicate call IDs across a whole turn while append uniqueness
+is per message; this is an accepted non-blocking boundary.
+
+## Stage 4: public interface and end-to-end
+
+The typed client exports the managed configuration and approval types. Usage
+and architecture documentation describe policy selection, approval lifecycle,
+saved-config reopening, and externally supplied OpenRouter credentials. The
+scripted SQLite acceptance scenario runs through both in-process and real stdio
+clients: Bob completes while Alice waits; suspension closes Alice's approval
+without a tool effect; export and fresh-home import reopen the saved config;
+the old answer remains unavailable; the resumed model receives the paired
+cancellation result; and a fresh one-time approval dispatches exactly once.
+A malformed stdio approval event without a turn ID is rejected. Request capture
+is an opt-in scripted-test facility.
+
+Stage 4 implementation gate: `bun run typecheck --pretty false` passed;
+`bun test ./test` passed 245 tests, 0 failures, 2953 assertions across 30 files
+(52.17s), with local IPC access. Independent final review is pending.
