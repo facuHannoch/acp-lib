@@ -46,6 +46,8 @@ test("a reopened development session shows its restored timeline and status in t
       ["channel2", ["bob", "channel:channel1"], 0, false], ["channel1", ["alice"], 0, false]]);
     expect(state.channels[0]!.messages.map(message => message.content)).toEqual([systemPrompt, 'Participant: "bob"\n\nHi, I am Bob', "Hello Bob.", "The design is approved.", "Noted: the design is approved."]);
     expect(state.session).toMatchObject({ storage: database, sessionId: "development", lifecycle: "running", execution: "idle", revision: before.session!.revision });
+    expect(state.channels.map(channel => channel.modelCalls)).toEqual(before.channels.map(channel => channel.modelCalls));
+    expect(state.channels.flatMap(channel => channel.modelCalls).every(call => call.outcome === "succeeded")).toBe(true);
     // The served page data is the same restored state.
     expect(await (await fetch(new URL("/state", server.url))).json()).toEqual(state);
     expect((await (await fetch(server.url)).text())).toContain("session ' + session.lifecycle");

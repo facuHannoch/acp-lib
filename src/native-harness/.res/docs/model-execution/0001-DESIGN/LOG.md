@@ -97,3 +97,27 @@ both paging orders, delta drop and gap, and connection failure. No Stage 4 work
 is included. Re-review gate: `bun run typecheck --pretty false` passed;
 `bun test ./test` passed 285 tests, 0 failures, 3113 assertions across 40 files
 (51.79s), with local IPC access. Independent re-review is pending.
+
+Gro approved Stage 3 at `19c189e22ff8ccab2fb5a11d5becf00731482a31`;
+their independent typecheck passed and the full suite passed 285 tests, 0
+failures, 3113 assertions across 40 files (58.46s). The accepted limitations
+remain: usage recovery was checked across clean reopen, not SIGKILL; the crash
+fixtures do not report usage; and model metadata is one rewritten state record.
+
+## Stage 4: public flow and final gate
+
+A real scripted SQLite stdio child uses opt-in test hooks for a partial reply,
+stall, reported usage and a 1.5-second model deadline. Alice times out with an
+incomplete draft and one attempt after Bob finishes; no response or tool effect
+is committed for her timed-out call. Alice completes fresh work, then reopen
+retains the timeout, usage and Seen receipt. Separate public cases exercise a
+text-and-tool response followed by a later reply in final and stream modes over
+both in-process and stdio, checking message IDs and completion-before-dispatch.
+The development inspector displays durable call summaries and attempts after
+reopen. README, architecture and business rules document the implementation.
+
+Final implementation gate: `bun run typecheck --pretty false` passed;
+`bun test ./test` passed 290 tests, 0 failures, 3149 assertions across 41 files
+(69.67s), with local IPC access. Independent final review is pending. The test
+stall and stream behavior is supplied by opt-in `HARNESS_TEST_*` hooks around
+the scripted adapter; ordinary scripted files remain complete-response scripts.

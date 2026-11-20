@@ -100,7 +100,8 @@ iterations into an orange context card (with the initiating prompt highlighted)
 and a blue result card, including tool calls and results. Expand Inference request
 under its context for the exact JSON sent, or Provider response under its result
 for the original assistant message. Authorization headers are not captured.
-Snapshots remain unchanged as later turns run.
+Snapshots remain unchanged as later turns run. Each channel also shows durable
+model-call outcomes, attempts and provider-reported usage, including after reopen.
 
 The page receives live updates over Server-Sent Events and reconnects with a
 fresh snapshot. Set `HARNESS_INSPECTOR_PORT` on the agent to override port 3000
@@ -200,7 +201,8 @@ requests, immutable inspection snapshots and SSE updates/reconnection. Socket
 and inspector tests require permission to open local listeners. No runtime
 dependencies were added.
 
-This slice has no call limit, streaming or model timeout. A model or unexpected
+A model call has a 120-second deadline, including streaming and one eligible
+retry; tool execution and approval waits have separate limits. A model or unexpected
 execution failure ends that turn as failed; its channel accepts and runs new
 work, as do other channels. Tool calls of a failed or interrupted turn that
 have no recorded result are listed as uncertain, described to the model in later
@@ -294,9 +296,9 @@ Exhausted invocations are captured too. Script errors carry stable codes:
 Responses are predetermined: the final answer does not prove the model interpreted
 a tool result. Offline tests separately assert that `echo` executed and its actual
 result reached the next captured request. No inference or API calls occur.
-Each scripted instance has its own sequential position; use separate instances
-when independent channel scripts are needed. No channel routing, delays or
-conditional script steps are implemented yet.
+Each channel reserves a script step durably for every model attempt, including
+retries. A crash after reservation consumes that step. The ordinary script
+format has no channel routing, delays or conditional steps.
 
 ## Experimental protocol and in-process client
 
@@ -345,7 +347,7 @@ uses the same session assembly with OpenRouter, its tools and inspector wrappers
 
 The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
 requests are `initialize`, `config/validate`, `session/create`, `session/load` (durable servers
-only), `session/messages`, `session/status`, `session/suspend`,
+only), `session/messages`, `session/message/read`, `session/model-calls`, `session/status`, `session/suspend`,
 `session/resume`, `session/stop`, `channel/push` and `session/idle`, plus
 `channel/create`, `channel/edit`, `channel/suspend`, `channel/resume`,
 `channel/delete`, `channel/withdraw`, `channel/interrupt` and
@@ -353,10 +355,31 @@ only), `session/messages`, `session/status`, `session/suspend`,
 `session/export`, `session/import` and `transfer/{open,write,read,close}` on
 durable servers.
 Initialize reports an experimental subset and whether this server's acceptance
-is `memory` or `durable`. It supports final text and none/summary/full tool events;
+is `memory` or `durable`. It supports `final` or `stream` text and
+none/summary/full tool events;
 the `callbacks` list must be empty. Full tool events retain JSON argument
 and result strings; a completed tool event means execution returned, which can
 include an actionable `{ ok: false }` result. Thrown execution errors emit failed.
+
+Text defaults to `final`, which delivers one `message_completed` for each
+committed response containing text. With `stream`, `text_delta` events carry a
+stable `messageId`; completion uses the same ID. `text_incomplete` ends an
+uncommitted draft, and `text_gap` signals dropped deltas when a consumer falls
+behind. Drafts are not durable: after reconnect, reconcile the ID against
+committed messages. Large completions carry `reference: true` instead of parts;
+use `client.readMessage({ messageId, offset })` to read base64 UTF-8 byte pages
+of up to 524288 bytes, concatenating bytes before decoding. `client.modelCalls()`
+returns paged durable call summaries and per-attempt provider usage;
+`aggregateUsage` sums reported fields without inventing missing counts.
+
+A transient failure may retry the identical request once after one second,
+within the original 120-second deadline. The first accepted nonempty text delta
+closes retry in both subscription modes. Timeout or output limit fails the turn;
+partial text is not added to the timeline and tools from an incomplete response
+are not dispatched. Interrupt and stop fence late output; suspension lets the
+current call and iteration finish within the same deadline. Both transports
+bound live delivery; a fully blocked connection closes and stops the session,
+while already committed records remain recoverable.
 
 Configuration contains `version: 1`, `system`, `model`, `defaultPolicy` and a
 `policies` map. A model is `{ protocol: "scripted", script }` or
@@ -477,8 +500,8 @@ and closes that consumer's outstanding approvals. Accepted input remains durable
 Model exhaustion produces a failed turn
 event after acceptance, not a failed push. Idle includes pending and running work.
 
-This is not full protocol v1 conformance: holds, broader permission features, usage,
-streaming and progress heartbeats remain unimplemented. Protocol version 1
+This is not full protocol v1 conformance: broader permission features and
+progress heartbeats remain unimplemented. Protocol version 1
 identifies these experimental message shapes, not a full compatibility claim.
 
 ## Stdio server and client transport

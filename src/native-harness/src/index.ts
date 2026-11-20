@@ -91,7 +91,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       let draftId: string | undefined;
       try {
       const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools },
-        scripted: binding.scripted, store, attempt: binding.create, signal,
+        scripted: binding.scripted, store, attempt: binding.create, signal, settings: binding.settings,
         delta: ({ messageId, text }) => { draftId = messageId; emit({ channel: turn.channelId,
           event: { type: "text_delta", turnId: String(turn.turnId), messageId, text } }); },
         incomplete: ({ messageId, reason }) => emit({ channel: turn.channelId,

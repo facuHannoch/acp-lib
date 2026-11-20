@@ -12,7 +12,7 @@ export function observeSession(session: PersistentSession, inspection: Inspectio
   const refresh = () => {
     const view = session.snapshot();
     inspection.status(session.status(), storage, Object.fromEntries(view.channels.map(channel => [channel.channelId,
-      [...new Set(view.items.filter(item => item.channelId === channel.channelId).map(item => item.senderId))]])));
+      [...new Set(view.items.filter(item => item.channelId === channel.channelId).map(item => item.senderId))]])), view.modelCalls);
   };
   refresh();
   const stopEvents = session.subscribe(refresh), stopLifecycle = session.subscribeSession(refresh);

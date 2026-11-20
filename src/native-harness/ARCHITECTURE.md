@@ -23,6 +23,8 @@ Managed config, durable policy references, the execution gate and one-time
 approvals follow [decision 0016](.res/decisions/0016-configuration-permissions.md),
 with OpenRouter references in [decision 0017](.res/decisions/0017-openrouter-managed-config.md)
 and durable dispatch evidence in [decision 0018](.res/decisions/0018-tool-dispatch-evidence.md).
+Model call attempts, durable response commits, delivery and recovery follow
+[decision 0019](.res/decisions/0019-model-execution.md).
 The detailed
 [project spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-project.md)
 and [v1 spec](../../.res/somelogs.md/11-11+/harness/11-11-SPEC-harness-v1.md)
@@ -199,8 +201,10 @@ or as `harness serve --stdio`, using its own versioned JSON-RPC protocol. Hosts 
 the same API through stdio or in-process transports; configured host functions
 and history sources can cross the process boundary as host callbacks.
 
-V1 stores the identity core in SQLite through `bun:sqlite`; channel contexts are
-in memory with optional JSONL snapshots. Export/import moves the whole entity.
+Durable sessions use SQLite through `bun:sqlite`; the memory adapter shares the
+same lifecycle rules. Logical archive version 4 carries model-call summaries and
+script reservations inside session-file envelope version 1. Export/import moves
+the session and its saved configuration.
 Continuous backup and waking stopped processes for background work are deferred.
 
 Offline scripted scenarios verify turns, steering, interruption, limits and

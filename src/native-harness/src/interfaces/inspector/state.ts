@@ -1,5 +1,6 @@
 import type { Message, ToolDefinition } from "../../contracts/loop.ts";
 import type { ContextEntry } from "../../contracts/context.ts";
+import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import type { SessionStatus } from "../../contracts/session.ts";
 
 /** What the session's storage says right now; not a record of past activity. */
@@ -33,6 +34,8 @@ export interface InspectedChannel {
   participants: string[];
   messages: Message[];
   requests: InspectedInference[];
+  /** Durable call outcomes and per-attempt usage, including after reopen. */
+  modelCalls: ModelCallSummary[];
 }
 
 /** Separate, in-memory observation state. Never feeds model context. */
@@ -47,7 +50,7 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
     let value = channels.get(id);
     if (!value) {
       value = { id, pending: 0, running: false, participants: [],
-        messages: [{ role: "system", content: systemPrompt }], requests: [] };
+        messages: [{ role: "system", content: systemPrompt }], requests: [], modelCalls: [] };
       channels.set(id, value);
     }
     return value;
@@ -61,7 +64,7 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
     }),
     /** Replace activity fields with the storage's own account, so a reopened
      * session shows its lifecycle, pending input and unfinished turns at once. */
-    status(status: SessionStatus, storage: string, participants: Record<string, string[]> = {}) {
+    status(status: SessionStatus, storage: string, participants: Record<string, string[]> = {}, modelCalls: readonly ModelCallSummary[] = []) {
       session = { storage, sessionId: status.sessionId, lifecycle: status.lifecycle, execution: status.execution, revision: status.revision };
       for (const state of status.channels) {
         const value = channel(state.channelId);
@@ -72,6 +75,7 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
         value.unresolved = state.unresolvedInterruption ? structuredClone(state.unresolvedInterruption) : undefined;
         value.error = state.unresolvedInterruption ? `Turn ${state.unresolvedInterruption.turnId} ${state.unresolvedInterruption.status}: ${state.unresolvedInterruption.reason}` : undefined;
         value.participants = [...participants[state.channelId] ?? value.participants];
+        value.modelCalls = structuredClone(modelCalls.filter(call => call.channel === state.channelId));
       }
       publish();
     },

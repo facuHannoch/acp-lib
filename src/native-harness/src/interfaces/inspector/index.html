@@ -124,6 +124,10 @@
       if (!turns.has(id)) turns.set(id, []);
       turns.get(id).push(request);
     }
+    for (const call of channel.modelCalls ?? []) {
+      const id = Number(call.turnId);
+      if (!turns.has(id)) turns.set(id, []);
+    }
     for (const [turnId, requests] of turns) {
       main.append(node('h2', turnId === 'unknown' ? 'New turn' : 'Turn ' + turnId, 'turn-divider'));
       const entries = liveContext.entries.filter(e => e.channelId === channel.id && e.turnId === turnId);
@@ -131,7 +135,15 @@
       const notices = entries.filter(e => e.kind === 'channel_notice').map(e =>
         'Internal notice from channel ' + JSON.stringify(e.sourceChannelId) + ' to channel ' + JSON.stringify(e.channelId)
         + ' (another execution of this same agent):\n' + e.message.content);
-      if (!requests.length) main.append(node('p', channel.error ? 'Turn stopped before inference.' : 'Waiting for inference…', 'muted'));
+      const calls = (channel.modelCalls ?? []).filter(call => call.turnId === String(turnId));
+      for (const call of calls) {
+        const details = node('details');
+        details.dataset.key = channel.id + ':model-call:' + call.callId;
+        details.open = expanded.has(details.dataset.key);
+        details.append(node('summary', 'Model call ' + call.callId + ' · ' + call.outcome), json(call));
+        main.append(details);
+      }
+      if (!requests.length && !calls.length) main.append(node('p', channel.error ? 'Turn stopped before inference.' : 'Waiting for inference…', 'muted'));
       for (const [index, request] of requests.entries()) {
         const iteration = node('section', undefined, 'iteration');
         iteration.append(node('p', 'Iteration ' + (index + 1) + ' · ' + request.at, 'muted'));

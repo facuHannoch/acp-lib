@@ -33,6 +33,10 @@ export interface ScriptedServerOptions {
   effects?: string;
   /** Offline test-only request capture; one JSON record per inference. */
   requests?: string;
+  /** Opt-in scripted stall and shorter model deadline for offline process tests. */
+  stallChannel?: string;
+  streamResponses?: boolean;
+  modelTimeoutMs?: number;
   /** Directory for transfer files when there is no home. */
   transfers?: string;
   /** Smaller transfer limits for tests. */
@@ -111,11 +115,21 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages })}\n`);
         return selected(messages, definitions, signal);
       };
-      bindModelAttempt(model, { scripted: true, create: step => {
+      bindModelAttempt(model, { scripted: true, ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }), create: step => {
         const next = completeModelAttempt(scripted!.modelAt(step!));
-        return (request, signal) => {
+        return async function* (request, signal) {
           if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages: request.messages })}\n`);
-          return next(request, signal);
+          if (options.stallChannel === turn.channelId && step === 0) {
+            yield { type: "accepted" }; yield { type: "usage", usage: { inputTokens: 7 } };
+            yield { type: "text_delta", text: "Partial reply" };
+            if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+            return;
+          }
+          for await (const event of next(request, signal)) {
+            if (options.streamResponses && event.type === "response" && event.response.content)
+              yield { type: "text_delta", text: event.response.content };
+            yield event;
+          }
         };
       } });
       return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
