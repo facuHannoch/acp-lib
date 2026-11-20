@@ -45,3 +45,14 @@ call-store implementations belong to Stage 3; the other four cases pass. Stage 3
 must repeat channel usability and the scripted test on both real adapters, along
 with persistence and crash gates. No Stage 3 storage work is included here.
 Independent Stage 2 review is pending.
+
+Gro did not approve `c02868b`: final subscriptions received ephemeral text
+notifications that the current stdio parser rejects. The protocol publication
+filter now drops text_delta, text_gap and text_incomplete for final mode, after
+the runner's independent retry cutoff. A protocol regression test verifies
+receipts, message_completed, tool and turn events still pass. The expanded gate
+(`bun test test/model-final-filter.test.ts test/model-channel-double.test.ts
+ test/model-runner.test.ts test/model-stream-adapter.test.ts test/loop.test.ts`)
+passed 22 tests, 0 failures, 68 assertions. Full typecheck remains at the same
+27 deferred storage/reference errors; the real scripted scheduler remains
+blocked on Stage 3's call store. Independent re-review is pending.

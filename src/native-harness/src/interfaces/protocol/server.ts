@@ -91,6 +91,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     finally { opening = false; }
     opened.session.subscribe(value => {
       const event = structuredClone(value);
+      // Filtering is downstream of inference and its retry cutoff: a final-mode
+      // consumer must never see ephemeral stream events it cannot interpret.
+      if (subscription.text === "final" && (event.event.type === "text_delta" || event.event.type === "text_gap" || event.event.type === "text_incomplete")) return;
       if (event.event.type === "tool_call") {
         if (subscription.tools === "none") return;
         if (subscription.tools === "summary") { delete event.event.input; delete event.event.output; }
