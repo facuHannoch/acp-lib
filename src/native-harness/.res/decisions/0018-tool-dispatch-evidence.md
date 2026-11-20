@@ -37,6 +37,12 @@ the request and commit that result before committing the turn's terminal state;
 after that state no result is appended. Dispatched calls without results retain
 the existing uncertain-effect rule.
 
+The paired result for an undispatched approval closed by a single-turn interrupt
+uses `approval_cancelled_by_interrupt`; session stop uses
+`approval_cancelled_by_stop`. These are distinct from
+`approval_cancelled_by_suspension` and are not the turn's interrupt reason.
+Already-dispatched calls receive neither code and keep the uncertain-effect rule.
+
 Import accepts an absent list. A present list must consist of unique nonempty
 strings, each naming a call belonging to the same turn; otherwise import writes
 nothing. A suspended turn still cannot contain an unanswered call. The marker is

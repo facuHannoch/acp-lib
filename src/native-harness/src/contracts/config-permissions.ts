@@ -37,7 +37,8 @@ export type ApprovalAnswer = "allow_once" | "deny";
  * approval consumer; callbacks must remain empty. */
 export interface ApprovalInitialization { approval?: boolean }
 export type ApprovalCloseReason = "approval_denied" | "approval_timeout" | "approval_unhandled"
-  | "approval_disconnected" | "approval_cancelled_by_suspension";
+  | "approval_disconnected" | "approval_cancelled_by_suspension"
+  | "approval_cancelled_by_interrupt" | "approval_cancelled_by_stop";
 
 /** A skipped call records a paired tool result with this stable reason. */
 export interface SkippedToolResult { ok: false; code: ApprovalCloseReason | "policy_denied"; message: string }
