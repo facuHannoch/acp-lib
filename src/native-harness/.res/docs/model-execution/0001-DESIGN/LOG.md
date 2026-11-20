@@ -22,3 +22,16 @@ protocol, events and storage contracts. Standalone contract `tsc` passes. Full
 handle reference messages, storage format 5/archive 4 and model-call methods;
 no implementation changes are included in this revision. Gro's re-review is
 required before Stage 2.
+
+Gro approved Stage 1 at `a9b5f84f4d165409bc7d9e81ecf15009b484714c`.
+Standalone contract typecheck passed independently; the full typecheck's 27
+errors were accepted as pending storage and reference-consumer implementation.
+
+Stage 2 work in progress adds the logical-call runner, scripted reservation
+adapter, OpenRouter streaming translation and the turn's commit-before-dispatch
+path. Focused runner, adapter and loop checks pass using a call-store double.
+The existing scripted scheduler test currently fails because the real adapters do
+not yet implement the call-store methods assigned to Stage 3. A runner-level
+concurrency test is not yet evidence that the real channel remains usable after
+an interrupt. The stage boundary and independent review remain pending with Gro;
+no Stage 3 storage implementation has been started.

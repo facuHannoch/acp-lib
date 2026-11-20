@@ -28,9 +28,10 @@ test("continues through multiple tools and retains history for the next turn", a
   const execute = async (call: { name: string }) => call.name === "clock" ? "time" : "not allowed";
   const context = { build: () => structuredClone(messages), append: (message: Message) => { messages.push(message); }, dispatchTool };
   messages.push({ role: "user", content: "First" });
-  expect(await runTurn(context, model, [], execute)).toBe("completed");
+  const infer: Model = async (...args) => { const answer = await model(...args); context.append(answer); return answer; };
+  expect(await runTurn(context, infer, [], execute)).toBe("completed");
   messages.push({ role: "user", content: "Second" });
-  expect(await runTurn(context, model, [], execute)).toBe("completed");
+  expect(await runTurn(context, infer, [], execute)).toBe("completed");
   expect(messages.at(-1)).toEqual({ role: "assistant", content: "Done", calls: [] });
   expect(calls).toBe(3);
 });
@@ -42,7 +43,7 @@ test("the loop checkpoints at a boundary instead of inferring, and an aborted tu
     build: () => [], append: message => { recorded.push(message); }, dispatchTool,
     // Suspension is requested while the first iteration's tool is running.
     checkpoint: () => ++boundaries === 2,
-  }, async () => { inferences++; return { role: "assistant", content: null, calls: [{ id: "a", name: "clock", arguments: "{}" }] }; }, [], async () => "time");
+  }, async () => { inferences++; const answer: Message & { role: "assistant" } = { role: "assistant", content: null, calls: [{ id: "a", name: "clock", arguments: "{}" }] }; recorded.push(answer); return answer; }, [], async () => "time");
   expect(outcome).toBe("suspended");
   expect(inferences).toBe(1);
   expect(recorded.map(message => message.role)).toEqual(["assistant", "tool"]);

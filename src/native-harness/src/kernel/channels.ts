@@ -160,7 +160,8 @@ export function createChannelScheduler(
     void Promise.resolve().then(() => execute(turn, port)).then(() => {}, error => {
       // Record the failure unless stop already ended the turn; either way the
       // channel stays usable.
-      const failed = storage.finishTurn(turnId, { status: "failed", reason: String(error) });
+      const outcome = error && typeof error === "object" && "outcome" in error && typeof error.outcome === "string" ? error.outcome : String(error);
+      const failed = storage.finishTurn(turnId, { status: "failed", reason: outcome });
       release();
       if (failed.ok && failed.value.finished) { ended(failed.value.turn, failed.revision); settleChannel(channelId, failed.revision); }
     }).then(() => {

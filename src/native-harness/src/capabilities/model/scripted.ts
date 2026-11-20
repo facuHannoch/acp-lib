@@ -61,14 +61,15 @@ export function createScriptedModel(script: unknown, startAt = 0) {
   }
   const requests: CapturedRequest[] = [];
   let position = startAt;
-  const model: Model = async (messages, tools) => {
+  const modelAt = (step: number): Model => async (messages, tools) => {
     requests.push(structuredClone({ messages: [...messages], tools: [...tools] }));
-    const answer = answers[position];
+    const answer = answers[step];
     if (!answer) throw new ScriptedModelError("script_exhausted", `Script exhausted at model call ${requests.length}; ${answers.length} responses configured`);
-    position++;
+    position = step + 1;
     return structuredClone(answer);
   };
-  return { model, requests: () => structuredClone(requests), remaining: () => answers.length - position };
+  const model: Model = (messages, tools, signal) => modelAt(position)(messages, tools, signal);
+  return { model, modelAt, requests: () => structuredClone(requests), remaining: () => answers.length - position };
 }
 
 export async function loadScriptedModel(path: string) {
@@ -79,4 +80,17 @@ export async function loadScriptedModel(path: string) {
   try { script = JSON.parse(text); }
   catch (error) { throw new ScriptedModelError("invalid_script", `Invalid JSON in ${path}: ${String(error)}`); }
   return createScriptedModel(script);
+}
+
+/** Run the step reserved by storage. Attempts never derive position from replies. */
+export function scriptedAttempt(script: unknown, step: number): import("../../contracts/model-execution.ts").ModelAttempt {
+  const scripted = createScriptedModel(script, step);
+  return async function* (request, signal) {
+    try {
+      const answer = await scripted.model(request.messages, request.tools, signal);
+      if (!signal.aborted) yield { type: "response", response: { ...answer, stopReason: answer.calls.length ? "tool_calls" : "complete" } };
+    } catch (error) {
+      if (!signal.aborted) yield { type: "failure", kind: "invalid_request", message: String(error) };
+    }
+  };
 }

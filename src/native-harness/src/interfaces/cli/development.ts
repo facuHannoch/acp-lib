@@ -6,7 +6,9 @@ import type { Model } from "../../contracts/loop.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import { buildSharedContext } from "../../capabilities/context/build.ts";
 import { openRouter } from "../../capabilities/model/openrouter.ts";
-import { createScriptedModel } from "../../capabilities/model/scripted.ts";
+import { createScriptedModel, scriptedAttempt } from "../../capabilities/model/scripted.ts";
+import { bindModelAttempt } from "../../capabilities/model/attempt.ts";
+import { openRouterAttempt } from "../../capabilities/model/openrouter-stream.ts";
 import { createDashboardWork } from "../../capabilities/tools/dashboard.ts";
 import { createScenarioTools, scenarioDefinitions } from "../../capabilities/tools/scenario.ts";
 import { createMemoryStorageAdapter } from "../../state/storage/memory.ts";
@@ -87,7 +89,6 @@ export async function openDevelopment(options: DevelopmentOptions) {
 
   const inspection = createInspection(systemPrompt, scenarioDefinitions);
   const dashboard = createDashboardWork(options.dashboardWait);
-  const scripted = new Map<string, Model>();
   const session: PersistentSession = createSession({
     systemPrompt, storage, config: managedConfig,
     configureTurn(turn, notify) {
@@ -97,17 +98,25 @@ export async function openDevelopment(options: DevelopmentOptions) {
           const provider = (options.providerFactory ?? openRouter)(apiKey!, providerModel!.model, onRequest);
           return (messages, tools, signal) => { scenario.beginInference(); return provider(messages, tools, signal); };
         }
-        let channel = scripted.get(turn.channelId);
-        if (!channel) {
-          const script = scripts.channels[turn.channelId] ?? scripts.fallback;
-          if (!script) throw new Error(`No script for channel ${turn.channelId}`);
-          // Continue each channel's script after the responses already recorded for it.
-          const consumed = session.snapshot().timeline.filter(entry => entry.channelId === turn.channelId && entry.message.role === "assistant").length;
-          channel = createScriptedModel(script, consumed).model; scripted.set(turn.channelId, channel);
-        }
-        const next = channel;
+        const script = scripts.channels[turn.channelId] ?? scripts.fallback;
+        if (!script) throw new Error(`No script for channel ${turn.channelId}`);
+        const next = createScriptedModel(script).model;
         return (messages, tools, signal) => { scenario.beginInference(); onRequest(JSON.stringify({ messages, tools })); return next(messages, tools, signal); };
       }, turn.turnId);
+      if (scripts) {
+        const script = scripts.channels[turn.channelId] ?? scripts.fallback;
+        if (!script) throw new Error(`No script for channel ${turn.channelId}`);
+        bindModelAttempt(model, { scripted: true, create: step => {
+          const next = scriptedAttempt(script, step!);
+          return async function* (request, signal) {
+            scenario.beginInference(); inspection.request(turn.channelId, JSON.stringify(request), turn.turnId);
+            for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; }
+          };
+        } });
+      } else if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => {
+        const next = openRouterAttempt(apiKey!, providerModel!.model, fetch, body => inspection.request(turn.channelId, body, turn.turnId));
+        return async function* (request, signal) { scenario.beginInference(); for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; } };
+      } });
       return { model, tools: scenarioDefinitions, executeTool: scenario.execute };
     },
   });

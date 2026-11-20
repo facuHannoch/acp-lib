@@ -6,6 +6,8 @@ import { createMemoryStorageAdapter } from "./state/storage/memory.ts";
 import { buildContext } from "./capabilities/context/build.ts";
 import { createChannelScheduler } from "./kernel/channels.ts";
 import { runTurn } from "./kernel/loop.ts";
+import { runModelCall } from "./capabilities/model/runner.ts";
+import { getModelAttempt } from "./capabilities/model/attempt.ts";
 import { createApprovalService, dispatchWithPolicy } from "./governance/permissions/gate.ts";
 import { toolDecision } from "./governance/policy/resolve.ts";
 import type { Message } from "./contracts/loop.ts";
@@ -82,7 +84,25 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
           event: { ...event, turnId: String(turn.turnId),
             ...(event.type === "message_completed" && recorded ? { messageId: String(recorded.seq) } : {}) } });
       },
-    }, services.model, services.tools, services.executeTool);
+    }, async (messages, tools, signal) => {
+      const view = read();
+      const itemIds = view.items.filter(item => item.turnId === turn.turnId).map(item => item.itemId);
+      const binding = getModelAttempt(services.model);
+      const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools },
+        scripted: binding.scripted, store, attempt: binding.create, signal,
+        delta: ({ messageId, text }) => emit({ channel: turn.channelId,
+          event: { type: "text_delta", turnId: String(turn.turnId), messageId, text } }),
+        incomplete: ({ messageId, reason }) => emit({ channel: turn.channelId,
+          event: { type: "text_incomplete", turnId: String(turn.turnId), messageId, reason } }),
+        receipt: (milestone, items, revision) => emit({ channel: turn.channelId, revision,
+          event: { type: "items_receipt", turnId: String(turn.turnId), items, milestone } }),
+      });
+      recorded = { seq: result.entry.seq, revision: result.revision }; changes.publish();
+      if (result.response.content) emit({ channel: turn.channelId, revision: result.revision,
+        event: { type: "message_completed", turnId: String(turn.turnId), messageId: result.messageId,
+          parts: [{ type: "text", text: result.response.content }] } });
+      return result.response;
+    }, services.tools, services.executeTool);
   };
   const scheduler = createChannelScheduler(store, options.wrapTurn?.(run) ?? run, emit, lifecycle.publish);
   agent = scheduler.agent;

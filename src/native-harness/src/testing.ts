@@ -6,6 +6,8 @@ import { createSession } from "./index.ts";
 import type { SessionStorage, SessionStorageAdapter } from "./contracts/storage.ts";
 import type { ExecuteTool, Model } from "./contracts/loop.ts";
 import { createScriptedModel } from "./capabilities/model/scripted.ts";
+import { bindModelAttempt, completeModelAttempt } from "./capabilities/model/attempt.ts";
+import { openRouterAttempt } from "./capabilities/model/openrouter-stream.ts";
 import { openRouter } from "./capabilities/model/openrouter.ts";
 import { scenarioDefinitions } from "./capabilities/tools/scenario.ts";
 import { echoDefinition, executeEcho } from "./capabilities/tools/echo.ts";
@@ -99,20 +101,23 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const session = createSession({ systemPrompt: config.system, config, storage, configureTurn(turn) {
       if (config.model.protocol === "openrouter") {
         const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
+        if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "") });
         return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
       }
       let scripted = models.get(turn.channelId);
-      if (!scripted) {
-        // A script is consumed one response per recorded assistant message, so
-        // a reopened session continues where the previous process stopped.
-        const consumed = session.snapshot().timeline.filter(entry => entry.channelId === turn.channelId && entry.message.role === "assistant").length;
-        scripted = createScriptedModel(script, consumed); models.set(turn.channelId, scripted);
-      }
+      if (!scripted) { scripted = createScriptedModel(script); models.set(turn.channelId, scripted); }
       const selected = scripted.model;
       const model: Model = (messages, definitions, signal) => {
         if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages })}\n`);
         return selected(messages, definitions, signal);
       };
+      bindModelAttempt(model, { scripted: true, create: step => {
+        const next = completeModelAttempt(scripted!.modelAt(step!));
+        return (request, signal) => {
+          if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages: request.messages })}\n`);
+          return next(request, signal);
+        };
+      } });
       return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
     } });
     return { session, config, close() { opened.value.close(); }, commitConfig() {

@@ -5,7 +5,7 @@ import type { TurnContext } from "../contracts/context.ts";
  * checkpointed for suspension. Every pass starts at the iteration boundary. */
 export async function runTurn(
   context: TurnContext,
-  model: Model,
+  infer: Model,
   tools: readonly ToolDefinition[],
   executeTool: ExecuteTool,
 ): Promise<"completed" | "suspended"> {
@@ -14,17 +14,10 @@ export async function runTurn(
     // Suspension wins the boundary: checkpoint without taking input or inferring.
     if (context.checkpoint?.()) return "suspended";
     context.drainNotices?.();
-    const answer = await model(context.build(), tools, signal);
+    const answer = await infer(context.build(), tools, signal);
     // A stopped turn is already interrupted; its late answer must not be recorded.
     signal?.throwIfAborted();
-    // Record the requesting assistant before its results, preserving the order
-    // required to pair every tool result with the call that produced it.
-    context.append(answer);
-    if (answer.content) context.emit?.({ type: "message_completed", parts: [{ type: "text", text: answer.content }] });
-    // Seen means the harness holds the model's output, so the output is made
-    // durable first. A crash between the two commits leaves the reply recorded
-    // and the receipt unadvanced, never a receipt without its reply.
-    context.confirm?.("seen");
+    // The injected inference boundary returns only a committed response.
     if (answer.calls.length === 0) {
       if (context.finish?.() ?? true) return "completed";
       continue;

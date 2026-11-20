@@ -18,9 +18,8 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
 }
 
-/** Returns one complete assistant response, without executing tools. Resolving
- * is provider evidence that the request was delivered and seen; rejecting is
- * not. Honors `signal`: stop aborts in-flight inference (decision 0013). */
+/** Legacy complete-response adapter. Wrap through the model call runner for
+ * validation, evidence and atomic commit (decision 0019). Honors `signal`. */
 export type Model = (
   messages: readonly Message[], tools: readonly ToolDefinition[], signal?: AbortSignal,
 ) => Promise<Extract<Message, { role: "assistant" }>>;
