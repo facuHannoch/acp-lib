@@ -86,3 +86,14 @@ currently serialized as one state record, so updates copy and rewrite that recor
 as call history grows; performance at large call counts has not been benchmarked.
 Independent Stage 3 review is pending. Stage 4 still requires the real scripted
 stdio stall/deadline scenario, documentation and final independent review.
+
+Gro did not approve Stage 3 at `2ed06ec`: summary pagination discarded earlier
+records when a later summary exceeded a frame, and in-process delivery lacked
+the bounded live queue. The fix returns a continuation after earlier whole
+summaries and fails only when an oversized summary is first on its page. The
+in-process transport now uses the same bounded queue as stdio; nondroppable
+overflow closes the connection and stops the session. Regression tests cover
+both paging orders, delta drop and gap, and connection failure. No Stage 4 work
+is included. Re-review gate: `bun run typecheck --pretty false` passed;
+`bun test ./test` passed 285 tests, 0 failures, 3113 assertions across 40 files
+(51.79s), with local IPC access. Independent re-review is pending.

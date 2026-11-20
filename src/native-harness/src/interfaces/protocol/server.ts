@@ -283,8 +283,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const page = []; let bytes = 0;
       for (const call of calls.slice(at + 1)) {
         const size = new TextEncoder().encode(JSON.stringify(call)).length + 1;
-        if (size > MAX_FRAME_BYTES - 1024) throw new Fault("transfer_limit", "Call summary exceeds frame limit");
-        if (page.length >= limit || bytes + size > MAX_FRAME_BYTES - 1024) break;
+        if (page.length >= limit) break;
+        if (size > MAX_FRAME_BYTES - 1024) {
+          if (page.length) break;
+          throw new Fault("transfer_limit", "Call summary exceeds frame limit");
+        }
+        if (bytes + size > MAX_FRAME_BYTES - 1024) break;
         page.push(call); bytes += size;
       }
       return { calls: page, ...(at + 1 + page.length < calls.length ? { next: page.at(-1)!.callId } : {}) };
