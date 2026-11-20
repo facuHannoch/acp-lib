@@ -31,12 +31,15 @@ export async function runTurn(
     }
 
     for (const call of answer.calls) {
-      context.emit?.({ type: "tool_call", id: call.id, name: call.name, status: "started", input: call.arguments });
       try {
-        const content = await executeTool(call, signal);
+        const result = await context.dispatchTool(call, executeTool);
         signal?.throwIfAborted();
-        context.append({ role: "tool", callId: call.id, content });
-        context.emit?.({ type: "tool_call", id: call.id, name: call.name, status: "completed", output: content });
+        // A skip is already paired synchronously by the gate, so interruption
+        // cannot end a turn between its approval closure and its result commit.
+        if (result.dispatched) {
+          context.append({ role: "tool", callId: call.id, content: result.content });
+          context.emit?.({ type: "tool_call", id: call.id, name: call.name, status: "completed", output: result.content });
+        }
       } catch (error) {
         // A stopped turn has already reported its interruption; stay silent after it.
         if (!signal?.aborted) context.emit?.({ type: "tool_call", id: call.id, name: call.name, status: "failed", output: String(error) });

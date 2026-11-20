@@ -94,7 +94,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       hit("tool");
       return result;
     };
-    const session = createSession({ systemPrompt: config.system, storage, configureTurn(turn) {
+    const session = createSession({ systemPrompt: config.system, config, storage, configureTurn(turn) {
       if (config.model.protocol === "openrouter") {
         const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
         return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };

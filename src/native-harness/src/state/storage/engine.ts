@@ -163,7 +163,7 @@ export function recover(tables: Tables, upgrade?: () => void): void {
         && tables.channel(turn.channelId)?.lifecycle === "suspended";
       const live = tables.turns().filter(turn => (turn.state.status === "running" || turn.state.status === "suspended") && !kept(turn));
       for (const turn of live) tables.putTurn({ ...turn, state: { status: "interrupted",
-        reason: "The owning process exited before this turn finished", uncertainCallIds: unanswered(tables, turn.turnId) } });
+        reason: "The owning process exited before this turn finished", uncertainCallIds: uncertain(tables, turn) } });
       const reopened = tables.channels().filter(channel => channel.lifecycle === "suspending");
       for (const channel of reopened) tables.putChannel({ ...channel, lifecycle: "open" });
       if (live.length || reopened.length || meta.lifecycle !== "running") { meta.lifecycle = "running"; changed = true; }
@@ -181,9 +181,19 @@ function unanswered(tables: Tables, turnId: number): string[] {
   return open;
 }
 
+/** Older states lack dispatch evidence and retain the conservative old rule. */
+function uncertain(tables: Tables, turn: TurnRow): string[] {
+  const open = unanswered(tables, turn.turnId);
+  if (turn.state.status !== "running" && turn.state.status !== "suspended") return open;
+  const marked = turn.state.dispatchedCallIds;
+  return marked === undefined ? open : open.filter(id => marked.includes(id));
+}
+
 /** The contract over any backend. `ownerKey` is the key passed to this open. */
 export function createEngine(tables: Tables, ownerKey: string, release: () => void, config?: ManagedConfig, incompatibleViewOnly = false): SessionStorage {
   let closed = false;
+  // This is the config validated at open, not the separately mutable saved copy.
+  const ownerSnapshot = config === undefined ? undefined : structuredClone(config);
   const now = () => new Date().toISOString();
 
   function run<T>(work: (meta: Meta) => T, readOnly = false): StorageResult<T> {
@@ -221,7 +231,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     return { turn: full(turn), items, entries };
   }
   function interrupt(turn: TurnRow, status: "failed" | "interrupted", reason: string): TurnRow {
-    const ended: TurnRow = { ...turn, state: { status, reason, uncertainCallIds: unanswered(tables, turn.turnId) } };
+    const ended: TurnRow = { ...turn, state: { status, reason, uncertainCallIds: uncertain(tables, turn) } };
     tables.putTurn(ended);
     settle(turn.channelId);
     return ended;
@@ -243,7 +253,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     return { ...channel, participantIds: [...spoke] };
   };
   const legacy = "__legacy_allow";
-  const activeConfig = config ?? { version: 1 as const, system: "", model: { protocol: "scripted" as const, script: "legacy" }, defaultPolicy: legacy,
+  const activeConfig = ownerSnapshot ?? { version: 1 as const, system: "", model: { protocol: "scripted" as const, script: "legacy" }, defaultPolicy: legacy,
     policies: { [legacy]: { fallback: "allow" as const, tools: {} } } };
   const requireCompatible = () => {
     if (!referencesCompatible(tables, activeConfig)) fail("incompatible", "A stored policy no longer exists");
@@ -255,9 +265,9 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     catch { return false; }
   };
   const resolve = (explicit?: string | null, channel?: string) => {
-    const selected = explicit ?? channel ?? config?.defaultPolicy ?? legacy;
-    if (config && !Object.hasOwn(config.policies, selected)) fail("invalid_policy", `Unknown policy: ${selected}`);
-    if (!config && selected !== legacy) fail("invalid_policy", `Unknown policy: ${selected}`);
+    const selected = explicit ?? channel ?? ownerSnapshot?.defaultPolicy ?? legacy;
+    if (ownerSnapshot && !Object.hasOwn(ownerSnapshot.policies, selected)) fail("invalid_policy", `Unknown policy: ${selected}`);
+    if (!ownerSnapshot && selected !== legacy) fail("invalid_policy", `Unknown policy: ${selected}`);
     return selected;
   };
 
@@ -282,7 +292,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
       const target = tables.channel(input.channelId);
       if (notice && input.explicitPolicy != null) fail("invalid_input", "Notices cannot override policy");
-      if (notice && config && input.sourceTurnId === undefined) fail("invalid_input", "A notice needs its executing source turn");
+      if (notice && ownerSnapshot && input.sourceTurnId === undefined) fail("invalid_input", "A notice needs its executing source turn");
       const resolved = resolve(input.explicitPolicy, target?.policy);
       let inherited: string[] = [];
       if (notice && input.sourceTurnId !== undefined) {
@@ -350,11 +360,22 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           if (used.has(call.id)) fail("invalid_input", `Duplicate tool call ID: ${call.id}`);
           used.add(call.id);
         }
+        if (message.calls.length && turn.state.status === "running" && turn.state.dispatchedCallIds === undefined)
+          tables.putTurn({ ...turn, state: { ...turn.state, dispatchedCallIds: [] } });
       } else if (!open.includes(message.callId)) fail("invalid_input", `No unanswered call ${message.callId} in this turn`);
       const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId,
         from: message.role === "tool" ? "tool" : "agent", message: structuredClone(message) };
       tables.addEntry(entry);
       return entry;
+    }),
+
+    markToolDispatched: (turnId, callId) => run(meta => {
+      const turn = running(turnId);
+      const state = turn.state.status === "running" ? turn.state : fail("invalid_state", "Turn is not running");
+      if (!text(callId) || !unanswered(tables, turnId).includes(callId)
+        || state.dispatchedCallIds?.includes(callId)) fail("invalid_state", "Call is not an undispatched outstanding call of this turn");
+      tables.putTurn({ ...turn, state: { ...state, dispatchedCallIds: [...(state.dispatchedCallIds ?? []), callId] } });
+      seq(meta);
     }),
 
     confirmReceipts: (turnId, milestone) => run(meta => {
@@ -394,7 +415,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const last = tables.entriesOfTurn(turnId).at(-1);
       if (last?.message.role === "assistant" && !last.message.calls.length && !tables.pendingItems(turn.channelId).length)
         fail("invalid_state", "This turn is finished; complete it instead of checkpointing");
-      const saved: TurnRow = { ...turn, state: { status: "suspended",
+      const saved: TurnRow = { ...turn, state: { status: "suspended", ...(turn.state.status === "running" && turn.state.dispatchedCallIds !== undefined ? { dispatchedCallIds: turn.state.dispatchedCallIds } : {}),
         checkpoint: { nextStep: "inference", afterSeq: last?.seq ?? turn.startedSeq, policyFingerprint: turnFingerprint(turn) } } };
       tables.putTurn(saved); settle(turn.channelId); seq(meta);
       return full(saved);
@@ -422,7 +443,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && ["open", "suspending"].includes(tables.channel(turn.channelId)?.lifecycle ?? "retired"));
       const foreign = saved.find(turn => !compatible(turn));
       if (foreign) fail("incompatible", `Turn ${foreign.turnId} was checkpointed under a different configuration`);
-      const turns = saved.map(turn => { const live: TurnRow = { ...turn, state: { status: "running" } }; tables.putTurn(live); return full(live); });
+      const turns = saved.map(turn => { const live: TurnRow = { ...turn, state: { status: "running", ...(turn.state.status === "suspended" && turn.state.dispatchedCallIds !== undefined ? { dispatchedCallIds: turn.state.dispatchedCallIds } : {}) } }; tables.putTurn(live); return full(live); });
       meta.lifecycle = "running"; seq(meta);
       return { session: session(meta), turns };
     }),
@@ -491,7 +512,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const row: ChannelRow = { ...channel, lifecycle: "open" };
       tables.putChannel(row);
       let turn: StoredTurn | undefined;
-      if (cont) { const live: TurnRow = { ...cont, state: { status: "running" } }; tables.putTurn(live); turn = full(live); }
+      if (cont) { const live: TurnRow = { ...cont, state: { status: "running", ...(cont.state.status === "suspended" && cont.state.dispatchedCallIds !== undefined ? { dispatchedCallIds: cont.state.dispatchedCallIds } : {}) } }; tables.putTurn(live); turn = full(live); }
       seq(meta);
       return { channel: view(row), ...(turn ? { turn } : {}) };
     }),
@@ -526,6 +547,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return { interrupted: true as const, turn: full(ended) };
     }),
 
+    ownerConfig: () => run(() => ownerSnapshot, true),
     executionCompatible: () => run(() => !incompatibleViewOnly && referencesCompatible(tables, activeConfig), true),
     importedConfig: () => run(() => tables.getConfig(), true),
     saveConfig: value => run(() => {

@@ -82,15 +82,32 @@ export function validateArchive(value: unknown): SessionArchive {
   }
 
   const entries = new Map<number, (typeof snapshot.timeline)[number]>();
+  const calls = new Map<number, { all: Set<string>; outstanding: Set<string> }>();
   previous = 0;
   for (const entry of snapshot.timeline) {
     const turn = entry && turns.get(entry.turnId), message = entry?.message;
     if (!turn || !int(entry.seq) || entry.seq <= previous || entry.seq > revision || entry.channelId !== turn.channelId
       || !str(entry.at) || !str(entry.from) || !message) bad("Invalid timeline entry");
     if (message.role === "user") { if (typeof message.content !== "string") bad("Invalid input entry"); }
-    else if (message.role === "assistant") { if (!Array.isArray(message.calls)) bad("Invalid assistant entry"); }
-    else if (message.role !== "tool" || !str(message.callId)) bad("Invalid timeline message");
+    else if (message.role === "assistant") {
+      if (!Array.isArray(message.calls)) bad("Invalid assistant entry");
+      const state = calls.get(entry.turnId) ?? { all: new Set<string>(), outstanding: new Set<string>() };
+      for (const call of message.calls) {
+        if (!str(call.id) || state.all.has(call.id)) bad("Invalid or duplicate tool call ID");
+        state.all.add(call.id); state.outstanding.add(call.id);
+      }
+      calls.set(entry.turnId, state);
+    } else if (message.role === "tool") {
+      if (!str(message.callId) || !calls.get(entry.turnId)?.outstanding.delete(message.callId)) bad("Tool result has no matching call");
+    } else bad("Invalid timeline message");
     previous = entry.seq; entries.set(entry.seq, entry);
+  }
+  for (const turn of snapshot.turns) {
+    const { all, outstanding } = calls.get(turn.turnId) ?? { all: new Set<string>(), outstanding: new Set<string>() };
+    const dispatched = (turn.state as { dispatchedCallIds?: unknown }).dispatchedCallIds;
+    if (dispatched !== undefined && (!Array.isArray(dispatched) || dispatched.some(id => !str(id) || !all.has(id))
+      || new Set(dispatched).size !== dispatched.length)) bad("Invalid dispatched call evidence");
+    if (turn.state.status === "suspended" && outstanding.size) bad("Checkpoint has an unanswered tool call");
   }
 
   const ids = new Set<string>(), accepted = new Set<number>();

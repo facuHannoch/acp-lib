@@ -48,7 +48,7 @@ export function sessionStatus(view: StorageSnapshot, stopped: boolean, incompati
 export function createChannelScheduler(
   storage: SessionStorage, execute: TurnExecutor, emit: EventSink = () => {}, emitSession: SessionEventSink = () => {},
 ): ChannelScheduler {
-  const live = new Map<string, { turnId: number; abort: AbortController }>();
+  const live = new Map<string, { turnId: number; abort: AbortController; suspension: AbortController }>();
   // Channels that may have pending input. Only an optimization and an idle
   // signal: beginTurn remains the authority on whether a turn starts.
   const waiting = new Set<string>();
@@ -110,8 +110,8 @@ export function createChannelScheduler(
   }
 
   function run(turn: ActiveTurn) {
-    const { channelId, turnId } = turn, abort = new AbortController();
-    live.set(channelId, { turnId, abort });
+    const { channelId, turnId } = turn, abort = new AbortController(), suspensionSignal = new AbortController();
+    live.set(channelId, { turnId, abort, suspension: suspensionSignal });
     // Called with the commit that ends or parks the turn, before its event, so
     // an observer reacting to that event already sees the channel as free.
     const release = () => { if (live.get(channelId)?.turnId === turnId) live.delete(channelId); };
@@ -119,6 +119,7 @@ export function createChannelScheduler(
     const fenced = (message: string): never => { throw new Error(`Turn ${turnId} can no longer be advanced: ${message}`); };
     const port: TurnPort = {
       signal: abort.signal,
+      suspensionSignal: suspensionSignal.signal,
       take() {
         const taken = storage.takePending(turnId);
         if (!taken.ok) { if (taken.error.code !== "not_running" && taken.error.code !== "channel_suspended") fenced(taken.error.message); return; }
@@ -235,7 +236,10 @@ export function createChannelScheduler(
       let settle!: (result: ControlResult<ChannelStatus>) => void;
       const promise = new Promise<ControlResult<ChannelStatus>>(resolve => { settle = resolve; });
       channelSuspensions.set(channelId, { promise, settle });
-      emitState(channelId, begun.revision);
+      // Install the waiter before aborting: a synchronous cancellation observer
+      // may call stop and must be able to settle this very suspension.
+      if (before === "open") live.get(channelId)?.suspension.abort();
+      if (channelSuspensions.has(channelId)) emitState(channelId, begun.revision);
       // The channel's turn reaches its boundary on its own and settles this at
       // the commit that checkpoints, completes or interrupts it.
       return promise;
@@ -271,7 +275,13 @@ export function createChannelScheduler(
       return outcome;
     }),
     interrupt: (channelId, turnId, reason = "interrupted by request") => control(
-      () => storage.interruptTurn(channelId, turnId, reason), (outcome, revision) => {
+      () => {
+        const handle = live.get(channelId);
+        // Close approval and record its paired result before terminal storage
+        // state. Reject invalid reasons without touching the live turn.
+        if (handle?.turnId === turnId && typeof reason === "string" && reason.trim()) handle.abort.abort(new Error(reason));
+        return storage.interruptTurn(channelId, turnId, reason);
+      }, (outcome, revision) => {
         if (!outcome.interrupted) return outcome;
         // Commit first, then cancel: whatever the aborted work returns is already fenced.
         const handle = live.get(channelId);
@@ -304,11 +314,17 @@ export function createChannelScheduler(
       const begun = storage.beginSuspend();
       if (!begun.ok) return Promise.resolve({ ok: false, error: begun.error });
       if (begun.value.lifecycle === "suspended") { lifecycle = "suspended"; return Promise.resolve({ ok: true, status: status() }); }
-      if (lifecycle === "running") emitSession({ type: "lifecycle", lifecycle: "suspending", revision: begun.revision });
+      const announce = lifecycle === "running";
       lifecycle = "suspending";
       let settle!: (result: LifecycleResult) => void;
       const promise = new Promise<LifecycleResult>(resolve => { settle = resolve; });
       suspension = { promise, settle };
+      // Observers can synchronously stop the session while an approval closes.
+      // Make the waiter visible before notifying any of them.
+      for (const handle of live.values()) handle.suspension.abort();
+      if (!suspension) return promise;
+      if (announce) emitSession({ type: "lifecycle", lifecycle: "suspending", revision: begun.revision });
+      if (!suspension) return promise;
       // Active turns reach their boundary on their own; with none, finish now.
       settleSuspension();
       return promise;
@@ -333,9 +349,10 @@ export function createChannelScheduler(
       if (stopped) return status();
       stopped = true;
       const suspending = [...channelSuspensions.keys()];
-      // Commit the interruption first so nothing a cancelled call returns can be recorded.
+      // Cancellation synchronously closes pending approvals and records their
+      // skip before the storage transaction ends each turn.
+      for (const { abort } of live.values()) abort.abort(Object.assign(new Error(reason), { approvalCloseCode: "approval_cancelled_by_stop" }));
       const interrupted = storage.interruptActive(reason);
-      for (const { abort } of live.values()) abort.abort(new Error(reason));
       live.clear();
       if (interrupted.ok) {
         for (const turn of interrupted.value) ended(turn, interrupted.revision);

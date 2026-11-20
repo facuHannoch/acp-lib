@@ -37,6 +37,7 @@ export function createInProcessTransport(endpoint: ProtocolEndpoint): ClientTran
     },
     close() {
       if (closed) return;
+      endpoint.disconnect?.();
       closed = true; unsubscribe(); listeners.clear(); sessionListeners.clear();
       for (const listener of closeListeners) listener();
       closeListeners.clear();

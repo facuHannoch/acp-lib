@@ -18,6 +18,8 @@ function message(value: any): value is RpcResponse | RpcNotification | RpcSessio
       case "turn_started": case "turn_took": return strings(event.items);
       case "items_receipt": return strings(event.items) && ["delivered", "seen"].includes(event.milestone);
       case "turn_suspended": case "turn_resumed": return true;
+      case "approval_requested": return typeof event.requestId === "string" && typeof event.channel === "string"
+        && typeof event.toolCallId === "string" && typeof event.tool === "string" && typeof event.arguments === "string";
       case "turn_ended": return ["completed", "failed", "interrupted"].includes(event.outcome)
         && (event.error === undefined || typeof event.error === "string")
         && (event.uncertainCalls === undefined || strings(event.uncertainCalls));

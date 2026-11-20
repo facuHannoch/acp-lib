@@ -89,7 +89,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const dashboard = createDashboardWork(options.dashboardWait);
   const scripted = new Map<string, Model>();
   const session: PersistentSession = createSession({
-    systemPrompt, storage,
+    systemPrompt, storage, config: managedConfig,
     configureTurn(turn, notify) {
       const scenario = createScenarioTools(turn, dashboard, notify);
       const model = observeModel(inspection, turn.channelId, onRequest => {

@@ -38,6 +38,7 @@ test("policy precedence and fingerprints depend on named contributing rules", ()
   expect(toolDecision(config, ["default", "strict"], "edit")).toBe("deny");
   expect(toolDecision(config, ["default", "review"], "edit")).toBe("ask");
   expect(toolDecision(config, ["default", "strict"], "safe")).toBe("allow");
+  expect(() => toolDecision(config, [], "safe")).toThrow("without taken-input policies");
   expect(policyFingerprint(config, ["review", "strict", "review"])).toBe(policyFingerprint(config, ["strict", "review"]));
   const changed = validateManagedConfig({ ...value, policies: { ...value.policies, default: { fallback: "deny", tools: {} } } });
   expect(policyFingerprint(changed, ["strict"])).toBe(policyFingerprint(config, ["strict"]));

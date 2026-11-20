@@ -11,6 +11,7 @@ export function resolvePolicy(config: ManagedConfig, explicit?: string | null, c
 }
 /** A taken input contributes all its policy names; no pending input is passed. */
 export function toolDecision(config: ManagedConfig, references: readonly string[], tool: string): ToolDecision {
+  if (!references.length) throw new Error("Cannot authorize a turn without taken-input policies");
   let result: ToolDecision = "allow";
   for (const reference of new Set(references)) {
     if (!Object.hasOwn(config.policies, reference)) throw new PolicyError(reference);

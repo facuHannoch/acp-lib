@@ -57,6 +57,7 @@ export class HarnessClient {
   }
   createSession(params: CreateParams) { return this.request("session/create", params); }
   validateConfig(config: unknown) { return this.request("config/validate", { config }); }
+  respondApproval(requestId: string, decision: "allow_once" | "deny") { return this.request("approval/respond", { requestId, decision }); }
   /** Open an existing session. The returned view precedes every live event
    * for work the session recovers; callers reconcile their own records with it. */
   loadSession(params: Calls["session/load"]["params"]) { return this.request("session/load", params); }

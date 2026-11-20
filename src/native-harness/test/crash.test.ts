@@ -145,8 +145,8 @@ test("crash between the reply commit and its receipt: the reply is recorded and 
   try {
     expect(harness.loaded.messages.map(message => message.parts[0]!.text)).toEqual(["Recording."]);
     expect(harness.loaded.items).toMatchObject([{ id: "m1", milestone: "taken", turnId: "1" }]);
-    // The requested call never ran; it is still reported uncertain and is not started now.
-    expect(harness.loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", uncertainCalls: ["rec-1"] }]);
+    // The call was recorded but never dispatched; it is not uncertain or replayed.
+    expect(harness.loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", uncertainCalls: [] }]);
     await new Promise(resolve => setTimeout(resolve, 150));
     expect(effects(crashed.log)).toEqual([]);
   } finally { await harness.close(); }

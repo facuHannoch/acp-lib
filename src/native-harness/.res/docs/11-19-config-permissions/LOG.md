@@ -68,4 +68,26 @@ Stage 2 gate: `bun run typecheck` passed; `bun test ./test` passed 209 tests,
 0 failures, 2753 assertions across 25 files (52.39s), using local IPC access.
 The gate includes both-adapter migration and inherited-notice tests, managed and
 explicit-db reopen, fresh-home session-file import, and offline fake-provider
-credential and checkpoint tests. Stage 2 independent review is pending.
+credential and checkpoint tests.
+
+Gro approved Stage 2 at `47cd4df`; their independent typecheck passed and the
+full suite passed 209 tests, 0 failures, 2753 assertions (73.23s).
+
+## Stage 3: dispatch and approvals
+
+Gro approved dispatch-evidence decision 0018 at `4ef6286`, confirmed distinct
+interrupt/stop close codes in `d67c693`, and approved owner-config binding at
+`00ecb36`. The gate resolves policies from the storage owner's immutable config,
+tracks approval requests and unused grants, and commits dispatch evidence before
+invoking a tool. Pending approval closure writes its paired result before live
+interrupt, stop or checkpoint; crash recovery never replays a request or grant.
+The stdio and in-process paths expose the same approval event and answer request.
+
+Gate: `bun run typecheck` passed; `bun test ./test` passed 243 tests, 0 failures,
+2917 assertions across 29 files (64.41s), with local IPC access. Focused tests
+cover policy precedence at take, inherited notices, deny/unhandled/timeout/
+disconnect, one-time grants, both suspension/dispatch orders, reentrant
+interrupt and stop, a real crash with approval pending, legacy and invalid
+dispatch evidence, and owner-config mismatch/failure/mutation on both adapters.
+Independent Stage 3 review is pending. Stage 4's public end-to-end scenario and
+documentation remain outstanding.

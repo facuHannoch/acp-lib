@@ -25,8 +25,11 @@ export function storageConformance(name: string, location: () => SessionStorageA
   const notice = (s: SessionStorage, text: string, channelId = "c1") =>
     s.acceptItem({ kind: "channel_notice", channelId, senderId: "channel:c2", sourceChannelId: "c2", text });
   const say = (s: SessionStorage, turnId: number, content: string) => ok(s.appendMessage(turnId, { role: "assistant", content, calls: [] }));
-  const call = (s: SessionStorage, turnId: number, callId: string) =>
-    ok(s.appendMessage(turnId, { role: "assistant", content: null, calls: [{ id: callId, name: "echo", arguments: "{}" }] }));
+  const call = (s: SessionStorage, turnId: number, callId: string) => {
+    const entry = ok(s.appendMessage(turnId, { role: "assistant", content: null, calls: [{ id: callId, name: "echo", arguments: "{}" }] }));
+    ok(s.markToolDispatched(turnId, callId));
+    return entry;
+  };
   const snap = (s: SessionStorage) => ok(s.snapshot());
   /** A refused or no-op call must leave the committed state byte-identical. */
   function unchanged(s: SessionStorage, act: () => void) {

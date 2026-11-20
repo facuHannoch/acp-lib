@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import type { Message, Model } from "../src/contracts/loop.ts";
 import { runTurn } from "../src/kernel/loop.ts";
 import { openRouter } from "../src/capabilities/model/openrouter.ts";
+import type { ExecuteTool, ToolCall } from "../src/contracts/loop.ts";
+
+const dispatchTool = async (call: ToolCall, execute: ExecuteTool) => ({ content: await execute(call), dispatched: true });
 
 test("continues through multiple tools and retains history for the next turn", async () => {
   const messages: Message[] = [{ role: "system", content: "Test" }];
@@ -23,7 +26,7 @@ test("continues through multiple tools and retains history for the next turn", a
     return { role: "assistant", content: "Done", calls: [] };
   };
   const execute = async (call: { name: string }) => call.name === "clock" ? "time" : "not allowed";
-  const context = { build: () => structuredClone(messages), append: (message: Message) => { messages.push(message); } };
+  const context = { build: () => structuredClone(messages), append: (message: Message) => { messages.push(message); }, dispatchTool };
   messages.push({ role: "user", content: "First" });
   expect(await runTurn(context, model, [], execute)).toBe("completed");
   messages.push({ role: "user", content: "Second" });
@@ -36,7 +39,7 @@ test("the loop checkpoints at a boundary instead of inferring, and an aborted tu
   const recorded: Message[] = [];
   let boundaries = 0, inferences = 0;
   const outcome = await runTurn({
-    build: () => [], append: message => { recorded.push(message); },
+    build: () => [], append: message => { recorded.push(message); }, dispatchTool,
     // Suspension is requested while the first iteration's tool is running.
     checkpoint: () => ++boundaries === 2,
   }, async () => { inferences++; return { role: "assistant", content: null, calls: [{ id: "a", name: "clock", arguments: "{}" }] }; }, [], async () => "time");
@@ -45,7 +48,7 @@ test("the loop checkpoints at a boundary instead of inferring, and an aborted tu
   expect(recorded.map(message => message.role)).toEqual(["assistant", "tool"]);
 
   const abort = new AbortController(), late: Message[] = [];
-  const stopped = runTurn({ build: () => [], append: message => { late.push(message); }, signal: abort.signal },
+  const stopped = runTurn({ build: () => [], append: message => { late.push(message); }, signal: abort.signal, dispatchTool },
     async (_messages, _tools, signal) => { expect(signal).toBe(abort.signal); abort.abort(new Error("stopped")); return { role: "assistant", content: "late", calls: [] }; },
     [], async () => "unused");
   await expect(stopped).rejects.toThrow("stopped");

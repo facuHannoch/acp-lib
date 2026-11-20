@@ -60,9 +60,9 @@ export function describe(durable: boolean, archives = false): Description {
     configOptions: [], commands: [], policies: [],
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable,
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
-        "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "session/idle",
+        "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : [])],
-      events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "session/event"] },
+      events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "session/event"] },
   };
 }
 
@@ -71,6 +71,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   const transfers = options.importArchive && options.transferDirectory ? createTransfers(options.transferDirectory, limits) : undefined;
   const description = describe(!!options.durable, !!transfers);
   let initialized = false;
+  let approvalConsumer = false;
   let opening = false;
   let current: OpenedSession | undefined;
   let activeConfig: ProtocolConfig | undefined;
@@ -101,6 +102,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const message: RpcSessionNotification = { jsonrpc: "2.0", method: "session/event", params: event };
       publish(() => { for (const listener of sessionListeners) { try { listener(structuredClone(message)); } catch { /* Isolate clients. */ } } });
     });
+    opened.session.approvals.setConsumer(approvalConsumer);
     activeConfig = structuredClone(opened.config ?? request.config);
     return opened;
   }
@@ -126,7 +128,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     if (!description.capabilities.methods.includes(method)) throw new Fault("method_not_found", `Unsupported method: ${method}`, -32601);
     const p = obj(raw);
     if (method === "initialize") {
-      keys(p, ["protocolVersion", "host", "callbacks", "subscription"]);
+      keys(p, ["protocolVersion", "host", "callbacks", "subscription", "approval"]);
       if (p.protocolVersion !== 1) throw new Fault("version_mismatch", "Only experimental protocol version 1 is supported");
       if (initialized) throw new Fault("already_exists", "Already initialized");
       const host = obj(p.host); keys(host, ["name", "version"]); text(host.name); text(host.version);
@@ -134,6 +136,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const sub = obj(p.subscription); keys(sub, ["text", "tools"]);
       if (sub.text !== "final" || !["none", "summary", "full"].includes(sub.tools)) bad("Only final text and none/summary/full tools are supported");
       subscription = { text: "final", tools: sub.tools };
+      approvalConsumer = p.approval === true;
       initialized = true;
       return { protocolVersion: 1, harness: { version: "0.0.0" }, description };
     }
@@ -213,6 +216,12 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { bytes: bytes.length, sha256, transferId: transfers.offer(bytes, sha256) };
     }
     const session = current.session;
+    if (method === "approval/respond") {
+      keys(p, ["requestId", "decision"]);
+      if (p.decision !== "allow_once" && p.decision !== "deny") bad("Expected allow_once or deny");
+      if (!session.approvals.respond(text(p.requestId), p.decision)) throw new Fault("not_found", "Approval request is no longer available");
+      return { accepted: true };
+    }
     if (method.startsWith("channel/") && method !== "channel/push") {
       const channel = text(p.channel);
       let result;
@@ -300,6 +309,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     subscribeSession(listener) { sessionListeners.add(listener); return () => { sessionListeners.delete(listener); }; },
-    dispose() { transfers?.dispose(); current?.close(); current = undefined; },
+    disconnect() { approvalConsumer = false; current?.session.approvals.disconnect(); },
+    dispose() { approvalConsumer = false; current?.session.approvals.disconnect(); transfers?.dispose(); current?.close(); current = undefined; },
   };
 }

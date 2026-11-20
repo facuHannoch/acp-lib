@@ -51,6 +51,7 @@ export async function serveProtocolStdio(endpoint: ProtocolEndpoint, input: Read
       // Requests read before EOF are still dispatched (above), so a stop issued
       // here follows them. Its interruption events go out with the final flush.
       // A server with no session, or without stop, has nothing to interrupt.
+      endpoint.disconnect?.();
       await endpoint.request({ jsonrpc: "2.0", id: -1, method: "session/stop", params: {} });
       await Promise.all(pending);
       if (failure) throw failure;
@@ -60,7 +61,7 @@ export async function serveProtocolStdio(endpoint: ProtocolEndpoint, input: Read
       timer = setTimeout(() => reject(new Error("Stdio shutdown grace expired before requests settled")), graceMs);
     })]);
   } finally {
-    clearTimeout(timer); unsubscribe();
+    clearTimeout(timer); endpoint.disconnect?.(); unsubscribe();
     await reader.cancel().catch(() => {}); reader.releaseLock();
   }
 }
