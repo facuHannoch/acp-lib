@@ -12,3 +12,13 @@ Stage 1 contract gate: `bun run typecheck --pretty false` passed. Decision
 0019 traces retry in both subscriptions, interruption, slow delivery, and the
 crash boundaries, including durable receipts, usage and script reservation.
 Independent contract review is pending; no dependent implementation is included.
+
+Gro did not approve `741cdff`; the requested contract locks include the existing
+wire event, turn outcomes, deadline start, scripted counter, dispatch fence,
+receipt/usage validation, transactional migration and bounded delivery. The
+revised contract includes those locks and wires the new types into the actual
+protocol, events and storage contracts. Standalone contract `tsc` passes. Full
+`bun run typecheck --pretty false` is expected to fail until implementations
+handle reference messages, storage format 5/archive 4 and model-call methods;
+no implementation changes are included in this revision. Gro's re-review is
+required before Stage 2.

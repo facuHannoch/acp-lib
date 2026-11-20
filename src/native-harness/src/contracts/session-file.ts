@@ -10,7 +10,7 @@ export interface PortableSessionConfig {
   policies?: Record<string, import("./config-permissions.ts").ToolPolicy>;
 }
 
-/** File version 1 CBOR payload. `archive` is the revision-2 logical archive;
+/** File version 1 CBOR payload. `archive` is a supported logical archive;
  * defined here generically so this contract module imports nothing. Both fields
  * are validated before atomic publication (decision 0015). */
 export interface SessionFilePayload<Archive> {

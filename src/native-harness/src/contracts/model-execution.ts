@@ -28,7 +28,7 @@ export type AttemptOutcome = "running" | "succeeded" | "transient_failure" | "in
 export type CallOutcome = "running" | "succeeded" | "failed" | "incomplete" | "output_limit" | "timeout" | "interrupted";
 /** Records are durable and returned as copies; timestamps are UTC, not ordering keys. */
 export interface ModelAttemptSummary {
-  attemptId: string; ordinal: number; startedAt: string; endedAt?: string;
+  attemptId: string; /** Zero-based and contiguous within the call. */ ordinal: number; startedAt: string; endedAt?: string;
   outcome: AttemptOutcome; retryReason?: string; providerRequestId?: string; usage?: ModelUsage;
   /** Zero-based script step reserved atomically at start, when scripted. */
   scriptStep?: number;
@@ -47,6 +47,7 @@ export interface ModelCallStore {
   /** Reserves the scripted step in this transaction when scripted is true. */
   startAttempt(callId: string, scripted: boolean): StorageResult<ModelAttemptSummary>;
   confirm(callId: string, attemptId: string, evidence: "delivered" | "seen"): StorageResult<string[]>;
+  recordProviderRequestId(callId: string, attemptId: string, providerRequestId: string): StorageResult<void>;
   recordUsage(callId: string, attemptId: string, usage: ModelUsage): StorageResult<void>;
   finishAttempt(callId: string, attemptId: string, outcome: Exclude<AttemptOutcome, "running" | "succeeded">, providerRequestId?: string): StorageResult<void>;
   /** Commits call/attempt success and its complete response in one transaction;
@@ -61,8 +62,7 @@ export interface ModelCallStore {
 export type ModelTextEvent =
   | { type: "text_delta"; turnId: string; messageId: string; text: string }
   | { type: "text_gap"; turnId: string; messageId: string }
-  | { type: "text_incomplete"; turnId: string; messageId: string; reason: Exclude<CallOutcome, "running" | "succeeded"> }
-  | { type: "text_completed"; turnId: string; messageId: string; text?: string; reference?: true };
+  | { type: "text_incomplete"; turnId: string; messageId: string; reason: Exclude<CallOutcome, "running" | "succeeded"> };
 /** Text pages are UTF-8 bytes encoded as base64; offset is a byte offset, and
  * client concatenates bytes before UTF-8 decoding. Reads are bounded. */
 export interface ModelTextPage { messageId: string; offset: number; data: string; nextOffset?: number }

@@ -1,6 +1,6 @@
 /** Loop facts; composition supplies channel/turn IDs and message IDs. */
 export type LoopEvent =
-  | { type: "message_completed"; parts: { type: "text"; text: string }[] }
+  | ({ type: "message_completed" } & ({ parts: { type: "text"; text: string }[]; reference?: never } | { parts?: never; reference: true }))
   | { type: "tool_call"; id: string; name: string; status: "started" | "completed" | "failed"; input?: string; output?: string };
 
 /** Ordered within a channel; no order is promised across channels.
@@ -27,6 +27,7 @@ export interface ChannelEvent {
   channel: string;
   revision?: number;
   event: (LoopEvent & { turnId: string; messageId?: string })
+    | import("./model-execution.ts").ModelTextEvent
     | { type: "turn_started" | "turn_took"; turnId: string; items: string[] }
     | { type: "items_receipt"; turnId: string; items: string[]; milestone: "delivered" | "seen" }
     | { type: "turn_suspended" | "turn_resumed"; turnId: string }

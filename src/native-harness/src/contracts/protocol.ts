@@ -1,7 +1,8 @@
+import type { ModelExecutionMethods } from "./model-execution.ts";
 import type { ChannelEvent, SessionEvent } from "./events.ts";
 import type { ItemKind, ItemMilestone } from "./agent.ts";
 
-export interface Subscription { text: "final"; tools: "none" | "summary" | "full" }
+export interface Subscription { text: "final" | "stream"; tools: "none" | "summary" | "full" }
 export interface InitializeParams {
   protocolVersion: number;
   host: { name: string; version: string };
@@ -83,7 +84,8 @@ export interface ChannelStatusResult {
   activeTurn?: { turnId: string; state: "running" | "suspended" };
   pending: string[]; waitingForResume: boolean; unresolved?: TurnStatus;
 }
-export interface StoredMessage { messageId: string; channel: string; turnId: string; parts: { type: "text"; text: string }[] }
+export type StoredMessage = { messageId: string; channel: string; turnId: string } &
+  ({ parts: { type: "text"; text: string }[]; reference?: never } | { parts?: never; reference: true });
 
 /** One consistent view at `status.revision`. Ordering guarantee on a
  * connection: every event whose commit is included in this revision was
@@ -115,7 +117,7 @@ export interface LoadResult {
 export interface TransferLimits { chunkBytes: 524288; maxBytes: 268435456; idleMs: 60000 }
 export type ArchiveLocation = { type: "path"; path: string } | { type: "transfer" };
 
-export interface DurableMethods {
+export interface DurableMethods extends ModelExecutionMethods {
   /** Open an existing session with runtime configuration. Returns the load
    * view; a second load on the same endpoint returns a fresh view only. */
   "session/load": { params: { sessionId: string; config?: ProtocolConfig; messagesLimit?: number }; result: LoadResult };

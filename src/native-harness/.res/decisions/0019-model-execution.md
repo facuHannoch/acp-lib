@@ -27,7 +27,7 @@ calls, `tool_calls` has at least one, and `output_limit` is terminal without
 committing that response or dispatching any of its tools. Non-streaming adapters
 can return a response without deltas. Empty deltas have no effect.
 
-The default logical deadline is 120000ms from call start, shared by all attempts
+The default logical deadline is 120000ms from the first durable attempt start, shared by all attempts
 and the retry wait. A single transient failure before cutoff may retry once,
 after 1000ms, with the identical frozen request and only remaining time. No
 retry occurs for invalid input/config, cancellation, incomplete EOF, output
@@ -81,7 +81,7 @@ the same message when they fit; on overflow drop further deltas for that
 message and enqueue one `text_gap` before its completion. If a required gap,
 completion, or other nondroppable event cannot fit, fail the connection and
 apply existing disconnect/stop rules; committed data remains recoverable. A
-completion fitting the frame is inline; otherwise it carries `reference: true`
+`message_completed` fitting the frame is inline; otherwise it carries `reference: true`
 and its ID. `session/message/read` retrieves committed UTF-8 text by ID as
 base64 pages of at most 524288 raw bytes, with byte offsets and `nextOffset`;
 concatenate bytes before decoding. Unknown IDs are `not_found`, invalid offsets
@@ -118,3 +118,71 @@ Crash after script reservation but before response commit leaves an interrupted
 call and consumed script step, with no response or tool effect. Crash after
 response commit preserves the successful call and message with the same ID;
 tool effects obey dispatch evidence 0018 and are never replayed.
+
+## Contract locks following review
+
+The following details resolve the wire and lifecycle choices above. The existing
+completion event is `message_completed`, never a second completion event. It
+carries the reserved message ID in both subscription modes. Streaming adds only
+`text_delta`, `text_gap`, and `text_incomplete`; `final` filters those three,
+while receiving completions, tool events and turn outcomes. Receipts remain
+`items_receipt`, emitted after their commit only for items that advanced.
+Inline `message_completed` has the complete text in parts; a reference omits
+parts. Oversized entries in load and message listing use the same reference.
+`session/model-calls` and `session/message/read` are protocol methods. Turn
+outcomes remain completed, failed and interrupted: only interrupt and stop
+produce interrupted; timeout, failed, incomplete and output_limit end the turn
+failed with that call outcome as its reason, with no further call in that turn.
+
+The deadline starts when the first attempt's durable start commits, not at
+startCall. If less than the 1000ms retry delay remains, finish timeout without
+starting the retry. Defaults are 120000ms, 1000ms and one retry; tests may
+shorten timeoutMs. Tool execution, approval and inbox time are outside the limit.
+
+The script counter denotes the next zero-based step. Starting a scripted
+attempt atomically records that step and increments the counter; a non-scripted
+start does not. A failed start writes nothing. A call has at most one running
+attempt and two attempts total; an excess start fails and writes nothing. A
+failed response commit does not undo a reservation. Migration counts all prior
+assistant timeline messages on the channel, including tool-only messages; reopen
+uses the stored counter without recounting.
+
+A call reserves a message ID that is never reused even if it does not commit.
+`commitResponse` accepts only validated `complete` without calls or validated
+`tool_calls` with calls; other stop reasons or invalid tool payloads fail without
+writes. The same transaction ensures dispatchedCallIds exists for responses
+containing calls without marking new call IDs, as in 0018. The transaction does
+not mark or invoke tools. The existing permission gate follows it. Completion
+is emitted only for nonempty committed text. Non-streaming adapters emit a
+validated response through the runner; the kernel does not take receipt evidence
+or dispatch from a resolved Model promise.
+
+Milestones only advance; seen includes delivered, and repeated or lower evidence
+writes nothing. startCall rejects any item that is not taken by that turn with no
+write. A provider request ID is committed on its first report, including accepted
+before terminal, and survives crash. Usage reports replace absolute per-attempt
+values; negative, fractional or unsafe counts are rejected without replacing a
+prior report. Missing fields stay unknown. Sum each present field once per
+attempt without inventing a total. Reports after terminal, timeout or cancellation
+are ignored.
+
+Format 2/3 performs existing upgrade through 4 and existing recovery, then the
+format 5 migration in one transaction. Format 4 performs existing recovery first:
+a suspended session keeps its turns; otherwise running turns and checkpoints
+outside individually suspended channels are interrupted, and a suspending channel
+returns open. The same transaction adds empty call records, initializes script
+positions and publishes format 5, including for suspended sessions. Failure leaves
+the owned file at its old version. Import and export reject running calls or
+attempts. A succeeded call has exactly one assistant timeline message at its
+reserved ID with its committed tool calls; other outcomes have none. Attempt
+ordinals are contiguous from zero. Adapter archives 1–3 and session-file archives
+2–3 migrate equivalently; envelope 1 remains, and archive 1 inside it is invalid.
+A summary page contains whole calls; a single call too large for a frame fails
+`transfer_limit`, never an empty page.
+
+The runner never awaits a transport write. The per-connection 1 MiB live queue
+coalesces deltas in order, drops further deltas for a lagging message and enqueues
+one gap. The existing 1 MiB frame and 4 MiB queued-write limits remain. If a
+nondroppable event cannot fit the live queue or the existing writer rejects it,
+fail that connection and apply existing disconnect and stop rules. Already
+committed records remain recoverable.

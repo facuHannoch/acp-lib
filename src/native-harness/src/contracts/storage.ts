@@ -1,3 +1,4 @@
+import type { ModelCallStore } from "./model-execution.ts";
 import type { ItemKind, ItemMilestone } from "./agent.ts";
 import type { ContextEntry } from "./context.ts";
 import type { Message } from "./loop.ts";
@@ -64,8 +65,8 @@ export type SessionLifecycle = "running" | "suspending" | "suspended";
 export interface StoredSession {
   sessionId: string;
   /** Storage contract/data format revision, distinct from RPC and archive versions.
-   * Revision 4 stores policy metadata. Formats 2 and 3 upgrade on open. */
-  formatVersion: 4;
+   * Revision 5 stores model calls and script reservations. Formats 2–4 upgrade on open. */
+  formatVersion: 5;
   createdAt: string;
   lifecycle: SessionLifecycle;
   /** The key supplied at create. Immutable; open never rewrites it. */
@@ -199,13 +200,16 @@ export interface StorageSnapshot {
   items: StoredItem[];
   /** All entries in increasing seq order, suitable for the context builder. */
   timeline: TimelineEntry[];
+  /** Durable call records and each channel's next zero-based scripted step. */
+  modelCalls: import("./model-execution.ts").ModelCallSummary[];
+  scriptPositions: Record<string, number>;
 }
 
 /** Logical, adapter-independent session copy. JSON-serializable. Versioned
- * independently of `formatVersion`. Version 3 adds policy metadata. */
+ * independently of `formatVersion`. Version 4 adds model call records and script reservations. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 3;
+  archiveVersion: 4;
   exportedAt: string;
   snapshot: StorageSnapshot;
   /** ID allocation state so the copy never reissues a turn ID, seq or item ID. */
@@ -219,7 +223,7 @@ export interface SessionArchiveV1 {
   format: "harness-session";
   archiveVersion: 1;
   exportedAt: string;
-  snapshot: Omit<StorageSnapshot, "session" | "channels"> & {
+  snapshot: Omit<StorageSnapshot, "session" | "channels" | "modelCalls" | "scriptPositions"> & {
     session: Omit<StoredSession, "formatVersion"> & { formatVersion: 2 };
     channels: Omit<StoredChannel, "displayName" | "lifecycle">[];
   };
@@ -229,7 +233,14 @@ export interface SessionArchiveV1 {
 /** Import-only logical format from the channel-controls revision. */
 export interface SessionArchiveV2 {
   format: "harness-session"; archiveVersion: 2; exportedAt: string;
-  snapshot: Omit<StorageSnapshot, "session"> & { session: Omit<StoredSession, "formatVersion"> & { formatVersion: 3 } };
+  snapshot: Omit<StorageSnapshot, "session" | "modelCalls" | "scriptPositions"> & { session: Omit<StoredSession, "formatVersion"> & { formatVersion: 3 } };
+  allocation: SessionArchive["allocation"];
+}
+
+/** Import-only logical format from configuration and permissions. */
+export interface SessionArchiveV3 {
+  format: "harness-session"; archiveVersion: 3; exportedAt: string;
+  snapshot: Omit<StorageSnapshot, "session" | "modelCalls" | "scriptPositions"> & { session: Omit<StoredSession, "formatVersion"> & { formatVersion: 4 } };
   allocation: SessionArchive["allocation"];
 }
 
@@ -247,7 +258,7 @@ export type InterruptOutcome =
   | { interrupted: false; turn: StoredTurn };
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
-export interface SessionStorage {
+export interface SessionStorage extends ModelCallStore {
   /** Validated config supplied to this open, copied at bind time; undefined for
    * legacy allow-only opens. Returns a defensive copy. It is independent of
    * saved/imported config and is not retargeted by saveConfig. Failure is not
@@ -494,7 +505,7 @@ export interface SessionStorageAdapter {
   /** Read the saved configuration without creating or recovering a session. */
   readSavedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
   /** Atomically publish the logical archive and validated portable config. */
-  importSessionFile(payload: import("./session-file.ts").SessionFilePayload<SessionArchive>, options?: { sessionId?: string }): StorageResult<StoredSession>;
+  importSessionFile(payload: import("./session-file.ts").SessionFilePayload<SessionArchive | SessionArchiveV2 | SessionArchiveV3>, options?: { sessionId?: string }): StorageResult<StoredSession>;
   /** Acquire exclusive ownership, then check format and session ID, before any
    * write. A second owner (`owner_conflict`), unreadable or unsupported format
    * and a different session ID (`incompatible`) leave the data untouched.
@@ -526,5 +537,5 @@ export interface SessionStorageAdapter {
    * revision) import as channels `open` and unnamed; version 2 preserves
    * channel lifecycle, names, withdrawn items and retired IDs.
    * Any failure leaves no partial session. The result is not opened or owned. */
-  importArchive(archive: SessionArchive | SessionArchiveV1 | SessionArchiveV2, options?: { sessionId?: string }): StorageResult<StoredSession>;
+  importArchive(archive: SessionArchive | SessionArchiveV1 | SessionArchiveV2 | SessionArchiveV3, options?: { sessionId?: string }): StorageResult<StoredSession>;
 }
