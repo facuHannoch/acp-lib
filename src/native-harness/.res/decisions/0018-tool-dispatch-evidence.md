@@ -58,3 +58,12 @@ request. The gate consumes approval only at dispatch; its last check observes
 both signals. The loop receives a gated result and never directly invokes a tool.
 `approval_requested` is an always-on channel event; `approval/respond` answers
 once. A connection disconnect closes its requests.
+
+Storage exposes the validated configuration bound to its current owner, or
+absence for a legacy allow-only open. Session assembly takes its gate policy
+from that same owner config, and rejects a separately supplied config or system
+prompt that differs. When assembly creates its own storage it supplies the
+selected config to that open. This prevents a caller from resolving inputs
+under one set of policy definitions and dispatching under a more permissive one.
+Comparison treats object key order as immaterial. No config is read from model
+text or from mutable caller-owned objects after assembly.

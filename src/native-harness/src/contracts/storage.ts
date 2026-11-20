@@ -248,6 +248,9 @@ export type InterruptOutcome =
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
 export interface SessionStorage {
+  /** Validated policy config supplied to this owner at open, or undefined for
+   * legacy allow-only opens. Returned values are defensive copies. */
+  ownerConfig(): StorageResult<import("./config-permissions.ts").ManagedConfig | undefined>;
   /** Commit that a running turn's own unanswered, not-yet-marked call is being
    * dispatched. Invalid or duplicate marks write nothing; failure cannot invoke
    * the tool or emit started. After success its effect is uncertain until its
