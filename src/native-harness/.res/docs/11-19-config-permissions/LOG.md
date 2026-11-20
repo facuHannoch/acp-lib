@@ -110,4 +110,34 @@ is an opt-in scripted-test facility.
 
 Stage 4 implementation gate: `bun run typecheck --pretty false` passed;
 `bun test ./test` passed 245 tests, 0 failures, 2953 assertions across 30 files
-(52.17s), with local IPC access. Independent final review is pending.
+(52.17s), with local IPC access. Gro approved the behavior revision
+`626783ef308be1a39e8b276eb10a71e19e8ec288`. Their independent typecheck
+passed and the full suite passed 245 tests, 0 failures, 2953 assertions across
+30 files (48.10s). This closes the configuration and tool permissions slice.
+
+## Closure and retrospective
+
+The accepted contract revisions are 0016 at `d09cb7e`, OpenRouter amendment
+0017 at `6cac6d2`, dispatch evidence 0018 at `4ef6286`, close-code naming at
+`d67c693`, and owner binding at `00ecb36`. Gro independently approved Stage 2
+at `47cd4df`, Stage 3 at `bb171b2`, and Stage 4 at `626783e`. The earlier
+session-file behavior remains `7e49bd5`; storage format 4, logical archive 3,
+and session-file envelope 1 remain unchanged by Stage 4.
+
+The contract-first reviews caught missing migration and race guarantees, and
+required a separate owner-config binding before the dispatch gate could be
+completed. Those decisions and the separate stage gates made the repeated
+review work explicit. The OpenRouter scope amendment preserved the development
+path while testing provider behavior offline without live credentials.
+
+Accepted boundaries: automatic approval review, configured tool adapters,
+shared-history access policies and pattern matching remain out of scope. An
+invalid sidecar fails open with a validation error; it neither falls through to
+nor replaces the saved config. Interrupt and stop approval cancellation codes
+apply to undispatched approvals; a dispatched call follows the uncertain-effect
+rules. Custom credential environment references have no fallback, and provider
+secrets are supplied at runtime. The transfer/open announced-size limit still
+applies before body bytes are received. A pre-format-4 session lacking the
+legacy policy opens for inspection without migrating or recovering its owned
+file. Archive import's turn-wide duplicate-call-ID restriction is stricter than
+append's per-message uniqueness. No merge was requested.
