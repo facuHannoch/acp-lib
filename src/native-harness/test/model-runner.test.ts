@@ -46,7 +46,7 @@ test("interrupt fences a stalled adapter and its late terminal", async () => {
 test("retry does not begin when the remaining deadline is shorter than its delay", async () => {
   const h = harness([[{ type: "failure", kind: "transient", message: "try" }]]);
   await expect(runModelCall({ turnId: "1", itemIds: [], request: { messages: [], tools: [] }, scripted: true, store: h.store,
-    attempt: () => async function* () { yield { type: "failure", kind: "transient", message: "try" }; }, settings: { timeoutMs: 10, retryDelayMs: 20 } })).rejects.toMatchObject({ outcome: "timeout" });
+    attempt: () => async function* () { yield { type: "failure", kind: "transient", message: "try" }; }, settings: { timeoutMs: 10 } })).rejects.toMatchObject({ outcome: "timeout" });
   expect(h.records).toEqual(["start:0", "0:transient_failure", "call:timeout"]);
 });
 
@@ -100,4 +100,18 @@ test("a stalled channel does not prevent an independent channel from completing"
   expect((await bob.run()).response.content).toBe("done"); expect(bob.records).toContain("commit");
   stop.abort(); await expect(pending).rejects.toMatchObject({ outcome: "interrupted" });
   const fresh = harness([[{ type: "response", response: success }]]); expect((await fresh.run()).response.content).toBe("done");
+});
+
+test("scripted and OpenRouter attempt adapters run through the commit boundary", async () => {
+  const { scriptedAttempt } = await import("../src/capabilities/model/scripted.ts");
+  const { openRouterAttempt } = await import("../src/capabilities/model/openrouter-stream.ts");
+  const script = { version: 1, responses: [{ content: "scripted" }] }, first = harness([]);
+  const scripted = await runModelCall({ turnId: "1", itemIds: [], request: { messages: [], tools: [] }, scripted: true, store: first.store,
+    attempt: step => scriptedAttempt(script, step!) });
+  expect(scripted.response.content).toBe("scripted"); expect(first.records).toContain("commit");
+  const data = `data: ${JSON.stringify({ id: "r", choices: [{ delta: { content: "provider" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+  const fetcher = (async () => new Response(data)) as unknown as typeof fetch, second = harness([]), deltas: string[] = [];
+  const provider = await runModelCall({ turnId: "2", itemIds: [], request: { messages: [], tools: [] }, scripted: false, store: second.store,
+    attempt: () => openRouterAttempt("fake", "model", fetcher), delta: event => deltas.push(event.text) });
+  expect(provider.response.content).toBe("provider"); expect(deltas).toEqual(["provider"]); expect(second.records).toContain("commit");
 });

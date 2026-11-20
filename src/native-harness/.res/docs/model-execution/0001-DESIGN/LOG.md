@@ -27,11 +27,21 @@ Gro approved Stage 1 at `a9b5f84f4d165409bc7d9e81ecf15009b484714c`.
 Standalone contract typecheck passed independently; the full typecheck's 27
 errors were accepted as pending storage and reference-consumer implementation.
 
-Stage 2 work in progress adds the logical-call runner, scripted reservation
-adapter, OpenRouter streaming translation and the turn's commit-before-dispatch
-path. Focused runner, adapter and loop checks pass using a call-store double.
-The existing scripted scheduler test currently fails because the real adapters do
-not yet implement the call-store methods assigned to Stage 3. A runner-level
-concurrency test is not yet evidence that the real channel remains usable after
-an interrupt. The stage boundary and independent review remain pending with Gro;
-no Stage 3 storage implementation has been started.
+## Stage 2: call execution
+
+The logical-call runner, scripted reservation adapter, OpenRouter streaming
+translation and turn's commit-before-dispatch path are implemented. The gate
+uses a call-store double: `bun test test/model-channel-double.test.ts
+ test/model-runner.test.ts test/model-stream-adapter.test.ts test/loop.test.ts`
+passed 21 tests, 0 failures and 66 assertions. It covers the same-channel
+scheduler after interruption, stop and late response, the permission gate after
+commit, retry and deadline, both text-delivery cutoff paths, malformed calls,
+and both adapters through the runner.
+
+Full `bun run typecheck --pretty false` remains red on the 27 already identified
+storage format and reference-consumer errors. The real `test/scripted.test.ts`
+scheduler case fails at missing `startCall` because the memory and SQLite
+call-store implementations belong to Stage 3; the other four cases pass. Stage 3
+must repeat channel usability and the scripted test on both real adapters, along
+with persistence and crash gates. No Stage 3 storage work is included here.
+Independent Stage 2 review is pending.
