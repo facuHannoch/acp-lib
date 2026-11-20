@@ -588,6 +588,21 @@ Run `bun test test/protocol.test.ts test/stdio.test.ts` for transport parity and
 framing/process lifecycle checks. Child stdin in Bun uses IPC and may require
 local IPC permissions in sandboxed environments. All scenarios are offline.
 
+## acp-client integration
+
+acp-client hosts this harness as one process per Agent, with each native
+conversation as a channel of one durable session. The host and its controller
+live in acp-client's `src/native/` and use only `src/client.ts` (the typed
+client and stdio transport) and the `serve --stdio` command; they import no
+harness internals. The contract is the
+[integration spec](.res/docs/acp-client-integration/0001-DESIGN/SPEC.md) and its
+[protocol profile](.res/docs/acp-client-integration/0001-DESIGN/PROTOCOL.md);
+the work and its test evidence are in the
+[log](.res/docs/acp-client-integration/0001-DESIGN/11-20-LOG.md). The harness
+side of that contract is the startup channel-change batch described above
+(decision 0020). From the repository root, `bun test ./test/native` runs the
+host, controller, conformance and real-stdio checkpoint tests offline.
+
 ## Documents
 
 - [Architecture](ARCHITECTURE.md): boundaries, extension points and intended layout.

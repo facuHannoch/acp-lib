@@ -14,7 +14,7 @@ amendment is proposed.
 | [Channel controls](11-19-channel-controls/SPEC.md) | Accepted | Behavior approved at `4d58629`, with closure and documentation at `3428258` on `aiagent/cod1a-native-channel-controls`. |
 | [Configuration and permissions](11-19-config-permissions/SPEC.md) | Accepted | Behavior approved at `626783e`, with closure at `28c6faf` on `aiagent/cod1a-config-permissions`. |
 | [Model execution](model-execution/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `02c96de`, with closure at `49f2974` on `aiagent/cod1a-model-execution`. |
-| [acp-client integration contract](acp-client-integration/0001-DESIGN/SPEC.md) | In design | Review the first two-channel scripted stdio scenario and agree on the public boundary. |
+| [acp-client integration contract](acp-client-integration/0001-DESIGN/SPEC.md) | Implemented, awaiting review | First scripted stdio checkpoint implemented on `acp-client-integration`; gates, evidence, gaps and drift are in the [log](acp-client-integration/0001-DESIGN/11-20-LOG.md). Next: independent review of each gate. |
 
 ## Priorities
 
