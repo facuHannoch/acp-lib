@@ -1,3 +1,4 @@
+import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import type { ManagedConfig } from "../../contracts/config-permissions.ts";
 import { policyItemSignature, contributingPolicies, fingerprint } from "./policy-metadata.ts";
 import { validateManagedConfig } from "../../util/config.ts";
@@ -16,10 +17,22 @@ export type ChannelRow = Omit<StoredChannel, "participantIds">;
 /** A turn as stored; `itemIds` is derived from the items linked to it. */
 export type TurnRow = Omit<StoredTurn, "itemIds">;
 
+/** Model-call metadata is stored transactionally alongside the logical rows. */
+export interface ModelState {
+  nextCall: number;
+  calls: ModelCallSummary[];
+  itemIds: Record<string, string[]>;
+  scriptPositions: Record<string, number>;
+  entryIds: Record<string, string>;
+}
+export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], itemIds: {}, scriptPositions: {}, entryIds: {} });
+
 /** Row access shared by the memory and SQLite adapters. The engine owns every
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables {
+  getModelState(): ModelState | undefined;
+  setModelState(state: ModelState): void;
   getConfig(): import("../../contracts/session-file.ts").PortableSessionConfig | undefined;
   setConfig(config: import("../../contracts/session-file.ts").PortableSessionConfig): void;
   transaction<T>(run: () => T): T;
@@ -122,7 +135,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 4, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: 5, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -141,7 +154,11 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
       lifecycle: row.lifecycle, participantIds: [...spoke.get(row.channelId) ?? []] })),
     participants: tables.participants().map(participantId => ({ participantId })),
     turns: tables.turns().map(row => ({ ...row, itemIds: tables.itemsOfTurn(row.turnId).map(item => item.itemId) })),
-    items: tables.items(), timeline,
+    items: tables.items(), timeline: timeline.map(entry => {
+      const id = tables.getModelState()?.entryIds[String(entry.seq)];
+      return id ? { ...entry, messageId: id } : entry;
+    }),
+    modelCalls: tables.getModelState()?.calls ?? [], scriptPositions: tables.getModelState()?.scriptPositions ?? {},
   };
 }
 
@@ -167,6 +184,20 @@ export function recover(tables: Tables, upgrade?: () => void): void {
       const reopened = tables.channels().filter(channel => channel.lifecycle === "suspending");
       for (const channel of reopened) tables.putChannel({ ...channel, lifecycle: "open" });
       if (live.length || reopened.length || meta.lifecycle !== "running") { meta.lifecycle = "running"; changed = true; }
+    }
+    if (meta.formatVersion < 5) {
+      const state = emptyModelState();
+      for (const entry of tables.entries()) if (entry.message.role === "assistant")
+        Object.defineProperty(state.scriptPositions, entry.channelId, { value: (Object.hasOwn(state.scriptPositions, entry.channelId) ? state.scriptPositions[entry.channelId]! : 0) + 1, writable: true, configurable: true, enumerable: true });
+      tables.setModelState(state); meta.formatVersion = 5; changed = true;
+    } else {
+      const state = tables.getModelState() ?? emptyModelState();
+      for (const call of state.calls) if (call.outcome === "running") {
+        call.outcome = "interrupted"; call.endedAt = new Date().toISOString();
+        for (const attempt of call.attempts) if (attempt.outcome === "running") { attempt.outcome = "interrupted"; attempt.endedAt = call.endedAt; }
+        changed = true;
+      }
+      if (changed) tables.setModelState(state);
     }
     if (changed) tables.setMeta({ ...meta, revision: meta.revision + 1 });
   });
@@ -233,6 +264,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
   function interrupt(turn: TurnRow, status: "failed" | "interrupted", reason: string): TurnRow {
     const ended: TurnRow = { ...turn, state: { status, reason, uncertainCallIds: uncertain(tables, turn) } };
     tables.putTurn(ended);
+    finishModels(turn.turnId);
     settle(turn.channelId);
     return ended;
   }
@@ -271,7 +303,100 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     return selected;
   };
 
+  const modelCall = (state: ModelState, id: string) => state.calls.find(call => call.callId === id) ?? fail("not_found", `Unknown model call: ${id}`);
+  const activeAttempt = (state: ModelState, id: string, attemptId: string) => {
+    const call = modelCall(state, id); running(Number(call.turnId));
+    if (call.outcome !== "running") fail("invalid_state", "Model call has ended");
+    const attempt = call.attempts.find(value => value.attemptId === attemptId);
+    if (!attempt || attempt.outcome !== "running") return fail("invalid_state", "Model attempt has ended or is unknown");
+    return { call, attempt };
+  };
+  const finishModels = (turnId: number) => {
+    const state = tables.getModelState() ?? emptyModelState(); let changed = false;
+    for (const call of state.calls) if (call.turnId === String(turnId) && call.outcome === "running") {
+      call.outcome = "interrupted"; call.endedAt = now(); changed = true;
+      for (const attempt of call.attempts) if (attempt.outcome === "running") { attempt.outcome = "interrupted"; attempt.endedAt = call.endedAt; }
+    }
+    if (changed) tables.setModelState(state);
+  };
   return {
+    startCall: (turnId, itemIds) => run(meta => {
+      if (!/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) fail("invalid_input", "Invalid turn ID");
+      const turn = running(Number(turnId));
+      if (!Array.isArray(itemIds) || new Set(itemIds).size !== itemIds.length || itemIds.some(id => tables.item(id)?.turnId !== turn.turnId))
+        fail("invalid_input", "Model call inputs must be taken items of this turn");
+      const state = tables.getModelState() ?? emptyModelState();
+      if (state.calls.some(call => call.turnId === turnId && call.outcome === "running")) fail("invalid_state", "Turn already has a running model call");
+      const id = String(state.nextCall++), call: ModelCallSummary = { callId: id, turnId, channel: turn.channelId, messageId: `model:${id}`,
+        startedAt: now(), outcome: "running", attempts: [] };
+      state.calls.push(call); state.itemIds[id] = [...itemIds]; tables.setModelState(state); seq(meta); return call;
+    }),
+    startAttempt: (id, scripted) => run(meta => {
+      const state = tables.getModelState() ?? emptyModelState(), call = modelCall(state, id); running(Number(call.turnId));
+      if (call.outcome !== "running" || call.attempts.length >= 2 || call.attempts.some(a => a.outcome === "running")) fail("invalid_state", "Cannot start another model attempt");
+      const ordinal = call.attempts.length, step = Object.hasOwn(state.scriptPositions, call.channel) ? state.scriptPositions[call.channel]! : 0;
+      const attempt: ModelCallSummary["attempts"][number] = { attemptId: `${id}:${ordinal}`, ordinal, startedAt: now(), outcome: "running", ...(ordinal ? { retryReason: call.attempts[ordinal - 1]?.outcome } : {}), ...(scripted ? { scriptStep: step } : {}) };
+      if (scripted) Object.defineProperty(state.scriptPositions, call.channel, { value: step + 1, writable: true, configurable: true, enumerable: true });
+      call.attempts.push(attempt); tables.setModelState(state); seq(meta); return attempt;
+    }),
+    confirm: (id, attemptId, milestone) => run(meta => {
+      const state = tables.getModelState() ?? emptyModelState(); activeAttempt(state, id, attemptId);
+      if (milestone !== "delivered" && milestone !== "seen") fail("invalid_input", "Invalid receipt");
+      const advanced = (state.itemIds[id] ?? []).map(itemId => tables.item(itemId)!).filter(item => RANK[item.milestone] < RANK[milestone]);
+      for (const item of advanced) tables.putItem({ ...item, milestone });
+      if (advanced.length) seq(meta); return advanced.map(item => item.itemId);
+    }),
+    recordProviderRequestId: (id, attemptId, requestId) => run(meta => {
+      const state = tables.getModelState() ?? emptyModelState(), { attempt } = activeAttempt(state, id, attemptId);
+      if (!text(requestId)) fail("invalid_input", "Invalid provider request ID");
+      if (!attempt.providerRequestId) { attempt.providerRequestId = requestId; tables.setModelState(state); seq(meta); }
+    }),
+    recordUsage: (id, attemptId, usage) => run(meta => {
+      const state = tables.getModelState() ?? emptyModelState(), call = modelCall(state, id);
+      const attempt = call.attempts.find(value => value.attemptId === attemptId);
+      if (!attempt) return fail("not_found", "Unknown model attempt");
+      if (call.outcome !== "running" || attempt.outcome !== "running" || tables.turn(Number(call.turnId))?.state.status !== "running") return;
+      if (!usage || typeof usage !== "object" || Object.keys(usage).some(key => !["inputTokens", "outputTokens", "totalTokens"].includes(key))
+        || Object.values(usage).some(value => !Number.isSafeInteger(value) || value < 0)) fail("invalid_input", "Invalid provider usage");
+      attempt.usage = structuredClone(usage); tables.setModelState(state); seq(meta);
+    }),
+    finishAttempt: (id, attemptId, outcome, requestId) => run(meta => {
+      const state = tables.getModelState() ?? emptyModelState(), { attempt } = activeAttempt(state, id, attemptId);
+      if (!["transient_failure", "invalid_request", "invalid_config", "provider_failure", "incomplete", "output_limit", "timeout", "interrupted"].includes(outcome) || (requestId !== undefined && !text(requestId))) fail("invalid_input", "Invalid attempt outcome or provider ID");
+      attempt.outcome = outcome; attempt.endedAt = now(); if (!attempt.providerRequestId && requestId) attempt.providerRequestId = requestId;
+      tables.setModelState(state); seq(meta);
+    }),
+    commitResponse: (id, attemptId, response, requestId) => run(meta => {
+      const state = tables.getModelState() ?? emptyModelState(), { call, attempt } = activeAttempt(state, id, attemptId), turn = running(Number(call.turnId));
+      if (requestId !== undefined && !text(requestId)) fail("invalid_input", "Invalid provider request ID");
+      if (!response || !((response.stopReason === "complete" && response.calls?.length === 0) || (response.stopReason === "tool_calls" && response.calls?.length > 0))) fail("invalid_input", "Invalid response stop reason");
+      const { stopReason: _stopReason, ...raw } = response, message = checkMessage(raw);
+      if (message.role !== "assistant") return fail("invalid_input", "Expected assistant response");
+      if (unanswered(tables, turn.turnId).length) fail("invalid_state", "Earlier tool calls have no result");
+      const used = new Set(tables.entriesOfTurn(turn.turnId).flatMap(entry => entry.message.role === "assistant" ? entry.message.calls.map(c => c.id) : []));
+      for (const tool of message.calls) {
+        if (used.has(tool.id)) fail("invalid_input", "Duplicate tool call ID"); used.add(tool.id);
+        try { const args = JSON.parse(tool.arguments); if (!args || typeof args !== "object" || Array.isArray(args)) fail("invalid_input", "Invalid tool arguments"); }
+        catch (error) { if (error instanceof Fail) throw error; fail("invalid_input", "Invalid tool arguments"); }
+      }
+      if (message.calls.length && turn.state.status === "running" && turn.state.dispatchedCallIds === undefined) tables.putTurn({ ...turn, state: { ...turn.state, dispatchedCallIds: [] } });
+      const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId: turn.turnId, from: "agent", message };
+      tables.addEntry(entry); state.entryIds[String(entry.seq)] = call.messageId; call.outcome = "succeeded"; call.endedAt = now();
+      attempt.outcome = "succeeded"; attempt.endedAt = call.endedAt; if (!attempt.providerRequestId && requestId) attempt.providerRequestId = requestId;
+      tables.setModelState(state); return { ...entry, messageId: call.messageId };
+    }),
+    finishCall: (id, outcome) => run(meta => {
+      const state = tables.getModelState() ?? emptyModelState(), call = modelCall(state, id); running(Number(call.turnId));
+      if (call.outcome !== "running" || call.attempts.some(a => a.outcome === "running")) fail("invalid_state", "Cannot finish model call");
+      if (!["failed", "incomplete", "output_limit", "timeout", "interrupted"].includes(outcome)) fail("invalid_input", "Invalid call outcome");
+      call.outcome = outcome; call.endedAt = now(); tables.setModelState(state); seq(meta);
+    }),
+    readCalls: (after, limit = 100) => run(() => {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail("invalid_input", "Invalid model call page size");
+      const calls = (tables.getModelState() ?? emptyModelState()).calls, at = after ? calls.findIndex(call => call.callId === after) : -1;
+      if (after && at < 0) fail("not_found", "Unknown model call cursor");
+      const page = calls.slice(at + 1, at + 1 + limit); return { calls: page, ...(at + 1 + limit < calls.length ? { next: page.at(-1)!.callId } : {}) };
+    }, true),
     acceptItem: input => run(meta => {
       requireCompatible();
       const shaped = !!input && typeof input === "object"
@@ -560,11 +685,13 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
 
     exportArchive: () => run(meta => {
       const snapshot = readSnapshot(tables);
+      if (snapshot.modelCalls.some(call => call.outcome === "running" || call.attempts.some(attempt => attempt.outcome === "running")))
+        fail("busy", "A model call or attempt is still running");
       const idle = meta.lifecycle === "running" && !snapshot.turns.some(turn => turn.state.status === "running" || turn.state.status === "suspended")
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: 3, exportedAt: now(), snapshot,
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: 4, exportedAt: now(), snapshot,
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
     }),

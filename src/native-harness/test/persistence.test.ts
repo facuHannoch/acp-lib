@@ -59,7 +59,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(loaded.turns).toMatchObject([{ turnId: "1", state: "completed" }, { turnId: "2", state: "completed" }]);
     expect(loaded.turns.map(turn => turn.items).flat().sort()).toEqual(["a1", "b1"]);
     expect(loaded.items.map(item => [item.id, item.milestone, item.kind])).toEqual([["a1", "seen", "participant_message"], ["b1", "seen", "participant_message"]]);
-    expect(loaded.messages.map(message => message.parts[0]!.text).sort()).toEqual(["First reply.", "First reply.", "Recording.", "Recording."]);
+    expect(loaded.messages.map(message => message.parts![0]!.text).sort()).toEqual(["First reply.", "First reply.", "Recording.", "Recording."]);
     expect(await second.client.idle()).toEqual({ idle: true });
     // Deduplication and conflicts survive the restart.
     expect(await second.client.push(push("a", "a1", "alpha question"))).toMatchObject({ duplicate: true, item: { milestone: "seen" } });
@@ -73,7 +73,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(started.event).toMatchObject({ turnId: "3", items: ["a2"] });
     expect(started.revision).toBeGreaterThan(loaded.status.revision);
     // The script continued from where the first process left it.
-    expect(log.events.flatMap(event => event.event.type === "message_completed" ? [event.event.parts[0]!.text] : [])).toEqual(["Second reply."]);
+    expect(log.events.flatMap(event => event.event.type === "message_completed" ? [event.event.parts![0]!.text] : [])).toEqual(["Second reply."]);
     const messageId = log.events.flatMap(event => event.event.type === "message_completed" ? [event.event.messageId!] : [])[0]!;
     expect(loaded.messages.map(message => message.messageId)).not.toContain(messageId);
     if ("models" in second) {
@@ -137,22 +137,21 @@ test("load views that cannot fit one frame fail whole; message pages respect the
   const view = () => { const read = storage.snapshot(); if (!read.ok) throw new Error(read.error.message); return read.value; };
   const first = loadView(sessionStatus(view(), false), view(), 100);
   // Three 300 KB messages fit beside the fixed part; the rest are paged.
-  expect(first.messages.map(message => message.parts[0]!.text[0])).toEqual(["0", "1", "2"]);
+  expect(first.messages.map(message => message.parts![0]!.text[0])).toEqual(["0", "1", "2"]);
   expect(new TextEncoder().encode(JSON.stringify(first)).length).toBeLessThan(1024 * 1024);
   const before = view().revision;
   storage.appendMessage(turn.value.turn.turnId, { role: "assistant", content: "later", calls: [] });
   const rest = pageMessages(view(), before, Number(first.nextMessage), 100);
-  expect(rest.messages.map(message => message.parts[0]!.text[0])).toEqual(["3", "4"]);
+  expect(rest.messages.map(message => message.parts![0]!.text[0])).toEqual(["3", "4"]);
   expect(rest.nextMessage).toBeUndefined();
-  // One record larger than a frame cannot be delivered, but the history before it still can.
+  // Oversized text is represented by a bounded-read reference.
   storage.appendMessage(turn.value.turn.turnId, { role: "assistant", content: "y".repeat(1024 * 1024), calls: [] });
   const prefix = pageMessages(view(), view().revision, 0, 100);
-  expect(prefix.messages.map(message => message.parts[0]!.text[0])).toEqual(["0", "1", "2"]);
+  expect(prefix.messages.map(message => message.parts![0]!.text[0])).toEqual(["0", "1", "2"]);
   const middle = pageMessages(view(), view().revision, Number(prefix.nextMessage), 100);
-  expect(middle.messages.map(message => message.parts[0]!.text)).toEqual([`3${big}`, `4${big}`, "later"]);
-  // The page stops at the last record it could include; it does not skip the oversized one.
-  expect(middle.nextMessage).toBe(middle.messages[2]!.messageId);
-  expect(() => pageMessages(view(), view().revision, Number(middle.nextMessage), 100)).toThrow(FrameLimit);
+  expect(middle.messages.slice(0, 3).map(message => message.parts![0]!.text)).toEqual([`3${big}`, `4${big}`, "later"]);
+  expect(middle.messages[3]).toMatchObject({ reference: true });
+  expect(middle.nextMessage).toBeUndefined();
   expect(loadView(sessionStatus(view(), false), view(), 100).messages).toEqual(prefix.messages);
   // Unpaged turns and items that outgrow a frame fail the load rather than truncating it.
   for (let i = 0; i < 4; i++) storage.acceptItem({ kind: "participant_message", channelId: "a", senderId: "ana", text: "t", itemId: `${i}${big}` });

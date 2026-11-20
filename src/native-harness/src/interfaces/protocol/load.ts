@@ -35,10 +35,10 @@ export function pageMessages(view: StorageSnapshot, revision: number, after: num
   let nextMessage: string | undefined;
   for (const entry of view.timeline) {
     if (entry.seq <= after || entry.seq > revision || entry.message.role !== "assistant" || !entry.message.content) continue;
-    const message: StoredMessage = { messageId: String(entry.seq), channel: entry.channelId, turnId: String(entry.turnId),
+    const message: StoredMessage = { messageId: entry.messageId ?? String(entry.seq), channel: entry.channelId, turnId: String(entry.turnId),
       parts: [{ type: "text", text: entry.message.content }] };
+    if (size(message) + 1 > BUDGET) { delete (message as { parts?: unknown }).parts; Object.assign(message, { reference: true }); }
     const bytes = size(message) + 1;
-    if (bytes > BUDGET && !messages.length) throw new FrameLimit(`Message ${message.messageId} does not fit in one protocol frame`);
     // Count reached, or no room left on this page: an ordinary page break.
     if (messages.length >= limit || used + bytes > BUDGET) { nextMessage = messages.at(-1)?.messageId ?? String(after); break; }
     messages.push(message); used += bytes;

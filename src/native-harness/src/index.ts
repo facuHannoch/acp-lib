@@ -6,7 +6,7 @@ import { createMemoryStorageAdapter } from "./state/storage/memory.ts";
 import { buildContext } from "./capabilities/context/build.ts";
 import { createChannelScheduler } from "./kernel/channels.ts";
 import { runTurn } from "./kernel/loop.ts";
-import { runModelCall } from "./capabilities/model/runner.ts";
+import { ModelCallError, runModelCall } from "./capabilities/model/runner.ts";
 import { getModelAttempt } from "./capabilities/model/attempt.ts";
 import { createApprovalService, dispatchWithPolicy } from "./governance/permissions/gate.ts";
 import { toolDecision } from "./governance/policy/resolve.ts";
@@ -88,10 +88,12 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       const view = read();
       const itemIds = view.items.filter(item => item.turnId === turn.turnId).map(item => item.itemId);
       const binding = getModelAttempt(services.model);
+      let draftId: string | undefined;
+      try {
       const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools },
         scripted: binding.scripted, store, attempt: binding.create, signal,
-        delta: ({ messageId, text }) => emit({ channel: turn.channelId,
-          event: { type: "text_delta", turnId: String(turn.turnId), messageId, text } }),
+        delta: ({ messageId, text }) => { draftId = messageId; emit({ channel: turn.channelId,
+          event: { type: "text_delta", turnId: String(turn.turnId), messageId, text } }); },
         incomplete: ({ messageId, reason }) => emit({ channel: turn.channelId,
           event: { type: "text_incomplete", turnId: String(turn.turnId), messageId, reason } }),
         receipt: (milestone, items, revision) => emit({ channel: turn.channelId, revision,
@@ -102,6 +104,13 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
         event: { type: "message_completed", turnId: String(turn.turnId), messageId: result.messageId,
           parts: [{ type: "text", text: result.response.content }] } });
       return result.response;
+      } catch (error) {
+        // A storage failure can occur after a draft was published but before the
+        // runner can write a normal terminal outcome. The draft must still end.
+        if (draftId && !(error instanceof ModelCallError)) emit({ channel: turn.channelId,
+          event: { type: "text_incomplete", turnId: String(turn.turnId), messageId: draftId, reason: "failed" } });
+        throw error;
+      }
     }, services.tools, services.executeTool);
   };
   const scheduler = createChannelScheduler(store, options.wrapTurn?.(run) ?? run, emit, lifecycle.publish);

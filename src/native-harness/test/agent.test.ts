@@ -31,9 +31,9 @@ test("channels run concurrently; a message for a busy channel joins its turn at 
   expect(started).toEqual(["hold", "independent", "next"]);
   // Both inputs for channel a share one turn and one outcome.
   const a = events.filter(e => e.channel === "a").map(e => e.event);
-  expect(a.map(e => e.type)).toEqual(["turn_started", "message_completed", "items_receipt", "turn_took", "message_completed", "items_receipt", "turn_ended"]);
+  expect(a.map(e => e.type)).toEqual(["turn_started", "items_receipt", "message_completed", "turn_took", "items_receipt", "message_completed", "turn_ended"]);
   expect(a[0]).toMatchObject({ items: ["hold"] }); expect(a[3]).toMatchObject({ items: ["next"] });
-  expect(a[2]).toMatchObject({ items: ["hold"], milestone: "seen" }); expect(a[5]).toMatchObject({ items: ["next"], milestone: "seen" });
+  expect(a[1]).toMatchObject({ items: ["hold"], milestone: "seen" }); expect(a[4]).toMatchObject({ items: ["next"], milestone: "seen" });
   expect(new Set(a.map(e => "turnId" in e ? e.turnId : undefined)).size).toBe(1);
   expect(session.snapshot().turns.find(turn => turn.channelId === "a")).toMatchObject({ itemIds: ["hold", "next"], state: { status: "completed" } });
   expect(session.store.snapshot().filter((e) => e.channelId === "a").map((e) => e.message.content?.split("\n\n").at(-1))).toEqual(["hold", "hold", "next", "next"]);
@@ -51,7 +51,7 @@ test("a failed turn ends by itself: its channel and other channels keep working"
       return { role: "assistant", content: "ok", calls: [] };
     } }) });
   session.start();
-  await expect(ask(session, { channelId: "a", participantId: "alice", text: "first" })).rejects.toThrow("model failed");
+  await expect(ask(session, { channelId: "a", participantId: "alice", text: "first" })).rejects.toThrow("failed");
   expect(session.status().channels[0]).toMatchObject({ channelId: "a", unresolvedInterruption: { turnId: 1, status: "failed" } });
   expect(await ask(session, { channelId: "a", participantId: "alice", text: "second" })).toBe("ok");
   expect(await ask(session, { channelId: "b", participantId: "bob", text: "hello" })).toBe("ok");
@@ -121,7 +121,7 @@ test("local requests whose inputs share a turn all resolve with that turn's repl
     release();
     expect(await Promise.all([first, second])).toEqual(["reply to two", "reply to two"]);
     expect(session.snapshot().turns).toHaveLength(1);
-    await expect(sendLocal(socket, { channelId: "a", participantId: "alice", text: "fail" })).rejects.toThrow("provider down");
+    await expect(sendLocal(socket, { channelId: "a", participantId: "alice", text: "fail" })).rejects.toThrow("failed");
     expect(await sendLocal(socket, { channelId: "a", participantId: "alice", text: "again" })).toBe("reply to again");
   } finally {
     await server.stop(true);

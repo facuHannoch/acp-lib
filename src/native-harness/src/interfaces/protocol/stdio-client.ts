@@ -23,8 +23,11 @@ function message(value: any): value is RpcResponse | RpcNotification | RpcSessio
       case "turn_ended": return ["completed", "failed", "interrupted"].includes(event.outcome)
         && (event.error === undefined || typeof event.error === "string")
         && (event.uncertainCalls === undefined || strings(event.uncertainCalls));
-      case "message_completed": return typeof event.messageId === "string" && Array.isArray(event.parts)
-        && event.parts.every((part: any) => part?.type === "text" && typeof part.text === "string");
+      case "text_delta": return typeof event.messageId === "string" && typeof event.text === "string";
+      case "text_gap": return typeof event.messageId === "string";
+      case "text_incomplete": return typeof event.messageId === "string" && ["failed", "incomplete", "output_limit", "timeout", "interrupted"].includes(event.reason);
+      case "message_completed": return typeof event.messageId === "string" && (event.reference === true && event.parts === undefined || Array.isArray(event.parts)
+        && event.parts.every((part: any) => part?.type === "text" && typeof part.text === "string"));
       case "tool_call": return typeof event.id === "string" && typeof event.name === "string"
         && ["started", "completed", "failed"].includes(event.status)
         && (event.input === undefined || typeof event.input === "string")

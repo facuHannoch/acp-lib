@@ -28,7 +28,7 @@ export async function ask(session: PersistentSession, input: ChannelInput): Prom
     const stop = session.subscribe(({ event }) => {
       if ((event.type === "turn_started" || event.type === "turn_took") && event.items.includes(itemId)) turnId = event.turnId;
       if (turnId === undefined || !("turnId" in event) || event.turnId !== turnId) return;
-      if (event.type === "message_completed") answer = event.parts.map(part => part.text).join("");
+      if (event.type === "message_completed") answer = (event.parts ?? []).map(part => part.text).join("");
       if (event.type === "turn_ended") { stop(); event.outcome === "completed" ? resolve(answer) : reject(new Error(event.error ?? event.outcome)); }
     });
     const accepted = session.agent.send(input);

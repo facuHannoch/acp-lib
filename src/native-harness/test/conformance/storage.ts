@@ -54,7 +54,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       // A different key opens normally and is never written.
       const again = ok(adapter.open({ mode: "open", identity: id("k2") }));
       const view = snap(again);
-      expect(view.session).toMatchObject({ sessionId: "s1", formatVersion: 4, lifecycle: "running", compatibilityKey: "k1" });
+      expect(view.session).toMatchObject({ sessionId: "s1", formatVersion: 5, lifecycle: "running", compatibilityKey: "k1" });
       expect(view.items.map(item => item.text)).toEqual(["hello"]);
       ok(again.close());
       expect(snap(ok(adapter.open({ mode: "open", identity: id() }))).session.compatibilityKey).toBe("k1");
@@ -409,7 +409,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
 
     test("export needs an idle or cleanly suspended session", () => {
       const { s } = create();
-      expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 3, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });
+      expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 4, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });
       ok(msg(s, "a"));
       unchanged(s, () => refused(s.exportArchive(), "busy"));
       const t = begin(s).turn.turnId;
@@ -728,7 +728,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
 
     test("an archive round-trips channel state, names, withdrawn items, retired IDs and checkpoints", () => {
       const { s, a, archive } = richArchive();
-      expect(archive.archiveVersion).toBe(3);
+      expect(archive.archiveVersion).toBe(4);
       const home = location();
       ok(home.importArchive(archive, { sessionId: "copy" }));
       const copy = ok(home.open({ mode: "open", identity: { sessionId: "copy", compatibilityKey: "k1" } }));
@@ -783,7 +783,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       const home = location();
       ok(home.importArchive(JSON.parse(JSON.stringify(v1))));
       const copy = ok(home.open({ mode: "open", identity: id() }));
-      expect(snap(copy).session.formatVersion).toBe(4);
+      expect(snap(copy).session.formatVersion).toBe(5);
       expect(snap(copy).channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }]);
       expect(ok(copy.resume()).turns.map(turn => turn.turnId)).toEqual([t]); // session-wide resume, as before
       expect(ok(copy.takePending(t)).items.map(item => item.itemId)).toEqual(["p"]);
@@ -828,8 +828,8 @@ export function storageConformance(name: string, location: () => SessionStorageA
       const good = JSON.stringify(ok(s.exportArchive()));
       const broken: ((archive: any) => void)[] = [
         a => { a.format = "something-else"; },
-        a => { a.archiveVersion = 4; },
-        a => { a.snapshot.session.formatVersion = 5; },
+        a => { a.archiveVersion = 5; },
+        a => { a.snapshot.session.formatVersion = 6; },
         a => { a.snapshot.session.lifecycle = "suspending"; },
         a => { a.snapshot.turns[0].state = { status: "running" }; },
         a => { a.snapshot.turns[0].state = { status: "suspended", checkpoint: { nextStep: "inference", afterSeq: 1 } }; },

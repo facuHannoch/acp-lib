@@ -134,7 +134,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(lines(effects).sort()).toEqual(["done:k", "done:k", "start:k", "start:k"]);
     await until(() => seen.session.length === 2, "lifecycle events");
     // Each iteration finished its tool, then checkpointed instead of inferring or taking input.
-    for (const channel of ["a", "b"]) expect(seen.types(channel)).toEqual(["turn_started", "message_completed", "items_receipt", "tool_call", "tool_call", "turn_suspended"]);
+    for (const channel of ["a", "b"]) expect(seen.types(channel)).toEqual(["turn_started", "items_receipt", "message_completed", "tool_call", "tool_call", "turn_suspended"]);
     expect(seen.session.map(event => event.lifecycle)).toEqual(["suspending", "suspended"]);
     expect(seen.order.at(-1)).toBe("session:suspended");
     expect(seen.session[1]!.revision).toBe(status.revision);
@@ -162,11 +162,11 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(resumed.lifecycle).toBe("running");
     await until(() => seen.channel.filter(event => event.event.type === "turn_ended").length === 2, "resumed turns to end");
     // The resumed turn on a takes the pending item before its first inference; b infers directly.
-    expect(seen.types("a")).toEqual(["turn_resumed", "turn_took", "message_completed", "items_receipt", "turn_ended"]);
+    expect(seen.types("a")).toEqual(["turn_resumed", "turn_took", "items_receipt", "message_completed", "turn_ended"]);
     expect(seen.types("b")).toEqual(["turn_resumed", "message_completed", "turn_ended"]);
     expect(seen.order[0]).toBe("session:running");
     expect(seen.channel.find(event => event.event.type === "turn_took")!.event).toMatchObject({ turnId: "1", items: ["a2"] });
-    expect(seen.channel.flatMap(event => event.event.type === "message_completed" ? [event.event.parts[0]!.text] : [])).toEqual(["Finished.", "Finished."]);
+    expect(seen.channel.flatMap(event => event.event.type === "message_completed" ? [event.event.parts![0]!.text] : [])).toEqual(["Finished.", "Finished."]);
     expect(seen.channel.filter(event => event.event.type === "tool_call")).toEqual([]);
     // The completed calls ran once across both processes.
     expect(lines(effects).sort()).toEqual(["done:k", "done:k", "start:k", "start:k"]);

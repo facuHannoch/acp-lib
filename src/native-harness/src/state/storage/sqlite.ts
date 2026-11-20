@@ -117,7 +117,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       run: (...args: any[]) => { prepared().run(...args); } };
   };
   const s = {
-    meta: q("SELECT key, value FROM meta"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+    meta: q("SELECT key, value FROM meta"), modelState: q("SELECT value FROM meta WHERE key = 'modelState'"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
     channel: q("SELECT * FROM channels WHERE channel_id = ?"),
     addChannel: q("INSERT OR IGNORE INTO channels (channel_id, position) VALUES (?, (SELECT COUNT(*) FROM channels))"),
     putChannel: q("UPDATE channels SET display_name = ?, lifecycle = ?, policy = ? WHERE channel_id = ?"),
@@ -140,6 +140,8 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
   let depth = 0;
   return {
     dispose() { for (const finalize of finalizers.splice(0)) finalize(); },
+    getModelState() { const row = s.modelState.get(); return row ? JSON.parse(row.value) : undefined; },
+    setModelState(state) { s.setMeta.run("modelState", JSON.stringify(state)); },
     getConfig() { const row = s.config.get(); return row ? JSON.parse(row.value) : undefined; },
     setConfig(config) { s.setMeta.run("importedConfig", JSON.stringify(config)); },
     // Short and synchronous: nothing awaits between BEGIN and COMMIT.
@@ -235,7 +237,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         if (!identity || typeof identity.sessionId !== "string" || !identity.sessionId.trim() || typeof identity.compatibilityKey !== "string"
           || (options.mode !== "create" && options.mode !== "open")) throw new Fail("invalid_input", "Open needs a mode, sessionId and compatibilityKey");
         let config; try { config = options.config === undefined ? undefined : validateManagedConfig(options.config); } catch (error) { throw new Fail("invalid_input", String(error)); }
-        if (options.mode === "create") publish(path, { sessionId: identity.sessionId, formatVersion: 4, createdAt: new Date().toISOString(),
+        if (options.mode === "create") publish(path, { sessionId: identity.sessionId, formatVersion: 5, createdAt: new Date().toISOString(),
           compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         else if (!existsSync(path)) throw new Fail("not_found", `No session exists at ${path}`);
         db = new Database(path, { readwrite: true, create: false });
@@ -248,7 +250,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           meta = inspect.getMeta();
         } catch { throw new Fail("incompatible", "File is not a readable harness session"); }
         finally { inspect.dispose(); db.exec("ROLLBACK"); }
-        if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
+        if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
         if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");
         // An old format has only the implicit legacy policy. If the candidate
         // lacks it, build an in-memory inspection view without changing the

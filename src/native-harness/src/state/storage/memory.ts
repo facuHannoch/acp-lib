@@ -1,9 +1,10 @@
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
-import { Fail, createEngine, failure, recover, referencesCompatible, type ChannelRow, type Meta, type Tables, type TurnRow } from "./engine.ts";
+import { Fail, createEngine, failure, recover, referencesCompatible, type ChannelRow, type Meta, type Tables, type TurnRow, type ModelState } from "./engine.ts";
 import { archiveMeta, restoreArchive, storedSession, validateArchive, validateSessionPayload } from "./archive.ts";
 import { validateManagedConfig } from "../../util/config.ts";
 
 interface Data {
+  modelState?: ModelState;
   config?: import("../../contracts/session-file.ts").PortableSessionConfig;
   meta: Meta;
   channels: Map<string, ChannelRow>; participants: Set<string>;
@@ -19,6 +20,8 @@ function memoryTables(data: Data): Tables {
   let undo: (() => void)[] | undefined;
   const log = (step: () => void) => { undo?.push(step); };
   return {
+    getModelState: () => copy(data.modelState),
+    setModelState(state) { const old = data.modelState; log(() => { data.modelState = old; }); data.modelState = copy(state); },
     getConfig: () => copy(data.config),
     setConfig(config) { const old = data.config; log(() => { data.config = old; }); data.config = copy(config); },
     transaction(run) {
@@ -98,7 +101,7 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
         if (owned) throw new Fail("owner_conflict", "Session storage already has an owner");
         if (options.mode === "create") {
           if (data) throw new Fail("already_exists", "A session already exists at this location");
-          data = empty({ sessionId: identity.sessionId, formatVersion: 4, createdAt: new Date().toISOString(),
+          data = empty({ sessionId: identity.sessionId, formatVersion: 5, createdAt: new Date().toISOString(),
             compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         } else {
           if (!data) throw new Fail("not_found", "No session exists at this location");

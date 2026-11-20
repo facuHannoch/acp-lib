@@ -110,13 +110,13 @@ test("crash after a tool's external effect, before its result commits: reported 
 }, 15000);
 
 test("a committed reply the client never received is recovered by load, and the channel continues", async () => {
-  // The third append is the final assistant reply: committed, then the process dies before publishing it.
-  const crashed = await crashAt("appendMessage:3");
-  const delivered = crashed.seen.map(event => event.event).flatMap(event => event.type === "message_completed" ? [event.parts[0]!.text] : []);
+  // The second model response commits before the process publishes it.
+  const crashed = await crashAt("commitResponse:2");
+  const delivered = crashed.seen.map(event => event.event).flatMap(event => event.type === "message_completed" ? [event.parts![0]!.text] : []);
   expect(delivered).not.toContain("First reply.");
   const harness = await reopen(crashed.home, crashed.log);
   try {
-    expect(harness.loaded.messages.map(message => message.parts[0]!.text)).toEqual(["Recording.", "First reply."]);
+    expect(harness.loaded.messages.map(message => message.parts![0]!.text)).toEqual(["Recording.", "First reply."]);
     const missed = harness.loaded.messages[1]!;
     expect(missed).toMatchObject({ channel: "a", turnId: "1" });
     // Its turn had not committed completion, so it is interrupted with nothing uncertain.
@@ -124,7 +124,7 @@ test("a committed reply the client never received is recovered by load, and the 
     const done = turnEnded(harness, "2");
     await harness.client.push(push("m2", "fresh"));
     expect((await done).event).toMatchObject({ outcome: "completed" });
-    const replies = events(harness.wire).map(event => event.event).flatMap(event => event.type === "message_completed" ? [event.parts[0]!.text] : []);
+    const replies = events(harness.wire).map(event => event.event).flatMap(event => event.type === "message_completed" ? [event.parts![0]!.text] : []);
     expect(replies).toEqual(["Second reply."]);
     // Message IDs are stable: a later load repeats the recovered IDs and lists
     // the live message under the ID its event carried.
@@ -136,16 +136,15 @@ test("a committed reply the client never received is recovered by load, and the 
   } finally { await harness.close(); }
 }, 15000);
 
-test("crash between the reply commit and its receipt: the reply is recorded and the receipt has not advanced", async () => {
-  // The first append is the assistant message that requests the tool. Dying
-  // right after it leaves the output durable and Seen unconfirmed, never the reverse.
-  const crashed = await crashAt("appendMessage:1");
+test("crash after receipt evidence and before reply commit keeps the receipt without a reply", async () => {
+  // Non-streaming evidence commits before the response transaction.
+  const crashed = await crashAt("confirm:1");
   expect(effects(crashed.log)).toEqual([]);
   const harness = await reopen(crashed.home, crashed.log);
   try {
-    expect(harness.loaded.messages.map(message => message.parts[0]!.text)).toEqual(["Recording."]);
-    expect(harness.loaded.items).toMatchObject([{ id: "m1", milestone: "taken", turnId: "1" }]);
-    // The call was recorded but never dispatched; it is not uncertain or replayed.
+    expect(harness.loaded.messages).toEqual([]);
+    expect(harness.loaded.items).toMatchObject([{ id: "m1", milestone: "seen", turnId: "1" }]);
+    // No response was committed or dispatched; there is no uncertain tool effect.
     expect(harness.loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", uncertainCalls: [] }]);
     await new Promise(resolve => setTimeout(resolve, 150));
     expect(effects(crashed.log)).toEqual([]);

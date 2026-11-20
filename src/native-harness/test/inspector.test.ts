@@ -49,7 +49,7 @@ test("session and channel status follow storage: acceptance, a shared failed tur
   await new Promise(resolve => setTimeout(resolve, 5));
   expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 0, running: true, turn: "running" });
   release(); await log.done;
-  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 0, running: false, error: "Turn 1 failed: Error: provider down",
+  expect(inspection.snapshot().channels[0]).toMatchObject({ pending: 0, running: false, error: "Turn 1 failed: failed",
     unresolved: { turnId: 1, status: "failed", uncertainCallIds: [] } });
   // The next completed turn resolves it.
   const next = turnsEnd(session);

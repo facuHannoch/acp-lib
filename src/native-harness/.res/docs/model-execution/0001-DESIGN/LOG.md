@@ -56,3 +56,33 @@ receipts, message_completed, tool and turn events still pass. The expanded gate
 passed 22 tests, 0 failures, 68 assertions. Full typecheck remains at the same
 27 deferred storage/reference errors; the real scripted scheduler remains
 blocked on Stage 3's call store. Independent re-review is pending.
+
+Gro approved Stage 2 at `aeb81af68d9dcdbd3619fdeb71608e2165bc5e08`;
+their independent focused gate passed 22 tests, 0 failures, 68 assertions.
+
+## Stage 3: storage and streaming
+
+Memory and SQLite use the shared call-store transactions; format 2/3/4 recovery
+and migration publish format 5, and logical archive 4 retains call summaries,
+script positions and message identity. The stdio parser accepts stream events
+and reference completions. A bounded live queue drops deltas with a gap or fails
+a blocked connection; oversized committed text is available in bounded byte
+pages. The public client exposes message and model-call reads and usage summing.
+
+Both real adapters pass interruption followed by new work, receipt and usage
+reopen, script reservation and archive identity tests. SQLite SIGKILL tests on
+both sides of response commit check call outcome, timeline identity and the next
+reserved script step. Other checks cover final/stream message IDs and ordering,
+a slow reader while another channel commits, blocked-queue shutdown, large
+UTF-8 reads on both transports, and a storage failure after a streamed draft.
+The test using usage reports across reopen uses a clean handle close to simulate
+recovery; the SIGKILL fixtures do not themselves report provider usage.
+
+Gate: `bun run typecheck --pretty false` passed; `bun test ./test` passed 282
+tests, 0 failures, 3103 assertions across 39 files (57.84s), with local IPC
+access. The shared storage engine remains over 400 lines because it owns the
+transactional lifecycle and model-call rules for both adapters. Model metadata is
+currently serialized as one state record, so updates copy and rewrite that record
+as call history grows; performance at large call counts has not been benchmarked.
+Independent Stage 3 review is pending. Stage 4 still requires the real scripted
+stdio stall/deadline scenario, documentation and final independent review.

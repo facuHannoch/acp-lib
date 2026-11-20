@@ -22,7 +22,7 @@ function watch(harness: ReturnType<typeof spawnHarness>) {
   harness.client.onChannelEvent(event => { events.push(event); });
   return events;
 }
-const texts = (events: ChannelEvent[]) => events.flatMap(event => event.event.type === "message_completed" ? [event.event.parts[0]!.text] : []);
+const texts = (events: ChannelEvent[]) => events.flatMap(event => event.event.type === "message_completed" ? [event.event.parts![0]!.text] : []);
 const taken = (events: ChannelEvent[]) => events.flatMap(({ event }) => event.type === "turn_started" || event.type === "turn_took" ? event.items.map(item => `${item}@${event.turnId}`) : []);
 
 test("crash during individual suspension reopens the channel and preserves pending input", async () => {
@@ -83,7 +83,7 @@ test("clean relocation: suspend with a tool running, export, import into a fresh
     expect(loaded).toEqual(sourceView);
     expect(loaded.status).toMatchObject({ lifecycle: "suspended", execution: "suspended" });
     expect(loaded.turns).toMatchObject([{ turnId: "1", channel: "a", state: "suspended", items: ["a1"] }, { turnId: "2", channel: "b", state: "suspended", items: ["b1"] }]);
-    expect(loaded.messages.map(message => [message.channel, message.turnId, message.parts[0]!.text]).sort()).toEqual([["a", "1", "Working."], ["b", "2", "Working."]]);
+    expect(loaded.messages.map(message => [message.channel, message.turnId, message.parts![0]!.text]).sort()).toEqual([["a", "1", "Working."], ["b", "2", "Working."]]);
     expect(loaded.items.find(item => item.id === "a2")).toMatchObject({ milestone: "received", channel: "a" });
     expect(loaded.status.channels.find(channel => channel.channel === "a")!.pending).toEqual(["a2"]);
     await new Promise(resolve => setTimeout(resolve, 150));
@@ -134,7 +134,7 @@ test("crash recovery: kills on both sides of take, a tool effect without a resul
 
   // 3. The effect is reported uncertain and not replayed. A fresh message is answered, but the process
   //    is killed after that reply commits and before the client receives it.
-  await life("appendMessage:1", async (harness, loaded, events) => {
+  await life("commitResponse:1", async (harness, loaded, events) => {
     expect(loaded!.turns).toMatchObject([{ turnId: "1", state: "interrupted", items: ["m1"], uncertainCalls: ["rec-1"] }]);
     expect(loaded!.items).toMatchObject([{ id: "m1", milestone: "seen", turnId: "1" }]);
     expect(loaded!.status).toMatchObject({ execution: "idle", channels: [{ channel: "a", pending: [], unresolved: { turnId: "1" } }] });
@@ -146,7 +146,7 @@ test("crash recovery: kills on both sides of take, a tool effect without a resul
 
   // 4. Load returns the reply the client missed. Killed again right after the next input is taken.
   await life("beginTurn:1", async (harness, loaded) => {
-    expect(loaded!.messages.map(message => [message.turnId, message.parts[0]!.text])).toEqual([["1", "Recording."], ["2", "First reply."]]);
+    expect(loaded!.messages.map(message => [message.turnId, message.parts![0]!.text])).toEqual([["1", "Recording."], ["2", "First reply."]]);
     expect(texts(all)).not.toContain("First reply.");
     expect(loaded!.turns).toMatchObject([{ turnId: "1", state: "interrupted", uncertainCalls: ["rec-1"] }, { turnId: "2", state: "interrupted", items: ["m2"], uncertainCalls: [] }]);
     void harness.client.push(push("a", "m3", "taken, then the process dies")).catch(() => {});
@@ -156,8 +156,8 @@ test("crash recovery: kills on both sides of take, a tool effect without a resul
   //    the same channel accepts and completes fresh work.
   await life(undefined, async (harness, loaded, events) => {
     expect(loaded!.turns).toMatchObject([{ turnId: "1", state: "interrupted" }, { turnId: "2", state: "interrupted" }, { turnId: "3", state: "interrupted", items: ["m3"], uncertainCalls: [] }]);
-    expect(loaded!.items.map(item => [item.id, item.milestone, item.turnId])).toEqual([["m1", "seen", "1"], ["m2", "taken", "2"], ["m3", "taken", "3"]]);
-    // m2's reply was committed but its Seen receipt was not: the kill fell between the two commits.
+    expect(loaded!.items.map(item => [item.id, item.milestone, item.turnId])).toEqual([["m1", "seen", "1"], ["m2", "seen", "2"], ["m3", "taken", "3"]]);
+    // m2's receipt was committed before its reply and survives the crash.
     expect(loaded!.status.channels).toMatchObject([{ channel: "a", pending: [], unresolved: { turnId: "3", state: "interrupted" } }]);
     for (const [id, text] of [["m1", "record this"], ["m2", "fresh after the crash"], ["m3", "taken, then the process dies"]] as const)
       expect(await harness.client.push(push("a", id, text))).toMatchObject({ duplicate: true });
@@ -171,7 +171,7 @@ test("crash recovery: kills on both sides of take, a tool effect without a resul
     const final = await harness.client.loadSession({ sessionId: "ledger", config });
     expect(final.turns.map(turn => [turn.turnId, turn.state, turn.items, turn.uncertainCalls ?? []])).toEqual([
       ["1", "interrupted", ["m1"], ["rec-1"]], ["2", "interrupted", ["m2"], []], ["3", "interrupted", ["m3"], []], ["4", "completed", ["m4"], []]]);
-    expect(final.messages.map(message => message.parts[0]!.text)).toEqual(["Recording.", "First reply.", "Second reply."]);
+    expect(final.messages.map(message => message.parts![0]!.text)).toEqual(["Recording.", "First reply.", "Second reply."]);
     expect(final.status).toMatchObject({ execution: "idle", channels: [{ channel: "a", pending: [] }] });
     expect(final.status.channels[0]!.unresolved).toBeUndefined();
   });

@@ -4,6 +4,7 @@ import type { SessionArchive, StorageResult, StoredSession } from "../../contrac
 import type { SessionFilePayload } from "../../contracts/session-file.ts";
 import { SessionFileError, validateConfig } from "../../state/storage/session-file.ts";
 import { validateManagedConfig } from "../../runtime/config/managed.ts";
+import { MAX_FRAME_BYTES } from "./framing.ts";
 import { FrameLimit, loadView, pageMessages, turnStatus, wireStatus } from "./load.ts";
 import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
 import type { TransferLimits } from "../../contracts/protocol.ts";
@@ -60,9 +61,9 @@ export function describe(durable: boolean, archives = false): Description {
     configOptions: [], commands: [], policies: [],
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable,
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
-        "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
+        "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : [])],
-      events: ["turn_started", "turn_took", "items_receipt", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "session/event"] },
+      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "session/event"] },
   };
 }
 
@@ -94,6 +95,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       // Filtering is downstream of inference and its retry cutoff: a final-mode
       // consumer must never see ephemeral stream events it cannot interpret.
       if (subscription.text === "final" && (event.event.type === "text_delta" || event.event.type === "text_gap" || event.event.type === "text_incomplete")) return;
+      if (event.event.type === "message_completed" && event.event.parts && new TextEncoder().encode(JSON.stringify(event)).length > MAX_FRAME_BYTES - 1024) {
+        const { parts: _parts, ...completion } = event.event;
+        event.event = { ...completion, reference: true };
+      }
       if (event.event.type === "tool_call") {
         if (subscription.tools === "none") return;
         if (subscription.tools === "summary") { delete event.event.input; delete event.event.output; }
@@ -137,8 +142,8 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const host = obj(p.host); keys(host, ["name", "version"]); text(host.name); text(host.version);
       if (!Array.isArray(p.callbacks) || p.callbacks.length) bad("Host callbacks are not supported yet");
       const sub = obj(p.subscription); keys(sub, ["text", "tools"]);
-      if (sub.text !== "final" || !["none", "summary", "full"].includes(sub.tools)) bad("Only final text and none/summary/full tools are supported");
-      subscription = { text: "final", tools: sub.tools };
+      if (!["final", "stream"].includes(sub.text) || !["none", "summary", "full"].includes(sub.tools)) bad("Only final/stream text and none/summary/full tools are supported");
+      subscription = { text: sub.text, tools: sub.tools };
       approvalConsumer = p.approval === true;
       initialized = true;
       return { protocolVersion: 1, harness: { version: "0.0.0" }, description };
@@ -196,7 +201,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3].includes(payload.archive?.archiveVersion))
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
       try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;
@@ -270,9 +275,34 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return wireStatus(outcome.status, session.snapshot());
     }
     if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.snapshot()); }
+    if (method === "session/model-calls") {
+      keys(p, ["after", "limit"]); const calls = session.snapshot().modelCalls;
+      const at = p.after === undefined ? -1 : calls.findIndex(call => call.callId === text(p.after));
+      if (p.after !== undefined && at < 0) throw new Fault("not_found", "Unknown call cursor");
+      const limit = p.limit === undefined ? 100 : count(p.limit, 100); if (limit > 100) bad("Limit exceeds 100");
+      const page = []; let bytes = 0;
+      for (const call of calls.slice(at + 1)) {
+        const size = new TextEncoder().encode(JSON.stringify(call)).length + 1;
+        if (size > MAX_FRAME_BYTES - 1024) throw new Fault("transfer_limit", "Call summary exceeds frame limit");
+        if (page.length >= limit || bytes + size > MAX_FRAME_BYTES - 1024) break;
+        page.push(call); bytes += size;
+      }
+      return { calls: page, ...(at + 1 + page.length < calls.length ? { next: page.at(-1)!.callId } : {}) };
+    }
+    if (method === "session/message/read") {
+      keys(p, ["messageId", "offset"]); const id = text(p.messageId), offset = p.offset;
+      if (!Number.isSafeInteger(offset) || offset < 0) bad("Invalid byte offset");
+      const entry = session.snapshot().timeline.find(value => (value.messageId ?? String(value.seq)) === id && value.message.role === "assistant");
+      if (!entry || entry.message.role !== "assistant" || entry.message.content === null) throw new Fault("not_found", "Unknown text message");
+      const bytes = new TextEncoder().encode(entry.message.content); if (offset > bytes.length) bad("Invalid byte offset");
+      const end = Math.min(bytes.length, offset + 524288);
+      return { messageId: id, offset, data: Buffer.from(bytes.subarray(offset, end)).toString("base64"), ...(end < bytes.length ? { nextOffset: end } : {}) };
+    }
     if (method === "session/messages") {
       keys(p, ["revision", "after", "limit"]);
-      const view = session.snapshot(), after = Number(text(p.after));
+      const view = session.snapshot(), cursor = text(p.after);
+      const matched = view.timeline.find(entry => entry.messageId === cursor || String(entry.seq) === cursor);
+      const after = matched?.seq ?? Number(cursor);
       if (!Number.isSafeInteger(p.revision) || p.revision < 0 || !Number.isSafeInteger(after) || after < 0) bad("Expected a revision and a message ID");
       if (p.revision > view.revision) throw new Fault("not_found", `Session has not reached revision ${p.revision}`);
       return pageMessages(view, p.revision, after, count(p.limit, 100));

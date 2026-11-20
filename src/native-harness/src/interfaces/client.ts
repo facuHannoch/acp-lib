@@ -63,6 +63,8 @@ export class HarnessClient {
   loadSession(params: Calls["session/load"]["params"]) { return this.request("session/load", params); }
   messages(params: Calls["session/messages"]["params"]) { return this.request("session/messages", params); }
   status() { return this.request("session/status", {}); }
+  modelCalls(params: Calls["session/model-calls"]["params"] = {}) { return this.request("session/model-calls", params); }
+  readMessage(params: Calls["session/message/read"]["params"]) { return this.request("session/message/read", params); }
   /** Resolves once the session is cleanly suspended: active iterations have
    * finished and every unfinished turn is checkpointed. May take as long as a
    * running tool; pass a longer client timeout for long tools. */

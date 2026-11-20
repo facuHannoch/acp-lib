@@ -23,7 +23,7 @@ function followReplies(subscribe: LocalSession["subscribe"]) {
       turn.items.push(...mine); turns.set(event.turnId, turn);
     } else if (event.type === "message_completed") {
       const turn = turns.get(event.turnId);
-      if (turn) turn.answer = event.parts.map(part => part.text).join("");
+      if (turn) turn.answer = (event.parts ?? []).map(part => part.text).join("");
     } else if (event.type === "turn_ended" || event.type === "turn_suspended") {
       const turn = turns.get(event.turnId);
       if (!turn) return;

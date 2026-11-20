@@ -1,6 +1,7 @@
 import { DuplicateJsonField, parseUniqueJson } from "../../util/json.ts";
 import type { ProtocolEndpoint, RpcRequest } from "../../contracts/protocol.ts";
 import { LineDecoder, LineWriter } from "./framing.ts";
+import { LiveQueue } from "./live-queue.ts";
 
 /** Serve until EOF. EOF is stop (decision 0013): admission closes, inference
  * and tools are cancelled, active turns are recorded interrupted and pending
@@ -14,9 +15,8 @@ export async function serveProtocolStdio(endpoint: ProtocolEndpoint, input: Read
   const pending = new Set<Promise<void>>();
   let failure: unknown;
   const fail = (error: unknown) => { failure = error; void reader.cancel().catch(() => {}); };
-  function send(value: unknown) {
-    try { void writer.send(value).catch(fail); } catch (error) { fail(error); }
-  }
+  const queue = new LiveQueue(value => writer.send(value), fail);
+  function send(value: unknown) { try { queue.send(value); } catch (error) { fail(error); } }
   // One writer for responses and both notification kinds keeps wire order
   // equal to publication order.
   const unsubscribeChannel = endpoint.subscribe(send), unsubscribeSession = endpoint.subscribeSession?.(send);
@@ -55,12 +55,19 @@ export async function serveProtocolStdio(endpoint: ProtocolEndpoint, input: Read
       await endpoint.request({ jsonrpc: "2.0", id: -1, method: "session/stop", params: {} });
       await Promise.all(pending);
       if (failure) throw failure;
+      await queue.flush();
       await writer.flush();
     };
     await Promise.race([settle(), new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error("Stdio shutdown grace expired before requests settled")), graceMs);
     })]);
   } finally {
+    // A failed writer or live queue closes this connection just like EOF: stop
+    // the session so in-flight work is fenced before releasing the endpoint.
+    if (failure) {
+      endpoint.disconnect?.();
+      await endpoint.request({ jsonrpc: "2.0", id: -1, method: "session/stop", params: {} }).catch(() => {});
+    }
     clearTimeout(timer); endpoint.disconnect?.(); unsubscribe();
     await reader.cancel().catch(() => {}); reader.releaseLock();
   }

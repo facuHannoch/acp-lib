@@ -145,7 +145,7 @@ export interface StoredItem extends Required<Pick<AcceptItem, "itemId">>, Omit<A
 /** A timeline entry. `seq` comes from the session-wide committed sequence and is
  * the entry's stable ID (assistant message ID `String(seq)`); values increase
  * but need not be contiguous. `itemId` is set on entries created by a take. */
-export interface TimelineEntry extends ContextEntry { itemId?: string }
+export interface TimelineEntry extends ContextEntry { itemId?: string; /** Reserved model message ID when produced by the call runner. */ messageId?: string }
 
 /** Enough to continue at the next step without repeating recorded work. Only
  * references to committed records; no functions, credentials or handles. */

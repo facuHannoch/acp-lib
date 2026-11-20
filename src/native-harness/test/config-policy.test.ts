@@ -206,6 +206,8 @@ test("a version 2 session file upgrades its config and item signatures", async (
     for (let i = 0; i < 200 && !(await first.client.idle()).idle; i++) await new Promise(resolve => setTimeout(resolve, 5));
     const payload = decodeSessionFile(await first.client.exportArchive(), 268435456) as any;
     payload.archive.archiveVersion = 2; payload.archive.snapshot.session.formatVersion = 3;
+    delete payload.archive.snapshot.modelCalls; delete payload.archive.snapshot.scriptPositions;
+    for (const entry of payload.archive.snapshot.timeline) delete entry.messageId;
     for (const item of payload.archive.snapshot.items) { item.signature = legacyItemSignature(item); delete item.policy; delete item.explicitPolicy; }
     payload.config = { version: 1, system: config.system, model: config.model };
     legacy = encodeSessionFile(payload, 268435456);
@@ -295,6 +297,6 @@ test("format 3 item signatures upgrade to policy-aware identities without reacce
     const opened = adapter.open({ mode: "open", identity }); if (!opened.ok) throw new Error(opened.error.message);
     expect(opened.value.acceptItem(input)).toMatchObject({ ok: true, value: { duplicate: true, item: { policy: { resolved: LEGACY_POLICY, inherited: [] } } } });
     expect(opened.value.acceptItem({ ...input, explicitPolicy: LEGACY_POLICY })).toMatchObject({ ok: false, error: { code: "item_conflict" } });
-    expect(opened.value.snapshot()).toMatchObject({ ok: true, value: { session: { formatVersion: 4 } } }); opened.value.close();
+    expect(opened.value.snapshot()).toMatchObject({ ok: true, value: { session: { formatVersion: 5 } } }); opened.value.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

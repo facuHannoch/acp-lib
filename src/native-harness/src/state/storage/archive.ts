@@ -13,7 +13,7 @@ const CHANNEL_STATES = ["open", "suspended", "retired"];
 export function validateSessionPayload(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "archive,config") bad("Invalid session file payload");
   const payload = value as { archive: SessionArchive; config: unknown };
-  if (![2, 3].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
+  if (![2, 3, 4].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
   const archive = validateArchive(payload.archive);
   let config: ReturnType<typeof validateConfig>;
   try { config = validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { return bad(String(error)); }
@@ -29,11 +29,11 @@ export function validateSessionPayload(value: unknown) {
 export function validateArchive(value: unknown): SessionArchive {
   if (!isJson(value) || !value || typeof value !== "object") bad("Archive is not JSON data");
   const raw = value as any;
-  if (raw.format !== "harness-session" || ![1, 2, 3].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
+  if (raw.format !== "harness-session" || ![1, 2, 3, 4].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
   const v1 = raw.archiveVersion === 1;
-  const legacy = raw.archiveVersion !== 3;
+  const legacy = raw.archiveVersion < 3;
   if (!raw.snapshot || !raw.allocation || !raw.snapshot.session || !Array.isArray(raw.snapshot.channels)) bad("Archive is missing its snapshot or allocation state");
-  const archive: SessionArchive = legacy ? { ...raw, archiveVersion: 3, snapshot: { ...raw.snapshot,
+  const policyArchive = legacy ? { ...raw, archiveVersion: 3, snapshot: { ...raw.snapshot,
     session: { ...raw.snapshot.session, formatVersion: 4 },
     channels: v1 ? raw.snapshot.channels.map((channel: any) => ({ ...channel, lifecycle: "open" as const })) : raw.snapshot.channels,
     turns: Array.isArray(raw.snapshot.turns) ? raw.snapshot.turns.map((turn: any) => turn?.state?.status === "suspended"
@@ -41,10 +41,16 @@ export function validateArchive(value: unknown): SessionArchive {
     items: Array.isArray(raw.snapshot.items) ? raw.snapshot.items.map((item: any) => {
       if (!item || item.signature !== legacyItemSignature(item)) bad("Invalid legacy item signature");
       return { ...item, signature: policyItemSignature(item), policy: { resolved: "__legacy_allow", inherited: [] } };
-    }) : raw.snapshot.items } } : raw as SessionArchive;
+    }) : raw.snapshot.items } } : raw;
+  const old = raw.archiveVersion < 4;
+  const positions: Record<string, number> = {};
+  if (old && Array.isArray(policyArchive.snapshot.timeline)) for (const entry of policyArchive.snapshot.timeline)
+    if (entry.message?.role === "assistant") Object.defineProperty(positions, entry.channelId, { value: (Object.hasOwn(positions, entry.channelId) ? positions[entry.channelId]! : 0) + 1, writable: true, configurable: true, enumerable: true });
+  const archive: SessionArchive = old ? { ...policyArchive, archiveVersion: 4, snapshot: { ...policyArchive.snapshot,
+    session: { ...policyArchive.snapshot.session, formatVersion: 5 }, modelCalls: [], scriptPositions: positions } } : raw;
   const snapshot = archive.snapshot, allocation = archive.allocation;
   const { session, revision } = snapshot;
-  if (session.formatVersion !== 4 || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
+  if (session.formatVersion !== 5 || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
     bad("Unsupported session format");
   if (session.lifecycle !== "running" && session.lifecycle !== "suspended") bad("Archive was not exported from an idle or suspended session");
   if (!Number.isSafeInteger(revision) || revision < 0 || allocation.nextSeq !== revision + 1 || !int(allocation.nextTurnId) || !int(allocation.nextItemNumber))
@@ -110,6 +116,42 @@ export function validateArchive(value: unknown): SessionArchive {
     if (turn.state.status === "suspended" && outstanding.size) bad("Checkpoint has an unanswered tool call");
   }
 
+  if (!Array.isArray(snapshot.modelCalls) || !snapshot.scriptPositions || typeof snapshot.scriptPositions !== "object" || Array.isArray(snapshot.scriptPositions)) bad("Invalid model execution records");
+  for (const [channel, next] of Object.entries(snapshot.scriptPositions))
+    if (!channels.has(channel) || !Number.isSafeInteger(next) || (next as number) < 0) bad("Invalid scripted position");
+  const callIds = new Set<string>(), messageIds = new Set<string>(), reservations = new Set<string>();
+  let previousCallId = 0;
+  for (const call of snapshot.modelCalls) {
+    if (!call || !/^[1-9]\d*$/.test(call.callId) || !Number.isSafeInteger(Number(call.callId)) || callIds.has(call.callId)
+      || !str(call.messageId) || messageIds.has(call.messageId) || !turns.has(Number(call.turnId)) || turns.get(Number(call.turnId))!.channelId !== call.channel
+      || !str(call.startedAt) || !str(call.endedAt) || !["succeeded", "failed", "incomplete", "output_limit", "timeout", "interrupted"].includes(call.outcome)
+      || !Array.isArray(call.attempts) || call.attempts.length > 2) bad("Invalid model call");
+    if (Number(call.callId) <= previousCallId) bad("Model calls are not in creation order");
+    previousCallId = Number(call.callId);
+    if (call.messageId !== `model:${call.callId}`) bad("Invalid reserved message ID");
+    callIds.add(call.callId); messageIds.add(call.messageId);
+    for (const [ordinal, attempt] of call.attempts.entries()) {
+      if (!attempt || attempt.ordinal !== ordinal || attempt.attemptId !== `${call.callId}:${ordinal}` || !str(attempt.startedAt) || !str(attempt.endedAt)
+        || !["succeeded", "transient_failure", "invalid_request", "invalid_config", "provider_failure", "incomplete", "output_limit", "timeout", "interrupted"].includes(attempt.outcome)
+        || (attempt.providerRequestId !== undefined && !str(attempt.providerRequestId)) || (attempt.retryReason !== undefined && !str(attempt.retryReason))
+        || (attempt.scriptStep !== undefined && (!Number.isSafeInteger(attempt.scriptStep) || attempt.scriptStep < 0))) bad("Invalid model attempt");
+      if (attempt.scriptStep !== undefined) {
+        const key = `${call.channel}\0${attempt.scriptStep}`;
+        if (reservations.has(key) || attempt.scriptStep >= (Object.hasOwn(snapshot.scriptPositions, call.channel) ? snapshot.scriptPositions[call.channel]! : 0)) bad("Invalid script reservation");
+        reservations.add(key);
+      }
+      if (attempt.usage && (typeof attempt.usage !== "object" || Object.keys(attempt.usage).some(key => !["inputTokens", "outputTokens", "totalTokens"].includes(key))
+        || Object.values(attempt.usage).some(value => !Number.isSafeInteger(value) || (value as number) < 0))) bad("Invalid model usage");
+    }
+    const succeeded = call.attempts.filter(attempt => attempt.outcome === "succeeded");
+    if (call.outcome === "succeeded" ? succeeded.length !== 1 || call.attempts.at(-1)?.outcome !== "succeeded" : succeeded.length !== 0)
+      bad("Call and attempt outcomes disagree");
+    const matched = snapshot.timeline.filter(entry => entry.messageId === call.messageId);
+    if (call.outcome === "succeeded" ? matched.length !== 1 || matched[0]!.message.role !== "assistant" || matched[0]!.turnId !== Number(call.turnId) : matched.length !== 0)
+      bad("Model call and committed response disagree");
+  }
+  for (const entry of snapshot.timeline) if (entry.messageId && !messageIds.has(entry.messageId)) bad("Unknown model message ID");
+
   const ids = new Set<string>(), accepted = new Set<number>();
   for (const item of [...snapshot.items].sort((a, b) => (a?.entrySeq ?? 0) - (b?.entrySeq ?? 0))) {
     if (!item || !str(item.itemId) || ids.has(item.itemId) || !channels.has(item.channelId) || !MILESTONES.includes(item.milestone)
@@ -140,7 +182,7 @@ export function validateArchive(value: unknown): SessionArchive {
 
 export function archiveMeta(archive: SessionArchive, sessionId?: string): Meta {
   const { session, revision } = archive.snapshot;
-  return { sessionId: sessionId ?? session.sessionId, formatVersion: 4, createdAt: session.createdAt,
+  return { sessionId: sessionId ?? session.sessionId, formatVersion: 5, createdAt: session.createdAt,
     compatibilityKey: session.compatibilityKey, lifecycle: session.lifecycle, revision,
     nextTurnId: archive.allocation.nextTurnId, nextItemNumber: archive.allocation.nextItemNumber };
 }
@@ -154,9 +196,12 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
     for (const { itemIds: _derived, ...turn } of snapshot.turns) tables.putTurn(turn);
     for (const entry of snapshot.timeline) tables.addEntry(entry);
     for (const item of snapshot.items) tables.putItem(item);
+    const entryIds = Object.fromEntries(snapshot.timeline.filter(entry => entry.messageId).map(entry => [String(entry.seq), entry.messageId!]));
+    const max = snapshot.modelCalls.reduce((n, call) => Math.max(n, Number(call.callId) || 0), 0);
+    tables.setModelState({ nextCall: max + 1, calls: snapshot.modelCalls, itemIds: {}, scriptPositions: snapshot.scriptPositions, entryIds });
   });
 }
 
 export function storedSession(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 4, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
+  return { sessionId: meta.sessionId, formatVersion: 5, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }

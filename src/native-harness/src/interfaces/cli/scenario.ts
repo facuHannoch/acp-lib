@@ -11,7 +11,7 @@ async function main() {
   }) });
   let answer = "";
   const ended = new Promise<void>((resolve, reject) => session.subscribe(({ event }) => {
-    if (event.type === "message_completed") answer = event.parts.map(part => part.text).join("");
+    if (event.type === "message_completed") answer = (event.parts ?? []).map(part => part.text).join("");
     if (event.type === "turn_ended") event.outcome === "completed" ? resolve() : reject(new Error(event.error ?? event.outcome));
   }));
   session.start();
