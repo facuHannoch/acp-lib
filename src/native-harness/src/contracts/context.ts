@@ -1,4 +1,4 @@
-import type { Message } from "./loop.ts";
+import type { Message, ToolCall, ExecuteTool } from "./loop.ts";
 import type { LoopEvent } from "./events.ts";
 
 /** Attributed agent experience; system instructions are configuration, not events. */
@@ -13,9 +13,9 @@ export interface ContextEntry {
   message: Message;
 }
 
-/** In-memory or durable source of truth. Values never alias caller objects. */
+/** Read-only projection of the storage timeline. Values never alias stored
+ * records. Listeners run after a commit that changed the timeline. */
 export interface SharedContextStore {
-  append(entry: Omit<ContextEntry, "seq" | "at">): void;
   snapshot(): ContextEntry[];
   subscribe(listener: () => void): () => void;
 }
@@ -24,7 +24,18 @@ export interface SharedContextStore {
 export interface TurnContext {
   append(message: Message): void;
   build(): Message[];
+  /** The sole dispatch boundary. It records dispatch before invoking the tool,
+   * invokes before publishing started to prevent reentrant cancellation, and
+   * returns a paired skipped result for denial or closed approval. A test
+   * barrier resolves before the last cancellation check. */
+  dispatchTool(call: ToolCall, execute: ExecuteTool): Promise<{ content: string; dispatched: boolean }>;
+  /** Take pending inbox items (messages and notices) into this turn. */
   drainNotices?(): void;
   finish?(): boolean;
   emit?(event: LoopEvent): void;
+  /** Decision 0013. Throwing from append means the turn was fenced (stopped or
+   * ended); the loop must not continue. The members below mirror TurnPort. */
+  confirm?(milestone: "delivered" | "seen"): void;
+  checkpoint?(): boolean;
+  signal?: AbortSignal;
 }

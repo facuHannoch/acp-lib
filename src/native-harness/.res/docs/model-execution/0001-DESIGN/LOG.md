@@ -1,0 +1,148 @@
+# Model execution work log
+
+Implementation branch `aiagent/cod1a-model-execution` starts from accepted
+configuration/permissions closure `28c6faf7faf3d4d48333498a61ea74f92273cc25`.
+Scope commit `0590af9` was cherry-picked as `aeac966`. Stage 1 defines the
+contract and decision before runner, adapter, storage, or protocol behavior.
+Each stage requires its own gate and Gro's review of the named revision before
+continuing. The final gate includes scripted SQLite over real stdio, in-process
+parity, full typecheck and the complete offline harness suite.
+
+Stage 1 contract gate: `bun run typecheck --pretty false` passed. Decision
+0019 traces retry in both subscriptions, interruption, slow delivery, and the
+crash boundaries, including durable receipts, usage and script reservation.
+Independent contract review is pending; no dependent implementation is included.
+
+Gro did not approve `741cdff`; the requested contract locks include the existing
+wire event, turn outcomes, deadline start, scripted counter, dispatch fence,
+receipt/usage validation, transactional migration and bounded delivery. The
+revised contract includes those locks and wires the new types into the actual
+protocol, events and storage contracts. Standalone contract `tsc` passes. Full
+`bun run typecheck --pretty false` is expected to fail until implementations
+handle reference messages, storage format 5/archive 4 and model-call methods;
+no implementation changes are included in this revision. Gro's re-review is
+required before Stage 2.
+
+Gro approved Stage 1 at `a9b5f84f4d165409bc7d9e81ecf15009b484714c`.
+Standalone contract typecheck passed independently; the full typecheck's 27
+errors were accepted as pending storage and reference-consumer implementation.
+
+## Stage 2: call execution
+
+The logical-call runner, scripted reservation adapter, OpenRouter streaming
+translation and turn's commit-before-dispatch path are implemented. The gate
+uses a call-store double: `bun test test/model-channel-double.test.ts
+ test/model-runner.test.ts test/model-stream-adapter.test.ts test/loop.test.ts`
+passed 21 tests, 0 failures and 66 assertions. It covers the same-channel
+scheduler after interruption, stop and late response, the permission gate after
+commit, retry and deadline, both text-delivery cutoff paths, malformed calls,
+and both adapters through the runner.
+
+Full `bun run typecheck --pretty false` remains red on the 27 already identified
+storage format and reference-consumer errors. The real `test/scripted.test.ts`
+scheduler case fails at missing `startCall` because the memory and SQLite
+call-store implementations belong to Stage 3; the other four cases pass. Stage 3
+must repeat channel usability and the scripted test on both real adapters, along
+with persistence and crash gates. No Stage 3 storage work is included here.
+Independent Stage 2 review is pending.
+
+Gro did not approve `c02868b`: final subscriptions received ephemeral text
+notifications that the current stdio parser rejects. The protocol publication
+filter now drops text_delta, text_gap and text_incomplete for final mode, after
+the runner's independent retry cutoff. A protocol regression test verifies
+receipts, message_completed, tool and turn events still pass. The expanded gate
+(`bun test test/model-final-filter.test.ts test/model-channel-double.test.ts
+ test/model-runner.test.ts test/model-stream-adapter.test.ts test/loop.test.ts`)
+passed 22 tests, 0 failures, 68 assertions. Full typecheck remains at the same
+27 deferred storage/reference errors; the real scripted scheduler remains
+blocked on Stage 3's call store. Independent re-review is pending.
+
+Gro approved Stage 2 at `aeb81af68d9dcdbd3619fdeb71608e2165bc5e08`;
+their independent focused gate passed 22 tests, 0 failures, 68 assertions.
+
+## Stage 3: storage and streaming
+
+Memory and SQLite use the shared call-store transactions; format 2/3/4 recovery
+and migration publish format 5, and logical archive 4 retains call summaries,
+script positions and message identity. The stdio parser accepts stream events
+and reference completions. A bounded live queue drops deltas with a gap or fails
+a blocked connection; oversized committed text is available in bounded byte
+pages. The public client exposes message and model-call reads and usage summing.
+
+Both real adapters pass interruption followed by new work, receipt and usage
+reopen, script reservation and archive identity tests. SQLite SIGKILL tests on
+both sides of response commit check call outcome, timeline identity and the next
+reserved script step. Other checks cover final/stream message IDs and ordering,
+a slow reader while another channel commits, blocked-queue shutdown, large
+UTF-8 reads on both transports, and a storage failure after a streamed draft.
+The test using usage reports across reopen uses a clean handle close to simulate
+recovery; the SIGKILL fixtures do not themselves report provider usage.
+
+Gate: `bun run typecheck --pretty false` passed; `bun test ./test` passed 282
+tests, 0 failures, 3103 assertions across 39 files (57.84s), with local IPC
+access. The shared storage engine remains over 400 lines because it owns the
+transactional lifecycle and model-call rules for both adapters. Model metadata is
+currently serialized as one state record, so updates copy and rewrite that record
+as call history grows; performance at large call counts has not been benchmarked.
+Independent Stage 3 review is pending. Stage 4 still requires the real scripted
+stdio stall/deadline scenario, documentation and final independent review.
+
+Gro did not approve Stage 3 at `2ed06ec`: summary pagination discarded earlier
+records when a later summary exceeded a frame, and in-process delivery lacked
+the bounded live queue. The fix returns a continuation after earlier whole
+summaries and fails only when an oversized summary is first on its page. The
+in-process transport now uses the same bounded queue as stdio; nondroppable
+overflow closes the connection and stops the session. Regression tests cover
+both paging orders, delta drop and gap, and connection failure. No Stage 4 work
+is included. Re-review gate: `bun run typecheck --pretty false` passed;
+`bun test ./test` passed 285 tests, 0 failures, 3113 assertions across 40 files
+(51.79s), with local IPC access. Independent re-review is pending.
+
+Gro approved Stage 3 at `19c189e22ff8ccab2fb5a11d5becf00731482a31`;
+their independent typecheck passed and the full suite passed 285 tests, 0
+failures, 3113 assertions across 40 files (58.46s). The accepted limitations
+remain: usage recovery was checked across clean reopen, not SIGKILL; the crash
+fixtures do not report usage; and model metadata is one rewritten state record.
+
+## Stage 4: public flow and final gate
+
+A real scripted SQLite stdio child uses opt-in test hooks for a partial reply,
+stall, reported usage and a 1.5-second model deadline. Alice times out with an
+incomplete draft and one attempt after Bob finishes; no response or tool effect
+is committed for her timed-out call. Alice completes fresh work, then reopen
+retains the timeout, usage and Seen receipt. Separate public cases exercise a
+text-and-tool response followed by a later reply in final and stream modes over
+both in-process and stdio, checking message IDs and completion-before-dispatch.
+The development inspector displays durable call summaries and attempts after
+reopen. README, architecture and business rules document the implementation.
+
+Final implementation gate: `bun run typecheck --pretty false` passed;
+`bun test ./test` passed 290 tests, 0 failures, 3149 assertions across 41 files
+(69.67s), with local IPC access. Gro approved the behavior revision
+`02c96de2ee9b70cad2081e744b67737dc1b58844`; their independent typecheck
+passed and the full suite passed 290 tests, 0 failures, 3149 assertions across
+41 files (68.33s). The test stall and stream behavior is supplied by opt-in
+`HARNESS_TEST_*` hooks around the scripted adapter; ordinary scripted files
+remain complete-response scripts.
+
+## Closure and retrospective
+
+The accepted chain is configuration/permissions closure `28c6faf`, model scope
+`aeac966`, Stage 1 contract `a9b5f84`, Stage 2 `aeb81af`, Stage 3 `19c189e`,
+and Stage 4 behavior `02c96de`. The envelope remains version 1; the durable
+storage format is 5 and logical archive is 4. The default model deadline remains
+120 seconds, while the final stdio test used 1.5 seconds.
+
+Contract review clarified the existing wire completion, recovery ordering and
+attempt reservation before implementation. Independent stage reviews caught a
+final-mode publication error, then a pagination and in-process buffering gap;
+each was fixed and re-reviewed before the next stage. The public gate verified
+timeout and fresh work with a real SQLite stdio child, plus both text modes and
+transports; the inspector was checked across reopen.
+
+Accepted limits: usage recovery was tested across a clean close, not SIGKILL;
+the SIGKILL fixtures do not emit usage. Model metadata is stored as one rewritten
+record and its performance at large call counts has not been benchmarked. The
+shared storage engine exceeds 400 lines because it owns both adapters' common
+transactions. The test-only stall and delta hooks do not extend the ordinary
+script-file format. No merge was requested.

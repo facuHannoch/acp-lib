@@ -14,3 +14,8 @@ the connection. An unfinished frame at EOF is a framing failure.
 EOF stops request admission, drains accepted work and writes within a five-second
 deadline, then exits. Timeout is a nonzero failure, not interrupted-and-persisted
 shutdown. No persistence, replay, cancellation or restart guarantees are added.
+
+Superseded in part by [0013](0013-durable-delivery-contract.md): once persistent
+stop is wired, EOF is an immediate stop that interrupts active turns, with no
+drain. That is now the server's behavior; the five-second deadline remains only
+as a bound on settling requests already read and flushing output.

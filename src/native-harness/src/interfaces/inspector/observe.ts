@@ -1,46 +1,27 @@
-import type { Agent, TurnRunner } from "../../contracts/agent.ts";
+import type { SessionAgent } from "../../contracts/agent.ts";
 import type { Message, Model } from "../../contracts/loop.ts";
 import type { ContextEntry, SharedContextStore } from "../../contracts/context.ts";
+import type { PersistentSession } from "../../contracts/session.ts";
 import type { Inspection } from "./state.ts";
 
-export function observeAgent(agent: Agent, inspection: Inspection): Agent {
-  return {
-    idle: () => agent.idle(),
-    notify(notice) {
-      const receipt = agent.notify(notice);
-      if (receipt.accepted && receipt.completion) {
-        inspection.accepted(notice.channelId, `channel:${notice.fromChannelId}`);
-        void receipt.completion.then(
-          () => inspection.finished(notice.channelId),
-          error => inspection.finished(notice.channelId, String(error)),
-        );
-      }
-      return receipt;
-    },
-    async send(input) {
-      // Count at submission, before the channel queue starts executing the turn.
-      inspection.accepted(input.channelId, input.participantId);
-      try {
-        const answer = await agent.send(input);
-        inspection.finished(input.channelId);
-        return answer;
-      } catch (error) {
-        inspection.finished(input.channelId, String(error));
-        throw error;
-      }
-    },
+/** Keep the inspector's session and channel status equal to storage: once at
+ * attach, so restored state is visible before any new message, and again after
+ * every acceptance and every committed event. Reading status never starts,
+ * resumes or changes work. */
+export function observeSession(session: PersistentSession, inspection: Inspection, storage: string) {
+  const refresh = () => {
+    const view = session.snapshot();
+    inspection.status(session.status(), storage, Object.fromEntries(view.channels.map(channel => [channel.channelId,
+      [...new Set(view.items.filter(item => item.channelId === channel.channelId).map(item => item.senderId))]])), view.modelCalls);
   };
-}
-
-export function observeTurn(run: TurnRunner, inspection: Inspection): TurnRunner {
-  return async (input, mailbox) => {
-    // The kernel invokes this only when the turn leaves its channel queue.
-    inspection.running(input.channelId, true);
-    try { return await run(input, mailbox); }
-    finally {
-      inspection.running(input.channelId, false);
-    }
+  refresh();
+  const stopEvents = session.subscribe(refresh), stopLifecycle = session.subscribeSession(refresh);
+  const agent: SessionAgent = {
+    idle: () => session.agent.idle(),
+    send(input) { const result = session.agent.send(input); refresh(); return result; },
+    notify(notice) { const result = session.agent.notify(notice); refresh(); return result; },
   };
+  return { agent, refresh, stop() { stopEvents(); stopLifecycle(); } };
 }
 
 export function observeModel(
@@ -54,8 +35,8 @@ export function observeModel(
     // fetch, rather than reconstructing it later from changing channel history.
     inspection.request(channelId, body, turnId);
   });
-  return async (messages, tools) => {
-    const response = await model(messages, tools);
+  return async (messages, tools, signal) => {
+    const response = await model(messages, tools, signal);
     inspection.response(channelId, response);
     return response;
   };

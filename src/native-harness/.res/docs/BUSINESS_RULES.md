@@ -14,7 +14,7 @@ tested independently. Expose a public setting when a consumer needs to choose.
 
 ## Model execution
 
-These rules are proposed in the
+These rules are implemented from the
 [model execution spec](model-execution/0001-DESIGN/SPEC.md).
 
 | Rule | Current proposal | Why |
@@ -28,6 +28,12 @@ These rules are proposed in the
 | Slow reader | Coalesce live deltas within a bounded buffer. Fall back to the committed reply when the reader falls behind. | Keep inference independent of live rendering speed. |
 | Provider output limit | End the turn with `output_limit`, mark any streamed reply incomplete, and skip all tool requests in that response. | Avoid acting on a truncated response. |
 | Retry during suspension | An eligible retry can finish the current call within its original deadline. | Let suspension finish the current iteration with a bounded wait. |
+
+Implementation locations: retry budget, deadline and cutoff are in
+`src/capabilities/model/runner.ts`; stream publication and reference decisions
+are in `src/interfaces/protocol/server.ts` and `live-queue.ts`; durable call,
+receipt and script-reservation transactions are in `src/state/storage/engine.ts`.
+The stdio and in-process transports share the bounded live queue.
 
 The spec owns execution contracts and invariants. Commit-before-dispatch, tool
 result pairing, and fencing output after interruption stay defined there.

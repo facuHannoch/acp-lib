@@ -5,18 +5,20 @@ import { serveLocal, sendLocal } from "../src/interfaces/protocol/local.ts";
 import { subscribeLocal } from "../src/interfaces/protocol/subscribe.ts";
 import { createSession } from "../src/index.ts";
 import type { ChannelOutput } from "../src/contracts/output.ts";
+import { lastInput } from "./helpers/session.ts";
 
 test("channel subscription delivers own and notice-started replies once, isolated by channel", async () => {
   const directory = await mkdtemp("/tmp/harness-output-");
   const socket = `${directory}/agent.sock`;
   const outputs = createChannelOutputs();
-  const session = createSession({ systemPrompt: "test", configureTurn: input => ({
-    model: async () => ({ role: "assistant", content: `Answer: ${input.text}`, calls: [] }),
+  const session = createSession({ systemPrompt: "test", configureTurn: () => ({
+    model: async messages => ({ role: "assistant", content: `Answer: ${lastInput(messages)}`, calls: [] }),
     tools: [], executeTool: async () => "unused",
   }) });
   session.subscribe(event => publishChannelEvent(outputs, event));
+  session.start();
   const agent = session.agent;
-  const server = serveLocal(agent, socket, outputs);
+  const server = serveLocal(session, socket, outputs);
   const received: ChannelOutput[] = [];
   let resolve!: () => void;
   let delivery = new Promise<void>(r => { resolve = r; });
@@ -28,9 +30,7 @@ test("channel subscription delivers own and notice-started replies once, isolate
     await delivery;
     expect(received.map(e => e.text)).toEqual(["Answer: hello"]);
     delivery = new Promise<void>(r => { resolve = r; });
-    const receipt = agent.notify({ channelId: "bob", fromChannelId: "alice", text: "What is the error?" });
-    expect(receipt.accepted && receipt.delivery).toBe("turn");
-    if (receipt.accepted) await receipt.completion;
+    expect(agent.notify({ channelId: "bob", fromChannelId: "alice", text: "What is the error?" })).toMatchObject({ accepted: true, milestone: "received" });
     await delivery;
     expect(received.map(e => e.text)).toEqual(["Answer: hello", "Answer: What is the error?"]);
     expect(new Set(received.map(e => e.turnId)).size).toBe(2);

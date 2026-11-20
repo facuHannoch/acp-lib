@@ -4,9 +4,9 @@ import type { ChannelEvent } from "../../contracts/events.ts";
 /** Development clients consume completed messages, never a second final return. */
 export function publishChannelEvent(outputs: ChannelOutputs, { channel, event }: ChannelEvent) {
   if (event.type === "message_completed") outputs.publish({ channelId: channel, turnId: Number(event.turnId),
-    type: "reply", text: event.parts.map(part => part.text).join("") });
-  if (event.type === "turn_ended" && event.outcome === "failed") outputs.publish({ channelId: channel,
-    turnId: Number(event.turnId), type: "error", text: event.error ?? "Turn failed" });
+    type: "reply", text: (event.parts ?? []).map(part => part.text).join("") });
+  if (event.type === "turn_ended" && event.outcome !== "completed") outputs.publish({ channelId: channel,
+    turnId: Number(event.turnId), type: "error", text: event.error ?? `Turn ${event.outcome}` });
 }
 
 export function createChannelOutputs(): ChannelOutputs {

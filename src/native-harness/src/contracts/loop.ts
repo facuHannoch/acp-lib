@@ -18,10 +18,12 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
 }
 
-/** Returns one complete assistant response, without executing tools. */
+/** Legacy complete-response adapter. Wrap through the model call runner for
+ * validation, evidence and atomic commit (decision 0019). Honors `signal`. */
 export type Model = (
-  messages: readonly Message[], tools: readonly ToolDefinition[],
+  messages: readonly Message[], tools: readonly ToolDefinition[], signal?: AbortSignal,
 ) => Promise<Extract<Message, { role: "assistant" }>>;
 
-/** Executes only permitted tools; returns serialized successes or errors. */
-export type ExecuteTool = (call: ToolCall) => Promise<string>;
+/** Executes only permitted tools; returns serialized successes or errors. Stop
+ * aborts `signal`; a call already in flight may still have had its effect. */
+export type ExecuteTool = (call: ToolCall, signal?: AbortSignal) => Promise<string>;

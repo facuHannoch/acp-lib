@@ -1,18 +1,33 @@
-import type { ClientTransport, StdioConnection, RpcResponse, RpcNotification } from "../../contracts/protocol.ts";
+import type { ClientTransport, StdioConnection, RpcResponse, RpcNotification, RpcSessionNotification } from "../../contracts/protocol.ts";
 import { LineDecoder, LineWriter } from "./framing.ts";
 
-function message(value: any): value is RpcResponse | RpcNotification {
+const strings = (value: unknown) => Array.isArray(value) && value.every((id: unknown) => typeof id === "string");
+function message(value: any): value is RpcResponse | RpcNotification | RpcSessionNotification {
   if (!value || value.jsonrpc !== "2.0") return false;
+  if (value.method === "session/event") return value.params?.type === "lifecycle" && Number.isSafeInteger(value.params.revision)
+    && ["running", "suspending", "suspended"].includes(value.params.lifecycle);
   if (value.method === "channel/event") {
-    if (typeof value.params?.channel !== "string" || typeof value.params?.event?.turnId !== "string") return false;
+    if (typeof value.params?.channel !== "string" || !value.params?.event) return false;
+    if (value.params.revision !== undefined && !Number.isSafeInteger(value.params.revision)) return false;
     const event = value.params.event;
+    if (event.type === "channel_state") return ["open", "suspending", "suspended", "retired"].includes(event.lifecycle)
+      && (event.displayName === undefined || typeof event.displayName === "string") && (event.policy === undefined || typeof event.policy === "string");
+    if (event.type === "item_withdrawn") return typeof event.item === "string";
+    if (typeof event.turnId !== "string") return false;
     switch (event.type) {
-      case "turn_started": case "turn_took":
-        return Array.isArray(event.items) && event.items.every((id: unknown) => typeof id === "string");
-      case "turn_ended": return ["completed", "failed"].includes(event.outcome)
-        && (event.error === undefined || typeof event.error === "string");
-      case "message_completed": return typeof event.messageId === "string" && Array.isArray(event.parts)
-        && event.parts.every((part: any) => part?.type === "text" && typeof part.text === "string");
+      case "turn_started": case "turn_took": return strings(event.items);
+      case "items_receipt": return strings(event.items) && ["delivered", "seen"].includes(event.milestone);
+      case "turn_suspended": case "turn_resumed": return true;
+      case "approval_requested": return typeof event.requestId === "string" && typeof event.channel === "string"
+        && typeof event.toolCallId === "string" && typeof event.tool === "string" && typeof event.arguments === "string";
+      case "turn_ended": return ["completed", "failed", "interrupted"].includes(event.outcome)
+        && (event.error === undefined || typeof event.error === "string")
+        && (event.uncertainCalls === undefined || strings(event.uncertainCalls));
+      case "text_delta": return typeof event.messageId === "string" && typeof event.text === "string";
+      case "text_gap": return typeof event.messageId === "string";
+      case "text_incomplete": return typeof event.messageId === "string" && ["failed", "incomplete", "output_limit", "timeout", "interrupted"].includes(event.reason);
+      case "message_completed": return typeof event.messageId === "string" && (event.reference === true && event.parts === undefined || Array.isArray(event.parts)
+        && event.parts.every((part: any) => part?.type === "text" && typeof part.text === "string"));
       case "tool_call": return typeof event.id === "string" && typeof event.name === "string"
         && ["started", "completed", "failed"].includes(event.status)
         && (event.input === undefined || typeof event.input === "string")
@@ -31,6 +46,7 @@ export function createStdioTransport(connection: StdioConnection): ClientTranspo
   let closed = false;
   let failure: Error | undefined;
   const listeners = new Set<(value: RpcResponse | RpcNotification) => void>();
+  const sessionListeners = new Set<(value: RpcSessionNotification) => void>();
   const closeListeners = new Set<(error?: Error) => void>();
   const reader = connection.readable.getReader();
   const writer = new LineWriter(connection.write);
@@ -39,7 +55,7 @@ export function createStdioTransport(connection: StdioConnection): ClientTranspo
     closed = true; failure = error;
     void reader.cancel().catch(() => {});
     for (const listener of closeListeners) { try { listener(error); } catch { /* Isolate consumers. */ } }
-    closeListeners.clear(); listeners.clear();
+    closeListeners.clear(); listeners.clear(); sessionListeners.clear();
     // Close stdin only after queued frames. Process ownership stays with host.
     void writer.flush().catch(() => {}).then(() => connection.end()).catch(() => {});
   }
@@ -52,7 +68,10 @@ export function createStdioTransport(connection: StdioConnection): ClientTranspo
         for (const line of decoder.push(chunk.value)) {
           const value: unknown = JSON.parse(line);
           if (!message(value)) throw new Error("Invalid protocol message from server");
-          for (const listener of listeners) { try { listener(structuredClone(value)); } catch { /* Consumer isolation. */ } }
+          // Lifecycle notifications never reach channel/response listeners.
+          if ("method" in value && value.method === "session/event") {
+            for (const listener of sessionListeners) { try { listener(structuredClone(value)); } catch { /* Consumer isolation. */ } }
+          } else for (const listener of listeners) { try { listener(structuredClone(value as RpcResponse | RpcNotification)); } catch { /* Consumer isolation. */ } }
         }
       }
     } catch (error) { stop(new Error(`Protocol connection failed: ${String(error)}`)); }
@@ -67,6 +86,7 @@ export function createStdioTransport(connection: StdioConnection): ClientTranspo
       catch (error) { stop(new Error(String(error))); throw error; }
     },
     subscribe(listener) { if (closed) throw failure ?? new Error("Transport closed"); listeners.add(listener); return () => { listeners.delete(listener); }; },
+    subscribeSession(listener) { if (closed) throw failure ?? new Error("Transport closed"); sessionListeners.add(listener); return () => { sessionListeners.delete(listener); }; },
     onClose(listener) { if (closed) listener(failure); else closeListeners.add(listener); return () => { closeListeners.delete(listener); }; },
     close() { stop(); },
   };

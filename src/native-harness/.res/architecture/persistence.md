@@ -1,8 +1,9 @@
 # Persistence proposal
 
-Status: proposed, updated 2026-11-17. No SQLite implementation or new public contract has
-been approved through this document. The implementation requires a contract
-decision before dependent changes.
+Status: implemented through the persistence slice in
+[docs/11-16-persistence](../docs/11-16-persistence/LOG.md), 2026-11-19. This
+document is kept as the original proposal; the README and decision 0013
+describe current behavior.
 
 The first type-only contract is now defined in
 [`src/contracts/storage.ts`](../../src/contracts/storage.ts), with rationale in
@@ -12,7 +13,13 @@ turns; durable notice admission, protocol deduplication and suspension remain
 subsequent contract work. Integrating existing notice-driven execution must not
 silently drop notices or pretend that this first interface handles them.
 
-### Contract operations, revision 1
+Revision 2 of the contract ([decision 0013](../decisions/0013-durable-delivery-contract.md))
+replaces the revision 1 operations below with a durable inbox, take, lifecycle,
+load and archive operations. Memory and SQLite adapters implement it, and the
+scheduler, context builder and scripted stdio server run on it, including
+suspend, resume, stop, and archive export/import by path or bounded transfer.
+
+### Contract operations, revision 1 (superseded)
 
 An adapter is configured with its location by assembly. `open` explicitly creates
 or opens a session, validates its compatibility key and acquires exclusive ownership.
@@ -25,20 +32,33 @@ execution; closing does not suspend or cancel it. Unfinished turns are preserved
 and classified as interrupted on reopen. Schema migration and portable checkpoint
 formats remain adapter/lifecycle work rather than implied capabilities.
 
-### Required adapter conformance checks
+### Required adapter conformance checks (revision 2)
 
 These become shared executable checks when memory and SQLite adapters are added:
 
-- Explicit create/open, identity mismatch, incompatible format, ownership conflict,
-  close/reopen and operations on closed handles.
-- Atomic input/channel/participant/turn creation, attribution and defensive copies.
-- Monotonic IDs and sequence order after reopen; timestamp-independent ordering.
-- Per-channel start order, independent channels and rejected illegal transitions.
-- Assistant calls recorded before results, pairing validation, serialization failure
-  without partial writes, and completion only after a final tool-free response.
-- Failed/interrupted turns retain history and leave channels usable for new work.
-- Atomic reopen recovery of queued/running turns; incompatible opens leave data
-  untouched. SQLite-specific tests additionally cover real process death/ownership.
+- Explicit create/open, session ID mismatch, unsupported format, ownership
+  conflict, close/reopen and operations on closed handles. A different
+  compatibility key opens normally and open never rewrites the stored key.
+- Acceptance: the exact signature, `auto:<n>` allocation, identical retries
+  returning the original item in every lifecycle state and after reopen,
+  `item_conflict`, lifecycle admission, and no timeline or turn change.
+- Atomic `beginTurn`/`takePending`/`finishTurn`: items taken once in acceptance
+  order, the finish-time pending check, per-channel single live turn,
+  independent channels, attribution and defensive copies.
+- Monotonic turn IDs, seq and revision after reopen; timestamp-independent order.
+- Assistant calls recorded before results, pairing validation, serialization
+  failure without partial writes. `appendMessage`, `confirmReceipts` and
+  `takePending` refuse a turn that is not running.
+- Failed/interrupted turns keep history, items and receipts, list uncertain
+  calls, and leave the channel usable. Nothing replays an uncertain call.
+- Suspension: checkpoint only for turns needing inference, `completeSuspend`
+  preconditions, `interruptActive` in each lifecycle state, and `resume`
+  failing `incompatible` on a key mismatch while writing nothing.
+- Reopen: `suspended` keeps checkpoints and pending items unchanged; any other
+  lifecycle interrupts running and checkpointed turns in one transaction.
+- Illegal transitions, export preconditions and failed imports leave no partial
+  writes; an export/import round trip preserves IDs, deduplication and counters.
+  SQLite-specific tests additionally cover real process death and ownership.
 
 The contract does not itself constitute passing conformance; no adapter has been
 verified against these requirements yet.

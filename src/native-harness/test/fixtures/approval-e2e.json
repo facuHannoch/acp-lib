@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "responses": [
+    { "content": "Requesting the action.", "calls": [{ "id": "first", "name": "record", "arguments": { "text": "approved" } }] },
+    { "content": "Requesting the action again.", "calls": [{ "id": "second", "name": "record", "arguments": { "text": "approved" } }] },
+    { "content": "Finished.", "calls": [] }
+  ]
+}

@@ -1,8 +1,25 @@
 import { HarnessClient, createStdioTransport } from "../../src/client.ts";
+import type { ClientTransport, RpcNotification, RpcResponse } from "../../src/contracts/protocol.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-export function spawnHarness() {
-  const child = Bun.spawn([process.execPath, new URL("../../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio"], {
-    stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...process.env, OPENROUTER_API_KEY: undefined },
+/** Record everything the transport delivers, in wire order. A client resolves
+ * responses a microtask after listeners run, so only this log shows the order
+ * in which a response and the notifications around it actually arrived. */
+export function recordWire(transport: ClientTransport) {
+  const wire: (RpcResponse | RpcNotification)[] = [];
+  transport.subscribe(message => { wire.push(message); });
+  return wire;
+}
+
+export interface SpawnOptions { home?: string; fault?: string; effects?: string; requests?: string; stallChannel?: string; streamResponses?: boolean; modelTimeoutMs?: number }
+export function spawnHarness(options: SpawnOptions = {}) {
+  const temporaryHome = options.home ? undefined : mkdtempSync(join(tmpdir(), "harness-stdio-"));
+  const child = Bun.spawn([process.execPath, new URL("../../src/interfaces/cli/main.ts", import.meta.url).pathname, "serve", "--stdio",
+    "--home", options.home ?? temporaryHome!], {
+    stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, OPENROUTER_API_KEY: undefined, HARNESS_TEST_FAULT: options.fault, HARNESS_TEST_EFFECTS: options.effects, HARNESS_TEST_REQUESTS: options.requests, HARNESS_TEST_STALL_CHANNEL: options.stallChannel, HARNESS_TEST_STREAM_RESPONSES: options.streamResponses ? "1" : undefined, HARNESS_TEST_MODEL_TIMEOUT_MS: options.modelTimeoutMs?.toString() },
   });
   const [protocol, capture] = child.stdout.tee();
   const stdout = new Response(capture).text();
@@ -11,9 +28,11 @@ export function spawnHarness() {
     async write(bytes) { child.stdin.write(bytes); await child.stdin.flush(); },
     async end() { await child.stdin.end(); },
   });
+  const wire = recordWire(transport);
   const client = new HarnessClient(transport, 2000);
+  if (temporaryHome) void child.exited.then(() => rmSync(temporaryHome, { recursive: true, force: true }));
   return {
-    client, child, stdout, stderr,
+    client, child, stdout, stderr, wire,
     async close() {
       client.close();
       const timer = setTimeout(() => child.kill("SIGKILL"), 2000);

@@ -1,0 +1,143 @@
+# Configuration and permissions work log
+
+Branch `aiagent/cod1a-config-permissions`, based on session-file closure
+`df43007`. Spec/plan `821f5f6` cherry-picked as `610451d`. Implementer:
+cod1a-m; independent reviewer: gro1a-o; coordinator: haurness-l.
+
+## Stage 1: contract and decision
+
+Decision 0016 and the contract types define config provisioning, durable policy
+references, approval wire messages and lifecycle ordering. Contract review is
+required before implementation. Typecheck and the retry, notice/restart and
+suspension/dispatch traces are the gate.
+
+Gro reviewed `92605f3` without approval and requested locks for legacy migration
+and signatures, canonical checkpoint fingerprints, initialization and interrupt
+semantics, and incompatible execution and channel policy edits. The follow-up
+records those requirements; Stage 2 remains blocked on independent approval.
+
+Gro approved contract revision `d09cb7e`; their independent typecheck passed.
+Stage 2 is in progress. Its first increment provides pure config validation,
+policy precedence, canonical policy fingerprints, signature and inherited
+reference helpers, and `config/validate` over both client transports. These do
+not yet enforce policies at dispatch or provide managed reopen. The focused
+validation and policy tests are separate from the required Stage 2 gate.
+
+### Stage 2: configuration and policy implementation
+
+The implementation adds managed per-session paths, active and saved config
+selection, validation, format 4 policy metadata and archive 3 migration,
+policy-aware input signatures and transitive notice references, and canonical
+checkpoint-policy fingerprints. A mismatched policy reference permits
+inspection without executing; legacy incompatible SQLite sessions use an
+isolated inspection view. Fresh-home session-file import reopens using saved
+config. `29b4856` introduced pure validation and policy helpers; `ad71378` and
+`8cb8888` extended the reviewed contracts before their implementation.
+
+The scripted-only config raised a scope question because the existing explicit
+`--db` development path also supports OpenRouter. The coordinator confirmed
+that this provider needs managed config as part of the work.
+Tool dispatch enforcement and consumer approvals belong to Stage 3 and are not
+yet implemented; Stage 2 must be reviewed before that work starts.
+
+The user approved extending managed config for OpenRouter. Contract amendment
+0017 and its types are submitted separately before provider implementation.
+It preserves the existing OpenRouter compatibility key, records only the
+environment variable name, and leaves key values in the destination process.
+
+Gro approved amendment `6cac6d2`: a custom `apiKeyEnv` is resolved only by
+that name, without falling back to `OPENROUTER_API_KEY`. The key value and
+variable name are deliberately excluded from checkpoint fingerprints; changing
+the referenced credential therefore does not block resume. A legacy direct
+`provider.apiKey` can be used for the current open only when no saved config
+exists, and is never persisted. The destination must supply the saved reference
+on later opens. Provider tests use injected offline models and fake secrets.
+
+The Stage 2 implementation supports scripted and OpenRouter managed configs,
+keeps the original provider checkpoint key, resolves the selected environment
+reference on open, and does not persist credential values. Fake-provider tests
+cover fresh-home import/reopen, custom environment selection, missing keys,
+sidecar/model precedence, model and reference checkpoint compatibility, and a
+pre-managed provider checkpoint. Provider error text is redacted if it echoes
+the credential. SQLite statement cleanup was tightened after a migrated-session
+reopen exposed a lock retained by prepared statements. `engine.ts` remains over
+400 lines because both adapters share its transactional lifecycle and policy
+rules; splitting that engine is deferred to a dedicated change.
+
+Stage 2 gate: `bun run typecheck` passed; `bun test ./test` passed 209 tests,
+0 failures, 2753 assertions across 25 files (52.39s), using local IPC access.
+The gate includes both-adapter migration and inherited-notice tests, managed and
+explicit-db reopen, fresh-home session-file import, and offline fake-provider
+credential and checkpoint tests.
+
+Gro approved Stage 2 at `47cd4df`; their independent typecheck passed and the
+full suite passed 209 tests, 0 failures, 2753 assertions (73.23s).
+
+## Stage 3: dispatch and approvals
+
+Gro approved dispatch-evidence decision 0018 at `4ef6286`, confirmed distinct
+interrupt/stop close codes in `d67c693`, and approved owner-config binding at
+`00ecb36`. The gate resolves policies from the storage owner's immutable config,
+tracks approval requests and unused grants, and commits dispatch evidence before
+invoking a tool. Pending approval closure writes its paired result before live
+interrupt, stop or checkpoint; crash recovery never replays a request or grant.
+The stdio and in-process paths expose the same approval event and answer request.
+
+Gate: `bun run typecheck` passed; `bun test ./test` passed 243 tests, 0 failures,
+2917 assertions across 29 files (64.41s), with local IPC access. Focused tests
+cover policy precedence at take, inherited notices, deny/unhandled/timeout/
+disconnect, one-time grants, both suspension/dispatch orders, reentrant
+interrupt and stop, a real crash with approval pending, legacy and invalid
+dispatch evidence, and owner-config mismatch/failure/mutation on both adapters.
+Gro approved Stage 3 at `bb171b22fe165eab82837c70432e23a83f0b64e5`; their
+independent typecheck passed and the full suite passed 243 tests, 0 failures,
+2917 assertions across 29 files (63.15s). The reviewer noted that archive
+import rejects duplicate call IDs across a whole turn while append uniqueness
+is per message; this is an accepted non-blocking boundary.
+
+## Stage 4: public interface and end-to-end
+
+The typed client exports the managed configuration and approval types. Usage
+and architecture documentation describe policy selection, approval lifecycle,
+saved-config reopening, and externally supplied OpenRouter credentials. The
+scripted SQLite acceptance scenario runs through both in-process and real stdio
+clients: Bob completes while Alice waits; suspension closes Alice's approval
+without a tool effect; export and fresh-home import reopen the saved config;
+the old answer remains unavailable; the resumed model receives the paired
+cancellation result; and a fresh one-time approval dispatches exactly once.
+A malformed stdio approval event without a turn ID is rejected. Request capture
+is an opt-in scripted-test facility.
+
+Stage 4 implementation gate: `bun run typecheck --pretty false` passed;
+`bun test ./test` passed 245 tests, 0 failures, 2953 assertions across 30 files
+(52.17s), with local IPC access. Gro approved the behavior revision
+`626783ef308be1a39e8b276eb10a71e19e8ec288`. Their independent typecheck
+passed and the full suite passed 245 tests, 0 failures, 2953 assertions across
+30 files (48.10s). This closes the configuration and tool permissions slice.
+
+## Closure and retrospective
+
+The accepted contract revisions are 0016 at `d09cb7e`, OpenRouter amendment
+0017 at `6cac6d2`, dispatch evidence 0018 at `4ef6286`, close-code naming at
+`d67c693`, and owner binding at `00ecb36`. Gro independently approved Stage 2
+at `47cd4df`, Stage 3 at `bb171b2`, and Stage 4 at `626783e`. The earlier
+session-file behavior remains `7e49bd5`; storage format 4, logical archive 3,
+and session-file envelope 1 remain unchanged by Stage 4.
+
+The contract-first reviews caught missing migration and race guarantees, and
+required a separate owner-config binding before the dispatch gate could be
+completed. Those decisions and the separate stage gates made the repeated
+review work explicit. The OpenRouter scope amendment preserved the development
+path while testing provider behavior offline without live credentials.
+
+Accepted boundaries: automatic approval review, configured tool adapters,
+shared-history access policies and pattern matching remain out of scope. An
+invalid sidecar fails open with a validation error; it neither falls through to
+nor replaces the saved config. Interrupt and stop approval cancellation codes
+apply to undispatched approvals; a dispatched call follows the uncertain-effect
+rules. Custom credential environment references have no fallback, and provider
+secrets are supplied at runtime. The transfer/open announced-size limit still
+applies before body bytes are received. A pre-format-4 session lacking the
+legacy policy opens for inspection without migrating or recovering its owned
+file. Archive import's turn-wide duplicate-call-ID restriction is stricter than
+append's per-message uniqueness. No merge was requested.

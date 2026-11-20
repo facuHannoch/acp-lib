@@ -1,5 +1,16 @@
 import type { Message, ToolDefinition } from "../../contracts/loop.ts";
 import type { ContextEntry } from "../../contracts/context.ts";
+import type { ModelCallSummary } from "../../contracts/model-execution.ts";
+import type { SessionStatus } from "../../contracts/session.ts";
+
+/** What the session's storage says right now; not a record of past activity. */
+export interface InspectedSession {
+  storage: string;
+  sessionId: string;
+  lifecycle: SessionStatus["lifecycle"];
+  execution: SessionStatus["execution"];
+  revision: number;
+}
 
 export interface InspectedInference {
   number: number;
@@ -14,9 +25,17 @@ export interface InspectedChannel {
   pending: number;
   running: boolean;
   error?: string;
+  /** `suspended`: a checkpointed turn waits for resume. */
+  turn?: "running" | "suspended";
+  /** IDs of accepted inputs no turn has taken yet. */
+  pendingItems?: string[];
+  /** The channel's latest turn ended failed or interrupted and nothing has run since. */
+  unresolved?: { turnId: number; status: "failed" | "interrupted"; reason: string; uncertainCallIds: string[] };
   participants: string[];
   messages: Message[];
   requests: InspectedInference[];
+  /** Durable call outcomes and per-attempt usage, including after reopen. */
+  modelCalls: ModelCallSummary[];
 }
 
 /** Separate, in-memory observation state. Never feeds model context. */
@@ -25,12 +44,13 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
   let entries: ContextEntry[] = [];
   let base: Message[] = [{ role: "system", content: systemPrompt }];
   let latestRequest: { channelId: string; number: number; at: string; body: unknown } | null = null;
+  let session: InspectedSession | null = null;
   const listeners = new Set<() => void>();
   function channel(id: string) {
     let value = channels.get(id);
     if (!value) {
       value = { id, pending: 0, running: false, participants: [],
-        messages: [{ role: "system", content: systemPrompt }], requests: [] };
+        messages: [{ role: "system", content: systemPrompt }], requests: [], modelCalls: [] };
       channels.set(id, value);
     }
     return value;
@@ -40,7 +60,25 @@ export function createInspection(systemPrompt: string, tools: readonly ToolDefin
     snapshot: () => structuredClone({
       liveContext: { systemPrompt, tools, entries, base, request: latestRequest },
       channels: [...channels.values()],
+      ...(session ? { session } : {}),
     }),
+    /** Replace activity fields with the storage's own account, so a reopened
+     * session shows its lifecycle, pending input and unfinished turns at once. */
+    status(status: SessionStatus, storage: string, participants: Record<string, string[]> = {}, modelCalls: readonly ModelCallSummary[] = []) {
+      session = { storage, sessionId: status.sessionId, lifecycle: status.lifecycle, execution: status.execution, revision: status.revision };
+      for (const state of status.channels) {
+        const value = channel(state.channelId);
+        value.turn = state.activeTurn?.status;
+        value.running = state.activeTurn?.status === "running";
+        value.pendingItems = [...state.pendingItemIds];
+        value.pending = state.pendingItemIds.length;
+        value.unresolved = state.unresolvedInterruption ? structuredClone(state.unresolvedInterruption) : undefined;
+        value.error = state.unresolvedInterruption ? `Turn ${state.unresolvedInterruption.turnId} ${state.unresolvedInterruption.status}: ${state.unresolvedInterruption.reason}` : undefined;
+        value.participants = [...participants[state.channelId] ?? value.participants];
+        value.modelCalls = structuredClone(modelCalls.filter(call => call.channel === state.channelId));
+      }
+      publish();
+    },
     sharedContext(snapshot: readonly ContextEntry[], renderedBase?: readonly Message[]) {
       entries = structuredClone([...snapshot]);
       if (renderedBase) base = structuredClone([...renderedBase]);
