@@ -288,3 +288,50 @@ Added real stdio coverage for the documented schema-validation gap. Invalid
 callback arguments produce a paired result for the next inference without
 opening approval or invoking the handler. The new isolated test passed.
 Independent review is pending.
+
+## Independent approval and retrospective
+
+Gro approved Gates 1–4 at `f4eff944b648ece634891e3dcdb5ae71f6059eed`
+on a clean tree. The accepted chain is contract `610b8fe` and `f95b299`
+(decision 0021), catalog and lifecycle `7fdd963`, callback transport
+`0bbf257`, host and public checkpoint `ea5da58`, integration base merge
+`c4f11be` (including `b9a96b8` and its startup fence `7133c5c`), baseline
+`fcc1807`, and stdio validation coverage `f4eff94`.
+
+Both independent typechecks passed. The root suite passed 1402 tests across
+131 files (11960 assertions, 192.94s). The full harness suite passed 320 of
+325 tests across 44 files (3413 assertions, 156.95s). Gro attributed the five
+failures to load: three session/create client timeouts, one stdio child killed
+after its shutdown grace period, and one SQLite owner-config test timeout.
+Isolated reruns of portability, protocol, permissions end-to-end and
+owner-config passed all 24 tests (371 assertions, 18.89s). Gro accepted this
+evidence with the existing timeout and shutdown settings.
+
+The real SQLite stdio checkpoint passed approved callback dispatch while Bob
+completed independently, pending-approval revocation across reopen, scoped
+retrieval of a 3 MB producer-owned result, and lost, timed-out and interrupted
+callback outcomes with late replies fenced. Review closed the schema coverage
+gap with a real child: invalid arguments skipped before approval or dispatch
+and the next inference received the paired result. The existing implementation
+needed no behavior fix.
+
+Native turns use backend supervision, including for silent models. Harness
+model, approval and configured tool deadlines still apply. A lost connection
+can reopen while unsettled submission records remain, including records restored
+by an optional file store. The default store is memory. The host supplies the
+catalog and runtime selection on open. Revocations persist, while revocation
+requests made with the harness stopped are not queued.
+
+SQLite format 5 and archive 4 retain their version numbers. Tool outcomes are
+optional and older results without them are treated as successes. Files with
+new tool outcomes cannot open on the previous revision. Policy-denied tools,
+including built-ins, are omitted from inference and still denied at dispatch.
+The schema checker ignores unsupported keywords, and dispatch checks the latest
+inference's offered set.
+
+The producer stores result bytes in mode-0600 files. Reads address serialized
+JSON bytes, and expiry is checked against the reference timestamp in the
+harness and against modification time plus TTL in the host. A lost approval
+answer returns false without retry. The combined startup-deadline and callback
+case has no dedicated test. Each process serves one connection. The shared
+protocol server and native host exceed the 400-line guideline.
