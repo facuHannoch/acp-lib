@@ -1,11 +1,11 @@
 # Orchestrator and worker pool
 
-Status: agreed, not started. Written 2026-11-11; model restated and grounded in code 2026-11-12; review 1 on
-2026-11-13 (aligned with the integration spec); implementation plan written, not yet reviewed. Third in the order
-(`../11-11-NOTE-overview.md`): after the controller interface and integration stage 2a, whose turn events, native
-delivery and permission events it uses. Its core is still tested through the consumer API with fake workers, with
-no harness and no provider key; with 2a in place, the way back is also tested end to end against native channels
-(the harness's scripted model).
+Status: agreed, not started. Written 2026-11-11; grounded in code 2026-11-12; review 1 and implementation plan
+2026-11-13; revised 2026-11-21 against the built harness and integration: **the orchestrator stands; only its route
+to the harness changed** (Delegation as registered tools, below). Starts after the integration's Remaining work 2 and
+3 (the permission matcher and permission events) and needs the harness's consumer-registered tools
+(`../../../../src/native-harness/.res/docs/tools-and-callbacks/0001-DESIGN/`) for its route. Its core is tested
+through the consumer API with workers on the offline fixture agents, with no harness and no provider key.
 
 ## Problem
 
@@ -25,12 +25,26 @@ place. It does not:
 - decide whether to delegate, what to say or when to check (judgment, in the model);
 - render anything into a context (the harness);
 - speak to users (it records facts, never lines such as "Delegated · running");
-- know about the harness: the harness reaches it only through its delegation tools, which call back into acp-client,
-  and hears from it only through items pushed onto its channels.
+- know about the harness: the harness reaches it only through tools acp-client registers with it, which call back
+  into acp-client, and hears from it only through what is pushed onto its channels.
+
+**Delegation as registered tools** (2026-11-21). The harness has no delegation subsystem, by design: it lets a
+consumer register tools and set the system prompt, and then behaves as if it could delegate. So acp-client gives the
+agent its delegation capacity from outside:
+
+- **acp-client registers `delegate`, `check`, `list` and `stop`** (names provisional) as consumer-registered
+  functions when it opens the session (the harness's tools-and-callbacks work), each with its description and input
+  schema, and adds a short section to the system prompt on how to use workers.
+- **The harness runs them like any tool:** through its permission gate (a harness policy that denies them hides them
+  from that channel's model), then a `functions/call` to the host with the invocation id, channel, turn, tool name
+  and arguments. acp-client routes the call to the orchestrator and returns the result (`sent`, `steered`, `busy`,
+  `no_worker_free`, statuses) as the tool's output.
+- **The harness never knows it is delegating.** The pool, the busy rules, the way back and permission forwarding
+  are all acp-client's, as below.
 
 ```
 harness (the agent)                        acp-client (orchestrator + workers table)
-  delegate / check / list / stop  ───────► delegation callbacks over the protocol
+  delegate / check / list / stop  ───────► functions/call (tools acp-client registered)
   ◄──────────────────────────────────────  replies, failures, redirected, interrupted, permission asks:
                                            items pushed onto the agent's channel
 ```
@@ -69,15 +83,16 @@ Nothing about workers goes into the system prompt; the tool descriptions say how
 | The `Agent` event bus | events for the consumer |
 
 Nothing imports the orchestrator except the `Agent` (which constructs it when `orchestrator` is configured) and
-`src/native/` (which serves the harness's delegation callbacks with it). An `Agent` with no orchestrator configured
+`src/native/` (which serves the registered delegation tools' `functions/call` with it). An `Agent` with no orchestrator configured
 behaves as today.
 
 **What this spec owns beyond the pool:**
 
-- **The delegation callbacks.** The harness's `delegate`, `check`, `list` and `stop` tools arrive as `delegation/*`
-  requests over the protocol, each with the channel, the sender, the turn's `DelegationPolicy` and its
-  `WorkerPermissions`. `src/native/callbacks.ts` (from the integration spec) routes them to the orchestrator; this spec
-  adds that route and maps the results back (`sent`, `steered`, `busy`, `no_worker_free`, statuses).
+- **The delegation tools.** Their registration and system prompt section; the `functions/call` route from
+  `src/native/` to the orchestrator; building the `Actor` from the call (the channel's conversation, the sender of
+  the turn's input, and the turn's resolved policy name); mapping results back as tool output. Delegation calls
+  aren't idempotent (`delegate` opens a worker): the harness never repeats an uncertain callback, which is what they
+  need.
 - **The delivery port's ACP half.** For an ACP conversation, items become out-of-band messages delivered with its
   next prompt, with a kind and a sender in their metadata (`src/out-of-band-messages.ts`). The native half (pushing
   onto a channel) comes from integration stage 2a.
@@ -125,8 +140,10 @@ source of state.
 
 ## Policy limits
 
-The policy is the harness's; the orchestrator receives the `delegation` part of the calling turn's policy with each
-callback:
+The harness's policies are a `fallback` plus exact tool names (its decision 0016), with no delegation part. So the
+delegation rules live in **acp-client's orchestrator config, keyed by the harness policy name** the turn resolved
+(owner, trusted, guest, …); `use` can also be enforced in the harness by denying the delegation tools in a policy,
+which hides them. The shape:
 
 ```ts
 interface DelegationPolicy {
@@ -138,9 +155,10 @@ interface DelegationPolicy {
 type WorkerPermissions = { default: Level; rules: Record<string, Level> };   // the policy's `worker:` rules
 ```
 
-Each delegation callback carries the turn's `DelegationPolicy` and its `WorkerPermissions` (the `worker:` rules of the
-policy's one permission setting, `../harness/11-11-SPEC-harness-v1.md`, Policies). The orchestrator keeps them in memory
-with the running work, and applies them to that work's permission requests.
+For each delegation call, the orchestrator looks up the `DelegationPolicy` and `WorkerPermissions` (the `worker:`
+rules, matched by acp-client's permission matcher, integration Remaining work 2) for the turn's policy name, keeps
+them in memory with the running work, and applies them to that work's permission requests. If the callback doesn't
+carry the turn's resolved policy name, that is a request to the harness's tools-and-callbacks contract gate.
 
 - Owner and trusted presets: `use`, `scope: "all"`, `redirect: true`. Guest: `scope: "none"`, `redirect: false`.
 - No per-conversation cap by default: the pool limit is the entity's capacity.
@@ -364,12 +382,13 @@ src/persistence/    the optional workers? repository (WorkerPersistence) with ca
 Written 2026-11-13; not yet reviewed. Seven briefs, each about one agent run, run in order by one trio
 (`../.plan-execution/plan.md`; its code-quality and triage rules apply).
 
-**Dependencies.** Starts after integration stage 2a is merged: it uses the turn-based controller interface, the
-permission events and `answerPermission` (integration N2), the permission matcher with `worker:` rules (N0), the
-native delivery port (N9), and the optional-repository pattern (`channels?`, N4). O1–O5 need no harness: workers are
+**Dependencies.** Starts after the integration's Remaining work 1–3: it uses the turn-based controller interface, the
+permission events and `answerPermission` (integration Remaining work 3), the permission matcher with `worker:`
+rules (Remaining work 2), pushing onto native channels (the built host), and the optional-repository pattern
+(`channels?`, Durable channel intents). O1–O5 need no harness: workers are
 ordinary conversations on the existing offline fixture ACP agents (`test/fixtures/`: `steer-agent`,
-`permission-agent`, `stalling-prompt-agent`, …), so they are tested as real conversations, not fakes. O6 needs harness
-part 2 (the delegation tools) for its end-to-end step.
+`permission-agent`, `stalling-prompt-agent`, …), so they are tested as real conversations, not fakes. O6 needs the harness's
+consumer-registered tools (`functions/call`) for its route.
 
 **Common to every brief.** Clean-copy gates (`bun run typecheck`, full `bun test`, output saved); the integration
 spec's final gate is the baseline; no edit to `src/agent-session.ts`; no live harness runs except O6's step 3, with
@@ -436,7 +455,9 @@ decides the `agent_action` question with a recommendation, and reports what move
 
 **Scope:** steps 1–2.
 
-1. **The delivery port** (`src/orchestrator/contracts.ts`): the native half is integration's (N9); the ACP half here,
+1. **The delivery port** (`src/orchestrator/contracts.ts`): the native half pushes onto the channel through the built
+   host (today the harness accepts text-only user messages; worker results need an item kind or notice the harness
+   accepts, checked in brief G); the ACP half here,
    out-of-band messages with a kind and a sender in their metadata, delivered with the next prompt. **Gate:** an item
    reaches a native channel (fake harness client) and an ACP conversation.
 2. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
@@ -450,8 +471,8 @@ decides the `agent_action` question with a recommendation, and reports what move
 **Scope:** steps 1–2.
 
 1. **The handler** passed with each prompt to a worker: the level from the giving conversation's `worker:` rules
-   (integration N0's matcher); allow and deny answered at once; ask me as `permission_requested` on the giving
-   conversation, marked with the worker (integration N2); ask the agent as a `permission_request` item; a giving
+   (integration Remaining work 2's matcher); allow and deny answered at once; ask me as `permission_requested` on the giving
+   conversation, marked with the worker (integration Remaining work 3); ask the agent as a `permission_request` item; a giving
    conversation that doesn't answer permissions gets its default at once. **Gate:** each level; the timeout; a
    headless giving conversation.
 2. **Allow always:** stripped from the options shown when a non-owner conversation is asked; automatic allow follows
@@ -476,11 +497,11 @@ decides the `agent_action` question with a recommendation, and reports what move
 
 **Scope:** steps 1–3.
 
-1. **The route:** `delegation/*` callbacks (`src/native/callbacks.ts`) to the orchestrator, with the turn's
-   `DelegationPolicy` and `WorkerPermissions`; results mapped back (`sent`, `steered`, `busy`, `no_worker_free`,
-   statuses). **Gate:** with the fake harness client.
-2. **Against `harness serve`** (harness part 2's delegation tools, scripted model): delegate, a reply reaching the
-   agent's channel, a forwarded permission, a redirect. **Gate:** each.
+1. **The route:** the delegation tools registered at session open with their prompt section; `functions/call` from
+   the harness routed to the orchestrator, the `Actor` built from the call, the policy looked up by name; results
+   returned as tool output. **Gate:** with the in-process harness.
+2. **Against `serve --stdio`** (the harness's consumer-registered tools, scripted model): delegate, a reply reaching
+   the agent's channel, a forwarded permission, a redirect. **Gate:** each.
 3. **One live run,** with the owner's authorization: real throwaway ACP workers on a cheap model; a reply reaches the
    delegating conversation, a forwarded permission is answered, a redirect is reported; sessions deleted afterwards.
    **Gate:** the run's evidence in the report.
