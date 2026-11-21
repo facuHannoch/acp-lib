@@ -53,7 +53,7 @@ for its reasoning; a note at the head of each says what changed.
 | a prompt to a suspended channel is held | refused (`channel_suspended`) |
 | `abandonTurn` interrupts | it never stops provider work (the controller contract) |
 | config stored by acp-client, `describe()` before start | the harness manages its config (decision 0016: inline, sidecar or saved); `config/validate` checks it; no acp-client override store |
-| harness callbacks (functions, delegation, history) | none yet; consumer-registered tools are the harness's tools-and-callbacks work |
+| harness callbacks (functions, delegation, history) | consumer-registered tools through `functions/call` (the harness's tools-and-callbacks work, approved on its branch, with acp-client's host functions and `NativeFunctionContext`); calls carry their contributing `policyNames` (callback policy amendment, proposed); no delegation or history callbacks: delegation is acp-client's, through registered tools (orchestrator spec) |
 | usage per call, pushed | pulled: `session/model-calls` with per-attempt usage; not yet forwarded to metering |
 
 **Accepted limitations** (in addition to Limitations, below): the startup batch's transitions are composed, not one
@@ -83,8 +83,10 @@ Ordered; each a brief in the controller-interface template when its trio starts,
 6. **Small gaps from the integration log:** withdraw through the harness after a push was sent; the stall clock
    paused while the host reopens; `items_receipt` forwarded beyond `receiptOf`; a real-process test with `stream`
    text.
-7. **Stage 2b** (Stages): identity for ACP conversations, consumer-registered tools and callbacks (the harness's
-   tools-and-callbacks work), messages between channels, the `http` internal-inference runtime.
+7. **Stage 2b** (Stages): identity for ACP conversations, messages between channels (the harness's channel
+   messaging work; its first slice, external notices through `channel/notify`, is what the orchestrator's way back
+   uses), the `http` internal-inference runtime. Consumer-registered tools are built on the harness's
+   tools-and-callbacks branch.
 
 Follow-ups, not scheduled: message submissions surviving an acp-client restart; reconciling turns that ended while
 no acp-client process existed; bounded recovery pages for turns and inputs.
