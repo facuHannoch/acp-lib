@@ -262,6 +262,9 @@ export type { Adapter, AdapterPreset, AgentAdapter, NativeAdapter } from "./adap
 export { HarnessIncompatibleError, HarnessUnavailableError, NativeHarnessHost } from "./native/host.ts";
 export type { ChannelChangeOutcome, NativeHarnessHostConfig, NativeHostState } from "./native/host.ts";
 export { NativeTurnError } from "./native/controller.ts";
+export { FunctionError, NATIVE_FUNCTION_DEFAULTS } from "./native/functions.ts";
+export type { NativeFunction, NativeFunctionContext, NativeFunctionsConfig } from "./native/functions.ts";
+export type { ToolAvailability, ToolInvocation, ToolInvocationState, ResultReference, TurnPhase } from "./native-harness/src/client.ts";
 export { createFileHostRecords, createMemoryHostRecords } from "./native/records.ts";
 export type { ChannelDesire, NativeHostRecords, PendingChange, Submission } from "./native/records.ts";
 export type { AgentHarnessConfig } from "./agent/config.ts";

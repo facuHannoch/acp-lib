@@ -44,6 +44,11 @@ export interface Subject {
    * backend never accepted fails without any turn having existed.
    */
   readonly backendScheduled?: true;
+  /**
+   * The backend enforces its own deadlines (`conversationCapabilities.supervision: "backend"`), so the
+   * host's silence limits do not cancel its turns: a quiet tool is not a stalled provider.
+   */
+  readonly backendSupervised?: true;
   open(options?: { stale?: boolean }): Promise<OpenConversation>;
 }
 
@@ -151,6 +156,17 @@ export function runConformance(subject: Subject): void {
 
     test("stale detection: a silent provider is cancelled, the prompt fails as stalled", async () => {
       const open = await subject.open({ stale: true });
+      if (subject.backendSupervised) {
+        // The same silent turn, well past the host's limits, is still running; only an explicit stop ends it.
+        let settled = false;
+        const pending = open.session.prompt(open.silent()).catch((caught) => caught).finally(() => { settled = true; });
+        await until(() => open.events.some((event) => event.kind === "turn_started"));
+        await Bun.sleep(400);
+        expect(settled).toBe(false);
+        await open.session.connection.forceStop();
+        expect((await pending).code).not.toBe("stalled");
+        return;
+      }
       const error = await open.session.prompt(open.silent()).catch((caught) => caught);
       expect(error.code).toBe("stalled");
       expect(open.events.some((event) => event.kind === "turn_failed")).toBe(true);

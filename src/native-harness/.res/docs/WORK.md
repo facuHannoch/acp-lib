@@ -15,6 +15,7 @@ amendment is proposed.
 | [Configuration and permissions](11-19-config-permissions/SPEC.md) | Accepted | Behavior approved at `626783e`, with closure at `28c6faf` on `aiagent/cod1a-config-permissions`. |
 | [Model execution](model-execution/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `02c96de`, with closure at `49f2974` on `aiagent/cod1a-model-execution`. |
 | [acp-client integration contract](acp-client-integration/0001-DESIGN/SPEC.md) | Implemented, awaiting review | First scripted stdio checkpoint implemented on `acp-client-integration`; gates, evidence, gaps and drift are in the [log](acp-client-integration/0001-DESIGN/11-20-LOG.md). Next: independent review of each gate. |
+| [Tools and host callbacks](tools-and-callbacks/0001-DESIGN/SPEC.md) | Implemented, awaiting review | Implemented on `tools-and-callbacks`, based on the unreviewed `acp-client-integration` branch. Gates, evidence, gaps and drift are in the [log](tools-and-callbacks/0001-DESIGN/LOG.md). Next: independent review of each gate. |
 | [Operator and consumer controls](operator-controls/0001-DESIGN/SPEC.md) | Spec and plan drafted | Review the [implementation plan](operator-controls/0001-DESIGN/PLAN.md) before handoff. |
 | [Long-running mock mode](long-running-mock/0001-DESIGN/SPEC.md) | Spec and plan drafted | Review the [implementation plan](long-running-mock/0001-DESIGN/PLAN.md), including the final driven rehearsal. |
 

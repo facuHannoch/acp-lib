@@ -34,6 +34,8 @@ export interface NativeRig {
   readonly effectsPath: string;
   /** Mutable: read when the harness process is launched, so a test can set fault points before a (re)start. */
   readonly env: Record<string, string>;
+  /** Mutable: extra harness settings (for example `functions`) merged into the Agent's `harness` config at `open`. */
+  readonly harness: Record<string, unknown>;
   /** Launch requests the host launcher received, and a switch that makes the next launches fail. */
   readonly launches: Array<{ kind: string; target: readonly string[] }>;
   breakLaunch(error: Error | null): void;
@@ -53,6 +55,7 @@ export async function nativeRig(options: { policies?: ProtocolConfig["policies"]
   const home = join(directory, "harness-home"), scriptPath = join(directory, "script.json"), effectsPath = join(directory, "effects.log");
   const env: Record<string, string> = { HARNESS_TEST_EFFECTS: effectsPath };
   const logs: NativeRig["logs"] = [];
+  const harness: Record<string, unknown> = {};
   const logger = Object.fromEntries((["debug", "info", "warn", "error"] as const).map((level) =>
     [level, (event: string, meta?: unknown) => { logs.push([level, event, meta]); }])) as any;
   const agents: Agent[] = [];
@@ -74,7 +77,7 @@ export async function nativeRig(options: { policies?: ProtocolConfig["policies"]
     policies: options.policies ?? { open: { fallback: "allow", tools: {} } },
   };
   return {
-    directory, home, effectsPath, env, logs, script, launches,
+    directory, home, effectsPath, env, harness, logs, script, launches,
     breakLaunch: (error) => { broken = error; },
     effects: () => existsSync(effectsPath) ? readFileSync(effectsPath, "utf8").split("\n").filter(Boolean) : [],
     release: (key) => writeFileSync(`${effectsPath}.release-${key}`, ""),
@@ -85,7 +88,7 @@ export async function nativeRig(options: { policies?: ProtocolConfig["policies"]
         defaultAdapterId: "main",
         capture: { message: "content", error: "raw" },
         checkpointing: { enabled: false },
-        harness: { home, config, launcher, requestTimeoutMs: 5000 },
+        harness: { home, config, launcher, requestTimeoutMs: 5000, ...harness } as AgentConfig["harness"],
         conversationDefaults: { metering: { pricing: false }, cwd: directory, logger },
         ...overrides,
       });

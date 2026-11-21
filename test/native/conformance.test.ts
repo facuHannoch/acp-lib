@@ -9,6 +9,7 @@ afterEach(async () => { for (const rig of rigs.splice(0)) await rig.clean(); });
 const nativeSubject: Subject = {
   name: "the NativeController (scripted stdio harness)",
   backendScheduled: true,
+  backendSupervised: true,
   async open(options): Promise<OpenConversation> {
     const rig = await nativeRig();
     rigs.push(rig);

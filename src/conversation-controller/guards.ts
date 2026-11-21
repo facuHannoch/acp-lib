@@ -85,5 +85,8 @@ export function reloadProviderSession(controller: ConversationController, sessio
  * is handled by the supervisor itself (`isReplaying`), which reads `live` as time goes on.
  */
 export function stallLimitsFor(controller: ConversationController, limits: StaleLimits | undefined): StaleLimits | undefined {
+  // A backend that supervises its own turns (the native harness) is never cancelled for silence,
+  // even with configured limits: a quiet host function is not a stalled provider.
+  if (controller.conversationCapabilities.supervision === "backend") return { firstOutputMs: false, nextOutputMs: false, toolMs: false };
   return isDegradedController(controller) ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits;
 }

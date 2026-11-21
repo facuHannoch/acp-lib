@@ -164,6 +164,8 @@ export class NativeController implements ConversationController, ChannelPort {
   get conversationCapabilities(): ConversationCapabilities {
     return {
       nativeSteering: true,
+      // The harness times out model calls, approvals and tools itself and reports the outcome.
+      supervision: "backend",
       freshContext: false,
       backend: {
         loadSession: false, forkSession: false, listSessions: false,
@@ -396,7 +398,8 @@ export class NativeController implements ConversationController, ChannelPort {
           case "tool_call": {
             const activity = event.status === "started"
               ? { kind: "tool" as const, toolCallId: event.id, title: event.name, toolKind: "other", status: "in_progress", ...(event.input === undefined ? {} : { rawInput: parse(event.input) }) }
-              : { kind: "tool_update" as const, toolCallId: event.id, status: event.status, ...(event.output === undefined ? {} : { rawOutput: event.output }) };
+              // A call that was skipped, or whose wait ended without an outcome, did not complete.
+              : { kind: "tool_update" as const, toolCallId: event.id, status: event.status === "completed" ? "completed" : "failed", ...(event.output === undefined ? {} : { rawOutput: event.output }) };
             handlers.onActivity?.(activity);
             signal({ kind: "update", sessionId, activity });
             return;

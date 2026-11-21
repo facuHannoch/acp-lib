@@ -28,7 +28,10 @@ import {
   type StatusResult,
   type StoredMessage,
   type TurnStatus,
+  type ToolAvailability,
+  type ToolInvocation,
 } from "../native-harness/src/client.ts";
+import { createNativeFunctionHost, type NativeFunctionHost, type NativeFunctionsConfig } from "./functions.ts";
 import { prepareNativeLaunch, onceDispose, type AcpLauncher } from "../launcher.ts";
 import { noopLogger, type Logger } from "../logger.ts";
 import { createMemoryHostRecords, type ChannelDesire, type NativeHostRecords, type PendingChange, type Submission } from "./records.ts";
@@ -114,6 +117,8 @@ export interface NativeHarnessHostConfig {
   readonly logger?: Logger;
   /** A blocked channel change (a delete that found pending work, a resume the configuration cannot run...). */
   readonly onChannelChangeBlocked?: (result: ChannelChangeResult) => void;
+  /** Functions the model can call, served by this process (tools and callbacks spec). */
+  readonly functions?: NativeFunctionsConfig;
   /** Test seam: replaces the process launch. */
   readonly connect?: () => Promise<NativeConnection>;
 }
@@ -226,6 +231,9 @@ export class NativeHarnessHost {
     for (const port of [...this.#ports.values()]) port.failed(error);
     await (connection ?? this.#connection)?.kill();
     this.#connection = null;
+    // Stored results were temporary: a default result directory goes with the host.
+    this.#functions?.dispose();
+    this.#functions = null;
   }
 
   async #start(): Promise<void> {
@@ -303,10 +311,14 @@ export class NativeHarnessHost {
     const { client } = connection;
     this.#early = [];
     client.onChannelEvent((event) => this.#route(connection, event));
+    // Handlers are in place before `initialize` names them: a recovered call can arrive right after the open.
+    const functions = this.#functionHost();
+    if (functions) client.serveFunctions((call, signal) => functions.call(call, signal), (read) => functions.read(read));
     const initialized = await client.initialize({
       protocolVersion: 1,
       host: { name: "acp-client", version: "1" },
-      callbacks: [],
+      callbacks: functions ? ["functions/call"] : [],
+      ...(functions ? { functions: functions.handlers() } : {}),
       approval: true,
       subscription: { text: this.#config.text ?? "final", tools: "full" },
     });
@@ -315,6 +327,7 @@ export class NativeHarnessHost {
     if (!capabilities.persistence || capabilities.acceptance !== "durable") throw new HarnessIncompatibleError("the native harness does not offer durable sessions");
     if (missing.length) throw new HarnessIncompatibleError(`the native harness lacks ${missing.join(", ")}`);
     if (!capabilities.startupChannelChanges) throw new HarnessIncompatibleError("the native harness cannot apply channel changes at open");
+    if (functions && !capabilities.functions) throw new HarnessIncompatibleError("the native harness cannot call host functions");
 
     // The startup cutoff: what is pending now goes inside the open and is applied before any work
     // can run. An edit made after this line is sent through the live channel methods once open.
@@ -360,10 +373,42 @@ export class NativeHarnessHost {
 
   /** Per channel, the version of a change the harness reported blocked. That version is not resent while running. */
   readonly #blockedVersions = new Map<string, number>();
+  #functions: NativeFunctionHost | null = null;
+
+  /** The function host, created on first use so a host without functions makes no result directory. */
+  #functionHost(): NativeFunctionHost | null {
+    if (!this.#config.functions) return null;
+    return this.#functions ??= createNativeFunctionHost(this.#config.functions);
+  }
+
+  /** Every registered tool with its availability and, when unavailable, the reason. Policy is separate. */
+  async tools(): Promise<ToolAvailability[]> { return (await this.#client().tools()).tools; }
+  /** Revoke a `revocable` tool's grant. The harness keeps it with the session, across reopen. */
+  async revokeTool(name: string): Promise<ToolAvailability> { return (await this.#client().revokeTool(name)).tool; }
+  async restoreTool(name: string): Promise<ToolAvailability> { return (await this.#client().restoreTool(name)).tool; }
+  /** Enable a `runtime` tool by name. Remembered here and supplied again on the next open. */
+  async enableTool(name: string): Promise<ToolAvailability> {
+    const tool = (await this.#client().enableTool(name)).tool;
+    this.#functionHost()?.select(name, true);
+    return tool;
+  }
+  async removeTool(name: string): Promise<ToolAvailability> {
+    const tool = (await this.#client().removeTool(name)).tool;
+    this.#functionHost()?.select(name, false);
+    return tool;
+  }
+  /** One tool call by its invocation ID, from the harness's records. Undefined when unknown. */
+  async toolInvocation(invocationId: string): Promise<ToolInvocation | undefined> {
+    try { return (await this.#client().toolInvocation(invocationId)).invocation; }
+    catch (error) { if (codeOf(error) === "not_found") return undefined; throw error; }
+  }
+  async toolInvocations(turn: string): Promise<ToolInvocation[]> { return (await this.#client().toolInvocations(turn)).invocations; }
 
   async #loadOrCreate(client: HarnessClient, batch: PendingChannelChange[]): Promise<LoadResult> {
     const { sessionId, config } = this.#config;
-    const changes = batch.length ? { channelChanges: batch } : {};
+    const functions = this.#functionHost();
+    // The catalog and the current runtime selection go inside the open, before recovered work can start.
+    const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(functions ? { tools: functions.catalog() } : {}) };
     const load = () => client.loadSession({ sessionId, config, ...changes });
     try {
       try {
@@ -426,7 +471,9 @@ export class NativeHarnessHost {
     this.#setState("stopped");
     this.#log.warn("native_harness_connection_lost", { sessionId: this.sessionId });
     for (const port of [...this.#ports.values()]) port.disconnected();
-    const outstanding = this.#waiters.size > 0 || [...this.#ports.values()].some((port) => port.busy());
+    // An input the harness accepted is outstanding until its turn settles, even when the process died
+    // before this host saw that turn start: its `turn_started` may never have been written.
+    const outstanding = this.#waiters.size > 0 || [...this.#ports.values()].some((port) => port.busy()) || this.records.submissions().length > 0;
     if (outstanding) void this.#reopen();
   }
 
