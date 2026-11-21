@@ -281,3 +281,27 @@ test("negotiation and catalog validation: bad input opens nothing; a server refu
     await expect(client.revokeTool("lookup")).rejects.toMatchObject({ code: "not_found" });
   } finally { harness.close(); }
 });
+
+test("stdio: invalid callback arguments are paired without approval or dispatch", async () => {
+  const requests = join(root, "invalid-arguments-requests.log");
+  const harness = spawnHarness({ requests });
+  const { client } = harness;
+  const seen = watch(client);
+  let handled = 0;
+  client.serveFunctions(() => { handled++; return { output: "unexpected" }; });
+  try {
+    await client.initialize(hello(["lookup_handler"]));
+    await client.createSession({ sessionId: "s", config: config(callThen("lookup", { q: 42 }), "ask"),
+      participants: [], channels: {}, tools: { catalog: [tool("lookup")] } });
+    await client.push(push("a", "a1"));
+    await until(() => seen.ended("a"), "turn completion");
+    expect(handled).toBe(0);
+    expect(seen.events.some(event => event.event.type === "approval_requested")).toBe(false);
+    expect(seen.toolEvents("a").map(event => event.status)).toEqual(["skipped"]);
+    expect(seen.output("a", "skipped")).toMatchObject({ ok: false, code: "invalid_arguments" });
+    const [, next] = readFileSync(requests, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const paired = next.messages.find((message: { role: string }) => message.role === "tool");
+    expect(paired.callId).toBe("t1");
+    expect(JSON.parse(paired.content)).toMatchObject({ code: "invalid_arguments" });
+  } finally { await harness.close(); }
+});

@@ -276,3 +276,15 @@ function handlers are registered before `initialize`, so a connection that is
 killed for arriving late has served nothing.
 
 Still not done: independent review of the tools and callbacks gates.
+
+## Independent review follow-up
+
+Fix branch `aiagent/cod1a-tools-and-callbacks` starts from `fcc1807`, with
+the approved ACP integration closure `b9a96b8` in its ancestry. At the baseline
+both typechecks passed, the native suite passed 67 tests, and the focused
+harness catalog and protocol suites passed 22 tests.
+
+Added real stdio coverage for the documented schema-validation gap. Invalid
+callback arguments produce a paired result for the next inference without
+opening approval or invoking the handler. The new isolated test passed.
+Independent review is pending.
