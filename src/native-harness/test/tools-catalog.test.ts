@@ -332,6 +332,16 @@ test("deadlines: a tool's own overrides the session default, none means no deadl
   } finally { u.close(); }
 });
 
+test("an executor that rejects its wait when asked to stop still yields the paired timeout result", async () => {
+  const r = rig({ catalog: { catalog: [tool("quick", "fixed", { deadlineMs: 30 })] } }); const s = r.open();
+  try {
+    s.executor.call = (_request, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    s.send("a", 'call quick {"q":"x"}'); await until(() => s.ended("a"), "turn");
+    expect(s.results()).toMatchObject([{ code: "tool_timeout", outcome: { status: "interrupted", code: "tool_timeout" } }]);
+    expect(s.events.findLast(e => e.event.type === "turn_ended")!.event).toMatchObject({ outcome: "completed" });
+  } finally { s.close(); }
+});
+
 test("a typed handler error is a paired failure and the turn goes on; a lost connection leaves the call uncertain and it is never repeated", async () => {
   const r = rig(); const s = r.open();
   s.send("a", 'call lookup {"q":"x"}'); await until(() => s.calls.length === 1, "callback");

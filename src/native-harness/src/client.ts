@@ -1,4 +1,6 @@
-export { HarnessClient, HarnessClientError } from "./interfaces/client.ts";
+export { HarnessClient, HarnessClientError, FunctionError } from "./interfaces/client.ts";
+export type { FunctionHandler, ResultReader } from "./interfaces/client.ts";
+export type { ToolRegistration, ToolCatalogInput, ToolAvailability, ToolInvocation, ToolInvocationState, ToolOutcome, ResultReference, TurnPhase, FunctionCall, FunctionResult, ResultRead, ResultPage } from "./contracts/tools.ts";
 export { createInProcessTransport } from "./interfaces/protocol/in-process.ts";
 export { createStdioTransport } from "./interfaces/protocol/stdio-client.ts";
 export type { StdioConnection } from "./contracts/protocol.ts";

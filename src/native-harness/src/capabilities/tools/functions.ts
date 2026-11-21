@@ -46,10 +46,13 @@ export async function runFunction(options: {
   stopped.catch(() => undefined);
   const interrupted = () => { wait.abort(signal.reason); stop(signal.reason); };
   signal.addEventListener("abort", interrupted, { once: true });
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined, expired = false;
   const timedOut = deadline === undefined ? undefined : new Promise<"deadline">(resolve => {
-    timer = setTimeout(() => { wait.abort(new Error("tool deadline")); resolve("deadline"); }, deadline);
+    // An executor that honours the abort rejects its wait at once; `expired`
+    // tells that rejection apart from a failure of the call.
+    timer = setTimeout(() => { expired = true; wait.abort(new Error("tool deadline")); resolve("deadline"); }, deadline);
   });
+  const timeout = () => failure("interrupted", "tool_timeout", `The tool did not answer within ${deadline} ms and was asked to stop. Whether it took effect is unknown; it was not retried.`, { effect: "unknown" });
   try {
     signal.throwIfAborted();
     const answering = executor.call(request, wait.signal);
@@ -57,8 +60,7 @@ export async function runFunction(options: {
     answering.catch(() => undefined);
     const answer = await Promise.race(timedOut ? [answering, timedOut, stopped] : [answering, stopped]);
     signal.throwIfAborted();
-    if (answer === "deadline")
-      return failure("interrupted", "tool_timeout", `The tool did not answer within ${deadline} ms and was asked to stop. Whether it took effect is unknown; it was not retried.`, { effect: "unknown" });
+    if (answer === "deadline") return timeout();
     if (answer && typeof answer === "object" && "reference" in answer && answer.reference !== undefined) {
       if (!validReference(answer.reference) || typeof answer.preview !== "string")
         return failure("failed", "invalid_result", "The tool returned a malformed result reference.");
@@ -75,6 +77,7 @@ export async function runFunction(options: {
     return { content, outcome: { status: "succeeded" } };
   } catch (error) {
     if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Turn interrupted");
+    if (expired) return timeout();
     if (error instanceof CallbackFailure) return failure("failed", error.code, error.message);
     throw error;
   } finally {
