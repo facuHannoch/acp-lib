@@ -1,6 +1,9 @@
 # Controller interface: what a conversation needs from its backend
 
-Status: ready for implementation; reviews 1–7 and a final review done 2026-11-12 (checked against `beta`, 0.12.1). First in the library line
+Status: **implemented and merged** (reviewed revision `9668cf7`, merged as the integration base at `004cc7f`);
+reviews 1–7 and a final review done 2026-11-12; updated 2026-11-21 to match the merged code
+(`src/conversation-controller/`, `src/conversation-turns/`). Where this spec and that code differ, the code and the
+2026-11-21 notes below are current. First in the library line
 (`../11-11-NOTE-overview.md`, Order of work). A refactor with **no new behaviour**: every native piece depends on it,
 and its gate is that nothing breaks. Carries over the "provider-session interface" prerequisite of
 `../../9-22+/10-17-NOTE-model-call-controller.md` and the 2026-11-09 review.
@@ -131,6 +134,17 @@ changed in A2):
   spent, so no cost data is lost; consumers must not rely on either. The characterization tests assert each mode's
   current outcome, so a later change shows, without requiring the modes to agree.
 
+**Settled during implementation** (2026-11-15, recorded 2026-11-21):
+
+- **A message accepted by a backend-scheduled controller** waits for the turn that takes it. The wait is cancellable
+  (`stop`, withdraw, interrupt) and has no time limit: a message accepted while a long turn runs is legitimately
+  waiting. A backend that never starts a turn is a backend bug.
+- **"Now live" is checked by interval:** the supervisor re-reads `live` each time a stall deadline is reached, so a
+  turn that goes live and then silent is judged stalled within one stall limit of the change (limits are minutes);
+  no explicit signal.
+- **A backend that can't start a fresh context** says so with `conversationCapabilities.freshContext: false`;
+  `startFresh` then throws `UnsupportedError` before changing anything (native conversations: no context reset).
+
 **A known hang, accepted for now:** an ACP harness that never answers while connecting or reconnecting leaves its
 conversation stuck (the queue and `stop()` wait forever). It is today's behaviour, seen on A1, and a named exception
 to the "nothing waits forever" rule for ACP's existing lifecycle; the fix is in
@@ -198,7 +212,7 @@ interface ConversationController {
   stop(): Promise<void>;
   readonly isConnected: boolean;
   subscribeConnection(listener: () => void): () => void;
-  readonly cancelGraceMs: number;
+  readonly cancelGraceMs: number | undefined;      // undefined when the adapter sets none: the supervisor uses 30 s
   // settings and usage
   readonly configOptions: ConfigOptions;            // may be non-empty before start
   setConfig(id: string, value: unknown): Promise<void>;
@@ -220,6 +234,8 @@ interface TurnRun {
   turnId?: string;                      // session-scheduled: the session's id for the run (its first message's id),
                                         // required; backend-scheduled: absent, the backend assigns turn ids
   messageIds: readonly string[];        // every message the run carries (one, or several for a combined steer run)
+  messages: readonly CombinedMessage[]; // the messages themselves, in messageIds order (what the queue holds), so a
+                                        // backend-scheduled controller has what the user wrote; ACP ignores it
   operationKind: MeteredOperationKind;
 }
 interface TurnContent {
@@ -236,7 +252,9 @@ interface PreparedTurn extends SupervisedProvider {   // one turn, prepared; pro
 interface TurnStarted { kind: "turn_started"; turnId: string; cause: TurnCause; sentBySession: boolean }
 interface TurnTook { kind: "turn_took"; turnId: string; cause: TurnCause }  // more items folded into a running turn
 type TurnEvent = TurnStarted | TurnTook;
-type TurnCause = { kind: "messages"; messageIds: readonly string[] } | { kind: "items"; items: readonly unknown[] };
+type TurnCause =                       // the messages, the backend items, or both (a native backend takes all that
+  | { messageIds: readonly string[]; items?: readonly ItemRef[] }   // waits at each model call, so a worker reply
+  | { messageIds?: readonly string[]; items: readonly ItemRef[] };  // and a user message can share one turn)
 type StartResult = ConnectResult;      // { sessionId, resumed }
 type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
 ```
