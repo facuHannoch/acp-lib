@@ -40,6 +40,9 @@ loader validates the file before execution and reports malformed or unsupported
 records with their line numbers. Convert the existing short JSON fixtures so
 there is one supported on-disk script format.
 
+Parse and validate the scenario once per open and reuse the validated sequences
+across channels and attempts. Each channel has its own attempt position.
+
 | Record | Fields and behavior |
 | --- | --- |
 | `scenario` | `version` and a scenario name. Required first record. |
@@ -113,27 +116,43 @@ callbacks, delayed results, failures, and observable effects. The fixture owns
 its effects. The harness owns approval, cancellation, pairing results with
 calls, and crash recovery. Uncertain effects follow the existing no-replay rule.
 
+The timed rehearsal command supplies a documented set of test handlers and a
+dedicated tool policy. The checked-in timed fixture uses bounded handlers and
+explicitly allows any built-in notices it requests. It runs unattended. Keep
+approval waits, manual holds, and deliberate stalls in deterministic tests,
+where test code controls the responder and release. Both modes use the same
+permission gate and report unexpected tool failures in the run results.
+
 ## Run results
 
 Run against a fresh test session by default. A restart case deliberately reopens
 that same session. After all scheduled sends are issued, allow expected work to
 settle within a configured run deadline. Track each scheduled send by input ID
 and resolve each accepted input to an outcome. Several accepted inputs can
-share one turn. Fail on unexpected rejection or turn failure, accepted work
-still unfinished at the deadline, or missing or duplicate committed replies
-where delivery was expected. A test can explicitly expect interruption,
-failure, or timeout. Report unused model records separately. Unused records
-fail a test only when it requires exact consumption.
+share one turn. Completion also checks the session for work started by notices,
+including on channels with no scheduled sends. Running turns, pending inputs,
+and checkpoints count as unfinished unless the test explicitly expects that
+state. An idle indication alone does not establish completion. Once work
+settles, capture a consistent final revision for delivery verification. If
+the run reaches its deadline, record the blocking work available through
+status, then stop and reap the child within the cleanup budget.
+
+Fail on unexpected rejection or turn failure, unfinished work at the deadline,
+or missing or duplicate committed replies where delivery was expected. A test
+can explicitly expect interruption, failure, or timeout. Report unused model
+records separately. Unused records fail a test only when it requires exact
+consumption.
 
 Record a compact event log and summary with run duration, sent inputs, turn
 outcomes, and observable callback effects. Compare replies recorded by the
-consumer with bounded harness history reads by committed message ID. Scope the
-comparison to the tested channels and expected delivery windows. For detached
-channels, check expected replies after explicit recovery. Keep full
-inference-request capture opt-in so long runs avoid copying the growing shared
-history into a capture log for every attempt. Generate synthetic fixtures
-before running them. Fixture authors can use real timing and event patterns as
-a guide.
+consumer with bounded harness history reads by committed message ID through the
+final revision. Scope the comparison to the tested channels and expected
+delivery windows. For detached channels, check expected replies after explicit
+recovery. Full inference-request capture is opt-in at the scripted adapter.
+With capture disabled, skip diagnostic cloning, retention, and file writes of
+full requests. Lightweight attempt observations can still report channel,
+ordinal, and input IDs. Generate synthetic fixtures before running them.
+Fixture authors can use real timing and event patterns as a guide.
 
 ## Acceptance
 
@@ -141,7 +160,8 @@ a guide.
    works through the scripted harness. Reject malformed records, report a
    missing response explicitly, and verify independent channel positions.
    After a crash with pending input and no checkpoint, reject a changed model
-   sequence before any new attempt is reserved.
+   sequence before any new attempt is reserved. Verify capture-off skips full
+   request copying and several attempts reuse one validated scenario.
 2. Run a deterministic acp-client test with a real stdio child. Alice streams
    text and waits on a controlled callback while Bob completes. Exercise
    approval through the normal gate, then verify targeted interruption leaves
@@ -156,9 +176,11 @@ a guide.
 4. Run a multi-minute timed fixture with bursts, idle gaps, concurrent
    channels, and short and tool-heavy turns. Verify the driver finishes within
    the configured run deadline, accounts for accepted inputs and expected
-   committed replies by ID, and leaves no child process running. The same
-   driver accepts hour-scale fixtures. All runs work without contacting a
-   model provider.
+   committed replies by ID through the final revision, and leaves no child
+   process running. Verify the driver waits for a notice-driven turn after the
+   last scheduled input settles. Exercise deadline diagnostics and cleanup
+   separately. The same driver accepts hour-scale fixtures. All runs work
+   without contacting a model provider.
 5. In an ordinary session, verify `notify_channel` is offered once when
    policy allows it and runs without consumer registration. Verify policy
    denial prevents dispatch and consumer registration cannot shadow it.

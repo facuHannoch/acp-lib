@@ -30,12 +30,15 @@ export interface RunModelCallOptions {
   delta?: (event: { messageId: string; text: string }) => void;
   incomplete?: (event: { messageId: string; reason: Exclude<CallOutcome, "running" | "succeeded"> }) => void;
   receipt?: (milestone: "delivered" | "seen", items: string[], revision: number) => void;
+  /** The durable call record exists: its ID, before any attempt starts. */
+  started?: (callId: string) => void;
 }
 /** Run one frozen request; only commitResponse can produce a dispatchable answer. */
 export async function runModelCall(options: RunModelCallOptions): Promise<{ response: ModelResponse; messageId: string; entry: TimelineEntry; revision: number }> {
   const settings = { ...MODEL_EXECUTION_DEFAULTS, ...options.settings };
   const request = structuredClone(options.request);
   const call = take(options.store.startCall(options.turnId, options.itemIds));
+  options.started?.(call.callId);
   let deadline = 0, output = false;
   const finish = (outcome: Exclude<CallOutcome, "running" | "succeeded">, detail = outcome): never => {
     const result = options.store.finishCall(call.callId, outcome);

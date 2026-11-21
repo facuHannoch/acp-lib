@@ -38,7 +38,9 @@ export type ApprovalAnswer = "allow_once" | "deny";
 export interface ApprovalInitialization { approval?: boolean }
 export type ApprovalCloseReason = "approval_denied" | "approval_timeout" | "approval_unhandled"
   | "approval_disconnected" | "approval_cancelled_by_suspension"
-  | "approval_cancelled_by_interrupt" | "approval_cancelled_by_stop";
+  | "approval_cancelled_by_interrupt" | "approval_cancelled_by_stop"
+  /** Decision 0021: the tool was revoked or removed, or its handler left, while the request was open. */
+  | "tool_unavailable";
 
 /** A skipped call records a paired tool result with this stable reason. */
 export interface SkippedToolResult { ok: false; code: ApprovalCloseReason | "policy_denied"; message: string }

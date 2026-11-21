@@ -158,7 +158,7 @@ test("interrupting one turn ends it at once; a late tool result and a stale inte
   r.release("alice", 1);
   await until(() => r.effects.includes("done:alice#1"), "the old tool to return late");
   await new Promise(resolve => setTimeout(resolve, 20));
-  expect(channel(session, "alice").activeTurn).toEqual({ turnId: 3, status: "running" }); // still waiting on its own tool
+  expect(channel(session, "alice").activeTurn).toMatchObject({ turnId: 3, status: "running" }); // still waiting on its own tool
   r.release("alice", 3);
   await until(() => r.effects.includes("done:alice#3"), "the second tool to finish");
   expect(session.snapshot().timeline.filter(entry => entry.turnId === 1 && entry.message.role === "tool")).toEqual([]);
@@ -183,7 +183,7 @@ test("a stale interrupt sent while the next turn is running leaves that turn run
   await until(() => r.effects.includes("start:alice#2"), "the second turn's tool");
   expect(ok(session.channels.interrupt("alice", 1))).toMatchObject({ interrupted: false });
   expect(turnOf(session, 2).state.status).toBe("running");
-  expect(channel(session, "alice").activeTurn).toEqual({ turnId: 2, status: "running" });
+  expect(channel(session, "alice").activeTurn).toMatchObject({ turnId: 2, status: "running" });
   r.release("alice");
   await until(() => turnOf(session, 2).state.status === "completed", "turn 2");
   expect(turnOf(session, 1).state).toMatchObject({ status: "interrupted", reason: "interrupted by request" });
