@@ -28,7 +28,9 @@ export interface TurnContext {
    * invokes before publishing started to prevent reentrant cancellation, and
    * returns a paired skipped result for denial or closed approval. A test
    * barrier resolves before the last cancellation check. */
-  dispatchTool(call: ToolCall, execute: ExecuteTool): Promise<{ content: string; dispatched: boolean }>;
+  dispatchTool(call: ToolCall, execute: ExecuteTool): Promise<{ content: string; dispatched: boolean;
+    /** Decision 0021: recorded with the paired result of a dispatched call. */
+    outcome?: import("./tools.ts").ToolOutcome }>;
   /** Take pending inbox items (messages and notices) into this turn. */
   drainNotices?(): void;
   finish?(): boolean;
