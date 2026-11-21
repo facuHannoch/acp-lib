@@ -117,7 +117,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       run: (...args: any[]) => { prepared().run(...args); } };
   };
   const s = {
-    meta: q("SELECT key, value FROM meta"), modelState: q("SELECT value FROM meta WHERE key = 'modelState'"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+    meta: q("SELECT key, value FROM meta"), modelState: q("SELECT value FROM meta WHERE key = 'modelState'"), revoked: q("SELECT value FROM meta WHERE key = 'revokedTools'"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
     channel: q("SELECT * FROM channels WHERE channel_id = ?"),
     addChannel: q("INSERT OR IGNORE INTO channels (channel_id, position) VALUES (?, (SELECT COUNT(*) FROM channels))"),
     putChannel: q("UPDATE channels SET display_name = ?, lifecycle = ?, policy = ? WHERE channel_id = ?"),
@@ -142,6 +142,9 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     dispose() { for (const finalize of finalizers.splice(0)) finalize(); },
     getModelState() { const row = s.modelState.get(); return row ? JSON.parse(row.value) : undefined; },
     setModelState(state) { s.setMeta.run("modelState", JSON.stringify(state)); },
+    // A meta key, like the model state: no schema or format change (decision 0021).
+    getRevokedTools() { const row = s.revoked.get(); return row ? JSON.parse(row.value) : undefined; },
+    setRevokedTools(names) { s.setMeta.run("revokedTools", JSON.stringify(names)); },
     getConfig() { const row = s.config.get(); return row ? JSON.parse(row.value) : undefined; },
     setConfig(config) { s.setMeta.run("importedConfig", JSON.stringify(config)); },
     // Short and synchronous: nothing awaits between BEGIN and COMMIT.

@@ -1,7 +1,9 @@
 /** Loop facts; composition supplies channel/turn IDs and message IDs. */
 export type LoopEvent =
   | ({ type: "message_completed" } & ({ parts: { type: "text"; text: string }[]; reference?: never } | { parts?: never; reference: true }))
-  | { type: "tool_call"; id: string; name: string; status: "started" | "completed" | "failed"; input?: string; output?: string };
+  /** Decision 0021 adds `invocationId` and, for catalog tools, `skipped` (never
+   * dispatched) and `interrupted` (the wait ended after dispatch: effect unknown). */
+  | { type: "tool_call"; id: string; name: string; status: "started" | "completed" | "failed" | "skipped" | "interrupted"; input?: string; output?: string; invocationId?: string };
 
 /** Ordered within a channel; no order is promised across channels.
  * With storage (decision 0013) every event except tool_call started/failed

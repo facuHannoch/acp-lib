@@ -30,8 +30,9 @@ export interface ChannelStatus {
   policy?: string;
   displayName?: string;
   lifecycle: ChannelLifecycle;
-  /** A running turn, or a checkpointed one (`suspended`). */
-  activeTurn?: { turnId: number; status: "running" | "suspended" };
+  /** A running turn, or a checkpointed one (`suspended`). `phase` (decision
+   * 0021) is this process's view of what a running turn is doing. */
+  activeTurn?: { turnId: number; status: "running" | "suspended"; phase?: import("./tools.ts").TurnPhase };
   /** Pending (never taken, not withdrawn) items in acceptance order. */
   pendingItemIds: string[];
   /** True when pending items or a checkpointed turn exist that cannot run until
@@ -96,6 +97,10 @@ export interface PersistentSessionOptions {
   /** Opened and later closed by the caller. Recovery already ran in open. */
   storage: SessionStorage;
   configureTurn(turn: ActiveTurn, notify: SessionAgent["notify"]): TurnServices;
+  /** Decision 0021: consumer functions, validated by the caller. Their names
+   * must not collide with the tools `configureTurn` returns. */
+  catalog?: import("./tools.ts").ToolCatalogInput;
+  toolLimits?: Partial<import("./tools.ts").ToolLimits>;
   wrapTurn?: (run: TurnExecutor) => TurnExecutor;
 }
 
@@ -140,4 +145,21 @@ export interface PersistentSession {
   stop(reason: string): SessionStatus;
   subscribe(listener: EventSink): () => void;
   subscribeSession(listener: SessionEventSink): () => void;
+  /** Decision 0021. Absent on a session assembled without a catalog. */
+  tools?: ToolControls;
+}
+
+/** The session's tool catalog (decision 0021). Definitions come from the open;
+ * only revocations are stored. Failures use storage error codes plus
+ * `not_found` (unknown name) and `invalid_state` (wrong group for the operation). */
+export interface ToolControls {
+  list(): import("./tools.ts").ToolAvailability[];
+  /** The handler names the current connection serves; an empty list on disconnect. */
+  serve(handlers: readonly string[], executor?: import("./tools.ts").FunctionExecutor): void;
+  revoke(name: string): ControlResult<import("./tools.ts").ToolAvailability>;
+  restore(name: string): ControlResult<import("./tools.ts").ToolAvailability>;
+  enable(name: string): ControlResult<import("./tools.ts").ToolAvailability>;
+  remove(name: string): ControlResult<import("./tools.ts").ToolAvailability>;
+  invocation(invocationId: string): import("./tools.ts").ToolInvocation | undefined;
+  invocations(turnId: number): import("./tools.ts").ToolInvocation[];
 }

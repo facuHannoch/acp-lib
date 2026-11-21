@@ -116,6 +116,9 @@ export function validateArchive(value: unknown): SessionArchive {
     if (turn.state.status === "suspended" && outstanding.size) bad("Checkpoint has an unanswered tool call");
   }
 
+  const revoked = (snapshot as { revokedTools?: unknown }).revokedTools;
+  if (revoked !== undefined && (!Array.isArray(revoked) || revoked.some(name => !str(name)) || new Set(revoked).size !== revoked.length
+    || JSON.stringify([...revoked].sort()) !== JSON.stringify(revoked))) bad("Invalid revoked tools");
   if (!Array.isArray(snapshot.modelCalls) || !snapshot.scriptPositions || typeof snapshot.scriptPositions !== "object" || Array.isArray(snapshot.scriptPositions)) bad("Invalid model execution records");
   for (const [channel, next] of Object.entries(snapshot.scriptPositions))
     if (!channels.has(channel) || !Number.isSafeInteger(next) || (next as number) < 0) bad("Invalid scripted position");
@@ -199,6 +202,7 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
     const entryIds = Object.fromEntries(snapshot.timeline.filter(entry => entry.messageId).map(entry => [String(entry.seq), entry.messageId!]));
     const max = snapshot.modelCalls.reduce((n, call) => Math.max(n, Number(call.callId) || 0), 0);
     tables.setModelState({ nextCall: max + 1, calls: snapshot.modelCalls, itemIds: {}, scriptPositions: snapshot.scriptPositions, entryIds });
+    if (snapshot.revokedTools !== undefined) tables.setRevokedTools(snapshot.revokedTools);
   });
 }
 

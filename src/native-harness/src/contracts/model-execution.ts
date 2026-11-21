@@ -2,7 +2,11 @@ import type { Message, ToolDefinition } from "./loop.ts";
 import type { StorageResult, TimelineEntry } from "./storage.ts";
 
 /** One immutable logical request, identical across the attempts of a call. */
-export interface ModelRequest { messages: readonly Message[]; tools: readonly ToolDefinition[] }
+export interface ModelRequest { messages: readonly Message[]; tools: readonly ToolDefinition[];
+  /** Decision 0021: the first N tools are the stable group (built-ins and
+   * fixed registrations); the rest can change between inferences. Absent: all
+   * are stable. Adapters may place the groups differently; both use one gate. */
+  fixedToolCount?: number }
 /** Defaults apply per call and never include tool or approval time. */
 export interface ModelExecutionSettings { timeoutMs: number; retryDelayMs: number; maxRetries: number }
 /** `final` remains the existing wire spelling for messages mode. */
