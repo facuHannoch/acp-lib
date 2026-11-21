@@ -173,6 +173,8 @@ export type {
 } from "./persistence/backend.ts";
 
 export {
+  HarnessController,
+  /** @deprecated Renamed `HarnessController`. */
   AgentController,
   parseConfigValue,
   parseBoolean,
@@ -182,8 +184,11 @@ export {
 export type { CommandArgumentDescriptor, CommandDescriptor } from "./command-descriptors.ts";
 export type {
   AgentControllerConfig,
+  /** @deprecated Renamed `ControllerStartEvent`. */
+  AgentControllerStartEvent,
   AgentMode,
   ControllerCommand,
+  ControllerStartEvent,
   ControllerCommandId,
   ConfigValueParseResult,
   SetConfigFromStringResult,
@@ -252,8 +257,14 @@ export type {
   BridgeOptions,
 } from "./agent-client.ts";
 
-export { ADAPTERS, buildSpawnCommand } from "./adapters.ts";
-export type { Adapter, AdapterPreset } from "./adapters.ts";
+export { ADAPTERS, buildSpawnCommand, isNativeAdapter } from "./adapters.ts";
+export type { Adapter, AdapterPreset, AgentAdapter, NativeAdapter } from "./adapters.ts";
+export { HarnessIncompatibleError, HarnessUnavailableError, NativeHarnessHost } from "./native/host.ts";
+export type { ChannelChangeOutcome, NativeHarnessHostConfig, NativeHostState } from "./native/host.ts";
+export { NativeTurnError } from "./native/controller.ts";
+export { createFileHostRecords, createMemoryHostRecords } from "./native/records.ts";
+export type { ChannelDesire, NativeHostRecords, PendingChange, Submission } from "./native/records.ts";
+export type { AgentHarnessConfig } from "./agent/config.ts";
 
 export { buildClientCapabilities, CLIENT_CAPABILITIES } from "./capabilities.ts";
 export type {
@@ -705,7 +716,22 @@ export type {
 } from "./metering/catalog/index.ts";
 export type { UsageNormalization } from "./metering/usage.ts";
 
-export { ProcessCrashError, NotConnectedError, TimeoutError } from "./errors.ts";
+export { ProcessCrashError, NotConnectedError, TimeoutError, UnsupportedError } from "./errors.ts";
+export type {
+  BackendCapabilities,
+  ConversationCapabilities,
+  ConversationController,
+  PreparedTurn,
+  StartResult,
+  ItemRef,
+  TurnCause,
+  TurnContent,
+  TurnEvent,
+  TurnRun,
+  TurnStarted,
+  TurnTook,
+  UsageListener,
+} from "./conversation-controller/index.ts";
 
 export { createWireLog } from "./wire-log.ts";
 export type { WireLogOptions } from "./wire-log.ts";

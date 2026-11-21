@@ -22,6 +22,8 @@ export interface CreateParams {
   config?: ProtocolConfig;
   participants: { id: string; kind: "person" | "agent" | "worker" | "host" }[];
   channels: Record<string, never>;
+  /** Decision 0020. Applied before the new session starts. */
+  channelChanges?: PendingChannelChange[];
 }
 export interface PushParams {
   channel: string;
@@ -31,7 +33,40 @@ export interface Description {
   configOptions: unknown[]; commands: unknown[]; policies: string[];
   /** Advertise only implemented guarantees: `durable`/`true` are reported by a
    * server only once its acceptance commits to storage before acknowledging. */
-  capabilities: { experimental: true; acceptance: "memory" | "durable"; methods: string[]; events: string[]; persistence: boolean };
+  capabilities: { experimental: true; acceptance: "memory" | "durable"; methods: string[]; events: string[]; persistence: boolean;
+    /** Decision 0020: `session/create` and `session/load` accept `channelChanges`
+     * and apply them before the session starts. Absent on older servers, which
+     * reject the field. */
+    startupChannelChanges?: true };
+}
+
+// ---- Channel changes applied at open, decision 0020.
+
+/** The host's newest desired state for one channel, decided while the harness
+ * was not running. A missing field leaves the value alone; `null` clears a
+ * name or policy. An unknown channel is created. `changeId` is opaque to the
+ * harness and echoed in the result so the host can match its own version. */
+export interface PendingChannelChange {
+  channel: string;
+  changeId: string;
+  displayName?: string | null;
+  policy?: string | null;
+  /** `open` clears the channel's own suspension (never the session's);
+   * `suspended` suspends it; `retired` deletes it. */
+  lifecycle?: "open" | "suspended" | "retired";
+}
+/** One per batch entry, in request order. `blocked` wrote neither name nor
+ * policy and left the lifecycle as it was, with one exception: `channel_busy`
+ * (retirement found pending input or a running or checkpointed turn) durably
+ * suspends the channel and keeps its work. `channel_retired`: the ID is
+ * retired and the entry asked for something other than retirement.
+ * `incompatible`: the resume would continue work the current configuration
+ * cannot run; the channel stays suspended. */
+export interface ChannelChangeResult {
+  channel: string;
+  changeId: string;
+  outcome: "applied" | "blocked";
+  reason?: "channel_busy" | "channel_retired" | "incompatible";
 }
 
 // ---- Durable operations, decision 0013. A server lists a method in
@@ -105,6 +140,9 @@ export interface LoadResult {
   items: ItemStatus[];
   messages: StoredMessage[];
   nextMessage?: string;
+  /** Decision 0020: results of the batch this connection's open applied.
+   * Present when a batch was sent with this open or recorded by it. */
+  channelChanges?: ChannelChangeResult[];
 }
 
 /** Archive bytes move by path when host and harness share a filesystem, or by
@@ -119,8 +157,14 @@ export type ArchiveLocation = { type: "path"; path: string } | { type: "transfer
 
 export interface DurableMethods extends ModelExecutionMethods {
   /** Open an existing session with runtime configuration. Returns the load
-   * view; a second load on the same endpoint returns a fresh view only. */
-  "session/load": { params: { sessionId: string; config?: ProtocolConfig; messagesLimit?: number }; result: LoadResult };
+   * view; a second load on the same endpoint returns a fresh view only.
+   * `channelChanges` (decision 0020) is validated as a whole, then applied
+   * after recovery and before any pending or recovered work becomes eligible;
+   * the view shows the resulting channel state. An invalid batch fails the
+   * request with nothing changed and the session not opened. A repeated load
+   * with the same batch, or none, reports the recorded results and applies
+   * nothing; a different batch fails `invalid_state`. */
+  "session/load": { params: { sessionId: string; config?: ProtocolConfig; messagesLimit?: number; channelChanges?: PendingChannelChange[] }; result: LoadResult };
   /** Only records committed at or before `revision`, after message `after`.
    * `not_found` for a revision the session has not reached. */
   "session/messages": { params: { revision: number; after: string; limit?: number }; result: { messages: StoredMessage[]; nextMessage?: string } };
@@ -185,7 +229,8 @@ export interface Methods {
   /** Validate without opening a session or starting execution. */
   "config/validate": { params: { config: unknown }; result: { valid: true } };
   "approval/respond": { params: { requestId: string; decision: import("./config-permissions.ts").ApprovalAnswer }; result: { accepted: true } };
-  "session/create": { params: CreateParams; result: { sessionId: string } };
+  /** `channelChanges` (decision 0020) follows the same rules as on load. */
+  "session/create": { params: CreateParams; result: { sessionId: string; channelChanges?: ChannelChangeResult[] } };
   /** With durable acceptance the response is sent only after the inbox commit
    * and includes `item` (Received, or the original item's current state for a
    * retry). It never waits for or reports a reply. There is one delivery

@@ -2,6 +2,7 @@ import type { Adapter } from "../../adapters.ts";
 import type { AgentConversationId } from "../../agent-ids.ts";
 import { ProviderSessionListUnsupportedError } from "../../agent-conversation-errors.ts";
 import { AcpClient, type AcpClientConfig } from "../../client.ts";
+import { fromAcp } from "../../conversation-controller/capabilities.ts";
 
 /** A session the provider holds, as `session/list` reports it, and the conversation that owns it, if any. */
 export interface ProviderSessionSummary {
@@ -47,7 +48,7 @@ export async function listProviderSessions(
   const sessions: ProviderSessionSummary[] = [];
   try {
     await client.connect();
-    if (!client.capabilities.agent.sessionCapabilities.list) {
+    if (!fromAcp(client.capabilities).listSessions) {
       throw new ProviderSessionListUnsupportedError(listing.adapterId);
     }
     let cursor: string | undefined;

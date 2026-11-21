@@ -1,22 +1,21 @@
 # Architecture documentation
 
-Updated: 2026-11-16.
+Updated: 2026-11-20.
 
-These documents describe the harness as it exists and distinguish proposals from
-implemented behavior. The root [ARCHITECTURE.md](../../ARCHITECTURE.md) remains
-the target layout and dependency guide. [Decision records](../decisions/) explain
-accepted changes; a proposal here does not replace a contract decision.
+These pages describe the implemented harness. The reviewed foundation is on
+`alpha`. The acp-client adapter and startup channel changes are implemented on
+`acp-client-integration` and awaiting independent review. The
+[work index](../docs/WORK.md) tracks proposed slices and review status.
 
-| Document | Purpose | Status |
-| --- | --- | --- |
-| [Overview](overview.md) | Entity model, ownership, entry points and boundaries | Current implementation |
-| [Technical architecture](technical-architecture.md) | Runtime objects, code locations, composition and message flow | Current implementation |
-| [Execution](execution.md) | Channels, turns, concurrency, notices and output | Current implementation |
-| [Context and data](context-and-data.md) | Stored information, queries and inference context | Current implementation and intended separation |
-| [Persistence](persistence.md) | SQLite design, restart behavior and incremental delivery | Proposal; no persistence implemented |
-| [Suspend and resume](suspend-and-resume.md) | Lifecycle, safe checkpoints, updates and relocation | Agreed direction; not implemented |
+| Document | Purpose |
+| --- | --- |
+| [Overview](overview.md) | Agent, channels, owners, and entry points |
+| [Technical architecture](technical-architecture.md) | Runtime composition and the path from input to reply |
+| [Execution](execution.md) | Scheduling, steering, model calls, permissions, and tool dispatch |
+| [Context and data](context-and-data.md) | Shared timeline, derived requests, and inspection |
+| [Persistence](persistence.md) | Storage adapters, recovery, and session files |
+| [Suspend, stop, and resume](suspend-and-resume.md) | Session and channel lifecycle, interruption, and process replacement |
 
-Maintain these documents when the corresponding behavior changes. Describe the
-resulting architecture rather than keeping a chronological work log. Move an
-implemented proposal into the current-behavior sections and keep unresolved
-decisions explicit.
+The root [ARCHITECTURE.md](../../ARCHITECTURE.md) defines dependency boundaries
+and target layout. [Decision records](../decisions/) and the linked specs define
+the exact contracts. Update these pages when implemented behavior changes.

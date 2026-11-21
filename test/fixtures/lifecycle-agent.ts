@@ -4,10 +4,13 @@
  *
  * A prompt containing `[lifecycle:<mode>]` (or `LIFECYCLE_MODE`) selects the behaviour:
  * `silent` and `ignore` never answer, `partial` sends one chunk and then nothing (all three ignore
- * cancel), `permission` asks for permission, `tool` runs a tool for `LIFECYCLE_TOOL_MS`. Any other prompt
+ * cancel), `permission` asks for permission, `tool` runs a tool for `LIFECYCLE_TOOL_MS` (and, with
+ * `LIFECYCLE_END_GATE_FILE`, ends the turn after its last chunk only once that file exists, so a
+ * test can release the end on an event it observed). Any other prompt
  * echoes the process id and the session's history, so a test can kill the process and check context.
  *
- * Faults: `LIFECYCLE_HANG_CONTROL` never answers that one method, `LIFECYCLE_FAIL_CONTROL` answers it
+ * Faults: `LIFECYCLE_HANG_CONTROL` never answers that one method; `LIFECYCLE_HOLD_CONTROL` holds that
+ * method until the file `LIFECYCLE_HOLD_FILE` exists, then answers it normally; `LIFECYCLE_FAIL_CONTROL` answers it
  * with an error; `LIFECYCLE_FAIL_LOAD=1` reports
  * every session missing; while the file `LIFECYCLE_FAIL_LOAD_FILE` exists, loads fail with an internal
  * error although the session exists, and each failed load appends a line to it.
@@ -52,6 +55,11 @@ function handle(m: any): void {
     return;
   }
   if (process.env.LIFECYCLE_HANG_CONTROL === m.method) return;
+  const holdFile = process.env.LIFECYCLE_HOLD_FILE;
+  if (holdFile && process.env.LIFECYCLE_HOLD_CONTROL === m.method && !existsSync(holdFile)) {
+    setTimeout(() => handle(m), 5);
+    return;
+  }
   if (process.env.LIFECYCLE_FAIL_CONTROL === m.method) {
     send({ id: m.id, error: { code: -32603, message: "internal error" } });
     return;
@@ -140,8 +148,22 @@ function prompt(m: any): void {
       if (pending?.id !== m.id) return;
       update(session, { sessionUpdate: "tool_call_update", toolCallId: "sleep", status: "completed" });
       text(session, "tool finished");
-      reply(m.id, { stopReason: "end_turn" });
-      pending = null;
+      const end = () => {
+        reply(m.id, { stopReason: "end_turn" });
+        pending = null;
+      };
+      const gate = process.env.LIFECYCLE_END_GATE_FILE;
+      if (!gate) {
+        end();
+        return;
+      }
+      // Wait for the test's release; a cancel while waiting answers the prompt instead.
+      const waitForGate = () => {
+        if (pending?.id !== m.id) return;
+        if (existsSync(gate)) end();
+        else setTimeout(waitForGate, 2);
+      };
+      waitForGate();
     }, Number(process.env.LIFECYCLE_TOOL_MS ?? 150));
     return;
   }

@@ -1,7 +1,11 @@
 import type { Adapter } from "./adapters.ts";
 import { buildPtyCommand, buildSpawnCommand } from "./adapters.ts";
 
-export type LaunchKind = "acp" | "pty";
+/**
+ * `native-harness`: the Agent's own harness process (`serve --stdio`), one per Agent. A launcher that
+ * wraps commands for an environment (a container, say) wraps this one the same way.
+ */
+export type LaunchKind = "acp" | "pty" | "native-harness";
 
 /** A fully resolved host process launch. The environment is exact, not an overlay. */
 export interface PreparedLaunch {
@@ -33,7 +37,7 @@ export interface LegacyLaunchOptions {
  * behavior for callers that have not migrated yet.
  */
 export async function prepareLaunch(
-  kind: LaunchKind,
+  kind: Exclude<LaunchKind, "native-harness">,
   launcher: AcpLauncher | undefined,
   legacy: LegacyLaunchOptions,
 ): Promise<PreparedLaunch> {
@@ -71,6 +75,35 @@ export async function prepareLaunch(
     // This inference exists only in the compatibility adapter. Explicit launchers own cwd.
     spawnCwd: kind === "acp" && command[0] === "docker" ? undefined : legacy.cwd,
     spawnEnv: env,
+  };
+}
+
+/**
+ * Resolve the launch of the native harness process. It has no adapter: the command is the harness's own
+ * server mode. With a launcher the environment is the launcher's, exactly; without one the process inherits
+ * this process's environment plus `env`.
+ */
+export async function prepareNativeLaunch(
+  launcher: AcpLauncher | undefined,
+  options: { command: readonly string[]; env?: Record<string, string>; cwd?: string },
+): Promise<PreparedLaunch> {
+  if (!options.command.length) throw new Error("native harness command cannot be empty");
+  if (launcher) {
+    const prepared = await launcher.prepare({ kind: "native-harness", targetCommand: [...options.command] });
+    if (!prepared.command.length) {
+      await prepared.dispose?.();
+      throw new Error("launcher returned an empty command");
+    }
+    if (prepared.spawnEnv == null) {
+      await prepared.dispose?.();
+      throw new Error("launcher must return a complete spawnEnv");
+    }
+    return prepared;
+  }
+  return {
+    command: [...options.command],
+    spawnCwd: options.cwd,
+    spawnEnv: { ...(process.env as Record<string, string>), ...(options.env ?? {}) },
   };
 }
 

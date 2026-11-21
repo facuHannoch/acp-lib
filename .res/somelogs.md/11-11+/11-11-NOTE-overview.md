@@ -53,6 +53,10 @@ specs are the source of truth; the Claude Docs they came from carry a pointer he
 | `harness/11-11-NOTE-memory-findings.md` | Findings on memory: kinds, write and read paths, Letta, digests, what is deferred | Reference |
 | `harness/theory/11-11-NOTE-harness-theory.md` | How harnesses work in general | Reference |
 
+**Document types:** `SPEC` (what to build), `NOTE` (context and decisions), `TODO` (deferred work), `FINDING`
+(something observed, accepted for now), `RULES` (how the library behaves and why, documented without changing it).
+Named `<month>-<day>-<TYPE>-<topic>.md`, in the folder of the part they concern.
+
 ## Decisions
 
 Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorded here.
@@ -190,7 +194,8 @@ Agreed between 2026-11-06 and 2026-11-11. Changing one is a new decision recorde
     events carry the cause (controller-interface spec).
 41. **The backend starts turns freely; the host never grants them.** The harness decides when a channel takes a
     turn. acp-client keeps its guarantees with holds for exclusive operations (handoff out, stop, delete), in-order
-    handling of each conversation's turns, and a budget guard in the harness. Limitations and the alternatives (a
+    handling of each conversation's turns, and billing-grade metering of every model call (a spending cap is deferred:
+    `library/todos/11-13-TODO-spending-cap.md`). Limitations and the alternatives (a
     grant before each turn) are in the controller-interface spec, Appendix A.
 42. **The native harness process starts lazily, on activity, and its config is known before start.** Channels always
     exist; the process (and its container) starts when a native conversation first needs it and may stop when idle.
@@ -283,8 +288,8 @@ implementing agent (about an hour per brief; a large spec is split into several 
    Needed before integration stage 2a.
 3. **Harness part 2**: the actual harness. Needed before integration stage 2b and the orchestrator's end-to-end tests.
 
-**After the four main specs:** `billing_required` for native conversations
-(`library/todos/11-12-TODO-billing-required-native.md`).
+**`billing_required` for native conversations** is part of integration stage 2a (Billing-grade metering), decided
+2026-11-13. A spending cap enforced by the library is deferred (`library/todos/11-13-TODO-spending-cap.md`).
 
 **Once everything is built:** the end-to-end robustness stress test (`11-12-SPEC-end-to-end-robustness.md`), whose
 findings refine the specs.

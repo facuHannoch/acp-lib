@@ -1,3 +1,4 @@
+import { ProviderSessionReloadUnsupportedError } from "../errors.ts";
 import type { AgentConversationId } from "../agent-ids.ts";
 import type {
   ConversationErrorRecoverability,
@@ -23,6 +24,8 @@ export function isMissingProviderSessionError(
   error: unknown,
   override?: (error: unknown) => boolean,
 ): boolean {
+  // Our own condition, not a provider's failure: a classifier written for provider errors isn't asked.
+  if (error instanceof ProviderSessionReloadUnsupportedError) return true;
   if (override) return override(error);
   const value = error as { code?: unknown; message?: unknown; data?: unknown } | null;
   const message = typeof value?.message === "string" ? value.message : String(error);

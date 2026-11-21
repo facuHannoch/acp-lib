@@ -233,3 +233,132 @@ test("reports a cancel once when requested and once with how it ended", async ()
   expect(await run("stalled", (finish) => finish(cancelled)))
     .toEqual(["requested:stalled", "resolved:stalled:acknowledged"]);
 });
+
+test("a replaying provider is not stalled; once it stops replaying the stall deadline applies again (bounded)", async () => {
+  const clock = new Clock();
+  let replaying = true;
+  const calls: string[] = [];
+  const provider: SupervisedProvider = {
+    prompt: () => new Promise(() => {}),
+    subscribeOutput: () => () => undefined,
+    cancel: () => { calls.push("cancel"); },
+    forceStop: async () => {},
+  };
+  const supervisor = new OperationSupervisor(provider, {
+    operationId: "replay",
+    kind: "turn",
+    timers: clock,
+    limits: { firstOutputMs: 100 },
+    isReplaying: () => replaying,
+  });
+  void supervisor.run().catch(() => undefined);
+  await Promise.resolve();
+  clock.advance(1000); // ten intervals while replaying: never stalled
+  expect(calls).toEqual([]);
+  replaying = false; // the replay is over and the turn is live, but silent
+  clock.advance(100); // one interval later at most: stalled
+  expect(calls).toEqual(["cancel"]);
+});
+
+test("a provider that never replays keeps today's deadline exactly", async () => {
+  const clock = new Clock();
+  const calls: string[] = [];
+  const provider: SupervisedProvider = {
+    prompt: () => new Promise(() => {}),
+    subscribeOutput: () => () => undefined,
+    cancel: () => { calls.push("cancel"); },
+    forceStop: async () => {},
+  };
+  const supervisor = new OperationSupervisor(provider, { operationId: "live", kind: "turn", timers: clock, limits: { firstOutputMs: 100 }, isReplaying: () => false });
+  void supervisor.run().catch(() => undefined);
+  await Promise.resolve();
+  clock.advance(99);
+  expect(calls).toEqual([]);
+  clock.advance(1);
+  expect(calls).toEqual(["cancel"]);
+});
+
+test("a replayed tool still in flight is never stalled while replaying, with no timer storm; it stalls within one interval once live", async () => {
+  const clock = new Clock();
+  const arm = clock.setTimeout;
+  let armings = 0;
+  clock.setTimeout = (run: () => void, delay: number) => {
+    if (++armings > 200) throw new Error("timer storm: a deadline already in the past was re-armed without delay");
+    return arm(run, delay);
+  };
+  let replaying = true;
+  const calls: string[] = [];
+  let emit!: OutputListener;
+  const provider: SupervisedProvider = {
+    prompt: () => new Promise(() => {}),
+    subscribeOutput: (fn) => { emit = fn; return () => undefined; },
+    cancel: () => { calls.push("cancel"); },
+    forceStop: async () => {},
+  };
+  const supervisor = new OperationSupervisor(provider, {
+    operationId: "replayed-tool",
+    kind: "turn",
+    timers: clock,
+    limits: { toolMs: 100 },
+    isReplaying: () => replaying,
+  });
+  void supervisor.run().catch(() => undefined);
+  await Promise.resolve();
+  emit({ kind: "update", sessionId: null, activity: { kind: "tool", toolCallId: "t1", status: "in_progress" } as never }); // the replay starts a tool
+  const armedBefore = armings;
+  clock.advance(1000); // ten tool intervals while replaying
+  expect(calls).toEqual([]);
+  expect(armings - armedBefore).toBeLessThanOrEqual(11); // one re-arm per interval
+  replaying = false; // live now, the tool still running
+  clock.advance(100); // within one interval: stalled
+  expect(calls).toEqual(["cancel"]);
+});
+
+test("a tool in flight on a provider that never replays keeps today's deadline exactly", async () => {
+  const clock = new Clock();
+  const calls: string[] = [];
+  let emit!: OutputListener;
+  const provider: SupervisedProvider = {
+    prompt: () => new Promise(() => {}),
+    subscribeOutput: (fn) => { emit = fn; return () => undefined; },
+    cancel: () => { calls.push("cancel"); },
+    forceStop: async () => {},
+  };
+  const supervisor = new OperationSupervisor(provider, { operationId: "live-tool", kind: "turn", timers: clock, limits: { toolMs: 100 }, isReplaying: () => false });
+  void supervisor.run().catch(() => undefined);
+  await Promise.resolve();
+  emit({ kind: "update", sessionId: null, activity: { kind: "tool", toolCallId: "t1", status: "in_progress" } as never });
+  clock.advance(99);
+  expect(calls).toEqual([]);
+  clock.advance(1);
+  expect(calls).toEqual(["cancel"]);
+});
+
+test("a replay check that lands exactly at clock zero still floors the deadline (no zero-delay storm)", async () => {
+  const clock = new Clock();
+  clock.time = -100; // a clock whose zero falls inside the operation
+  const arm = clock.setTimeout;
+  let armings = 0;
+  clock.setTimeout = (run: () => void, delay: number) => {
+    if (++armings > 200) throw new Error("timer storm: the floor was lost at clock zero");
+    return arm(run, delay);
+  };
+  let replaying = true;
+  const calls: string[] = [];
+  const provider: SupervisedProvider = {
+    prompt: () => new Promise(() => {}),
+    subscribeOutput: () => () => undefined,
+    cancel: () => { calls.push("cancel"); },
+    forceStop: async () => {},
+  };
+  const supervisor = new OperationSupervisor(provider, { operationId: "zero", kind: "turn", timers: clock, limits: { firstOutputMs: 100 }, isReplaying: () => replaying });
+  void supervisor.run().catch(() => undefined);
+  await Promise.resolve();
+  clock.advance(100); // the first deadline is reached at exactly zero, while replaying: skipped
+  expect(calls).toEqual([]);
+  clock.advance(150);
+  expect(calls).toEqual([]); // still replaying: the next check is a full interval after the skip, not immediately
+  replaying = false;
+  clock.advance(100);
+  expect(calls).toEqual(["cancel"]);
+});

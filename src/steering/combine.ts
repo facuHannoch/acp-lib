@@ -25,7 +25,8 @@ export function mergeHandlers(list: readonly (PromptHandlers | undefined)[]): Pr
   return merged;
 }
 
-function partOf(prompt: SteeringPrompt): CombinedMessage {
+/** The message a queued prompt is, as a run hands it to a backend (also one original message of a combined prompt). */
+export function partOf(prompt: SteeringPrompt): CombinedMessage {
   return {
     id: prompt.turnId,
     text: prompt.text,

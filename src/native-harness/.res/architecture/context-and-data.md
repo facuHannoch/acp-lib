@@ -1,59 +1,31 @@
 # Context and data
 
-Status: current implementation and intended separation, 2026-11-16.
+| Layer | Responsibility |
+| --- | --- |
+| Storage | Commit inbox items, timeline entries, turn and channel state, and model-call records. |
+| Queries | Read neutral storage snapshots. The protocol projects revisioned status and load views, message pages, and model-call records. |
+| Context builder | Render a fresh inference request for the active turn from the stored timeline and system prompt. |
 
-## Three responsibilities
+The timeline is the common record for all channels. It orders events and
+attributes them to a sender, channel, and turn. A pending input lives in the
+inbox and joins the timeline when taken. The agent can have several inference
+requests in flight, each built from the timeline as it existed when that
+iteration started. Later entries are available at a later inference boundary.
 
-| Responsibility | Meaning | Current implementation |
-| --- | --- | --- |
-| Storage | Own recorded information and its ordering | `SharedContextStore`, implemented in `src/state/storage/shared-context.ts` |
-| Queries | Select stored information without rendering it | Currently only the store's complete `snapshot()`; no separate query service |
-| Context building | Present selected information to the model | Pure functions in `src/capabilities/context/build.ts` |
+The [context builder](../../src/capabilities/context/build.ts) combines the
+system prompt, channel and participant labels, attributed shared history,
+and the active turn's native messages. The active turn is excluded from the
+shared-history block so its tool calls and results appear once as paired
+messages. Notices carry source attribution. Opaque provider state stays out of
+shared text. Tool definitions are a separate model-request field.
 
-Keep these responsibilities distinct without creating a module for each before
-it is useful. A SQLite adapter may implement both writes and typed read queries;
-the builder receives neutral data and never SQL or a database handle. Later,
-history tools and the inspector can use queries without reusing prompt rendering.
+The current builder includes other channels' history and tool result content.
+Bounded recall, compaction, and history access rules remain open. The tool
+permission gate governs execution; shared history has its own visibility
+design to complete. See the [work index](../docs/WORK.md).
 
-## Recorded experience
-
-Each `ContextEntry` carries a global sequence number, timestamp, channel, turn,
-sender, optional input/notice kind and source channel, and a neutral message.
-Messages contain participant text, assistant text/tool calls, or tool results.
-The current store deep-copies appended values and snapshots and notifies local
-subscribers after append.
-
-System instructions and tool definitions are supplied configuration, not history
-entries. Execution status, queued work and protocol acceptance records are not
-fully represented by the context log either. Conversation history alone cannot
-reconstruct a scheduler reliably.
-
-## What an inference receives
-
-`buildSharedContext` produces the system prompt and attributed shared history as
-JSON text. It excludes opaque provider state from that shared rendering.
-
-`buildContext` adds current channel and participant/notice origin, removes the
-active turn from the shared-history section, then appends that turn's messages
-in native conversation form. This preserves local assistant/tool pairing and
-avoids duplicating the active input. Tool definitions are a separate model-call
-argument; the provider adapter decides their wire representation.
-
-There is one shared record of experience and a fresh view for every inference.
-There is no single mutable model-context buffer whose latest writer wins. Parallel
-inferences can therefore see different snapshots of the same growing record.
-
-The inspector's Live context is the channel-independent rendered base plus tool
-definitions for inspection. It is not a provider's hidden token layout. Per-call
-inspection includes the actual active-turn context and provider request.
-
-## Limits and future changes
-
-All history is currently included on every build. There are no budgets,
-compaction, retrieval, durable facts, scoped history queries or confidentiality
-filters. Persistent raw history comes first; memory selection can improve later.
-
-Opaque provider state is kept with its originating response. A durable format
-will need explicit serialization and provider compatibility rules; it must not
-silently discard or reinterpret that data. Restored historical turns can remain
-attributed data without attempting to resume their native provider exchanges.
+The development inspector's **Live context** tab shows a rendering of the
+current shared base. **Channels** shows captured inference requests and
+results for individual turns. These are distinct data sources. A current
+rendering can change while an older captured inference request stays fixed.
+The inspector also reads stored model-call records after SQLite reopen.

@@ -36,7 +36,7 @@ a core-only fake controller and the controller conformance suite.
 - **Integration stage 2a** (where the native backend needs them): channel holds, `accepted` on the prompt handle, a
   separate "accept a message" step for messages a backend takes on its own, generalizing `provider_sessions`, the
   neutral permission request shape, the model-call record, opaque provider data on messages; anything native.
-- **Harness part 1:** the protocol for holds and the budget guard (Appendix A).
+- **Harness part 1:** the protocol for holds (Appendix A).
 - **No new public `send()`.** Today's `PromptHandle` (the result promise plus `id` and `withdraw`) already is "put a
   message in, get its result later": a consumer that doesn't want to wait doesn't await it.
 
@@ -101,6 +101,41 @@ controller (`InternalPromptTarget`, line 307) before it is live, and emits no tu
   under the turn.
 - The identity delivery receipt is confirmed at the end (`ownerLifecycle.afterPrompt` with
   `identityDeliveryReceipt`).
+
+**Which orders are contractual** (decided 2026-11-13, during A2). Tests assert these strictly:
+
+- each stream keeps its own order: records in sequence-number order, events in emission order;
+- a turn's records and metering belong to that turn, each appears once, and record ids are stable;
+- metering is recorded after the provider's result;
+- the final assistant message is recorded before the turn is announced complete;
+- `turn_completed` comes only after metering, the transcript and `afterPrompt` are done.
+
+**Not contractual:** the relative order of metering against a turn's presentation events (managed mode: any of them,
+since presentation events are delivered from their own queue and may lag behind metering) or its last in-progress
+assistant snapshot record (Agent-owned mode). They are written on separate paths and today's code
+fixes no order between them; both orders occur on A1. Making one order hold would be a behaviour change
+(`findings/11-13-FINDING-metering-vs-presentation-order.md`), not part of this spec.
+
+**Metering when a turn fails before it finishes** (decided 2026-11-13, during A2; today's behaviour, accepted, not
+changed in A2):
+
+- **At most one durable metering record per operation,** and a metering write is idempotent by operation id (SQLite
+  enforces it: `metering_records` keyed by conversation and operation id, `agent_metering_records` by session and
+  operation id; a custom backend must honour it). An in-process retry of the same record is allowed; it can't
+  duplicate.
+- **When the metering write itself fails,** the error is surfaced and the turn ends as it does today, possibly with no
+  durable record. There is no durable retry: if storage is down, a retry has nowhere to write. Same limitation as the
+  two logs disagreeing.
+- **An operation that opened metering but never reached the provider** (failing during preparation, before dispatch)
+  may leave no record or one with no usage: today managed mode leaves none, detached mode leaves one. Nothing was
+  spent, so no cost data is lost; consumers must not rely on either. The characterization tests assert each mode's
+  current outcome, so a later change shows, without requiring the modes to agree.
+
+**A known hang, accepted for now:** an ACP harness that never answers while connecting or reconnecting leaves its
+conversation stuck (the queue and `stop()` wait forever). It is today's behaviour, seen on A1, and a named exception
+to the "nothing waits forever" rule for ACP's existing lifecycle; the fix is in
+the integration spec (Cancellable connect, stage 2a). A2 keeps the queue waiting on an in-progress reconnect (two
+reconnects never overlap), and fails the prompt that triggered it as soon as `send` fails.
 
 **Who uses `AgentController` directly:** `src/agent-session.ts` (18 references), `src/controller.ts`,
 `src/internal-inference/runtime/harness-runtime.ts` (6), `src/repl/commands.ts`, `src/cli/index.ts`, `src/index.ts`,
@@ -229,7 +264,8 @@ type ControllerStartEvent = AgentControllerStartEvent;   // renamed, alias kept
   is an error (the controller throws, the session treats it as a bug). In this stage each dispatched message belongs
   to exactly one turn. A cause's ids name messages the session sent; a backend-scheduled cause naming an unknown id
   is recorded and logged, not trusted for settlement.
-- **`turn_started`** is the only turn event the controller reports. A turn's end is its prepared turn's `prompt()`
+- **The controller reports only the start of turns, never their end:** `turn_started`, and for backend-scheduled
+  controllers `turn_took` (more items folded into a running turn). A turn's end is its prepared turn's `prompt()`
   resolving or rejecting, which is the single authority for the provider's outcome; the public `turn_completed` / `turn_failed`
   are the session's, emitted after finalization (below). A result forced by the supervisor (stall, force stop) goes
   the same way; the controller never announces an outcome of its own.
@@ -346,7 +382,7 @@ after:  pump: controller.send(run) → the controller reports turn_started (insi
   now and recorded in `findings/11-12-FINDING-acp-message-durability.md`.
 
 **Public API.** `prompt()` and `PromptHandle` are unchanged. `turn_started` gains `cause`. Consumers that want every
-turn, including ones nobody prompted, subscribe to the conversation's events (`turn_started`, `turn_completed`,
+turn, including ones nobody prompted, subscgentribe to the conversation's events (`turn_started`, `turn_completed`,
 `turn_failed`), as they can today. In stage 2a the handle gains `accepted: Promise<void>` (queued for ACP, stored by
 the harness for native), which makes the durability difference visible per backend.
 
@@ -628,6 +664,17 @@ member it guards.
 - **Order changes in the turn path.** The managed-mode preflight, the moment `turn_started` is emitted and the
   user-record ids are the likely places. Sign: an A1 snapshot changes in order or ids. Fix the order, never the
   snapshot.
+- **The one allowed snapshot exception (A2).** For the two non-contractual cases only, the characterization tests
+  accept the observed alternatives: in managed mode, the turn's metering event may appear anywhere among that turn's
+  presentation events, but only after its `turn_started` and before its `turn_completed` (widened 2026-11-13 after
+  `M → P1 → P2` was observed: metering ahead of the in-progress presentation, not only the completed one); in
+  Agent-owned mode, metering vs. the last in-progress assistant snapshot record, either order. The presentation
+  events' own order (in-progress before completed), stable ids, metering exactly once, and `turn_completed` after
+  both metering and the turn's last presentation event stay strict. Everything else stays strict (content, ids, order within each
+  stream, sequence numbers), and the contractual orders get explicit assertions of their own. Where a test is about a
+  specific sequence, it waits on an event barrier instead (as A1's instant-tool case does). This is one dedicated
+  commit, reviewed. Before the gate, the affected cases run many times (about 50) on A1 and on A2, and the frequency
+  of each order is compared; a noticeable shift means A2 changed timing in the turn path and is investigated.
 - **A reported turn left open.** If `send` reports `turn_started` and the turn then fails before its `prompt()` is called, the
   turn must still be abandoned and end with `turn_failed`, and steering's `turnEnded` must still run. Covered by the
   A2 step 4 tests and the conformance suite.
@@ -660,12 +707,15 @@ How the guarantees that today depend on acp-client starting every turn are kept:
    operation.
 2. **Turn 1 is recorded before turn 2.** acp-client handles each conversation's turns in order, locally; the
    controller holds turn 2's output until the session runs it. No protocol step.
-3. **Budgets.** A harness guard, configured by the host, refuses calls over the limit. The harness keeps the usage
-   ledger and is the only place that also sees model calls outside turns (compaction).
-4. **A stopped or deleted conversation starts nothing new:** its channel is closed.
+3. **Costs.** The harness reports every model call's usage, in turns and outside them (compaction), and acp-client
+   meters each at billing grade (integration spec, Billing-grade metering). Spending limits are the consumer's,
+   outside; a cap enforced by the library is deferred (`todos/11-13-TODO-spending-cap.md`, revised 2026-11-13).
+4. **A deleted conversation starts nothing new:** its channel is closed. A stopped one is only unloaded: the backend
+   may still run turns on its channel (a worker reply, another channel's trigger), which reload it (integration spec,
+   Limitations).
 
-Where it is built: holds and the budget guard in harness part 1 (protocol `channel/hold`, `channel/release`; the
-guard's limit in the config); their use in integration stage 2a. This spec only needs the session to accept turns
+Where it is built: holds in harness part 1 (protocol `channel/hold`, `channel/release`);
+their use in integration stage 2a. This spec only needs the session to accept turns
 the backend starts, which the fake exercises.
 
 ### Limitations
@@ -690,7 +740,8 @@ the backend starts, which the fake exercises.
 - **Local per-turn checks can't prevent native spending.** Holding a reported turn's output until the session runs
   it keeps the order of what is observed; it does not stop the harness from executing or spending meanwhile. Stage
   2a needs an explicit policy for each check the session makes before an ACP turn:
-  - **budget rejection:** the harness's guard, as above;
+  - **budget rejection:** none in the library (there is none today either); the consumer enforces limits from the
+    metering, as above;
   - **stale configuration:** the harness may run a turn on settings acp-client is about to change; a setting change
     applies from the next model call, and stage 2a states whether a pending change holds the channel first;
   - **unhealthy persistence:** the harness keeps working while acp-client can't record; stage 2a decides whether

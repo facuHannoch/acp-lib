@@ -5,7 +5,7 @@ import { SessionManager } from "../src/session-manager.ts";
 import type { SessionRecord, SessionStore } from "../src/session-store.ts";
 import type { Capabilities } from "../src/capabilities.ts";
 import type { ConnectResult } from "../src/client.ts";
-import { AgentController } from "../src/controller.ts";
+import { HarnessController } from "../src/controller.ts";
 
 // --- test doubles ------------------------------------------------------------
 
@@ -127,7 +127,7 @@ describe("createControllerCommands · dispatch", () => {
 
 describe("createControllerCommands · introspection", () => {
   test("controller discovery includes descriptions, structured arguments, and mode controls", () => {
-    const controller = new AgentController({
+    const controller = new HarnessController({
       adapter: { command: ["agent-acp"], ptyCommand: ["agent"] },
       adapterId: "test",
     });

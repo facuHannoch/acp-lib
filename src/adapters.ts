@@ -18,6 +18,31 @@ export interface Adapter {
 }
 
 /**
+ * A conversation on a native adapter is a channel of the Agent's own harness session, not a process of
+ * its own. The harness itself is configured once on the Agent (`AgentConfig.harness`): two native
+ * adapters differ only in channel defaults.
+ */
+export interface NativeAdapter {
+  kind: "native";
+  /** Seeds a new channel's policy when the conversation sets none. */
+  defaultPolicy?: string;
+  displayName?: string;
+}
+
+/** What an Agent's adapter directory takes. */
+export type AgentAdapter = Adapter | NativeAdapter;
+
+export function isNativeAdapter(adapter: AgentAdapter): adapter is NativeAdapter {
+  return (adapter as NativeAdapter).kind === "native";
+}
+
+/**
+ * The command a native adapter shows where an `Adapter` is expected (catalogs, display). It is never
+ * spawned for a native conversation: the controller factory selects the native controller first.
+ */
+export const NATIVE_ADAPTER_COMMAND = Object.freeze(["native-harness"]) as readonly string[];
+
+/**
  * Convenient presets. NOT exhaustive and NOT authoritative — a caller can always pass
  * a raw `{ command: [...] }`. These only encode how to start the binary; they say
  * nothing about what the agent supports.

@@ -66,9 +66,15 @@ export interface AgentConfig {
   readonly operationLifecycle?: OperationLifecycleConfig;
   readonly id?: AgentSessionId;
   readonly persistence: AgentPersistenceConfig;
-  readonly adapters: Readonly<Record<string, import("../adapters.ts").Adapter>>
+  readonly adapters: Readonly<Record<string, import("../adapters.ts").AgentAdapter>>
     | readonly AgentAdapterRegistration[];
   readonly defaultAdapterId?: string;
+  /**
+   * The Agent's own harness: one durable session, with every conversation on a native adapter
+   * (`{ kind: "native" }`) as one of its channels. Required when a native adapter is registered. The
+   * process starts on first use, not when the Agent or a conversation opens.
+   */
+  readonly harness?: AgentHarnessConfig;
   readonly identity?: AgentIdentityRuntime | CheckpointBackedIdentityConfig;
   readonly identityConsistency?: IdentityConsistency;
   readonly identityTimeoutMs?: number;
@@ -88,6 +94,27 @@ export interface AgentConfig {
    * side-effect free and stable for a given conversation; see `ConversationPersistenceResolver`.
    */
   readonly conversationPersistence?: ConversationPersistenceResolver;
+}
+
+export interface AgentHarnessConfig {
+  /** The harness configuration, sent on every open. */
+  readonly config: import("../native-harness/src/client.ts").ProtocolConfig;
+  /** The harness home, a path in the harness's environment. It must survive process restarts. */
+  readonly home: string;
+  /** How to start the harness server. Defaults to this package's harness in `serve --stdio` mode. */
+  readonly command?: readonly string[];
+  /** Defaults to `conversationDefaults.launcher`. */
+  readonly launcher?: import("../launcher.ts").AcpLauncher;
+  readonly env?: Record<string, string>;
+  readonly cwd?: string;
+  /** Pending channel changes and unresolved submissions. In memory by default; see `createFileHostRecords`. */
+  readonly records?: import("../native/records.ts").NativeHostRecords;
+  /** `final`: complete assistant messages only (default). `stream`: text deltas too. */
+  readonly text?: "final" | "stream";
+  readonly startupTimeoutMs?: number;
+  readonly requestTimeoutMs?: number;
+  readonly restart?: { readonly limit: number; readonly windowMs: number };
+  readonly onChannelChangeBlocked?: (result: import("../native-harness/src/client.ts").ChannelChangeResult) => void;
 }
 
 export interface CreateAgentConversationConfig {

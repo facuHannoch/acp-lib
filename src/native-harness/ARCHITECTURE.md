@@ -1,13 +1,12 @@
 # Native harness architecture
 
-The [architecture documentation](.res/architecture/README.md) maps the current
-implementation and the proposed persistence increments. This document remains
-the target layout and dependency guide; proposals in that documentation are not
-implemented guarantees.
+The [detailed architecture](.res/architecture/README.md) maps the current
+implementation. This document defines the target layout and dependency
+boundaries. The [work index](.res/docs/WORK.md) tracks proposed and reviewed work.
 
-Status: target architecture, implemented incrementally. An agent with durable
-sessions (memory or SQLite), terminal clients and a tool loop exists; current
-behavior is described in [README.md](README.md).
+Status: implemented incrementally. The harness runs sessions in memory or uses
+SQLite for durable sessions. See the [package README](README.md) for commands
+and public behavior.
 Existing modules follow the grouped layout below; future folders are created
 only as their implementation begins.
 An experimental protocol subset and typed client now reuse the same
@@ -36,15 +35,18 @@ A session is one agent entity: configuration, system prompt, policies, timeline,
 shared state and channels. Two sessions are separate entities. One process opens
 and locks one session; its channels can run concurrently.
 
-A channel is one conversation with a derived context view and its own inbox. Each channel is a
-sequential actor. The inner loop calls the model, executes requested tools and
-appends their results until the model answers without tools and no notices remain.
-Explicit notices are accepted into a busy turn's inbox or start a new turn when
-the channel is idle or has closed admission. The final inbox check and admission
-close are synchronous; notices are drained before inference after any tool results.
-Ordinary shared events alone do not trigger continuation. The outer loop
-starts turns on inbox events, including messages and consumer-supplied events. Steering
-items join a running turn at its next context-building boundary.
+A channel is one conversation with a derived context view and its own inbox.
+The inner loop calls the model, executes requested tools, and appends paired
+results. An eligible input or explicit notice starts a turn on an idle channel
+or steers its running turn at the next inference boundary. The pending-input
+check and turn completion occur in one storage transaction. Ordinary shared
+events become visible when context is next built. The channel's eligibility
+depends on session and channel lifecycle.
+
+The host owns the process and transport. The harness owns channel state and
+turn execution, which can continue without a participant observing the channel.
+The [operator controls proposal](.res/docs/operator-controls/0001-DESIGN/SPEC.md)
+extends this boundary with attach-only and reattachment behavior.
 
 The turn state machine is pure:
 `idle → building → calling → running_tools → building → … → idle`, with an
@@ -151,7 +153,7 @@ src/native-harness/
     interfaces/
       cli/               main.ts and CLI commands
       protocol/          JSON-RPC server/client and transports
-      client.ts          HarnessClient, transports, pure describe(config)
+    client.ts            public HarnessClient and transport exports
     testing/             scripted client, golden helpers, conformance suites
   test/                  unit tests, scenarios, golden requests
 ```
@@ -196,21 +198,21 @@ prompt; the harness handles those through its ordinary tool and event contracts.
 
 ## Hosts, storage and verification
 
-The harness owns its model calls, tools, credentials and storage. It runs standalone
-or as `harness serve --stdio`, using its own versioned JSON-RPC protocol. Hosts use
-the same API through stdio or in-process transports; configured host functions
-and history sources can cross the process boundary as host callbacks.
+The harness owns model execution, tool dispatch, and storage. Providers resolve
+credentials at runtime through configured environment references. Hosts use the
+public client through stdio or in-process transports. The acp-client host and
+controller are implemented on the integration review branch. Configured host
+functions are a [proposed extension](.res/docs/tools-and-callbacks/0001-DESIGN/SPEC.md).
 
-Durable sessions use SQLite through `bun:sqlite`; the memory adapter shares the
-same lifecycle rules. Logical archive version 4 carries model-call summaries and
-script reservations inside session-file envelope version 1. Export/import moves
-the session and its saved configuration.
+Durable sessions use SQLite through `bun:sqlite`. The memory adapter shares the
+same lifecycle rules and lasts for the process. Logical archive version 4
+carries model-call summaries and script reservations inside session-file
+envelope version 1. Export/import copies the session and portable configuration.
 Continuous backup and waking stopped processes for background work are deferred.
 
-Offline scripted scenarios verify turns, steering, interruption, limits and
-compaction. Conformance suites check each adapter. Golden files check neutral
-requests and provider JSON. Live model evals are separate and opt-in; tests need
-no provider credentials. Both transports must pass the same scenarios.
+Offline scripted scenarios verify turns, steering, interruption, deadlines, and
+recovery. Storage conformance exercises both adapters. Protocol tests exercise
+in-process and stdio transports. Live model evaluations are separate and opt-in.
 
 Build working behavior incrementally rather than completing modules one by one.
 Each increment introduces only the contracts and implementations it needs, with

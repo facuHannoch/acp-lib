@@ -947,6 +947,58 @@ All non-deleted conversations are shared in v1, including conversations with dif
 users, so consumers should enable this only where such cross-conversation visibility is
 appropriate. A custom `AgentIdentityRuntime` remains available for other policies.
 
+## Native harness conversations (experimental)
+
+An Agent can run conversations on its own harness instead of an external ACP
+agent. This is opt-in and experimental: it currently runs the scripted harness
+used for offline development, and existing ACP conversations are unaffected.
+
+```ts
+const agent = await Agent.open({
+  persistence: { kind: "sqlite", path: "./agent.sqlite" },
+  adapters: { main: { kind: "native" }, codex: ADAPTERS.codex },
+  defaultAdapterId: "main",
+  harness: {
+    home: "./harness-home",          // must survive process restarts
+    config: { version: 1, system: "...", model: { protocol: "scripted", script: "./script.json" },
+      defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } } },
+  },
+});
+const conversation = await agent.conversations.create({ title: "Alice" });
+const result = await conversation.prompt("hello", { onPermissionRequest: (request) => ({ outcome: "selected", optionId: "allow_once" }) });
+```
+
+- **One Agent is one harness session; one conversation is one channel.** All
+  native conversations of an Agent talk to the same agent and share one process.
+  `conversation.internalSessionId` is the Agent's id for each of them.
+- **The process starts on first use,** not when the Agent or a conversation
+  opens. Concurrent first prompts share one start. It stops with `agent.close()`.
+  `agent.nativeHarness` exposes its `state`, `status()`, `restart()` and `stop()`.
+- **The harness schedules turns.** A prompt resolves with the turn that took its
+  message. A `delivery: "steer"` message sent while a turn runs is accepted at
+  once and taken by that turn at its next model call; both prompts then resolve
+  with the same `operationId`.
+- **Approvals** for tools a policy marks `ask` reach the `onPermissionRequest`
+  handler of the first message the turn took, with `allow_once` and `deny`
+  options. Without a handler the session's `defaultPermission` applies.
+- **Interrupting** (`conversation.interrupt()`, or `connection.forceStop()`)
+  ends that conversation's turn only. Other conversations and the shared
+  process keep running, and the interrupted conversation accepts new input.
+- **Channel changes** go through `agent.nativeHarness.changeChannel(conversationId,
+  { displayName, policy, lifecycle })`. While the harness is stopped they are
+  stored (they never start it) and applied by the next start before any pending
+  work can run. Creating a conversation with a title, and deleting one, record
+  the channel's name and retirement the same way.
+- **After a harness crash** the host reopens the session, restores committed
+  replies it missed, settles interrupted turns as failed, and keeps accepted
+  input pending. Interrupted tool calls are never replayed.
+
+Not available on a native conversation yet: `startFresh` and anything that
+needs a fresh context (`conversationCapabilities.freshContext` is `false`),
+handoff, modes, config options, session listing, adoption, usage metering
+(records report usage as unavailable), and a user-message record for prompts.
+`PromptResult.endedBy` is not reported.
+
 ## Legacy direct and managed sessions
 
 The remaining sections describe the compatibility `AgentSession` and

@@ -1,6 +1,6 @@
 import { OperationSupervisor } from "../../operations/supervisor.ts";
 import type { OutputListener } from "../../operations/contracts.ts";
-import { AgentController, type AgentControllerConfig } from "../../controller.ts";
+import { HarnessController, type AgentControllerConfig } from "../../controller.ts";
 import type { PromptResult } from "../../types.ts";
 import type {
   InternalInferenceRequest,
@@ -11,7 +11,7 @@ import type {
 
 export interface HarnessInternalInferenceRuntimeConfig {
   controllerConfig(request: InternalInferenceRequest): AgentControllerConfig;
-  /** Test/custom seam; production defaults to AgentController. */
+  /** Test/custom seam; production defaults to HarnessController. */
   createController?(config: AgentControllerConfig): InternalInferenceController;
 }
 
@@ -45,7 +45,7 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
       clientHandlers: {},
     };
     const controller = this.config.createController?.(controllerConfig)
-      ?? new AgentController(controllerConfig);
+      ?? new HarnessController(controllerConfig);
     let supervisor: OperationSupervisor | undefined;
     const abort = () => supervisor ? supervisor.cancel("abort") : controller.interrupt();
     signal?.addEventListener("abort", abort, { once: true });

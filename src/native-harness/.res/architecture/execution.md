@@ -1,64 +1,42 @@
 # Execution
 
-Status: current implementation, 2026-11-16.
+## Admission and scheduling
 
-## Accepting and scheduling input
+Messages and channel notices enter a committed inbox before acknowledgment.
+A channel takes pending items before its next inference, or starts a turn if
+it is idle. Several inputs can share one turn and its outcome. Scheduling is
+serial within one channel and concurrent across channels.
 
-`createChannelScheduler` in `src/kernel/channels.ts` assigns a session-local turn
-ID and immediately appends attributed input to the shared store. A promise chain
-queues execution for that channel. Other channels have independent chains, so
-several turns can run concurrently.
+In the development scenario, `notify_channel` submits an attributed internal
+notice to an existing target channel. It can steer a running turn or wake an
+idle channel. Ordinary shared timeline entries become visible at the next
+inference without starting work. The pending-input check and the transaction
+that finishes a turn determine whether a racing input extends that turn or
+starts the next one.
 
-An accepted input can already appear in shared history while its turn is queued.
-Timeline order records append order; it does not serialize inference or tool
-execution across channels. A later append cannot change a request already sent
-to the model.
+## Inference and tool execution
 
-## Inner loop
+Each iteration checks for suspension, takes eligible input, renders context,
+and asks the model for a response. The model runner owns attempts and usage.
+Its ordinary 120-second deadline includes streaming, any retry delay, and one
+eligible retry. The retry window closes when the runner accepts the first
+nonempty text delta for publication or commits a response. Draft text can be
+delivered as deltas or buffered for clients that want complete messages.
 
-`runTurn` in `src/kernel/loop.ts` repeats:
+The assistant response commits before tool dispatch. Tool calls run in order
+within an iteration. The permission gate evaluates the policies contributing
+to the turn, handles approval when required, and records dispatch evidence
+before an executor can have an external effect. A result is paired with the
+model's call ID. Approval waits and model deadlines are separate. Tool
+approval identifiers and one-time grants are scoped to the live service.
 
-1. Drain pending explicit notices into the active turn's stored history.
-2. Build context from a fresh shared-store snapshot and call the model.
-3. Append the assistant response and publish any assistant text.
-4. Execute requested tools sequentially within this iteration, recording results.
-5. Continue after tools. With no tool calls, end only if no notices remain.
+When no tool calls or pending inbox items require another iteration, the turn
+finishes. A failed or interrupted turn leaves the channel usable. The harness
+fences late results from an interrupted turn. Recorded dispatch without a
+committed result is reported as uncertain and is never automatically replayed.
 
-The final notice check and closing of admission are synchronous. A notice that
-arrives after admission closes queues a new turn, even if the previous turn's
-promise has not settled yet. There is no fixed notice-pass limit or tool-call
-limit in this prototype.
-
-Ordinary activity in other channels does not keep a turn alive. Explicit notices
-do. The next inference includes fresh shared activity, but there is no automatic
-revalidation of a final answer or proposed side effect against newer events.
-
-## Notices
-
-`agent.notify` validates the target channel, rejects unknown or failed channels,
-and either places a notice in an active accepting inbox or queues a notice-driven
-turn. It acknowledges acceptance without awaiting the target's answer. This
-avoids two concurrent turns waiting for one another through notifications.
-
-Notices retain source-channel attribution and are not human messages. Their
-current model rendering uses the API's user role with explicit internal-notice
-text. This role is a rendering choice, not participant identity or authority.
-
-Busy-channel notices are stored only when drained; before that they exist solely
-in the scheduler's array. Idle-channel notices are stored by the enqueue path.
-Both paths currently lose everything on process exit.
-
-## Output and failures
-
-The loop emits completed assistant text independently of turn completion. A
-notice can extend a turn after an answer has already been published. The scheduler
-emits turn lifecycle events; interface adapters subscribe outside the kernel.
-
-A thrown model/tool failure stops that channel for the process lifetime. Queued
-turns on that channel fail explicitly; other channels continue. The prototype
-does not replay failed tools or reconcile external effects. Restart currently
-clears the failure along with all history.
-
-These facts matter for persistence: turn IDs and failure state cannot simply
-reset while old history remains, and an unanswered tool call must not be
-automatically executed again after a crash.
+See [model execution](../docs/model-execution/0001-DESIGN/SPEC.md) for attempts,
+delivery, and usage, and [configuration and permissions](../docs/11-19-config-permissions/SPEC.md)
+for policy composition and approval. The [callbacks proposal](../docs/tools-and-callbacks/0001-DESIGN/SPEC.md)
+extends this dispatch path with host functions, invocation status, and scoped
+result references.
