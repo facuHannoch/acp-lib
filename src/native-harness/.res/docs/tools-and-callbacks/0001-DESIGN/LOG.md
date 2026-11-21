@@ -1,9 +1,9 @@
 # Tools and host callbacks: work log
 
 Branch: `tools-and-callbacks`.
-Base: `c17d525` on `acp-client-integration`. That revision was still in review
-when this work started; the owner approved proceeding on it. If review changes
-the base, this branch needs a rebase and a rerun of everything below.
+Base: the work started on `c17d525` of `acp-client-integration`, before its
+review finished. The reviewed and approved revision `b9a96b8` was merged in
+afterwards at `c4f11be`; see the last entry.
 
 Baseline at the base: harness typecheck clean and 298 tests passing; acp-client
 typecheck clean and 1390 tests passing.
@@ -251,3 +251,28 @@ For the reviewer, in order of weight:
 
 Not done: independent review of each gate, which the plan requires before
 closure, and the retrospective that follows it.
+
+## Merge of the accepted base
+
+Commit `c4f11be` merges `acp-client-integration` at `b9a96b8`. That brings the
+startup-deadline fix `7133c5c` and the recorded approval of Gates 1–3 of the
+integration (behavior revision `7133c5c`). Item 1 of the reviewer list above
+no longer applies: the base is accepted.
+
+One conflict, in `src/native/host.ts` (`#loadOrCreate`). Both sides were kept:
+the deadline checks from the fix and the tool catalog sent on open.
+
+Verification at `c4f11be`:
+
+- acp-client: typecheck clean; `bun test ./test` 1402 tests in 131 files,
+  1401 pass. The one failure, a 5 s timeout in
+  `test/persistence-file-registry-store.test.ts`, passed when rerun alone
+  (7 of 7). `bun test ./test/native` alone: 67 of 67, including the
+  late-connection regression from the fix and the tools checkpoint.
+- Harness: typecheck clean; 324 of 324.
+
+Gap: the startup deadline is not tested together with host functions. The
+function handlers are registered before `initialize`, so a connection that is
+killed for arriving late has served nothing.
+
+Still not done: independent review of the tools and callbacks gates.
