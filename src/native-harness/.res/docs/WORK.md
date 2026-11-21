@@ -15,19 +15,21 @@ amendment is proposed.
 | [Configuration and permissions](11-19-config-permissions/SPEC.md) | Accepted | Behavior approved at `626783e`, with closure at `28c6faf` on `aiagent/cod1a-config-permissions`. |
 | [Model execution](model-execution/0001-DESIGN/SPEC.md) | Accepted | Behavior approved at `02c96de`, with closure at `49f2974` on `aiagent/cod1a-model-execution`. |
 | [acp-client integration contract](acp-client-integration/0001-DESIGN/SPEC.md) | Implemented, awaiting review | First scripted stdio checkpoint implemented on `acp-client-integration`; gates, evidence, gaps and drift are in the [log](acp-client-integration/0001-DESIGN/11-20-LOG.md). Next: independent review of each gate. |
+| [Operator and consumer controls](operator-controls/0001-DESIGN/SPEC.md) | Spec and plan drafted | Review the [implementation plan](operator-controls/0001-DESIGN/PLAN.md) before handoff. |
+| [Long-running mock mode](long-running-mock/0001-DESIGN/SPEC.md) | Spec and plan drafted | Review the [implementation plan](long-running-mock/0001-DESIGN/PLAN.md), including the final driven rehearsal. |
 
 ## Priorities
 
 First, give acp-client a harness it can develop and test against offline:
 
 1. Define the acp-client integration contract.
-2. Define configurable tools and host callbacks, starting with
-   consumer-registered tools.
-3. Define operator and consumer controls for config, capabilities, status,
-   usage, and lifecycle.
-4. Define long-running mock agent mode. Use deterministic scripted scenarios
-   for CI and real-time runs that can last minutes or hours. Use synthetic
-   fixtures informed by real timing and event patterns.
+2. Define [configurable tools and host callbacks](tools-and-callbacks/0001-DESIGN/SPEC.md),
+   starting with consumer-registered tools. Review the
+   [implementation plan](tools-and-callbacks/0001-DESIGN/PLAN.md).
+3. Review the [operator and consumer controls spec](operator-controls/0001-DESIGN/SPEC.md)
+   and [implementation plan](operator-controls/0001-DESIGN/PLAN.md).
+4. Review the [long-running mock mode spec](long-running-mock/0001-DESIGN/SPEC.md)
+   and [implementation plan](long-running-mock/0001-DESIGN/PLAN.md).
 
 The integration checkpoint is a real stdio run from acp-client with two
 conversations on one session, a host tool callback, an approval, interruption

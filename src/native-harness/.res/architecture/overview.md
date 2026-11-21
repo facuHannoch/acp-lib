@@ -1,64 +1,44 @@
 # Overview
 
-Status: current implementation, 2026-11-16.
-
-## The entity
-
-One session represents one agent with a configured system prompt, model/tools,
-shared history and multiple channels. Channels preserve participant attribution
-and run independently. Each channel runs one turn at a time; different channels
-can await inference or tools concurrently.
-
-The harness provides execution and configurable capabilities. Coding workers
-and their orchestration belong to the consumer, initially acp-client. Configured
-tools can expose those capabilities without making them built-in harness concepts.
-Policy configuration is part of the target design; the current prototype does
-not implement the full policy or permission system.
-
-## Composition and entry points
-
-`src/index.ts` exposes `createSession(options)`. It assembles the store, context
-builder, scheduler and inner loop. It starts no listener, reads no input and
-requires no provider key itself. The host supplies per-turn model and tool
-services and can supply a store and observation wrapper.
-
-| Entry point | Current role |
-| --- | --- |
-| `bun run start` | Development assembly: OpenRouter, scenario tools, Unix socket, inspector and LAN web chat |
-| `bun run chat <channelId> <participantId>` | Terminal client of the development server |
-| `src/client.ts` | Typed client with in-process and stdio transports |
-| `src/testing.ts` | Scripted server assembly and in-process test client |
-| `bun run serve --stdio` | Scripted experimental JSON-RPC server over newline-delimited JSON |
-
-The development socket protocol and experimental JSON-RPC protocol are distinct
-adapters. They share session execution, but are not interchangeable wire formats.
-The stdio subset currently supports initialize, session/create, channel/push and
-session/idle. It makes no real inference calls and has no load/resume operation.
+A native harness session represents one agent with a shared identity, system
+prompt, configuration, and timeline. The harness owns its channels. Each
+channel has its own inputs, participants, policy, and turns. At most one turn
+executes at a time on a channel. Different channels can await models and tools
+concurrently.
 
 ## Ownership
 
-| Part | Owns |
+| Component | What it owns |
 | --- | --- |
-| Contracts | Neutral messages, model/tool interfaces, session and transport interfaces |
-| Kernel | Per-channel scheduling, active inboxes and inference/tool iteration |
-| Context capability | Rendering stored experience into inference messages |
-| Model capability | Provider translation or scripted model behavior |
-| Tool capabilities | Tool definitions and implementations |
-| State/storage | The shared append-only conversation store, currently in memory |
-| Interfaces | Protocol validation, clients, output subscriptions and inspection |
-| Entry points | Configuration and assembly of implementations |
+| Harness session | Configuration, approval handling, shared timeline, session lifecycle, and storage ownership |
+| Channel scheduler | Admission, turn scheduling, and channel lifecycle |
+| Turn | Inferences and tool invocations, with their results attributed to the turn and channel |
+| Model adapter | Translating neutral requests and provider responses |
+| Consumer host | Process launch, transport, conversation-to-channel mapping, and application records |
+| Client attachment | Observing a channel and delivering its updates to a participant |
 
-The kernel imports contracts only. Features communicate through contracts;
-composition at entry points connects implementations. No harness module imports
-acp-client code. The package must remain independently extractable.
+A turn can run without anyone observing its channel. A participant closing a
+development chat subscription leaves accepted work in the harness. On the
+integration branch, native controller shutdown currently requests a targeted
+interrupt before detaching. The [operator controls proposal](../docs/operator-controls/0001-DESIGN/SPEC.md)
+defines attachment disposal independently of channel and agent controls.
 
-## What survives today
+The host can provide policy and respond to approvals. Consumer-registered
+tool callbacks are [proposed](../docs/tools-and-callbacks/0001-DESIGN/SPEC.md).
+Coding workers and their orchestration belong to the consumer.
 
-Channels and their work survive a client disconnect while the process remains
-alive. Nothing survives a process restart. History, queues, counters, pending
-notices and protocol deduplication are all in memory. Tool-owned state, such as
-the dashboard scenario counter, is also in memory and separate from history.
+## Entry points
 
-The stdio server drains accepted work at EOF within a five-second deadline.
-Expiry exits with an error; it does not create a persisted suspension checkpoint.
-SQLite and restart semantics are proposed in [Persistence](persistence.md).
+Paths are relative to the harness package.
+
+| Entry point | Role |
+| --- | --- |
+| [`src/index.ts`](../../src/index.ts) | Assemble a session with its configured services and storage |
+| [`src/client.ts`](../../src/client.ts) | Typed public client and in-process and stdio transports |
+| [`src/testing.ts`](../../src/testing.ts) | Scripted model helpers for offline tests |
+| `bun run serve --stdio` | Newline-delimited JSON-RPC endpoint. Use `--home` for managed SQLite sessions. |
+| `bun run start` and `bun run chat` | Development runtime and terminal chat over Unix-socket HTTP, with an inspector and optional web chat |
+
+Development HTTP and stdio are separate interfaces over the same session
+assembly. The stdio host launches the child and holds the connection. See the
+[package README](../../README.md) for commands and supported operations.

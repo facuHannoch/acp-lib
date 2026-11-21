@@ -6,27 +6,18 @@ is intended to become a separate package: it must not import acp-client modules.
 
 ## Current state
 
-An agent with durable sessions, terminal clients and a tool loop is
-implemented. A session can live in memory or in a SQLite file, survive restarts
-and crashes, be suspended and resumed, and be exported and imported. A separate agent process accepts messages over HTTP on a Unix socket.
-All channels share one session timeline held by a storage adapter. Each channel
-runs one turn at a time; different channels execute concurrently. It uses OpenRouter native tool calls and includes one harmless
-`current_time`, `dashboard_work` and `notify_channel` tools. An experimental
-client/protocol subset is implemented over in-process and stdio transports.
-Experiments live in [.res/sandbox/](.res/sandbox/).
+The harness runs one agent session with a shared timeline and concurrent
+channels. Each channel runs one turn at a time. Use memory for a temporary
+session or SQLite for durable receipt, restart recovery, and session files.
+The public client supports stdio and in-process transports. Development chat
+uses HTTP over a Unix socket and has a separate inspector.
 
-We are starting with a small, hands-on learning milestone before delegating the
-broader implementation:
-
-1. Send a message to a model and keep one conversation's history in memory.
-2. Add one harmless tool and run the inner loop: model call, tool execution,
-   matching tool result, next model call, until the model answers without tools.
-3. Show requests, tool calls, results and stop reasons; enforce a call limit.
-4. Reproduce the behavior offline with a scripted model before expanding it.
-
-This milestone is a slice of the design, not completion of v1 part 1. Richer
-sessions, participant policies, persistence, MCP and the
-host protocol remain to be built. Coding-worker integration belongs to acp-client.
+The current harness supports channel and session controls, managed
+configuration, tool policies and approvals, and streamed model calls with
+recorded attempts and usage. Models can use OpenRouter or an offline script.
+The [detailed architecture](.res/architecture/README.md) explains how these
+parts fit together. The [work index](.res/docs/WORK.md) tracks remaining v1
+work. Experiments live in [.res/sandbox/](.res/sandbox/).
 
 ## Development
 
@@ -55,7 +46,8 @@ bun run suspend                            # pause cleanly; waits for running to
 bun run resume                             # continue a suspended session
 ```
 
-Opening a database restores its timeline and never continues work by itself.
+Opening a database restores its timeline. The development command starts
+eligible work when the session is running and preserves a committed suspension.
 Turns a previous process left unfinished are marked interrupted and are not
 retried; input that was accepted but never taken runs. A suspended session
 stays paused, and refuses new messages, until `bun run resume` or `--resume`.
@@ -590,8 +582,9 @@ local IPC permissions in sandboxed environments. All scenarios are offline.
 
 ## acp-client integration
 
-acp-client hosts this harness as one process per Agent, with each native
-conversation as a channel of one durable session. The host and its controller
+On the `acp-client-integration` review branch, acp-client hosts one harness
+process per agent, with each native conversation as a channel of one durable
+session. The host and its controller
 live in acp-client's `src/native/` and use only `src/client.ts` (the typed
 client and stdio transport) and the `serve --stdio` command; they import no
 harness internals. The contract is the
