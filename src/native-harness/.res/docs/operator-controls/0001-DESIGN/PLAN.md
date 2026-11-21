@@ -22,12 +22,13 @@ in a harness decision before implementation builds on them.
 | Area | Existing code | Work |
 | --- | --- | --- |
 | Harness lifecycle | `src/native-harness/src/kernel/channels.ts` and `src/native-harness/src/state/storage/` | Reuse admission, suspend, resume, stop, interrupt, and recovery. If phase information is missing, expose it from the execution boundary that owns it. Use the existing records for durable outcomes. |
+| Harness built-in notices | `src/native-harness/src/capabilities/tools/`, session composition in `src/native-harness/src/index.ts`, and the scripted server in `src/native-harness/src/testing.ts` | Promote the existing `notify_channel` to the default tool composition. Reuse the current notice handling and permission gate, reserve the name, and remove duplicate development registration. Exercise the ordinary session path over scripted stdio. |
 | Harness storage reads | `src/native-harness/src/contracts/storage.ts` and `src/native-harness/src/state/storage/` | Add bounded, indexed sequence-range reads for conversation and timeline pages. Add focused reads for current channel state and tracked input or turn IDs. Give memory and SQLite the same read contract. |
-| Harness public protocol | `src/native-harness/src/contracts/protocol.ts`, `src/native-harness/src/interfaces/protocol/`, and public `src/native-harness/src/client.ts` | Replace the full-load and forward-replay endpoints with the open, observe, reconcile, conversation, and timeline operations in the spec. Keep the lifecycle and model-call methods. Keep cursor validation and frame budgeting at the protocol boundary. |
-| acp-client host | `src/native/host.ts` | Own the shared connection and child lifecycle. Compose agent controls from existing harness requests. Route channel operations through the existing host path and keep status and interrupt available while suspend waits. Route harness-owned approvals to authorized responders independently of channel attachments. |
+| Harness public protocol | `src/native-harness/src/contracts/protocol.ts`, `src/native-harness/src/interfaces/protocol/`, and public `src/native-harness/src/client.ts` | Replace full load and forward replay with the operations in the spec. Expose pending approvals from the existing harness approval service through `channel/observe`. Keep the lifecycle, model-call, and approval response methods. Validate cursors and enforce frame budgets at the protocol boundary. |
+| acp-client host | `src/native/host.ts` | Own the shared connection and child lifecycle. Compose agent controls from existing harness requests. Keep status and interrupt available while suspend waits. Route approval events to the configured application responder before conversation delivery. The responder remains available across detach. |
 | acp-client recovery | Extract from `src/native/host.ts` into one focused module under `src/native/` | Share channel observation, targeted reads, and snapshot/live reconciliation between process reopen and channel reattachment. Keep startup channel changes and submission retry orchestration with the host. Keep application submission records in `src/native/records.ts`. |
 | acp-client history | Existing transcript pagination in `src/persistence/transcript-reader.ts` and the native adapter under `src/native/` | Retain consumer-facing cursor pagination. Resolve the conversation ID to a channel ID. Support explicitly requested backward history and forward catch-up. Persist the catch-up position with committed messages, and skip harness history reads when the consumer does not request them. |
-| acp-client controller | `src/native/controller.ts` | Own the conversation attachment and adapt harness turns to the existing supervisor. Add attachment disposal separately from interrupt-and-detach `stop()`. Await the targeted interrupt outcome for confirmed stop. Reconcile live agent-started turns even when there is no local submission record. |
+| acp-client controller | `src/native/controller.ts` | Own the conversation attachment and adapt harness turns to the existing supervisor. Add attachment disposal separately from interrupt-and-detach `stop()`. Await targeted interruption for confirmed stop. Reconcile live agent-started turns without requiring a submission record. Use the existing conversation approval handler when no host responder is configured. |
 | Shared controller | `src/conversation-controller/` | Keep the common start and stop contract and use the capability surface for attach-only where supported. If Restart is exposed, compose stop then start once at the shared call site. Keep native protocol types inside `src/native/`. |
 
 The harness reports channel lifecycle, running turns, and execution phase.
@@ -47,18 +48,19 @@ startup loop that exhausts every message page on the new open path.
 
 | Gate | Work and evidence |
 | --- | --- |
-| **1. Contract** | Pin the reviewed base. Encode the replacement operations from the spec. Define their types, bounds, cursor validation, live message positions, and commit ordering. Confirm command completion, approval routing, status ownership, and blocking-tool observation. Typecheck contract changes. |
-| **2. Harness control and observation** | Reuse lifecycle methods and implement focused reads in both adapters. Verify open, attachment, targeted lookups, and pages avoid full history reads. Verify oversized events advance the cursor. Check responsive status and interruption during suspend, stale interrupts, and independent channel suspension. Exercise both transports. |
-| **3. acp-client host and controller** | Switch startup to the replacement protocol. Add host controls, approval routing, and attachment disposal. Share reopen and reattach recovery. Verify confirmed stop before shared Restart, authorization while detached, idempotent reattachment, and recovery of live agent-started turns. Exercise both transcript sources, targeted recovery with history disabled, and explicit forward catch-up with live overlap. Run shared controller conformance. |
+| **1. Contract** | Pin the reviewed base. Define the replacement operation types, bounds, cursors, message positions, and commit ordering. Record the storage contract decision. Define the optional host responder, its single answer path, fallback to the conversation handler, and how views learn a pending request closed. Confirm command completion, status ownership, and blocking-tool observation. Typecheck the contracts. |
+| **2. Harness control and observation** | Implement focused reads in both adapters under shared conformance. Verify SQLite uses indexed ranges and the public reads avoid full history snapshots. Expose live pending approvals in `channel/observe` under their existing deadlines and cancellation rules. Compose and test the default notice tool. Check oversized events, status and interrupt during suspend, stale interrupts, and independent channel suspension. Exercise both transports. |
+| **3. acp-client host and controller** | Switch startup to the replacement protocol. Add host controls, central approval routing, and attachment disposal. Verify host responder ownership, legacy handler fallback, and pending request reconciliation by ID. Share reopen and reattach recovery. Verify confirmed stop before Restart, idempotent reattachment, and recovery of live agent-started turns. Exercise both transcript sources, targeted recovery, forward catch-up, and controller conformance. |
 | **4. Public stdio checkpoint** | Extend `test/native/checkpoint.test.ts` and run the scenarios below through acp-client with a real scripted harness child. Check config validation, negotiated capabilities, and partial usage. Run both packages' typechecks and test suites. Update architecture and usage docs for the accepted behavior. |
 
 ## End-to-end acceptance
 
-1. Detach Alice while her turn runs and let it finish. Trigger another turn
-   on her active channel with no attachment. Reattach and request the newest
-   page. Recover each committed reply once and receive later events. Bob's work
-   and subscription continue throughout. Exercise an event arriving during
-   reattachment.
+1. Detach Alice while her turn runs and let it finish. Have Bob's scripted
+   model call the built-in `notify_channel` to wake Alice's active channel.
+   Wait for the notice-driven reply to commit before reattaching. Request the
+   newest page, recover each committed reply once, and receive later events.
+   Bob's work and subscription continue throughout. Exercise an event
+   arriving during reattachment.
 2. Suspend a session during a controlled host callback. Observe the blocking
    invocation, let it settle, and wait for the committed suspension. Replace
    the child, reload the same session, and explicitly resume. Verify the
@@ -76,10 +78,13 @@ startup loop that exhausts every message page on the new open path.
    stable cursors. Verify tool records stay outside the conversation count and
    remain available in the independently paged timeline. Verify SQLite serves
    page reads through a bounded range query without materializing the timeline.
-5. Detach the last observer from a pending approval and exercise a new request
-   made with nobody attached. Verify an authorized responder can reattach
-   and answer before expiry. Verify an unauthorized observer cannot answer
-   and that expiry and approval connection loss retain their existing effects.
+5. With a configured host responder, detach the last observer while an
+   approval is pending. Answer through the host and verify the tool runs once.
+   Request a separate approval with nobody attached, then reattach and recover
+   it by ID. Verify an observer without authority cannot answer, expiry or
+   connection loss closes the request, and a late or duplicate answer cannot
+   dispatch the tool. Run the same approval path with no host responder and
+   verify the existing conversation handler still answers.
 6. Verify shared Restart waits for confirmed interruption and leaves the next
    turn untouched. Lose the connection before confirmation and verify shared
    Restart reports the unconfirmed stop and does not start the conversation.
@@ -89,8 +94,7 @@ startup loop that exhausts every message page on the new open path.
 
 Use scripted inference and controlled barriers. Put focused harness checks in
 the harness test suite and host, attachment, and controller checks in
-`test/native/`. Use a fixture for unattended input if the scripted endpoint
-needs one. Run `bun run typecheck` in both packages, `bun test ./test/native`
+`test/native/`. Run `bun run typecheck` in both packages, `bun test ./test/native`
 from the repository root for the focused integration gate, and `bun test ./test`
 from both packages for the final gate.
 

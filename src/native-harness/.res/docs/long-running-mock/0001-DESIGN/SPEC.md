@@ -102,7 +102,8 @@ file-driven control commands can follow later.
 
 ## Tools and notices
 
-`notify_channel` is a harness-owned tool supplied by default in each session.
+Reuse the default `notify_channel` built-in from
+[operator controls](../../operator-controls/0001-DESIGN/SPEC.md).
 The harness provides its definition and handler through normal session
 composition and reserves the name against consumer registration. It derives
 the source channel and turn from the invocation and uses the existing
