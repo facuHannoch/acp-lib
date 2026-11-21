@@ -116,6 +116,18 @@ describe("starting", () => {
     expect(host.state).toBe("running");
   });
 
+  test("a connection returned after the startup deadline is killed before initialize", async () => {
+    let resolveConnection!: (connection: NativeConnection) => void;
+    const pending = new Promise<NativeConnection>(resolve => { resolveConnection = resolve; });
+    const host = new NativeHarnessHost({ sessionId: "late", home: tmpdir(), startupTimeoutMs: 20, connect: () => pending });
+    let initialized = 0, killed = 0;
+    const client = { async initialize() { initialized++; throw new Error("unexpected initialize"); }, onChannelEvent() {} } as unknown as HarnessClient;
+    await expect(host.ensureStarted()).rejects.toBeInstanceOf(HarnessUnavailableError);
+    resolveConnection({ client, closed: new Promise(() => {}), async kill() { killed++; } });
+    await tick();
+    expect({ initialized, killed, state: host.state }).toEqual({ initialized: 0, killed: 1, state: "stopped" });
+  });
+
   test("a harness without a required capability is refused before any session is opened", async () => {
     const { host, intercept, calls } = await rig();
     intercept.initialize = async (real, ...args) => {

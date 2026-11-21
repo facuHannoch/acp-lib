@@ -240,16 +240,25 @@ export class NativeHarnessHost {
     this.#setState("starting");
     let connection: NativeConnection | undefined;
     const limit = this.#config.startupTimeoutMs ?? 30_000;
+    const deadline = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const opening = (async () => {
         connection = await (this.#config.connect ?? (() => this.#launch()))();
         this.launches += 1;
-        await this.#open(connection);
+        if (deadline.signal.aborted) {
+          await connection.kill();
+          return;
+        }
+        await this.#open(connection, deadline.signal);
       })();
       opening.catch(() => undefined);
       await Promise.race([opening, new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new HarnessUnavailableError(`the native harness did not open within ${limit} ms`)), limit);
+        timer = setTimeout(() => {
+          const error = new HarnessUnavailableError(`the native harness did not open within ${limit} ms`);
+          deadline.abort(error);
+          reject(error);
+        }, limit);
       })]);
     } catch (error) {
       this.#early = null;
@@ -307,7 +316,7 @@ export class NativeHarnessHost {
   }
 
   /** Handlers first, then initialize, then load (or create) with the pending channel changes; then reconcile. */
-  async #open(connection: NativeConnection): Promise<void> {
+  async #open(connection: NativeConnection, signal: AbortSignal): Promise<void> {
     const { client } = connection;
     this.#early = [];
     client.onChannelEvent((event) => this.#route(connection, event));
@@ -322,6 +331,7 @@ export class NativeHarnessHost {
       approval: true,
       subscription: { text: this.#config.text ?? "final", tools: "full" },
     });
+    signal.throwIfAborted();
     const capabilities = initialized.description.capabilities;
     const missing = REQUIRED_METHODS.filter((method) => !capabilities.methods.includes(method));
     if (!capabilities.persistence || capabilities.acceptance !== "durable") throw new HarnessIncompatibleError("the native harness does not offer durable sessions");
@@ -333,7 +343,8 @@ export class NativeHarnessHost {
     // can run. An edit made after this line is sent through the live channel methods once open.
     const cutoff = this.records.pendingChanges();
     const batch = cutoff.map(toWire);
-    const view = await this.#loadOrCreate(client, batch);
+    const view = await this.#loadOrCreate(client, batch, signal);
+    signal.throwIfAborted();
 
     this.#blockedVersions.clear();
     for (const result of view.channelChanges ?? []) {
@@ -351,6 +362,7 @@ export class NativeHarnessHost {
     let next = view.nextMessage;
     while (next !== undefined) {
       const page = await client.messages({ revision: view.status.revision, after: next });
+      signal.throwIfAborted();
       messages.push(...page.messages);
       next = page.nextMessage;
     }
@@ -404,12 +416,15 @@ export class NativeHarnessHost {
   }
   async toolInvocations(turn: string): Promise<ToolInvocation[]> { return (await this.#client().toolInvocations(turn)).invocations; }
 
-  async #loadOrCreate(client: HarnessClient, batch: PendingChannelChange[]): Promise<LoadResult> {
+  async #loadOrCreate(client: HarnessClient, batch: PendingChannelChange[], signal: AbortSignal): Promise<LoadResult> {
     const { sessionId, config } = this.#config;
     const functions = this.#functionHost();
     // The catalog and the current runtime selection go inside the open, before recovered work can start.
     const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(functions ? { tools: functions.catalog() } : {}) };
-    const load = () => client.loadSession({ sessionId, config, ...changes });
+    const load = () => {
+      signal.throwIfAborted();
+      return client.loadSession({ sessionId, config, ...changes });
+    };
     try {
       try {
         return await load();
@@ -422,6 +437,7 @@ export class NativeHarnessHost {
     } catch (error) {
       if (codeOf(error) !== "not_found") throw error;
     }
+    signal.throwIfAborted();
     await client.createSession({ sessionId, config, participants: [], channels: {}, ...changes });
     return load();
   }
