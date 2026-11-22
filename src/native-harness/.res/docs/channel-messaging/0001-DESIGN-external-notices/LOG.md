@@ -208,3 +208,40 @@ Haurness-l then pinned bounded, non-secret reasons and the partial-effects
 warning. The contract uses fixed public text from recognized terminal
 signals with explicit generic fallbacks, and tests that untrusted raw
 provider text stays out of the persisted outcome and notice.
+
+## Production repository and process-death verification
+
+Merge `56ac47a` brings in Core's reviewed causal hook at `7be9456`.
+Runtime `c21c6bf43bb7130267975b4de5cdb78565f1d8a5` binds the submitted
+message before dispatch and attaches the operation and final record in
+the worker's terminal transaction. The feasibility test update at
+`59e75545a02351ba0769d56f4d8be9a243c7d551` checks the new table is empty.
+
+The fixed reason mapping uses typed stalls, forced stops and recognized
+interrupt or steering signals. Unclassified failures use "worker failed".
+Cancellation without a recognized signal uses "worker interrupted",
+including native. Dispatch history cannot rule out effects on these
+lifecycle inputs, so the outcome records possible partial effects.
+
+Both typechecks passed. The focused gate passed 9 tests and 147
+assertions. The ACP fixture checks the indexed binding on disk at prompt
+receipt. The final and partial SIGKILL cases inspect the database before
+replacement, then recover by assignment ID using the repository with an
+undispatchable adapter. They assert one stable pending notice, the exact
+final result or uncertainty, and immutable staging even after a late
+terminal record. Live fixture failure and targeted interruption exercise
+the lifecycle commits. Folded success and failure are checked through
+the repository with separate destinations and a shared policy union.
+
+The retry check exercises repeated repository staging with identical
+payload and ID, then the receipt state transition. Actual host outbox
+flush and acknowledgement loss over the wire belong to the orchestrator
+integration gate. No live ACP provider was exercised.
+
+Full verification on runtime parent `59e7554` passed root
+`bun test ./test` (1457/0, 35 snapshots, 135 files) and harness
+`bun test ./test --timeout 30000` (360/0, 47 files), using normal local
+subprocess permissions. The initial root run exposed the original
+feasibility assertion that the assignment table must not exist; the
+corrected test checks that the table contains no rows. Independent
+implementation review is pending.
