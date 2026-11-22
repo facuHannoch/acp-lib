@@ -74,3 +74,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   (R1 doesn't touch them again); `src/native/*`, `conversation-manager.ts`, `agent-session.ts`, `client.ts` and
   `src/permissions/` stay R1–R3's. Worker delivery merges into alpha after R1; orchestrator O1 builds on that
   repository instead of a second assignments store.
+- Cod1a asked for a per-prompt `beforeDispatch?: (operationId) => Promise<void>` hook (for the worker binding
+  write before dispatch). Kept one writer: cod2a adds it on `native-integration-r` before step 3, in its own commit.
+  Awaited after the durable `beforePrompt`, before dispatch; a rejection fails the prompt before dispatch through the
+  existing path; combined steer runs await each message's hook in order; native awaits it before any push.
