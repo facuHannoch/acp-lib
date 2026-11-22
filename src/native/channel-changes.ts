@@ -1,7 +1,7 @@
 import type { Logger } from "../logger.ts";
 import type { ChannelDesire, ChannelPersistence, PendingChange } from "../persistence/channels.ts";
 import type { ChannelChangeResult, ChannelStatusResult, HarnessClient, PendingChannelChange } from "../native-harness/src/client.ts";
-import { ambiguous, codeOf, HarnessUnavailableError } from "./errors.ts";
+import { ambiguous, codeOf, HarnessUnavailableError, pendingRetirementError } from "./errors.ts";
 import type { NativeHostRecords } from "./records.ts";
 
 export type ChannelChangeOutcome =
@@ -34,6 +34,15 @@ export class NativeChannelChanges {
   ) {}
 
   pendingChanges(): Promise<PendingChange[]> { return this.store.pendingChanges(); }
+
+  async resume(channel: string) {
+    const client = this.client();
+    return this.enqueue(channel, async () => {
+      const pending = await this.store.pendingChange(channel);
+      if (pending?.desire.lifecycle === "retired") throw pendingRetirementError(channel);
+      return client.resumeChannel({ channel });
+    });
+  }
 
   /** Per channel, order live edits and pushes before any repository or network wait. */
   enqueue<T>(channel: string, work: () => Promise<T>): Promise<T> {

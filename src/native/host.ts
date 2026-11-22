@@ -793,7 +793,7 @@ export class NativeHarnessHost {
   }
   validateConfig(config: unknown) { return this.#client().validateConfig(config); }
   async suspendChannel(channel: string) { return this.#client().suspendChannel({ channel }); }
-  async resumeChannel(channel: string) { return this.#client().resumeChannel({ channel }); }
+  resumeChannel(channel: string) { return this.#changes.resume(channel); }
   reconcileChannel(params: Parameters<HarnessClient["reconcileChannel"]>[0]) { return this.#client().reconcileChannel(params); }
   modelCalls(params: Parameters<HarnessClient["modelCalls"]>[0] = {}) { return this.#client().modelCalls(params); }
   conversationMessages(params: Parameters<HarnessClient["channelMessages"]>[0]) { return this.#client().channelMessages(params); }
