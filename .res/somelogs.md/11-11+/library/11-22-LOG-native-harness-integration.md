@@ -28,3 +28,11 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   before any await; the startup cutoff scan kept atomic). Open points: the public sync `NativeHostRecords` API, file-store
   pending changes under a durable backend, `harness.records` vs the repository, operator suspend/resume. Sent to
   clad2a for review.
+- R1 grounding review in from clad2a, `980f26b` ([review](reports/11-22-REVIEW-R1-grounding.md)): accurate; agrees
+  with the async design. A committed read is required (one SQLite connection: a read outside the write queue sees an
+  uncommitted delete). Additions: a committed delete reuses `#flushChange` and mints no version; the creation intent
+  (`conversation-manager.ts:887`) goes in the create transaction or is documented; `changeChannel` rejections are
+  propagated; an allocator test across a reopen. Public API: additive (keep the sync records for the fallback, an
+  internal async store). For the user: file-store pending changes under a durable backend; suspend/resume while
+  the harness is stopped (and never downgrading a pending retirement).
+- Step 1 (the `channels?` repository, schema 17) released to cod2a.
