@@ -12,6 +12,7 @@ export interface WorkerAssignmentBinding {
 
 export type WorkerAssignmentFailure = {
   readonly kind: "failed" | "interrupted";
+  /** Public terminal reason, at most 128 UTF-8 bytes. Never raw provider text. */
   readonly reason: string;
   readonly possiblePartialEffects: boolean;
 };

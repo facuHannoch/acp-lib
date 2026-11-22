@@ -92,8 +92,18 @@ A terminal failure or interruption observed by the current owner stages a
 `failed` or `interrupted` outcome, respectively, with the terminal reason
 and one stable notice per affected assignment. Explicit cancellation is
 interrupted. The notice identifies the assignment and worker, reports the
-known kind and reason, and mentions possible partial effects when tools
-were dispatched or dispatch history cannot rule them out. This outcome
+known kind and reason, and warns that partial external effects may have
+occurred. The outcome keeps the evidence flag for whether tools were
+dispatched or dispatch history cannot rule them out.
+
+Persist only bounded, non-secret reasons. Map typed terminal signals to
+fixed public reason strings of at most 128 UTF-8 bytes. Use a generic
+reason when no safe detail is available. Never copy arbitrary provider
+error or stop text into the stored reason or notice. For example, a
+recognized stall can report "worker stalled", while an unclassified
+failure reports "worker failed". A cancellation without a recognized
+reason reports "worker interrupted", including on native. A successful
+completion is represented by the existing `result` kind. This outcome
 and notice commit in the transaction that persists terminal lifecycle
 records. Reserve uncertainty for abandoned work without reliable
 terminal evidence. Use causal message
@@ -182,3 +192,8 @@ notice IDs, and exclusion of bindings outside the operation's causes.
 Conformance verifies a live provider failure with its reason, a targeted
 interruption with its reason, and pre-finalization crash uncertainty. Each
 produces exactly one immutable outcome and notice on repeated staging.
+
+Conformance verifies recognized safe reasons, fallback for absent or
+untrusted details, and absence of provider-supplied secrets and oversized
+reason text in both the outcome and notice. A known interrupted outcome
+keeps the same delivery ID and reason on repeated staging.

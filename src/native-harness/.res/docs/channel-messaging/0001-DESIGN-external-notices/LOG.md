@@ -202,3 +202,9 @@ Failure and interruption now carry distinct kinds, the terminal reason
 and a possible-partial-effects flag. Crash uncertainty remains reserved
 for work without reliable terminal evidence. Independent contract review
 and the reviewed causal hook are still pending.
+
+Clad approved the distinct terminal outcome contract at `de82940`.
+Haurness-l then pinned bounded, non-secret reasons and the partial-effects
+warning. The contract uses fixed public text from recognized terminal
+signals with explicit generic fallbacks, and tests that untrusted raw
+provider text stays out of the persisted outcome and notice.
