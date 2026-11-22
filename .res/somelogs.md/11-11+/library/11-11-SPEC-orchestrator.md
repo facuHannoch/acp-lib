@@ -74,10 +74,9 @@ behaves as today.
 
 **What this spec owns beyond the pool:**
 
-- **The delegation callbacks.** The harness's `delegate`, `check`, `list` and `stop` tools arrive as `delegation/*`
-  requests over the protocol, each with the channel, the sender, the turn's `DelegationPolicy` and its
-  `WorkerPermissions`. `src/native/callbacks.ts` (from the integration spec) routes them to the orchestrator; this spec
-  adds that route and maps the results back (`sent`, `steered`, `busy`, `no_worker_free`, statuses).
+- **The delegation callbacks.** Native tool invocations arrive through `functions/call` with their channel, turn,
+  and contributing `policyNames`. The acp-client native callback adapter resolves the worker rules, routes the
+  operation to the orchestrator, and maps the results back (`sent`, `steered`, `busy`, `no_worker_free`, statuses).
 - **The delivery port's ACP half.** For an ACP conversation, items become out-of-band messages delivered with its
   next prompt, with a kind and a sender in their metadata (`src/out-of-band-messages.ts`). The native half (pushing
   onto a channel) comes from integration stage 2a.
@@ -125,8 +124,8 @@ source of state.
 
 ## Policy limits
 
-The policy is the harness's; the orchestrator receives the `delegation` part of the calling turn's policy with each
-callback:
+The native harness supplies the policy names that contributed to the invocation. The orchestrator uses them to
+resolve these worker rules:
 
 ```ts
 interface DelegationPolicy {
@@ -138,9 +137,13 @@ interface DelegationPolicy {
 type WorkerPermissions = { default: Level; rules: Record<string, Level> };   // the policy's `worker:` rules
 ```
 
-Each delegation callback carries the turn's `DelegationPolicy` and its `WorkerPermissions` (the `worker:` rules of the
-policy's one permission setting, `../harness/11-11-SPEC-harness-v1.md`, Policies). The orchestrator keeps them in memory
-with the running work, and applies them to that work's permission requests.
+acp-client binds the worker-rule mapping to the harness's active policy configuration when it opens the session.
+For a native callback, the orchestrator looks up each name and applies the most restrictive applicable worker
+rules. An empty list selects the orchestrator's configured defaults, which another harness integration can also
+select by explicitly indicating that it has no policy context. A missing native field or an unknown name causes
+the delegation operation to be declined. The orchestrator keeps the resolved rules with the running work and
+applies them to later permission requests for that assignment. See the
+[callback policy amendment](../../../../src/native-harness/.res/docs/tools-and-callbacks/0002-AMENDMENT-callback-policy/SPEC.md).
 
 - Owner and trusted presets: `use`, `scope: "all"`, `redirect: true`. Guest: `scope: "none"`, `redirect: false`.
 - No per-conversation cap by default: the pool limit is the entity's capacity.
@@ -230,9 +233,18 @@ The user never sees the worker's text directly; the agent reads it and decides w
 | restart finds a worker that was busy | `worker_interrupted` | `last_conversation` |
 | a forwarded permission at Ask the agent | `permission_request` with the options | `last_conversation` |
 
-- **The port:** for a native conversation it pushes the item onto the channel; the harness keeps it in the channel's
-  inbox in its own store, so it survives a restart. For an ACP conversation (later, with MCP) it is an out-of-band
-  message delivered with the next prompt.
+- **The port:** for a native conversation it delivers the result through `channel/notify`. The harness commits
+  the external notice to the channel inbox before acknowledging. For an ACP conversation (later, with MCP) it is
+  an out-of-band message delivered with the next prompt.
+- **Durable native completion:** persist the assignment's identity, destination, and originating policy names
+  before work starts. Use a worker backend whose completion can be recovered by assignment ID or retained until
+  acknowledgment. In the Agent database, record the result and stage the pending notice in one transaction.
+  After acp-client restarts, recover unstaged completions and retry staged notices by stable ID until the
+  harness accepts them or delivery is recorded as blocked or failed. The result remains available for inspection.
+  See the [external-notices spec](../../../../src/native-harness/.res/docs/channel-messaging/0001-DESIGN-external-notices/SPEC.md).
+- **Redirect and completion:** persist the new destination and policy provenance together when redirect takes
+  effect. Completion staging freezes the committed assignment state in the pending notice. A later redirect
+  leaves that notice intact. Preserve policy restrictions from all work taken into the completed worker turn.
 - A stop asked by the conversation itself produces no item: the tool result said "stopped".
 - Several items arriving together are taken in one turn: the harness drains what waits at each model call.
 - Pull stays available: `check` and `list`. What a reply contains is tuned by the test run; v1 sends the final message.
@@ -436,9 +448,10 @@ decides the `agent_action` question with a recommendation, and reports what move
 
 **Scope:** steps 1–2.
 
-1. **The delivery port** (`src/orchestrator/contracts.ts`): the native half is integration's (N9); the ACP half here,
-   out-of-band messages with a kind and a sender in their metadata, delivered with the next prompt. **Gate:** an item
-   reaches a native channel (fake harness client) and an ACP conversation.
+1. **The delivery port** (`src/orchestrator/contracts.ts`) uses `channel/notify` for native conversations and
+   out-of-band messages with kind and sender metadata for ACP conversations. Out-of-band messages arrive with the
+   next prompt. **Gate:** a notice reaches a native channel through the fake harness client and an item reaches an
+   ACP conversation through its existing path.
 2. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
    `last_conversation`; a stop asked by the conversation itself produces none; a gone target keeps the reply on the
    worker (`check`, `list`). **Gate:** each item; a deleted target.
@@ -476,9 +489,9 @@ decides the `agent_action` question with a recommendation, and reports what move
 
 **Scope:** steps 1–3.
 
-1. **The route:** `delegation/*` callbacks (`src/native/callbacks.ts`) to the orchestrator, with the turn's
-   `DelegationPolicy` and `WorkerPermissions`; results mapped back (`sent`, `steered`, `busy`, `no_worker_free`,
-   statuses). **Gate:** with the fake harness client.
+1. **The route:** Native function callbacks to the orchestrator. Resolve `policyNames` to the session's
+   worker rules, then map results back (`sent`, `steered`, `busy`, `no_worker_free`, statuses).
+   **Gate:** with the fake harness client.
 2. **Against `harness serve`** (harness part 2's delegation tools, scripted model): delegate, a reply reaching the
    agent's channel, a forwarded permission, a redirect. **Gate:** each.
 3. **One live run,** with the owner's authorization: real throwaway ACP workers on a cheap model; a reply reaches the
