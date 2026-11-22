@@ -42,3 +42,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   durable intent path (so they can never override a pending retirement). Suggested to the user as a separate
   follow-up: schedule `agent.nativeHarness` `state` (listed, unscheduled), so consumers can know the harness is
   offline. Passed to cod2a.
+- R1 step 1 in from cod2a: implementation `61ecd21`, report `e55afcf` ([report](reports/11-22-REPORT-R1.md)). New
+  `channels?` repository (`src/persistence/channels.ts`, `sqlite-channels.ts`), schema 17 with the upgrade from 16;
+  tests for merge, stale acknowledgement, rollback visibility, the v16 upgrade and the version allocator across a
+  reopen. Full `./test` green, 1,430 in 132 files, 265 s. Offline suspend/resume throws the shared
+  `HarnessUnavailableError` today. Sent to clad2a for review.
