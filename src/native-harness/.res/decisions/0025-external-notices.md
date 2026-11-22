@@ -331,3 +331,14 @@ captures the requesting callback's originating policies; it does not
 inherit the old assignment merely because the worker is the same.
 Where terminal output actually reflects taken inputs subject to earlier
 restrictions, keep the applicable contributing policy union.
+
+The orchestrator runs closeContinuation in replace mode and reserve
+inside one Agent persistence.transaction from the new prompt's
+beforeDispatch hook, using only that transaction's scoped workerDelivery
+repository. If the close did not stage, a scoped read must establish that
+the expected predecessor already finalized or settled before proceeding;
+a stale live predecessor conflicts. If reserve conflicts, throw in the
+transaction so the old binding (including awaiting continuation state)
+and any old notice remain exactly as they were before the attempt. The
+old interruption notice uses "worker interrupted by steering" as its
+public reason.
