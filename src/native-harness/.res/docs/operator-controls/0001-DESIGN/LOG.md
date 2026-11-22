@@ -123,3 +123,42 @@ The combined native and persisted transcript reader gate
 (`bun test ./test/native test/persistence-transcript-reader.test.ts`) passed
 79 tests with zero failures and 6497 assertions across seven files.
 Independent review is pending.
+
+Clad approved Gate 3 at `d107412cebc90380a5e8a43638ce1e5a1c1bf113`.
+Independent verification passed both typechecks, 334 harness tests, 79
+native and transcript tests, and 1405 root tests. Explicit usage requests
+page the whole model-call history even when filtering by channel. This
+remains a known limit, along with the model record read during abandoned-turn
+recovery.
+
+Gate 4 extends the real-stdio checkpoint with the shared Agent rig and scripted
+SQLite child. The cases cover a completion while Alice reattaches and Bob
+keeps receiving events, notice delivery to unattached Alice, pending approval
+recovery without a second responder, and Restart losing its connection before
+confirmation. The callback checkpoint covers responsive status and stop
+during suspension, clean replacement, and explicit resume with Bob still
+individually suspended. Tests distinguish attachment connectivity, channel
+lifecycle, session lifecycle, and process state, and verify two working
+channels while both have running turns.
+
+The scale fixture has 10,000 assistant and tool timeline records and 5,000
+turns whose legacy projection exceeds one frame. Under held inference, clean
+open, attachment, and tracked reconciliation add no storage snapshots and
+issue no history requests. Model context assembly itself still reads storage.
+Explicit history pages stay channel-scoped and tool activity stays in the
+timeline. Paging advances past an omitted oversized result. The loss fixture
+kills the child after a reply commits, interrupts catch-up between pages,
+and retries from the consumer's persisted position while live delivery
+continues. The consumer owns its page transaction and message-ID deduplication.
+
+The CLI snapshot counter is opt-in for the offline test. It leaves the
+production storage path unchanged when the test environment variable is
+absent. The checkpoint file retains the shared Agent rig and control
+barriers used by the prior real-process cases.
+
+The Gate 4 submission containing this entry passed both package typechecks.
+Serial harness verification (`bun test ./test --timeout 30000`) passed 334
+tests and 3595 assertions across 45 files. Full root `bun test ./test` passed
+1411 tests, 12054 assertions and 35 snapshots across 131 files, including all
+six new real-stdio operator cases. Both suites had zero failures.
+Independent review is pending.

@@ -36,6 +36,7 @@ export interface ScriptedServerOptions {
   requests?: string;
   /** Opt-in scripted stall and shorter model deadline for offline process tests. */
   stallChannel?: string;
+  snapshotLog?: string;
   streamResponses?: boolean;
   modelTimeoutMs?: number;
   /** Directory for transfer files when there is no home. */
@@ -99,7 +100,10 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       const code = opened.error.code;
       throw new SessionOpenError(code === "not_found" || code === "already_exists" || code === "owner_conflict" || code === "incompatible" ? code : "storage_failure", opened.error.message);
     }
-    const storage = options.fault ? withFaults(opened.value, hit) : opened.value;
+    const storage = options.fault || options.snapshotLog ? withFaults(opened.value, point => {
+      if (point === "snapshot" && options.snapshotLog) appendFileSync(options.snapshotLog, "snapshot\n");
+      hit(point);
+    }) : opened.value;
     const record = createRecordTool(options.effects), hold = createHoldTool(options.effects);
     const executeTool: ExecuteTool = async (call, signal) => {
       const result = await (call.name === "record" ? record(call, signal) : call.name === "hold" ? hold(call, signal) : executeEcho(call, signal));

@@ -973,7 +973,15 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   `conversation.internalSessionId` is the Agent's id for each of them.
 - **The process starts on first use,** not when the Agent or a conversation
   opens. Concurrent first prompts share one start. It stops with `agent.close()`.
-  `agent.nativeHarness` exposes its `state`, `status()`, `restart()` and `stop()`.
+  Use `agent.nativeHarness.start()`, `suspend()`, `resume()`, and `stop()`
+  for agent-wide controls. `operatorStatus()` reports process health and the
+  last confirmed session view. `workingChannels` counts running turns.
+- **Attachment** is independent of the channel and agent. Call
+  `conversation.attachObservation()` and dispose the returned handle to
+  detach without interrupting. Read `conversation.connection.attachmentConnected`
+  for attachment state and the host's `status()` for channel and session
+  lifecycle. `restartConversation(conversation.connection)` starts only after
+  confirmed stop.
 - **The harness schedules turns.** A prompt resolves with the turn that took its
   message. A `delivery: "steer"` message sent while a turn runs is accepted at
   once and taken by that turn at its next model call; both prompts then resolve
@@ -981,6 +989,9 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
 - **Approvals** for tools a policy marks `ask` reach the `onPermissionRequest`
   handler of the first message the turn took, with `allow_once` and `deny`
   options. Without a handler the session's `defaultPermission` applies.
+  Set `harness.approvalResponder(request, answer, signal)` to answer centrally,
+  including while detached. `answer("allow_once")` and `answer("deny")`
+  report whether the harness accepted the answer.
 - **Interrupting** (`conversation.interrupt()`, or `connection.forceStop()`)
   ends that conversation's turn only. Other conversations and the shared
   process keep running, and the interrupted conversation accepts new input.
@@ -992,6 +1003,14 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
 - **After a harness crash** the host reopens the session, restores committed
   replies it missed, settles interrupted turns as failed, and keeps accepted
   input pending. Interrupted tool calls are never replayed.
+
+Use `conversationMessages({ channel })` for a page from the harness.
+`catchUp(channel, savedPosition, commitPage)` requests missed messages.
+Persist each page and its position together, using message IDs to deduplicate.
+The default acp-client transcript remains available independently. Use
+`timeline()` for harness activity and `usage(channel?)` for reported token
+totals, missing field counts, and completeness. Usage is an explicit scan
+of the model-call pages.
 
 ### Functions the model can call
 

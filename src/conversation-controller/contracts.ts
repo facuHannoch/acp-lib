@@ -82,6 +82,7 @@ export interface ConversationController {
    * handshake, and `internal_session_acquired` only when a context actually exists.
    */
   /** Optional observation-only attachment. Disposing it leaves the backend turn running. */
+  readonly attachmentConnected?: boolean;
   attachObservation?(): Promise<{ dispose(): void }>;
   start(onProgress?: (event: ControllerStartEvent) => void): Promise<StartResult>;
   /** Starts with a fresh context, never resuming. Same result and progress as `start`. */

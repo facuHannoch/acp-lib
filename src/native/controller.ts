@@ -180,6 +180,7 @@ export class NativeController implements ConversationController, ChannelPort {
   }
   readonly cancelGraceMs = undefined;
 
+  get attachmentConnected(): boolean { return this.#detach !== null; }
   get attachmentStatus(): "disconnected" | "offline" | "suspended" | "online" {
     if (!this.#detach) return "disconnected";
     if (this.#host.state !== "running") return "offline";
