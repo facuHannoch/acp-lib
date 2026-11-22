@@ -120,3 +120,10 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
 - **Gate passed on `4cd3ce9`** ([gate](../.plan-execution/status/11-22-GATE-alpha-713a76a-merge.md)): run 1 one
   unrelated failure (SQLite cross-process ownership), run 2 green, 1,426 in 132 files.
 - **Spec 1 verification complete on alpha `713a76a`.** Ready for the user to merge.
+
+### 2026-11-22: alpha `ac52dbc`
+
+- alpha moved `713a76a` → `ac52dbc` (`27c7166`: alpha's rehearsal test stabilized with explicit barriers and deadline
+  diagnostics, approved by Clad; `ac52dbc` its log). Test files only; trial merge with `4cd3ce9` clean. The
+  deadline-before-settlement case is instrumented, not root-caused (haurness-l). cod2a to merge and re-run, clad2a
+  to review, then the gate on the merge commit.
