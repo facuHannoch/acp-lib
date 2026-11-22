@@ -104,3 +104,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   `promptFailed`. Review from clad2a, `40bab3f`: blocking finding resolved; probes show the hook id in the terminal
   `messageIds` in every case. **Gate passed** ([gate](../.plan-execution/status/11-22-GATE-beforeDispatch.md)): 1,448
   in 132 files. Sent to Cod1a and haurness-l.
+- Step 3 (cod2a, in progress): a gap that predates R1. A never-prompted native conversation has no persisted provider
+  descriptor, so after a full Agent restart (another conversation opened the harness and consumed its initial
+  intent) a delete can't tell it is native and doesn't retire its channel. Persisting the descriptor at create
+  would change first-attachment behaviour: not folded in. cod2a to establish the consequence (an idle leftover, or
+  can it take work or block?); if idle, an error note and a Limitations line; otherwise escalate.
