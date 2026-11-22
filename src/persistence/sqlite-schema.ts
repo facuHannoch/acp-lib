@@ -8,7 +8,8 @@ const WORKER_DELIVERY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS worker_assignments (
   assignment_id TEXT PRIMARY KEY NOT NULL,
   worker_id TEXT NOT NULL,
-  operation_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  operation_id TEXT,
   owner_id TEXT NOT NULL,
   original_destination TEXT NOT NULL,
   destination TEXT NOT NULL,
@@ -18,7 +19,7 @@ CREATE TABLE IF NOT EXISTS worker_assignments (
   staged_json TEXT,
   delivery_id TEXT UNIQUE,
   delivery_state TEXT CHECK (delivery_state IN ('pending','delivered','blocked_policy','failed_destination')),
-  UNIQUE (worker_id, operation_id)
+  UNIQUE (worker_id, message_id)
 );
 `;
 

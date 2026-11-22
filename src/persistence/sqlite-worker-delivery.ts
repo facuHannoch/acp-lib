@@ -1,6 +1,7 @@
+import { normalizeWorkerFailure } from "./worker-terminal-reason.ts";
 import type { Database } from "bun:sqlite";
 import type {
-  StagedWorkerAssignment, WorkerAssignmentBinding, WorkerAssignmentOutcome,
+  StagedWorkerAssignment, WorkerAssignmentBinding, WorkerAssignmentFailure, WorkerAssignmentOutcome,
   WorkerDeliveryRepository, WorkerDeliveryState,
 } from "./worker-delivery-contract.ts";
 
@@ -9,7 +10,8 @@ interface Row {
   assignment_id: string;
   worker_id: string;
   owner_id: string;
-  operation_id: string;
+  message_id: string;
+  operation_id: string | null;
   original_destination: string;
   destination: string;
   originating_policies: string;
@@ -39,20 +41,20 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
     return this.database.query<Row, [string]>("SELECT * FROM worker_assignments WHERE assignment_id = ?").get(id);
   }
 
-  reserve(binding: WorkerAssignmentBinding): Promise<"reserved" | "existing" | "conflict"> {
-    const { assignmentId, workerConversationId, operationId, destination } = binding;
+  reserve(binding: Parameters<WorkerDeliveryRepository["reserve"]>[0]): Promise<"reserved" | "existing" | "conflict"> {
+    const { assignmentId, workerConversationId, messageId, destination } = binding;
     const originating = JSON.stringify(names(binding.originatingPolicyNames));
     const contributing = JSON.stringify(names(binding.contributingPolicyNames));
     return this.write(() => {
       const row = this.row(assignmentId);
-      if (row) return row.worker_id === workerConversationId && row.operation_id === operationId &&
+      if (row) return row.worker_id === workerConversationId && row.message_id === messageId &&
         row.original_destination === destination && row.originating_policies === originating ? "existing" : "conflict";
       const inserted = this.database.query(`
         INSERT INTO worker_assignments (
-          assignment_id, worker_id, operation_id, owner_id, original_destination, destination,
+          assignment_id, worker_id, message_id, owner_id, original_destination, destination,
           originating_policies, contributing_policies
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
-      `).run(assignmentId, workerConversationId, operationId, this.ownerId, destination, destination, originating, contributing);
+      `).run(assignmentId, workerConversationId, messageId, this.ownerId, destination, destination, originating, contributing);
       if (!inserted.changes) return "conflict";
       return "reserved";
     });
@@ -62,15 +64,28 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
     return this.read(() => {
       const row = this.row(id);
       if (!row) return;
-      return { assignmentId: id, workerConversationId: row.worker_id, operationId: row.operation_id,
+      return { assignmentId: id, workerConversationId: row.worker_id, messageId: row.message_id,
+        ...(row.operation_id === null ? {} : { operationId: row.operation_id }),
+        ...(row.final_record_id === null ? {} : { finalRecordId: row.final_record_id }),
         destination: row.destination, originatingPolicyNames: JSON.parse(row.originating_policies),
         contributingPolicyNames: JSON.parse(row.contributing_policies) };
     });
   }
 
-  recordFinal(workerId: string, operationId: string): Promise<void> {
+  private causalBindings(workerId: string, messageIds: readonly string[]): Row[] {
+    const lookup = this.database.query<Row, [string, string]>(
+      "SELECT * FROM worker_assignments WHERE worker_id = ? AND message_id = ?",
+    );
+    return [...new Set(messageIds)].flatMap(id => {
+      const row = lookup.get(workerId, id);
+      return row ? [row] : [];
+    });
+  }
+
+  recordFinal(workerId: string, operationId: string, messageIds: readonly string[]): Promise<void> {
     return this.write(() => {
-      if (!this.database.query("SELECT 1 FROM worker_assignments WHERE worker_id = ? AND operation_id = ? AND staged_json IS NULL AND final_record_id IS NULL").get(workerId, operationId)) return;
+      const bindings = this.causalBindings(workerId, messageIds);
+      if (!bindings.some(row => row.final_record_id === null && row.staged_json === null)) return;
       const record = this.database.query<{ record_id: string }, [string, string]>(`
         SELECT r.record_id FROM conversation_records r
         JOIN conversation_messages m ON m.record_row_id = r.row_id
@@ -78,11 +93,41 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
           AND m.role = 'assistant' AND m.status = 'completed'
         ORDER BY r.sequence DESC LIMIT 1
       `).get(workerId, operationId);
-      if (!record) return;
-      this.database.query(`UPDATE worker_assignments SET final_record_id = ?
-        WHERE worker_id = ? AND operation_id = ? AND final_record_id IS NULL AND staged_json IS NULL
-      `).run(record.record_id, workerId, operationId);
+      const policies = JSON.stringify(this.policyUnion(bindings));
+      for (const row of bindings) {
+        if (row.final_record_id !== null || row.staged_json !== null) continue;
+        if (record) {
+          this.database.query(`UPDATE worker_assignments SET operation_id = ?, final_record_id = ?,
+            contributing_policies = ? WHERE assignment_id = ?`).run(operationId, record.record_id, policies, row.assignment_id);
+        } else {
+          this.recordKnownFailure(row, operationId, policies, {
+            kind: "failed", reason: "worker produced no saved result", possiblePartialEffects: true,
+          });
+        }
+      }
     });
+  }
+
+  private policyUnion(bindings: readonly Row[]): string[] {
+    return names(bindings.flatMap(row => [
+      ...JSON.parse(row.originating_policies) as string[], ...JSON.parse(row.contributing_policies) as string[],
+    ]));
+  }
+
+  recordFailure(workerId: string, operationId: string, messageIds: readonly string[], failure: WorkerAssignmentFailure): Promise<void> {
+    return this.write(() => {
+      const bindings = this.causalBindings(workerId, messageIds);
+      const policies = JSON.stringify(this.policyUnion(bindings));
+      for (const row of bindings) {
+        if (row.final_record_id === null && row.staged_json === null) this.recordKnownFailure(row, operationId, policies, failure);
+      }
+    });
+  }
+
+  private recordKnownFailure(row: Row, operationId: string, policies: string, failure: WorkerAssignmentFailure): void {
+    this.database.query("UPDATE worker_assignments SET operation_id = ?, contributing_policies = ? WHERE assignment_id = ?")
+      .run(operationId, policies, row.assignment_id);
+    this.writeStage({ ...row, contributing_policies: policies }, normalizeWorkerFailure(failure));
   }
 
   redirect(id: string, destination: string): Promise<boolean> {
@@ -111,7 +156,7 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
         AND m.role = 'assistant' AND m.status = 'completed'
         AND r.sequence <= (SELECT sequence FROM conversation_records WHERE record_id = ?)
       ORDER BY r.sequence
-    `).all(row.worker_id, row.operation_id, row.final_record_id!).map(message => message.search_text).join("\n");
+    `).all(row.worker_id, row.operation_id!, row.final_record_id!).map(message => message.search_text).join("\n");
   }
 
   stage(id: string): Promise<StagedWorkerAssignment | undefined> {
@@ -123,20 +168,27 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
       const outcome: WorkerAssignmentOutcome = row.final_record_id === null
         ? { kind: "uncertain" }
         : { kind: "result", finalRecordId: row.final_record_id, text: this.finalText(row) };
-      const deliveryId = `worker-result:${id}`;
-      const value: StagedWorkerAssignment = {
-        assignmentId: id, outcome,
-        delivery: {
-          id: deliveryId, destination: row.destination, source: row.worker_id,
-          text: outcome.kind === "result" ? outcome.text : `Worker ${row.worker_id} has no reliable result for assignment ${id}.`,
-          policyNames: names([...JSON.parse(row.originating_policies) as string[], ...JSON.parse(row.contributing_policies) as string[]]),
-          state: "pending",
-        },
-      };
-      this.database.query(`UPDATE worker_assignments SET staged_json = ?, delivery_id = ?, delivery_state = 'pending'
-        WHERE assignment_id = ?`).run(JSON.stringify(value), deliveryId, id);
-      return value;
+      return this.writeStage(row, outcome);
     });
+  }
+
+  private writeStage(row: Row, outcome: WorkerAssignmentOutcome): StagedWorkerAssignment {
+    const id = row.assignment_id;
+    const deliveryId = `worker-result:${id}`;
+    const value: StagedWorkerAssignment = {
+      assignmentId: id, outcome,
+      delivery: {
+        id: deliveryId, destination: row.destination, source: row.worker_id,
+        text: outcome.kind === "result" ? outcome.text : outcome.kind === "uncertain"
+          ? `Worker ${row.worker_id} has no reliable result for assignment ${id}.`
+          : `Worker ${row.worker_id} assignment ${id}: ${outcome.reason}. Partial external effects may have occurred.`,
+        policyNames: names([...JSON.parse(row.originating_policies) as string[], ...JSON.parse(row.contributing_policies) as string[]]),
+        state: "pending",
+      },
+    };
+    this.database.query(`UPDATE worker_assignments SET staged_json = ?, delivery_id = ?, delivery_state = 'pending'
+      WHERE assignment_id = ?`).run(JSON.stringify(value), deliveryId, id);
+    return value;
   }
 
   readStaged(id: string): Promise<StagedWorkerAssignment | undefined> {

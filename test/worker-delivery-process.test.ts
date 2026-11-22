@@ -66,18 +66,45 @@ for (const mode of ["final", "partial"] as const) test(`production worker delive
       const repository = backend.workerDelivery!;
       if (mode === "partial") {
         await backend.transaction(async scope => {
-          await scope.records.append([{
+          await scope.records.appendMany([{
             recordId: "late-assistant", kind: "message", role: "assistant", status: "completed",
             agentSessionId: backend.identityRecord.agentSessionId,
             agentConversationId: recovered.binding.workerConversationId,
-            operationId: recovered.binding.operationId,
+            operationId: "late-operation",
             timestamp: new Date().toISOString(), content: "Late output",
           }]);
           await scope.workerDelivery!.recordFinal(
-            recovered.binding.workerConversationId, recovered.binding.operationId,
+            recovered.binding.workerConversationId, "late-operation", [recovered.binding.messageId],
           );
         });
         expect(await repository.readStaged(assignmentId)).toEqual(recovered.staged);
+      }
+      if (mode === "final") {
+        const workerConversationId = recovered.binding.workerConversationId;
+        const operationId = "folded-operation";
+        for (const name of ["guest", "owner", "unrelated"]) {
+          expect(await repository.reserve({
+            assignmentId: name, workerConversationId, messageId: `${name}-message`,
+            destination: `${name}-channel`, originatingPolicyNames: [name], contributingPolicyNames: [],
+          })).toBe("reserved");
+        }
+        await backend.transaction(async scope => {
+          await scope.records.append({
+            recordId: "folded-assistant", kind: "message", role: "assistant", status: "completed",
+            agentSessionId: backend.identityRecord.agentSessionId, agentConversationId: workerConversationId,
+            operationId, timestamp: new Date().toISOString(), content: "Shared folded result",
+          });
+          await scope.workerDelivery!.recordFinal(workerConversationId, operationId, ["guest-message", "owner-message"]);
+        });
+        await repository.recordFailure(workerConversationId, operationId, ["owner-message"],
+          { kind: "failed", reason: "worker failed", possiblePartialEffects: true });
+        for (const name of ["guest", "owner"]) {
+          expect(await repository.stage(name)).toMatchObject({
+            outcome: { kind: "result", finalRecordId: "folded-assistant", text: "Shared folded result" },
+            delivery: { id: `worker-result:${name}`, destination: `${name}-channel`, policyNames: ["guest", "owner"] },
+          });
+        }
+        expect(await repository.stage("unrelated")).toBeUndefined();
       }
       expect(await repository.transitionDelivery(recovered.staged.delivery.id, { from: "pending", to: "delivered" })).toBe(true);
       expect((await repository.stage(assignmentId))?.delivery).toEqual({ ...recovered.staged.delivery, state: "delivered" });
@@ -90,3 +117,27 @@ for (const mode of ["final", "partial"] as const) test(`production worker delive
     await rm(directory, { recursive: true, force: true });
   }
 }, 20_000);
+
+for (const mode of ["fail", "interrupt"] as const) test(`live ACP ${mode} stages a safe notice before closing the owner`, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "worker-delivery-failed-"));
+  const child = Bun.spawn([process.execPath, fixture, join(directory, "agent.sqlite"), mode, assignmentId],
+    { stdout: "pipe", stderr: "inherit" });
+  const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  try {
+    const output = await new Response(child.stdout).text();
+    expect(await child.exited).toBe(0);
+    expect(output).not.toContain("fake-secret");
+    const { staged, repeated } = JSON.parse(output);
+    expect(staged).toMatchObject({
+      outcome: { kind: mode === "fail" ? "failed" : "interrupted",
+        reason: mode === "fail" ? "worker failed" : "worker interrupted by request", possiblePartialEffects: true },
+      delivery: { id: `worker-result:${assignmentId}`, state: "pending", policyNames: ["guest"] },
+    });
+    expect(repeated).toEqual(staged);
+  } finally {
+    clearTimeout(timeout);
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await child.exited;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);

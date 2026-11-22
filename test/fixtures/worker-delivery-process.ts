@@ -20,16 +20,32 @@ if (recovering) {
   const worker = await agent.conversations.create({ title: "Worker" });
   const prompt = {
     text: "assignment result",
-    async beforeDispatch(operationId: string) {
+    async beforeDispatch(messageId: string) {
       const reservation = await repository.reserve({
-        assignmentId, workerConversationId: worker.id, operationId, destination: "owner-channel",
+        assignmentId, workerConversationId: worker.id, messageId, destination: "owner-channel",
         originatingPolicyNames: ["guest"], contributingPolicyNames: [],
       });
       if (reservation !== "reserved") throw new Error(`Assignment reservation returned ${reservation}`);
     },
-    ...(mode === "partial" ? { handlers: { onResponseChunk() { writeBarrier({ partial: true }); } } } : {}),
+    ...(mode === "partial" ? { handlers: { onResponseChunk() { writeBarrier({ partial: true }); } } } : mode === "interrupt" ? { handlers: { onResponseChunk() { worker.interrupt(); } } } : {}),
   };
+  if (mode === "fail") {
+    try {
+      await worker.prompt(prompt);
+      throw new Error("Expected ACP worker failure");
+    } catch (error) {
+      const staged = await repository.readStaged(assignmentId);
+      if (staged?.outcome.kind !== "failed") throw error;
+      writeBarrier({ staged, repeated: await repository.stage(assignmentId) });
+    } finally { await agent.close(); }
+    process.exit(0);
+  }
   await worker.prompt(prompt);
+  if (mode === "interrupt") {
+    writeBarrier({ staged: await repository.readStaged(assignmentId), repeated: await repository.stage(assignmentId) });
+    await agent.close();
+    process.exit(0);
+  }
   writeBarrier({ finalized: true });
   setInterval(() => {}, 1000);
 }

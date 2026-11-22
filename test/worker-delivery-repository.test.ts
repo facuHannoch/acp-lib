@@ -20,7 +20,7 @@ for (const version of [16, 17]) test(`worker repository upgrades schema ${versio
     } finally { db.close(); }
     backend = await SqliteAgentPersistence.open({ path });
     const repo = backend.workerDelivery!;
-    const binding = { assignmentId: "assignment", workerConversationId: "worker", operationId: "operation",
+    const binding = { assignmentId: "assignment", workerConversationId: "worker", messageId: "operation",
       destination: "original", originatingPolicyNames: ["guest"], contributingPolicyNames: [] };
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow();
     expect(await repo.reserve(binding)).toBe("reserved");
@@ -28,7 +28,32 @@ for (const version of [16, 17]) test(`worker repository upgrades schema ${versio
     expect(await repo.reserve({ ...binding, destination: "different" })).toBe("conflict");
     expect(await repo.stage(binding.assignmentId)).toBeUndefined();
     expect(await repo.reserve({ ...binding, assignmentId: "other" })).toBe("conflict");
-    const undeliverable = { ...binding, assignmentId: "missing-destination", operationId: "other-operation" };
+    const foldedOwner = { ...binding, assignmentId: "fold-owner", messageId: "fold-owner-message",
+      originatingPolicyNames: ["owner"], destination: "owner" };
+    const foldedGuest = { ...binding, assignmentId: "fold-guest", messageId: "fold-guest-message",
+      originatingPolicyNames: ["guest"], destination: "guest" };
+    expect(await repo.reserve(foldedOwner)).toBe("reserved");
+    expect(await repo.reserve(foldedGuest)).toBe("reserved");
+    await repo.recordFailure("worker", "folded-operation", [foldedOwner.messageId, foldedGuest.messageId],
+      { kind: "failed", reason: "fake-secret-" + "x".repeat(200), possiblePartialEffects: true });
+    const ownerFailure = await repo.stage(foldedOwner.assignmentId);
+    const guestFailure = await repo.stage(foldedGuest.assignmentId);
+    expect(ownerFailure).toMatchObject({ outcome: { kind: "failed", reason: "worker failed" },
+      delivery: { destination: "owner", policyNames: ["guest", "owner"] } });
+    expect(guestFailure?.delivery.id).not.toBe(ownerFailure?.delivery.id);
+    expect(guestFailure?.delivery.policyNames).toEqual(["guest", "owner"]);
+    expect(JSON.stringify(ownerFailure)).not.toContain("fake-secret");
+    expect(ownerFailure?.delivery.text).toContain("Partial external effects may have occurred");
+    expect(await repo.stage(foldedOwner.assignmentId)).toEqual(ownerFailure);
+    expect(await repo.stage(binding.assignmentId)).toBeUndefined();
+    const interrupted = { ...binding, assignmentId: "interrupted", messageId: "interrupted-message" };
+    expect(await repo.reserve(interrupted)).toBe("reserved");
+    await repo.recordFailure("worker", "interrupted-operation", [interrupted.messageId],
+      { kind: "interrupted", reason: "worker interrupted", possiblePartialEffects: true });
+    expect(await repo.stage(interrupted.assignmentId)).toMatchObject({
+      outcome: { kind: "interrupted", reason: "worker interrupted" }, delivery: { state: "pending" },
+    });
+    const undeliverable = { ...binding, assignmentId: "missing-destination", messageId: "other-operation" };
     expect(await repo.reserve(undeliverable)).toBe("reserved");
     await expect(backend.transaction(async scope => {
       await scope.workerDelivery!.redirect(binding.assignmentId, "rollback");
@@ -65,4 +90,17 @@ for (const version of [16, 17]) test(`worker repository upgrades schema ${versio
     await backend.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("worker terminal reasons are fixed public strings for typed signals", async () => {
+  const { workerTerminalFailure } = await import("../src/persistence/worker-terminal-reason.ts");
+  const { OperationStalledError } = await import("../src/operations/errors.ts");
+  expect(workerTerminalFailure(true)).toMatchObject({ kind: "interrupted", reason: "worker interrupted" });
+  expect(workerTerminalFailure(true, undefined, "interrupt")).toMatchObject({
+    kind: "interrupted", reason: "worker interrupted by request",
+  });
+  expect(workerTerminalFailure(false, new Error("credential=secret"))).toMatchObject({
+    kind: "failed", reason: "worker failed",
+  });
+  expect(workerTerminalFailure(false, new OperationStalledError("operation", "first_output")).reason).toBe("worker stalled");
 });

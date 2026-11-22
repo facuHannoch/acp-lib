@@ -1,3 +1,4 @@
+import { workerTerminalFailure } from "../persistence/worker-terminal-reason.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import type { OperationStalledError } from "../operations/errors.ts";
 import { randomUUID } from "node:crypto";
@@ -184,7 +185,11 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
       await this.persistObservationsInTransaction(persistence, prepared, true, persisted);
       if (status === "completed") {
         await persistence.workerDelivery?.recordFinal(
-          this.conversationId, input.operationId,
+          this.conversationId, input.operationId, input.messageIds,
+        );
+      } else {
+        await persistence.workerDelivery?.recordFailure(
+          this.conversationId, input.operationId, input.messageIds, workerTerminalFailure(status === "cancelled", undefined, input.result.endedBy),
         );
       }
       // Delivery is tracked per provider context, so it holds when no user or assistant text is captured.
@@ -263,7 +268,11 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
       }),
     }));
     const parts = input.messages.map((message) => message.parts);
-    await this.updateIdentity(await this.persistMessagesWithParts(records, parts));
+    await this.updateIdentity(await this.persistMessagesWithParts(records, parts, true, async scope => {
+      await scope.workerDelivery?.recordFailure(
+        this.conversationId, input.operationId, input.messageIds, workerTerminalFailure(false, input.error),
+      );
+    }));
   }
 
   resolveAdapter(adapterId: string) {
@@ -334,12 +343,14 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     records: readonly NewConversationRecord[],
     parts: readonly (readonly ResolvedPart[] | undefined)[],
     audit = true,
+    terminal?: (scope: PersistenceScope) => Promise<void>,
   ): Promise<readonly ConversationRecord[]> {
     const persisted: ConversationRecord[] = [];
     const pending: Array<readonly [object, string]> = [];
     await this.agent.persistence.transaction(async (scope) => {
       const prepared = await this.withStoredParts(scope, records, parts, pending);
       await this.persistObservationsInTransaction(scope, prepared, audit, persisted);
+      await terminal?.(scope);
     });
     for (const [part, ref] of pending) this.outputMedia.set(part, ref);
     this.agent.publishCommittedRecords(persisted);
@@ -412,6 +423,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
   private async persistObservations(
     records: readonly NewConversationRecord[],
     audit = true,
+    terminal?: (scope: PersistenceScope) => Promise<void>,
   ): Promise<readonly ConversationRecord[]> {
     return await persistConversationObservations(this.agent, this.settings, records, audit);
   }
