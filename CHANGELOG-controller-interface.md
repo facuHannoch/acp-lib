@@ -72,5 +72,7 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   continuation rule decides (`ProviderSessionReloadUnsupportedError`, an `UnsupportedError`).
 - Native prompts with unsupported media parts or attachments reject with `UnsupportedError` before any message in
   the run is submitted. This applies to queued and steered prompts.
+- A same-adapter handoff on a native conversation rejects directly with `UnsupportedError` when fresh contexts are
+  unsupported, before any handoff events or reset records are created.
 - Test-only: the A1 characterization snapshots are unchanged except `cause`, plus a reviewed ordering exception for the
   two non-contractual orders (metering vs presentation events / the last in-progress assistant snapshot).

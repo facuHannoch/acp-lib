@@ -327,6 +327,22 @@ describe("the native conversation at the Agent", () => {
     expect(await alice.prompt("a2")).toMatchObject({ text: "reply 2" });
   }, 30_000);
 
+  test("a same-adapter native handoff rejects before events or records, and the next prompt runs", async () => {
+    const rig = await rigWith();
+    const agent = await rig.open();
+    const session = await agent.conversations.create() as AgentSession;
+    expect(await session.prompt("before handoff")).toMatchObject({ text: "reply 1" });
+    const events = rig.watch(session);
+    const actions = () => agent.persistence.records.list(session.id, { kinds: ["native_action"] });
+    const before = (await actions()).records;
+
+    await expect(session.handoff({ continuation: { kind: "none" } })).rejects.toBeInstanceOf(UnsupportedError);
+    await expect(session.handoff({ target: { adapterId: session.adapterId } })).rejects.toBeInstanceOf(UnsupportedError);
+    expect(events.filter((event) => event.kind.startsWith("handoff_"))).toEqual([]);
+    expect((await actions()).records).toEqual(before);
+    expect(await session.prompt("after handoff")).toMatchObject({ status: "completed", text: "reply 2" });
+  }, 30_000);
+
   test("deleting a conversation while the harness is stopped retires its channel at the next open, without starting a process", async () => {
     const rig = await rigWith();
     const agent = await rig.open();

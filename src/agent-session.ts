@@ -14,6 +14,7 @@ import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./op
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
 import type { HarnessController, AgentControllerConfig, ControllerStartEvent, AgentMode } from "./controller.ts";
+import { ownHandoffOptions } from "./handoff-options.ts";
 import {
   acpCapabilitiesOf, availableCommandsOf, createController, harnessControllerOf, isDegradedController, listAgentSessions,
   reloadProviderSession, requireFreshContext, requireMember, stallLimitsFor,
@@ -2517,10 +2518,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
-    await this.ensureProvider();
-    const fromInternalSessionId = this._internalSessionId;
     const fromAdapterId = this.adapterId;
     const targetAdapterId = item.options.target?.adapterId ?? fromAdapterId;
+    if (targetAdapterId === fromAdapterId) requireFreshContext(this.controller, "a same-adapter handoff");
+    await this.ensureProvider();
+    const fromInternalSessionId = this._internalSessionId;
     const targetMode = item.options.target?.mode ?? this._mode;
     const continuation = normalizeHandoffContinuation(item.options);
     const transitionKind = targetAdapterId === fromAdapterId ? "handoff" as const : "switch" as const;
@@ -4416,45 +4418,6 @@ export type AgentConversationOpenConfig = AgentSessionOpenConfig;
 export type AgentConversationOpenResult = AgentSessionOpenResult;
 export type ManagedAgentConversationCreationBootstrap = ManagedAgentSessionCreationBootstrap;
 export type ManagedAgentConversationPersistenceSnapshot = ManagedAgentSessionPersistenceSnapshot;
-
-function ownHandoffOptions(options: HandoffOptions): HandoffOptions {
-  return Object.freeze({
-    ...(options.summary === undefined ? {} : { summary: options.summary }),
-    ...(options.target === undefined
-      ? {}
-      : {
-          target: Object.freeze({
-            adapterId: options.target.adapterId,
-            ...(options.target.mode === undefined ? {} : { mode: options.target.mode }),
-            ...(options.target.adapter === undefined
-              ? {}
-              : {
-                  adapter: Object.freeze({
-                    ...(options.target.adapter.cancelGraceMs === undefined
-                      ? {}
-                      : { cancelGraceMs: options.target.adapter.cancelGraceMs }),
-                    ...options.target.adapter,
-                    command: Object.freeze([...options.target.adapter.command]) as unknown as string[],
-                    ...(options.target.adapter.ptyCommand
-                      ? {
-                          ptyCommand: Object.freeze([
-                            ...options.target.adapter.ptyCommand,
-                          ]) as unknown as string[],
-                        }
-                      : {}),
-                  }),
-                }),
-            ...(options.target.config === undefined
-              ? {}
-              : { config: Object.freeze({ ...options.target.config }) }),
-          }),
-        }),
-    ...(options.continuation === undefined
-      ? {}
-      : { continuation: Object.freeze({ ...options.continuation }) }),
-    ...(options.targetPrompt === undefined ? {} : { targetPrompt: options.targetPrompt }),
-  });
-}
 
 function normalizeHandoffContinuation(options: HandoffOptions):
   | { readonly kind: "generated"; readonly summaryPrompt: string }
