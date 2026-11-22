@@ -14,6 +14,17 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 
 ## Added
 
+- **Durable channel intents:** Agent backends can expose the optional `channels` repository
+  (`ChannelPersistence`) and advertise it through `capabilities.channels`. SQLite persists each channel's
+  latest intent and version. Native conversation deletion commits the retirement intent with the conversation
+  deletion.
+- **Native host records:** With a durable channel backend, the channel methods on `host.records` throw.
+  Use the async `host.pendingChannelChanges()` to read pending intents. Submission methods continue to
+  use the configured host records.
+- **Native operator errors:** `HarnessUnavailableError` exposes a readonly `code` of `not_running`,
+  `failed`, `stopped`, `open_timeout`, `start_failed`, or `reopen_failed`. The async operator
+  `suspendChannel()` and `resumeChannel()` methods reject with `not_running` while offline.
+  `resumeChannel()` also rejects with `channel_retired` while a retirement is pending.
 - **Stored controller kind:** Agent conversation rows record `controller_kind` as `acp` or `native`. The SQLite
   schema 16 to 17 migration leaves older rows unset. Native deletion uses the stored kind to retire channels,
   including conversations that never completed a prompt. Switches and handoffs across controller kinds reject

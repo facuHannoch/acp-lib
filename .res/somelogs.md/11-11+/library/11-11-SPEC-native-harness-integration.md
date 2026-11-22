@@ -1175,6 +1175,11 @@ the agent or a channel stuck nor silently lose data in normal operation, are rec
   mounts a durable volume (Where the session lives).
 - **Offline channel changes are eventually applied, not immediate.** A running harness can take work before a
   retirement or suspension arrives (Durable channel intents).
+- **Deletes before the first open leave retired tombstones.** The harness creates and retires the channel
+  in the same open batch. Each such deletion leaves one empty retired channel, which cannot take work.
+- **The memory fallback loses pending channel intents on Agent restart.** Backends without
+  `capabilities.channels` use host records. The default memory store is process-local, and the fallback
+  writes the conversation deletion and its retirement intent separately.
 - **Legacy rows and custom backends that omit controller kind rely on fallback detection.** Retirement
   uses the provider descriptor or a live conversation. An unused native channel can remain open after deletion
   following an Agent restart if neither identifies it.
