@@ -30,6 +30,9 @@ export interface NativeFunctionContext {
   readonly channel: string;
   readonly turnId: string;
   readonly tool: string;
+  /** Configured contributors from the harness authorization snapshot.
+   * Order grants no precedence. An empty list means none contributed. */
+  readonly policyNames: readonly string[];
   /** Aborts when the harness stops waiting: the tool's deadline, an interrupt, a stop or a lost connection. */
   readonly signal: AbortSignal;
 }
