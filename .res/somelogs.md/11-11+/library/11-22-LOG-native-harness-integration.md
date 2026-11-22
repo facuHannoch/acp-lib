@@ -194,3 +194,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 - alpha moved to `d403bf4` (worker delivery merged by haurness-l, on R1). R2 merges with it cleanly (trial merge);
   cod2a merges alpha after the step 2 gate. The orchestrator's O1 builds on the worker repository and adds no
   second assignments store.
+- R2 steps 1–2 review in from clad2a, `c994609` ([review](reports/11-22-REVIEW-R2-steps1-2.md)): no blocking
+  findings. The neutral view is additive (`tool` on handler callbacks, never in records; snapshots unchanged);
+  command matching held against 40 of 40 bypass attempts; most restrictive across kind and command. For step 3:
+  validate rule values and key prefixes at config time; document that a `command:` allow can't override a stricter
+  `kind:execute`; a changelog line for `tool`.
