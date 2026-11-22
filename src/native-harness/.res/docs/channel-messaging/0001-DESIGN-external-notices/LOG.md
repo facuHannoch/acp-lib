@@ -279,3 +279,24 @@ Stable retry was verified at the repository boundary. The orchestrator
 integration gate still owns host flushing through channel/notify,
 lost wire acknowledgements, and retries after resume or earlier channel
 changes. Haurness-l coordinates integration and merge order.
+
+## Final R1 compatibility verification
+
+Merged Core's reviewed R1 `70ba71a` in `395d337`, then the final
+pre-alpha base `a180301` in `b5418f60c7d096f7b753606c2a5efc4c0ac4c0fb`.
+The schema conflict resolution retains R1's nullable controller-kind
+repair and the additive worker assignment table in the same migration
+transaction. Schema 18 accepts final and early schema 17. Fixture tests
+cover 16, final 17, and early 17 without the column. Existing native
+kind survives, and databases without the column gain a nullable kind.
+Each fixture exercises the worker repository after migration.
+
+Both typechecks passed. Focused migration, persistence and worker
+replacement tests passed 43/0. The full harness suite passed 360/0.
+The first full root run, concurrent with the harness suite, passed
+1472 tests with one audit flush timeout. The audit file passed 12/0
+in isolation. No timeout settings were changed.
+
+The full serial root rerun on the merged runtime passed 1473/0 across
+135 files, with 35 snapshots. The combined branch is ready for independent
+delta review. Worker delivery has not been merged into alpha.
