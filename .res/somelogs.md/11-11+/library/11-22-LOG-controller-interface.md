@@ -20,3 +20,10 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
 
 - Branches created at `d11cd18`; roles confirmed by the user.
 - A1 assigned to cod2a (verification of the characterization tests).
+- A1 report in from cod2a, `f020860` (report only; [report](reports/11-22-REPORT-A1-verify.md)): clean baseline at
+  `d11cd18`, typecheck clean, 1,727 tests in 175 files (352 s); characterization file 35/35 three times, snapshot
+  hash unchanged. Every case exercised; six marked "different" (other fixture or observation point). No fixes.
+  Open: fixture names in the spec, the observation points for reattach and capabilities, explicit force stop, and
+  a fixed 50 ms wait in the bridge test. Error notes: ID numbering order, the fixed PTY wait, sandboxed fixture
+  connections.
+- A1 sent to clad2a for review.
