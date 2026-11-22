@@ -281,3 +281,12 @@ forced-deadline case.
 
 Both package typechecks and all 87 native tests passed on the follow-up.
 Independent review is pending.
+
+Clad approved `27c7166e96a1f91ee8420f8743b5745f2fb19490` independently.
+Root typecheck passed on a clean checkout. Ten serial and three concurrent
+runs of the complete rehearsal test file passed all 130 tests; no rehearsal
+stdio child remained. The original intermittent deadline before settlement
+remains unroot-caused. The bounded diagnostics can identify the stage and
+active phase if it recurs. The CI barriers serialize bursts while preserving
+concurrency within them. Timing-driven overlap between bursts is exercised
+by the real timed CLI run.
