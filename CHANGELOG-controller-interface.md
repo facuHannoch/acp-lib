@@ -5,7 +5,9 @@
 - ACP and native conversations emit `permission_requested` for a request and exactly one
   `permission_resolved` with its outcome and source. Sources are `handler`, `consumer`, `default`,
   `timeout`, and `turn_ended`. The last means the turn's lifecycle closed the request, including
-  force stop or conversation stop. Native host responder decisions are reported as `handler`.
+  force stop or conversation stop. `permission_resolved` is delivered in a microtask after the
+  request closes, so all request listeners see the request first. Native host responder decisions
+  are reported as `handler`.
   Agent-owned permission records keep their existing format.
 - Set `answersPermissions: true` on a conversation or in `conversationDefaults` to answer an
   open ask with `await conversation.answerPermission(id, optionId)`. The result contains
@@ -16,7 +18,8 @@
   Time starts at ACP client or native host receipt.
   A native request recovered by observation uses the first time that host sees it, and replay
   preserves that timestamp. Expiry refuses the request. The native harness still has its own
-  ten-minute timeout.
+  ten-minute timeout. A local detach, force stop, or stop sends a denial for an open
+  conversation-owned approval. A host responder retains authority if only its observer detaches.
 - Final policy levels resolve immediately. For ask, a prompt handler takes precedence, then a
   declared consumer can answer, and an unattended ask is refused. Prompt handlers retain their
   existing lifetime. The permission rule callback receives the neutral native tool name and the

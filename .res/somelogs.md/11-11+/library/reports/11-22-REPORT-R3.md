@@ -28,7 +28,7 @@ The changes reuse the R2 matcher and neutral request, existing permission record
 | `src/controller.ts` | 840 | 840 |
 | `src/agent/conversation-manager.ts` | 1,085 | 1,085 |
 | `src/native/host.ts` | 884 | 877 |
-| `src/native/controller.ts` | 601 | 584 |
+| `src/native/controller.ts` | 601 | 599 |
 
 The focused stdio run initially stalled in restricted execution at the ACP connection handshake. The offline fixture processes completed with the required execution approval. No live providers were used.
 
@@ -39,3 +39,22 @@ The first clean gate on `fef2020` found three stand-in failures. On `8776401`, c
 The deadline follow-up makes the timed-out refusal independent of completion of the requested record. [Deadline finding](../../../../../.agents/.artifacts/common/errors/11-22-r3-permission-deadline-behind-record-write.md)
 
 The final clean archive of `ce5e3d5` passed typecheck and all **1,507 tests across 137 files** in 94.65 s. All 35 A1 snapshots passed. The snapshot hash matched the R2 grounding hash before and after the run. Logs are at `/tmp/acp-r3-gate.zqpeZM/typecheck.log` and `/tmp/acp-r3-gate.zqpeZM/full.log`.
+
+## Step 1 review follow-up
+
+`8776401` is the standalone fix for the fake host failure reported against `c0fcf62`. The same failure occurred
+on the clean run of `fef2020`. The fix reuses the production ticket and keeps all three controller assertions.
+
+`a95f82a` sends a best-effort native denial when a local detach or stop closes an unanswered approval. The
+controller also releases approvals held before a prepared turn starts. Real stdio tests assert a matching
+`approval_closed` on detach and a single reply on detach, force stop, or stop. An explicitly configured host
+responder remains authoritative when only its observer detaches. Already confirmed gates and disconnected
+transports need no reply. [Detach finding](../../../../../.agents/.artifacts/common/errors/11-22-r3-native-approval-open-after-detach.md)
+
+The step 2 commit includes `expiresAt` for consumer waits. The final spec and changelog document that
+`permission_resolved` follows in a microtask after closure. The stdio rig exposes no shorter approval deadline.
+The harness's gate suite exercised its own shortened timeout in process, and the controller fixture exercised the
+`approval_closed` wire reason and its mapping to `by: "timeout"`. The native stdio suite separately exercised the
+shortened acp-client consumer deadline.
+
+The clean R3 gate on `a95f82a` passed typecheck and **1,509 tests across 137 files** in 103.96 s. All 35 A1 snapshots passed and their file still matches the R2 grounding hash. The separate focused run of the harness gate and native permission cases passed all 20 selected tests, and the final controller file passed all 21 tests. Full logs are at `/tmp/acp-r3-local-close-gate.0qtdd7/typecheck.log` and `/tmp/acp-r3-local-close-gate.0qtdd7/full.log`.

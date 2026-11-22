@@ -774,7 +774,10 @@ user answers                  →  conversation.answerPermission(id, optionId)  
 - **Every request closes with an event:** `permission_resolved { id, outcome, by }`, `by` being handler, consumer,
   default, timeout or `turn_ended`, so a UI can close its dialog. `turn_ended` means the turn's lifecycle
   closed the request, including force stop or conversation stop. Native host responder answers count as handler
-  answers. Request events carry `expiresAt` only while routing to a consumer wait.
+  answers. The conversation emits the resolution in a microtask after closing the request,
+  after all request listeners have been notified. Request events carry `expiresAt` only while routing
+  to a consumer wait. When a local close leaves an unanswered native gate open, the conversation sends
+  a denial. The configured host responder retains authority when only the conversation observer detaches.
 - **The per-prompt handler stays as a shortcut:** if the running turn's prompt brought one, it is called and nothing
   waits on events (the request event is still emitted, and resolved `by: "handler"`). When a turn took several messages, the first message in its cause that brought a permission
   handler provides it, the rule steering's combined runs use today (`src/steering/combine.ts:23`). A message folded in
