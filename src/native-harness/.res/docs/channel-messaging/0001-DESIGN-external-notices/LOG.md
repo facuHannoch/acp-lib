@@ -300,3 +300,13 @@ in isolation. No timeout settings were changed.
 The full serial root rerun on the merged runtime passed 1473/0 across
 135 files, with 35 snapshots. The combined branch is ready for independent
 delta review. Worker delivery has not been merged into alpha.
+
+Clad independently approved `d403bf40c13cdb910f1d302e643997b046978af8`
+(runtime `b5418f6`). Both typechecks, the serial root suite (1473/0)
+and two focused runs (43/0 each) passed. The first harness run had one
+invalid-batch test failure (359/1). The case passed three isolated runs,
+and the full harness rerun passed 360/0. The parallel audit flush timeout
+and the harness case were load-sensitive in these runs. Neither test or
+its timeout settings changed in this delta. The same on-open column
+repair also covers pre-merge schema 18 databases missing controller kind.
+Haurness-l owns integration into alpha.
