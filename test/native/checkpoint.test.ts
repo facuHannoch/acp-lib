@@ -17,6 +17,7 @@ import { spawnHarness } from "../../src/native-harness/test/helpers/stdio.ts";
 import type { NativeApprovalResponder } from "../../src/native/host.ts";
 import type { Agent } from "../../src/agent.ts";
 import type { AgentSession } from "../../src/agent-session.ts";
+import type { AgentConversationOwnerLifecycle } from "../../src/agent-conversation-owner.ts";
 import { UnsupportedError } from "../../src/errors.ts";
 import { NativeTurnError } from "../../src/native/controller.ts";
 import { createFileHostRecords } from "../../src/native/records.ts";
@@ -31,6 +32,7 @@ async function rigWith(...args: Parameters<typeof nativeRig>) {
   return rig;
 }
 const two = async (agent: Agent) => [await agent.conversations.create({ title: "Alice" }), await agent.conversations.create({ title: "Bob" })] as unknown as [AgentSession, AgentSession];
+const lifecycleOf = (session: AgentSession) => (session as unknown as { ownerLifecycle: AgentConversationOwnerLifecycle }).ownerLifecycle;
 const kinds = (events: Seen[], prefix = "turn_") => events.filter((event) => event.kind.startsWith(prefix)).map((event) => `${event.kind}:${event.turnId}`);
 const track = <T>(promise: Promise<T>) => {
   const state: { settled: boolean; value?: T; error?: any } = { settled: false };
@@ -56,6 +58,9 @@ describe("the first end-to-end checkpoint", () => {
     const agent = await rig.open();
     const host = agent.nativeHarness!;
     const [alice, bob] = await two(agent);
+    const completed = spyOn(lifecycleOf(alice), "afterPrompt");
+    const hookIds: string[] = [];
+    const beforeDispatch = async (messageId: string) => { hookIds.push(messageId); };
     const aliceEvents = rig.watch(alice), bobEvents = rig.watch(bob);
     // Creating and showing conversations launched nothing.
     expect(host.state).toBe("stopped");
@@ -65,7 +70,9 @@ describe("the first end-to-end checkpoint", () => {
     const asked: Array<{ who: string; request: PermissionRequest }> = [];
     let allowAlice!: (outcome: PermissionOutcome) => void;
     // Concurrent first sends.
-    const a1 = alice.prompt("a1", { onPermissionRequest: (request) => { asked.push({ who: "alice", request }); return new Promise((resolve) => { allowAlice = resolve; }); } });
+    const a1 = alice.prompt({ text: "a1", beforeDispatch, handlers: {
+      onPermissionRequest: (request) => { asked.push({ who: "alice", request }); return new Promise((resolve) => { allowAlice = resolve; }); },
+    } });
     const b1 = bob.prompt("b1", { onPermissionRequest: (request) => { asked.push({ who: "bob", request }); return { outcome: "selected", optionId: "allow_once" }; } });
 
     // Bob finishes on his own while Alice's turn is still waiting for her approval.
@@ -88,7 +95,7 @@ describe("the first end-to-end checkpoint", () => {
     expect(bob.internalSessionId).toBe(agent.id);
 
     // Input sent while Alice's turn works: accepted durably, not yet taken.
-    const a2 = alice.prompt({ text: "a2", delivery: "steer" });
+    const a2 = alice.prompt({ text: "a2", delivery: "steer", beforeDispatch });
     await until(async () => (await host.status()).channels.find((channel) => channel.channel === alice.id)!.pending.includes(a2.id), "a2 to be accepted");
     const a2State = track(a2);
     expect(a2State.settled).toBe(false);
@@ -103,6 +110,9 @@ describe("the first end-to-end checkpoint", () => {
     // The steered input was taken by the turn that was running: both settle with that turn.
     expect(first).toMatchObject({ status: "completed", text: "Recording.\n\nDone." });
     expect(second.operationId).toBe(first.operationId);
+    expect(first.operationId).not.toBe(a1.id);
+    expect(hookIds).toEqual([a1.id, a2.id]);
+    expect(completed).toHaveBeenCalledWith(expect.objectContaining({ operationId: first.operationId, messageIds: hookIds }));
     expect(kinds(aliceEvents)).toEqual([`turn_started:${first.operationId}`, `turn_completed:${first.operationId}`]);
     expect(aliceEvents.find((event) => event.kind === "turn_started")!.cause.messageIds).toEqual([a1.id]);
     expect(kinds(bobEvents)).toEqual([`turn_started:${bobResult.operationId}`, `turn_completed:${bobResult.operationId}`]);
@@ -113,6 +123,51 @@ describe("the first end-to-end checkpoint", () => {
     expect(await recordedReplies(agent, alice)).toEqual(["Recording.", "Done."]);
   }, 30_000);
 
+  test("a rejected native dispatch hook rejects the message without a push or a turn", async () => {
+    const rig = await rigWith();
+    const agent = await rig.open();
+    const host = agent.nativeHarness!;
+    const [alice] = await two(agent);
+    const events = rig.watch(alice);
+    const push = spyOn(host, "push");
+    const failed = spyOn(lifecycleOf(alice), "promptFailed");
+    const error = new Error("native hook failed");
+    const hookIds: string[] = [];
+    const prompt = alice.prompt({ text: "do not send", async beforeDispatch(messageId) {
+      hookIds.push(messageId);
+      throw error;
+    } });
+    await expect(prompt).rejects.toBe(error);
+    expect(hookIds).toEqual([prompt.id]);
+    expect(push).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled();
+    expect(kinds(events)).toEqual([]);
+    expect(await alice.prompt("after rejection")).toMatchObject({ status: "completed", text: "reply 1" });
+  }, 30_000);
+
+  test("an interrupted native turn finalizes with the input's message ID", async () => {
+    const rig = await rigWith();
+    rig.script([hold("interrupted-hook"), reply("Later.")]);
+    const agent = await rig.open();
+    const [alice] = await two(agent);
+    const completed = spyOn(lifecycleOf(alice), "afterPrompt");
+    const toolStarted = barrier();
+    const hookIds: string[] = [];
+    const input = alice.prompt({
+      text: "interrupt this",
+      async beforeDispatch(messageId) { hookIds.push(messageId); },
+      handlers: { onActivity(event) { if (event.kind === "tool") toolStarted.open(); } },
+    });
+    await toolStarted.waiting;
+    alice.interrupt();
+    const result = await input;
+    expect(result.status).toBe("cancelled");
+    expect(hookIds).toEqual([input.id]);
+    expect(completed).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: result.operationId, messageIds: hookIds, result,
+    }));
+  }, 30_000);
+
   test("4: a conversation-level forceStop interrupts only its own turn; the other channel and the shared process keep running; the interrupted channel takes fresh input", async () => {
     const rig = await rigWith();
     rig.script([hold("k"), reply("Finished."), reply("Next.")]);
@@ -120,14 +175,20 @@ describe("the first end-to-end checkpoint", () => {
     const host = agent.nativeHarness!;
     const [alice, bob] = await two(agent);
     const aliceEvents = rig.watch(alice);
-    const a1 = track(alice.prompt("a1")), b1 = bob.prompt("b1");
+    const failed = spyOn(lifecycleOf(alice), "promptFailed");
+    const alicePrompt = alice.prompt("a1");
+    const a1 = track(alicePrompt), b1 = bob.prompt("b1");
     await until(() => rig.effects().filter((line) => line === "start:k").length === 2, "both tools to start");
     await until(() => alice.state.operation?.stage === "tool_running" && bob.state.operation?.stage === "tool_running", "both turns to be supervised");
 
     await alice.connection.forceStop();
     await until(() => a1.settled, "alice's prompt to settle");
     expect(String(a1.error)).toContain("forced stop");
-    expect(aliceEvents.some((event) => event.kind === "turn_failed")).toBe(true);
+    const failure = aliceEvents.find((event) => event.kind === "turn_failed");
+    expect(failure).toBeDefined();
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: failure!.turnId, messageIds: [alicePrompt.id],
+    }));
     // The harness interrupted exactly that turn. Bob's is untouched, in the same process.
     await until(async () => (await host.status()).channels.find((channel) => channel.channel === alice.id)!.activeTurn === undefined, "alice's turn to end in the harness");
     const status = await host.status();

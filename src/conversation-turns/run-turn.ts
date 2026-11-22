@@ -129,11 +129,18 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
   let closed: OperationMeteringRecord | null = null;
   let transcriptClosed = false;
   let providerSettled = false;
-  // A lazily created thread acquires its provider session during dispatch, so this is the
-  // closest observable acquisition time when `session/new` happens inside `prompt()`.
-  const dispatchedAt = new Date().toISOString();
+  let hookInProgress = false;
   try {
     // Phase 4: dispatch under the supervisor.
+    if (sent) {
+      hookInProgress = true;
+      for (const message of item.parts ?? [item]) {
+        if (message.beforeDispatch) await message.beforeDispatch("id" in message ? message.id : item.turnId);
+      }
+      hookInProgress = false;
+    }
+    // A lazy thread acquires its provider session during dispatch.
+    const dispatchedAt = new Date().toISOString();
     // The prepared turn starts nothing; the supervisor subscribes to its output, then calls its
     // `prompt()` (the attachment barrier).
     let res = await ctx.supervisedPrompt(ctx.controller, turnId, "turn",
@@ -239,6 +246,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
     if (ctx.owner.lifecycle) {
       const completed = {
         operationId: turnId,
+        messageIds: [...(turn.cause.messageIds ?? [])],
         agentSessionId: ctx.owner.agentSessionId!,
         agentConversationId: ctx.owner.agentConversationId,
         targetProviderContextId,
@@ -291,6 +299,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
       });
       await ctx.owner.lifecycle?.promptFailed({
         operationId: turnId,
+        messageIds: [...(turn.cause.messageIds ?? [])],
         agentSessionId: ctx.owner.agentSessionId!,
         agentConversationId: ctx.owner.agentConversationId,
         ...(item.participantId ? { participantId: item.participantId } : {}),
@@ -340,6 +349,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
         (persistenceError) => ctx.log.warn("transcript_terminal_write_failed", { error: String(persistenceError) }),
       );
     }
+    if (hookInProgress) throw err;
     if (err instanceof OperationStalledError) {
       err.messages = messages;
       err.metering = record;

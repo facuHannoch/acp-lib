@@ -12,7 +12,7 @@ import type { MessagePart } from "../media/parts.ts";
  */
 export type PromptDelivery = "steer" | "queue";
 
-/** Identifies one prompt while it waits. It is the prompt's operation id. */
+/** Identifies one prompt. A turn can take several messages with distinct ids. */
 export type PendingMessageId = string;
 
 /** Why a pending message was delivered when it was. */
@@ -62,6 +62,7 @@ export type MessageEvent =
 
 /** One original message of a combined prompt. */
 export interface CombinedMessage {
+  readonly beforeDispatch?: (messageId: string) => Promise<void>;
   readonly messageParts?: readonly MessagePart[];
   readonly attachments?: readonly Attachment[];
   readonly id: PendingMessageId;
@@ -85,6 +86,7 @@ export interface SteeringPrompt {
   participantId?: string;
   consumerMetadata?: PersistenceJsonValue;
   handlers?: PromptHandlers;
+  readonly beforeDispatch?: CombinedMessage["beforeDispatch"];
   attachments?: Attachment[];
   messageParts?: readonly MessagePart[];
   /** Present only on a combined prompt: the original messages, in order. */

@@ -244,6 +244,11 @@ export class NativeController implements ConversationController, ChannelPort {
       }
       for (const attachment of message.attachments ?? []) requireMedia(mediaKind(attachment.mimeType));
     }
+    // The harness assigns turn ids after acceptance. Use the input's id before any push.
+    for (const message of run.messages) {
+      if (message.beforeDispatch) await message.beforeDispatch(message.id);
+    }
+    if (this.#stopped) throw new Error("the conversation is stopped");
     if (!this.#detach) await this.start();
     for (const message of run.messages) {
       await this.#host.push({

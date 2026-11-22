@@ -37,6 +37,7 @@ export interface PromptQueueItem extends SteeringPrompt {
  */
 export interface TurnContext {
   readonly turnId: string;
+  /** Live for backend turns so finalization can see messages added by `turn_took`. */
   readonly cause: TurnCause;
   readonly messages?: PromptQueueItem;
   /**

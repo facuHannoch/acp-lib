@@ -249,7 +249,7 @@ export async function runBackendTurn(host: BackendTurnHost, current: Conversatio
     // The consumer's own handlers, when a message the turn took brought them: its stream and its
     // permission requests reach the consumer that sent the message, as for a turn the session sends.
     const handlers = host.turns.handlersOf(item.messageIds);
-    const result = await host.run({ turnId: item.turnId, cause: item.cause, ...(handlers ? { handlers } : {}) });
+    const result = await host.run({ turnId: item.turnId, get cause() { return item.cause; }, ...(handlers ? { handlers } : {}) });
     host.emit({ kind: "turn_completed", turnId: item.turnId, result: copyPromptResult(result) });
     host.turns.end(item, { result }, host.log);
   } catch (error) {

@@ -89,8 +89,84 @@ async function detachedConversation() {
 }
 
 describe("the turn path through send", () => {
+  test("beforeDispatch awaits the durable prompt and runs before prepareTurn", async () => {
+    const { agent, conversation } = await agentConversation(ECHO);
+    const prepare = spyOn(conversation.connection, "prepareTurn");
+    const persisted = spyOn(lifecycleOf(conversation), "beforePrompt");
+    const hook = async (operationId: string) => {
+      expect(persisted).toHaveBeenCalledTimes(1);
+      expect(prepare).not.toHaveBeenCalled();
+      const { records } = await agent.persistence.records.list(conversation.id);
+      expect(records).toContainEqual(expect.objectContaining({ operationId, kind: "message", role: "user" }));
+    };
+    const handle = conversation.prompt({ text: "persist then dispatch", beforeDispatch: hook });
+    expect(await handle).toMatchObject({ operationId: handle.id, status: "completed" });
+    expect(prepare.mock.calls.map(([id]) => id)).toEqual([handle.id]);
+  }, 20_000);
+
+  test("a rejected beforeDispatch abandons the turn and rejects with the hook error", async () => {
+    const { conversation, events } = await agentConversation(ECHO);
+    const prepare = spyOn(conversation.connection, "prepareTurn");
+    const abandon = spyOn(conversation.connection, "abandonTurn");
+    const error = new Error("hook failed");
+    const handle = conversation.prompt({ text: "do not dispatch", async beforeDispatch() { throw error; } });
+    await expect(handle).rejects.toBe(error);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(abandon.mock.calls).toEqual([[handle.id, error]]);
+    expect(events.filter((event) => event.kind.startsWith("turn_")).map((event) => event.kind)).toEqual(["turn_started", "turn_failed"]);
+    await expect(conversation.prompt("queue continues")).resolves.toMatchObject({ status: "completed" });
+  }, 20_000);
+
+  test("combined steer awaits hooks in message order and one rejection fails the whole run", async () => {
+    const { conversation, events } = await agentConversation(STEER);
+    const prepare = spyOn(conversation.connection, "prepareTurn");
+    const abandon = spyOn(conversation.connection, "abandonTurn");
+    const failed = spyOn(lifecycleOf(conversation), "promptFailed");
+    const error = new Error("second hook failed");
+    const order: string[] = [];
+    const { promise: entered, resolve: enter } = Promise.withResolvers<void>();
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    let messages: ReturnType<AgentSession["prompt"]>[] = [];
+    let outcomes: Promise<unknown[]> | undefined;
+    const first = conversation.prompt(SEQUENTIAL, {
+      onActivity(event) {
+        if (event.kind !== "tool" || messages.length > 0) return;
+        const a = conversation.prompt({ text: "First steer.", delivery: "steer", async beforeDispatch(id) {
+          order.push(`first:${id}`);
+          enter();
+          await gate;
+        } });
+        const b = conversation.prompt({ text: "Second steer.", delivery: "steer", async beforeDispatch(id) {
+          order.push(`second:${id}`);
+          throw error;
+        } });
+        messages = [a, b];
+        outcomes = Promise.all(messages.map((message) => message.catch((reason: unknown) => reason)));
+      },
+    });
+    try {
+      await within(entered, 10_000, "the first steer hook");
+      expect(order).toEqual([`first:${messages[0]!.id}`]);
+      expect(prepare.mock.calls.map(([id]) => id)).toEqual([first.id]);
+    } finally {
+      release();
+    }
+    await first;
+    expect(await outcomes).toEqual([error, error]);
+    expect(order).toEqual([`first:${messages[0]!.id}`, `second:${messages[1]!.id}`]);
+    expect(prepare.mock.calls.map(([id]) => id)).toEqual([first.id]);
+    expect(abandon.mock.calls).toContainEqual([messages[0]!.id, error]);
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: messages[0]!.id, messageIds: messages.map(({ id }) => id), error,
+    }));
+    expect(ofKind(events, "turn_failed").map((event) => event.turnId)).toEqual([messages[0]!.id]);
+  }, 20_000);
+
   test("a combined steer run's cause lists both message ids; record ids stay keyed by the turn", async () => {
     const { agent, conversation, events } = await agentConversation(STEER);
+    const completed = spyOn(lifecycleOf(conversation), "afterPrompt");
+    const hookIds: string[] = [];
+    const beforeDispatch = async (messageId: string) => { hookIds.push(messageId); };
     let a!: ReturnType<AgentSession["prompt"]>;
     let b!: ReturnType<AgentSession["prompt"]>;
     let fired = false;
@@ -98,13 +174,15 @@ describe("the turn path through send", () => {
       onActivity: (event) => {
         if (event.kind !== "tool" || fired) return;
         fired = true;
-        a = conversation.prompt({ text: "Also include the length of each word in your final answer.", delivery: "steer" });
-        b = conversation.prompt({ text: "No, actually, only report the length of the longest word.", delivery: "steer" });
+        a = conversation.prompt({ text: "Also include the length of each word in your final answer.", delivery: "steer", beforeDispatch });
+        b = conversation.prompt({ text: "No, actually, only report the length of the longest word.", delivery: "steer", beforeDispatch });
       },
     });
     await first;
     const [ra, rb] = await Promise.all([a, b]);
     expect(ra).toBe(rb);
+    expect(hookIds).toEqual([a.id, b.id]);
+    expect(completed).toHaveBeenCalledWith(expect.objectContaining({ operationId: ra.operationId, messageIds: hookIds }));
 
     const started = ofKind(events, "turn_started");
     expect(started).toEqual([
