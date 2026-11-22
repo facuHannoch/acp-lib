@@ -62,3 +62,15 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   finalized ACP worker completion from the worker conversation's own records in the Agent database, keyed by an
   assignment → worker turn id persisted before the work starts (O1); a death before finalization is
   `worker_interrupted`.
+- R1 step 2 in from cod2a: implementation `56c1b3a`, report `a902ccf`. Delivery extracted to
+  `src/native/channel-changes.ts`; `host.ts` 984 → 887; error codes in `src/native/errors.ts`; both decisions and the
+  ordering barriers tested. cod2a: three disk-backed full runs had different timeouts, a RAM-backed run green
+  (1,442). Coordinator run on disk: green, 1,442 in 132 files, 286 s. Sent to clad2a, with whether step 2 slowed
+  anything.
+- Worker delivery (haurness-l, Cod1a, Clad1a): contract approved at `89f873d` (docs only). Base, schema and file
+  ownership decided by the coordinator (next entry).
+- Decision, sent to Cod1a and haurness-l: base on `a902ccf` (R1 step 2, which already has schema 17); schema 18 for
+  worker delivery; Cod1a owns its new persistence files and may make additive edits to the shared persistence files
+  (R1 doesn't touch them again); `src/native/*`, `conversation-manager.ts`, `agent-session.ts`, `client.ts` and
+  `src/permissions/` stay R1–R3's. Worker delivery merges into alpha after R1; orchestrator O1 builds on that
+  repository instead of a second assignments store.
