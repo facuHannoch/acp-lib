@@ -13,6 +13,18 @@ export class HarnessUnavailableError extends Error {
   }
 }
 
+/** The running harness lacks a capability required by this integration. */
+export class HarnessIncompatibleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HarnessIncompatibleError";
+  }
+}
+
+export function pendingRetirementError(channel: string): HarnessClientError {
+  return new HarnessClientError("channel_retired", `Channel ${channel} is pending retirement`);
+}
+
 export const codeOf = (error: unknown): string | undefined => error instanceof HarnessClientError ? error.code : undefined;
 /** The request's outcome is unknown: it may or may not have been applied. */
 export const ambiguous = (error: unknown) => { const code = codeOf(error); return code === "timeout" || code === "transport_closed" || code === "closed"; };

@@ -120,6 +120,7 @@ interface ConversationRow {
   metadata: string | null;
   adopted: number;
   adopt_provider_session_id: string | null;
+  controller_kind: NonNullable<AgentConversationSummary["controllerKind"]> | null;
 }
 
 interface IdentityRow {
@@ -487,8 +488,8 @@ class SqliteConversationPersistence implements ConversationPersistence {
       runSql(this.database,
         `INSERT INTO conversations(
           agent_conversation_id, agent_session_id, title, created_at, updated_at, metadata,
-          adopted, adopt_provider_session_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          adopted, adopt_provider_session_id, controller_kind
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         input.agentConversationId,
         input.agentSessionId,
         input.title ?? null,
@@ -497,6 +498,7 @@ class SqliteConversationPersistence implements ConversationPersistence {
         input.metadata ?? null,
         input.adoptProviderSessionId === undefined ? 0 : 1,
         input.adoptProviderSessionId ?? null,
+        input.controllerKind ?? null,
       );
       const participants = input.participants?.length
         ? input.participants
@@ -2104,6 +2106,7 @@ function summaryFromRowWithParticipants(
     agentConversationId: row.agent_conversation_id as AgentConversationId,
     agentSessionId: row.agent_session_id as AgentSessionId,
     ...(row.title !== null ? { title: row.title } : {}),
+    ...(row.controller_kind !== null ? { controllerKind: row.controller_kind } : {}),
     participants: Object.freeze(participants),
     createdAt: row.created_at,
     updatedAt: row.updated_at,

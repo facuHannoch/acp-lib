@@ -3,6 +3,7 @@ import {
   type AgentSessionId,
 } from "./agent-ids.ts";
 import { NativeHarnessHost } from "./native/host.ts";
+import { protectPendingRetirement } from "./agent/native-channel-lifecycle.ts";
 import {
   AgentAdapterRegistry,
   type AgentAdapterRegistration,
@@ -154,7 +155,7 @@ export class Agent {
           ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
           : {}),
         ...(config.conversationDefaults?.logger ? { logger: config.conversationDefaults.logger } : {}),
-      }, channels)
+      }, channels && protectPendingRetirement(persistence, channels))
       : null;
     this.audit = audit;
     const logger = config.conversationDefaults?.logger ?? noopLogger;

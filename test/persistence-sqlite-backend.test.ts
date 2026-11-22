@@ -529,12 +529,13 @@ describe("SQLite agent persistence", () => {
     });
     await backend.close();
 
-    // Restore the v16 layout. The two intent tables and migration entry are the only v17 schema changes.
+    // Restore the v16 layout before reopening with the v17 backend.
     {
       using legacy = new Database(path);
       legacy.exec(`
         DROP TABLE native_channel_intents;
         DROP TABLE native_channel_intent_clock;
+        ALTER TABLE conversations DROP COLUMN controller_kind;
         DELETE FROM schema_migrations WHERE version >= 17;
         INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (16, '2026-11-22T00:00:00.000Z');
       `);
@@ -543,11 +544,42 @@ describe("SQLite agent persistence", () => {
 
     const upgraded = await track(SqliteAgentPersistence.open({ path }));
     expect((await upgraded.conversations.get(conversationId))?.title).toBe("Existing");
+    expect((await upgraded.conversations.get(conversationId))?.controllerKind).toBeUndefined();
     expect(await upgraded.channels.pendingChanges()).toEqual([]);
+    await upgraded.conversations.delete(conversationId);
+    expect((await upgraded.conversations.get(conversationId))?.deletedAt).toEqual(expect.any(String));
     expect((await upgraded.channels.desire(conversationId, { lifecycle: "retired" })).version).toBe(1);
     await upgraded.close();
     using migrated = new Database(path, { readonly: true });
     expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 18 });
+    expect(migrated.query("SELECT controller_kind FROM conversations").get()).toEqual({ controller_kind: null });
+  });
+
+  test("adds controller kind to an early version 17 database and reopens it again", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const legacyId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: legacyId, title: "Early v17" });
+    await backend.close();
+    {
+      using early = new Database(path);
+      early.exec("ALTER TABLE conversations DROP COLUMN controller_kind");
+      expect(early.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 18 });
+    }
+
+    const upgraded = await track(SqliteAgentPersistence.open({ path }));
+    expect(await upgraded.conversations.get(legacyId)).toMatchObject({ title: "Early v17" });
+    expect((await upgraded.conversations.get(legacyId))?.controllerKind).toBeUndefined();
+    const id = createAgentConversationId();
+    const created = await upgraded.conversations.create({ agentSessionId, agentConversationId: id, controllerKind: "native" });
+    expect(created.controllerKind).toBe("native");
+    await upgraded.conversations.delete(id);
+    const deleted = await upgraded.conversations.get(id);
+    expect(deleted?.deletedAt).toEqual(expect.any(String));
+    await upgraded.close();
+
+    const reopened = await track(SqliteAgentPersistence.open({ path }));
+    expect(await reopened.conversations.get(id)).toEqual(deleted);
+    expect((await reopened.conversations.get(legacyId))?.controllerKind).toBeUndefined();
   });
 
   test("searches records through an external-content FTS5 index", async () => {

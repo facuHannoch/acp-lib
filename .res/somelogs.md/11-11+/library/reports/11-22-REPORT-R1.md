@@ -56,3 +56,88 @@ The second full run passed the ACP case. It finished with 1,441 passed and one f
 The third full run passed both earlier failures and finished with 1,439 passed and three audit-runtime deadlines across 132 files in 302.89 s. The system reported elevated disk I/O pressure during the failures. The first two runs passed all three cases. [Acknowledgement backoff timeout](../../../../../.agents/.artifacts/common/errors/11-22-r1-step2-audit-ack-timeout.md), [size rotation timeout](../../../../../.agents/.artifacts/common/errors/11-22-r1-step2-audit-rotation-timeout.md), [bounded-tail timeout](../../../../../.agents/.artifacts/common/errors/11-22-r1-step2-audit-tail-timeout.md)
 
 The fourth full run used a private RAM-backed clean archive and set `TMPDIR` to a private fixture directory on the same filesystem. It used the same commit, command and deadlines. `bun test ./test` passed **1,442 tests across 132 files** in 94.45 s, with zero failures and 35 snapshots. Snapshot hashes matched before and after and matched the original disk-backed archive. The run log is `/tmp/acp-r1-step2-ram-gate.CgVTVM/full.log`.
+
+## Step 3. Conversation creation, deletion, and channel intents
+
+Implementation commit `c600199` on `native-integration-r`, after the separately verified hook correction `7be9456`. The create and delete transaction helpers are in `src/agent/native-channel-lifecycle.ts`.
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `src/agent/conversation-manager.ts` | 1,098 | 1,092 |
+| `src/native/host.ts` | 887 | 884 |
+
+For durable native deletion, the scoped repositories write retirement, optionally delete checkpoints, and mark the conversation deleted in one transaction. The commit promise reserves a host delivery slot and participates in the startup scan barrier. Live delivery awaits the commit and uses the existing flush and acknowledgement path with the transaction's version. An RPC failure after local commit leaves the intent pending and logs the delivery failure. A stopped host leaves the committed retirement available for the next open. The existing records fallback remains available for backends without the channel repository.
+
+New native conversations commit their initial title and default policy intent alongside their conversation row. Later declarative title, policy and lifecycle changes use the channel repository. The check for a pending retirement and a declarative suspend or reopen write share a transaction. If retirement is pending, the host returns `channel_retired` and leaves its version intact. Operator suspend and resume stay direct and return `not_running` while offline.
+
+The tests fault the scoped retirement write, force a delete validation failure after a retirement was staged, and fault the initial channel write after the creation row was staged. Each test checks the rollback through the root repositories. The live-delivery test pauses the transaction after both writes. It verifies the wire delete sees the committed state and the original version, occurs once, and precedes a later push. The stopped test confirms that subsequent suspend and reopen desires preserve the pending retirement.
+
+A live native conversation can be identified before its first prompt. A separate scripted probe reproduced an older identification gap after a full Agent restart. A different conversation had opened the harness and cleared the unused channel's initial intent. The restarted Agent soft-deleted the unused conversation without recording retirement. The still-open harness channel then accepted an operator push and committed an assistant message. This can run work on a deleted conversation, so it was escalated to the coordinator for the user's decision. The first-attachment path remains as before. [Shared error note](../../../../../.agents/.artifacts/common/errors/11-22-r1-native-unused-channel-identity-after-restart.md)
+
+### Clean archive gate
+
+Clean archive of `c600199` using a private RAM-backed checkout and fixture directory. `bun run typecheck` passed. `bun test ./test` passed **1,451 tests across 132 files** in 97.76 s. All 35 snapshot hashes matched the hook-fix baseline and the archived files before the run. Logs are at `/tmp/acp-r1-step3-gate.ALQrzm/typecheck.log` and `/tmp/acp-r1-step3-gate.ALQrzm/full.log`. The focused rollback and delivery checks also passed in the disk-backed worktree.
+
+## Step 3b. Stored controller kind
+
+Implementation commit `f0e589a` on `native-integration-r`. Conversation creation stores `controllerKind` from the Agent's native adapter selection. SQLite stores it in the nullable `conversations.controller_kind` column, constrained to `acp` or `native`. Schema 17 is still unreleased. New schemas include the column, and upgrading from 16 adds it with null values for existing rows. The persisted summary represents those nulls as an absent kind.
+
+Deletion reads the stored kind through the same transaction scope that stages retirement and deletes the conversation. Legacy rows and custom backends that omit the kind fall back to the provider descriptor or live adapter. The Agent passes the kind to custom stores through the shared repository contract. This repository has no separate in-memory Agent conversation store. The spec's Limitations section records the legacy and custom fallback. Native startup and first provider attachment retain their existing behavior.
+
+The SQLite restart tests cover an unused native conversation with an acknowledged creation intent, a still-pending creation intent, and no title or policy. Each test opens a new Agent on the same database and verifies that deletion stages retirement without launching the harness. The first case simulates acknowledgement at the repository boundary. A separate legacy test verifies native retirement using an old row's active provider descriptor. The v16 upgrade test checks SQL null, summary shape, and soft deletion of the migrated row.
+
+Handoff and switch reject cross-kind transitions with `UnsupportedError` before recording a transition or emitting its events. The tests exercise both methods in both directions. The guard also keeps native-to-native switches unsupported. Reopening a row with a persisted kind likewise rejects a route that selects the other kind.
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `src/agent/conversation-manager.ts` | 1,092 | 1,089 |
+| `src/agent-session.ts` | 4,600 | 4,567 |
+| `src/native/host.ts` | 884 | 884 |
+
+Handoff option normalization moved to `src/handoff-options.ts`. The changelog covers the schema and transition behavior.
+
+### Clean archive gate
+
+Clean RAM-backed archive of `f0e589a`. Typecheck passed. `bun test ./test` passed **1,456 tests across 132 files** in 91.98 s. All 35 snapshots matched both the archive before the run and the step 3 baseline. Logs are at `/tmp/acp-r1-kind-gate.VjyYGG/typecheck.log` and `/tmp/acp-r1-kind-gate.VjyYGG/full.log`.
+
+## Step 4. Scripted stdio restart tests
+
+Test commit `be36dfc` adds six tests in `test/native/checkpoint.test.ts`. Each restart opens a new Agent over the same SQLite database and harness home. The stdio child runs the scripted fixture.
+
+| Case | Verified behavior |
+| --- | --- |
+| Delete while stopped | The original Agent writes retirement without relaunching. The new Agent reads the same version and opens the harness with the channel retired. A push is refused with `channel_retired`. |
+| Crash between apply and acknowledgement | A storage fault kills the harness child after `deleteChannel` commits and before its open response. The Agent still has the pending version. A new Agent sends that version again, receives `applied`, and clears it. A later push is refused and the channel keeps only its original assistant reply. |
+| Blocked retirement | Wire tool and suspension events establish a channel with pending input. Reopen reports `channel_busy` for the same retirement version. The channel remains suspended and the queued input stays in place. Operator resume rejects with `channel_retired` before sending an RPC. |
+| Unused channel already created by another conversation's open | Its initial intent is consumed and it has no provider descriptor. Deleting after an Agent restart retires it. The operator push used in the original orphan probe now rejects and there is no assistant output. |
+| Delete before the first harness open | The first create batch acknowledges the retirement. The load view shows only a retired channel. A push rejects, the timeline is empty, and the wire shows no turn start. |
+| Native conversation with no title or policy | It has no creation intent or channel in the initially open session. After an Agent restart, deletion still stages retirement. The following open retires the id and refuses a push. |
+
+A channel deleted before the harness first opened may appear as a retired tombstone (created and retired in the same open batch).
+
+The six focused stdio tests passed in 4.18 s. Tool and suspension waits subscribe to wire events with a 10 s deadline. Tests also have a 30 s outer deadline.
+
+## Done
+
+| Work | Commits |
+| --- | --- |
+| Grounding and async design | `1bac66c` |
+| Scoped channel repository and schema 17 | `61ecd21`, report `e55afcf` |
+| Native host wiring and ordering barriers | `56c1b3a`, report `a902ccf` |
+| Dispatch hook for worker delivery | `acc6d5d`, message identity correction `7be9456` |
+| Atomic native deletion and creation | `c600199`, report `49b5a1c`, operator resume guard `64060fa` |
+| Stored controller kind and legacy fallback | `f0e589a`, report `e701ba0`, early-v17 repair `8b17fbd` |
+| Scripted stdio restart verification | `be36dfc` |
+
+The async channel store is the durable authority. Host scans and delivery read it directly, without a mirror. Root SQLite reads wait for commits, and native deletion writes its intent in the same scoped transaction as the deleted row. Backends without channel intent support continue using the synchronous host records. Submission storage still follows the configured host records.
+
+SQLite schema 16 → 17 adds the channel intent table, the persistent version allocator, and nullable `conversations.controller_kind`. Startup repairs missing controller-kind columns on early schema 17 databases. Legacy rows and custom stores that omit the kind use descriptor or live-conversation fallback. Scoped writes and conditional acknowledgement preserve pending versions across restart.
+
+| R1 point | `src/native/host.ts` | `src/agent/conversation-manager.ts` |
+| --- | ---: | ---: |
+| Alpha baseline and step 1 | 984 | 1,098 |
+| Step 2 | 887 | 1,098 |
+| Step 3 and operator resume guard | 884 | 1,092 |
+| Step 3b through step 4 | 884 | 1,089 |
+
+Final clean RAM-backed archive of `be36dfc`. Typecheck passed. `bun test ./test` passed **1,463 tests across 132 files** in 89.48 s. All 35 snapshot hashes matched before and after the run and matched the step 3b compatibility baseline. Logs are at `/tmp/acp-r1-step4-gate.VpxqlV/typecheck.log` and `/tmp/acp-r1-step4-gate.VpxqlV/full.log`.

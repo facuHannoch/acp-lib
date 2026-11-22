@@ -24,6 +24,7 @@ import {
   type ParticipantRef,
 } from "../persistence/backend.ts";
 import { ProviderSessionError, ProviderSessionInUseError } from "../agent-conversation-errors.ts";
+import { UnsupportedError } from "../errors.ts";
 import {
   OUT_OF_BAND_MESSAGE_ORIGIN,
   type AppendAssistantMessageInput,
@@ -90,6 +91,7 @@ import { forgetPendingParts, pendingOutOfBandParts } from "../media/pending.ts";
 import { resolveParts } from "../media/store.ts";
 import { persistParts } from "../media/content.ts";
 import { isMediaPart, promptParts, partsText } from "../media/parts.ts";
+import { createConversationWithChannel, deleteConversationWithChannel, initialChannelDesire } from "./native-channel-lifecycle.ts";
 
 export class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
@@ -169,20 +171,21 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     }
     // Validate caller input before the durable row: a mistake must not orphan a
     // conversation, and must not be recorded as a provider-session failure.
-    this.prepareStart({ ...config, providerSession: adoption ? "load" : "new" });
+    const adapterId = this.prepareStart({ ...config, providerSession: adoption ? "load" : "new" });
     if (adoption) return await this.createAdopting(id, participants, config, adoption, settings);
-    await this.agent.persistence.conversations.create({
+    const channelIntentCommitted = await createConversationWithChannel(this.agent, {
       agentSessionId: this.agent.id,
       agentConversationId: id,
       participants,
       ...(config.title !== undefined ? { title: config.title } : {}),
       ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
-    });
+    }, this.agent.adapters.native(adapterId));
     const attemptId = `provider-create-${randomUUID()}`;
     try {
       return await this.start(id, participants, {
         ...config,
         providerSession: "new",
+        channelIntentCommitted,
         settings,
       });
     } catch (error) {
@@ -218,6 +221,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         ...(config.title !== undefined ? { title: config.title } : {}),
         ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
         adoptProviderSessionId: adoption.providerSessionId,
+        controllerKind: this.agent.adapters.native(this.resolveAdapterId(config.adapterId)) ? "native" : "acp",
       });
     });
     const attemptId = `provider-load-${randomUUID()}`;
@@ -433,7 +437,10 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     };
     // Validate caller input before the recorded region so a configuration mistake is not
     // persisted as a provider-session failure.
-    this.prepareStart({ ...startConfig, providerSession: active ? "load" : "new" });
+    const adapterId = this.prepareStart({ ...startConfig, providerSession: active ? "load" : "new" });
+    if (summary.controllerKind && summary.controllerKind !== (this.agent.adapters.native(adapterId) ? "native" : "acp")) {
+      throw new UnsupportedError("opening with a different conversation controller kind is unsupported");
+    }
     const attemptId = active ? `provider-load-${randomUUID()}` : `provider-create-${randomUUID()}`;
     try {
       const conversation = await this.start(id, summary.participants, {
@@ -618,26 +625,12 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     id: AgentConversationId,
     options: string | DeleteConversationOptions = {},
   ): Promise<DeleteConversationResult> {
-    const { deletedAt, providerSession = "no", checkpoints = false }: DeleteConversationOptions =
-      typeof options === "string" ? { deletedAt: options } : options;
-    // Read what the provider side needs before the conversation is gone from view.
-    const nativeHost = this.agent.nativeHarness;
-    const descriptor = providerSession === "best-effort" || nativeHost
-      ? await this.agent.persistence.providerSessions.active(id)
-      : null;
-    const isNative = !!descriptor && !!nativeHost && this.agent.adapters.native(descriptor.adapterId) !== null;
-    // A native conversation has no provider session of its own to delete: its channel is retired instead.
-    const active = providerSession === "best-effort" && !isNative ? descriptor : null;
     const live = this.live.get(id);
     if (live) await live.stop();
     this.live.delete(id);
-    // Deleting the conversation retires its channel; the entity's timeline keeps its entries. Stored
-    // while the harness is stopped, so a delete never starts a process on its own.
-    if (isNative) await nativeHost!.changeChannel(id, { lifecycle: "retired" });
-    const checkpointsDeleted = checkpoints
-      ? (await this.agent.persistence.recoveryCheckpoints?.deleteForConversation?.(id)) ?? 0
-      : 0;
-    await this.agent.persistence.conversations.delete(id, deletedAt);
+    const { active, checkpointsDeleted } = await deleteConversationWithChannel(
+      this.agent, id, typeof options === "string" ? { deletedAt: options } : options, live?.adapterId,
+    );
     // A deleted conversation runs no next turn, so its waiting out-of-band parts would never leave.
     forgetPendingParts(this.agent, id);
     let providerDeleted: boolean | "unsupported" = false;
@@ -863,6 +856,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     participants: readonly ParticipantRef[],
     config: (CreateAgentConversationConfig | OpenAgentConversationConfig) & {
       readonly providerSession: "new" | "load";
+      readonly channelIntentCommitted?: boolean;
       readonly internalSessionId?: string;
       /** What this conversation persists, resolved before it started. */
       readonly settings: ManagerSettings;
@@ -881,14 +875,9 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       const nativeAdapter = this.agent.adapters.native(adapterId);
       const nativeHost = nativeAdapter ? this.agent.nativeHarness : null;
       if (nativeAdapter && !nativeHost) throw new Error("a native adapter requires AgentConfig.harness");
-      if (nativeHost && config.providerSession !== "load") {
-        const title = "title" in config ? config.title : undefined;
-        if (title !== undefined || nativeAdapter!.defaultPolicy !== undefined) {
-          await nativeHost.changeChannel(id, {
-            ...(title !== undefined ? { displayName: title } : {}),
-            ...(nativeAdapter!.defaultPolicy !== undefined ? { policy: nativeAdapter!.defaultPolicy } : {}),
-          });
-        }
+      if (nativeHost && config.providerSession !== "load" && !config.channelIntentCommitted) {
+        const desire = initialChannelDesire(nativeAdapter!, "title" in config ? config.title : undefined);
+        if (desire) await nativeHost.changeChannel(id, desire);
       }
       await this.detachedMeteringBarriers.get(id);
       const persistedMetering = await this.agent.persistence.metering.state(id);
@@ -918,6 +907,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         ...("title" in config && config.title !== undefined ? { title: config.title } : {}),
         adapter,
         adapterId,
+        isNativeAdapter: (id) => this.agent.adapters.native(id) !== null,
         ...(nativeHost ? { native: { host: nativeHost, channelId: id } } : {}),
         agentSessionId: this.agent.id,
         ownerAgentSessionId: this.agent.id,
@@ -1021,13 +1011,14 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     readonly mode?: AgentMode;
     readonly runtime?: AgentConversationRuntimeDefaults;
     readonly providerSession: "new" | "load";
-  }): void {
+  }): string {
     const adapterId = this.resolveAdapterId(config.adapterId);
     this.agent.adapters.require(adapterId);
     const mode = config.mode ?? config.runtime?.mode ?? this.settings.defaults.mode;
     if (mode === "degraded" && config.providerSession === "load") {
       throw new Error("providerSession.kind=load requires ACP (normal) mode");
     }
+    return adapterId;
   }
 
   /**

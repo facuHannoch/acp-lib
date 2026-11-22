@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS conversations (
   deleted_at TEXT,
   metadata TEXT,
   adopted INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1)),
-  adopt_provider_session_id TEXT
+  adopt_provider_session_id TEXT,
+  controller_kind TEXT CHECK (controller_kind IN ('acp', 'native'))
 );
 
 CREATE INDEX IF NOT EXISTS conversations_updated_idx
@@ -721,6 +722,11 @@ export function migrateSqliteAgentSchema(database: Database): void {
         }
       }
       if (version < 17) database.exec(CHANNEL_INTENT_SCHEMA);
+      // Early schema-17 databases had channel intents but no controller kind.
+      const columns = database.query<{ name: string }, []>("PRAGMA table_info(conversations)").all();
+      if (!columns.some(({ name }) => name === "controller_kind")) {
+        database.exec("ALTER TABLE conversations ADD COLUMN controller_kind TEXT CHECK (controller_kind IN ('acp', 'native'))");
+      }
       if (version < 18) database.exec(WORKER_DELIVERY_SCHEMA);
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(

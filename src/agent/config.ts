@@ -50,6 +50,7 @@ type OwnerControlledConversationKey =
   | "ownerAgentSessionId"
   | "participants"
   | "ownerLifecycle"
+  | "isNativeAdapter"
   | "providerSession"
   | "persistence"
   | "transcriptPath"

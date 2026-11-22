@@ -5,20 +5,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteAgentPersistence } from "../src/persistence/sqlite-backend.ts";
 
-for (const version of [16, 17]) test(`worker repository upgrades schema ${version} and recovers only abandoned work`, async () => {
+for (const legacy of [16, 17, "early 17"] as const) test(`worker repository upgrades schema ${legacy} and recovers only abandoned work`, async () => {
   const dir = await mkdtemp(join(tmpdir(), "worker-delivery-"));
   const path = join(dir, "agent.sqlite");
   let backend = await SqliteAgentPersistence.open({ path });
   try {
+    const version = legacy === 16 ? 16 : 17;
+    await backend.conversations.create({ agentConversationId: "migration-worker",
+      agentSessionId: backend.identityRecord.agentSessionId, controllerKind: "native" });
     await backend.close();
     const db = new Database(path);
     try {
       db.exec("DROP TABLE worker_assignments");
+      if (legacy !== 17) db.exec("ALTER TABLE conversations DROP COLUMN controller_kind");
       if (version === 16) db.exec("DROP TABLE native_channel_intents; DROP TABLE native_channel_intent_clock");
       db.query("DELETE FROM schema_migrations WHERE version > ?").run(version);
       db.query("INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)").run(version, new Date().toISOString());
     } finally { db.close(); }
     backend = await SqliteAgentPersistence.open({ path });
+    expect((await backend.conversations.get("migration-worker"))?.controllerKind).toBe(legacy === 17 ? "native" : undefined);
+    {
+      using migrated = new Database(path, { readonly: true });
+      expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 18 });
+    }
     const repo = backend.workerDelivery!;
     const binding = { assignmentId: "assignment", workerConversationId: "worker", messageId: "operation",
       destination: "original", originatingPolicyNames: ["guest"], contributingPolicyNames: [] };

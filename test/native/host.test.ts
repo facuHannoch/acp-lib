@@ -247,7 +247,7 @@ for (const durable of [false, true]) describe(durable ? "channel changes (SQLite
 
   test("a delete that finds pending work suspends the channel instead, keeps the work, is reported and stays pending; the next open sends it again", async () => {
     const steps = [{ content: "Working.", calls: [{ id: "hold-1", name: "hold", arguments: { key: "k" } }] }, { content: "Finished.", calls: [] }, { content: "Next.", calls: [] }];
-    const { host, blocked, attach, effects } = await rig({ steps, durable });
+    const { host, blocked, attach, effects, calls } = await rig({ steps, durable });
     const channel = attach("a", true);
     await host.push(input("a1", "a", "start"));
     await until(() => channel.events.some((event) => event.event.type === "tool_call"), "the tool to start");
@@ -258,10 +258,17 @@ for (const durable of [false, true]) describe(durable ? "channel changes (SQLite
     writeFileSync(`${effects}.release-k`, "");
     expect(await deleting).toEqual({ state: "blocked", reason: "channel_busy" });
     expect(blocked).toEqual([{ channel: "a", changeId: expect.any(String), outcome: "blocked", reason: "channel_busy" }]);
-    expect(await host.pendingChannelChanges()).toMatchObject([{ channel: "a", desire: { lifecycle: "retired" } }]);
+    const retirement = await host.pendingChannelChanges();
+    expect(retirement).toMatchObject([{ channel: "a", desire: { lifecycle: "retired" } }]);
     const status = (await host.status()).channels[0]!;
     expect(status).toMatchObject({ channel: "a", lifecycle: "suspended", waitingForResume: true });
     expect([...status.pending, ...(status.activeTurn ? ["checkpoint"] : [])].length).toBeGreaterThan(0);
+    await expect(host.resumeChannel("a")).rejects.toMatchObject({ code: "channel_retired" });
+    expect(calls).not.toContain("resumeChannel");
+    expect(await host.pendingChannelChanges()).toEqual(retirement);
+    expect((await host.status()).channels[0]).toMatchObject({
+      lifecycle: "suspended", waitingForResume: true, pending: status.pending,
+    });
     // Stopped and started again: the delete is still the host's desired state and is re-evaluated.
     await host.stop();
     await host.ensureStarted();

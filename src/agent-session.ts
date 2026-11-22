@@ -15,7 +15,7 @@ import { UnsupportedError } from "./errors.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
 import type { HarnessController, AgentControllerConfig, ControllerStartEvent, AgentMode } from "./controller.ts";
-import { ownHandoffOptions } from "./handoff-options.ts";
+import { normalizeHandoffContinuation, ownHandoffOptions } from "./handoff-options.ts";
 import {
   acpCapabilitiesOf, availableCommandsOf, createController, harnessControllerOf, isDegradedController, listAgentSessions,
   reloadProviderSession, requireFreshContext, requireMember, stallLimitsFor,
@@ -173,7 +173,6 @@ import {
 } from "./steering/index.ts";
 import { AgentConversationPresentation } from "./agent-conversation-presentation.ts";
 import {
-  HANDOFF_SUMMARY_PROMPT,
   buildContinuationPrompt,
   createContinuationReport,
   descriptorFromCheckpoint,
@@ -334,6 +333,8 @@ export interface AgentSessionConfig {
    * process. Opt-in: absent for every ACP conversation. `adapter` is then display only.
    */
   native?: NativeControllerBinding;
+  /** @internal Resolves native routes in the owning Agent. */
+  isNativeAdapter?: (adapterId: string) => boolean;
   /** @deprecated Use launcher. */
   execPrefix?: string[];
   /** @deprecated Use launcher and its exact spawnEnv. */
@@ -465,7 +466,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly controllerDefaults: Omit<
     AgentControllerConfig,
     "adapter" | "adapterId" | "mode" | "sessionId" | "sessionLoadFailure"
-  > & { native?: NativeControllerBinding };
+  > & Pick<AgentConversationConfig, "native" | "isNativeAdapter">;
   private detachControllerCommands: (() => void) | null = null;
   private detachControllerUsage: (() => void) | null = null;
   private detachControllerTurns: (() => void) | null = null;
@@ -674,6 +675,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
     this.controllerDefaults = {
       operationLifecycle: this.operationLifecycle,
+      isNativeAdapter: config.isNativeAdapter,
       ...(config.native ? { native: config.native } : {}),
       launcher: config.launcher,
       execPrefix: config.execPrefix,
@@ -2509,6 +2511,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private async runHandoff(item: HandoffQueueItem): Promise<HandoffResult> {
     const fromAdapterId = this.adapterId;
     const targetAdapterId = item.options.target?.adapterId ?? fromAdapterId;
+    const native = this.controllerDefaults.native !== undefined;
+    if (native ? targetAdapterId !== fromAdapterId : this.controllerDefaults.isNativeAdapter?.(targetAdapterId)) {
+      throw new UnsupportedError("switching to or from a native controller is unsupported");
+    }
     if (targetAdapterId === fromAdapterId) requireFreshContext(this.controller, "a same-adapter handoff");
     await this.ensureProvider();
     const fromInternalSessionId = this._internalSessionId;
@@ -4414,45 +4420,6 @@ export type AgentConversationOpenConfig = AgentSessionOpenConfig;
 export type AgentConversationOpenResult = AgentSessionOpenResult;
 export type ManagedAgentConversationCreationBootstrap = ManagedAgentSessionCreationBootstrap;
 export type ManagedAgentConversationPersistenceSnapshot = ManagedAgentSessionPersistenceSnapshot;
-
-function normalizeHandoffContinuation(options: HandoffOptions):
-  | { readonly kind: "generated"; readonly summaryPrompt: string }
-  | { readonly kind: "provided"; readonly content: string }
-  | { readonly kind: "none" } {
-  if (options.summary !== undefined && options.continuation !== undefined) {
-    throw new Error("handoff cannot combine deprecated summary with continuation");
-  }
-  if (options.target && !options.target.adapterId.trim()) {
-    throw new Error("handoff target adapter id cannot be blank");
-  }
-  if (options.targetPrompt !== undefined && !options.targetPrompt.trim()) {
-    throw new Error("handoff target prompt cannot be blank");
-  }
-  if (options.summary !== undefined) {
-    if (!options.summary.trim()) throw new Error("handoff summary cannot be blank");
-    return Object.freeze({ kind: "provided", content: options.summary });
-  }
-  const continuation = options.continuation ?? { kind: "generated" as const };
-  if (continuation.kind === "provided") {
-    if (!continuation.content.trim()) throw new Error("handoff continuation cannot be blank");
-    return Object.freeze({ kind: "provided", content: continuation.content });
-  }
-  if (continuation.kind === "none") return Object.freeze({ kind: "none" });
-  if (continuation.summaryPrompt !== undefined && continuation.summaryInstructions !== undefined) {
-    throw new Error("handoff generated continuation cannot combine summaryPrompt and summaryInstructions");
-  }
-  if (continuation.summaryPrompt !== undefined && !continuation.summaryPrompt.trim()) {
-    throw new Error("handoff summary prompt cannot be blank");
-  }
-  if (continuation.summaryInstructions !== undefined && !continuation.summaryInstructions.trim()) {
-    throw new Error("handoff summary instructions cannot be blank");
-  }
-  const base = continuation.summaryPrompt ?? HANDOFF_SUMMARY_PROMPT;
-  const summaryPrompt = continuation.summaryInstructions === undefined
-    ? base
-    : `${base}\n\nAdditional summary instructions:\n${continuation.summaryInstructions}`;
-  return Object.freeze({ kind: "generated", summaryPrompt });
-}
 
 function configurationTargetIssue(
   option: ConfigOption | undefined,
