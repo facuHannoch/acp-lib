@@ -17,7 +17,7 @@ export function workerPermissionHandler(
     if (level !== "ask") return selectPermissionOutcome(level, request.options)!;
     return forwardPermission(findGivingConversation?.(actor.conversationId), request, {
       source: { kind: "worker", handle: worker.handle, conversationId: worker.conversationId },
-      includeAllowAlways: false,
+      includeAllowAlways: actor.isOwner === true,
       signal,
     });
   };

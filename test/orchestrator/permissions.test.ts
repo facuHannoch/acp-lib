@@ -8,7 +8,7 @@ import type { WorkerActor } from "../../src/orchestrator/contracts.ts";
 import type { PermissionLevel } from "../../src/permissions/matcher.ts";
 import type { ConversationPermissionEvent } from "../../src/permissions/conversation.ts";
 
-async function rig(level: PermissionLevel, options: { answers?: boolean; timeoutMs?: number } = {}) {
+async function rig(level: PermissionLevel, options: { answers?: boolean; timeoutMs?: number; owner?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "acp-worker-permissions-"));
   const agent = await Agent.open({
     persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
@@ -27,7 +27,7 @@ async function rig(level: PermissionLevel, options: { answers?: boolean; timeout
     const actor: WorkerActor = {
       kind: "conversation", conversationId: giver.id, sender: "giver", invocationId: "ask",
       policyNames: ["trusted"], policy: { use: true, scope: "all", redirect: false },
-      workerPermissions: [{ default: level }],
+      workerPermissions: [{ default: level }], isOwner: options.owner,
     };
     const events: ConversationPermissionEvent[] = [];
     const requested = Promise.withResolvers<Extract<ConversationPermissionEvent, { kind: "permission_requested" }>>();
@@ -105,5 +105,28 @@ test("stopping the giver closes its forwarded permission and the worker receives
     expect(await outcome()).toEqual({ outcome: "cancelled" });
     expect(await giver.answerPermission(request.id, "allow")).toEqual({ accepted: false });
     expect(events).toEqual([request, { kind: "permission_resolved", id: request.id, by: "turn_ended", outcome: "cancelled" }]);
+  } finally { await close(); }
+}, 15_000);
+
+for (const owner of [false, true]) {
+  test(`allow_always is ${owner ? "offered to the owner" : "hidden and rejected for a non-owner"}`, async () => {
+    const { agent, giver, actor, requested, outcome, close } = await rig("ask", { answers: true, owner });
+    try {
+      await agent.orchestrator!.open(actor, { text: "reject-first" });
+      const request = await requested;
+      expect(request.options.some(option => option.kind === "allow_always")).toBe(owner);
+      expect(await giver.answerPermission(request.id, "always")).toEqual({ accepted: owner });
+      if (!owner) expect(await giver.answerPermission(request.id, "allow")).toEqual({ accepted: true });
+      expect(await outcome()).toEqual({ outcome: "selected", optionId: owner ? "always" : "allow" });
+    } finally { await close(); }
+  }, 15_000);
+}
+
+test("automatic worker allow falls back to allow_always when the provider offers no allow_once", async () => {
+  const { agent, actor, events, outcome, close } = await rig("allow", { answers: true, owner: false });
+  try {
+    await agent.orchestrator!.open(actor, { text: "always-only" });
+    expect(await outcome()).toEqual({ outcome: "selected", optionId: "always" });
+    expect(events).toEqual([]);
   } finally { await close(); }
 }, 15_000);

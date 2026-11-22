@@ -18,6 +18,8 @@ export type WorkerActor = { readonly kind: "consumer" } | {
   readonly policyNames: readonly string[];
   readonly policy: DelegationPolicy;
   readonly workerPermissions: readonly PermissionSettings[];
+  /** A trusted caller can attest owner authority independently of policy names. */
+  readonly isOwner?: boolean;
 };
 
 export interface WorkerInput {
