@@ -322,3 +322,12 @@ steered cancellation before and after the replacement transaction.
 Commit the close and new reservation together before dispatch. A crash
 after that commit leaves the old outcome staged and an unfinished new
 binding recoverable as uncertain, without redispatch.
+
+Use the same new assignment and message IDs on retry. Repeating the
+transaction returns the existing matching reservation and leaves the old
+notice unchanged. A reservation conflict rolls back the close. A crash
+between the close and reservation rolls back both. The new assignment
+captures the requesting callback's originating policies; it does not
+inherit the old assignment merely because the worker is the same.
+Where terminal output actually reflects taken inputs subject to earlier
+restrictions, keep the applicable contributing policy union.
