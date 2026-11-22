@@ -32,3 +32,10 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
 - **A1 gate passed** ([gate](../.plan-execution/status/11-22-GATE-A1-verify.md)): first full run had one failure
   (the bridge test timed out waiting for a status, load-dependent), second full run green, 1,402 tests in 131 files
   for `./test` (1,727 in 175 from the repo root). Flake recorded, left to the user.
+- A2 assigned to cod2a.
+- A2 report in, `c6c6a00` (report only; [report](reports/11-22-REPORT-A2-verify.md)): steps 1–4 present, phase
+  order kept (readiness/acceptance reordered by the A2 review, as recorded), five required tests present,
+  `agent-session.ts` 4,641 lines (target ~4,550, below 5,022). Typecheck clean. Full `./test`: run 1 three
+  operation-lifecycle failures, run 2 one checkpointing/strategy failure, run 3 green (1,402 in 131 files). Four new
+  error notes for intermittent failures. No fixes. Sent to clad2a for review, with the question whether any failure
+  is a real race.
