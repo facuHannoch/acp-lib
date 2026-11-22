@@ -1,3 +1,5 @@
+import { messagePosition } from "./util/message-position.ts";
+import { executeNotice, notifyChannelDefinition } from "./capabilities/tools/scenario.ts";
 import type { PersistentSession, PersistentSessionOptions } from "./contracts/session.ts";
 import type { SessionAgent, TurnExecutor } from "./contracts/agent.ts";
 import type { EventSink, SessionEventSink } from "./contracts/events.ts";
@@ -55,12 +57,23 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   const read = () => { const view = store.snapshot(); if (!view.ok) throw new Error(view.error.message); return view.value; };
   // Every published event follows a commit, so it is also the moment the
   // timeline projection may have changed.
-  const emit: EventSink = event => { changes.publish(); events.publish(event); };
+  const identity = store.readSession();
+  if (!identity.ok) throw new Error(identity.error.message);
+  const position = (channel: string, seq: string) => messagePosition(identity.value.sessionId, channel, Number(seq));
+  const emit: EventSink = value => {
+    const { channel, event } = value;
+    if ((event.type === "turn_started" || event.type === "turn_took") && event.messages)
+      value = { ...value, event: { ...event, messages: event.messages.map(message => ({ ...message, position: position(channel, message.position) })) } };
+    changes.publish();
+    events.publish(value);
+  };
   const config = owner.value ?? { version: 1 as const, system: options.systemPrompt, model: { protocol: "scripted" as const, script: "legacy" },
     defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow" as const, tools: {} } } };
   // ---- Tools, decision 0021. The catalog's definitions come from the open;
   // the revoked set mirrors storage; the executor belongs to the connection.
-  const catalog = options.catalog ? createToolCatalog(options.catalog, read().revokedTools ?? []) : undefined;
+  const revoked = options.catalog ? store.readRevokedTools() : undefined;
+  if (revoked && !revoked.ok) throw new Error(revoked.error.message);
+  const catalog = options.catalog ? createToolCatalog(options.catalog, revoked?.value ?? []) : undefined;
   const limits = { ...TOOL_LIMITS, ...options.toolLimits };
   let executor: FunctionExecutor | undefined;
   /** What each running turn is doing now. Process state, cleared when the turn's run ends. */
@@ -69,21 +82,22 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   const approvals = createApprovalService(request => {
     phase(Number(request.turnId), "approval", request.requestId);
     emit({ channel: request.channel, event: { type: "approval_requested", ...request } });
-  }, options.approvalTimeoutMs);
+  }, options.approvalTimeoutMs, (request, reason) => emit({ channel: request.channel, event: { type: "approval_closed", turnId: request.turnId, requestId: request.requestId, reason } }));
   let agent: SessionAgent;
   const run: TurnExecutor = (turn, port) => {
     const services = options.configureTurn(turn, notice => agent.notify({ ...notice, fromChannelId: turn.channelId, sourceTurnId: turn.turnId }));
-    // Policy is read from the items this turn has taken, at the moment of use.
-    const decide = (tool: string) => toolDecision(config, read().items.filter(item => item.turnId === turn.turnId).flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"]), tool);
+    const policySnapshot = () => [...new Set(read().items.filter(item => item.turnId === turn.turnId)
+      .flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"]))].sort();
     /** The names offered by this turn's latest inference: what a call must match. */
     let offered = new Set<string>();
     /** One snapshot per inference: built-ins and available catalog entries the
      * turn's policy does not deny, the stable group first. The model call runner
      * freezes it, so a retry of the request offers the same list. */
     const offer = (): { tools: ToolDefinition[]; fixedToolCount?: number } => {
-      const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => decide(tool.name) !== "deny");
+      const policies = policySnapshot();
+      const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => toolDecision(config, policies, tool.name) !== "deny");
       const definition = ({ name, description, parameters }: ToolDefinition): ToolDefinition => ({ name, description, parameters });
-      const builtins = allowed(services.tools);
+      const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel"), notifyChannelDefinition]);
       if (!catalog) { offered = new Set(builtins.map(tool => tool.name)); return { tools: [...builtins] }; }
       const available = catalog.offered();
       const fixed = [...builtins, ...allowed(available.fixed).map(definition), ...allowed([readToolResultDefinition])];
@@ -109,9 +123,10 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       dispatchTool(call, execute) {
         const registration = catalog?.get(call.name), reader = !!catalog && call.name === READ_TOOL_RESULT;
         const id = invocationId(turn.turnId, call.id);
+        let policies: string[];
         return dispatchWithPolicy({ channel: turn.channelId, turnId: turn.turnId, call,
           signal: port.signal, suspension: port.suspensionSignal, approvals, beforeDispatch: options.beforeToolDispatch,
-          decide: () => decide(call.name),
+          decide: () => toolDecision(config, policies = policySnapshot(), call.name),
           // Catalog tools and the reader must have been offered by this request,
           // still be available, and carry arguments their definition accepts.
           ...(registration || reader ? { refuse: () => {
@@ -126,10 +141,14 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
             // Dispatch evidence is committed. From here the effect is the host's.
             if (!executor) throw new CallbackLost("No connection serves this tool's handler");
             return runFunction({ executor, registration, limits, signal: signal ?? port.signal, defaultDeadlineMs: catalog!.defaultDeadlineMs,
-              request: { invocationId: id, sessionId: read().session.sessionId, channel: turn.channelId, turnId: String(turn.turnId),
-                tool: call.name, handler: registration.handler, arguments: JSON.parse(call.arguments) } });
+              request: { invocationId: id, sessionId: identity.value.sessionId, channel: turn.channelId, turnId: String(turn.turnId),
+                tool: call.name, handler: registration.handler, policyNames: policies.filter(name => name !== "__legacy_allow"), arguments: JSON.parse(call.arguments) } });
           } : reader ? (_call, signal) => readResult({ executor, view: read(), channel: turn.channelId, arguments: call.arguments, limits, signal: signal ?? port.signal })
-            : execute,
+            : call.name === "notify_channel" ? async () => {
+              try { return JSON.stringify(executeNotice(JSON.parse(call.arguments), (channelId, text) =>
+                agent.notify({ channelId, text, fromChannelId: turn.channelId, sourceTurnId: turn.turnId }))); }
+              catch (error) { return JSON.stringify({ ok: false, error: String(error) }); }
+            } : execute,
           recordSkip: (content, code) => {
             append({ role: "tool", callId: call.id, content, outcome: { status: "skipped", code } });
             // Built-in tools keep their event stream as it was: a skip is silent.
@@ -155,11 +174,15 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       const { tools, fixedToolCount } = offer();
       phase(turn.turnId, "model");
       const view = read();
-      const itemIds = view.items.filter(item => item.turnId === turn.turnId).map(item => item.itemId);
+      const taken = view.items.filter(item => item.turnId === turn.turnId);
+      const itemIds = taken.map(item => item.itemId);
+      const previousResponse = view.timeline.findLast(entry => entry.turnId === turn.turnId && entry.message.role === "assistant")?.seq ?? 0;
+      const takenItemIds = taken.filter(item => (item.entrySeq ?? 0) > previousResponse)
+        .sort((a, b) => a.entrySeq! - b.entrySeq!).map(item => item.itemId);
       const binding = getModelAttempt(services.model);
       let draftId: string | undefined;
       try {
-      const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
+      const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, takenItemIds, ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
         started: callId => phase(turn.turnId, "model", callId),
         scripted: binding.scripted, store, attempt: binding.create, signal, settings: binding.settings,
         delta: ({ messageId, text }) => { draftId = messageId; emit({ channel: turn.channelId,
@@ -171,12 +194,13 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       });
       recorded = { seq: result.entry.seq, revision: result.revision }; changes.publish();
       if (result.response.content) emit({ channel: turn.channelId, revision: result.revision,
-        event: { type: "message_completed", turnId: String(turn.turnId), messageId: result.messageId,
+        event: { type: "message_completed", turnId: String(turn.turnId), messageId: result.messageId, position: position(turn.channelId, String(result.entry.seq)),
           parts: [{ type: "text", text: result.response.content }] } });
       return result.response;
       } catch (error) {
         // A storage failure can occur after a draft was published but before the
         // runner can write a normal terminal outcome. The draft must still end.
+        if (error instanceof ModelCallError && error.message === "script_exhausted") throw Object.assign(new Error(error.message), { outcome: "script_exhausted" });
         if (draftId && !(error instanceof ModelCallError)) emit({ channel: turn.channelId,
           event: { type: "text_incomplete", turnId: String(turn.turnId), messageId: draftId, reason: "failed" } });
         throw error;
@@ -228,7 +252,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   }
   return {
     ...(tools ? { tools } : {}),
-    agent, channels: scheduler.channels, approvals,
+    agent, channels: scheduler.channels, approvals, operatorReads: store, turnPhase: id => phases.get(id),
     store: { snapshot: () => read().timeline, subscribe: listener => changes.subscribe(listener) },
     snapshot: read, status, start: scheduler.start,
     suspend: scheduler.suspend, resume: scheduler.resume, stop: scheduler.stop,

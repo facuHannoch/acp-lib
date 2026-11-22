@@ -12,6 +12,7 @@ import type { Agent } from "../../src/agent.ts";
 import type { AgentSession } from "../../src/agent-session.ts";
 import { type NativeFunction, type NativeFunctionContext, type NativeFunctionsConfig } from "../../src/native/functions.ts";
 import { NativeTurnError } from "../../src/native/controller.ts";
+import { createInProcessHarness } from "../../src/native-harness/src/testing.ts";
 import type { PermissionOutcome, PermissionRequest } from "../../src/types.ts";
 import { nativeRig, reply, until, type NativeRig, type Step } from "./support.ts";
 
@@ -73,6 +74,7 @@ describe("tools and host callbacks: the public checkpoint", () => {
     expect(JSON.stringify(asked[0])).toContain("lookup");
     expect(args[0]).toEqual({ q: "weather" });
     const aliceCall = contexts.find((context) => context.channel === alice.id)!;
+    expect(aliceCall.policyNames).toEqual(["ask"]);
 
     // Bob's whole turn runs while Alice's handler is held.
     const b1 = await bob.prompt("b1", { onPermissionRequest: allow });
@@ -272,4 +274,20 @@ describe("tools and host callbacks: the public checkpoint", () => {
     // The conversation takes fresh input afterwards.
     expect((await alice.prompt("a2")).text).toBe("Never.");
   }, 60_000);
+});
+
+test("an in-process callback exposes the same native handler policy context", async () => {
+  const rig = await rigWith();
+  rig.script([call("lookup", { q: "weather" }), reply("Done.")]);
+  rig.harness.connect = async () => {
+    const harness = createInProcessHarness({ home: rig.home });
+    let close!: () => void;
+    const closed = new Promise<void>(resolve => { close = resolve; });
+    return { client: harness.client, closed, async kill() { harness.close(); close(); } };
+  };
+  const contexts: NativeFunctionContext[] = [];
+  const agent = await open(rig, { tools: { lookup: fn((_args, context) => { contexts.push(context); return true; }) } });
+  const conversation = await agent.conversations.create({ title: "Policy context" }) as unknown as AgentSession;
+  expect((await conversation.prompt("look up weather")).text).toBe("Done.");
+  expect(contexts.map(context => context.policyNames)).toEqual([["open"]]);
 });

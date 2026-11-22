@@ -23,8 +23,12 @@ Reuse the existing [channel controls](../../11-19-channel-controls/SPEC.md).
 
 An agent session represents one identity and timeline. Each channel keeps its
 own lifecycle, turns, pending inputs, and policy over the session tool catalog.
-An active channel can admit input and run a turn with no attachments. Closing a
-client view leaves the channel, its work, and the shared host connection intact.
+An active channel can admit input and run a turn with no attachments. The
+harness supplies `notify_channel` by default in normal session composition,
+including the scripted stdio server. The harness derives the source channel
+and turn, reserves the built-in name, and uses the existing tool permission
+and channel admission rules. Closing a client view leaves the channel, its
+work, and the shared host connection intact.
 Closing the host's stdio connection still has the existing EOF stop semantics.
 Two clients may observe one channel through the consumer without creating two
 harness channels or two turn supervisors for it.
@@ -63,17 +67,6 @@ accepted inputs, running turns, and pending approvals in the harness under
 their existing lifecycle rules. Removing a listener just stops delivery to
 that listener.
 
-The harness owns pending approvals and enforces their deadlines. An
-approval-capable consumer can route and answer requests independently of a
-conversation attachment. In acp-client, the host routes the request to an
-authorized responder under acp-client's own authorization. Attaching or
-sending a message grants no approval authority. If the approval connection
-stays open but nobody is available to answer, the request waits under its
-existing deadline. An authorized responder who attaches before expiry can
-see and answer it. Closing the approval connection follows the existing
-cancellation rules. A harness without an approval-capable consumer skips
-calls that need approval. Harness-level participant approval roles are deferred.
-
 Keep the existing `ConversationController.start()` and `stop()` pair for the
 shared high-level workflow. Native start can attach and make an eligible
 channel available. ACP keeps its existing lifecycle. A client can compose
@@ -91,6 +84,36 @@ the unconfirmed result and reconcile the target on reopen. Shared Restart
 opens only after successful stop. Attachment disposal leaves the turn running.
 Explicitly suspend the channel to prevent future turns, and resume it to
 restore eligibility. Host shutdown acts at agent scope.
+
+### Approval delivery and authority
+
+The harness owns each pending approval, associates it with its channel and
+exact tool call, and enforces its existing deadline and cancellation rules.
+It publishes `approval_requested` on the existing connection and accepts
+`allow_once` or `deny` through `approval/respond` for the pending request ID.
+A harness without an approval-capable consumer skips calls that need approval.
+
+The embedding application can configure one responder on acp-client's
+`NativeHarnessHost`. The host receives approval events for all its channels
+before forwarding events to conversation controllers. A configured host
+responder is the sole answer path for that agent. The embedding application
+decides which operators may answer through it. Channel attachment and message
+submission confer no approval authority. For applications without a host
+responder, preserve the existing conversation handler and its behavior.
+
+The application can present requests through an operator inbox or inline in
+a chat using their channel and tool-call IDs. With a configured responder,
+disposing the last chat attachment leaves the host connection and the pending
+request intact. If nobody can answer, the request waits under its existing
+deadline. Closing the approval-capable host connection follows the existing
+cancellation rules.
+
+`channel/observe` exposes still-pending approvals so a reattached view can
+reconcile them with live events by request ID. The harness response remains
+authoritative for answer races. Expiry, suspension, interruption, and
+disconnection close requests under the existing rules. Late or duplicate
+answers grant no permission. Harness-level participant roles and automatic
+approval review are deferred.
 
 ## Opening, reconciliation, and history
 
@@ -224,11 +247,14 @@ usage as unknown and surface when an aggregate is partial.
 
 Use a scripted model over real stdio without provider credentials.
 
-1. Attach Alice and Bob. Detach Alice without interrupting her turn, then
-   trigger another turn on her active channel while she is detached. Reattach
-   with an explicit history read and verify each committed reply appears once,
-   later events arrive, and Bob's attachment remains intact. Use an existing
-   harness trigger or a scripted fixture for the unattended turn.
+1. Attach Alice and Bob. Detach Alice without interrupting her turn and let it
+   finish. Have Bob's scripted model call `notify_channel` for Alice's active
+   channel. Wait for the notice-driven reply to commit while she is detached.
+   Reattach with an explicit history read and verify each committed reply
+   appears once, later events arrive, and Bob's attachment remains intact.
+   Verify ordinary session composition offers the built-in once when policy
+   permits it, policy denial prevents dispatch, and consumer registration
+   cannot shadow it.
 2. Suspend Alice while Bob works. Verify Alice rejects new input, her accepted
    untaken work stays pending, and explicit resume enables it once. A stale
    interrupt leaves a newer turn alone. Verify repeated attachment and
@@ -250,10 +276,14 @@ Use a scripted model over real stdio without provider credentials.
    replies arrive and verify ordering, stable attribution, and no duplicate or
    missing messages. Verify tool activity does not consume the conversation
    page budget and remains visible in the separately paged agent timeline.
-6. Detach the last observer while an approval is pending and request an
-   approval on a channel with nobody attached. Verify an authorized responder
-   can act before expiry, an unauthorized observer cannot answer, and the
-   existing expiry and disconnect rules still apply.
+6. With a configured host responder, detach the last observer while an
+   approval is pending. Answer through the host before expiry and verify the
+   tool runs once. In a separate case, request approval while nobody is
+   attached, then reattach and recover the pending request by ID. Verify an
+   observer without approval authority cannot answer, expiry and cancellation
+   retain their existing effects, and late or duplicate answers cannot
+   dispatch the tool. Verify the existing conversation handler still works
+   when the application configures no host responder.
 7. Verify shared Restart waits for targeted interruption before reopening the
    conversation. An unconfirmed stop makes Restart fail before it calls start.
    Verify the next turn and other channels are unaffected by the targeted request.

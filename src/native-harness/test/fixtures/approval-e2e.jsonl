@@ -1,0 +1,4 @@
+{"type":"scenario","version":1,"name":"approval-e2e"}
+{"type":"model","content":"Requesting the action.","calls":[{"id":"first","name":"record","arguments":{"text":"approved"}}]}
+{"type":"model","content":"Requesting the action again.","calls":[{"id":"second","name":"record","arguments":{"text":"approved"}}]}
+{"type":"model","content":"Finished.","calls":[]}

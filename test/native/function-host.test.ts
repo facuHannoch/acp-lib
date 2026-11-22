@@ -9,7 +9,7 @@ import { createNativeFunctionHost, FunctionError, type NativeFunctionsConfig } f
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 const temp = () => { const directory = mkdtempSync(join(tmpdir(), "acp-fn-host-")); directories.push(directory); return directory; };
-const call = (handler: string, args: Record<string, unknown> = {}) => ({ invocationId: "1:t1", sessionId: "s", channel: "c", turnId: "1", tool: handler, handler, arguments: args });
+const call = (handler: string, args: Record<string, unknown> = {}) => ({ invocationId: "1:t1", sessionId: "s", channel: "c", turnId: "1", tool: handler, handler, policyNames: ["main"], arguments: args });
 const code = async (work: () => unknown) => { try { await work(); return "ok"; } catch (error) { return error instanceof FunctionError ? error.code : String(error); } };
 const schema = { type: "object" };
 

@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "responses": [
-    { "content": "Working.", "calls": [{ "id": "hold-1", "name": "hold", "arguments": { "key": "k" } }] },
-    { "content": "Finished.", "calls": [] },
-    { "content": "Next.", "calls": [] }
-  ]
-}

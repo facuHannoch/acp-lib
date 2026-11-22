@@ -17,7 +17,7 @@ export function completeModelAttempt(model: Model): ModelAttempt {
 
 /** Assembly attaches a provider-specific attempt to a legacy model identity;
  * the fallback keeps existing embedders on the complete-response path. */
-interface AttemptBinding { scripted: boolean; create: (step?: number) => ModelAttempt; settings?: Partial<ModelExecutionSettings> }
+interface AttemptBinding { scripted: boolean; create: (step?: number, ordinal?: number) => ModelAttempt; settings?: Partial<ModelExecutionSettings> }
 const attempts = new WeakMap<Model, AttemptBinding>();
 export function bindModelAttempt(model: Model, binding: AttemptBinding): Model {
   attempts.set(model, binding); return model;

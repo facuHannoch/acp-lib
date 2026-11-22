@@ -1,0 +1,5 @@
+{"type":"scenario","version":1,"name":"crash-scenario"}
+{"type":"model","content":"Recording.","calls":[{"id":"rec-1","name":"record","arguments":{"text":"effect"}}]}
+{"type":"model","content":"First reply.","calls":[]}
+{"type":"model","content":"Second reply.","calls":[]}
+{"type":"model","content":"Third reply.","calls":[]}

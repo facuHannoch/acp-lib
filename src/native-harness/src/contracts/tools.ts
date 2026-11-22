@@ -19,7 +19,7 @@ export interface ToolRegistration extends ToolDefinition {
   deadlineMs?: number;
 }
 
-/** Supplied with `session/create` and `session/load`. */
+/** Supplied with `session/create` and `session/open`. */
 export interface ToolCatalogInput {
   catalog: ToolRegistration[];
   /** Runtime entries enabled from the start. */
@@ -102,6 +102,10 @@ export interface FunctionCall {
   turnId: string;
   tool: string;
   handler: string;
+  /** Deduplicated configured policy names frozen at authorization, including
+   * inherited notice policies. Order grants no precedence. The internal
+   * __legacy_allow fallback is omitted. An empty list means none contributed. */
+  policyNames: string[];
   /** Parsed and validated against the tool's `parameters`. */
   arguments: Record<string, unknown>;
 }

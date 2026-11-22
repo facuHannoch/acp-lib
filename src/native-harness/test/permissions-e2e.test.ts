@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { createInProcessHarness } from "../src/testing.ts";
 import { spawnHarness } from "./helpers/stdio.ts";
 import type { ChannelEvent, ManagedConfig } from "../src/client.ts";
 
-const script = new URL("./fixtures/approval-e2e.json", import.meta.url).pathname;
+const script = new URL("./fixtures/approval-e2e.jsonl", import.meta.url).pathname;
 const config: ManagedConfig = { version: 1, system: "Test approvals", model: { protocol: "scripted", script }, defaultPolicy: "ask",
   policies: { ask: { fallback: "ask", tools: {} }, deny: { fallback: "deny", tools: {} } } };
 const init = { protocolVersion: 1, host: { name: "test", version: "0" }, callbacks: [], approval: true,
@@ -45,7 +46,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: su
     await harness.close(); sourceClosed = true;
     restored = open(destination); restored.client.onChannelEvent(event => events.push(event));
     await restored.client.initialize(init); await restored.client.importArchive(archive);
-    const loaded = await restored.client.loadSession({ sessionId: "s" });
+    const loaded = await inspectOperatorView(restored.client, { sessionId: "s" });
     await expect(restored.client.respondApproval(first.requestId, "allow_once")).rejects.toMatchObject({ code: "not_found" });
     expect(loaded.status.channels.find(channel => channel.channel === "alice")).toMatchObject({ lifecycle: "suspended", activeTurn: { turnId: "1", state: "suspended" } });
     await restored.client.resume();

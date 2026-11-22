@@ -245,52 +245,30 @@ Run the real in-memory store, context builder, scheduler and tool loop without a
 model provider or API key:
 
 ```sh
-bun run test:scenario test/fixtures/echo-scenario.json "Echo hello"
+bun run test:scenario test/fixtures/echo-scenario.jsonl "Echo hello"
 ```
 
-The command prints JSON containing the final answer, captured model requests,
-recorded context entries and count of unused responses. It starts no servers.
-This is the first test-mode increment, not the stdio protocol implementation.
-Normal `start` still uses the live model and does not register `echo`.
+The command prints the answer, committed entries and unused response count.
+Set `HARNESS_CAPTURE_SCRIPT_REQUESTS=1` to include the full requests in this
+command or the scripted development inspector.
 
-Scenario format:
+Script files use JSONL. The first record names and versions the scenario.
+Model records can specify a channel and one of a response, provider failure,
+or cancellation wait. With no channel record, a channel uses its own
+position in the default sequence.
 
-```json
-{
-  "version": 1,
-  "responses": [
-    {
-      "content": "I'll echo that.",
-      "calls": [
-        { "id": "echo-1", "name": "echo", "arguments": { "text": "hello" } }
-      ]
-    },
-    { "content": "The tool returned hello.", "calls": [] }
-  ]
-}
+```jsonl
+{"type":"scenario","version":1,"name":"echo"}
+{"type":"model","content":"I'll echo that.","calls":[{"id":"echo-1","name":"echo","arguments":{"text":"hello"}}]}
+{"type":"model","content":"The tool returned hello."}
 ```
 
-Each response consumes one model invocation. `content` is a required string or
-null; `calls` defaults to an empty array when omitted. Calls require nonempty
-names, IDs unique within that response, and JSON object arguments. The adapter
-serializes those arguments to the existing neutral tool-call contract. Unknown
-fields and malformed scripts fail before execution. Tool arguments are still
-validated by the executor: for example, `{ "text": 42 }` reaches `echo` and
-returns a tool error that the next model invocation can inspect.
-
-`createScriptedModel(script)` in `src/capabilities/model/scripted.ts` returns
-`{ model, requests(), remaining() }`. `loadScriptedModel(path)` loads the same
-format from disk. Both use the existing `Model` interface. Captured messages and
-tool definitions are copied at invocation time; inspection returns fresh copies.
-Exhausted invocations are captured too. Script errors carry stable codes:
-`invalid_script`, `script_load_failed`, or `script_exhausted`.
-
-Responses are predetermined: the final answer does not prove the model interpreted
-a tool result. Offline tests separately assert that `echo` executed and its actual
-result reached the next captured request. No inference or API calls occur.
-Each channel reserves a script step durably for every model attempt, including
-retries. A crash after reservation consumes that step. The ordinary script
-format has no channel routing, delays or conditional steps.
+Records can include an initial delay, timed text chunks and synthetic usage.
+A malformed line fails before execution with its line number. Each attempt
+consumes one durable position, including retries and crash-abandoned attempts.
+Reopen checks the model sequence digest before recovering the session.
+Old scripted stores without a digest need a fresh test session. See
+[the scenario contract](.res/decisions/0023-long-running-mock.md).
 
 ## Experimental protocol and in-process client
 
@@ -310,7 +288,7 @@ try {
     config: {
       version: 1,
       system: "You are a test assistant.",
-      model: { protocol: "scripted", script: "test/fixtures/echo-scenario.json" },
+      model: { protocol: "scripted", script: "test/fixtures/echo-scenario.jsonl" },
       defaultPolicy: "default",
       policies: { default: { fallback: "allow", tools: {} } },
     },
@@ -338,9 +316,9 @@ transport factory and host types. `src/index.ts` exports host-independent
 uses the same session assembly with OpenRouter, its tools and inspector wrappers.
 
 The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
-requests are `initialize`, `config/validate`, `session/create`, `session/load` (durable servers
-only), `session/messages`, `session/message/read`, `session/model-calls`, `session/status`, `session/suspend`,
-`session/resume`, `session/stop`, `channel/push` and `session/idle`, plus
+requests are `initialize`, `config/validate`, `session/create`, `session/open` (durable servers
+only), `channel/observe`, `channel/reconcile`, `channel/messages`, `session/timeline`, `session/message/read`, `session/model-calls`, `session/status`, `session/suspend`,
+`session/resume`, `session/stop`, `channel/push`, `channel/notify` and `session/idle`, plus
 `channel/create`, `channel/edit`, `channel/suspend`, `channel/resume`,
 `channel/delete`, `channel/withdraw`, `channel/interrupt` and
 `approval/respond`, plus
@@ -417,23 +395,35 @@ deduplicates item IDs, across restarts on a durable server: the same ID and
 content returns the original item's current milestone and turn, and different
 content fails with `item_conflict`. Unknown senders are recorded as IDs.
 
-`session/load` opens an existing session and returns one view at a storage
-revision: status, turns, items with their last confirmed milestone, and
-committed assistant messages with stable IDs (paged with `session/messages`).
-Opening interrupts turns a previous process left unfinished; it never replays
-them. Pending input becomes eligible only after the load response is written,
-so live events for recovered work follow it, and every event carries the
-revision of the commit it reports. A view that cannot fit one frame fails with
-`transfer_limit`.
+The owning host can submit `channel/notify` with a stable notice ID, text,
+optional source label, and an explicit inherited policy-name array. New
+notices require an existing open channel and a running session. An identical
+retry returns the original receipt even during suspension or an incompatible
+inspection open. Accepted notices appear in the timeline and enter the
+receiving turn as attributed external input. Conversation pages count only
+participant and assistant messages.
 
-`session/create` and `session/load` accept `channelChanges`
+`session/open` opens an existing session and returns its lifecycle, revision,
+and any startup channel-change results. Opening recovers unfinished turns
+without replaying them. Pending input becomes eligible after the open response.
+
+Use `channel/observe` for revisioned channel state, the session blocker, and
+pending approvals visible to the approval consumer. Use `channel/reconcile`
+for outcomes and committed reply identities tied to outstanding item or turn
+IDs. `channel/messages` pages participant and assistant messages, and
+`session/timeline` pages activity, including notices and tool results. Live
+message IDs and channel positions match the paged records. A large assistant
+message is returned by reference and can be read with `session/message/read`.
+A large timeline record keeps its attribution and position.
+
+`session/create` and `session/open` accept `channelChanges`
 ([decision 0020](.res/decisions/0020-startup-channel-changes.md)): the newest
 name, policy, suspension, resume or deletion a host decided for each channel
 while the harness was stopped. The batch is validated as a whole, applied
 after recovery and before any pending or recovered work can run, and answered
 with one `applied` or `blocked` result per entry. A deletion that finds pending
 input or a checkpoint suspends that channel instead and reports `channel_busy`.
-A repeated load on the same connection reports the recorded results without
+A repeated open on the same connection reports the recorded results without
 applying anything; a new connection can resend the same desired state safely.
 Servers advertise this as `capabilities.startupChannelChanges`.
 
@@ -595,12 +585,12 @@ client.serveFunctions(
 await client.initialize({ protocolVersion: 1, host: { name: "app", version: "1" },
   callbacks: ["functions/call"], functions: ["lookup_handler"],
   approval: true, subscription: { text: "final", tools: "full" } });
-await client.loadSession({ sessionId, tools: { catalog: [
+await client.openSession({ sessionId, tools: { catalog: [
   { name: "lookup", description: "...", parameters: { type: "object" },
     handler: "lookup_handler", group: "fixed" } ] } });
 ```
 
-- **Catalog.** `tools` goes on every `session/create` and `session/load`.
+- **Catalog.** `tools` goes on every `session/create` and `session/open`.
   Definitions are not stored. `group` is `fixed`, `revocable` (`tool/revoke`
   and `tool/restore`, stored with the session and its archives) or `runtime`
   (`tool/enable` and `tool/remove`, in memory, listed in `tools.enabled`).

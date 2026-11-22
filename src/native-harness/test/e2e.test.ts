@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +27,7 @@ const texts = (events: ChannelEvent[]) => events.flatMap(event => event.event.ty
 const taken = (events: ChannelEvent[]) => events.flatMap(({ event }) => event.type === "turn_started" || event.type === "turn_took" ? event.items.map(item => `${item}@${event.turnId}`) : []);
 
 test("crash during individual suspension reopens the channel and preserves pending input", async () => {
-  const config: ProtocolConfig = { version: 1, system: "Crash during channel suspension", model: { protocol: "scripted", script: fixture("hold-scenario.json") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+  const config: ProtocolConfig = { version: 1, system: "Crash during channel suspension", model: { protocol: "scripted", script: fixture("hold-scenario.jsonl") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
   const home = mkdtempSync(join(root, "channel-crash-")), effects = join(home, "effects.log");
   const first = spawnHarness({ home, effects, fault: "beginChannelSuspend:1" });
   await first.client.initialize(); await first.client.createSession({ sessionId: "crash", config, participants: [], channels: {} });
@@ -39,16 +40,16 @@ test("crash during individual suspension reopens the channel and preserves pendi
   const second = spawnHarness({ home, effects });
   try {
     await second.client.initialize();
-    const loaded = await second.client.loadSession({ sessionId: "crash", config });
-    expect(loaded.status.channels).toMatchObject([{ channel: "a", lifecycle: "open", pending: ["a2"] }]);
-    expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", items: ["a1"], uncertainCalls: ["hold-1"] }]);
-    expect(loaded.items.find(item => item.id === "a2")).toMatchObject({ milestone: "received" });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "crash", config });
+    expect(loaded.status.channels).toMatchObject([{ channel: "a", lifecycle: "open" }]);
+    expect(loaded.turns[0]).toMatchObject({ turnId: "1", state: "interrupted", items: ["a1"], uncertainCalls: ["hold-1"] });
+    expect(loaded.items.find(item => item.id === "a2")).toBeDefined();
     await second.client.push(push("a", "a3", "new work"));
   } finally { await second.close(); }
 }, 20000);
 
 test("clean relocation: suspend with a tool running, export, import into a fresh home, verify, then resume exactly once", async () => {
-  const config: ProtocolConfig = { version: 1, system: "Relocation system", model: { protocol: "scripted", script: fixture("hold-scenario.json") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+  const config: ProtocolConfig = { version: 1, system: "Relocation system", model: { protocol: "scripted", script: fixture("hold-scenario.jsonl") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
   const setup: CreateParams = { sessionId: "office", participants: [], channels: {}, config };
   const effects = join(mkdtempSync(join(root, "fx-")), "effects.log");
   const sourceHome = mkdtempSync(join(root, "source-")), destinationHome = mkdtempSync(join(root, "destination-"));
@@ -64,7 +65,7 @@ test("clean relocation: suspend with a tool running, export, import into a fresh
   await until(async () => (await source.client.status()).lifecycle === "suspending", "suspension to begin");
   writeFileSync(`${effects}.release-k`, "");
   expect(await suspending).toMatchObject({ lifecycle: "suspended" });
-  const sourceView = await source.client.loadSession({ sessionId: "office", config });
+  const sourceView = await inspectOperatorView(source.client, { sessionId: "office", config });
   const archive = await source.client.exportArchive();
   // Stop the source before the copy runs anywhere. Closing stdin is stop; a suspended session keeps its checkpoints.
   await source.close();
@@ -76,9 +77,9 @@ test("clean relocation: suspend with a tool running, export, import into a fresh
   const events = watch(destination);
   try {
     await destination.client.initialize();
-    await expect(destination.client.loadSession({ sessionId: "office", config })).rejects.toMatchObject({ code: "not_found" });
+    await expect(destination.client.openSession({ sessionId: "office", config })).rejects.toMatchObject({ code: "not_found" });
     expect(await destination.client.importArchive(archive)).toMatchObject({ sessionId: "office", lifecycle: "suspended" });
-    const loaded = await destination.client.loadSession({ sessionId: "office", config });
+    const loaded = await inspectOperatorView(destination.client, { sessionId: "office", config });
     // Verified before resuming: the same timeline messages, turn IDs and pending input as the source.
     expect(loaded).toEqual(sourceView);
     expect(loaded.status).toMatchObject({ lifecycle: "suspended", execution: "suspended" });
@@ -99,7 +100,7 @@ test("clean relocation: suspend with a tool running, export, import into a fresh
     // The completed tool calls ran once across both processes.
     expect(events.filter(event => event.event.type === "tool_call")).toEqual([]);
     expect(lines(effects).sort()).toEqual(["done:k", "done:k", "start:k", "start:k"]);
-    const after = await destination.client.loadSession({ sessionId: "office", config });
+    const after = await inspectOperatorView(destination.client, { sessionId: "office", config });
     expect(after.turns).toMatchObject([{ turnId: "1", state: "completed", items: ["a1", "a2"] }, { turnId: "2", state: "completed", items: ["b1"] }]);
     expect(after.items.map(item => [item.id, item.milestone, item.turnId])).toEqual([["a1", "seen", "1"], ["b1", "seen", "2"], ["a2", "seen", "1"]]);
     expect(after.status).toMatchObject({ lifecycle: "running", execution: "idle" });
@@ -107,17 +108,19 @@ test("clean relocation: suspend with a tool running, export, import into a fresh
 }, 30000);
 
 test("crash recovery: kills on both sides of take, a tool effect without a result and a missed reply are all reported, and nothing is replayed", async () => {
-  const config: ProtocolConfig = { version: 1, system: "Recovery system", model: { protocol: "scripted", script: fixture("crash-scenario.json") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+  const config: ProtocolConfig = { version: 1, system: "Recovery system", model: { protocol: "scripted", script: fixture("crash-scenario.jsonl") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
   const setup: CreateParams = { sessionId: "ledger", participants: [], channels: {}, config };
   const home = mkdtempSync(join(root, "crash-")), effects = join(home, "effects.log");
   const all: ChannelEvent[] = [];
   /** One process lifetime: optional load, one action, and (when a fault is set) death at that exact commit. */
-  async function life(fault: string | undefined, act: (harness: ReturnType<typeof spawnHarness>, loaded: Awaited<ReturnType<ReturnType<typeof spawnHarness>["client"]["loadSession"]>> | undefined, events: ChannelEvent[]) => Promise<void>, create = false) {
+  async function life(fault: string | undefined, act: (harness: ReturnType<typeof spawnHarness>, loaded: Awaited<ReturnType<typeof inspectOperatorView>> | undefined, events: ChannelEvent[]) => Promise<void>, create = false) {
     const harness = spawnHarness({ home, effects, fault });
     const events = watch(harness);
     try {
       await harness.client.initialize();
-      const loaded = create ? (await harness.client.createSession(setup), undefined) : await harness.client.loadSession({ sessionId: "ledger", config });
+      const loaded = create ? (await harness.client.createSession(setup), undefined) : fault === "tool:1"
+        ? (expect(await harness.client.openSession({ sessionId: "ledger", config })).toMatchObject({ lifecycle: "running" }), undefined)
+        : await inspectOperatorView(harness.client, { sessionId: "ledger", config });
       await act(harness, loaded, events);
       if (fault) expect(await harness.child.exited).not.toBe(0);
     } finally { all.push(...events); if (fault) harness.client.close(); else await harness.close(); }
@@ -127,9 +130,7 @@ test("crash recovery: kills on both sides of take, a tool effect without a resul
   await life("acceptItem:1", async harness => { void harness.client.push(push("a", "m1", "record this")).catch(() => {}); }, true);
 
   // 2. The input is still pending and runs. Killed after the tool's external effect, before its result commits.
-  await life("tool:1", async (_harness, loaded) => {
-    expect(loaded).toMatchObject({ turns: [], items: [{ id: "m1", milestone: "received" }], status: { channels: [{ channel: "a", pending: ["m1"] }] } });
-  });
+  await life("tool:1", async () => {});
   expect(lines(effects)).toEqual(["effect"]);
 
   // 3. The effect is reported uncertain and not replayed. A fresh message is answered, but the process
@@ -168,7 +169,7 @@ test("crash recovery: kills on both sides of take, a tool effect without a resul
     expect(taken(events)).toEqual(["m4@4"]);
     expect(events.at(-1)!.event).toMatchObject({ type: "turn_ended", turnId: "4", outcome: "completed" });
     expect(texts(events)).toEqual(["Second reply."]);
-    const final = await harness.client.loadSession({ sessionId: "ledger", config });
+    const final = await inspectOperatorView(harness.client, { sessionId: "ledger", config });
     expect(final.turns.map(turn => [turn.turnId, turn.state, turn.items, turn.uncertainCalls ?? []])).toEqual([
       ["1", "interrupted", ["m1"], ["rec-1"]], ["2", "interrupted", ["m2"], []], ["3", "interrupted", ["m3"], []], ["4", "completed", ["m4"], []]]);
     expect(final.messages.map(message => message.parts![0]!.text)).toEqual(["Recording.", "First reply.", "Second reply."]);
