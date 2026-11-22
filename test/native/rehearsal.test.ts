@@ -101,7 +101,7 @@ test("real stdio streaming, host approval, steering evidence, and targeted inter
 test("deadline reports active work and reaps the stdio child", async () => {
   const run = await rehearsal([send("alice", "pending"), { type: "model", channelId: "alice", wait: "cancel" }],
     { deadlineMs: 600, cleanupMs: 800 });
-  await expect(run.run()).rejects.toThrow(/blocking status:.*"workingChannels":1/);
+  await expect(run.run()).rejects.toThrow(/blocking status:.*"stage":"(channel settlement|inbox acknowledgments)".*"sample":\["pending"\].*"workingChannels":1.*"phase":\{"kind":"model"/);
   expect(run.exits).toHaveLength(1);
   expect(run.children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true);
 }, 12_000);
@@ -195,7 +195,7 @@ test("the timed fixture runs in CI with shortened offsets and the same bounded h
   const scenario = await loadScenario(long.pathname);
   const lines = readFileSync(long, "utf8").trimEnd().split("\n").map(line => {
     const record = JSON.parse(line) as ScenarioRecord;
-    if (record.type === "send") return JSON.stringify({ ...record, atMs: record.atMs / 25 });
+    if (record.type === "send") return JSON.stringify({ ...record, atMs: record.atMs / 1000 });
     if (record.type === "model" && record.calls)
       return JSON.stringify({ ...record, calls: record.calls.map(call => call.name === "quiet"
         ? { ...call, arguments: { delayMs: Number(call.arguments.delayMs) / 10 } } : call) });
@@ -203,9 +203,18 @@ test("the timed fixture runs in CI with shortened offsets and the same bounded h
   });
   const path = join(directory, "short.jsonl");
   await writeFile(path, lines.join("\n") + "\n");
-  const run = await createTimedRehearsal(path, 12_000);
+  const channelCompleted = (channel: string, count: number) =>
+    run.activity.filter(event => event.channel === channel && event.kind === "completed").length >= count;
+  const run = await createTimedRehearsal(path, 12_000, async channel => {
+    if (channel === "alice") await until(() => channelCompleted("bob", 1), "Bob's first turn");
+    if (channel === "follow-up") await until(() => channelCompleted("alice", 3), "Alice's final turn");
+  });
   cleanup.push(() => run.close());
-  const output = await run.run();
+  const output = await run.run(async offset => {
+    if (!offset) return;
+    const required = offset === 45 ? 1 : 2;
+    await until(() => channelCompleted("alice", required) && channelCompleted("bob", required), "previous burst");
+  });
   expect(output.fileDigest).not.toBe(scenario.fileDigest);
   expect(output.sends.map(send => send.inputId)).toEqual(["a-early", "b-early", "b-mid", "a-mid", "a-final"]);
   expect(output.sends.every(send => send.outcome === "completed")).toBe(true);
