@@ -127,3 +127,8 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   diagnostics, approved by Clad; `ac52dbc` its log). Test files only; trial merge with `4cd3ce9` clean. The
   deadline-before-settlement case is instrumented, not root-caused (haurness-l). cod2a to merge and re-run, clad2a
   to review, then the gate on the merge commit.
+- Merge in from cod2a, `035b7d7` (report section `58389dd`); review section from clad2a, `a951e4e`: no blocking
+  findings, `src/` diff identical to the previous merge, rehearsal 6 × green.
+- **Gate passed on `58389dd`** ([gate](../.plan-execution/status/11-22-GATE-alpha-ac52dbc-merge.md)): 1,426 in 132
+  files on the first run.
+- Combined branch `pre-alpha` (implementation, reviews and status) for the user to merge into alpha.
