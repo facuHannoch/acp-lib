@@ -1,12 +1,10 @@
 /**
  * The controller conformance suite (controller-interface spec, Brief B2 step 6): one conversation, run on any
  * controller, asserting what the session guarantees whichever backend runs a turn. It runs on the core-only fake
- * and on the real `HarnessController` (lifecycle fixture agent, an Agent-owned conversation); cases that need a
- * backend-started turn or per-turn supervision are fake-only and live in the fake's own files.
+ * and on the `HarnessController` (lifecycle fixture agent) and `NativeController` (scripted stdio harness).
+ * Dedicated interleaving cases live in the controller-specific tests.
  *
  * A subject supplies how to make a turn slow, silent or unreachable; the cases only talk to the conversation.
- * Content delivery to a backend-scheduled controller is NOT covered: the interface has no message payload yet
- * (`errors/11-15-spec-turnrun-no-message-payload.md`), so those cases are pending that decision.
  */
 import { describe, expect, test } from "bun:test";
 import type { Agent } from "../../src/agent.ts";
