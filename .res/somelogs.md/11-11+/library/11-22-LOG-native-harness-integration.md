@@ -181,3 +181,9 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   the orchestrator's `worker:` rules; a neutral request reusable by R3. Behaviour points for the user: native asks
   leave the ACP setting (removing the old approve opt-in); deny selects `reject_once` (recorded denied, not
   cancelled); ask refuses at once until R3. Sent to clad2a.
+- R2 grounding review in from clad2a, `29c97db` ([review](reports/11-22-REVIEW-R2-grounding.md)): accurate and
+  complete. Agrees on native outside the ACP setting (an explicit refusal when no handler), deny selecting
+  `reject_once` (A1 snapshots unchanged; `permissions.test.ts` assertions change in their own commit), and ask
+  refusing until R3. Decision needed before step 3: the order of handler and rules (handler-first, as R2's step
+  text implies, vs level-first, as the Permissions design says). Recommends level-first, with an omitted setting
+  meaning `{ default: "ask" }` and `"cancel"` migrating to ask. Steps 1 and 2 released to cod2a (not affected).
