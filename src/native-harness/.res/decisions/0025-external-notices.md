@@ -275,3 +275,24 @@ If an Agent schema migration is needed, use version 20 after O1's version
 19 lands. Exercise it on an actual alpha `3fd2db2` database through
 schema 19, retaining legacy rows and pending payloads. Reopen a second
 time to verify idempotence.
+
+Combined successor prompts call continueAssignment in beforeDispatch
+message order. The orchestrator reads the active predecessor from
+readBinding. After m0→m1→m2, m1 is superseded even if both m1 and m2
+appear in the final causes. Only m2 settles the assignment and one notice
+results. The orchestrator calls closeContinuation if it knows an awaiting
+successor will never dispatch and no terminal lifecycle callback will
+settle it. Examples include a refused send before beforeDispatch or a
+worker stopped while awaiting continuation. Once linked, promptFailed
+for the active successor settles it; closing the stale predecessor
+cannot overwrite it. Owner death leaves unfinished work for the
+replacement to settle as uncertain.
+
+The stable ID remains worker-result:<assignmentId> and can be derived
+before staging. Delivery requires the committed staged payload. The
+orchestrator owns the ACP idempotent append keyed by that ID. Its
+worker_reply is the projected final text; missing or blank projection
+maps to worker_failed with "worker produced no saved result".
+
+Core allocated schema 20 after O1's schema 19. Implementation waits for
+the reviewed O1 base before changing SQLite schema.
