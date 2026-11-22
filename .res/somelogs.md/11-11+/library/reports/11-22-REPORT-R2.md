@@ -1,6 +1,6 @@
 # R2 ACP permission requests and matching
 
-Steps 1 and 2 follow the [grounding report](11-22-REPORT-R2-grounding.md). The configuration replacement and handler precedence are step 3.
+R2 implements the neutral request, the ACP matcher, and the breaking permission setting migration. [Grounding report](11-22-REPORT-R2-grounding.md)
 
 ## Step 1. Neutral request projection
 
@@ -38,4 +38,17 @@ Merge commit `e87907f` brings alpha `29715a3` into `native-integration-r` after 
 
 A clean archive of the merge passed typecheck and **1,484 tests across 136 files** in 91.56 s. All 35 A1 snapshots passed, and the snapshot file matched the grounding SHA-256. Logs are at `/tmp/acp-r2-alpha-gate.Oxnieu/typecheck.log` and `/tmp/acp-r2-alpha-gate.Oxnieu/full.log`.
 
-Step 3 awaits the precedence decision and coordinator release.
+## Step 3. Apply the permission setting
+
+Commit `0ef8da4` wires the shared decision into recorded turns and raw ACP clients. The `permissionRule` callback takes precedence, then ACP uses the most restrictive matching rule or the configured default. Allow and deny are final. Ask uses the first available permission handler from the prompt cause. Until R3 supplies permission events, an unattended ask is refused and recorded as denied, even when ACP cancellation is the only available reply. ACP deny selects `reject_once` when available and otherwise cancels. Native approvals use the callback and the setting's default, with the existing harness routing and policy unchanged.
+
+The new `permissions` object replaces `defaultPermission`. The whole object is inherited in order from Agent to conversation defaults, conversation options, and runtime overrides. Raw clients and direct sessions accept the same object. Configuration validates rule keys and levels before use. The changelog records the migration, callback tool data, and the effects of default allow on both backends.
+
+Commit `43db21a` separately updates the raw ACP assertions. The implementation commit exercises recorded decisions, inheritance, and native approvals.
+
+| File | Before step 3 | After step 3 |
+| --- | ---: | ---: |
+| `src/client.ts` | 1,077 | 1,062 |
+| `src/agent-session.ts` | 4,567 | 4,565 |
+
+A clean archive of `43db21a` passed typecheck and **1,488 tests across 136 files** in 98.70 s. All 35 A1 snapshots passed, and the snapshot file matched the grounding SHA-256 before and after the run. Logs are at `/tmp/acp-r2-step3-gate.k4Dkpi/typecheck.log` and `/tmp/acp-r2-step3-gate.k4Dkpi/full.log`.
