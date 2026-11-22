@@ -262,3 +262,16 @@ schema, before implementation. Legacy rows default to native destinations.
 Legacy source falls back to the persisted worker conversation ID where
 no handle was recorded. Existing staged results and notices retain their
 original bytes and IDs, including their original text projection.
+
+Gate 3 native delivery applies the existing delivery state transitions.
+Schedule pending scans on open after channel changes, on eligible resume,
+and after confirmation of an earlier change. Lost acknowledgement keeps
+the same notice pending with the same ID and bytes. An invalid policy
+moves it to blocked_policy until explicit retry. A missing or retired
+destination moves it to failed_destination. Match confirmation to the
+attempted delivery ID so a stale response cannot settle unrelated work.
+
+If an Agent schema migration is needed, use version 20 after O1's version
+19 lands. Exercise it on an actual alpha `3fd2db2` database through
+schema 19, retaining legacy rows and pending payloads. Reopen a second
+time to verify idempotence.
