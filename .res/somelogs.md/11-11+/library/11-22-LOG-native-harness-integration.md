@@ -124,3 +124,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   no title and no policy never gets a row. Fix endorsed, with additions: always register a row at create; on
   confirm keep the row (desire cleared, marked applied); delete checks `known(id)` in its transaction; retired rows
   stay as tombstones. Waiting on the user.
+- Resume guard in from cod2a, `64060fa`; review from clad2a, `eec1f82`: resolved (the extended test fails on
+  `49b5a1c`; race-free through the per-channel queue). **Step 3 gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R1-step3.md)): 1,451 in 132 files.
+- Worker delivery: Cod1a's implementation `b53abf2` (hook merged at `56ac47a`) is with Clad1a for review; repository
+  level only, the host flush and wire integration go to the orchestrator.
