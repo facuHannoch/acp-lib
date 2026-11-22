@@ -2,7 +2,9 @@
 export interface WorkerAssignmentBinding {
   readonly assignmentId: string;
   readonly workerConversationId: string;
-  readonly operationId: string;
+  readonly messageId: string;
+  readonly operationId?: string;
+  readonly finalRecordId?: string;
   readonly destination: string;
   readonly originatingPolicyNames: readonly string[];
   readonly contributingPolicyNames: readonly string[];
@@ -31,15 +33,17 @@ export interface StagedWorkerAssignment {
 
 /** Implementations share the reservation, staging and transition conformance cases in decision 0025. */
 export interface WorkerDeliveryRepository {
-  reserve(binding: WorkerAssignmentBinding): Promise<"reserved" | "existing" | "conflict">;
+  reserve(binding: Omit<WorkerAssignmentBinding, "operationId" | "finalRecordId">): Promise<"reserved" | "existing" | "conflict">;
   /** Record completed output in the same transaction as the final conversation records. */
-  recordFinal(workerConversationId: string, operationId: string): Promise<void>;
+  recordFinal(workerConversationId: string, operationId: string, messageIds: readonly string[]): Promise<void>;
+  /** Stage uncertainty for each causal binding inside its failed terminal commit. */
+  recordFailure(workerConversationId: string, operationId: string, messageIds: readonly string[]): Promise<void>;
   readBinding(assignmentId: string): Promise<WorkerAssignmentBinding | undefined>;
   /** Update the destination only before staging. */
   redirect(assignmentId: string, destination: string): Promise<boolean>;
   /** Add policies from taken work before staging. */
   addContributingPolicies(assignmentId: string, names: readonly string[]): Promise<boolean>;
-  /** Look up final evidence and write the outcome and notice in the same transaction.
+  /** Look up final evidence by causal worker/message ID and write the outcome and notice in the same transaction.
    * Uncertainty is allowed only for inherited unfinished work under exclusive writer ownership.
    * Repeated calls return the existing stage; a live unfinished operation returns undefined.
    */

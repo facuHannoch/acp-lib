@@ -183,3 +183,9 @@ correlates via the turn's causal message IDs and stores the final operation
 and record pointers in the final-record transaction. This supports folded
 messages sharing a final operation. Runtime changes await independent
 review of this amendment and Core's reviewed hook.
+
+The follow-up to `723c179` adds the policy union across folded bindings,
+terminal uncertainty staging for failed or interrupted operations under
+the live owner, and typed causal message correlation. Root typecheck
+reports the expected contract-first errors in existing consumers until
+the repository and both lifecycle hooks are updated.

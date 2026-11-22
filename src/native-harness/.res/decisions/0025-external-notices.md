@@ -79,12 +79,21 @@ authoritative final worker conversation record by worker and operation.
 In the same transaction that commits completed worker records, match
 bindings by worker conversation and every message ID in the turn causes,
 then attach the final operation and record pointers to each matching binding.
-Message IDs are unique within a worker conversation; operation IDs are not
-unique across assignments. Each matched assignment receives the full shared
-result once, staged under its own ID, destination and policy provenance. A
-failure event identifies its affected bindings by causal message ID and
-does not attach a final pointer. If no final result is recoverable after a
-crash, each affected assignment stages its own uncertainty notice.
+Message IDs are unique within a worker conversation. A second assignment
+claiming the same worker/message pair conflicts. Operation IDs may be
+shared. At terminal commit, compute the union of the originating and
+contributing policy names of all bindings named by the causal message
+IDs. Store the union as contributing policy on every affected binding,
+preserving its original provenance. Each assignment gets its own outcome
+and notice. A successful folded turn supplies the full shared result to
+each binding, with its own destination and the shared policy restrictions.
+
+A terminal failure or interruption under the current owner stages an
+uncertainty outcome and stable notice per affected assignment in the
+same transaction that records the terminal operation. Use causal message
+IDs to find the bindings and compute the same shared policy union. Failure
+attaches no final record pointer. If that transaction never commits, the
+replacement owner resolves each abandoned binding independently.
 A streamed chunk or draft cannot serve as a result. A backend may expose
 a recovery hook for an operation without a reliable final record. The
 first ACP implementation has no such hook and uses the uncertainty path.
@@ -98,7 +107,8 @@ There is no lease timeout, and current-owner operations are ineligible.
 
 Final-record commits and uncertainty staging must serialize through the
 same Agent database. The uncertainty transaction rechecks for a reliable
-final record under its write transaction. An earlier final record selects
+final record under its write transaction, through the binding’s causal
+worker/message ID even when no operation ID is attached yet. An earlier final record selects
 the exact result. If uncertainty commits first, a later final record may
 remain inspectable in the worker transcript but cannot change the staged
 outcome or notice. Enforce uniqueness of the terminal outcome by assignment
@@ -158,3 +168,7 @@ Pin the transaction and ownership semantics in shared repository conformance,
 including idempotence, conflicts, rollback, finalization order, immutable
 notice payload and retry transitions. Run the ownership and process-death
 cases on SQLite. Coordinate the type placement and schema with Core.
+
+Conformance covers folded success and failure, including guest and owner
+assignments with both policies on the owner notice, separate immutable
+notice IDs, and exclusion of bindings outside the operation's causes.
