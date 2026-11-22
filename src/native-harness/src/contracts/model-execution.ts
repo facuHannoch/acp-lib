@@ -3,6 +3,8 @@ import type { StorageResult, TimelineEntry } from "./storage.ts";
 
 /** One immutable logical request, identical across the attempts of a call. */
 export interface ModelRequest { messages: readonly Message[]; tools: readonly ToolDefinition[];
+  /** Frozen taken inputs for local attempt observation. Provider clients omit these IDs from wire requests. */
+  takenItemIds?: readonly string[];
   /** Decision 0021: the first N tools are the stable group (built-ins and
    * fixed registrations); the rest can change between inferences. Absent: all
    * are stable. Adapters may place the groups differently; both use one gate. */

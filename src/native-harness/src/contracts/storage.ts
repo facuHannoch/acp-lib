@@ -54,6 +54,9 @@ export interface StorageIdentity {
 export interface StorageOpenOptions {
   mode: "create" | "open";
   identity: StorageIdentity;
+  /** Scripted owners require the exact model digest before storage recovery.
+   * A missing or different digest on reopen returns incompatible without writes. */
+  requiredScriptDigest?: string;
   /** Validated policies for this owner; legacy callers use the legacy policy. */
   config?: import("./config-permissions.ts").ManagedConfig;
 }
