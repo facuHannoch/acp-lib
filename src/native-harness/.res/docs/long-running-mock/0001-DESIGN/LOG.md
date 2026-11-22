@@ -256,3 +256,37 @@ Accepted limits
   passed in isolation and in the full rerun.
 - Driver scheduling state stays in memory across child replacement. The
   driver itself does not resume after its process exits.
+
+## CI rehearsal stability follow-up
+
+Based on accepted alpha `713a76a`. The ordinary offset-only fixture passed
+four local baseline runs before edits. A controlled reproduction compressed
+the same sends by 1000 instead of 25 while keeping its offset-only scheduler.
+It failed exact consumption with an idle harness, no working channels,
+and no unresolved sends. The forced-deadline regression showed the distinct
+blocked-model case with one working channel, an active model phase, and
+the unresolved input ID. Under load the deadline can fire during inbox
+acknowledgments even when the later diagnostic snapshot shows a running turn.
+No scheduler defect was established.
+
+The CI fixture gates each later burst on completion of the previous burst.
+It holds Alice's first callback until Bob completes and holds the notice
+target until the last scheduled turn completes. This preserves concurrency
+and notice-settlement assertions, along with exact consumption. The documented
+timed command still uses elapsed offsets. Deadlines are unchanged. Failure
+diagnostics cap the operator-status wait at 250 ms and report stage, unresolved
+inputs, pending counts, and active phases before the existing stop and reap
+sequence. Eight repeated focused runs passed both the shortened fixture and
+forced-deadline case.
+
+Both package typechecks and all 87 native tests passed on the follow-up.
+Independent review is pending.
+
+Clad approved `27c7166e96a1f91ee8420f8743b5745f2fb19490` independently.
+Root typecheck passed on a clean checkout. Ten serial and three concurrent
+runs of the complete rehearsal test file passed all 130 tests; no rehearsal
+stdio child remained. The original intermittent deadline before settlement
+remains unroot-caused. The bounded diagnostics can identify the stage and
+active phase if it recurs. The CI barriers serialize bursts while preserving
+concurrency within them. Timing-driven overlap between bursts is exercised
+by the real timed CLI run.
