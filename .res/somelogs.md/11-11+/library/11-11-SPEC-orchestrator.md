@@ -536,8 +536,12 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 2. **The delivery port's ACP half** (`src/orchestrator/contracts.ts`): out-of-band messages with a kind and a sender
    in their metadata, delivered with the next prompt, **through the same store steps as native** (stage, deliver,
    mark delivered in `workerDelivery?`), so recovery after a restart is uniform; the host side's scan skips ACP
-   destinations (a destination-kind filter). **Gate:** an item reaches an ACP conversation and is marked delivered;
-   after a kill between the final record and the append, the restart finishes the delivery once.
+   destinations (a destination-kind filter). The append is **keyed by the delivery id and idempotent** (the current
+   `appendAssistantMessage` mints a random id, so O3a adds a stable-id, deduplicated out-of-band append): the delivery
+   is marked delivered only after the append commits, an unconfirmed append leaves it pending, and a retry appends
+   nothing twice. **Gate:** an item reaches an ACP conversation and is marked delivered; a retry after a kill between
+   the append and the mark appends once; after a kill between the final record and the append, the restart finishes
+   the delivery once.
 3. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
    the assignment's destination; a gone target keeps the reply on the
    worker (`check`, `list`). **Gate:** each item; a deleted target.

@@ -94,3 +94,11 @@ edit to `src/agent-session.ts`.
   built after O1's 19 is in alpha; the `src/native/host.ts` hook points are Cod1a's too (their own reviewed commit);
   the only other overlap, `agent-session.ts` (O4's one line) and Cod1a's scoped `persisted-lifecycle.ts`, is by
   grant.
+- Cod1a's contract amendment (`cef527a`, docs and types; Clad1a reviewing) inspected: `markSteered`,
+  `continueAssignment(assignmentId, predecessorMessageId, successorMessageId)`, `closeContinuation`, typed
+  `destination` and immutable `workerHandle`, `discoverAssignments` (oldest first, exclusive cursor), `latestOutcome`,
+  the result is the last completed assistant message (a missing or blank one is a known failure, "worker produced no
+  saved result"), ACP delivered only on a durable keyed append. It fits O3a. Notes sent: a combined steer (two folded
+  messages) must chain `continueAssignment` message by message; name when `closeContinuation` is needed and who calls
+  it; the ACP stable-id append is the orchestrator's (O3a, added to the spec). Schema 20 allocated to Cod1a, after
+  O1's 19 is in alpha (O1 must merge first).
