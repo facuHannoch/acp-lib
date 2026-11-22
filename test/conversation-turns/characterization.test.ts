@@ -537,27 +537,52 @@ describe("characterization, once", () => {
     const stop = spyOn(PtyClient.prototype, "stop");
     cleanups.push(async () => { start.mockRestore(); bridge.mockRestore(); stop.mockRestore(); });
     const count = () => ({ start: start.mock.calls.length, bridge: bridge.mock.calls.length, stop: stop.mock.calls.length });
+    const ptyCommand = ["bun", IDLE_PTY, "--ack-input"];
+
+    async function waitForBridgeEvent(event: Promise<void>, what: string, ms: number): Promise<void> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms waiting for ${what}`)), ms);
+      });
+      try {
+        await Promise.race([event, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
 
     /** Bridges, types a few bytes into the terminal, then the exit chord. */
-    async function bridgeOnce(target: { bridge(options?: object): Promise<void> }) {
+    async function bridgeOnce(mode: string, target: { bridge(options?: object): Promise<void> }) {
       const input = new PassThrough();
       const output = new PassThrough();
+      const ready = Promise.withResolvers<void>();
+      const received = Promise.withResolvers<void>();
       let written = "";
-      output.on("data", (chunk) => { written += String(chunk); });
+      output.on("data", (chunk) => {
+        written += String(chunk);
+        if (written.includes("idle pty received input")) received.resolve();
+      });
       const status: string[] = [];
-      const done = target.bridge({ input, output, onStatus: (message: string) => status.push(message.trim()) });
-      await until(() => status.length > 0);
-      input.write("typed\r");
-      await Bun.sleep(50);
-      input.write(Buffer.from([0x1d]));
-      await done;
+      const done = target.bridge({ input, output, onStatus: (message: string) => {
+        status.push(message.trim());
+        ready.resolve();
+      } });
+      const closedEarly = done.then(() => { throw new Error(`${mode} PTY bridge closed before its exit chord`); });
+      try {
+        await waitForBridgeEvent(Promise.race([ready.promise, closedEarly]), `${mode} PTY bridge startup status`, 15_000);
+        input.write("typed\r");
+        await waitForBridgeEvent(Promise.race([received.promise, closedEarly]), `${mode} PTY fixture to acknowledge input`, 10_000);
+      } finally {
+        input.end(Buffer.from([0x1d]));
+      }
+      await waitForBridgeEvent(done, `${mode} PTY bridge to close after its exit chord`, 10_000);
       return { status, wroteClearScreen: written.includes("\x1b[2J\x1b[H") };
     }
 
     // Degraded: the live PTY of the conversation is bridged; no other PTY starts.
     const directory = await tempDir();
     const degraded = new HarnessController({
-      adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY], displayName: "fixture" },
+      adapter: { command: ["bun", ECHO], ptyCommand, displayName: "fixture" },
       adapterId: "fixture",
       mode: "degraded",
       cwd: directory,
@@ -565,13 +590,13 @@ describe("characterization, once", () => {
     cleanups.push(() => degraded.stop());
     await degraded.start();
     const beforeDegraded = count();
-    const degradedRun = await bridgeOnce(degraded);
+    const degradedRun = await bridgeOnce("degraded", degraded);
     const degradedCalls = { before: beforeDegraded, after: count(), stillConnected: degraded.isConnected };
     await degraded.stop();
 
     // Normal: a temporary PTY is started, bridged and stopped; the ACP session is untouched.
     const conversation = await AgentSession.create({
-      adapter: { command: ["bun", ECHO], ptyCommand: ["bun", IDLE_PTY], displayName: "fixture" },
+      adapter: { command: ["bun", ECHO], ptyCommand, displayName: "fixture" },
       adapterId: "fixture",
       agentSessionId: "bridge-normal",
       cwd: directory,
@@ -579,7 +604,7 @@ describe("characterization, once", () => {
     cleanups.push(() => conversation.stop());
     const sessionBefore = conversation.internalSessionId;
     const beforeNormal = count();
-    const normalRun = await bridgeOnce(conversation);
+    const normalRun = await bridgeOnce("normal", conversation);
     const normalCalls = { before: beforeNormal, after: count() };
     const after = await settle(conversation.prompt("after bridge"));
     const untouched = {
@@ -589,7 +614,7 @@ describe("characterization, once", () => {
     };
     await conversation.stop();
     snapshot({ directory }, { degradedRun, degradedCalls, normalRun, normalCalls, untouched, after });
-  }, 20_000);
+  }, 80_000);
 
   test("capabilities.agent.promptCapabilities before and after start", async () => {
     const directory = await tempDir();

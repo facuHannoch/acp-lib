@@ -148,7 +148,11 @@ export class FakeController implements ConversationController {
       turnId,
       get live() { return !replaying; },
       subscribeOutput: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-      cancel: () => { cancelled = true; onCancel(); },
+      cancel: () => {
+        if (replaying) return;
+        cancelled = true;
+        onCancel();
+      },
       forceStop: () => this.forceStop(),
       prompt: async () => {
         entry.prompted = true;

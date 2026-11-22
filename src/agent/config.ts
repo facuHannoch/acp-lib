@@ -107,7 +107,7 @@ export interface AgentHarnessConfig {
   readonly launcher?: import("../launcher.ts").AcpLauncher;
   readonly env?: Record<string, string>;
   readonly cwd?: string;
-  /** Pending channel changes and unresolved submissions. In memory by default; see `createFileHostRecords`. */
+  /** Unresolved submissions, and pending channel changes when the backend has no channel repository. */
   readonly records?: import("../native/records.ts").NativeHostRecords;
   /** `final`: complete assistant messages only (default). `stream`: text deltas too. */
   readonly text?: "final" | "stream";

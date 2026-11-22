@@ -140,6 +140,22 @@ describe("a turn's early output is held until the prepared prompt attaches", () 
 });
 
 describe("inputs and the turns that take them", () => {
+  test("preflights a later message's attachment before pushing any message in the run", async () => {
+    const { controller, pushes, records } = standIn();
+    const sending = controller.send({
+      messageIds: ["m1", "m2"],
+      operationKind: "prompt",
+      messages: [
+        { id: "m1", text: "text only" },
+        { id: "m2", text: "with audio", attachments: [{ mimeType: "audio/wav", data: new ArrayBuffer(1) }] },
+      ],
+    });
+    expect(pushes).toHaveLength(0);
+    await expect(sending).rejects.toBeInstanceOf(UnsupportedError);
+    await expect(sending).rejects.toThrow("does not support audio input");
+    expect(records.submissions()).toEqual([]);
+  });
+
   test("send saves each message before pushing it, in order, and resolves on acceptance, promising no turn", async () => {
     const { controller, pushes, records, turns } = standIn();
     await controller.start();

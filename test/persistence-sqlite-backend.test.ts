@@ -47,6 +47,7 @@ describe("SQLite agent persistence", () => {
       transactions: true,
       fullTextSearch: true,
       identity: true,
+      channels: true,
       auditOutbox: true,
       extensions: true,
       vectorSearch: false,
@@ -466,6 +467,88 @@ describe("SQLite agent persistence", () => {
     expect(await backend.records.get("rolled-back")).toBeNull();
   });
 
+  test("merges pending channel fields and only clears the newest version", async () => {
+    const { backend } = await openBackend();
+    const first = await backend.channels.desire("alice", { displayName: "Alice", policy: "strict" });
+    const next = await backend.channels.desire("alice", { displayName: "New name", lifecycle: "suspended" });
+    const clearedPolicy = await backend.channels.desire("alice", { policy: null });
+    const bob = await backend.channels.desire("bob", { lifecycle: "retired" });
+
+    expect(next.version).toBeGreaterThan(first.version);
+    expect(clearedPolicy.version).toBeGreaterThan(next.version);
+    expect(next.desire).toEqual({ displayName: "New name", policy: "strict", lifecycle: "suspended" });
+    expect(clearedPolicy.desire).toEqual({ displayName: "New name", policy: null, lifecycle: "suspended" });
+    expect(await backend.channels.pendingChanges()).toEqual([clearedPolicy, bob]);
+    expect(await backend.channels.confirmChange("alice", next.version)).toBe(false);
+    expect(await backend.channels.pendingChange("alice")).toEqual(clearedPolicy);
+    expect(await backend.channels.confirmChange("alice", clearedPolicy.version)).toBe(true);
+    expect(await backend.channels.confirmChange("alice", clearedPolicy.version)).toBe(false);
+    expect(await backend.channels.pendingChange("alice")).toBeUndefined();
+    expect(await backend.channels.pendingChanges()).toEqual([bob]);
+  });
+
+  test("channel versions still increase after confirmation and reopening an empty repository", async () => {
+    const { backend, path } = await openBackend();
+    const first = await backend.channels.desire("alice", { displayName: "Alice" });
+    expect(await backend.channels.confirmChange("alice", first.version)).toBe(true);
+    await backend.close();
+
+    const reopened = await track(SqliteAgentPersistence.open({ path }));
+    expect(await reopened.channels.pendingChanges()).toEqual([]);
+    const next = await reopened.channels.desire("alice", { lifecycle: "retired" });
+    expect(next.version).toBeGreaterThan(first.version);
+    expect(await reopened.channels.confirmChange("alice", first.version)).toBe(false);
+    expect(await reopened.channels.pendingChange("alice")).toEqual(next);
+  });
+
+  test("root channel reads do not expose an intent rolled back by a transaction", async () => {
+    const { backend } = await openBackend();
+    const reads: Array<Promise<unknown>> = [];
+    await expect(backend.transaction(async (scope) => {
+      const retirement = await scope.channels!.desire("alice", { lifecycle: "retired" });
+      expect(await scope.channels!.pendingChange("alice")).toEqual(retirement);
+      reads.push(backend.channels.pendingChange("alice"), backend.channels.pendingChanges());
+      throw new Error("roll back retirement");
+    })).rejects.toThrow("roll back retirement");
+    expect(await Promise.all(reads)).toEqual([undefined, []]);
+
+    await backend.transaction(async (scope) => {
+      await scope.channels!.desire("alice", { lifecycle: "retired" });
+    });
+    expect((await backend.channels.pendingChange("alice"))?.desire).toEqual({ lifecycle: "retired" });
+  });
+
+  test("upgrades a version 16 database and preserves existing conversation data", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const conversationId = createAgentConversationId();
+    await backend.conversations.create({
+      agentSessionId,
+      agentConversationId: conversationId,
+      title: "Existing",
+    });
+    await backend.close();
+
+    // Restore the v16 layout. The two intent tables and migration entry are the only v17 schema changes.
+    {
+      using legacy = new Database(path);
+      legacy.exec(`
+        DROP TABLE native_channel_intents;
+        DROP TABLE native_channel_intent_clock;
+        DELETE FROM schema_migrations WHERE version >= 17;
+        INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (16, '2026-11-22T00:00:00.000Z');
+      `);
+      expect(legacy.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 16 });
+    }
+
+    const upgraded = await track(SqliteAgentPersistence.open({ path }));
+    expect((await upgraded.conversations.get(conversationId))?.title).toBe("Existing");
+    expect(await upgraded.channels.pendingChanges()).toEqual([]);
+    expect((await upgraded.channels.desire(conversationId, { lifecycle: "retired" })).version).toBe(1);
+    await upgraded.close();
+    using migrated = new Database(path, { readonly: true });
+    expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 17 });
+  });
+
   test("searches records through an external-content FTS5 index", async () => {
     const { backend, path, agentSessionId } = await openBackend();
     const conversationId = createAgentConversationId();
@@ -809,9 +892,8 @@ describe("SQLite agent persistence", () => {
       INSERT INTO schema_migrations(version, applied_at) VALUES (7, '2026-09-17T00:00:00.000Z');
     `);
     old.close();
-    expect(SQLITE_AGENT_SCHEMA_VERSION).toBe(16);
     await expect(SqliteAgentPersistence.open({ path })).rejects.toThrow(
-      "SQLite agent schema 7 is incompatible with 16; recreate the database",
+      `SQLite agent schema 7 is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
   });
 

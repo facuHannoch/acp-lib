@@ -2,7 +2,20 @@ import type { Database } from "bun:sqlite";
 import { contentText } from "../media/content.ts";
 import type { PersistedContent } from "./backend.ts";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 16;
+export const SQLITE_AGENT_SCHEMA_VERSION = 17;
+
+const CHANNEL_INTENT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS native_channel_intent_clock (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 9007199254740991)
+);
+
+CREATE TABLE IF NOT EXISTS native_channel_intents (
+  channel TEXT PRIMARY KEY NOT NULL,
+  version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 9007199254740991),
+  desire_json TEXT NOT NULL CHECK (json_valid(desire_json) AND json_type(desire_json) = 'object')
+);
+`;
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS out_of_band_delivery (
@@ -612,7 +625,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -688,6 +701,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
           database.exec("INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild')");
         }
       }
+      if (version < 17) database.exec(CHANNEL_INTENT_SCHEMA);
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

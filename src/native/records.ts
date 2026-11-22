@@ -12,20 +12,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-
-/** The channel fields a host can decide while the harness is stopped. Absent: leave alone. Null: clear. */
-export interface ChannelDesire {
-  displayName?: string | null;
-  policy?: string | null;
-  lifecycle?: "open" | "suspended" | "retired";
-}
-
-/** A channel's unconfirmed desired state. `version` grows with every edit and is the wire `changeId`. */
-export interface PendingChange {
-  readonly channel: string;
-  readonly version: number;
-  readonly desire: ChannelDesire;
-}
+import type { ChannelDesire, PendingChange } from "../persistence/channels.ts";
+export type { ChannelDesire, PendingChange } from "../persistence/channels.ts";
 
 /** One input as it is pushed: saved before the push, replayed unchanged after a lost response. */
 export interface Submission {
@@ -119,6 +107,30 @@ function build(state: State, commit: () => void): NativeHostRecords {
 }
 
 const empty = (): State => ({ changes: {}, submissions: {}, versions: 0 });
+const fileChanges = new WeakMap<NativeHostRecords, () => boolean>();
+
+export function fileHasPendingChannelChanges(records: NativeHostRecords): boolean {
+  return fileChanges.get(records)?.() ?? false;
+}
+
+/** Keep submission storage usable while preventing access to a second channel store. */
+export function submissionRecords(records: NativeHostRecords): NativeHostRecords {
+  const unavailable = () => {
+    throw new Error("Native host channel records use persistence. Read them with pendingChannelChanges().");
+  };
+  return {
+    desire: unavailable,
+    pendingChange: unavailable,
+    pendingChanges: unavailable,
+    confirmChange: unavailable,
+    saveSubmission: records.saveSubmission.bind(records),
+    submission: records.submission.bind(records),
+    submissions: records.submissions.bind(records),
+    markSent: records.markSent.bind(records),
+    markAccepted: records.markAccepted.bind(records),
+    settleSubmission: records.settleSubmission.bind(records),
+  };
+}
 
 export function createMemoryHostRecords(): NativeHostRecords {
   return build(empty(), () => undefined);
@@ -133,9 +145,11 @@ export function createFileHostRecords(path: string): NativeHostRecords {
   } else {
     mkdirSync(dirname(path), { recursive: true });
   }
-  return build(state, () => {
+  const records = build(state, () => {
     const temporary = `${path}.tmp`;
     writeFileSync(temporary, JSON.stringify(state));
     renameSync(temporary, path);
   });
+  fileChanges.set(records, () => Object.keys(state.changes).length !== 0);
+  return records;
 }
