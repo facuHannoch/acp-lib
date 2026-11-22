@@ -265,6 +265,9 @@ The user never sees the worker's text directly; the agent reads it and decides w
   acknowledged. In the `Agent` database, record the result and stage the pending notice in one transaction. After an
   acp-client restart, recover unstaged completions and retry staged notices by their stable id until the harness
   accepts them or delivery is recorded as blocked or failed; the result stays available to `check` and `list`.
+- **Redirect and completion:** persist the new destination and policy provenance together when redirect takes
+  effect. Completion staging freezes the committed assignment state in the pending notice. A later redirect
+  leaves that notice intact. Preserve policy restrictions from all work taken into the completed worker turn.
 - A stop asked by the conversation itself produces no item: the tool result said "stopped".
 - Several items arriving together are taken in one turn: the harness drains what waits at each model call.
 - Pull stays available: `check` and `list`. What a reply contains is tuned by the test run; v1 sends the final message.
