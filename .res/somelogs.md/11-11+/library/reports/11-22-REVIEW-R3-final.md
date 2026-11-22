@@ -121,3 +121,54 @@ refuses (`by: "default"`) and closes the request, so it can't be left open.
    resolves after `result` (so after `close`), but the event itself comes a microtask later. A consumer that awaits
    `answerPermission` and then checks its own event log synchronously may not see the resolved event yet. One
    changelog sentence would cover it.
+
+## Follow-up: deny on a local native close, and the microtask contract (`c5b10b0..fcd6f09`)
+
+Both notes are **resolved**. No findings. These are `a95f82a` (source) and `fcd6f09` (docs and report).
+
+**How it works.** `refuseNativeOnClose(ticket, stopping)` sends a deny through the ticket's `answer` (a cancelled
+resolution maps to harness `deny`). It's called:
+
+- from `closeLocally` (the conversation's `end(turnId)` and `stop()`);
+- from the request's abort path;
+- from a request that arrives already aborted or stopped;
+- from the standalone-handler path;
+- for held approvals (`#refuseHeldApprovals`) on detach, `#release` (force stop) and the release of a held turn.
+
+`NativeController.stop()` closes attachment approvals with the `stopping` reason *before* it interrupts the turns.
+
+**Sent at most once, and never after a real answer or an `approval_closed`:**
+
+- `refuseNativeOnClose` returns early when `hasWireOutcome` is true (the ticket is settled, or an answer from the
+  harness was observed). `approval_closed` and a confirmed answer both settle the ticket.
+- `Approval.answer` sends nothing when an answer is already in flight or the ticket is settled. So with a real answer
+  still in flight, the deny is a no-op, and a second local close does nothing.
+- cod2a's stdio tests assert **exactly one** `respondApproval` for detach, force stop and stop, and **none** for a
+  disconnect. The stand-in test checks that a held approval is denied on detach (`approval:req-1:deny`).
+
+**No race with the claim-once point:**
+
+- `closeLocally` first calls `entry.close(cancelledPermission)`, which deletes the entry and publishes **one**
+  `turn_ended`. Only then does it send the deny.
+- When the ticket's resolution arrives later, `native.resolution.then(entry.close)` finds the entry gone and does
+  nothing.
+- My probe (native stdio, a handler that never settles, then `stop()`): `requested`, `resolved:turn_ended`, exactly
+  one pair, and no tool effect, so the gate was refused and not granted.
+
+**Safe while disconnected:**
+
+- With no client, the deny's `respondApproval` rejects at once (`not_running`). `Approval.answer` finishes the
+  ticket in its `finally`, and the rejection is logged (`native_approval_local_refusal_failed`).
+- When connected, the host's request timeout bounds it.
+- My probe: a hanging handler, then `host.stop()`, then `conversation.stop()`. The stop returned in **0.3 s**, with one
+  pair, `turn_ended`.
+
+**The host responder:** a detach of the observer leaves a responder-owned approval alone (`hostHandled && !stopping`).
+A **conversation stop** does deny it. That's reasonable, since the conversation is done with the channel, and the
+changelog's "a host responder retains authority if only its observer detaches" implies it. Say it explicitly in one
+line if you want no ambiguity.
+
+**The microtask contract** is now documented in the changelog and the spec: the resolved event comes a microtask
+after the close, after every request listener.
+
+**`test/native`, run fully on the `fcd6f09` archive: 129 pass, 0 fail, 7 files** (136 s).
