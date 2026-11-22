@@ -51,7 +51,7 @@ agent its delegation capacity from outside:
 ```
 harness (the agent)                        acp-client (orchestrator + workers table)
   delegate / check / list / stop  ───────► functions/call (tools acp-client registered)
-  ◄──────────────────────────────────────  replies, failures, redirected, uncertain outcomes:
+  ◄──────────────────────────────────────  replies, failures, uncertain outcomes:
                                            external notices (channel/notify) on the agent's channel
 ```
 
@@ -158,8 +158,10 @@ assignment's id, its link to the worker and the worker operation, its destinatio
 written before dispatch; then its result and staged notice, written together (The way back). **The assignment id is
 the `delegate` or `send` call's invocation id** (`<turnId>:<toolCallId>`, decision 0021): stable and unique, and the
 harness never repeats an uncertain callback. A steer from the same conversation joins the running assignment and
-adds its policy names; a redirect retargets it to the redirecting conversation, with that conversation's names
-added; it ends when the worker's turn ends. In memory only: which slot a worker holds, the resolved worker rules of
+adds its policy names: **one assignment spans a steer chain**, the steered turn's end produces no notice, and the
+successor run's result is the assignment's one final notice (worker delivery gains a call that carries the
+assignment's binding to the successor's message ids); a redirect retargets it to the redirecting conversation, with
+that conversation's names added; it ends when the worker's final turn ends. In memory only: which slot a worker holds, the resolved worker rules of
 the running assignment, pending permission requests (refused on restart). Busy or idle is read from the worker
 conversation's state. No `agent_action` records in v1: the events and the `workers` row say what happened.
 
@@ -246,8 +248,8 @@ send(w1, text) from conversation X:
   w1 busy, X gave its running work ────────────────► steer into it         → "steered"
   w1 busy, other work, no redirect ────────────────► nothing sent          → "busy" + about, where, for whom, how long
   w1 busy, other work, redirect: true ─────────────► policy allows?
-                                                       yes → steer; assignment destination and last_conversation = X;
-                                                             the previous conversation gets "w1 was redirected"
+                                                       yes → steer; assignment destination and last_conversation = X
+                                                             (the previous conversation gets no notice in v1)
                                                        no  → refused
   w1 evicted ──────────────────────────────────────► take a slot, reload, then as above
 ```
@@ -274,7 +276,6 @@ The user never sees the worker's text directly; the agent reads it and decides w
 | --- | --- | --- |
 | a worker's turn ends normally | `worker_reply`: its final message | the assignment's destination |
 | a turn fails (stalled, crashed, error) | `worker_failed` with the error kind | the assignment's destination |
-| another conversation redirects the worker | `worker_redirected` | the assignment's previous destination |
 | restart finds an assignment with no reliable final record | an uncertainty notice: the assignment and worker, outcome uncertain; the work isn't repeated | its destination |
 
 - **The port:** for a native conversation it delivers the result through `channel/notify`, as an external notice
@@ -291,7 +292,8 @@ The user never sees the worker's text directly; the agent reads it and decides w
   - delivery: a suspension or an unresolved channel change keeps the notice pending; `invalid_policy` blocks it until
     an explicit retry; a missing or retired destination fails it, the result kept for `check` and `list`; a duplicate
     receipt counts as delivered.
-- A stop asked by the conversation itself produces no item: the tool result said "stopped".
+- A stop asked by the conversation itself may still produce an interrupted notice (worker delivery doesn't know who
+  asked for the stop); accepted in v1, the agent knows it asked (the tool result said "stopped").
 - Several items arriving together are taken in one turn: the harness drains what waits at each model call.
 - Pull stays available: `check` and `list`. What a reply contains is tuned by the test run; v1 sends the final message.
 - **Target gone:** the reply is kept on the worker and shows on `check` and `list`.
@@ -413,7 +415,7 @@ src/persistence/    the optional workers? repository (WorkerPersistence) with ca
 - **Touches existing code:** `src/agent.ts` (construct when configured, expose `agent.workers`); `src/agent/config.ts`
   (the `orchestrator` option); `src/persistence/` (one optional repository, like the others); the worker marker on
   conversations, and identity skipping marked conversations (`src/agent/persisted-lifecycle.ts`,
-  `src/agent/record-capture.ts`); `src/index.ts` (exports). The conversation manager is used through its public methods; `agent-session.ts` is not edited.
+  `src/agent/record-capture.ts`); `src/index.ts` (exports). The conversation manager is used through its public methods; `agent-session.ts` is not edited, **except O4's one-line change** (below).
 - Each file under ~400 lines; the module under ~2,000.
 - Tests: `test/orchestrator/` with workers on the offline fixture ACP agents (turn ends, permission requests, stalls) and a
   temp-file SQLite.
@@ -433,7 +435,7 @@ ordinary conversations on the existing offline fixture ACP agents (`test/fixture
 consumer-registered tools (`functions/call`) for its route.
 
 **Common to every brief.** Clean-copy gates (`bun run typecheck`, full `bun test`, output saved); the integration
-spec's final gate is the baseline; no edit to `src/agent-session.ts`; no live harness runs except O6's step 3, with
+spec's final gate is the baseline; no edit to `src/agent-session.ts` except O4's one reviewed one-line change (the constructor passes `this` to the permissions module's registry, so `forwardPermission(conversation, …)` can reach the conversation's coordinator; it adds no lines); no live harness runs except O6's step 3, with
 the owner's authorization.
 
 **Order** (revised 2026-11-22, with worker delivery in `alpha`): G, O1, O2, **O4**, O3a, O5a, O3b, O5b, O6. Gate 3's
@@ -499,7 +501,7 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 **Scope:** steps 1–2.
 
 1. **Busy rules:** steer when the same conversation gave the running work; `busy` with the listing otherwise;
-   `redirect: true` steers, retargets the running assignment (`redirect`), moves `last_conversation`, and pushes `worker_redirected` to the previous one. **Gate:**
+   `redirect: true` steers, retargets the running assignment (`redirect`), moves `last_conversation` (the previous conversation gets no notice in v1). **Gate:**
    each case, with two conversations on one worker.
 2. **Policy checks:** `use`, `scope`, `redirect` (also gating stop by others and drop), `maxOpen`. **Gate:** a
    refusal for each.
@@ -528,13 +530,16 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 
 1. **Assignments:** each delegated `delegate` or `send` reserves its assignment (id = the call's invocation id) in
    `workerDelivery?` before dispatch, through the `beforeDispatch` hook, with the destination and the call's
-   contributing `policyNames`; a steer joins the running assignment (`addContributingPolicies`) and a redirect
-   retargets it (`redirect`). **Gate:** an assignment exists before the worker's prompt reaches the provider; a steer
+   contributing `policyNames`; a steer joins the running assignment (`addContributingPolicies`, and the binding carried to the successor run) and a
+   redirect retargets it (`redirect`). **Gate:** an assignment exists before the worker's prompt reaches the provider; a steer
    and a redirect each change it; a refused hook sends nothing.
 2. **The delivery port's ACP half** (`src/orchestrator/contracts.ts`): out-of-band messages with a kind and a sender
-   in their metadata, delivered with the next prompt. **Gate:** an item reaches an ACP conversation.
+   in their metadata, delivered with the next prompt, **through the same store steps as native** (stage, deliver,
+   mark delivered in `workerDelivery?`), so recovery after a restart is uniform; the host side's scan skips ACP
+   destinations (a destination-kind filter). **Gate:** an item reaches an ACP conversation and is marked delivered;
+   after a kill between the final record and the append, the restart finishes the delivery once.
 3. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
-   the assignment's destination; a stop asked by the conversation itself produces none; a gone target keeps the reply on the
+   the assignment's destination; a gone target keeps the reply on the
    worker (`check`, `list`). **Gate:** each item; a deleted target.
 
 **Done:** report commits and each item.
@@ -614,6 +619,9 @@ events only for a conversation's own turns). Corrections go to the spec owner be
   owner may steer are later, as worker kinds a policy can be limited to (how such workers are created, and which
   policies they accept).
 
+- **No notice to the previous conversation on a redirect, and a stop the giver asked for may still produce an
+  interrupted notice:** all conversations of the entity are the same agent, so neither is needed in v1.
+
 ## Decided in review 2 (2026-11-22)
 
 - Delegation tools go in the tool catalog supplied at each open; usage guidance in their descriptions, no system
@@ -625,7 +633,6 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 ## Decided in review 1
 
 - Only the pool prompts workers (Slots); the consumer reads, stops and deletes them.
-- Whether a `worker_redirected` item wakes the agent is the harness's per-kind default, as for every item.
 
 ## Open
 

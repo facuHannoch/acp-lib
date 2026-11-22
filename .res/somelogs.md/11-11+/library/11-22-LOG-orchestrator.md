@@ -67,3 +67,10 @@ edit to `src/agent-session.ts`.
   latter). Also: read-only discovery (unstaged or pending assignments) is a missing Gate 3 deliverable. Spec
   corrections applied: the `agent_action` claim; message capture `content` required for the orchestrator;
   `permission_requested` gains a `source` mark and an optional `turnId` for forwarded requests.
+- User decisions: (1) the one-line `agent-session.ts` edit for O4 is allowed (own reviewed commit; the registry key
+  change adds no lines); (2) no notice is needed for an explicit stop or a redirect (the entity is one agent): no
+  suppression, no `worker_redirected` notice in v1; but **one assignment spans a steer chain** (one final notice);
+  (3) the ACP half uses the same store steps as native (stage, deliver, mark delivered), so recovery is uniform.
+  Spec updated. Requirements for the worker delivery side sent to haurness-l and Cod1a: carry an assignment's binding
+  to a successor run (and no notice for a steered end), read-only discovery, the destination-kind filter and the ACP
+  delivery marks, the worker handle as the persisted source label, and the result projection.
