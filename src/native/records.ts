@@ -12,20 +12,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-
-/** The channel fields a host can decide while the harness is stopped. Absent: leave alone. Null: clear. */
-export interface ChannelDesire {
-  displayName?: string | null;
-  policy?: string | null;
-  lifecycle?: "open" | "suspended" | "retired";
-}
-
-/** A channel's unconfirmed desired state. `version` grows with every edit and is the wire `changeId`. */
-export interface PendingChange {
-  readonly channel: string;
-  readonly version: number;
-  readonly desire: ChannelDesire;
-}
+import type { ChannelDesire, PendingChange } from "../persistence/channels.ts";
+export type { ChannelDesire, PendingChange } from "../persistence/channels.ts";
 
 /** One input as it is pushed: saved before the push, replayed unchanged after a lost response. */
 export interface Submission {

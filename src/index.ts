@@ -267,6 +267,7 @@ export type { NativeFunction, NativeFunctionContext, NativeFunctionsConfig } fro
 export type { ToolAvailability, ToolInvocation, ToolInvocationState, ResultReference, TurnPhase } from "./native-harness/src/client.ts";
 export { createFileHostRecords, createMemoryHostRecords } from "./native/records.ts";
 export type { ChannelDesire, NativeHostRecords, PendingChange, Submission } from "./native/records.ts";
+export type { ChannelPersistence } from "./persistence/channels.ts";
 export type { AgentHarnessConfig } from "./agent/config.ts";
 
 export { buildClientCapabilities, CLIENT_CAPABILITIES } from "./capabilities.ts";

@@ -100,6 +100,8 @@ import { SqliteSharedFiles } from "./sqlite-files.ts";
 import type { SharedFilesPersistence } from "../media/files.ts";
 import { SqliteMediaStore } from "./sqlite-media-store.ts";
 import type { MediaStore } from "../media/store.ts";
+import type { ChannelPersistence } from "./channels.ts";
+import { SqliteChannelPersistence } from "./sqlite-channels.ts";
 
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 type WriteRunner = <T>(work: () => T) => Promise<T>;
@@ -164,6 +166,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly internalInferences: InternalInferenceRepository;
   readonly recoveryCheckpoints: ConversationRecoveryCheckpointRepository;
   readonly identity: IdentityPersistence;
+  readonly channels: ChannelPersistence;
   readonly identityDelivery: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox: AuditOutboxPersistence;
@@ -188,12 +191,21 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       transactions: true as const,
       fullTextSearch,
       identity: true,
+      channels: true,
       auditOutbox: true,
       extensions: true,
       vectorSearch: false,
       metering: true,
     });
-    const scope = this.createScope((work) => this.autoWrite(work), (records) => this.notifyRecordsCommitted(records));
+    const scope = this.createScope(
+      (work) => this.autoWrite(work),
+      (records) => this.notifyRecordsCommitted(records),
+      // Root intent reads must not see a retirement inside an uncommitted delete.
+      (work) => {
+        this.assertOpen();
+        return this.enqueueWrite(async () => work());
+      },
+    );
     this.media = scope.media!;
     this.files = scope.files!;
     this.outOfBandDelivery = scope.outOfBandDelivery!;
@@ -206,6 +218,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.internalInferences = scope.internalInferences!;
     this.recoveryCheckpoints = scope.recoveryCheckpoints!;
     this.identity = scope.identity!;
+    this.channels = scope.channels!;
     this.identityDelivery = scope.identityDelivery!;
     this.search = fullTextSearch ? new SqliteSearchPersistence(database) : undefined;
     this.auditOutbox = scope.auditOutbox!;
@@ -331,6 +344,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   private createScope(
     runWrite: WriteRunner,
     onAppended: (records: readonly ConversationRecord[]) => void | Promise<void>,
+    readChannels: WriteRunner = runWrite,
   ): PersistenceScope {
     return Object.freeze({
       media: new SqliteMediaStore(this.database, runWrite),
@@ -355,6 +369,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
         runWrite,
       ),
       identityDelivery: new SqliteIdentityDeliveryPersistence(this.database, runWrite),
+      channels: new SqliteChannelPersistence(this.database, runWrite, readChannels),
       ...(this.capabilities.fullTextSearch
         ? { search: new SqliteSearchPersistence(this.database) }
         : {}),

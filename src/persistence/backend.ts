@@ -9,6 +9,7 @@ import type { SharedFilesPersistence } from "../media/files.ts";
 import type { MediaCaptureLevel } from "../media/capture.ts";
 import type { MediaStore } from "../media/store.ts";
 import type { MediaKind } from "../media/parts.ts";
+import type { ChannelPersistence } from "./channels.ts";
 import { contentText } from "../media/content.ts";
 
 export type PersistenceJsonPrimitive = string | number | boolean | null;
@@ -765,6 +766,7 @@ export interface PersistenceCapabilities {
   readonly transactions: true;
   readonly fullTextSearch: boolean;
   readonly identity: boolean;
+  readonly channels: boolean;
   readonly auditOutbox: boolean;
   readonly extensions: boolean;
   readonly vectorSearch: boolean;
@@ -789,6 +791,7 @@ export interface PersistenceScope {
   readonly internalInferences?: InternalInferenceRepository;
   readonly recoveryCheckpoints?: ConversationRecoveryCheckpointRepository;
   readonly identity?: IdentityPersistence;
+  readonly channels?: ChannelPersistence;
   readonly identityDelivery?: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox?: AuditOutboxPersistence;
