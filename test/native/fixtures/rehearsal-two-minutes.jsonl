@@ -1,0 +1,17 @@
+{"type":"scenario","version":1,"name":"two-minute-operations"}
+{"type":"send","atMs":0,"channelId":"alice","participantId":"ana","inputId":"a-early","text":"Run the first two work steps."}
+{"type":"send","atMs":0,"channelId":"bob","participantId":"ben","inputId":"b-early","text":"Check in."}
+{"type":"model","channelId":"alice","content":"Starting work","chunks":[{"afterMs":40,"text":"Starting "},{"afterMs":40,"text":"work"}],"calls":[{"id":"a-work-1","name":"quiet","arguments":{"delayMs":1000}}]}
+{"type":"model","channelId":"alice","content":null,"calls":[{"id":"a-work-2","name":"quiet","arguments":{"delayMs":500}}]}
+{"type":"model","channelId":"alice","content":"Work recorded."}
+{"type":"model","channelId":"bob","content":"Checked in."}
+{"type":"send","atMs":45000,"channelId":"bob","participantId":"ben","inputId":"b-mid","text":"Record the middle work."}
+{"type":"send","atMs":45000,"channelId":"alice","participantId":"ana","inputId":"a-mid","text":"Check the middle state."}
+{"type":"model","channelId":"alice","content":"Middle state confirmed."}
+{"type":"model","channelId":"bob","content":null,"calls":[{"id":"b-work","name":"quiet","arguments":{"delayMs":900}}]}
+{"type":"model","channelId":"bob","content":"Middle work recorded."}
+{"type":"send","atMs":125000,"channelId":"alice","participantId":"ana","inputId":"a-final","text":"Notify the follow-up channel."}
+{"type":"model","channelId":"alice","content":null,"calls":[{"id":"a-notify","name":"notify_channel","arguments":{"channelId":"follow-up","text":"Review the recorded work."}}]}
+{"type":"model","channelId":"alice","content":"Follow-up notified."}
+{"type":"model","channelId":"follow-up","content":null,"calls":[{"id":"follow-work","name":"quiet","arguments":{"delayMs":1500}}]}
+{"type":"model","channelId":"follow-up","content":"Review recorded."}

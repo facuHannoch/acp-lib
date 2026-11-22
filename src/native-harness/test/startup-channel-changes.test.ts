@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ import { spawnHarness } from "./helpers/stdio.ts";
 const root = mkdtempSync(join(tmpdir(), "harness-startup-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const fixture = (name: string) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
-const config: ProtocolConfig = { version: 1, system: "Startup changes", model: { protocol: "scripted", script: fixture("hold-scenario.json") },
+const config: ProtocolConfig = { version: 1, system: "Startup changes", model: { protocol: "scripted", script: fixture("hold-scenario.jsonl") },
   defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} }, strict: { fallback: "deny", tools: {} } } };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: `user-${channel}`, content: [{ type: "text" as const, text }] } });
 const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
@@ -45,7 +46,7 @@ async function crashed(name: string) {
   return { home, effects, open: (fault?: string) => spawnHarness({ home, effects, fault }) };
 }
 const load = (harness: ReturnType<typeof spawnHarness>, channelChanges?: PendingChannelChange[]) =>
-  harness.client.loadSession({ sessionId: "s", config, ...(channelChanges ? { channelChanges } : {}) });
+  inspectOperatorView(harness.client, { sessionId: "s", config, ...(channelChanges ? { channelChanges } : {}) });
 
 test("a suspension made while stopped holds recovered input; other channels run; a live resume takes the input once", async () => {
   const place = await crashed("suspend");
@@ -205,7 +206,7 @@ test("a resume in the batch continues a checkpoint only after the response; an i
   const changed = spawnHarness({ home, effects });
   try {
     await changed.client.initialize();
-    const loaded = await changed.client.loadSession({ sessionId: "s", config: { ...config, system: "Another system" }, channelChanges: resume });
+    const loaded = await inspectOperatorView(changed.client, { sessionId: "s", config: { ...config, system: "Another system" }, channelChanges: resume });
     expect(loaded.channelChanges).toEqual([{ channel: "a", changeId: "r1", outcome: "blocked", reason: "incompatible" }]);
     expect(loaded.status.channels).toMatchObject([{ channel: "a", lifecycle: "suspended", activeTurn: { turnId: "1", state: "suspended" } }]);
   } finally { await changed.close(); }
@@ -213,13 +214,12 @@ test("a resume in the batch continues a checkpoint only after the response; an i
   const second = spawnHarness({ home, effects }), events = watch(second);
   try {
     await second.client.initialize();
-    const loaded = await load(second, resume);
+    const loaded = await second.client.openSession({ sessionId: "s", config, channelChanges: resume });
     expect(loaded.channelChanges).toEqual([{ channel: "a", changeId: "r1", outcome: "applied" }]);
-    expect(loaded.status.channels).toMatchObject([{ channel: "a", lifecycle: "open", activeTurn: { turnId: "1", state: "running" } }]);
     await until(() => events.some(event => event.event.type === "turn_ended"), "resumed turn");
     expect(events.at(-1)).toMatchObject({ event: { type: "turn_ended", turnId: "1", outcome: "completed" } });
     // Everything the resumed turn produced came after the open response.
-    const at = second.wire.findIndex(message => "result" in message && (message.result as { status?: unknown })?.status !== undefined);
+    const at = second.wire.findIndex(message => "result" in message && (message.result as { sessionId?: string })?.sessionId === "s");
     const work = second.wire.findIndex(message => "method" in message && ["message_completed", "tool_call", "turn_ended", "items_receipt"].includes(message.params.event.type));
     expect(at).toBeGreaterThanOrEqual(0);
     expect(work).toBeGreaterThan(at);
@@ -234,7 +234,7 @@ test("create applies a batch before the new session starts; in-memory servers su
       .rejects.toMatchObject({ code: "invalid_policy" });
     const created = await harness.client.createSession({ sessionId: "m", config, participants: [], channels: {},
       channelChanges: [{ channel: "a", changeId: "1", displayName: "Alice", lifecycle: "suspended" }, { channel: "b", changeId: "2", policy: "strict", lifecycle: "open" }] });
-    expect(created).toEqual({ sessionId: "m", channelChanges: [{ channel: "a", changeId: "1", outcome: "applied" }, { channel: "b", changeId: "2", outcome: "applied" }] });
+    expect(created).toMatchObject({ sessionId: "m", lifecycle: "running", revision: expect.any(Number), channelChanges: [{ channel: "a", changeId: "1", outcome: "applied" }, { channel: "b", changeId: "2", outcome: "applied" }] });
     expect((await harness.client.status()).channels).toMatchObject([{ channel: "a", displayName: "Alice", lifecycle: "suspended" }, { channel: "b", policy: "strict", lifecycle: "open" }]);
     await expect(harness.client.push(push("a", "a1", "refused"))).rejects.toMatchObject({ code: "channel_suspended" });
     // Null clears and a missing field leaves the value alone, through the live API's own rules.

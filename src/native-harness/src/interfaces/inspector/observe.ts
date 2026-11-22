@@ -19,6 +19,7 @@ export function observeSession(session: PersistentSession, inspection: Inspectio
   const agent: SessionAgent = {
     idle: () => session.agent.idle(),
     send(input) { const result = session.agent.send(input); refresh(); return result; },
+    notifyExternal(notice) { const result = session.agent.notifyExternal(notice); refresh(); return result; },
     notify(notice) { const result = session.agent.notify(notice); refresh(); return result; },
   };
   return { agent, refresh, stop() { stopEvents(); stopLifecycle(); } };

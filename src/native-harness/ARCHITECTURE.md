@@ -45,8 +45,13 @@ depends on session and channel lifecycle.
 
 The host owns the process and transport. The harness owns channel state and
 turn execution, which can continue without a participant observing the channel.
-The [operator controls proposal](.res/docs/operator-controls/0001-DESIGN/SPEC.md)
-extends this boundary with attach-only and reattachment behavior.
+The host merges focused channel observation and tracked recovery with live
+events at a per-channel revision boundary. Attach-only preserves the channel
+lifecycle. History and catch-up use explicit pages. SQLite serves the pages
+through indexed entry ranges and looks up reserved reply IDs by sequence.
+Clean startup and focused reads skip the model-call history blob. Recovery of
+an abandoned running turn reads it once to close attempts.
+[Operator controls](.res/docs/operator-controls/0001-DESIGN/SPEC.md)
 
 The turn state machine is pure:
 `idle → building → calling → running_tools → building → … → idle`, with an

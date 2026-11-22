@@ -78,12 +78,21 @@ const blocked = (change: PendingChannelChange, reason: NonNullable<ChannelChange
  *
  * For each entry the lifecycle step is decided before the name and policy are
  * written, so a blocked entry writes neither. */
-export async function applyChannelChanges(session: Pick<PersistentSession, "channels" | "status">, batch: readonly PendingChannelChange[]): Promise<() => ChannelChangeResult[]> {
+export async function applyChannelChanges(session: Pick<PersistentSession, "channels" | "status" | "operatorReads">, batch: readonly PendingChannelChange[]): Promise<() => ChannelChangeResult[]> {
   const channels: Channels = session.channels;
   const results = new Map<string, ChannelChangeResult>();
-  const find = (channel: string): ChannelStatus | undefined => session.status().channels.find(value => value.channelId === channel);
+  const find = (channel: string) => {
+    if (!session.operatorReads) {
+      const state = session.status().channels.find(value => value.channelId === channel);
+      return state && { ...state, pendingCount: state.pendingItemIds.length };
+    }
+    const result = session.operatorReads.readChannel(channel);
+    if (!result.ok && result.error.code === "not_found") return undefined;
+    const state = done(result);
+    return { ...state.channel, pendingCount: state.pendingCount, activeTurn: state.activeTurn };
+  };
   /** Create the channel with its settings, or edit the fields the entry names. */
-  const write = (change: PendingChannelChange, existing: ChannelStatus | undefined) => {
+  const write = (change: PendingChannelChange, existing: ReturnType<typeof find>) => {
     if (!existing) {
       done(channels.create({ channelId: change.channel, ...(typeof change.displayName === "string" ? { displayName: change.displayName } : {}),
         ...(typeof change.policy === "string" ? { policy: change.policy } : {}) }));
@@ -106,7 +115,7 @@ export async function applyChannelChanges(session: Pick<PersistentSession, "chan
       // Busy is decided before anything is written: pending input or a
       // checkpoint must survive, and must not run, so the channel is suspended
       // instead and the host keeps its deletion pending.
-      if (existing && (existing.pendingItemIds.length || existing.activeTurn)) {
+      if (existing && (existing.pendingCount || existing.activeTurn)) {
         await suspend(change.channel);
         results.set(change.channel, blocked(change, "channel_busy"));
         continue;

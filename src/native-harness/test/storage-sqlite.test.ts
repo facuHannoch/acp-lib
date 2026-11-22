@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,7 +67,7 @@ test("unreadable or unsupported files are refused without being modified", () =>
   { const db = new Database(foreign); db.exec("CREATE TABLE notes (body TEXT)"); db.close(); }
   const future = fresh();
   { const first = createSqliteStorageAdapter(future).open({ mode: "create", identity }); if (first.ok) first.value.close(); }
-  { const db = new Database(future); db.exec("UPDATE meta SET value = '6' WHERE key = 'formatVersion'"); db.close(); }
+  { const db = new Database(future); db.exec("UPDATE meta SET value = '7' WHERE key = 'formatVersion'"); db.close(); }
   for (const path of [junk, foreign, future]) {
     const before = readFileSync(path);
     const adapter = createSqliteStorageAdapter(path);
@@ -147,7 +147,7 @@ test("a format 2 database with a session-wide suspension opens, upgrades once an
   const adapter = createSqliteStorageAdapter(path);
   const s = must(adapter.open({ mode: "open", identity }));
   const view = must(s.snapshot());
-  expect(view.session).toMatchObject({ formatVersion: 5, lifecycle: "suspended" });
+  expect(view.session).toMatchObject({ formatVersion: 6, lifecycle: "suspended" });
   expect(view.channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }, { channelId: "c2", lifecycle: "open", participantIds: [] }]);
   expect(view.turns[0]!.state.status).toBe("suspended"); // untouched by the upgrade
   expect(view.items.map(item => [item.itemId, item.milestone])).toEqual([["i1", "taken"], ["i2", "received"]]);
@@ -156,7 +156,7 @@ test("a format 2 database with a session-wide suspension opens, upgrades once an
   expect(must(s.withdrawItem("c2", "i2")).outcome).toBe("withdrawn");
   expect(must(s.beginChannelSuspend("c2")).lifecycle).toBe("suspended");
   s.close();
-  expect(rawFormat(path)).toBe("5"); // upgraded durably, readable only by this revision from now on
+  expect(rawFormat(path)).toBe("6"); // upgraded durably, readable only by this revision from now on
   const again = must(adapter.open({ mode: "open", identity }));
   expect(must(again.snapshot()).items.find(item => item.itemId === "i2")!.milestone).toBe("withdrawn");
   again.close();
@@ -201,4 +201,88 @@ test("a retired channel that still holds a checkpoint is left alone by session r
   expect(view.session.lifecycle).toBe("running");
   // And it does not block resume under another configuration either, so long as it is the only one.
   again.close();
+});
+
+test("focused SQLite reads use bounded ranges and skip the model history blob", () => {
+  const path = fresh(), adapter = createSqliteStorageAdapter(path);
+  const created = adapter.open({ mode: "create", identity });
+  if (!created.ok) throw new Error(created.error.message);
+  const s = created.value;
+  expect(s.acceptItem({ itemId: "a", kind: "participant_message", channelId: "c1", senderId: "ana", text: "hello" }).ok).toBe(true);
+  const begun = s.beginTurn("c1");
+  if (!begun.ok || !begun.value) throw new Error("No turn");
+  const turn = begun.value.turn.turnId;
+  const reply = s.appendMessage(turn, { role: "assistant", content: "answer", calls: [] });
+  if (!reply.ok) throw new Error(reply.error.message);
+  expect(s.finishTurn(turn, { status: "completed" }).ok).toBe(true);
+  expect(s.close().ok).toBe(true);
+
+  const db = new Database(path);
+  const history = JSON.stringify({ nextCall: 10_001, calls: Array.from({ length: 10_000 }, (_, i) => ({
+    callId: String(i + 1), outcome: "succeeded",
+  })), itemIds: {}, scriptPositions: {}, entryIds: { [reply.value.seq]: "reserved-reply" } });
+  // Simulate a write by a prior revision, which updates the blob alone.
+  db.run("INSERT OR REPLACE INTO meta VALUES ('modelState', ?)", [history]);
+  db.close();
+  const migrated = adapter.open({ mode: "open", identity });
+  if (!migrated.ok) throw new Error(migrated.error.message);
+  expect(migrated.value.close().ok).toBe(true);
+
+  const plans: string[][] = [];
+  const prepare = Database.prototype.prepare;
+  const rangeStatements = spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database, sql: string) {
+    if (sql.includes("AS reply_id FROM entries")) {
+      const explain = prepare.call(this, "EXPLAIN QUERY PLAN " + sql);
+      const parameters = sql.includes("turn_id = ?") ? [turn, "c1"] : sql.includes("channel_id = ?") ? ["c1"] : [];
+      try { plans.push(explain.all(...parameters, 100, 101, 51).map(row => String((row as {detail: string}).detail))); }
+      finally { explain.finalize(); }
+    }
+    return prepare.call(this, sql);
+  } as typeof Database.prototype.prepare);
+  const queries = spyOn(Database.prototype, "query");
+  try {
+    const opened = adapter.open({ mode: "open", identity });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const read = opened.value;
+    try {
+      expect(read.readSession().ok).toBe(true);
+      expect(read.readChannel("c1").ok).toBe(true);
+      expect(read.readTracked("c1", [], [turn]).ok).toBe(true);
+      const bounds = { direction: "older" as const, throughRevision: opened.revision, limit: 50 };
+      const conversation = read.readTimeline({ ...bounds, kind: "conversation", channel: "c1" });
+      expect(conversation.ok && conversation.value.entries[0]?.messageId).toBe("reserved-reply");
+      expect(read.readTimeline({ ...bounds, kind: "replies", channel: "c1", turnIds: [turn] }).ok).toBe(true);
+      expect(read.readTimeline({ ...bounds, kind: "timeline" }).ok).toBe(true);
+    } finally { read.close(); }
+    expect(plans.map(plan => plan[0])).toEqual([
+      expect.stringContaining("USING INDEX entries_conversation"),
+      expect.stringContaining("USING INDEX entries_replies"),
+      expect.stringContaining("USING INTEGER PRIMARY KEY"),
+    ]);
+    expect(plans.flat().filter(detail => detail.includes("SCAN entries"))).toEqual([]);
+    const metadataQueries = queries.mock.calls.map(([sql]) => sql).filter(sql => sql.includes("FROM meta"));
+    expect(metadataQueries.length).toBeGreaterThan(0);
+    expect(metadataQueries.every(sql => sql.startsWith("SELECT key, value FROM meta WHERE key IN") && !sql.includes("modelState") && !sql.includes("importedConfig"))).toBe(true);
+    expect(rangeStatements.mock.calls.every(([sql]) => !sql.includes("modelState"))).toBe(true);
+  } finally { queries.mockRestore(); rangeStatements.mockRestore(); }
+});
+
+test("format 5 adds external attribution columns without changing existing signatures", () => {
+  const path = fresh(), adapter = createSqliteStorageAdapter(path);
+  const created = adapter.open({ mode: "create", identity });
+  if (!created.ok) throw new Error(created.error.message);
+  const original = { kind: "participant_message" as const, channelId: "c1", senderId: "ana", text: "hello", itemId: "old" };
+  const accepted = created.value.acceptItem(original);
+  if (!accepted.ok) throw new Error(accepted.error.message);
+  created.value.close();
+  const db = new Database(path);
+  db.exec("ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source; UPDATE meta SET value='5' WHERE key='formatVersion'");
+  db.close();
+  const reopened = adapter.open({ mode: "open", identity });
+  if (!reopened.ok) throw new Error(reopened.error.message);
+  const duplicate = reopened.value.acceptItem(original);
+  expect(duplicate).toMatchObject({ ok: true, value: { duplicate: true, item: { signature: accepted.value.item.signature } } });
+  expect(reopened.value.acceptItem({ kind: "external_notice", itemId: "new", channelId: "c1", senderId: "host", text: "notice", inheritedPolicyNames: [] }).ok).toBe(true);
+  reopened.value.close();
+  expect(rawFormat(path)).toBe("6");
 });

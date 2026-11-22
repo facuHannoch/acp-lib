@@ -25,7 +25,7 @@ for (const text of ["final", "stream"] as const) test(`${text} subscription keep
     expect(completed).toHaveLength(2); expect(all.findIndex(event => event.type === "message_completed")).toBeLessThan(all.findIndex(event => event.type === "tool_call" && event.status === "started"));
     if (text === "stream") { expect(deltas).toHaveLength(2); expect(deltas.map(e => e.messageId)).toEqual(completed.map(e => e.messageId!)); }
     else expect(deltas).toHaveLength(0);
-    const loaded = await client.loadSession({ sessionId: "memory" }); expect(loaded.messages.map(message => message.messageId)).toEqual(completed.map(event => event.messageId!));
+    const loaded = await client.channelMessages({ channel: "a" }); expect(loaded.messages.filter(message => message.actor.kind === "agent").map(message => message.messageId)).toEqual(completed.map(event => event.messageId!));
   } finally { client.close(); server.dispose(); session.stop("done"); }
 });
 

@@ -151,10 +151,10 @@ test("each inference offers built-ins, then fixed entries, then changeable ones,
   const s = r.open();
   try {
     s.send("a", "hello"); await until(() => s.ended("a"), "first turn");
-    expect(s.requests[0]!.tools).toEqual(["echo", "alpha", "zeta", "read_tool_result", "extra", "send"]);
+    expect(s.requests[0]!.tools).toEqual(["echo", "notify_channel", "alpha", "zeta", "read_tool_result", "extra", "send"]);
     s.session.tools!.revoke("send"); s.session.tools!.remove("extra");
     s.send("a", "again"); await until(() => s.ended("a", 2), "second turn");
-    expect(s.requests[1]!.tools).toEqual(["echo", "alpha", "zeta", "read_tool_result"]);
+    expect(s.requests[1]!.tools).toEqual(["echo", "notify_channel", "alpha", "zeta", "read_tool_result"]);
     // A turn whose input carries a stricter policy sees only what that policy does not deny.
     s.send("b", "hello", "strict"); await until(() => s.ended("b"), "strict turn");
     expect(s.requests[2]!.tools).toEqual(["alpha"]);
@@ -182,10 +182,10 @@ test("a retry of one model call offers the list frozen for that call, even if a 
   try {
     session.agent.send({ channelId: "a", participantId: "u", text: "one" });
     await until(() => events.some(e => e.event.type === "turn_ended"), "turn");
-    expect(offered).toEqual([["read_tool_result", "send"], ["read_tool_result", "send"]]);
+    expect(offered).toEqual([["notify_channel", "read_tool_result", "send"], ["notify_channel", "read_tool_result", "send"]]);
     session.agent.send({ channelId: "a", participantId: "u", text: "two" });
     await until(() => events.filter(e => e.event.type === "turn_ended").length === 2, "second turn");
-    expect(offered[2]).toEqual(["read_tool_result"]);
+    expect(offered[2]).toEqual(["notify_channel", "read_tool_result"]);
   } finally { session.stop("test"); opened.value.close(); }
 });
 
@@ -195,7 +195,7 @@ test("a consumer call runs once through the gate: validated arguments, invocatio
     s.send("a", 'call lookup {"q":"weather"}');
     await until(() => s.calls.length === 1, "the callback");
     const { request } = s.calls[0]!;
-    expect(request).toEqual({ invocationId: "1:c1-1", sessionId: "s", channel: "a", turnId: "1", tool: "lookup", handler: "lookup_handler", arguments: { q: "weather" } });
+    expect(request).toEqual({ invocationId: "1:c1-1", sessionId: "s", channel: "a", turnId: "1", tool: "lookup", handler: "lookup_handler", policyNames: ["open"], arguments: { q: "weather" } });
     expect(s.session.tools!.invocation("1:c1-1")).toMatchObject({ state: "started", tool: "lookup", toolCallId: "c1-1", channel: "a", arguments: '{"q":"weather"}' });
     // The status shows what the turn is doing and which call it concerns.
     expect(s.session.status().channels[0]!.activeTurn).toMatchObject({ turnId: 1, status: "running", phase: { kind: "tool", id: "1:c1-1" } });
@@ -461,4 +461,8 @@ test("a large result is stored by its producer; only the channel that produced i
     await until(() => e.ended("a", 3), "oversized inline");
     expect(e.results().at(-1)).toMatchObject({ ok: false, code: "result_too_large", outcome: { status: "failed" } });
   } finally { e.close(); }
+});
+
+test("catalog registrations cannot shadow notify_channel", () => {
+  expect(() => parseCatalog({ catalog: [tool("notify_channel", "fixed")] }, [])).toThrow(CatalogError);
 });

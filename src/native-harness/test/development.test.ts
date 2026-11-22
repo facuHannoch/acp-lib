@@ -10,7 +10,7 @@ import { ask, turnsEnd } from "./helpers/session.ts";
 
 const root = mkdtempSync(join(tmpdir(), "harness-dev-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-const script = new URL("./fixtures/development-scenario.json", import.meta.url).pathname;
+const script = new URL("./fixtures/development-scenario.jsonl", import.meta.url).pathname;
 const systemPrompt = "Development test system";
 async function until(check: () => boolean, what: string) {
   for (let i = 0; i < 400; i++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
@@ -112,7 +112,7 @@ test("development startup controls: suspend over the local socket, reopen paused
 test("a process that ends without suspending reopens with its unfinished turn shown as interrupted, not retried", async () => {
   const database = join(mkdtempSync(join(root, "db-")), "session.sqlite");
   let waits = 0;
-  const first = await openDevelopment({ systemPrompt, database, create: true, script: new URL("./fixtures/development-scenario.json", import.meta.url).pathname,
+  const first = await openDevelopment({ systemPrompt, database, create: true, script: new URL("./fixtures/development-scenario.jsonl", import.meta.url).pathname,
     dashboardWait: () => { waits++; return new Promise(() => {}); } });
   first.session.start();
   await ask(first.session, { channelId: "channel2", participantId: "bob", text: "Hi" });

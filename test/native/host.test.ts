@@ -1,3 +1,4 @@
+import { modelScenario } from "../../src/native-harness/test/helpers/scenario.ts";
 /**
  * The shared native host against an in-process harness (same client interface as stdio, no process):
  * start once, the open sequence, channel changes made while stopped, saved submissions, reopening
@@ -10,7 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HarnessClientError, type ChannelEvent, type HarnessClient, type ProtocolConfig } from "../../src/native-harness/src/client.ts";
 import { createInProcessHarness } from "../../src/native-harness/src/testing.ts";
-import { HarnessIncompatibleError, HarnessUnavailableError, NativeHarnessHost, type ChannelPort, type ChannelView, type NativeConnection } from "../../src/native/host.ts";
+import { HarnessIncompatibleError, HarnessUnavailableError, NativeHarnessHost, type NativeApprovalResponder, type ChannelPort, type ChannelView, type NativeConnection } from "../../src/native/host.ts";
+import { NativeController } from "../../src/native/controller.ts";
 import { createFileHostRecords, createMemoryHostRecords } from "../../src/native/records.ts";
 import { prepareNativeLaunch } from "../../src/launcher.ts";
 
@@ -23,13 +25,13 @@ const until = async (predicate: () => boolean, what: string) => {
 };
 
 /** A harness whose storage outlives each connection, and a host connected to it through the test seam. */
-async function rig(options: { steps?: unknown[]; restart?: { limit: number; windowMs: number }; startupTimeoutMs?: number } = {}) {
+async function rig(options: { steps?: Parameters<typeof modelScenario>[0]; restart?: { limit: number; windowMs: number }; startupTimeoutMs?: number; approvalResponder?: NativeApprovalResponder } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "acp-native-host-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
-  const script = join(directory, "script.json"), effects = join(directory, "effects.log");
-  await writeFile(script, JSON.stringify({ version: 1, responses: options.steps ?? Array.from({ length: 8 }, (_, i) => ({ content: `reply ${i + 1}`, calls: [] })) }));
+  const script = join(directory, "script.jsonl"), effects = join(directory, "effects.log");
+  await writeFile(script, modelScenario(options.steps ?? Array.from({ length: 8 }, (_, i) => ({ content: `reply ${i + 1}`, calls: [] }))));
   const config: ProtocolConfig = { version: 1, system: "Host test", model: { protocol: "scripted", script }, defaultPolicy: "open",
-    policies: { open: { fallback: "allow", tools: {} }, strict: { fallback: "deny", tools: {} } } };
+    policies: { open: { fallback: "allow", tools: {} }, strict: { fallback: "deny", tools: {} }, ask: { fallback: "ask", tools: {} } } };
   // Durable through the harness's public testing entry point: SQLite sessions under this home.
   const home = join(directory, "home");
   /** Every client call, in order, across connections. */
@@ -60,7 +62,7 @@ async function rig(options: { steps?: unknown[]; restart?: { limit: number; wind
   const records = createMemoryHostRecords();
   const blocked: unknown[] = [];
   const host = new NativeHarnessHost({ sessionId: "agent-1", config, home: directory, records, connect, requestTimeoutMs: 2000,
-    onChannelChangeBlocked: (result) => blocked.push(result), ...(options.restart ? { restart: options.restart } : {}),
+    approvalResponder: options.approvalResponder, onChannelChangeBlocked: (result) => blocked.push(result), ...(options.restart ? { restart: options.restart } : {}),
     ...(options.startupTimeoutMs ? { startupTimeoutMs: options.startupTimeoutMs } : {}) });
   cleanups.push(() => host.stop());
   const attach = (channel: string, busy = false) => {
@@ -87,7 +89,7 @@ describe("starting", () => {
     expect(first).toMatchObject({ id: "m1", channel: "a", milestone: "received" });
     expect(second).toMatchObject({ id: "m2", channel: "b" });
     // Load first; the session did not exist, so it was created and then loaded for its view.
-    expect(calls.slice(0, 4)).toEqual(["initialize", "loadSession", "createSession", "loadSession"]);
+    expect(calls.slice(0, 4)).toEqual(["initialize", "openSession", "createSession", "status"]);
     await host.ensureStarted();
     expect(host.launches).toBe(1);
   });
@@ -397,4 +399,77 @@ describe("host records", () => {
     expect(createFileHostRecords(path).submissions().map((submission) => submission.id)).toEqual(["m2"]);
     expect(second.desire("b", {}).version).toBe(2);
   });
+});
+
+test("the host responder owns an unattached approval and answers once", async () => {
+  let answer: ((decision: "allow_once" | "deny") => Promise<boolean>) | undefined;
+  let closed: AbortSignal | undefined;
+  let requests = 0;
+  const { host, calls } = await rig({
+    steps: [
+      { content: null, calls: [{ id: "echo-1", name: "echo", arguments: { text: "approved" } }] },
+      { content: "complete", calls: [] },
+    ],
+    approvalResponder(_request, respond, signal) { requests++; answer = respond; closed = signal; },
+  });
+  await host.start();
+  await host.push({ ...input("approval-input"), policy: "ask" });
+  await until(() => answer !== undefined, "host approval responder");
+  const controller = new NativeController({ host, channelId: "a" });
+  const observed: string[] = [];
+  controller.subscribeTurns(turn => { if (turn.kind === "turn_started") observed.push(turn.turnId); });
+  const first = await controller.attachObservation();
+  expect(await controller.attachObservation()).toBe(first);
+  expect(observed).toHaveLength(1);
+  expect(calls).not.toContain("channelMessages");
+  const status = await host.operatorStatus();
+  expect(status.workingChannels).toBe(1);
+  expect(status.stale).toBe(false);
+  const requestId = status.session?.channels[0]?.activeTurn?.phase?.id;
+  if (!requestId) throw new Error("Status did not show the approval");
+  expect(await host.respondApproval(requestId, "allow_once")).toBe(false);
+  first.dispose();
+  expect(controller.attachmentStatus).toBe("disconnected");
+  expect(await answer!("allow_once")).toBe(true);
+  expect(await answer!("allow_once")).toBe(false);
+  await until(() => Boolean(closed?.aborted), "approval closure");
+  expect(requests).toBe(1);
+  expect(calls.filter(method => method === "respondApproval")).toHaveLength(1);
+});
+
+test("catch-up advances only through committed pages and stays opt-in", async () => {
+  const { host, calls, intercept } = await rig();
+  const observer = attachForTest();
+  function attachForTest() {
+    const events: ChannelEvent[] = [];
+    const detach = host.attach("a", { event: event => events.push(event), reconcile() {}, disconnected() {}, failed() {}, busy: () => false });
+    return { events, detach };
+  }
+  await host.start();
+  const push = async (id: string) => {
+    const completed = observer.events.filter(({ event }) => event.type === "turn_ended").length;
+    await host.push(input(id));
+    await until(() => observer.events.filter(({ event }) => event.type === "turn_ended").length > completed, id);
+  };
+  await push("first");
+  expect(calls).not.toContain("channelMessages");
+  const newest = await host.conversationMessages({ channel: "a", limit: 1 });
+  let position = newest.messages[0]!.position;
+  await push("second");
+  const committed: string[] = [];
+  const abort = new AbortController();
+  intercept.channelMessages = (real, params) => real({ ...params, limit: 1 });
+  await expect(host.catchUp("a", position, async (messages, next) => {
+    committed.push(...messages.map(message => message.messageId));
+    position = next;
+    abort.abort();
+  }, abort.signal)).rejects.toThrow();
+  expect(committed).toEqual(["item:second"]);
+  await host.catchUp("a", position, async (messages, next) => {
+    committed.push(...messages.map(message => message.messageId));
+    position = next;
+  });
+  expect(committed).toHaveLength(2);
+  expect(committed[1]).not.toBe(committed[0]);
+  observer.detach();
 });

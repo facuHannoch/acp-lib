@@ -1,3 +1,4 @@
+import type { OperatorStorageReads } from "./operator-controls.ts";
 import type { ModelCallStore } from "./model-execution.ts";
 import type { ItemKind, ItemMilestone } from "./agent.ts";
 import type { ContextEntry } from "./context.ts";
@@ -53,6 +54,16 @@ export interface StorageIdentity {
 export interface StorageOpenOptions {
   mode: "create" | "open";
   identity: StorageIdentity;
+  /** Opt-in scripted identity check. Create persists identity.compatibilityKey
+   * as scripted-jsonl-v1:<digest>:<systemHash>, with both hashes lowercase
+   * 64-character hexadecimal SHA-256. The digest segment must equal this value.
+   * Under ownership, open matches that segment of the stored key exactly.
+   * Untagged, malformed, or mismatched keys return incompatible without writes,
+   * before format upgrade, recovery, attempt repair, or any reservation.
+   * Existing checkpoint comparison uses the entire key, including systemHash.
+   * Changing only the system preserves open but blocks checkpoint resume.
+   * Callers that omit this option retain the existing behavior. */
+  requiredScriptDigest?: string;
   /** Validated policies for this owner; legacy callers use the legacy policy. */
   config?: import("./config-permissions.ts").ManagedConfig;
 }
@@ -66,7 +77,7 @@ export interface StoredSession {
   sessionId: string;
   /** Storage contract/data format revision, distinct from RPC and archive versions.
    * Revision 5 stores model calls and script reservations. Formats 2–4 upgrade on open. */
-  formatVersion: 5;
+  formatVersion: 6;
   createdAt: string;
   lifecycle: SessionLifecycle;
   /** The key supplied at create. Immutable; open never rewrites it. */
@@ -115,6 +126,9 @@ export interface AcceptItem {
   explicitPolicy?: string | null;
   /** Internal source turn of a notice; never supplied by model arguments. */
   sourceTurnId?: number;
+  /** External notice attribution and submitted policy set only. */
+  externalSource?: string;
+  inheritedPolicyNames?: readonly string[];
   /** Original payload, kept unrendered for the life of the item. */
   text: string;
 }
@@ -127,9 +141,9 @@ export interface AcceptItem {
  * retained for deduplication, so a retry cannot make it pending again. */
 export interface StoredItem extends Required<Pick<AcceptItem, "itemId">>, Omit<AcceptItem, "itemId"> {
   policy?: import("./config-permissions.ts").ItemPolicy;
-  /** Lowercase hex SHA-256 of the UTF-8 bytes of
-   * `JSON.stringify([kind, channelId, senderId, sourceChannelId ?? null, text])`
-   * (a JSON array, no extra whitespace). Identical in every adapter and archive. */
+  /** Lowercase SHA-256 of the UTF-8 identity array in decision 0025.
+   * External notices use source and the sorted inherited set. Existing
+   * participant and internal notice formulas retain their explicit override. */
   signature: string;
   /** Global sequence position of acceptance; acceptance order within a channel. */
   acceptedSeq: number;
@@ -209,10 +223,11 @@ export interface StorageSnapshot {
 }
 
 /** Logical, adapter-independent session copy. JSON-serializable. Versioned
- * independently of `formatVersion`. Version 4 adds model call records and script reservations. */
+ * independently of `formatVersion`. Version 4 adds model call records and script reservations.
+ * Version 5 adds external notices. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 4;
+  archiveVersion: 5;
   exportedAt: string;
   snapshot: StorageSnapshot;
   /** ID allocation state so the copy never reissues a turn ID, seq or item ID. */
@@ -247,6 +262,12 @@ export interface SessionArchiveV3 {
   allocation: SessionArchive["allocation"];
 }
 
+/** Import-only model execution archive, before external notices. */
+export interface SessionArchiveV4 extends Omit<SessionArchive, "archiveVersion" | "snapshot"> {
+  archiveVersion: 4;
+  snapshot: Omit<StorageSnapshot, "session"> & { session: Omit<StoredSession, "formatVersion"> & { formatVersion: 5 } };
+}
+
 /** Result of `withdrawItem`. The two outcomes are the two sides of the race with
  * take; whichever transaction commits first decides, and the decision is final.
  * `withdrawn` also answers a repeat of an earlier successful withdrawal. */
@@ -261,7 +282,11 @@ export type InterruptOutcome =
   | { interrupted: false; turn: StoredTurn };
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
-export interface SessionStorage extends ModelCallStore {
+export interface SessionStorage extends ModelCallStore, OperatorStorageReads {
+  readSession(): StorageResult<StoredSession>;
+  readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
+  readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
+  readRevokedTools(): StorageResult<string[]>;
   /** Validated config supplied to this open, copied at bind time; undefined for
    * legacy allow-only opens. Returns a defensive copy. It is independent of
    * saved/imported config and is not retargeted by saveConfig. Failure is not
@@ -293,6 +318,8 @@ export interface SessionStorage extends ModelCallStore {
    *    its StoredChannel (open, unnamed) and StoredParticipant; `participantIds`
    *    is unaffected until take.
    * Nothing is added to the timeline and no turn is created or changed. */
+  /** External notice retries compare durable identity before admission or
+   * policy validation for new work, through a path that writes nothing. */
   acceptItem(input: AcceptItem): StorageResult<{ item: StoredItem; duplicate: boolean }>;
 
   /** Start the channel's next turn by taking ALL its pending items, in
@@ -514,7 +541,7 @@ export interface SessionStorageAdapter {
   /** Read the saved configuration without creating or recovering a session. */
   readSavedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
   /** Atomically publish the logical archive and validated portable config. */
-  importSessionFile(payload: import("./session-file.ts").SessionFilePayload<SessionArchive | SessionArchiveV2 | SessionArchiveV3>, options?: { sessionId?: string }): StorageResult<StoredSession>;
+  importSessionFile(payload: import("./session-file.ts").SessionFilePayload<SessionArchive | SessionArchiveV2 | SessionArchiveV3 | SessionArchiveV4>, options?: { sessionId?: string }): StorageResult<StoredSession>;
   /** Acquire exclusive ownership, then check format and session ID, before any
    * write. A second owner (`owner_conflict`), unreadable or unsupported format
    * and a different session ID (`incompatible`) leave the data untouched.
@@ -546,5 +573,5 @@ export interface SessionStorageAdapter {
    * revision) import as channels `open` and unnamed; version 2 preserves
    * channel lifecycle, names, withdrawn items and retired IDs.
    * Any failure leaves no partial session. The result is not opened or owned. */
-  importArchive(archive: SessionArchive | SessionArchiveV1 | SessionArchiveV2 | SessionArchiveV3, options?: { sessionId?: string }): StorageResult<StoredSession>;
+  importArchive(archive: SessionArchive | SessionArchiveV1 | SessionArchiveV2 | SessionArchiveV3 | SessionArchiveV4, options?: { sessionId?: string }): StorageResult<StoredSession>;
 }

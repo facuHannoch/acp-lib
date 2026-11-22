@@ -3,16 +3,26 @@ import type { ExecuteTool, ToolDefinition } from "../../contracts/loop.ts";
 import { currentTimeDefinition, executeCurrentTime } from "./current-time.ts";
 import type { createDashboardWork } from "./dashboard.ts";
 
+export const notifyChannelDefinition: ToolDefinition = {
+  name: "notify_channel",
+  description: "Deliver important information to an existing channel. Acceptance does not mean the target has acted.",
+  parameters: { type: "object", properties: { channelId: { type: "string" }, text: { type: "string" } },
+    required: ["channelId", "text"], additionalProperties: false },
+};
+
+export function executeNotice(args: Record<string, unknown>, notify: (channel: string, text: string) => ReturnType<SessionAgent["notify"]>) {
+  if (!args || Array.isArray(args) || Object.keys(args).some(key => !["channelId", "text"].includes(key))
+    || typeof args.channelId !== "string" || !args.channelId.trim() || typeof args.text !== "string" || !args.text.trim())
+    throw new Error("notify_channel requires channelId and text");
+  const receipt = notify(args.channelId, args.text);
+  return receipt.accepted ? { accepted: true } : { accepted: false, error: receipt.error };
+}
+
 export const scenarioDefinitions: ToolDefinition[] = [currentTimeDefinition, {
   name: "dashboard_work",
   description: "Perform one of five dashboard implementation steps. Each step takes five seconds. Call at most once per inference, then reconsider the latest information before continuing. No work runs between calls.",
   parameters: { type: "object", properties: {}, additionalProperties: false },
-}, {
-  name: "notify_channel",
-  description: "Ask an existing channel to process important information. The notice is delivered as soon as that channel can take it. Acceptance does not mean the target has acted. Do not repeat a notice already delivered.",
-  parameters: { type: "object", properties: { channelId: { type: "string" }, text: { type: "string" } },
-    required: ["channelId", "text"], additionalProperties: false },
-}];
+}, notifyChannelDefinition];
 
 export function createScenarioTools(input: { channelId: string; turnId: number }, dashboard: ReturnType<typeof createDashboardWork>, notify: SessionAgent["notify"]) {
   let dashboardCalled = false;
@@ -29,11 +39,7 @@ export function createScenarioTools(input: { channelId: string; turnId: number }
         dashboardCalled = true;
         result = await dashboard(input);
       } else if (call.name === "notify_channel") {
-        if (Object.keys(args).some(key => !["channelId", "text"].includes(key))
-          || typeof args.channelId !== "string" || !args.channelId.trim()
-          || typeof args.text !== "string" || !args.text.trim()) throw new Error("notify_channel requires channelId and text");
-        const receipt = notify({ channelId: args.channelId, text: args.text, fromChannelId: input.channelId });
-        result = receipt.accepted ? { accepted: true } : { accepted: false, error: receipt.error };
+        result = executeNotice(args, (channelId, text) => notify({ channelId, text, fromChannelId: input.channelId }));
       } else throw new Error(`Tool not allowed: ${call.name}`);
     } catch (error) { result = { ok: false, error: String(error) }; }
     const content = JSON.stringify(result);

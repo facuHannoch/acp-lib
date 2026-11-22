@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnHarness } from "./helpers/stdio.ts";
 import type { ChannelEvent } from "../src/contracts/events.ts";
-const script = new URL("./fixtures/model-e2e.json", import.meta.url).pathname;
+const script = new URL("./fixtures/model-e2e.jsonl", import.meta.url).pathname;
 const until = async (fn: () => boolean, what: string) => { for (let i = 0; i < 1000; i++) { if (fn()) return; await new Promise(resolve => setTimeout(resolve, 5)); } throw new Error(`Timed out: ${what}`); };
 const push = (channel: string, id: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text: id }] } });
 
@@ -40,9 +40,10 @@ test("scripted stdio: partial reply times out without retry while another channe
     await first.close(); closed = true;
     const second = spawnHarness({ home });
     try {
-      await second.client.initialize(); const loaded = await second.client.loadSession({ sessionId: "s" });
+      await second.client.initialize(); await second.client.openSession({ sessionId: "s" });
+      const loaded = await second.client.reconcileChannel({ channel: "alice", itemIds: ["a1"] });
       expect(loaded.items.find(item => item.id === "a1")?.milestone).toBe("seen");
-      expect(loaded.messages.some(message => message.messageId === delta.messageId)).toBe(false);
+      expect((await second.client.channelMessages({ channel: "alice" })).messages.some(message => message.messageId === delta.messageId)).toBe(false);
       const restored = (await second.client.modelCalls()).calls.find(call => call.callId === alice.callId);
       expect(restored).toMatchObject({ outcome: "timeout", attempts: [{ usage: { inputTokens: 7 }, outcome: "timeout" }] });
     } finally { await second.close(); }
@@ -54,7 +55,7 @@ for (const mode of ["in-process", "stdio"] as const) for (const text of ["final"
     const { createInProcessHarness } = await import("../src/testing.ts");
     const home = mkdtempSync(join(tmpdir(), "model-modes-")), options = { home, streamResponses: true };
     const harness = mode === "stdio" ? spawnHarness(options) : createInProcessHarness(options), events: ChannelEvent[] = [];
-    const echoScript = new URL("./fixtures/echo-scenario.json", import.meta.url).pathname;
+    const echoScript = new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname;
     try {
       harness.client.onChannelEvent(event => events.push(event));
       await harness.client.initialize({ protocolVersion: 1, host: { name: "test", version: "0" }, callbacks: [], subscription: { text, tools: "full" } });
@@ -65,6 +66,6 @@ for (const mode of ["in-process", "stdio"] as const) for (const text of ["final"
       expect(ordered.findIndex(event => event.type === "message_completed")).toBeLessThan(ordered.findIndex(event => event.type === "tool_call" && event.status === "started"));
       if (text === "stream") { expect(deltas.map(event => event.messageId)).toEqual(completed.map(event => event.messageId!)); }
       else expect(deltas).toEqual([]);
-      const loaded = await harness.client.loadSession({ sessionId: "s" }); expect(loaded.messages.map(message => message.messageId)).toEqual(completed.map(event => event.messageId!));
+      const loaded = await harness.client.channelMessages({ channel: "alice" }); expect(loaded.messages.filter(message => message.actor.kind === "agent").map(message => message.messageId)).toEqual(completed.map(event => event.messageId!));
     } finally { await harness.close(); rmSync(home, { recursive: true, force: true }); }
   }, 15000);

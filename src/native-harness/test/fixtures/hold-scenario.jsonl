@@ -1,0 +1,4 @@
+{"type":"scenario","version":1,"name":"hold-scenario"}
+{"type":"model","content":"Working.","calls":[{"id":"hold-1","name":"hold","arguments":{"key":"k"}}]}
+{"type":"model","content":"Finished.","calls":[]}
+{"type":"model","content":"Next.","calls":[]}

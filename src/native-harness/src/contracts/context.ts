@@ -8,7 +8,9 @@ export interface ContextEntry {
   channelId: string;
   turnId: number;
   from: string;
-  kind?: "participant_message" | "channel_notice";
+  kind?: "participant_message" | "channel_notice" | "external_notice";
+  /** Optional host-supplied external attribution. */
+  externalSource?: string;
   sourceChannelId?: string;
   message: Message;
 }

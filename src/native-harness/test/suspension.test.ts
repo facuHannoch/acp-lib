@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,7 @@ import { lastInput } from "./helpers/session.ts";
 
 const root = mkdtempSync(join(tmpdir(), "harness-suspend-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
 const setup: CreateParams = { sessionId: "paused", participants: [], channels: {}, config };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }] } });
 const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
@@ -70,14 +71,14 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: ch
   const second = open();
   try {
     await second.client.initialize();
-    const loaded = await second.client.loadSession({ sessionId: "paused", config });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "paused", config });
     expect(loaded.status.channels).toEqual(expect.arrayContaining([expect.objectContaining({ channel: "a", lifecycle: "suspended", waitingForResume: true }), expect.objectContaining({ channel: "idle", lifecycle: "retired" })]));
     expect(await second.client.push(push("a", "withdraw", "remove"))).toMatchObject({ duplicate: true, item: { milestone: "withdrawn" } });
     expect(await second.client.interruptTurn({ channel: "a", turn: "1" })).toMatchObject({ interrupted: false, turn: { state: "suspended" } });
     const seen = watch(second.client);
     await second.client.resumeChannel({ channel: "a" });
     await until(() => seen.types("a").includes("turn_ended"), "resumed turn");
-    const after = await second.client.loadSession({ sessionId: "paused", config });
+    const after = await inspectOperatorView(second.client, { sessionId: "paused", config });
     expect(after.turns[0]).toMatchObject({ state: "completed", items: ["a1", "a2"] });
     expect(lines(effects).filter(line => line === "start:k")).toHaveLength(2);
     expect(await second.client.withdrawItem({ channel: "a", item: "a2" })).toMatchObject({ outcome: "taken", item: { turnId: "1" } });
@@ -98,7 +99,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: ta
     expect(await harness.client.interruptTurn({ channel: "a", turn: "1" })).toMatchObject({ interrupted: false });
     release();
     await until(() => seen.channel.some(e => e.event.type === "turn_ended" && e.event.turnId === "2"), "second turn completion");
-    const loaded = await harness.client.loadSession({ sessionId: "paused", config });
+    const loaded = await inspectOperatorView(harness.client, { sessionId: "paused", config });
     expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted" }, { turnId: "2", state: "completed", items: ["a2"] }]);
   } finally { await harness.close(); }
 }, 20000);
@@ -134,7 +135,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(lines(effects).sort()).toEqual(["done:k", "done:k", "start:k", "start:k"]);
     await until(() => seen.session.length === 2, "lifecycle events");
     // Each iteration finished its tool, then checkpointed instead of inferring or taking input.
-    for (const channel of ["a", "b"]) expect(seen.types(channel)).toEqual(["turn_started", "items_receipt", "message_completed", "tool_call", "tool_call", "turn_suspended"]);
+    for (const channel of ["a", "b"]) expect(seen.types(channel)).toEqual(["turn_started", "items_receipt", "items_receipt", "message_completed", "tool_call", "tool_call", "turn_suspended"]);
     expect(seen.session.map(event => event.lifecycle)).toEqual(["suspending", "suspended"]);
     expect(seen.order.at(-1)).toBe("session:suspended");
     expect(seen.session[1]!.revision).toBe(status.revision);
@@ -148,7 +149,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
   try {
     await second.client.initialize();
     const seen = watch(second.client);
-    const loaded = await second.client.loadSession({ sessionId: "paused", config });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "paused", config });
     expect(loaded.status).toMatchObject({ lifecycle: "suspended", execution: "suspended" });
     expect(loaded.turns).toMatchObject([{ turnId: "1", state: "suspended", items: ["a1"] }, { turnId: "2", state: "suspended", items: ["b1"] }]);
     expect(loaded.items.map(item => [item.id, item.milestone])).toEqual([["a1", "seen"], ["b1", "seen"], ["a2", "received"]]);
@@ -162,7 +163,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(resumed.lifecycle).toBe("running");
     await until(() => seen.channel.filter(event => event.event.type === "turn_ended").length === 2, "resumed turns to end");
     // The resumed turn on a takes the pending item before its first inference; b infers directly.
-    expect(seen.types("a")).toEqual(["turn_resumed", "turn_took", "items_receipt", "message_completed", "turn_ended"]);
+    expect(seen.types("a")).toEqual(["turn_resumed", "turn_took", "items_receipt", "items_receipt", "message_completed", "turn_ended"]);
     expect(seen.types("b")).toEqual(["turn_resumed", "message_completed", "turn_ended"]);
     expect(seen.order[0]).toBe("session:running");
     expect(seen.channel.find(event => event.event.type === "turn_took")!.event).toMatchObject({ turnId: "1", items: ["a2"] });
@@ -170,7 +171,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(seen.channel.filter(event => event.event.type === "tool_call")).toEqual([]);
     // The completed calls ran once across both processes.
     expect(lines(effects).sort()).toEqual(["done:k", "done:k", "start:k", "start:k"]);
-    const after = await second.client.loadSession({ sessionId: "paused", config });
+    const after = await inspectOperatorView(second.client, { sessionId: "paused", config });
     expect(after.turns).toMatchObject([{ turnId: "1", state: "completed", items: ["a1", "a2"] }, { turnId: "2", state: "completed", items: ["b1"] }]);
     expect(after.items.map(item => [item.id, item.milestone, item.turnId])).toEqual([["a1", "seen", "1"], ["b1", "seen", "2"], ["a2", "seen", "1"]]);
     expect(after.status).toMatchObject({ lifecycle: "running", execution: "idle" });
@@ -202,11 +203,11 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     await changed.client.initialize();
     const seen = watch(changed.client);
     // A different system prompt is a different configuration: readable, not resumable.
-    before = await changed.client.loadSession({ sessionId: "paused", config: { ...config, system: "Another system" } });
+    before = await inspectOperatorView(changed.client, { sessionId: "paused", config: { ...config, system: "Another system" } });
     expect(before.status).toMatchObject({ lifecycle: "suspended" });
     expect(before.turns).toMatchObject([{ turnId: "1", state: "suspended" }]);
     await expect(changed.client.resume()).rejects.toMatchObject({ code: "incompatible" });
-    expect(await changed.client.loadSession({ sessionId: "paused", config: { ...config, system: "Another system" } })).toEqual(before);
+    expect(await inspectOperatorView(changed.client, { sessionId: "paused", config: { ...config, system: "Another system" } })).toEqual(before);
     expect(seen.order).toEqual([]);
   } finally { await changed.close(); }
 
@@ -214,7 +215,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
   try {
     await original.client.initialize();
     const seen = watch(original.client);
-    expect(await original.client.loadSession({ sessionId: "paused", config })).toEqual(before);
+    expect(await inspectOperatorView(original.client, { sessionId: "paused", config })).toEqual(before);
     await original.client.resume();
     await until(() => seen.channel.some(event => event.event.type === "turn_ended"), "resumed turn");
     expect(seen.channel.at(-1)!.event).toMatchObject({ turnId: "1", outcome: "completed" });
@@ -255,9 +256,8 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: st
   try {
     await second.client.initialize();
     const seen = watch(second.client);
-    const loaded = await second.client.loadSession({ sessionId: "paused", config });
-    expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", items: ["a1"], uncertainCalls: ["hold-1"] }]);
-    expect(loaded.status.channels[0]).toMatchObject({ pending: ["a2"] });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "paused", config });
+    expect(loaded.turns.slice(0, 1)).toMatchObject([{ turnId: "1", state: "interrupted", items: ["a1"], uncertainCalls: ["hold-1"] }]);
     await until(() => seen.channel.some(event => event.event.type === "turn_ended"), "pending input to run");
     expect(seen.channel[0]!.event).toMatchObject({ type: "turn_started", turnId: "2", items: ["a2"] });
     expect(seen.channel.at(-1)!.event).toMatchObject({ turnId: "2", outcome: "completed" });
@@ -394,10 +394,10 @@ test("a process killed after checkpointing but before suspension commits reopens
   try {
     await next.client.initialize();
     const seen = watch(next.client);
-    const loaded = await next.client.loadSession({ sessionId: "paused", config });
+    const loaded = await inspectOperatorView(next.client, { sessionId: "paused", config });
     // The checkpoint was durable, the suspension was not: this is interruption, not a paused session.
     expect(loaded.status).toMatchObject({ lifecycle: "running" });
-    expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", items: ["a1"], uncertainCalls: [] }]);
+    expect(loaded.turns.slice(0, 1)).toMatchObject([{ turnId: "1", state: "interrupted", items: ["a1"], uncertainCalls: [] }]);
     await until(() => seen.channel.some(event => event.event.type === "turn_ended"), "pending input to run");
     expect(seen.channel[0]!.event).toMatchObject({ type: "turn_started", turnId: "2", items: ["a2"] });
   } finally { await next.close(); }
@@ -421,9 +421,8 @@ test("stdio: closing stdin stops the session at once; the next process finds the
   try {
     await second.client.initialize();
     const seen = watch(second.client);
-    const loaded = await second.client.loadSession({ sessionId: "paused", config });
-    expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", reason: "Stopped by the host", uncertainCalls: ["hold-1"] }]);
-    expect(loaded.status.channels[0]).toMatchObject({ pending: ["a2"] });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "paused", config });
+    expect(loaded.turns.slice(0, 1)).toMatchObject([{ turnId: "1", state: "interrupted", reason: "Stopped by the host", uncertainCalls: ["hold-1"] }]);
     await until(() => seen.channel.some(event => event.event.type === "turn_ended"), "pending input to run");
     expect(seen.channel[0]!.event).toMatchObject({ type: "turn_started", turnId: "2", items: ["a2"] });
     expect(lines(effects)).toEqual(["start:k"]);

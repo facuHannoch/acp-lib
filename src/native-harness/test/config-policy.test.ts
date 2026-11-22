@@ -162,7 +162,7 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: missing stored 
 
 test("stdio managed sessions use active config until reopen and preserve saved config after invalid sidecar", async () => {
   const home = mkdtempSync(join(tmpdir(), "harness-managed-config-")), id = "managed";
-  const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.json", import.meta.url).pathname } });
+  const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname } });
   const sidecar = managedSessionPaths(id, home).config;
   const { mkdirSync } = await import("node:fs"); mkdirSync(managedSessionPaths(id, home).directory);
   writeFileSync(sidecar, JSON.stringify(config));
@@ -175,18 +175,18 @@ test("stdio managed sessions use active config until reopen and preserve saved c
   } finally { await first.close(); }
   const second = spawnHarness({ home });
   try {
-    await second.client.initialize(); await second.client.loadSession({ sessionId: id });
+    await second.client.initialize(); await second.client.openSession({ sessionId: id });
     const { decodeSessionFile } = await import("../src/state/storage/session-file.ts");
     expect((decodeSessionFile(await second.client.exportArchive(), 268435456) as any).config.system).toBe("changed");
   } finally { await second.close(); }
   writeFileSync(sidecar, "bad JSON");
   const invalid = spawnHarness({ home });
-  try { await invalid.client.initialize(); await expect(invalid.client.loadSession({ sessionId: id, config })).rejects.toMatchObject({ code: "invalid_config" }); }
+  try { await invalid.client.initialize(); await expect(invalid.client.openSession({ sessionId: id, config })).rejects.toMatchObject({ code: "invalid_config" }); }
   finally { await invalid.close(); }
   rmSync(sidecar);
   const restored = spawnHarness({ home });
   try {
-    await restored.client.initialize(); await restored.client.loadSession({ sessionId: id });
+    await restored.client.initialize(); await restored.client.openSession({ sessionId: id });
     const { decodeSessionFile } = await import("../src/state/storage/session-file.ts");
     expect((decodeSessionFile(await restored.client.exportArchive(), 268435456) as any).config.system).toBe("changed");
   } finally { await restored.close(); rmSync(home, { recursive: true, force: true }); }
@@ -195,7 +195,7 @@ test("stdio managed sessions use active config until reopen and preserve saved c
 test("a version 2 session file upgrades its config and item signatures", async () => {
   const { decodeSessionFile, encodeSessionFile } = await import("../src/state/storage/session-file.ts");
   const { legacyItemSignature } = await import("../src/state/storage/policy-metadata.ts");
-  const script = new URL("./fixtures/echo-scenario.json", import.meta.url).pathname;
+  const script = new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname;
   const config = { version: 1 as const, system: "legacy", model: { protocol: "scripted" as const, script },
     defaultPolicy: LEGACY_POLICY, policies: { [LEGACY_POLICY]: { fallback: "allow" as const, tools: {} } } };
   const home = mkdtempSync(join(tmpdir(), "harness-legacy-file-")), first = spawnHarness({ home });
@@ -215,7 +215,8 @@ test("a version 2 session file upgrades its config and item signatures", async (
   const destination = mkdtempSync(join(tmpdir(), "harness-legacy-dest-")), second = spawnHarness({ home: destination });
   try {
     await second.client.initialize(); await second.client.importArchive(legacy);
-    const loaded = await second.client.loadSession({ sessionId: "s" });
+    await second.client.openSession({ sessionId: "s" });
+    const loaded = await second.client.reconcileChannel({ channel: "a", itemIds: ["m"] });
     expect(loaded.items[0]).toMatchObject({ id: "m", policy: { resolved: LEGACY_POLICY, inherited: [] } });
     expect(await second.client.push({ channel: "a", item: { id: "m", kind: "user_message", sender: "u", content: [{ type: "text", text: "hello" }] } })).toMatchObject({ duplicate: true, item: { policy: { resolved: LEGACY_POLICY } } });
   } finally { await second.close(); rmSync(home, { recursive: true, force: true }); rmSync(destination, { recursive: true, force: true }); }
@@ -224,7 +225,7 @@ test("a version 2 session file upgrades its config and item signatures", async (
 test("stdio retains a pending message's resolved policy across channel edits", async () => {
   const home = mkdtempSync(join(tmpdir(), "harness-policy-wire-")), effects = join(home, "effects.log");
   const harness = spawnHarness({ home, effects });
-  const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.json", import.meta.url).pathname } });
+  const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.jsonl", import.meta.url).pathname } });
   try {
     await harness.client.initialize(); await harness.client.createSession({ sessionId: "s", config, participants: [], channels: {} });
     await harness.client.createChannel({ channel: "a", policy: "strict" });
@@ -243,13 +244,10 @@ test("stdio retains a pending message's resolved policy across channel edits", a
 test("development open of an explicit database loads its saved scripted config", async () => {
   const { openDevelopment } = await import("../src/interfaces/cli/development.ts");
   const directory = mkdtempSync(join(tmpdir(), "harness-dev-config-")), path = join(directory, "session.sqlite");
-  const script = new URL("./fixtures/echo-scenario.json", import.meta.url).pathname;
+  const script = new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname;
   const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script } });
   const adapter = createSqliteStorageAdapter(path);
-  const opened = adapter.open({ mode: "create", identity: { sessionId: "development", compatibilityKey: "unused" }, config });
-  if (!opened.ok) throw new Error(opened.error.message);
-  if (!opened.value.saveConfig(config).ok) throw new Error("could not save config");
-  opened.value.close();
+  (await openDevelopment({ systemPrompt: config.system, database: path, create: true, managedConfig: config })).close();
   try {
     const development = await openDevelopment({ systemPrompt: "ignored", database: path });
     try { expect(development.session.status().sessionId).toBe("development"); }
@@ -273,7 +271,7 @@ test("incompatible policy on a format 3 database permits inspection without migr
     created.value.close();
     const db = new Database(path);
     db.query("UPDATE items SET signature = ?").run(legacyItemSignature(input));
-    db.exec("ALTER TABLE items DROP COLUMN policy_metadata; ALTER TABLE channels DROP COLUMN policy; UPDATE meta SET value = '3' WHERE key = 'formatVersion'");
+    db.exec("ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source; ALTER TABLE items DROP COLUMN policy_metadata; ALTER TABLE channels DROP COLUMN policy; UPDATE meta SET value = '3' WHERE key = 'formatVersion'");
     db.close();
     const { readFileSync } = require("node:fs"), before = readFileSync(path);
     const opened = adapter.open({ mode: "open", identity, config: validateManagedConfig(value) });
@@ -293,10 +291,10 @@ test("format 3 item signatures upgrade to policy-aware identities without reacce
     const input = { kind: "participant_message" as const, channelId: "a", senderId: "u", text: "hi", itemId: "m" };
     if (!created.value.acceptItem(input).ok) throw new Error("setup failed"); created.value.close();
     const db = new Database(path); db.query("UPDATE items SET signature = ?").run(legacyItemSignature(input));
-    db.exec("ALTER TABLE items DROP COLUMN policy_metadata; ALTER TABLE channels DROP COLUMN policy; UPDATE meta SET value = '3' WHERE key = 'formatVersion'"); db.close();
+    db.exec("ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source; ALTER TABLE items DROP COLUMN policy_metadata; ALTER TABLE channels DROP COLUMN policy; UPDATE meta SET value = '3' WHERE key = 'formatVersion'"); db.close();
     const opened = adapter.open({ mode: "open", identity }); if (!opened.ok) throw new Error(opened.error.message);
     expect(opened.value.acceptItem(input)).toMatchObject({ ok: true, value: { duplicate: true, item: { policy: { resolved: LEGACY_POLICY, inherited: [] } } } });
     expect(opened.value.acceptItem({ ...input, explicitPolicy: LEGACY_POLICY })).toMatchObject({ ok: false, error: { code: "item_conflict" } });
-    expect(opened.value.snapshot()).toMatchObject({ ok: true, value: { session: { formatVersion: 5 } } }); opened.value.close();
+    expect(opened.value.snapshot()).toMatchObject({ ok: true, value: { session: { formatVersion: 6 } } }); opened.value.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

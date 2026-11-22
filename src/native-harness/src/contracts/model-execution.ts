@@ -3,6 +3,12 @@ import type { StorageResult, TimelineEntry } from "./storage.ts";
 
 /** One immutable logical request, identical across the attempts of a call. */
 export interface ModelRequest { messages: readonly Message[]; tools: readonly ToolDefinition[];
+  /** IDs first included at this inference boundary, in take order. The first
+   * boundary includes the initial input group. Later boundaries include inputs
+   * taken since the preceding boundary, including across checkpoint resume.
+   * Retries carry the same frozen list. Local observations pair it with the
+   * attempt ordinal. Every provider client omits it from wire requests. */
+  takenItemIds?: readonly string[];
   /** Decision 0021: the first N tools are the stable group (built-ins and
    * fixed registrations); the rest can change between inferences. Absent: all
    * are stable. Adapters may place the groups differently; both use one gate. */

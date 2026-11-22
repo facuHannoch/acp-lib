@@ -40,6 +40,119 @@ export function storageConformance(name: string, location: () => SessionStorageA
   const begin = (s: SessionStorage, channelId = "c1") => ok(s.beginTurn(channelId))!;
 
   describe(`${name} storage conformance`, () => {
+    test("external notice identity, drain admission, inspection and archive round trip", () => {
+      const adapter = location();
+      const config = { version: 1 as const, system: "test", model: { protocol: "scripted" as const, script: "fixture" },
+        defaultPolicy: "owner", policies: { owner: { fallback: "allow" as const, tools: {} }, guest: { fallback: "deny" as const, tools: {} } } };
+      const s = ok(adapter.open({ mode: "create", identity: id(), config }));
+      ok(s.createChannel({ channelId: "c1" }));
+      ok(s.createChannel({ channelId: "c2" }));
+      const notice = { kind: "external_notice" as const, itemId: "external", channelId: "c1", senderId: "worker",
+        externalSource: "worker", text: "result", inheritedPolicyNames: ["guest", "owner"] };
+      refused(s.acceptItem({ ...notice, channelId: "missing" }), "not_found");
+      refused(s.acceptItem({ ...notice, inheritedPolicyNames: ["__legacy_allow"] }), "invalid_policy");
+      refused(s.acceptItem({ ...notice, inheritedPolicyNames: ["unknown"] }), "invalid_policy");
+      expect(ok(s.acceptItem(notice)).item.policy).toEqual({ resolved: "owner", inherited: ["guest", "owner"] });
+      const base = ok(s.snapshot()).revision;
+      expect(ok(s.acceptItem({ ...notice, inheritedPolicyNames: ["owner", "guest", "guest"] })).duplicate).toBe(true);
+      for (const change of [{ externalSource: undefined }, { text: "changed" }, { channelId: "c2" }, { inheritedPolicyNames: ["guest"] }])
+        refused(s.acceptItem({ ...notice, ...change }), "item_conflict");
+      refused(msg(s, "result", "c1", "external"), "item_conflict");
+      expect(ok(s.snapshot()).revision).toBe(base);
+      const taken = begin(s);
+      expect(taken.entries[0]).toMatchObject({ kind: "external_notice", itemId: "external", externalSource: "worker" });
+      ok(s.acceptItem({ ...notice, itemId: "pending" }));
+      ok(s.beginSuspend());
+      refused(s.acceptItem({ ...notice, itemId: "new" }), "not_running");
+      expect(ok(s.acceptItem(notice)).item.milestone).toBe("taken");
+      ok(s.acceptItem({ kind: "channel_notice", channelId: "c2", sourceChannelId: "c1", sourceTurnId: taken.turn.turnId, senderId: "channel:c1", text: "internal drain notice" }));
+      ok(s.interruptTurn("c1", taken.turn.turnId, "test suspension"));
+      ok(s.completeSuspend());
+      const archive = ok(s.exportArchive());
+      expect(archive.archiveVersion).toBe(5);
+      ok(s.close());
+      const inspection = ok(adapter.open({ mode: "open", identity: id(), config: { ...config, policies: { owner: config.policies.owner } } }));
+      const before = ok(inspection.snapshot()).revision;
+      expect(ok(inspection.acceptItem(notice)).duplicate).toBe(true);
+      refused(inspection.acceptItem({ ...notice, itemId: "new" }), "incompatible");
+      expect(ok(inspection.snapshot()).revision).toBe(before);
+      ok(inspection.close());
+      const copy = location();
+      ok(copy.importArchive(archive));
+      const imported = ok(copy.open({ mode: "open", identity: id(), config }));
+      expect(ok(imported.acceptItem(notice)).item).toMatchObject({ milestone: "taken", externalSource: "worker" });
+      expect(ok(imported.acceptItem({ ...notice, itemId: "pending" })).item).toMatchObject({ milestone: "received", inheritedPolicyNames: ["guest", "owner"] });
+      ok(imported.close());
+    });
+
+    test("archive 4 imports without changing existing item identities", () => {
+      const { s } = create();
+      const accepted = ok(msg(s, "original", "c1", "old")).item;
+      const active = begin(s);
+      say(s, active.turn.turnId, "reply"); ok(s.finishTurn(active.turn.turnId, { status: "completed" }));
+      const current = ok(s.exportArchive());
+      const old = { ...current, archiveVersion: 4 as const, snapshot: { ...current.snapshot,
+        session: { ...current.snapshot.session, formatVersion: 5 as const } } };
+      const adapter = location();
+      ok(adapter.importArchive(old));
+      const imported = ok(adapter.open({ mode: "open", identity: id() }));
+      const duplicate = ok(msg(imported, "original", "c1", "old"));
+      expect(duplicate).toMatchObject({ duplicate: true, item: { signature: accepted.signature } });
+      ok(imported.close()); ok(s.close());
+    });
+
+    test("scripted owners reject missing, malformed and changed digests before recovery", () => {
+      const digest = "a".repeat(64), changed = "b".repeat(64);
+      const tagged = (model: string, system = "c") => id(`scripted-jsonl-v1:${model}:${system.repeat(64)}`);
+      for (const legacy of [id(), id(`scripted-jsonl-v1:${digest}:bad`), id(tagged(digest).compatibilityKey + "\n")]) {
+        const adapter = location();
+        ok(ok(adapter.open({ mode: "create", identity: legacy })).close());
+        refused(adapter.open({ mode: "open", identity: tagged(digest), requiredScriptDigest: digest }), "incompatible");
+      }
+      const adapter = location(), first = ok(adapter.open({ mode: "create", identity: tagged(digest), requiredScriptDigest: digest }));
+      ok(msg(first, "taken", "c1", "taken")); begin(first);
+      ok(msg(first, "pending", "c1", "pending"));
+      const revision = ok(first.snapshot()).revision;
+      ok(first.close());
+      refused(adapter.open({ mode: "open", identity: tagged(changed), requiredScriptDigest: changed }), "incompatible");
+      const reopened = ok(adapter.open({ mode: "open", identity: tagged(digest, "d"), requiredScriptDigest: digest }));
+      const snapshot = ok(reopened.snapshot());
+      expect(snapshot.revision).toBe(revision + 1);
+      expect(snapshot.turns[0]?.state.status).toBe("interrupted");
+      expect(snapshot.items.find(item => item.itemId === "pending")?.milestone).toBe("received");
+      expect(snapshot.session.compatibilityKey).toBe(tagged(digest).compatibilityKey);
+      ok(reopened.close());
+    });
+
+    test("operator ranges separate conversation text, replies, and timeline activity", () => {
+      const { adapter, s } = create();
+      ok(msg(s, "original", "c1", "a"));
+      const first = begin(s).turn.turnId;
+      call(s, first, "echo");
+      ok(s.appendMessage(first, { role: "tool", callId: "echo", content: "result" }));
+      const reply = say(s, first, "answer");
+      ok(s.finishTurn(first, { status: "completed" }));
+      ok(msg(s, "other", "c2", "b"));
+      const second = begin(s, "c2").turn.turnId;
+      say(s, second, "other answer");
+      ok(s.finishTurn(second, { status: "completed" }));
+      const owner = reopen(adapter, s);
+      const throughRevision = snap(owner).revision;
+      const newest = ok(owner.readTimeline({ kind: "conversation", channel: "c1", direction: "older", throughRevision, limit: 1 }));
+      expect(newest.entries.map(entry => entry.seq)).toEqual([reply.seq]);
+      expect(newest.more).toBe(true);
+      const older = ok(owner.readTimeline({ kind: "conversation", channel: "c1", direction: "older", throughRevision, exclusiveSeq: reply.seq, limit: 1 }));
+      expect(older.entries.map(entry => entry.itemId)).toEqual(["a"]);
+      expect(older.more).toBe(false);
+      expect(ok(owner.readTimeline({ kind: "replies", channel: "c1", turnIds: [first, second], direction: "newer", throughRevision, limit: 10 })).entries.map(entry => entry.seq)).toEqual([reply.seq]);
+      expect(ok(owner.readTimeline({ kind: "timeline", direction: "newer", throughRevision, limit: 10 })).entries.map(entry => entry.message.role)).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant"]);
+      const tracked = ok(owner.readTracked("c1", ["a", "b"], [first, second]));
+      expect(tracked.items.map(item => item.itemId)).toEqual(["a"]);
+      expect(tracked.turns.map(turn => [turn.turnId, turn.itemIds])).toEqual([[first, ["a"]]]);
+      expect(ok(owner.readChannel("c1")).pendingCount).toBe(0);
+      ok(owner.close());
+    });
+
     test("explicit create/open, ownership, identity and closed handles", () => {
       const adapter = location();
       refused(adapter.open({ mode: "open", identity: id() }), "not_found");
@@ -54,7 +167,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       // A different key opens normally and is never written.
       const again = ok(adapter.open({ mode: "open", identity: id("k2") }));
       const view = snap(again);
-      expect(view.session).toMatchObject({ sessionId: "s1", formatVersion: 5, lifecycle: "running", compatibilityKey: "k1" });
+      expect(view.session).toMatchObject({ sessionId: "s1", formatVersion: 6, lifecycle: "running", compatibilityKey: "k1" });
       expect(view.items.map(item => item.text)).toEqual(["hello"]);
       ok(again.close());
       expect(snap(ok(adapter.open({ mode: "open", identity: id() }))).session.compatibilityKey).toBe("k1");
@@ -453,7 +566,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
 
     test("export needs an idle or cleanly suspended session", () => {
       const { s } = create();
-      expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 4, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });
+      expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 5, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });
       ok(msg(s, "a"));
       unchanged(s, () => refused(s.exportArchive(), "busy"));
       const t = begin(s).turn.turnId;
@@ -772,7 +885,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
 
     test("an archive round-trips channel state, names, withdrawn items, retired IDs and checkpoints", () => {
       const { s, a, archive } = richArchive();
-      expect(archive.archiveVersion).toBe(4);
+      expect(archive.archiveVersion).toBe(5);
       const home = location();
       ok(home.importArchive(archive, { sessionId: "copy" }));
       const copy = ok(home.open({ mode: "open", identity: { sessionId: "copy", compatibilityKey: "k1" } }));
@@ -827,7 +940,7 @@ export function storageConformance(name: string, location: () => SessionStorageA
       const home = location();
       ok(home.importArchive(JSON.parse(JSON.stringify(v1))));
       const copy = ok(home.open({ mode: "open", identity: id() }));
-      expect(snap(copy).session.formatVersion).toBe(5);
+      expect(snap(copy).session.formatVersion).toBe(6);
       expect(snap(copy).channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }]);
       expect(ok(copy.resume()).turns.map(turn => turn.turnId)).toEqual([t]); // session-wide resume, as before
       expect(ok(copy.takePending(t)).items.map(item => item.itemId)).toEqual(["p"]);
@@ -872,8 +985,8 @@ export function storageConformance(name: string, location: () => SessionStorageA
       const good = JSON.stringify(ok(s.exportArchive()));
       const broken: ((archive: any) => void)[] = [
         a => { a.format = "something-else"; },
-        a => { a.archiveVersion = 5; },
-        a => { a.snapshot.session.formatVersion = 6; },
+        a => { a.archiveVersion = 6; },
+        a => { a.snapshot.session.formatVersion = 7; },
         a => { a.snapshot.session.lifecycle = "suspending"; },
         a => { a.snapshot.turns[0].state = { status: "running" }; },
         a => { a.snapshot.turns[0].state = { status: "suspended", checkpoint: { nextStep: "inference", afterSeq: 1 } }; },
