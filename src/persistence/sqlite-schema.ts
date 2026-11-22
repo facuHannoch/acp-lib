@@ -702,12 +702,11 @@ export function migrateSqliteAgentSchema(database: Database): void {
           database.exec("INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild')");
         }
       }
-      if (version < 17) {
-        database.exec(CHANNEL_INTENT_SCHEMA);
-        const columns = database.query<{ name: string }, []>("PRAGMA table_info(conversations)").all();
-        if (!columns.some(({ name }) => name === "controller_kind")) {
-          database.exec("ALTER TABLE conversations ADD COLUMN controller_kind TEXT CHECK (controller_kind IN ('acp', 'native'))");
-        }
+      if (version < 17) database.exec(CHANNEL_INTENT_SCHEMA);
+      // Early schema-17 databases had channel intents but no controller kind.
+      const columns = database.query<{ name: string }, []>("PRAGMA table_info(conversations)").all();
+      if (!columns.some(({ name }) => name === "controller_kind")) {
+        database.exec("ALTER TABLE conversations ADD COLUMN controller_kind TEXT CHECK (controller_kind IN ('acp', 'native'))");
       }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(

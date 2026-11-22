@@ -554,6 +554,33 @@ describe("SQLite agent persistence", () => {
     expect(migrated.query("SELECT controller_kind FROM conversations").get()).toEqual({ controller_kind: null });
   });
 
+  test("adds controller kind to an early version 17 database and reopens it again", async () => {
+    const { backend, path, agentSessionId } = await openBackend();
+    const legacyId = createAgentConversationId();
+    await backend.conversations.create({ agentSessionId, agentConversationId: legacyId, title: "Early v17" });
+    await backend.close();
+    {
+      using early = new Database(path);
+      early.exec("ALTER TABLE conversations DROP COLUMN controller_kind");
+      expect(early.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 17 });
+    }
+
+    const upgraded = await track(SqliteAgentPersistence.open({ path }));
+    expect(await upgraded.conversations.get(legacyId)).toMatchObject({ title: "Early v17" });
+    expect((await upgraded.conversations.get(legacyId))?.controllerKind).toBeUndefined();
+    const id = createAgentConversationId();
+    const created = await upgraded.conversations.create({ agentSessionId, agentConversationId: id, controllerKind: "native" });
+    expect(created.controllerKind).toBe("native");
+    await upgraded.conversations.delete(id);
+    const deleted = await upgraded.conversations.get(id);
+    expect(deleted?.deletedAt).toEqual(expect.any(String));
+    await upgraded.close();
+
+    const reopened = await track(SqliteAgentPersistence.open({ path }));
+    expect(await reopened.conversations.get(id)).toEqual(deleted);
+    expect((await reopened.conversations.get(legacyId))?.controllerKind).toBeUndefined();
+  });
+
   test("searches records through an external-content FTS5 index", async () => {
     const { backend, path, agentSessionId } = await openBackend();
     const conversationId = createAgentConversationId();
