@@ -239,3 +239,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 - R3 step 2 in from cod2a, `fef2020` (answering, the consumer wait from ingress, handlers unbounded, an unattended ask
   refused even under a default allow; a native answer over real stdio). Only focused tests so far; cod2a reminded
   of the step 1 test fix and the review notes before step 3 and the full run.
+- R3 complete from cod2a, HEAD `c5b10b0`: the step 1 test fix `8776401` (the stand-in host uses the real ticket
+  helper); `ce5e3d5` (a timed-out refusal reaches the provider while a record write is held); step 3 `c5b10b0`
+  (changelog, spec, [report](reports/11-22-REPORT-R3.md)). Full `./test` on `ce5e3d5`: 1,507 in 137 files green.
+  Sent to clad2a for the final R3 review.
