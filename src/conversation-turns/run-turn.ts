@@ -135,7 +135,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
     if (sent) {
       hookInProgress = true;
       for (const message of item.parts ?? [item]) {
-        if (message.beforeDispatch) await message.beforeDispatch(turnId);
+        if (message.beforeDispatch) await message.beforeDispatch("id" in message ? message.id : item.turnId);
       }
       hookInProgress = false;
     }
@@ -246,6 +246,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
     if (ctx.owner.lifecycle) {
       const completed = {
         operationId: turnId,
+        messageIds: [...(turn.cause.messageIds ?? [])],
         agentSessionId: ctx.owner.agentSessionId!,
         agentConversationId: ctx.owner.agentConversationId,
         targetProviderContextId,
@@ -298,6 +299,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
       });
       await ctx.owner.lifecycle?.promptFailed({
         operationId: turnId,
+        messageIds: [...(turn.cause.messageIds ?? [])],
         agentSessionId: ctx.owner.agentSessionId!,
         agentConversationId: ctx.owner.agentConversationId,
         ...(item.participantId ? { participantId: item.participantId } : {}),

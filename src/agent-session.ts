@@ -249,8 +249,8 @@ export interface AgentConversationPromptInput {
   readonly attachments?: Attachment[];
   /** How this prompt waits if a turn is running. Defaults to the conversation's `busyDelivery`. */
   readonly delivery?: PromptDelivery;
-  /** Before dispatch. Combined ACP messages receive the shared operation ID. Native inputs receive their own message ID. */
-  readonly beforeDispatch?: (operationId: string) => Promise<void>;
+  /** Awaited before dispatch with this prompt's message ID. A rejection prevents dispatch. */
+  readonly beforeDispatch?: (messageId: string) => Promise<void>;
 }
 
 export interface AgentConversationAttributedPromptInput extends AgentConversationPromptInput {

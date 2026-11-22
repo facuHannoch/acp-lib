@@ -121,6 +121,7 @@ describe("the turn path through send", () => {
     const { conversation, events } = await agentConversation(STEER);
     const prepare = spyOn(conversation.connection, "prepareTurn");
     const abandon = spyOn(conversation.connection, "abandonTurn");
+    const failed = spyOn(lifecycleOf(conversation), "promptFailed");
     const error = new Error("second hook failed");
     const order: string[] = [];
     const { promise: entered, resolve: enter } = Promise.withResolvers<void>();
@@ -152,14 +153,20 @@ describe("the turn path through send", () => {
     }
     await first;
     expect(await outcomes).toEqual([error, error]);
-    expect(order).toEqual([`first:${messages[0]!.id}`, `second:${messages[0]!.id}`]);
+    expect(order).toEqual([`first:${messages[0]!.id}`, `second:${messages[1]!.id}`]);
     expect(prepare.mock.calls.map(([id]) => id)).toEqual([first.id]);
     expect(abandon.mock.calls).toContainEqual([messages[0]!.id, error]);
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: messages[0]!.id, messageIds: messages.map(({ id }) => id), error,
+    }));
     expect(ofKind(events, "turn_failed").map((event) => event.turnId)).toEqual([messages[0]!.id]);
   }, 20_000);
 
   test("a combined steer run's cause lists both message ids; record ids stay keyed by the turn", async () => {
     const { agent, conversation, events } = await agentConversation(STEER);
+    const completed = spyOn(lifecycleOf(conversation), "afterPrompt");
+    const hookIds: string[] = [];
+    const beforeDispatch = async (messageId: string) => { hookIds.push(messageId); };
     let a!: ReturnType<AgentSession["prompt"]>;
     let b!: ReturnType<AgentSession["prompt"]>;
     let fired = false;
@@ -167,13 +174,15 @@ describe("the turn path through send", () => {
       onActivity: (event) => {
         if (event.kind !== "tool" || fired) return;
         fired = true;
-        a = conversation.prompt({ text: "Also include the length of each word in your final answer.", delivery: "steer" });
-        b = conversation.prompt({ text: "No, actually, only report the length of the longest word.", delivery: "steer" });
+        a = conversation.prompt({ text: "Also include the length of each word in your final answer.", delivery: "steer", beforeDispatch });
+        b = conversation.prompt({ text: "No, actually, only report the length of the longest word.", delivery: "steer", beforeDispatch });
       },
     });
     await first;
     const [ra, rb] = await Promise.all([a, b]);
     expect(ra).toBe(rb);
+    expect(hookIds).toEqual([a.id, b.id]);
+    expect(completed).toHaveBeenCalledWith(expect.objectContaining({ operationId: ra.operationId, messageIds: hookIds }));
 
     const started = ofKind(events, "turn_started");
     expect(started).toEqual([

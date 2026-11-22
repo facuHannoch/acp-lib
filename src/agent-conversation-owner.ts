@@ -37,8 +37,9 @@ export interface OwnedPromptInput {
   };
 }
 
-/** How a turn's assistant messages ended, for its commit. */
-interface OwnedPromptMessageEnds {
+interface OwnedPromptTurnMessages {
+  /** The turn's input message IDs in cause order, including messages taken after it began. */
+  readonly messageIds: readonly string[];
   /**
    * When each message that ended before the turn did (the next message or a tool call began)
    * received its last text, in order. Those messages are completed at these times; the rest take
@@ -56,7 +57,7 @@ export interface OwnedPromptPreparation {
   readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
 }
 
-export interface OwnedPromptCompleted extends OwnedPromptInput, OwnedPromptMessageEnds {
+export interface OwnedPromptCompleted extends OwnedPromptInput, OwnedPromptTurnMessages {
   readonly result: AgentSessionPromptResult;
   readonly identityDeliveryReceipt?: IdentityDeliveryReceipt;
   readonly providerAttachment: ProviderAttachmentState;
@@ -77,7 +78,7 @@ export class OwnedPromptPostCommitError extends Error {
   }
 }
 
-export interface OwnedPromptFailed extends OwnedPromptInput, OwnedPromptMessageEnds {
+export interface OwnedPromptFailed extends OwnedPromptInput, OwnedPromptTurnMessages {
   readonly messages: readonly ResponseMessage[];
   readonly error: unknown;
 }

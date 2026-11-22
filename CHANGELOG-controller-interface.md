@@ -15,9 +15,13 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 ## Added
 
 - **`beforeDispatch` prompt option:** session-scheduled turns await this hook after durable prompt preparation
-  and before provider dispatch. Combined steer messages run their hooks in order with the shared operation ID.
-  Native inputs use their message IDs and run all hooks before the first push. A rejected hook rejects the run
-  before dispatch.
+  and before provider dispatch. Each hook receives its own message ID. Combined steer messages run their hooks
+  in message order. A rejection fails the whole ACP run, calls `abandonTurn` and emits `turn_failed`. The owned
+  failure callback and an error metering record still run for that undispatched operation. Native awaits every
+  hook before the first push, so rejection fails the send before the harness creates a turn.
+- **Owned turn finalization:** `afterPrompt` receives the turn's `messageIds` with every returned terminal status,
+  including cancellation and error. `promptFailed` also receives those IDs for rejected turns. The IDs include native
+  inputs folded into a running turn. The operation ID still identifies the turn.
 - **`cause` on `turn_started`:** `{ messageIds?, items? }`, at least one present: the messages the turn carries (a
   combined steer run lists each original message) and/or the backend items it took (a turn nobody prompted; a native
   backend often takes a worker reply and a user message into one turn, so a cause can hold both). Record and
