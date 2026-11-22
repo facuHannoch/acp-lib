@@ -65,11 +65,11 @@ export function createChannelScheduler(
    * suspended channel's backlog waits for its own resume and is not "waiting"
    * here, so it never keeps the session from reporting idle. */
   function rescan() {
-    const current = view();
-    lifecycle = current.session.lifecycle;
+    const current = storage.readReadyChannels();
+    if (!current.ok) throw new Error(current.error.message);
+    lifecycle = current.value.lifecycle;
     waiting.clear();
-    const open = new Set(current.channels.filter(channel => channel.lifecycle === "open").map(channel => channel.channelId));
-    for (const item of current.items) if (item.milestone === "received" && open.has(item.channelId)) waiting.add(item.channelId);
+    for (const channel of current.value.channels) waiting.add(channel);
   }
   rescan();
   const channelStatus = (channelId: string): ChannelStatus => status().channels.find(channel => channel.channelId === channelId)!;
@@ -105,7 +105,8 @@ export function createChannelScheduler(
     if (!begun.ok || !begun.value) { if (begun.ok) waiting.delete(channelId); return; }
     waiting.delete(channelId);
     emit({ channel: channelId, revision: begun.revision, event: { type: "turn_started", turnId: String(begun.value.turn.turnId),
-      items: begun.value.items.map(item => item.itemId) } });
+      items: begun.value.items.map(item => item.itemId), messages: begun.value.entries.flatMap(entry =>
+        entry.kind === "participant_message" && entry.itemId ? [{ itemId: entry.itemId, messageId: `item:${entry.itemId}`, position: String(entry.seq) }] : []) } });
     run({ channelId, turnId: begun.value.turn.turnId, resumed: false });
   }
 
@@ -125,7 +126,8 @@ export function createChannelScheduler(
         if (!taken.ok) { if (taken.error.code !== "not_running" && taken.error.code !== "channel_suspended") fenced(taken.error.message); return; }
         waiting.delete(channelId);
         if (taken.value.items.length) emit({ channel: channelId, revision: taken.revision,
-          event: { type: "turn_took", turnId: String(turnId), items: taken.value.items.map(item => item.itemId) } });
+          event: { type: "turn_took", turnId: String(turnId), items: taken.value.items.map(item => item.itemId), messages: taken.value.entries.flatMap(entry =>
+        entry.kind === "participant_message" && entry.itemId ? [{ itemId: entry.itemId, messageId: `item:${entry.itemId}`, position: String(entry.seq) }] : []) } });
       },
       confirm(milestone) {
         const advanced = storage.confirmReceipts(turnId, milestone);

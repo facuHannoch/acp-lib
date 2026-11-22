@@ -1,3 +1,4 @@
+import type { OperatorMethods } from "./operator-controls.ts";
 import type { ModelExecutionMethods } from "./model-execution.ts";
 import type { ChannelEvent, SessionEvent } from "./events.ts";
 import type { ItemKind, ItemMilestone } from "./agent.ts";
@@ -164,7 +165,7 @@ export interface LoadResult {
 export interface TransferLimits { chunkBytes: 524288; maxBytes: 268435456; idleMs: 60000 }
 export type ArchiveLocation = { type: "path"; path: string } | { type: "transfer" };
 
-export interface DurableMethods extends ModelExecutionMethods {
+export interface DurableMethods extends ModelExecutionMethods, Omit<OperatorMethods, "session/create"> {
   /** Open an existing session with runtime configuration. Returns the load
    * view; a second load on the same endpoint returns a fresh view only.
    * `channelChanges` (decision 0020) is validated as a whole, then applied
@@ -256,7 +257,7 @@ export interface Methods {
   "config/validate": { params: { config: unknown }; result: { valid: true } };
   "approval/respond": { params: { requestId: string; decision: import("./config-permissions.ts").ApprovalAnswer }; result: { accepted: true } };
   /** `channelChanges` (decision 0020) follows the same rules as on load. */
-  "session/create": { params: CreateParams; result: { sessionId: string; channelChanges?: ChannelChangeResult[] } };
+  "session/create": OperatorMethods["session/create"];
   /** With durable acceptance the response is sent only after the inbox commit
    * and includes `item` (Received, or the original item's current state for a
    * retry). It never waits for or reports a reply. There is one delivery

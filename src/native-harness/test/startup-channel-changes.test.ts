@@ -234,7 +234,7 @@ test("create applies a batch before the new session starts; in-memory servers su
       .rejects.toMatchObject({ code: "invalid_policy" });
     const created = await harness.client.createSession({ sessionId: "m", config, participants: [], channels: {},
       channelChanges: [{ channel: "a", changeId: "1", displayName: "Alice", lifecycle: "suspended" }, { channel: "b", changeId: "2", policy: "strict", lifecycle: "open" }] });
-    expect(created).toEqual({ sessionId: "m", channelChanges: [{ channel: "a", changeId: "1", outcome: "applied" }, { channel: "b", changeId: "2", outcome: "applied" }] });
+    expect(created).toMatchObject({ sessionId: "m", lifecycle: "running", revision: expect.any(Number), channelChanges: [{ channel: "a", changeId: "1", outcome: "applied" }, { channel: "b", changeId: "2", outcome: "applied" }] });
     expect((await harness.client.status()).channels).toMatchObject([{ channel: "a", displayName: "Alice", lifecycle: "suspended" }, { channel: "b", policy: "strict", lifecycle: "open" }]);
     await expect(harness.client.push(push("a", "a1", "refused"))).rejects.toMatchObject({ code: "channel_suspended" });
     // Null clears and a missing field leaves the value alone, through the live API's own rules.

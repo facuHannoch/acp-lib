@@ -40,6 +40,33 @@ export function storageConformance(name: string, location: () => SessionStorageA
   const begin = (s: SessionStorage, channelId = "c1") => ok(s.beginTurn(channelId))!;
 
   describe(`${name} storage conformance`, () => {
+    test("operator ranges separate conversation text, replies, and timeline activity", () => {
+      const { adapter, s } = create();
+      ok(msg(s, "original", "c1", "a"));
+      const first = begin(s).turn.turnId;
+      call(s, first, "echo");
+      ok(s.appendMessage(first, { role: "tool", callId: "echo", content: "result" }));
+      const reply = say(s, first, "answer");
+      ok(s.finishTurn(first, { status: "completed" }));
+      ok(msg(s, "other", "c2", "b"));
+      const second = begin(s, "c2").turn.turnId;
+      say(s, second, "other answer");
+      ok(s.finishTurn(second, { status: "completed" }));
+      const owner = reopen(adapter, s);
+      const throughRevision = snap(owner).revision;
+      const newest = ok(owner.readTimeline({ kind: "conversation", channel: "c1", direction: "older", throughRevision, limit: 1 }));
+      expect(newest.entries.map(entry => entry.seq)).toEqual([reply.seq]);
+      expect(newest.more).toBe(true);
+      const older = ok(owner.readTimeline({ kind: "conversation", channel: "c1", direction: "older", throughRevision, exclusiveSeq: reply.seq, limit: 1 }));
+      expect(older.entries.map(entry => entry.itemId)).toEqual(["a"]);
+      expect(older.more).toBe(false);
+      expect(ok(owner.readTimeline({ kind: "replies", channel: "c1", turnIds: [first, second], direction: "newer", throughRevision, limit: 10 })).entries.map(entry => entry.seq)).toEqual([reply.seq]);
+      expect(ok(owner.readTimeline({ kind: "timeline", direction: "newer", throughRevision, limit: 10 })).entries.map(entry => entry.message.role)).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant"]);
+      expect(ok(owner.readTracked("c1", ["a", "b"], [first, second])).items.map(item => item.itemId)).toEqual(["a"]);
+      expect(ok(owner.readChannel("c1")).pendingCount).toBe(0);
+      ok(owner.close());
+    });
+
     test("explicit create/open, ownership, identity and closed handles", () => {
       const adapter = location();
       refused(adapter.open({ mode: "open", identity: id() }), "not_found");

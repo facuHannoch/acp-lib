@@ -103,6 +103,13 @@ const entry = (row: Row): TimelineEntry => ({ seq: row.seq, at: row.at, channelI
   ...(row.kind === null ? {} : { kind: row.kind }), ...(row.source_channel_id === null ? {} : { sourceChannelId: row.source_channel_id }),
   ...(row.item_id === null ? {} : { itemId: row.item_id }), message: JSON.parse(row.message) });
 
+const REPLY = "json_extract(message, '$.role') = 'assistant' AND length(json_extract(message, '$.content')) > 0";
+const CHAT = `kind = 'participant_message' OR (${REPLY})`;
+const installReadIndexes = (db: Database) => db.exec(`
+  CREATE INDEX IF NOT EXISTS entries_conversation ON entries(channel_id, seq) WHERE ${CHAT};
+  CREATE INDEX IF NOT EXISTS entries_replies ON entries(turn_id, seq) WHERE ${REPLY};
+`);
+
 function sqliteTables(db: Database): Tables & { dispose(): void } {
   // Prepared on first use: statements for tables a format 2 file does not have
   // yet must not be compiled before the upgrade runs.
@@ -139,6 +146,21 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
   };
   let depth = 0;
   return {
+    pendingCount(id) {
+      return Number(db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM items WHERE channel_id = ? AND milestone = 'received'").get(id)?.n ?? 0);
+    },
+    readRange(range) {
+      const older = range.direction === "older";
+      const order = older ? "DESC" : "ASC";
+      const read = (filter: string, params: (string | number)[]) => db.query<Row, (string | number)[]>(`
+        SELECT * FROM entries WHERE (${filter}) AND seq <= ? AND seq ${older ? "<" : ">"} ?
+        ORDER BY seq ${order} LIMIT ?
+      `).all(...params, range.throughRevision, range.exclusiveSeq ?? (older ? Number.MAX_SAFE_INTEGER : 0), range.limit + 1).map(entry);
+      if (range.kind === "conversation") return read(`channel_id = ? AND (${CHAT})`, [range.channel!]);
+      if (range.kind === "replies") return (range.turnIds ?? []).flatMap(id => read(`turn_id = ? AND channel_id = ? AND ${REPLY}`, [id, range.channel!]))
+        .sort((a, b) => older ? b.seq - a.seq : a.seq - b.seq).slice(0, range.limit + 1);
+      return read("1", []);
+    },
     dispose() { for (const finalize of finalizers.splice(0)) finalize(); },
     getModelState() { const row = s.modelState.get(); return row ? JSON.parse(row.value) : undefined; },
     setModelState(state) { s.setMeta.run("modelState", JSON.stringify(state)); },
@@ -176,6 +198,12 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     putTurn(t) { s.putTurn.run(t.turnId, t.channelId, t.startedSeq, t.startedAt, t.compatibilityKey, t.state.status, JSON.stringify(t.state)); },
     liveTurn(channelId) { const row = s.live.get(channelId); return row ? turn(row) : undefined; },
     turns: () => s.turns.all().map(turn),
+    liveTurns: () => db.query<Row, []>("SELECT * FROM turns WHERE status IN ('running','suspended') ORDER BY turn_id").all().map(turn),
+    policyNames: () => db.query<{ name: string }, []>(`
+      SELECT policy AS name FROM channels WHERE policy IS NOT NULL
+      UNION SELECT coalesce(json_extract(policy_metadata, '$.resolved'), '__legacy_allow') FROM items
+      UNION SELECT inherited.value FROM items, json_each(items.policy_metadata, '$.inherited') AS inherited
+    `).all().map(row => row.name),
     addEntry(e) { s.addEntry.run(e.seq, e.at, e.channelId, e.turnId, e.from, e.kind ?? null, e.sourceChannelId ?? null,
       e.itemId ?? null, JSON.stringify(e.message)); },
     entriesOfTurn: turnId => s.entriesOf.all(turnId).map(entry),
@@ -193,7 +221,9 @@ function publish(path: string, meta: Meta, fill?: (tables: Tables) => void): voi
     const db = new Database(draft, { readwrite: true, create: true });
     try {
       db.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
-      const tables = sqliteTables((db.exec(SCHEMA), db));
+      db.exec(SCHEMA);
+      installReadIndexes(db);
+      const tables = sqliteTables(db);
       try { tables.transaction(() => { tables.setMeta(meta); fill?.(tables); }); }
       finally { tables.dispose(); }
     } finally { db.close(); }
@@ -265,13 +295,16 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           try {
             const view = sqliteTables(clone);
             view.transaction(() => { if (meta.formatVersion === 2) upgradeFromFormat2(clone); upgradeFromFormat3(clone);
-              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); });
+              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); installReadIndexes(clone); });
             return { ok: true, value: createEngine(view, identity.compatibilityKey, () => { view.dispose(); clone.close(true); owner.close(true); }, config, true), revision: meta.revision };
           } catch (error) { clone.close(); throw error; }
         }
         const tables = sqliteTables(db), owner = db;
-        if (meta.formatVersion < 4 || referencesCompatible(tables, config))
-          recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); } : undefined);
+        tables.transaction(() => {
+          if (meta.formatVersion < 4 || referencesCompatible(tables, config))
+            recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); } : undefined);
+          installReadIndexes(owner);
+        });
         return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config), revision: tables.getMeta().revision };
       } catch (error) {
         try { db?.close(); } catch { /* The original failure is the one to report. */ }

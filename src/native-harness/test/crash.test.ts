@@ -57,7 +57,7 @@ test("crash before take: the accepted input is still pending, runs once after re
     expect(await harness.client.push(push("m1", "first"))).toMatchObject({ duplicate: true, item: { milestone: "seen", turnId: "1" } });
     const status = await harness.client.status();
     expect(status).toMatchObject({ execution: "idle", channels: [{ channel: "a", pending: [] }] });
-    expect(events(harness.wire).filter(event => event.event.type === "turn_started").map(event => event.event)).toEqual([{ type: "turn_started", turnId: "1", items: ["m1"] }]);
+    expect(events(harness.wire).filter(event => event.event.type === "turn_started").map(event => event.event)).toMatchObject([{ type: "turn_started", turnId: "1", items: ["m1"] }]);
     expect(effects(crashed.log)).toEqual(["effect"]);
   } finally { await harness.close(); }
 }, 15000);
@@ -76,7 +76,7 @@ test("crash after take: the input stays on one interrupted turn, is not run agai
     expect(await harness.client.push(push("m2", "fresh"))).toMatchObject({ duplicate: false, item: { milestone: "received" } });
     expect((await done).event).toMatchObject({ outcome: "completed" });
     // Only the fresh message ever started a turn in this process.
-    expect(events(harness.wire).filter(event => event.event.type === "turn_started").map(event => event.event)).toEqual([{ type: "turn_started", turnId: "2", items: ["m2"] }]);
+    expect(events(harness.wire).filter(event => event.event.type === "turn_started").map(event => event.event)).toMatchObject([{ type: "turn_started", turnId: "2", items: ["m2"] }]);
     const status = await harness.client.status();
     expect(status.channels[0]!.unresolved).toBeUndefined();
     expect(status).toMatchObject({ execution: "idle" });
