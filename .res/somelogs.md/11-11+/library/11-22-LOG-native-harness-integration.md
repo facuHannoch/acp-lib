@@ -170,3 +170,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 - Docs in from cod2a, `70ba71a` (changelog and Limitations; docs only). **R1 gate passed**
   ([gate](../.plan-execution/status/11-22-GATE-R1-final.md)): two full runs, 1,463 in 132 files. Combined as
   `pre-alpha` for the user.
+
+### 2026-11-22: R2
+
+- R1 merged into alpha by the user (fast-forward to `a180301`). The three branches continue for R2 from `a180301`.
+- R2 (the permission setting and matcher, ACP side) assigned to cod2a: step 0 grounding first.
