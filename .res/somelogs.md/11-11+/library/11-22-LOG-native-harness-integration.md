@@ -191,3 +191,6 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   after an empty field showed in three A1 handler callback snapshots; no snapshot edits); full `./test` 1,464 green.
   Step 2, `7c8c18e` (the matcher; Grok source pinned); cod2a's full run in progress. Both sent to clad2a. Step 3
   held for the user's decisions.
+- alpha moved to `d403bf4` (worker delivery merged by haurness-l, on R1). R2 merges with it cleanly (trial merge);
+  cod2a merges alpha after the step 2 gate. The orchestrator's O1 builds on the worker repository and adds no
+  second assignments store.
