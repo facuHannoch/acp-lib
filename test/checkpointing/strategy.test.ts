@@ -165,9 +165,9 @@ describe("conversation checkpoint strategy", () => {
       await agent.checkpointing!.request(conversationId);
       releaseFirst();
 
-      const deadline = Date.now() + 3_000;
+      const deadline = performance.now() + 3_000;
       let latest = await agent.checkpointing!.latest(conversationId);
-      while ((!latest || latest.coveredSequence < 4) && Date.now() < deadline) {
+      while ((!latest || latest.coveredSequence < 4) && performance.now() < deadline) {
         await Bun.sleep(20);
         latest = await agent.checkpointing!.latest(conversationId);
       }
