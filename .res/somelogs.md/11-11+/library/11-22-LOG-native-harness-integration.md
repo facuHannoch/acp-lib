@@ -160,3 +160,10 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   no open channel, the tombstone, a refused push and no turn; a report line; no protocol change.
 - Step 4 in from cod2a: tests `be36dfc`, report `79d449d` (Done section complete). Six scripted stdio restart tests
   (4.2 s); full `./test` green, 1,463 in 132 files. Sent to clad2a with the final whole-R1 review.
+- Final R1 review in from clad2a, `fd0485c` ([review](reports/11-22-REVIEW-R1-final.md)): code complete and correct,
+  no blocking findings; step 4 uses a real stdio harness and a real restart, and 4 of its 6 tests fail on `64060fa`.
+  Missing changelog entries (the channels repository, `host.records` under a durable backend, the error codes and
+  the resume refusal) and two Limitations lines (tombstones; the memory fallback): a docs-only commit assigned to
+  cod2a. For the spec owner: R1's "code as it is" and its steps (3b, the creation transaction, retirement precedence,
+  the resume guard), and in "Durable channel intents": `controller_kind`, the kind-switch refusal, schema 17 with the
+  repair, the tombstone.
