@@ -222,3 +222,10 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   R2 notes. Review points: a native `requestedAt` (a first-receipt fallback for older harnesses: does it need a
   harness wire change?); bounding handlers by the deadline; host responder → `by: "handler"`, force stop and stop →
   `turn_ended`; the harness's 10-minute timer is armed today, contradicting two spec paragraphs. Sent to clad2a.
+- R3 grounding review in from clad2a, `299eb24` ([review](reports/11-22-REVIEW-R3-grounding.md)): accurate; a native
+  `requestedAt` would be a harness wire change and isn't needed (stamp at host ingress); the 10-minute harness timer
+  confirmed, contradicting the spec's "Nothing waits forever" row (L739) and the Permissions "When nobody will
+  answer" bullet (~L778–782), for the spec owner.
+- User decisions: handlers stay unlimited (the harness's 10 minutes still applies on native); `permissionTimeoutMs`
+  bounds only the consumer wait; an ask nobody can answer is refused at once (`by: "default"`), never falling back to
+  a looser default (replaces the spec's "else the setting's default"). Steps 1–3 released to cod2a.
