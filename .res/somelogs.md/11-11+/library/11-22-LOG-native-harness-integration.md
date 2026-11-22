@@ -150,3 +150,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   covers handoff, switch and recovery). Should fix: a version-17 database created before the amendment (no column)
   fails on create, because the ALTER only runs below 17; assigned to cod2a (check the column on every open, plus a
   test).
+- Column repair in from cod2a, `8b17fbd`; review from clad2a, `1e2988c`: resolved (their reproduction fixed;
+  idempotent; fresh and 16 → 17 databases fine). **Step 3b gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R1-step3b.md)): 1,457 in 132 files.
+- Step 4 (restart tests over a real stdio harness) released to cod2a.
