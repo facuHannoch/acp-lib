@@ -744,6 +744,11 @@ export class NativeHarnessHost {
   /** The pending channel intents from the host's active store. */
   async pendingChannelChanges(): Promise<PendingChange[]> { return this.#changes.pendingChanges(); }
 
+  /** Reserve delivery now, then read the intent only after its transaction commits. */
+  deliverCommittedChannelChange<T>(channel: string, commit: Promise<T>): Promise<T> {
+    return this.#changes.deliverCommitted(channel, commit, () => this.#state === "running");
+  }
+
   /** The session's status as the running harness reports it now. */
   #lastStatus?: StatusResult;
   #capabilities?: Awaited<ReturnType<HarnessClient["initialize"]>>["description"]["capabilities"];
