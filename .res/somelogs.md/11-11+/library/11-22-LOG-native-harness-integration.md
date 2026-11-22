@@ -145,3 +145,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   upgrade with fallback to the old detection, both refusals writing nothing; Limitations for rows from before and
   for custom backends that omit the kind. Full `./test` green, 1,456 in 132 files; `agent-session.ts` 4,600 →
   4,567, `conversation-manager.ts` 1,092 → 1,089. Sent to clad2a.
+- Step 3b review in from clad2a, `8ad9b97` ([review](reports/11-22-REVIEW-R1-step3b.md)): design sound (5 new tests
+  fail on `64060fa`; the kind matches the factory's binding; the refusal is the first statement of `runHandoff` and
+  covers handoff, switch and recovery). Should fix: a version-17 database created before the amendment (no column)
+  fails on create, because the ALTER only runs below 17; assigned to cod2a (check the column on every open, plus a
+  test).
