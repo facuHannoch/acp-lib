@@ -45,3 +45,8 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
 - **A2 gate passed** ([gate](../.plan-execution/status/11-22-GATE-A2-verify.md)): full `./test` green on the first
   run, 1,402 in 131 files, 200 s.
 - B1 assigned to cod2a.
+- B1 report in, `79627f6` (report only; [report](reports/11-22-REPORT-B1-verify.md)): steps 1–4 present; full
+  `./test` green first run (1,402, 181 s). Drift: the factory now also builds `NativeController`. Two native gaps
+  reproduced offline: a native prompt drops a file part and submits only text (silent data loss, meets triage);
+  an unsupported native handoff writes reset records and handoff events before refusing. Both need `src/`
+  changes: escalated to the user. Sent to clad2a for review and independent confirmation.
