@@ -24,3 +24,9 @@ edit to `src/agent-session.ts`.
 
 - Branches created at `4e88243`.
 - Brief G (grounding) assigned to cod2a.
+- clad2a's read-ahead for G: the spec stores assignments and results in a new `workers?` repository, duplicating
+  worker delivery's `worker_assignments`; `workers?` should hold only the worker rows; it would be schema 19, not 18;
+  delivery reads only the assignment's destination (`last_conversation` at most the default for the next one); the
+  orchestrator requires `capabilities.workerDelivery` as well.
+- **On hold** at the user's request, before G's report. cod2a paused with a clean worktree at `4e88243`, no G edits;
+  baseline green (1,509 in 137 files, 110 s).
