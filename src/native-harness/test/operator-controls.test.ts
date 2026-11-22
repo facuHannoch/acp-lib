@@ -22,7 +22,6 @@ for (const transport of ["in-process", "stdio"] as const) {
         subscription: { text: "final", tools: "full" } });
       expect(init.description.capabilities.methods).not.toContain("session/load");
       expect(init.description.capabilities.methods).not.toContain("session/messages");
-      await expect(client.loadSession({ sessionId: "s" })).rejects.toMatchObject({ code: "method_not_found" });
       const ready = await client.createSession({ sessionId: "s", participants: [], channels: {}, config: {
         version: 1, system: "test", model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.json", import.meta.url).pathname },
         defaultPolicy: "ask", policies: { ask: { fallback: "ask", tools: {} } },
@@ -52,3 +51,76 @@ for (const transport of ["in-process", "stdio"] as const) {
     } finally { await harness.close(); }
   });
 }
+
+test("focused startup and observation do not request a full storage snapshot", async () => {
+  const { createMemoryStorageAdapter } = await import("../src/state/storage/memory.ts");
+  const { createSession } = await import("../src/index.ts");
+  const { createProtocolServer } = await import("../src/interfaces/protocol/server.ts");
+  const { HarnessClient, createInProcessTransport } = await import("../src/client.ts");
+  const storage = createMemoryStorageAdapter().open({ mode: "create", identity: { sessionId: "s", compatibilityKey: "" } });
+  if (!storage.ok) throw new Error(storage.error.message);
+  const owner = storage.value;
+  const accepted = owner.acceptItem({ kind: "participant_message", channelId: "a", senderId: "u", itemId: "i", text: "test" });
+  if (!accepted.ok) throw new Error(accepted.error.message);
+  const turn = owner.beginTurn("a");
+  if (!turn.ok || !turn.value) throw new Error("Failed to seed turn");
+  const turnId = turn.value.turn.turnId;
+  const reply = owner.appendMessage(turnId, { role: "assistant", content: "old reply", calls: [] });
+  const oversized = owner.appendMessage(turnId, { role: "assistant", content: "x".repeat(1024 * 1024 + 1), calls: [] });
+  if (!oversized.ok) throw new Error(oversized.error.message);
+  if (!reply.ok || !owner.finishTurn(turnId, { status: "completed" }).ok) throw new Error("Failed to seed reply");
+  let snapshots = 0;
+  owner.snapshot = () => { snapshots++; throw new Error("Unexpected full storage read"); };
+  const server = createProtocolServer(async () => ({
+    session: createSession({ systemPrompt: "test", storage: owner, configureTurn() { throw new Error("Unexpected inference"); } }),
+    close() { owner.close(); },
+  }), { durable: true });
+  const client = new HarnessClient(createInProcessTransport(server));
+  try {
+    await client.initialize();
+    expect(await client.openSession({ sessionId: "s", channelChanges: [{ channel: "a", changeId: "1", displayName: "Alice" }] }))
+      .toMatchObject({ sessionId: "s", channelChanges: [{ outcome: "applied" }] });
+    expect(await client.observeChannel({ channel: "a" })).toMatchObject({ channel: { displayName: "Alice", pendingCount: 0 } });
+    expect(await client.reconcileChannel({ channel: "a", turnIds: [String(turnId)], itemIds: ["i"] }))
+      .toMatchObject({ turns: [{ state: "completed" }], items: [{ id: "i" }], replies: [{ messageId: String(reply.value.seq) }, { messageId: String(oversized.value.seq) }] });
+    const newest = await client.timeline({ limit: 1 });
+    expect(newest.events).toMatchObject([{ omitted: true, messageId: String(oversized.value.seq) }]);
+    const older = await client.timeline({ cursor: newest.next!, limit: 1 });
+    expect(older.events).toMatchObject([{ messageId: String(reply.value.seq) }]);
+    const latest = await client.channelMessages({ channel: "a", limit: 1 });
+    expect(latest.messages).toMatchObject([{ reference: true, messageId: String(oversized.value.seq) }]);
+    const foreignPosition = Buffer.from(JSON.stringify(["other-session", "a", reply.value.seq])).toString("base64url");
+    await expect(client.channelMessages({ channel: "a", after: foreignPosition, throughRevision: oversized.revision }))
+      .rejects.toMatchObject({ code: "invalid_params" });
+    expect(snapshots).toBe(0);
+  } finally { client.close(); server.dispose(); }
+});
+
+test("stdio offers notify_channel by default and a notice wakes an unattached channel", async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const directory = mkdtempSync(join(tmpdir(), "operator-notice-"));
+  const script = join(directory, "script.json");
+  writeFileSync(script, JSON.stringify({ version: 1, responses: [
+    { content: null, calls: [{ id: "notice", name: "notify_channel", arguments: { channelId: "bob", text: "wake" } }] },
+    { content: "done" },
+  ] }));
+  const harness = spawnHarness();
+  const events: ChannelEvent[] = [];
+  harness.client.onChannelEvent(event => events.push(event));
+  try {
+    await harness.client.initialize();
+    await harness.client.createSession({ sessionId: "notice", participants: [], channels: {}, config: {
+      version: 1, system: "test", model: { protocol: "scripted", script }, defaultPolicy: "allow",
+      policies: { allow: { fallback: "allow", tools: {} }, receiver: { fallback: "allow", tools: { notify_channel: "deny" } } },
+    }, channelChanges: [{ channel: "bob", changeId: "1", policy: "receiver" }] });
+    await harness.client.push({ channel: "alice", item: { id: "wake", kind: "user_message", sender: "alice", content: [{ type: "text", text: "notify Bob" }] } });
+    for (let i = 0; i < 300 && !events.some(event => event.channel === "bob" && event.event.type === "turn_ended"); i++)
+      await new Promise(resolve => setTimeout(resolve, 10));
+    expect(events.some(event => event.channel === "bob" && event.event.type === "turn_ended" && event.event.outcome === "completed")).toBe(true);
+    expect((await harness.client.timeline()).events).toContainEqual(expect.objectContaining({
+      kind: "channel_notice", sourceChannel: "alice", channel: "bob", actor: { kind: "agent", id: "alice" },
+    }));
+  } finally { await harness.close(); rmSync(directory, { recursive: true, force: true }); }
+}, 15000);

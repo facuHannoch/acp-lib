@@ -107,7 +107,7 @@ export interface PersistentSessionOptions {
 /** Creating the session executes nothing: it can be inspected, loaded and
  * exported first. Opening, starting and resuming are separate actions. */
 export interface PersistentSession {
-  operatorReads?: Pick<SessionStorage, "readSession" | "readChannel" | "readTracked" | "readTimeline">;
+  operatorReads?: Pick<SessionStorage, "readSession" | "readExecution" | "readChannel" | "readTracked" | "readTimeline">;
   turnPhase?(turnId: number): import("./tools.ts").TurnPhase | undefined;
   /** Approval requests belong to this connection; disconnect closes them. */
   approvals: {

@@ -264,6 +264,7 @@ export type InterruptOutcome =
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
 export interface SessionStorage extends ModelCallStore, OperatorStorageReads {
   readSession(): StorageResult<StoredSession>;
+  readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
   readRevokedTools(): StorageResult<string[]>;
   /** Validated config supplied to this open, copied at bind time; undefined for

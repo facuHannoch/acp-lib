@@ -66,6 +66,7 @@ function memoryTables(data: Data): Tables {
     },
     liveTurn: channelId => copy([...data.turns.values()].find(turn => turn.channelId === channelId && live(turn))),
     turns: () => copy([...data.turns.values()].sort((a, b) => a.turnId - b.turnId)),
+    latestTurn: id => copy([...data.turns.values()].findLast(turn => turn.channelId === id)),
     liveTurns: () => copy([...data.turns.values()].filter(live)),
     policyNames: () => [...new Set([...data.channels.values()].flatMap(channel => channel.policy ? [channel.policy] : [])
       .concat([...data.items.values()].flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"])))],
@@ -82,10 +83,14 @@ function memoryTables(data: Data): Tables {
         return older ? rows.slice(Math.max(0, low - range.limit - 1), low).reverse()
           : rows.slice(low, low + range.limit + 1).filter(row => row.seq <= range.throughRevision);
       };
-      if (range.kind === "conversation") return copy(select(data.conversation.get(range.channel!) ?? []));
-      if (range.kind === "replies") return copy((range.turnIds ?? []).flatMap(id => select(data.replies.get(id) ?? []))
-        .filter(row => row.channelId === range.channel).sort((a, b) => older ? b.seq - a.seq : a.seq - b.seq).slice(0, range.limit + 1));
-      return copy(select(data.entries));
+      const rows = range.kind === "conversation" ? select(data.conversation.get(range.channel!) ?? [])
+        : range.kind === "replies" ? (range.turnIds ?? []).flatMap(id => select(data.replies.get(id) ?? []))
+          .filter(row => row.channelId === range.channel).sort((a, b) => older ? b.seq - a.seq : a.seq - b.seq).slice(0, range.limit + 1)
+        : select(data.entries);
+      return copy(rows.map(row => {
+        const messageId = data.modelState?.entryIds[String(row.seq)];
+        return messageId ? { ...row, messageId } : row;
+      }));
     },
     addEntry(entry) {
       const saved = copy(entry);

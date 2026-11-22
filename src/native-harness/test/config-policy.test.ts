@@ -175,18 +175,18 @@ test("stdio managed sessions use active config until reopen and preserve saved c
   } finally { await first.close(); }
   const second = spawnHarness({ home });
   try {
-    await second.client.initialize(); await second.client.loadSession({ sessionId: id });
+    await second.client.initialize(); await second.client.openSession({ sessionId: id });
     const { decodeSessionFile } = await import("../src/state/storage/session-file.ts");
     expect((decodeSessionFile(await second.client.exportArchive(), 268435456) as any).config.system).toBe("changed");
   } finally { await second.close(); }
   writeFileSync(sidecar, "bad JSON");
   const invalid = spawnHarness({ home });
-  try { await invalid.client.initialize(); await expect(invalid.client.loadSession({ sessionId: id, config })).rejects.toMatchObject({ code: "invalid_config" }); }
+  try { await invalid.client.initialize(); await expect(invalid.client.openSession({ sessionId: id, config })).rejects.toMatchObject({ code: "invalid_config" }); }
   finally { await invalid.close(); }
   rmSync(sidecar);
   const restored = spawnHarness({ home });
   try {
-    await restored.client.initialize(); await restored.client.loadSession({ sessionId: id });
+    await restored.client.initialize(); await restored.client.openSession({ sessionId: id });
     const { decodeSessionFile } = await import("../src/state/storage/session-file.ts");
     expect((decodeSessionFile(await restored.client.exportArchive(), 268435456) as any).config.system).toBe("changed");
   } finally { await restored.close(); rmSync(home, { recursive: true, force: true }); }
@@ -215,7 +215,8 @@ test("a version 2 session file upgrades its config and item signatures", async (
   const destination = mkdtempSync(join(tmpdir(), "harness-legacy-dest-")), second = spawnHarness({ home: destination });
   try {
     await second.client.initialize(); await second.client.importArchive(legacy);
-    const loaded = await second.client.loadSession({ sessionId: "s" });
+    await second.client.openSession({ sessionId: "s" });
+    const loaded = await second.client.reconcileChannel({ channel: "a", itemIds: ["m"] });
     expect(loaded.items[0]).toMatchObject({ id: "m", policy: { resolved: LEGACY_POLICY, inherited: [] } });
     expect(await second.client.push({ channel: "a", item: { id: "m", kind: "user_message", sender: "u", content: [{ type: "text", text: "hello" }] } })).toMatchObject({ duplicate: true, item: { policy: { resolved: LEGACY_POLICY } } });
   } finally { await second.close(); rmSync(home, { recursive: true, force: true }); rmSync(destination, { recursive: true, force: true }); }

@@ -1,3 +1,4 @@
+import { notifyChannelDefinition } from "../src/capabilities/tools/scenario.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createScriptedModel, loadScriptedModel } from "../src/capabilities/model/scripted.ts";
@@ -19,7 +20,7 @@ test("file scenario executes echo through the real scheduler/loop and supplies i
     { role: "assistant", content: "I'll echo that.", calls: [{ id: "echo-1", name: "echo", arguments: '{"text":"hello"}' }] },
     { role: "tool", callId: "echo-1", content: '{"ok":true,"text":"hello"}' },
   ]);
-  expect(requests[0]?.tools).toEqual([echoDefinition]);
+  expect(requests[0]?.tools).toEqual([echoDefinition, notifyChannelDefinition]);
   expect(store.snapshot().map(entry => entry.message.role)).toEqual(["user", "assistant", "tool", "assistant"]);
   expect(scripted.remaining()).toBe(0);
 });

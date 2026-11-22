@@ -14,7 +14,7 @@ export interface ChannelScheduler {
 }
 
 /** Status is a pure reading of one snapshot plus this process's own state. */
-export function sessionStatus(view: StorageSnapshot, stopped: boolean, incompatible = false): SessionStatus {
+export function sessionStatus(view: Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">, stopped: boolean, incompatible = false): SessionStatus {
   const working = view.turns.some(turn => turn.state.status === "running");
   // Input pending on a channel that cannot run (suspended, suspending) is waiting
   // for a resume, not execution.
@@ -58,9 +58,18 @@ export function createChannelScheduler(
   // Individual channel suspensions begun by this process and not yet committed
   // as `suspended`. Storage holds the truth; this holds the waiting callers.
   const channelSuspensions = new Map<string, { promise: Promise<ControlResult<ChannelStatus>>; settle(result: ControlResult<ChannelStatus>): void }>();
-  const view = () => { const read = storage.snapshot(); if (!read.ok) throw new Error(read.error.message); return read.value; };
+  const channelRecord = (channelId: string) => {
+    const read = storage.readChannel(channelId);
+    if (read.ok) return read.value.channel;
+    if (read.error.code !== "not_found") throw new Error(read.error.message);
+    return undefined;
+  };
   const compatible = () => { const result = storage.executionCompatible(); if (!result.ok) throw new Error(result.error.message); return result.value; };
-  const status = () => sessionStatus(view(), stopped, !compatible());
+  const status = () => {
+    const read = storage.readExecution();
+    if (!read.ok) throw new Error(read.error.message);
+    return sessionStatus(read.value, stopped, !compatible());
+  };
   /** Channels whose pending input this process may start: open ones only. A
    * suspended channel's backlog waits for its own resume and is not "waiting"
    * here, so it never keeps the session from reporting idle. */
@@ -208,7 +217,7 @@ export function createChannelScheduler(
     if (!result.ok) return failedWith(result.error);
     return { ok: true, value: after(result.value, result.revision), revision: result.revision };
   }
-  const lifecycleOf = (channelId: string) => view().channels.find(channel => channel.channelId === channelId)?.lifecycle;
+  const lifecycleOf = (channelId: string) => channelRecord(channelId)?.lifecycle;
 
   const channels: ChannelControls = {
     create: input => {
@@ -219,7 +228,7 @@ export function createChannelScheduler(
       return result;
     },
     edit: (channelId, displayName, policy) => {
-      const before = view().channels.find(channel => channel.channelId === channelId);
+      const before = channelRecord(channelId);
       return control(() => storage.editChannel(channelId, displayName, policy), (now, revision) => {
         if (now.displayName !== before?.displayName || now.policy !== before?.policy) emitState(channelId, revision);
         return channelStatus(channelId);

@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -45,7 +46,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: su
     await harness.close(); sourceClosed = true;
     restored = open(destination); restored.client.onChannelEvent(event => events.push(event));
     await restored.client.initialize(init); await restored.client.importArchive(archive);
-    const loaded = await restored.client.loadSession({ sessionId: "s" });
+    const loaded = await inspectOperatorView(restored.client, { sessionId: "s" });
     await expect(restored.client.respondApproval(first.requestId, "allow_once")).rejects.toMatchObject({ code: "not_found" });
     expect(loaded.status.channels.find(channel => channel.channel === "alice")).toMatchObject({ lifecycle: "suspended", activeTurn: { turnId: "1", state: "suspended" } });
     await restored.client.resume();

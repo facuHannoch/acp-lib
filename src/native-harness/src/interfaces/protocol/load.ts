@@ -14,7 +14,7 @@ export function turnStatus(turn: StoredTurn): TurnStatus {
     ...(state.status === "failed" || state.status === "interrupted" ? { reason: state.reason, uncertainCalls: state.uncertainCallIds } : {}) };
 }
 
-export function wireStatus(status: SessionStatus, view: StorageSnapshot): StatusResult {
+export function wireStatus(status: SessionStatus, view: Pick<StorageSnapshot, "turns">): StatusResult {
   return { sessionId: status.sessionId, revision: status.revision, lifecycle: status.lifecycle, execution: status.execution,
     channels: status.channels.map(channel => {
       const unresolved = channel.unresolvedInterruption && view.turns.find(turn => turn.turnId === channel.unresolvedInterruption!.turnId);

@@ -4,7 +4,7 @@
  * It owns what belongs to the process and the session rather than to one conversation:
  * - launching the harness (`serve --stdio`) through the host launcher, lazily and once: concurrent
  *   first uses share one start;
- * - the open sequence: handlers attached, `initialize`, then `session/load` (or `session/create` on a
+ * - the open sequence: handlers attached, `initialize`, then `session/open` (or `session/create` on a
  *   confirmed `not_found`) carrying the channel changes made while the harness was stopped;
  * - reconciliation after every open, and reopening after a lost process or connection;
  * - the durable-acceptance rule for inputs: an id and exact payload are saved before `channel/push`,
@@ -76,6 +76,7 @@ export interface ChannelPort {
   failed(error: Error): void;
   /** Whether this channel has a turn the host should reopen for after a lost connection. */
   busy(): boolean;
+  trackedTurns?(): string[];
 }
 
 export type ChannelChangeOutcome =
@@ -124,7 +125,7 @@ export interface NativeHarnessHostConfig {
 }
 
 const HARNESS_MAIN = new URL("../native-harness/src/interfaces/cli/main.ts", import.meta.url).pathname;
-const REQUIRED_METHODS = ["session/load", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/message/read"];
+const REQUIRED_METHODS = ["session/open", "channel/observe", "channel/reconcile", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/message/read"];
 
 interface Deferred<T> { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void }
 function deferred<T>(): Deferred<T> {
@@ -343,11 +344,11 @@ export class NativeHarnessHost {
     // can run. An edit made after this line is sent through the live channel methods once open.
     const cutoff = this.records.pendingChanges();
     const batch = cutoff.map(toWire);
-    const view = await this.#loadOrCreate(client, batch, signal);
+    const opened = await this.#openOrCreate(client, batch, signal);
     signal.throwIfAborted();
 
     this.#blockedVersions.clear();
-    for (const result of view.channelChanges ?? []) {
+    for (const result of opened.channelChanges ?? []) {
       // Cleared only when this exact version was applied: an edit made during the open stays pending.
       if (result.outcome === "applied") this.records.confirmChange(result.channel, Number(result.changeId));
       else {
@@ -358,19 +359,50 @@ export class NativeHarnessHost {
       }
     }
 
-    const messages = [...view.messages];
-    let next = view.nextMessage;
-    while (next !== undefined) {
-      const page = await client.messages({ revision: view.status.revision, after: next });
-      signal.throwIfAborted();
-      messages.push(...page.messages);
-      next = page.nextMessage;
+    const status = await client.status();
+    signal.throwIfAborted();
+    const view: LoadResult = { status, items: [], turns: [], messages: [] };
+    const submissions = this.records.submissions();
+    const observed = new Map<string, number>();
+    for (const channel of new Set([...this.#ports.keys(), ...submissions.map(item => item.channel)])) {
+      const saved = submissions.filter(item => item.channel === channel);
+      try {
+        const current = await client.observeChannel({ channel });
+        signal.throwIfAborted();
+        observed.set(channel, current.revision);
+        const known = status.channels.find(value => value.channel === channel);
+        const { pendingCount: _pendingCount, ...state } = current.channel;
+        if (known) Object.assign(known, state);
+        else status.channels.push({ ...state, pending: [] });
+      } catch (error) {
+        if (codeOf(error) !== "not_found") throw error;
+        continue;
+      }
+      const tracked = new Set(this.#ports.get(channel)?.trackedTurns?.() ?? []);
+      for (let offset = 0; offset < saved.length; offset += 100) {
+        const page = await client.reconcileChannel({ channel, itemIds: saved.slice(offset, offset + 100).map(item => item.id) });
+        signal.throwIfAborted();
+        view.items.push(...page.items);
+        for (const item of page.items) if (item.turnId) tracked.add(item.turnId);
+      }
+      const turnIds = [...tracked];
+      for (let offset = 0; offset < turnIds.length; offset += 100) {
+        let page = await client.reconcileChannel({ channel, turnIds: turnIds.slice(offset, offset + 100) });
+        signal.throwIfAborted();
+        view.turns.push(...page.turns.map(turn => ({ ...turn, items: view.items.filter(item => item.turnId === turn.turnId).map(item => item.id) })));
+        while (true) {
+          view.messages.push(...page.replies.map(reply => ({ channel, messageId: reply.messageId, turnId: reply.turnId, reference: true as const })));
+          if (!page.next) break;
+          page = await client.reconcileChannel({ channel, cursor: page.next });
+          signal.throwIfAborted();
+        }
+      }
     }
 
     this.#channels.clear();
     for (const channel of view.status.channels) this.#channels.set(channel.channel, channel);
     this.#connection = connection;
-    this.#reconcile(view, messages);
+    this.#reconcile(view, view.messages);
 
     // Events received while the view was being read and applied: the ones it already includes are
     // dropped; the rest follow in delivery order. Several events can share a revision, so the
@@ -378,7 +410,7 @@ export class NativeHarnessHost {
     const early = this.#early ?? [];
     this.#early = null;
     for (const event of early) {
-      if (event.revision !== undefined && event.revision <= view.status.revision) continue;
+      if (event.revision !== undefined && event.revision <= (observed.get(event.channel) ?? opened.revision)) continue;
       this.#deliver(event);
     }
   }
@@ -416,14 +448,14 @@ export class NativeHarnessHost {
   }
   async toolInvocations(turn: string): Promise<ToolInvocation[]> { return (await this.#client().toolInvocations(turn)).invocations; }
 
-  async #loadOrCreate(client: HarnessClient, batch: PendingChannelChange[], signal: AbortSignal): Promise<LoadResult> {
+  async #openOrCreate(client: HarnessClient, batch: PendingChannelChange[], signal: AbortSignal) {
     const { sessionId, config } = this.#config;
     const functions = this.#functionHost();
     // The catalog and the current runtime selection go inside the open, before recovered work can start.
     const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(functions ? { tools: functions.catalog() } : {}) };
     const load = () => {
       signal.throwIfAborted();
-      return client.loadSession({ sessionId, config, ...changes });
+      return client.openSession({ sessionId, config, ...changes });
     };
     try {
       try {
@@ -438,8 +470,7 @@ export class NativeHarnessHost {
       if (codeOf(error) !== "not_found") throw error;
     }
     signal.throwIfAborted();
-    await client.createSession({ sessionId, config, participants: [], channels: {}, ...changes });
-    return load();
+    return client.createSession({ sessionId, config, participants: [], channels: {}, ...changes });
   }
 
   /** Settles what the view answers: submissions first (they decide which turn causes are ours), then each channel. */

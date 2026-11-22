@@ -357,20 +357,20 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { interrupted: outcome.value.interrupted, turn: turnStatus(outcome.value.turn) };
       }
       if (!result.ok) throw new Fault(result.error.code, result.error.message);
-      const status = wireStatus(session.status(), session.snapshot()).channels.find(value => value.channel === channel)!;
+      const status = wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()).channels.find(value => value.channel === channel)!;
       return { channel: status, ...(method === "channel/create" ? { created: (result.value as { created: boolean }).created } : {}) };
     }
     if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() }; }
-    if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.snapshot()); }
+    if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
     if (method === "session/suspend" || method === "session/resume") {
       keys(p, []);
       // Suspend answers only once `suspended` is committed, after in-flight
       // iterations settle; a refusal changes nothing and consumes nothing.
       const outcome = method === "session/suspend" ? await session.suspend() : session.resume();
       if (!outcome.ok) throw new Fault(outcome.error.code, outcome.error.message);
-      return wireStatus(outcome.status, session.snapshot());
+      return wireStatus(outcome.status, session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot());
     }
-    if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.snapshot()); }
+    if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
     if (method === "session/model-calls") {
       keys(p, ["after", "limit"]); const calls = session.snapshot().modelCalls;
       const at = p.after === undefined ? -1 : calls.findIndex(call => call.callId === text(p.after));
@@ -412,7 +412,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id, ...(item.policy == null ? {} : { policy: text(item.policy) }),
       text: parts.map((part: { text: string }) => part.text).join("\n") });
     if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
-    const policy = session.snapshot().items.find(value => value.itemId === id)?.policy;
+    const policy = session.operatorReads
+      ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]?.policy
+      : session.snapshot().items.find(value => value.itemId === id)?.policy;
     return { accepted: true, duplicate: result.duplicate, item: { id, channel, kind: "participant_message", sender, milestone: result.milestone,
       ...(policy === undefined ? {} : { policy }),
       ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };

@@ -39,7 +39,7 @@ export function createApprovalService(publish: (request: ApprovalRequest) => voi
     },
     /** Register before publishing, so even a synchronous consumer can answer. */
     request(request: ApprovalRequest, signal: AbortSignal, suspension: AbortSignal, record: (content: string, code: string) => void) {
-      if (!consumer) { const content = skipped("approval_unhandled"); record(content, "approval_unhandled"); return { answer: Promise.resolve({ allowed: false as const, content }), consume: () => false, discard: (_code?: ClosedCode) => {}, dispatchClosed: () => {} }; }
+      if (!consumer) { const content = skipped("approval_unhandled"); record(content, "approval_unhandled"); return { answer: Promise.resolve({ allowed: false as const, content }), consume: () => false, discard: (_code?: ClosedCode) => false, dispatchClosed: () => {}, dispatchFailed: () => {} }; }
       let settle!: (answer: Answer) => void, reject!: (error: unknown) => void;
       const answer = new Promise<Answer>((resolve, fail) => { settle = resolve; reject = fail; });
       let timer: ReturnType<typeof setTimeout>;
@@ -63,7 +63,14 @@ export function createApprovalService(publish: (request: ApprovalRequest) => voi
       if (signal.aborted) onAbort(); else if (suspension.aborted) onSuspend(); else { announced = true; publish(request); }
       return { answer, consume() { if (entry.recordError !== undefined) throw entry.recordError; if (entry.closed || !entry.granted) return false; entry.closed = true; cleanup(); return true; },
         dispatchClosed() { announceClose("dispatched"); },
-        discard(code: ClosedCode = "approval_cancelled_by_interrupt") { if (!entry.closed) { entry.closed = true; cleanup(); } announceClose(code); } };
+        dispatchFailed() { announceClose("approval_cancelled_by_interrupt"); },
+        discard(code: ClosedCode = "approval_cancelled_by_interrupt") {
+          if (entry.closed) return false;
+          entry.closed = true;
+          cleanup();
+          announceClose(code);
+          return true;
+        } };
     },
   };
 }
@@ -107,11 +114,11 @@ export async function dispatchWithPolicy(options: {
   // approval was given: the grant is discarded and the one paired result says why.
   const late = options.refuse?.();
   if (late) {
-    if (request) request.discard("tool_unavailable");
+    if (request && !request.discard("tool_unavailable")) return { content: "", dispatched: false };
     return skip(late.code, late.detail);
   }
   if (request && !request.consume()) return { content: "", dispatched: false };
-  try { options.mark(); } catch (error) { request?.discard(); throw error; }
+  try { options.mark(); } catch (error) { request?.dispatchFailed(); throw error; }
   let result: ReturnType<typeof options.execute>;
   try { result = options.execute(call, signal); }
   catch (error) { options.started(); request?.dispatchClosed(); throw error; }

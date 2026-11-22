@@ -35,3 +35,28 @@ The runtime cutover exposes a gate sequencing dependency. The current native
 host still requires session/load and pages session/messages. Fifteen harness
 test files also call the old methods. The old typed methods are still present
 for those callers. This checkpoint is not submitted as a passing Gate 2.
+
+The coordinator approved moving the minimal native host cutover from Gate 3
+into Gate 2 because supported open and recovery depend on the replacement
+wire methods. The host now opens, observes channel state, and reconciles
+tracked IDs without draining history pages. Harness fixtures were migrated
+off the removed wire methods. Host controls, responder routing, attachment
+handling, recovery extraction, and explicit history and catch-up stay in
+Gate 3.
+
+The guarded open test prohibits full snapshots during startup channel changes,
+observation, and reconciliation. SQLite EXPLAIN QUERY PLAN for the range
+predicates reports `entries_conversation` for channel conversation pages,
+`entries_replies` for turn replies, and the integer primary key for global
+timeline pages. Public tests cover both transports, oversized records,
+position scope and identity, approval observation and closure, and real stdio
+notice delivery to an unattached channel. The 10,000-record public checkpoint
+remains in Gate 4.
+
+Gate 2 submission is the revision containing this entry, based on checkpoint
+`cf90755d2ad84db118ddfe1b8324fa627f49b2d7`. Serial verification passed
+`bun run typecheck --pretty false` in both packages, harness
+`bun test ./test --timeout 30000` (331 pass, 0 fail, 3574 assertions, 45
+files), and root `bun test ./test/native` (67 pass, 0 fail, 6423 assertions,
+6 files). The harness run used a 30-second test runner budget. Runtime
+protocol deadlines are unchanged. Independent review is pending.

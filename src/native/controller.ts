@@ -317,6 +317,10 @@ export class NativeController implements ConversationController, ChannelPort {
     this.#notifyConnection();
   }
 
+  trackedTurns(): string[] {
+    return [...this.#turns.values()].filter(turn => !turn.ended && !turn.released).map(turn => turn.harnessId);
+  }
+
   busy(): boolean {
     return [...this.#turns.values()].some((turn) => !turn.ended && !turn.released);
   }

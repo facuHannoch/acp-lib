@@ -121,8 +121,6 @@ export class HarnessClient {
   reconcileChannel(params: Calls["channel/reconcile"]["params"]) { return this.request("channel/reconcile", params); }
   channelMessages(params: Calls["channel/messages"]["params"]) { return this.request("channel/messages", params); }
   timeline(params: Calls["session/timeline"]["params"] = {}) { return this.request("session/timeline", params); }
-  loadSession(params: Calls["session/load"]["params"]) { return this.request("session/load", params); }
-  messages(params: Calls["session/messages"]["params"]) { return this.request("session/messages", params); }
   status() { return this.request("session/status", {}); }
   modelCalls(params: Calls["session/model-calls"]["params"] = {}) { return this.request("session/model-calls", params); }
   readMessage(params: Calls["session/message/read"]["params"]) { return this.request("session/message/read", params); }

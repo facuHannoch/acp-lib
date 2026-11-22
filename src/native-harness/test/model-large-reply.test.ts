@@ -22,6 +22,6 @@ for (const mode of ["in-process", "stdio"] as const) test(`${mode}: oversized co
       const bytes = Buffer.from(page.data, "base64"); expect(bytes.length).toBeLessThanOrEqual(524288); buffers.push(bytes);
       if (page.nextOffset === undefined) break; offset = page.nextOffset; }
     expect(Buffer.concat(buffers).toString("utf8")).toBe(answer);
-    const loaded = await harness.client.loadSession({ sessionId: "s" }); expect(loaded.messages[0]).toMatchObject({ messageId: completion.messageId, reference: true });
+    const loaded = await harness.client.channelMessages({ channel: "a" }); expect(loaded.messages.find(message => message.actor.kind === "agent")).toMatchObject({ messageId: completion.messageId, reference: true });
   } finally { await harness.close(); rmSync(home, { recursive: true, force: true }); }
 }, 15000);

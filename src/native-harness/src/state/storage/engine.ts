@@ -67,6 +67,7 @@ export interface Tables {
   liveTurn(channelId: string): TurnRow | undefined;
   turns(): TurnRow[];
   liveTurns(): TurnRow[];
+  latestTurn(channel: string): TurnRow | undefined;
   policyNames(): string[];
   addEntry(entry: TimelineEntry): void;
   entriesOfTurn(turnId: number): TimelineEntry[];
@@ -708,6 +709,15 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (!referencesCompatible(tables, checked)) fail("incompatible", "A stored policy no longer exists");
       tables.setConfig(checked);
     }),
+    readExecution: () => run(meta => {
+      const channels = tables.channels().map(channel => ({ ...channel, participantIds: [] }));
+      const turns = channels.flatMap(({ channelId }) => {
+        const active = tables.liveTurn(channelId), last = tables.latestTurn(channelId);
+        return [active?.turnId === last?.turnId ? undefined : active, last].flatMap(turn => turn ? [{ ...turn, itemIds: turn.state.status === "failed" || turn.state.status === "interrupted" ? tables.itemsOfTurn(turn.turnId).map(item => item.itemId) : [] }] : []);
+      });
+      return { revision: meta.revision, session: session(meta), channels, turns,
+        items: channels.flatMap(channel => tables.pendingItems(channel.channelId)) };
+    }, true),
     readReadyChannels: () => run(meta => ({ lifecycle: meta.lifecycle,
       channels: tables.channels().filter(channel => channel.lifecycle === "open" && tables.pendingCount(channel.channelId) > 0).map(channel => channel.channelId) }), true),
     readRevokedTools: () => run(() => tables.getRevokedTools() ?? [], true),
@@ -735,11 +745,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         || !Number.isSafeInteger(range.throughRevision) || range.throughRevision < 0 || range.throughRevision > meta.revision)
         fail("invalid_input", "Invalid timeline bounds");
       const rows = tables.readRange(range);
-      const entryIds = tables.getModelState()?.entryIds;
-      return { entries: rows.slice(0, range.limit).map(entry => {
-        const messageId = entryIds?.[String(entry.seq)];
-        return messageId ? { ...entry, messageId } : entry;
-      }), more: rows.length > range.limit };
+      return { entries: rows.slice(0, range.limit), more: rows.length > range.limit };
     }, true),
     snapshot: () => run(() => readSnapshot(tables), true),
 

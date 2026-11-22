@@ -101,11 +101,12 @@ const turn = (row: Row): TurnRow => ({ turnId: row.turn_id, channelId: row.chann
   startedAt: row.started_at, compatibilityKey: row.compatibility_key, state: JSON.parse(row.state) });
 const entry = (row: Row): TimelineEntry => ({ seq: row.seq, at: row.at, channelId: row.channel_id, turnId: row.turn_id, from: row.sender,
   ...(row.kind === null ? {} : { kind: row.kind }), ...(row.source_channel_id === null ? {} : { sourceChannelId: row.source_channel_id }),
-  ...(row.item_id === null ? {} : { itemId: row.item_id }), message: JSON.parse(row.message) });
+  ...(row.item_id === null ? {} : { itemId: row.item_id }), ...(typeof row.reply_id === "string" ? { messageId: row.reply_id } : {}), message: JSON.parse(row.message) });
 
 const REPLY = "json_extract(message, '$.role') = 'assistant' AND length(json_extract(message, '$.content')) > 0";
 const CHAT = `kind = 'participant_message' OR (${REPLY})`;
 const installReadIndexes = (db: Database) => db.exec(`
+  CREATE INDEX IF NOT EXISTS turns_by_channel ON turns(channel_id, turn_id);
   CREATE INDEX IF NOT EXISTS entries_conversation ON entries(channel_id, seq) WHERE ${CHAT};
   CREATE INDEX IF NOT EXISTS entries_replies ON entries(turn_id, seq) WHERE ${REPLY};
 `);
@@ -124,6 +125,15 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       run: (...args: any[]) => { prepared().run(...args); } };
   };
   const s = {
+    pendingCount: q("SELECT count(*) AS n FROM items WHERE channel_id = ? AND milestone = 'received'"),
+    latestTurn: q("SELECT * FROM turns WHERE channel_id = ? ORDER BY turn_id DESC LIMIT 1"),
+    liveTurns: q("SELECT * FROM turns WHERE status IN ('running','suspended') ORDER BY turn_id"),
+    policyNames: q(`
+      SELECT policy AS name FROM channels WHERE policy IS NOT NULL
+      UNION SELECT coalesce(json_extract(policy_metadata, '$.resolved'), '__legacy_allow') FROM items
+      UNION SELECT inherited.value FROM items, json_each(items.policy_metadata, '$.inherited') AS inherited
+    `),
+
     meta: q("SELECT key, value FROM meta"), modelState: q("SELECT value FROM meta WHERE key = 'modelState'"), revoked: q("SELECT value FROM meta WHERE key = 'revokedTools'"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
     channel: q("SELECT * FROM channels WHERE channel_id = ?"),
     addChannel: q("INSERT OR IGNORE INTO channels (channel_id, position) VALUES (?, (SELECT COUNT(*) FROM channels))"),
@@ -147,15 +157,18 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
   let depth = 0;
   return {
     pendingCount(id) {
-      return Number(db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM items WHERE channel_id = ? AND milestone = 'received'").get(id)?.n ?? 0);
+      return Number(s.pendingCount.get(id)?.n ?? 0);
     },
     readRange(range) {
       const older = range.direction === "older";
       const order = older ? "DESC" : "ASC";
-      const read = (filter: string, params: (string | number)[]) => db.query<Row, (string | number)[]>(`
-        SELECT * FROM entries WHERE (${filter}) AND seq <= ? AND seq ${older ? "<" : ">"} ?
+      const read = (filter: string, params: (string | number)[]) => {
+        const statement = db.prepare<Row, (string | number)[]>(`
+        SELECT *, json_extract((SELECT value FROM meta WHERE key = 'modelState'), '$.entryIds."' || seq || '"') AS reply_id FROM entries WHERE (${filter}) AND seq <= ? AND seq ${older ? "<" : ">"} ?
         ORDER BY seq ${order} LIMIT ?
-      `).all(...params, range.throughRevision, range.exclusiveSeq ?? (older ? Number.MAX_SAFE_INTEGER : 0), range.limit + 1).map(entry);
+      `);
+        try { return statement.all(...params, range.throughRevision, range.exclusiveSeq ?? (older ? Number.MAX_SAFE_INTEGER : 0), range.limit + 1).map(entry); } finally { statement.finalize(); }
+      };
       if (range.kind === "conversation") return read(`channel_id = ? AND (${CHAT})`, [range.channel!]);
       if (range.kind === "replies") return (range.turnIds ?? []).flatMap(id => read(`turn_id = ? AND channel_id = ? AND ${REPLY}`, [id, range.channel!]))
         .sort((a, b) => older ? b.seq - a.seq : a.seq - b.seq).slice(0, range.limit + 1);
@@ -198,12 +211,13 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     putTurn(t) { s.putTurn.run(t.turnId, t.channelId, t.startedSeq, t.startedAt, t.compatibilityKey, t.state.status, JSON.stringify(t.state)); },
     liveTurn(channelId) { const row = s.live.get(channelId); return row ? turn(row) : undefined; },
     turns: () => s.turns.all().map(turn),
-    liveTurns: () => db.query<Row, []>("SELECT * FROM turns WHERE status IN ('running','suspended') ORDER BY turn_id").all().map(turn),
-    policyNames: () => db.query<{ name: string }, []>(`
-      SELECT policy AS name FROM channels WHERE policy IS NOT NULL
-      UNION SELECT coalesce(json_extract(policy_metadata, '$.resolved'), '__legacy_allow') FROM items
-      UNION SELECT inherited.value FROM items, json_each(items.policy_metadata, '$.inherited') AS inherited
-    `).all().map(row => row.name),
+    latestTurn(id) {
+      const row = s.latestTurn.get(id);
+      return row ? turn(row) : undefined;
+    },
+    liveTurns: () => s.liveTurns.all().map(turn),
+    policyNames: () => s.policyNames.all().map(row => String(row.name)),
+
     addEntry(e) { s.addEntry.run(e.seq, e.at, e.channelId, e.turnId, e.from, e.kind ?? null, e.sourceChannelId ?? null,
       e.itemId ?? null, JSON.stringify(e.message)); },
     entriesOfTurn: turnId => s.entriesOf.all(turnId).map(entry),

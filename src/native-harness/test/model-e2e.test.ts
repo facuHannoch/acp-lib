@@ -40,9 +40,10 @@ test("scripted stdio: partial reply times out without retry while another channe
     await first.close(); closed = true;
     const second = spawnHarness({ home });
     try {
-      await second.client.initialize(); const loaded = await second.client.loadSession({ sessionId: "s" });
+      await second.client.initialize(); await second.client.openSession({ sessionId: "s" });
+      const loaded = await second.client.reconcileChannel({ channel: "alice", itemIds: ["a1"] });
       expect(loaded.items.find(item => item.id === "a1")?.milestone).toBe("seen");
-      expect(loaded.messages.some(message => message.messageId === delta.messageId)).toBe(false);
+      expect((await second.client.channelMessages({ channel: "alice" })).messages.some(message => message.messageId === delta.messageId)).toBe(false);
       const restored = (await second.client.modelCalls()).calls.find(call => call.callId === alice.callId);
       expect(restored).toMatchObject({ outcome: "timeout", attempts: [{ usage: { inputTokens: 7 }, outcome: "timeout" }] });
     } finally { await second.close(); }
@@ -65,6 +66,6 @@ for (const mode of ["in-process", "stdio"] as const) for (const text of ["final"
       expect(ordered.findIndex(event => event.type === "message_completed")).toBeLessThan(ordered.findIndex(event => event.type === "tool_call" && event.status === "started"));
       if (text === "stream") { expect(deltas.map(event => event.messageId)).toEqual(completed.map(event => event.messageId!)); }
       else expect(deltas).toEqual([]);
-      const loaded = await harness.client.loadSession({ sessionId: "s" }); expect(loaded.messages.map(message => message.messageId)).toEqual(completed.map(event => event.messageId!));
+      const loaded = await harness.client.channelMessages({ channel: "alice" }); expect(loaded.messages.filter(message => message.actor.kind === "agent").map(message => message.messageId)).toEqual(completed.map(event => event.messageId!));
     } finally { await harness.close(); rmSync(home, { recursive: true, force: true }); }
   }, 15000);

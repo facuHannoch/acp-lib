@@ -87,7 +87,7 @@ describe("starting", () => {
     expect(first).toMatchObject({ id: "m1", channel: "a", milestone: "received" });
     expect(second).toMatchObject({ id: "m2", channel: "b" });
     // Load first; the session did not exist, so it was created and then loaded for its view.
-    expect(calls.slice(0, 4)).toEqual(["initialize", "loadSession", "createSession", "loadSession"]);
+    expect(calls.slice(0, 4)).toEqual(["initialize", "openSession", "createSession", "status"]);
     await host.ensureStarted();
     expect(host.launches).toBe(1);
   });
