@@ -12,7 +12,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { restartConversation } from "../../src/conversation-controller/index.ts";
-import { HarnessClientError, type HarnessClient } from "../../src/native-harness/src/client.ts";
+import { HarnessClientError, type ChannelChangeResult, type ChannelEvent, type HarnessClient } from "../../src/native-harness/src/client.ts";
 import { spawnHarness } from "../../src/native-harness/test/helpers/stdio.ts";
 import type { NativeApprovalResponder } from "../../src/native/host.ts";
 import type { Agent } from "../../src/agent.ts";
@@ -714,6 +714,192 @@ function barrier() {
   const waiting = new Promise<void>(resolve => { open = resolve; });
   return { open, waiting };
 }
+
+function waitForChannelEvent(client: HarnessClient, matches: (event: ChannelEvent) => boolean, description: string) {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const unsubscribe = client.onChannelEvent((event) => { if (matches(event)) resolve(); });
+  const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), 10_000);
+  return promise.finally(() => { clearTimeout(timer); unsubscribe(); });
+}
+
+describe("durable retirement across an Agent restart", () => {
+  async function expectRetired(agent: Agent, id: string) {
+    const host = agent.nativeHarness!;
+    expect(await agent.persistence.channels!.pendingChange(id)).toBeUndefined();
+    const status = (await host.status()).channels.find(({ channel }) => channel === id);
+    expect(status).toMatchObject({ lifecycle: "retired", pending: [] });
+    expect(status?.activeTurn).toBeUndefined();
+    const history = await host.conversationMessages({ channel: id });
+    await expect(host.push({ id: "after-delete", channel: id, sender: "operator", text: "must not run" }))
+      .rejects.toMatchObject({ code: "channel_retired" });
+    expect((await host.conversationMessages({ channel: id })).messages).toEqual(history.messages);
+  }
+
+  test("a delete while the harness is stopped survives reopening the Agent", async () => {
+    const rig = await rigWith();
+    const first = await rig.open();
+    const conversation = await first.conversations.create({ title: "Had a turn" });
+    await conversation.prompt("before deletion");
+    const host = first.nativeHarness!;
+    await host.stop();
+    await first.conversations.delete(conversation.id);
+    const pending = await first.persistence.channels!.pendingChange(conversation.id);
+    expect(pending?.desire.lifecycle).toBe("retired");
+    expect(host.launches).toBe(1);
+    await first.close();
+
+    const second = await rig.open();
+    expect(await second.persistence.channels!.pendingChange(conversation.id)).toEqual(pending);
+    await second.nativeHarness!.ensureStarted();
+    await expectRetired(second, conversation.id);
+  }, 30_000);
+
+  test("the same retirement version is acknowledged after the harness dies before its response", async () => {
+    const rig = await rigWith();
+    const trace = traceStdio(rig);
+    const first = await rig.open();
+    const conversation = await first.conversations.create({ title: "Committed retirement" });
+    await conversation.prompt("before deletion");
+    const host = first.nativeHarness!;
+    await host.stop();
+    await first.conversations.delete(conversation.id);
+    const pending = (await first.persistence.channels!.pendingChange(conversation.id))!;
+
+    // The scripted storage fault kills the child after deleteChannel succeeds and before its reply.
+    rig.env.HARNESS_TEST_FAULT = "deleteChannel:1";
+    await expect(host.ensureStarted()).rejects.toBeInstanceOf(HarnessClientError);
+    delete rig.env.HARNESS_TEST_FAULT;
+    expect(trace.children[1]!.child.signalCode).toBe("SIGKILL");
+    expect(await first.persistence.channels!.pendingChange(conversation.id)).toEqual(pending);
+    await first.close();
+
+    const second = await rig.open();
+    const results: ChannelChangeResult[] = [];
+    trace.intercept.openSession = async (real, [params]) => {
+      expect(params).toMatchObject({ channelChanges: [{
+        channel: conversation.id, changeId: String(pending.version), lifecycle: "retired",
+      }] });
+      const opened = await real() as Awaited<ReturnType<HarnessClient["openSession"]>>;
+      results.push(...(opened.channelChanges ?? []));
+      return opened;
+    };
+    await second.nativeHarness!.ensureStarted();
+    expect(results).toEqual([{ channel: conversation.id, changeId: String(pending.version), outcome: "applied" }]);
+    await expectRetired(second, conversation.id);
+    expect((await second.nativeHarness!.conversationMessages({ channel: conversation.id })).messages
+      .filter(({ actor }) => actor.kind === "agent")).toHaveLength(1);
+  }, 30_000);
+
+  test("queued input blocks a retirement across restart and operator resume is refused", async () => {
+    const rig = await rigWith();
+    const trace = traceStdio(rig);
+    const reported: ChannelChangeResult[] = [];
+    rig.harness.onChannelChangeBlocked = (result: ChannelChangeResult) => reported.push(result);
+    rig.script([hold("retirement"), reply("Must not run while suspended.")]);
+    const first = await rig.open();
+    const conversation = await first.conversations.create({ title: "Busy" });
+    const id = conversation.id, host = first.nativeHarness!;
+    await conversation.stop();
+    await host.ensureStarted();
+    const client = trace.children[0]!.client;
+    const toolStarted = waitForChannelEvent(client, ({ channel, event }) =>
+      channel === id && event.type === "tool_call" && event.status === "started", "the held tool");
+    await host.push({ id: "busy-first", channel: id, sender: "operator", text: "hold the turn" });
+    await toolStarted;
+    await host.push({ id: "busy-queued", channel: id, sender: "operator", text: "queue behind the turn" });
+    const suspending = waitForChannelEvent(client, ({ channel, event }) =>
+      channel === id && event.type === "channel_state" && event.lifecycle === "suspending", "the suspension barrier");
+    const suspend = host.suspendChannel(id);
+    try {
+      await suspending;
+    } finally {
+      rig.release("retirement");
+    }
+    await suspend;
+    const before = (await host.conversationMessages({ channel: id })).messages;
+    expect((await host.status()).channels.find(({ channel }) => channel === id)?.pending).toContain("busy-queued");
+    await first.close();
+
+    const second = await rig.open();
+    const reopened = second.nativeHarness!;
+    await second.conversations.delete(id);
+    const pending = (await second.persistence.channels!.pendingChange(id))!;
+    await reopened.ensureStarted();
+    expect(reported).toEqual([{ channel: id, changeId: String(pending.version), outcome: "blocked", reason: "channel_busy" }]);
+    expect(await second.persistence.channels!.pendingChange(id)).toEqual(pending);
+    await expect(reopened.resumeChannel(id)).rejects.toMatchObject({ code: "channel_retired" });
+    expect(trace.methods).not.toContain("resumeChannel");
+    expect((await reopened.status()).channels.find(({ channel }) => channel === id)).toMatchObject({
+      lifecycle: "suspended", pending: ["busy-queued"],
+    });
+    expect((await reopened.conversationMessages({ channel: id })).messages).toEqual(before);
+  }, 30_000);
+
+  test("an unused channel realized by another conversation's open cannot run after deletion", async () => {
+    const rig = await rigWith();
+    const first = await rig.open();
+    const [active, unused] = await two(first);
+    await active.prompt("realize both channels");
+    expect((await first.nativeHarness!.status()).channels.find(({ channel }) => channel === unused.id)?.lifecycle).toBe("open");
+    expect(await first.persistence.channels!.pendingChange(unused.id)).toBeUndefined();
+    expect(await first.persistence.providerSessions.active(unused.id)).toBeNull();
+    await first.close();
+
+    const second = await rig.open();
+    await second.conversations.delete(unused.id);
+    await second.nativeHarness!.ensureStarted();
+    await expectRetired(second, unused.id);
+    expect((await second.nativeHarness!.conversationMessages({ channel: unused.id })).messages).toEqual([]);
+  }, 30_000);
+
+  test("deletion before the first harness open leaves only a retired tombstone", async () => {
+    const rig = await rigWith();
+    const trace = traceStdio(rig);
+    const first = await rig.open();
+    const conversation = await first.conversations.create({ title: "Never opened" });
+    const id = conversation.id;
+    expect((await first.persistence.channels!.pendingChange(id))?.desire).toEqual({ displayName: "Never opened" });
+    await first.close();
+    expect(trace.children).toHaveLength(0);
+
+    const second = await rig.open();
+    await second.conversations.delete(id);
+    expect(trace.children).toHaveLength(0);
+    const retirement = (await second.persistence.channels!.pendingChange(id))!;
+    expect(retirement.desire.lifecycle).toBe("retired");
+    trace.intercept.createSession = async (real, [params]) => {
+      expect(params).toMatchObject({ channelChanges: [{
+        channel: id, changeId: String(retirement.version), lifecycle: "retired",
+      }] });
+      const result = await real() as Awaited<ReturnType<HarnessClient["createSession"]>>;
+      expect(result.channelChanges).toEqual([{ channel: id, changeId: String(retirement.version), outcome: "applied" }]);
+      return result;
+    };
+    const host = second.nativeHarness!;
+    await host.ensureStarted();
+    await expectRetired(second, id);
+    expect((await host.status()).channels).toMatchObject([{ channel: id, lifecycle: "retired" }]);
+    expect((await host.timeline()).events).toEqual([]);
+    expect(trace.children[0]!.wire.filter((message) =>
+      "method" in message && message.params.channel === id && message.params.event.type === "turn_started")).toEqual([]);
+  }, 30_000);
+
+  test("a native conversation with no title or policy is retired across restart", async () => {
+    const rig = await rigWith();
+    const first = await rig.open();
+    const conversation = await first.conversations.create();
+    const other = await first.conversations.create({ title: "Other" });
+    await other.prompt("open the existing session");
+    expect(await first.persistence.channels!.pendingChange(conversation.id)).toBeUndefined();
+    expect((await first.nativeHarness!.status()).channels.map(({ channel }) => channel)).not.toContain(conversation.id);
+    await first.close();
+
+    const second = await rig.open();
+    await second.conversations.delete(conversation.id);
+    await second.nativeHarness!.ensureStarted();
+    await expectRetired(second, conversation.id);
+  }, 30_000);
+});
 
 describe("operator controls over real stdio", () => {
   test("reattachment merges completion during a targeted read while another channel stays live", async () => {
