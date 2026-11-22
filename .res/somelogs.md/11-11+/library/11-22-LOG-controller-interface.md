@@ -50,3 +50,10 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   reproduced offline: a native prompt drops a file part and submits only text (silent data loss, meets triage);
   an unsupported native handoff writes reset records and handoff events before refusing. Both need `src/`
   changes: escalated to the user. Sent to clad2a for review and independent confirmation.
+- B1 review in from clad2a, `b93fbad` ([review](reports/11-22-REVIEW-B1-verify.md)): no blocking findings for B1.
+  Both native gaps confirmed with an independent offline probe. Media: silent data loss, to be fixed;
+  `NativeController.send` should throw `UnsupportedError` before any push when a message has parts the media
+  flags don't allow. Handoff: a spec contradiction only (no stuck channel, no lost data); smallest fix is a
+  `freshContext` check at the top of `runHandoff`, before `handoff_started`. B1 gate held until the user decides on
+  the fixes.
+- B2 assigned to cod2a (report only, in parallel with the decision).
