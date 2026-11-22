@@ -52,3 +52,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   distinguishable enough for decision (d): add a readonly `code` per throw (keeping `instanceof`).
 - **Step 1 gate passed** ([gate](../.plan-execution/status/11-22-GATE-R1-step1.md)): 1,430 in 132 files.
 - Step 2 (host records over the repository) released to cod2a, with the error code.
+- The user gave durable worker delivery to haurness-l's conversation (Cod1a implements, Clad1a reviews): first a
+  narrow proof of recovery by assignment id after acp-client exits before staging. Sent Cod1a our file map and the
+  constraints: keep off `host.ts`, `records.ts`, `conversation-manager.ts` and the schema until R1 lands; schema 18 if
+  they need a table; submissions aren't durable across an acp-client restart today. Waiting for their file list.
