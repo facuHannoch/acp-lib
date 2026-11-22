@@ -80,7 +80,11 @@ In the same transaction that commits completed worker records, match
 bindings by worker conversation and every message ID in the turn causes,
 then attach the final operation and record pointers to each matching binding.
 Message IDs are unique within a worker conversation; operation IDs are not
-unique across assignments. A failed prompt does not attach a final pointer.
+unique across assignments. Each matched assignment receives the full shared
+result once, staged under its own ID, destination and policy provenance. A
+failure event identifies its affected bindings by causal message ID and
+does not attach a final pointer. If no final result is recoverable after a
+crash, each affected assignment stages its own uncertainty notice.
 A streamed chunk or draft cannot serve as a result. A backend may expose
 a recovery hook for an operation without a reliable final record. The
 first ACP implementation has no such hook and uses the uncertainty path.
@@ -130,8 +134,13 @@ is available. The harness wire and archive formats are unchanged. Agent
 schema numbering and implementation ownership are coordinated with the
 R1–R3 and orchestrator workstreams before runtime changes.
 
-Verify that folded messages with different assignment IDs each resolve to
-the shared completed operation through their own binding.
+Repository conformance verifies unique assignment and worker/message
+keys. The process-death tests observe the exact beforeDispatch message
+binding on disk at ACP prompt receipt. Verify that folded messages with
+different assignment IDs each resolve to the shared completed operation
+through their own binding, with separate results and provenance. Verify
+that both assignments receive separate uncertainty notices if the final
+record never commits.
 
 Exercise both sides of final-record commit in real SIGKILL/replacement tests
 using the production index. Observe the binding on disk at ACP prompt
