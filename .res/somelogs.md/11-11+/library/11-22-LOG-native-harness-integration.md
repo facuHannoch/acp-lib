@@ -36,3 +36,9 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   internal async store). For the user: file-store pending changes under a durable backend; suspend/resume while
   the harness is stopped (and never downgrading a pending retirement).
 - Step 1 (the `channels?` repository, schema 17) released to cod2a.
+- User decisions: (b) file-store pending changes under a durable backend are ignored, with a one-time warning (spec
+  Limitations: only changes not yet delivered at upgrade time are lost); (d) operator suspend/resume while the
+  harness is stopped keep failing, with a distinguishable error (e.g. `harness_not_running`), and stay out of the
+  durable intent path (so they can never override a pending retirement). Suggested to the user as a separate
+  follow-up: schedule `agent.nativeHarness` `state` (listed, unscheduled), so consumers can know the harness is
+  offline. Passed to cod2a.
