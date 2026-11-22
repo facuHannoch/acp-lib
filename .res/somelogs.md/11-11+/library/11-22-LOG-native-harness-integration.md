@@ -236,3 +236,6 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   assigned to cod2a in its own commit; full runs required before each report from now on. clad2a's notes into step
   2: deny on a local close so the harness gate is released; `expiresAt`; the resolved event a microtask after
   close; test the harness's `approval_timeout` mapping.
+- R3 step 2 in from cod2a, `fef2020` (answering, the consumer wait from ingress, handlers unbounded, an unattended ask
+  refused even under a default allow; a native answer over real stdio). Only focused tests so far; cod2a reminded
+  of the step 1 test fix and the review notes before step 3 and the full run.
