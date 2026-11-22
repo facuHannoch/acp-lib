@@ -95,7 +95,8 @@ behaves as today.
 
 **What this spec owns beyond the pool:**
 
-- **The delegation tools.** Their registration and system prompt section; the `functions/call` route from
+- **The delegation tools.** Their registration in the per-open tool catalog, with usage guidance in their
+  descriptions (no system prompt section); the `functions/call` route from
   `src/native/` to the orchestrator; building the `Actor` from the call (the channel's conversation, the sender of
   the turn's input, and the call's contributing `policyNames`); mapping results back as tool output. Delegation calls
   aren't idempotent (`delegate` opens a worker): the harness never repeats an uncertain callback, which is what they
@@ -105,7 +106,14 @@ behaves as today.
 - **Not owned here: the native durable handoff.** Persisting assignments, staging results and notices, delivering
   them through `channel/notify` and recovering after a restart is a small acp-client module built by the harness's
   external notices work (its plan's Gate 3, "acp-client durable handoff"; decided 2026-11-22). The orchestrator
-  uses it: it creates assignments and reports their results.
+  uses it: it creates assignments and reports their results. **Built so far (in `alpha`, `d403bf4`, approved):** the
+  `workerDelivery?` repository (`src/persistence/worker-delivery-contract.ts`, SQLite schema 18, capability
+  `capabilities.workerDelivery`): assignments reserved before dispatch (idempotent by `assignmentId`, bound to the
+  worker's message id through the `beforeDispatch` hook), `redirect`, `addContributingPolicies`, the final and
+  failure outcomes written by the lifecycle (`recordFinal`, `recordFailure`, in the turn's terminal transaction), and
+  the staged notice with its delivery states. **Still to build (Gate 3):** the host flush through `channel/notify`,
+  retries after a lost acknowledgement or a resume, explicit retry after `invalid_policy`, and recovery at open
+  (the uncertainty notice). O3's native delivery and O5's restart gate need that remainder.
 
 ## Roles
 
@@ -130,8 +138,9 @@ behaves as today.
 Everything about a worker's progress is already in the worker's own conversation (its state, operation, messages,
 tool calls, records); `check` and `list` read it from there. The orchestrator stores only what nobody else knows and
 what must survive a restart, in an optional `workers?` repository with a `capabilities.workers` flag (the same
-pattern as `identity?` and the integration spec's `channels?`; SQLite implements it, schema version 18; a custom
-backend without it can't enable the orchestrator: creating the `Agent` fails with a clear error):
+pattern as `identity?` and the integration spec's `channels?`; SQLite implements it, schema version 19, after worker delivery's 18; a custom
+backend without it, or without `workerDelivery?`, can't enable the orchestrator: creating the `Agent` fails with a clear
+error):
 
 ```
 workers
@@ -300,8 +309,8 @@ w1 wants to run `bun test` → ACP request_permission → acp-client
 ```
 
 - **When the conversation that gave the work doesn't answer permissions** (`answersPermissions: false`, for example
-  one driven by an API integration with no human watching), its permission default applies at once, usually deny:
-  the rule every conversation follows (integration spec, Permissions). No routing to another conversation; a headless
+  one driven by an API integration with no human watching), an ask is refused at once, whatever its default says
+  (decided in integration R3: an ask nobody can answer is never loosened to the default). No routing to another conversation; a headless
   conversation gets worker approvals through rules instead (the policy allows the specific commands). The levels are
   allow, deny and ask me; "ask the agent" (the agent approving its own worker) is not in v1 (Limitations).
 - **Forwarded requests use the conversation's own events:** `permission_requested` on the giving conversation, marked
@@ -397,7 +406,7 @@ src/orchestrator/
   restart.ts        rebuild on start
   consumer-api.ts   agent.workers.*
   index.ts
-src/persistence/    the optional workers? repository (WorkerPersistence) with capabilities.workers; SQLite schema 18
+src/persistence/    the optional workers? repository (WorkerPersistence) with capabilities.workers; SQLite schema 19 (worker delivery took 18)
 ```
 
 - **Touches existing code:** `src/agent.ts` (construct when configured, expose `agent.workers`); `src/agent/config.ts`
@@ -456,10 +465,11 @@ reports what moved or doesn't exist
 
 **Scope:** steps 1–4.
 
-1. **The `workers?` repository** with `capabilities.workers`, its SQLite implementation (schema 18, upgrade from 17,
-   tested on a version-17 database); the orchestrator refused at `Agent` construction on a backend without it. It
-   holds the workers rows; assignments, results and staged notices are the durable handoff module's. **Gate:** suite
-   green; the upgrade test.
+1. **The `workers?` repository** with `capabilities.workers`, its SQLite implementation (schema 19, upgrade from 18,
+   tested on a version-18 database and on the chain from 16); the orchestrator refused at `Agent` construction on a
+   backend without `capabilities.workers` **or `capabilities.workerDelivery`**. It holds the workers rows;
+   assignments, results and staged notices are `workerDelivery?`'s. **Gate:** suite green; the upgrade tests; the
+   refusal for each missing capability.
 2. **The worker marker:** worker conversations created with `role: "worker"`; identity `load`, `update` and member
    registration skip them; `agent.conversations.list()` shows the role. **Gate:** a worker's records never reach the
    identity runtime; its prompts get no preamble.
@@ -505,9 +515,10 @@ reports what moved or doesn't exist
 
 1. **The handler** passed with each prompt to a worker: the level from the giving conversation's `worker:` rules
    (integration R2's matcher); allow and deny answered at once; ask me as `permission_requested` on the giving
-   conversation, marked with the worker (integration R3); a giving conversation that doesn't answer permissions gets
-   its default at once. **Gate:** each level; the timeout; a
-   headless giving conversation.
+   conversation, marked with the worker, through a forwarding entry on the conversation's permission handling that O4
+   adds (R3 emits events only for a conversation's own turns, so this is a small extension of it: a pending request
+   with a source mark and a resolver that answers the worker's request); a giving conversation that doesn't answer
+   permissions has the ask refused at once. **Gate:** each level; the timeout; a headless giving conversation.
 2. **Allow always:** stripped from the options shown when a non-owner conversation is asked; automatic allow follows
    the auto-approve rule. **Gate:** both.
 

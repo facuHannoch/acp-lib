@@ -30,3 +30,9 @@ edit to `src/agent-session.ts`.
   orchestrator requires `capabilities.workerDelivery` as well.
 - **On hold** at the user's request, before G's report. cod2a paused with a clean worktree at `4e88243`, no G edits;
   baseline green (1,509 in 137 files, 110 s).
+- Spec review 2 (`3fd2db2`, on alpha) checked by the coordinator. Fixes applied (user-approved): the integration
+  spec's R3 note (0022 is in alpha; R3 is built, gated and merged); schema numbering (`workers?` is 19, from 18) with
+  the chain test; the leftover "system prompt section"; `capabilities.workerDelivery` required as well; Gate 3's
+  built part (the `workerDelivery?` repository and lifecycle in alpha) and remaining part (host flush, retries,
+  recovery at open); Flow 4 and O4 now say an unanswerable ask is refused (not the default), and that O4 adds a
+  forwarding entry to the conversation's permission handling (R3 emits only for a conversation's own turns).
