@@ -99,3 +99,45 @@ Handoff option normalization moved to `src/handoff-options.ts`. The changelog co
 ### Clean archive gate
 
 Clean RAM-backed archive of `f0e589a`. Typecheck passed. `bun test ./test` passed **1,456 tests across 132 files** in 91.98 s. All 35 snapshots matched both the archive before the run and the step 3 baseline. Logs are at `/tmp/acp-r1-kind-gate.VjyYGG/typecheck.log` and `/tmp/acp-r1-kind-gate.VjyYGG/full.log`.
+
+## Step 4. Scripted stdio restart tests
+
+Test commit `be36dfc` adds six tests in `test/native/checkpoint.test.ts`. Each restart opens a new Agent over the same SQLite database and harness home. The stdio child runs the scripted fixture.
+
+| Case | Verified behavior |
+| --- | --- |
+| Delete while stopped | The original Agent writes retirement without relaunching. The new Agent reads the same version and opens the harness with the channel retired. A push is refused with `channel_retired`. |
+| Crash between apply and acknowledgement | A storage fault kills the harness child after `deleteChannel` commits and before its open response. The Agent still has the pending version. A new Agent sends that version again, receives `applied`, and clears it. A later push is refused and the channel keeps only its original assistant reply. |
+| Blocked retirement | Wire tool and suspension events establish a channel with pending input. Reopen reports `channel_busy` for the same retirement version. The channel remains suspended and the queued input stays in place. Operator resume rejects with `channel_retired` before sending an RPC. |
+| Unused channel already created by another conversation's open | Its initial intent is consumed and it has no provider descriptor. Deleting after an Agent restart retires it. The operator push used in the original orphan probe now rejects and there is no assistant output. |
+| Delete before the first harness open | The first create batch acknowledges the retirement. The load view shows only a retired channel. A push rejects, the timeline is empty, and the wire shows no turn start. |
+| Native conversation with no title or policy | It has no creation intent or channel in the initially open session. After an Agent restart, deletion still stages retirement. The following open retires the id and refuses a push. |
+
+A channel deleted before the harness first opened may appear as a retired tombstone (created and retired in the same open batch).
+
+The six focused stdio tests passed in 4.18 s. Tool and suspension waits subscribe to wire events with a 10 s deadline. Tests also have a 30 s outer deadline.
+
+## Done
+
+| Work | Commits |
+| --- | --- |
+| Grounding and async design | `1bac66c` |
+| Scoped channel repository and schema 17 | `61ecd21`, report `e55afcf` |
+| Native host wiring and ordering barriers | `56c1b3a`, report `a902ccf` |
+| Dispatch hook for worker delivery | `acc6d5d`, message identity correction `7be9456` |
+| Atomic native deletion and creation | `c600199`, report `49b5a1c`, operator resume guard `64060fa` |
+| Stored controller kind and legacy fallback | `f0e589a`, report `e701ba0`, early-v17 repair `8b17fbd` |
+| Scripted stdio restart verification | `be36dfc` |
+
+The async channel store is the durable authority. Host scans and delivery read it directly, without a mirror. Root SQLite reads wait for commits, and native deletion writes its intent in the same scoped transaction as the deleted row. Backends without channel intent support continue using the synchronous host records. Submission storage still follows the configured host records.
+
+SQLite schema 16 → 17 adds the channel intent table, the persistent version allocator, and nullable `conversations.controller_kind`. Startup repairs missing controller-kind columns on early schema 17 databases. Legacy rows and custom stores that omit the kind use descriptor or live-conversation fallback. Scoped writes and conditional acknowledgement preserve pending versions across restart.
+
+| R1 point | `src/native/host.ts` | `src/agent/conversation-manager.ts` |
+| --- | ---: | ---: |
+| Alpha baseline and step 1 | 984 | 1,098 |
+| Step 2 | 887 | 1,098 |
+| Step 3 and operator resume guard | 884 | 1,092 |
+| Step 3b through step 4 | 884 | 1,089 |
+
+Final clean RAM-backed archive of `be36dfc`. Typecheck passed. `bun test ./test` passed **1,463 tests across 132 files** in 89.48 s. All 35 snapshot hashes matched before and after the run and matched the step 3b compatibility baseline. Logs are at `/tmp/acp-r1-step4-gate.VpxqlV/typecheck.log` and `/tmp/acp-r1-step4-gate.VpxqlV/full.log`.
