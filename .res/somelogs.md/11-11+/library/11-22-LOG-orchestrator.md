@@ -74,3 +74,9 @@ edit to `src/agent-session.ts`.
   Spec updated. Requirements for the worker delivery side sent to haurness-l and Cod1a: carry an assignment's binding
   to a successor run (and no notice for a steered end), read-only discovery, the destination-kind filter and the ACP
   delivery marks, the worker handle as the persisted source label, and the result projection.
+- Cod1a can take the worker delivery amendment (decision 0025 and its LOG, the contract, the SQLite implementation,
+  the terminal reasons, the scoped `persisted-lifecycle.ts` change, the host scan wiring, tests) once haurness-l
+  confirms ownership. Allocated: `src/native/*` and those files are theirs; `src/orchestrator/`, the `workers?`
+  repository (schema 19), the worker role, the observation surface and the one-line `agent-session.ts` edit are
+  cod2a's. A migration, if any, is schema 20, after O1 merges. They pin: the durable continuation boundary, the
+  discovery cursor and state, the destination kind, the immutable worker handle and the final-message projection.
