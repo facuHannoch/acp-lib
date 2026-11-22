@@ -210,7 +210,8 @@ interface Orchestrator {
 type Actor =
   | { kind: "consumer" }
   | { kind: "conversation"; conversationId: string; sender: SenderRef; invocationId: string;
-      policy: DelegationPolicy; workerPermissions: WorkerPermissions };  // composed from the call's policyNames
+      policyNames: readonly string[];  // the call's contributing names (assignments keep them)
+      policy: DelegationPolicy; workerPermissions: WorkerPermissions };  // composed from policyNames
 type OpenResult = { status: "sent"; handle: string } | { status: "no_worker_free"; workers: WorkerSummary[] };
 type SendResult =
   | { status: "sent" | "steered" }
@@ -552,7 +553,11 @@ events only for a conversation's own turns). Corrections go to the spec owner be
    is marked delivered only after the append commits, an unconfirmed append leaves it pending, and a retry appends
    nothing twice. **Gate:** an item reaches an ACP conversation and is marked delivered; a retry after a kill between
    the append and the mark appends once; after a kill between the final record and the append, the restart finishes
-   the delivery once.
+   the delivery once. **If a steer's successor won't run** (its `beforeDispatch` rejects, or `replaceAssignment`
+   answers `conflict`), the send is refused and the orchestrator closes the awaiting continuation of the old
+   assignment (`closeContinuation`, interrupted, steered), so its notice isn't lost; `worker_redirected` is emitted
+   only after the successor's dispatch is accepted. After a `replaced` result the orchestrator triggers the host's
+   pending-notice flush (`agent.nativeHarness?.flushWorkerDelivery()`).
 3. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
    the assignment's destination; a gone target keeps the reply on the
    worker (`check`, `list`). **Gate:** each item; a deleted target.

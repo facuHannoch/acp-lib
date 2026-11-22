@@ -129,3 +129,15 @@ edit to `src/agent-session.ts`.
   complete from cod2a, HEAD `ce28ee5` ([report](reports/11-22-REPORT-O2.md)): busy rules on real ACP steering with a
   fake assignment port, and the policy checks; 1,527 in 141 files green on cod2a's runs; not yet reviewed.
 - **O1 combined as `pre-alpha` at `9fa7745`** (O1 only, so Cod1a's schema 20 can build on schema 19).
+- O2 in from cod2a, HEAD `ce28ee5`; review from clad2a, `c1ad02b` ([review](reports/11-22-REVIEW-O2.md)): meets the
+  brief, no blocking findings (1,527 green). Carry: `policyNames` on the actor and the port (added to the spec); the
+  composition across `policyNames` helpers (use and redirect need all names to allow, scope none wins, maxOpen the
+  minimum); `busyMs` restarts at every steer (count from the busy period); a same-giver `redirect: true` without
+  authority is refused (decided: an ordinary steer); `use: true` with `scope: "none"` can't open (decided: scope
+  `none` hides other conversations' workers; a conversation always sees workers it opened or gave running work to);
+  a rejected hook after a steer, the old assignment closed by the orchestrator, and `worker_redirected` only after the
+  successor's dispatch is accepted (added to the spec for O3a). One question to Cod1a: whether a steered
+  cancellation is recorded as awaiting continuation by the lifecycle (so no `prepare` call is needed before the
+  prompt).
+- Cod1a's runtime is in progress on `3c28130` and schema 20; `flushWorkerDelivery()` is triggered by the orchestrator
+  after a `replaced` result; an optional third host constructor repository argument is wired in `src/agent.ts`.
