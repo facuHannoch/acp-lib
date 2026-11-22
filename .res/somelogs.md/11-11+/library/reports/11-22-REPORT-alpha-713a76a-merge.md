@@ -33,3 +33,19 @@ The checks ran on a clean `git archive 4cd3ce9` at `/tmp/acp-alpha-713a76a.cHjxi
 The native probe run exercised both guard regressions and the multi-message preflight: no invalid media push in either delivery mode, no handoff events or new reset records on early refusal, a successful next prompt, and no partial submission for the invalid second message. The characterization snapshot hash matched before and after every check. Its SHA-256 is `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`.
 
 The second scoped run failed in alpha’s shortened timed rehearsal with `Unused model records`, while all channels were idle with no pending inputs. It passed in the first scoped run, the repository-root run and the fresh archive retry. The first scoped run and retry supply two green gates. The rehearsal uses the native host directly, bypassing the conflicted controller code, and its source and scenario match alpha byte-for-byte. See [the shared error note](../../../../../.agents/.artifacts/common/errors/11-22-alpha-713a76a-timed-rehearsal-unused-records.md). The retry uses `/tmp/acp-alpha-713a76a-retry.fh4Wd0`.
+
+## Follow-up on alpha `ac52dbc`
+
+Merge `035b7d7db7c1503af2cdfafa5652166f21cadfaf` cleanly combines verification tip `32d30d0` and alpha `ac52dbc`. Alpha's `27c7166` adds explicit completion barriers between the shortened rehearsal bursts and reports the blocked stage and pending input sample on a deadline. The follow-up changes three rehearsal files and the harness log. The release code and characterization snapshot are unchanged.
+
+The checks ran on `git archive 035b7d7` at `/tmp/acp-alpha-ac52dbc.wnOjX3` with the main checkout's dependencies linked. The output is under `/tmp/acp-alpha-ac52dbc-logs.8Tc0JI`.
+
+| Check | Result |
+| --- | --- |
+| `bun run typecheck` | Passed |
+| Full `bun test ./test`, run 1 | 1,426 passed, 0 failed, 132 files, 254.05 s |
+| Five isolated rehearsal file runs | 10 passed and 0 failed each, 50 total (22.49 s, 29.76 s, 12.63 s, 15.77 s, 14.56 s) |
+| Characterization file | 35 passed, 0 failed, 35 snapshots, 14.43 s |
+| Full `bun test ./test`, run 2 | 1,426 passed, 0 failed, 132 files, 235.94 s |
+
+The characterization snapshot was byte-identical before and after every check (SHA-256 `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`).
