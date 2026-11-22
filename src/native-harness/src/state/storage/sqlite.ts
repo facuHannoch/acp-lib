@@ -1,3 +1,4 @@
+import { checkScriptIdentity } from "./script-identity.ts";
 import { Database } from "bun:sqlite";
 import { existsSync, linkSync, rmSync } from "node:fs";
 import type { SessionStorageAdapter, StoredItem, TimelineEntry } from "../../contracts/storage.ts";
@@ -308,6 +309,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         if (!identity || typeof identity.sessionId !== "string" || !identity.sessionId.trim() || typeof identity.compatibilityKey !== "string"
           || (options.mode !== "create" && options.mode !== "open")) throw new Fail("invalid_input", "Open needs a mode, sessionId and compatibilityKey");
         let config; try { config = options.config === undefined ? undefined : validateManagedConfig(options.config); } catch (error) { throw new Fail("invalid_input", String(error)); }
+        if (options.mode === "create") checkScriptIdentity(identity.compatibilityKey, options.requiredScriptDigest);
         if (options.mode === "create") publish(path, { sessionId: identity.sessionId, formatVersion: 5, createdAt: new Date().toISOString(),
           compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         else if (!existsSync(path)) throw new Fail("not_found", `No session exists at ${path}`);
@@ -318,11 +320,12 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         let meta: Meta;
         const inspect = sqliteTables(db);
         try {
-          meta = inspect.getMeta();
-        } catch { throw new Fail("incompatible", "File is not a readable harness session"); }
-        finally { inspect.dispose(); db.exec("ROLLBACK"); }
-        if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
-        if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");
+          try { meta = inspect.getMeta(); }
+          catch { throw new Fail("incompatible", "File is not a readable harness session"); }
+          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
+          if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");
+          checkScriptIdentity(meta.compatibilityKey, options.requiredScriptDigest);
+        } finally { inspect.dispose(); db.exec("ROLLBACK"); }
         // An old format has only the implicit legacy policy. If the candidate
         // lacks it, build an in-memory inspection view without changing the
         // owned file or running recovery. Every mutation on that view is fenced.

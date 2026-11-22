@@ -19,7 +19,7 @@ import { lastInput, turnsEnd } from "./helpers/session.ts";
 const root = mkdtempSync(join(tmpdir(), "harness-persist-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const setup: CreateParams = { sessionId: "kept", participants: [], channels: {}, config: {
-  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
+  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }] } });
 function ended(client: HarnessClient, count: number) {
   const events: ChannelEvent[] = [];
@@ -35,7 +35,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
   const home = mkdtempSync(join(root, "home-")), effects = join(home, "effects.log");
   const locations = new Map<string, SessionStorageAdapter>();
   const adapter = (id: string) => locations.get(id) ?? locations.set(id, createMemoryStorageAdapter()).get(id)!;
-  const open = () => transport === "stdio" ? spawnHarness({ home, effects }) : createInProcessHarness({ adapter, effects });
+  const open = () => transport === "stdio" ? spawnHarness({ home, effects }) : createInProcessHarness({ adapter, effects, captureRequests: true });
 
   const first = open();
   try {
@@ -79,7 +79,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(loaded.messages.map(message => message.messageId)).not.toContain(messageId);
     if ("models" in second) {
       // The next inference is built from both restored conversations.
-      const request = JSON.stringify(second.models.get("a")!.requests()[0]!.messages);
+      const request = JSON.stringify(second.models.get("a")![0]!.messages);
       expect(request).toContain("alpha question"); expect(request).toContain("beta question"); expect(request).toContain("follow up");
     }
 

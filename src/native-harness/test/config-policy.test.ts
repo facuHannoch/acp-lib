@@ -162,7 +162,7 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: missing stored 
 
 test("stdio managed sessions use active config until reopen and preserve saved config after invalid sidecar", async () => {
   const home = mkdtempSync(join(tmpdir(), "harness-managed-config-")), id = "managed";
-  const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.json", import.meta.url).pathname } });
+  const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname } });
   const sidecar = managedSessionPaths(id, home).config;
   const { mkdirSync } = await import("node:fs"); mkdirSync(managedSessionPaths(id, home).directory);
   writeFileSync(sidecar, JSON.stringify(config));
@@ -195,7 +195,7 @@ test("stdio managed sessions use active config until reopen and preserve saved c
 test("a version 2 session file upgrades its config and item signatures", async () => {
   const { decodeSessionFile, encodeSessionFile } = await import("../src/state/storage/session-file.ts");
   const { legacyItemSignature } = await import("../src/state/storage/policy-metadata.ts");
-  const script = new URL("./fixtures/echo-scenario.json", import.meta.url).pathname;
+  const script = new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname;
   const config = { version: 1 as const, system: "legacy", model: { protocol: "scripted" as const, script },
     defaultPolicy: LEGACY_POLICY, policies: { [LEGACY_POLICY]: { fallback: "allow" as const, tools: {} } } };
   const home = mkdtempSync(join(tmpdir(), "harness-legacy-file-")), first = spawnHarness({ home });
@@ -225,7 +225,7 @@ test("a version 2 session file upgrades its config and item signatures", async (
 test("stdio retains a pending message's resolved policy across channel edits", async () => {
   const home = mkdtempSync(join(tmpdir(), "harness-policy-wire-")), effects = join(home, "effects.log");
   const harness = spawnHarness({ home, effects });
-  const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.json", import.meta.url).pathname } });
+  const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.jsonl", import.meta.url).pathname } });
   try {
     await harness.client.initialize(); await harness.client.createSession({ sessionId: "s", config, participants: [], channels: {} });
     await harness.client.createChannel({ channel: "a", policy: "strict" });
@@ -244,13 +244,10 @@ test("stdio retains a pending message's resolved policy across channel edits", a
 test("development open of an explicit database loads its saved scripted config", async () => {
   const { openDevelopment } = await import("../src/interfaces/cli/development.ts");
   const directory = mkdtempSync(join(tmpdir(), "harness-dev-config-")), path = join(directory, "session.sqlite");
-  const script = new URL("./fixtures/echo-scenario.json", import.meta.url).pathname;
+  const script = new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname;
   const config = validateManagedConfig({ ...value, model: { protocol: "scripted", script } });
   const adapter = createSqliteStorageAdapter(path);
-  const opened = adapter.open({ mode: "create", identity: { sessionId: "development", compatibilityKey: "unused" }, config });
-  if (!opened.ok) throw new Error(opened.error.message);
-  if (!opened.value.saveConfig(config).ok) throw new Error("could not save config");
-  opened.value.close();
+  (await openDevelopment({ systemPrompt: config.system, database: path, create: true, managedConfig: config })).close();
   try {
     const development = await openDevelopment({ systemPrompt: "ignored", database: path });
     try { expect(development.session.status().sessionId).toBe("development"); }

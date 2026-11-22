@@ -1,16 +1,11 @@
+import { ScriptedModelError } from "./scripted-error.ts";
+export { ScriptedModelError } from "./scripted-error.ts";
 import type { Message, Model, ToolDefinition } from "../../contracts/loop.ts";
 
 type Answer = Extract<Message, { role: "assistant" }>;
 export interface CapturedRequest {
   messages: Message[];
   tools: ToolDefinition[];
-}
-
-export class ScriptedModelError extends Error {
-  constructor(public readonly code: "invalid_script" | "script_load_failed" | "script_exhausted", message: string) {
-    super(message);
-    this.name = "ScriptedModelError";
-  }
 }
 
 function invalid(message: string): never { throw new ScriptedModelError("invalid_script", message); }
@@ -70,16 +65,6 @@ export function createScriptedModel(script: unknown, startAt = 0) {
   };
   const model: Model = (messages, tools, signal) => modelAt(position)(messages, tools, signal);
   return { model, modelAt, requests: () => structuredClone(requests), remaining: () => answers.length - position };
-}
-
-export async function loadScriptedModel(path: string) {
-  let text: string;
-  try { text = await Bun.file(path).text(); }
-  catch (error) { throw new ScriptedModelError("script_load_failed", `Cannot read script ${path}: ${String(error)}`); }
-  let script: unknown;
-  try { script = JSON.parse(text); }
-  catch (error) { throw new ScriptedModelError("invalid_script", `Invalid JSON in ${path}: ${String(error)}`); }
-  return createScriptedModel(script);
 }
 
 /** Run the step reserved by storage. Attempts never derive position from replies. */

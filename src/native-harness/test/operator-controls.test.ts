@@ -1,3 +1,4 @@
+import { modelScenario } from "./helpers/scenario.ts";
 import { expect, test } from "bun:test";
 import { createInProcessHarness } from "../src/testing.ts";
 import { spawnHarness } from "./helpers/stdio.ts";
@@ -23,7 +24,7 @@ for (const transport of ["in-process", "stdio"] as const) {
       expect(init.description.capabilities.methods).not.toContain("session/load");
       expect(init.description.capabilities.methods).not.toContain("session/messages");
       const ready = await client.createSession({ sessionId: "s", participants: [], channels: {}, config: {
-        version: 1, system: "test", model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.json", import.meta.url).pathname },
+        version: 1, system: "test", model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname },
         defaultPolicy: "ask", policies: { ask: { fallback: "ask", tools: {} } },
       } });
       expect(ready).toMatchObject({ sessionId: "s", lifecycle: "running", revision: expect.any(Number) });
@@ -101,11 +102,11 @@ for (const denied of [false, true]) test(denied ? "stdio policy deny prevents no
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const directory = mkdtempSync(join(tmpdir(), "operator-notice-"));
-  const script = join(directory, "script.json");
-  writeFileSync(script, JSON.stringify({ version: 1, responses: [
+  const script = join(directory, "script.jsonl");
+  writeFileSync(script, modelScenario([
     { content: null, calls: [{ id: "notice", name: "notify_channel", arguments: { channelId: "bob", text: "wake" } }] },
     { content: "done" },
-  ] }));
+  ]));
   const harness = spawnHarness();
   const events: ChannelEvent[] = [];
   harness.client.onChannelEvent(event => events.push(event));

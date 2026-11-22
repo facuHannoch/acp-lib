@@ -79,3 +79,38 @@ reach one read and validation.
 
 The contract-only follow-up passed both package typechecks. Independent
 re-review is pending.
+
+Clad approved Gate 1 at `53d99b827978b8c22600dff9862b6f27793fdf54`. Both
+typechecks passed independently on a clean checkout.
+
+## Gate 2
+
+Managed stdio, development startup (including saved config), and the scenario
+command now share the JSONL loader. The checked-in and generated file
+fixtures use JSONL. Some unit tests still inject inline model doubles or
+use the in-memory scripted helper. Those paths do not read files.
+
+The selected scenario loads once per open and uses the index reserved by
+storage for each attempt. Scripted attempts send accepted before their
+terminal response, so the converted tests check both delivered and seen
+milestones. The receipt-crash fixture now kills after the second confirmation
+to retain its original Seen coverage. Full request capture is opt-in.
+The lightweight attempt log includes the reserved step, attempt ordinal,
+and inputs first included at the boundary. The OpenRouter golden request
+omits the input IDs.
+
+Both adapters reject untagged, malformed and changed scripted keys before
+application recovery. The real stdio crash fixture leaves accepted input
+pending with no checkpoint, compares the complete database bytes after a
+changed-script rejection, and reopens with the original script at step zero.
+Separate coverage checks per-channel selection, retry consumption, usage,
+streaming, delayed cancellation, and exhaustion. The existing real-stdio
+notice case runs through the JSONL adapter and ordinary tool dispatch.
+
+Verification passed both package typechecks, all 343 harness tests with
+`bun test ./test --timeout 30000`, and all 76 native tests with
+`bun test ./test/native`. The final exact-key conformance rerun passed on
+both adapters. Removing the redundant test-only file wrapper was followed
+by a 13-test scripted, JSONL and provider adapter rerun. The stand-alone echo
+command returned the expected result and captured no requests by default.
+Independent review of this submission is pending.

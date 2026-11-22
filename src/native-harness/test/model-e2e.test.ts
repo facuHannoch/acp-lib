@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnHarness } from "./helpers/stdio.ts";
 import type { ChannelEvent } from "../src/contracts/events.ts";
-const script = new URL("./fixtures/model-e2e.json", import.meta.url).pathname;
+const script = new URL("./fixtures/model-e2e.jsonl", import.meta.url).pathname;
 const until = async (fn: () => boolean, what: string) => { for (let i = 0; i < 1000; i++) { if (fn()) return; await new Promise(resolve => setTimeout(resolve, 5)); } throw new Error(`Timed out: ${what}`); };
 const push = (channel: string, id: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text: id }] } });
 
@@ -55,7 +55,7 @@ for (const mode of ["in-process", "stdio"] as const) for (const text of ["final"
     const { createInProcessHarness } = await import("../src/testing.ts");
     const home = mkdtempSync(join(tmpdir(), "model-modes-")), options = { home, streamResponses: true };
     const harness = mode === "stdio" ? spawnHarness(options) : createInProcessHarness(options), events: ChannelEvent[] = [];
-    const echoScript = new URL("./fixtures/echo-scenario.json", import.meta.url).pathname;
+    const echoScript = new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname;
     try {
       harness.client.onChannelEvent(event => events.push(event));
       await harness.client.initialize({ protocolVersion: 1, host: { name: "test", version: "0" }, callbacks: [], subscription: { text, tools: "full" } });

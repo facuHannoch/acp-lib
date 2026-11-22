@@ -7,7 +7,7 @@ import { createInProcessHarness } from "../src/testing.ts";
 import { spawnHarness } from "./helpers/stdio.ts";
 import type { ChannelEvent, ManagedConfig } from "../src/client.ts";
 
-const script = new URL("./fixtures/approval-e2e.json", import.meta.url).pathname;
+const script = new URL("./fixtures/approval-e2e.jsonl", import.meta.url).pathname;
 const config: ManagedConfig = { version: 1, system: "Test approvals", model: { protocol: "scripted", script }, defaultPolicy: "ask",
   policies: { ask: { fallback: "ask", tools: {} }, deny: { fallback: "deny", tools: {} } } };
 const init = { protocolVersion: 1, host: { name: "test", version: "0" }, callbacks: [], approval: true,

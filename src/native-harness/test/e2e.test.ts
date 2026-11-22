@@ -27,7 +27,7 @@ const texts = (events: ChannelEvent[]) => events.flatMap(event => event.event.ty
 const taken = (events: ChannelEvent[]) => events.flatMap(({ event }) => event.type === "turn_started" || event.type === "turn_took" ? event.items.map(item => `${item}@${event.turnId}`) : []);
 
 test("crash during individual suspension reopens the channel and preserves pending input", async () => {
-  const config: ProtocolConfig = { version: 1, system: "Crash during channel suspension", model: { protocol: "scripted", script: fixture("hold-scenario.json") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+  const config: ProtocolConfig = { version: 1, system: "Crash during channel suspension", model: { protocol: "scripted", script: fixture("hold-scenario.jsonl") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
   const home = mkdtempSync(join(root, "channel-crash-")), effects = join(home, "effects.log");
   const first = spawnHarness({ home, effects, fault: "beginChannelSuspend:1" });
   await first.client.initialize(); await first.client.createSession({ sessionId: "crash", config, participants: [], channels: {} });
@@ -49,7 +49,7 @@ test("crash during individual suspension reopens the channel and preserves pendi
 }, 20000);
 
 test("clean relocation: suspend with a tool running, export, import into a fresh home, verify, then resume exactly once", async () => {
-  const config: ProtocolConfig = { version: 1, system: "Relocation system", model: { protocol: "scripted", script: fixture("hold-scenario.json") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+  const config: ProtocolConfig = { version: 1, system: "Relocation system", model: { protocol: "scripted", script: fixture("hold-scenario.jsonl") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
   const setup: CreateParams = { sessionId: "office", participants: [], channels: {}, config };
   const effects = join(mkdtempSync(join(root, "fx-")), "effects.log");
   const sourceHome = mkdtempSync(join(root, "source-")), destinationHome = mkdtempSync(join(root, "destination-"));
@@ -108,7 +108,7 @@ test("clean relocation: suspend with a tool running, export, import into a fresh
 }, 30000);
 
 test("crash recovery: kills on both sides of take, a tool effect without a result and a missed reply are all reported, and nothing is replayed", async () => {
-  const config: ProtocolConfig = { version: 1, system: "Recovery system", model: { protocol: "scripted", script: fixture("crash-scenario.json") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+  const config: ProtocolConfig = { version: 1, system: "Recovery system", model: { protocol: "scripted", script: fixture("crash-scenario.jsonl") }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
   const setup: CreateParams = { sessionId: "ledger", participants: [], channels: {}, config };
   const home = mkdtempSync(join(root, "crash-")), effects = join(home, "effects.log");
   const all: ChannelEvent[] = [];

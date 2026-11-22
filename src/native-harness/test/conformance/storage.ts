@@ -40,6 +40,29 @@ export function storageConformance(name: string, location: () => SessionStorageA
   const begin = (s: SessionStorage, channelId = "c1") => ok(s.beginTurn(channelId))!;
 
   describe(`${name} storage conformance`, () => {
+    test("scripted owners reject missing, malformed and changed digests before recovery", () => {
+      const digest = "a".repeat(64), changed = "b".repeat(64);
+      const tagged = (model: string, system = "c") => id(`scripted-jsonl-v1:${model}:${system.repeat(64)}`);
+      for (const legacy of [id(), id(`scripted-jsonl-v1:${digest}:bad`), id(tagged(digest).compatibilityKey + "\n")]) {
+        const adapter = location();
+        ok(ok(adapter.open({ mode: "create", identity: legacy })).close());
+        refused(adapter.open({ mode: "open", identity: tagged(digest), requiredScriptDigest: digest }), "incompatible");
+      }
+      const adapter = location(), first = ok(adapter.open({ mode: "create", identity: tagged(digest), requiredScriptDigest: digest }));
+      ok(msg(first, "taken", "c1", "taken")); begin(first);
+      ok(msg(first, "pending", "c1", "pending"));
+      const revision = ok(first.snapshot()).revision;
+      ok(first.close());
+      refused(adapter.open({ mode: "open", identity: tagged(changed), requiredScriptDigest: changed }), "incompatible");
+      const reopened = ok(adapter.open({ mode: "open", identity: tagged(digest, "d"), requiredScriptDigest: digest }));
+      const snapshot = ok(reopened.snapshot());
+      expect(snapshot.revision).toBe(revision + 1);
+      expect(snapshot.turns[0]?.state.status).toBe("interrupted");
+      expect(snapshot.items.find(item => item.itemId === "pending")?.milestone).toBe("received");
+      expect(snapshot.session.compatibilityKey).toBe(tagged(digest).compatibilityKey);
+      ok(reopened.close());
+    });
+
     test("operator ranges separate conversation text, replies, and timeline activity", () => {
       const { adapter, s } = create();
       ok(msg(s, "original", "c1", "a"));

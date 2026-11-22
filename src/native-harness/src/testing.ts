@@ -5,8 +5,13 @@ import { mkdtempSync, mkdirSync, existsSync, rmdirSync, appendFileSync } from "n
 import { createSession } from "./index.ts";
 import type { SessionStorage, SessionStorageAdapter } from "./contracts/storage.ts";
 import type { ExecuteTool, Model } from "./contracts/loop.ts";
-import { createScriptedModel } from "./capabilities/model/scripted.ts";
-import { bindModelAttempt, completeModelAttempt } from "./capabilities/model/attempt.ts";
+import { loadScenario, scriptedCompatibilityKey } from "./capabilities/model/scenario-file.ts";
+import { scenarioAttempt } from "./capabilities/model/scenario-attempt.ts";
+import type { ModelRequest } from "./contracts/model-execution.ts";
+import type { LoadedScenario } from "./contracts/scenario.ts";
+export type { LoadedScenario, ScenarioHeader, ScenarioModelRecord, ScenarioSend } from "./contracts/scenario.ts";
+export { loadScenario, parseScenario } from "./capabilities/model/scenario-file.ts";
+import { bindModelAttempt } from "./capabilities/model/attempt.ts";
 import { openRouterAttempt } from "./capabilities/model/openrouter-stream.ts";
 import { openRouter } from "./capabilities/model/openrouter.ts";
 import { scenarioDefinitions } from "./capabilities/tools/scenario.ts";
@@ -37,6 +42,11 @@ export interface ScriptedServerOptions {
   /** Opt-in scripted stall and shorter model deadline for offline process tests. */
   stallChannel?: string;
   snapshotLog?: string;
+  /** Lightweight local attempt evidence without request capture. */
+  attempts?: string;
+  captureRequests?: boolean;
+  /** Test seam for observing file reads. */
+  scenarioLoader?: (path: string) => Promise<LoadedScenario>;
   streamResponses?: boolean;
   modelTimeoutMs?: number;
   /** Directory for transfer files when there is no home. */
@@ -71,7 +81,7 @@ function withFaults(storage: SessionStorage, hit: (point: string) => void): Sess
  * protocol. In memory by default; durable when given a home or an adapter. */
 const BUILTINS = [echoDefinition, recordDefinition, holdDefinition];
 export function createScriptedServer(options: ScriptedServerOptions = {}) {
-  const models = new Map<string, ReturnType<typeof createScriptedModel>>();
+  const models = new Map<string, ModelRequest[]>();
   const durable = !!(options.home || options.adapter);
   const hit = faults(options.fault);
   const memory = createMemoryStorageAdapter();
@@ -87,15 +97,13 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
     const stored = mode === "open" ? adapter.readSavedConfig() : undefined;
     if (stored && !stored.ok) throw new SessionOpenError(stored.error.code === "not_found" || stored.error.code === "owner_conflict" ? stored.error.code : "storage_failure", stored.error.message);
     const config = chooseManagedConfig({ mode, sidecar: paths?.config ?? noSidecar, inline, saved: stored?.ok ? stored.value : undefined });
-    const script: unknown = config.model.protocol === "scripted" ? await Bun.file(config.model.script).json() : undefined;
-    if (config.model.protocol === "scripted") createScriptedModel(script); // Validate before acknowledgment.
+    const script = config.model.protocol === "scripted" ? await (options.scenarioLoader ?? loadScenario)(config.model.script) : undefined;
     const credential = config.model.protocol === "openrouter" ? resolveCredential(config.model, options.environment ?? process.env) : undefined;
-    // Compatible means: same prompt and same script content.
-    const compatibility = config.model.protocol === "scripted" ? [config.system, script]
-      : [config.system, config.model.model, scenarioDefinitions.map(tool => tool.name)];
-    const compatibilityKey = createHash("sha256").update(JSON.stringify(compatibility)).digest("hex");
+    const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, config.system)
+      : createHash("sha256").update(JSON.stringify([config.system, config.model.protocol === "openrouter" && config.model.model,
+        scenarioDefinitions.map(tool => tool.name)])).digest("hex");
     if (mode === "create" && paths) mkdirSync(paths.directory, { recursive: true });
-    const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey }, config });
+    const opened = adapter.open({ mode, identity: { sessionId, compatibilityKey }, config, requiredScriptDigest: script?.modelDigest });
     if (!opened.ok) {
       const code = opened.error.code;
       throw new SessionOpenError(code === "not_found" || code === "already_exists" || code === "owner_conflict" || code === "incompatible" ? code : "storage_failure", opened.error.message);
@@ -116,16 +124,16 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
         if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "") });
         return { model, tools: [echoDefinition, recordDefinition, holdDefinition], executeTool };
       }
-      let scripted = models.get(turn.channelId);
-      if (!scripted) { scripted = createScriptedModel(script); models.set(turn.channelId, scripted); }
-      const selected = scripted.model;
-      const model: Model = (messages, definitions, signal) => {
-        if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages })}\n`);
-        return selected(messages, definitions, signal);
-      };
-      bindModelAttempt(model, { scripted: true, ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }), create: step => {
-        const next = completeModelAttempt(scripted!.modelAt(step!));
+      const model: Model = async () => { throw new Error("Scripted model requires a reserved attempt"); };
+      bindModelAttempt(model, { scripted: true, ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }), create: (step, ordinal) => {
+        const next = scenarioAttempt(script!, turn.channelId, step!);
         return async function* (request, signal) {
+          if (options.attempts) appendFileSync(options.attempts, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, step, ordinal, itemIds: request.takenItemIds })}\n`);
+          if (options.captureRequests) {
+            const requests = models.get(turn.channelId) ?? [];
+            requests.push(structuredClone(request));
+            models.set(turn.channelId, requests);
+          }
           if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages: request.messages, tools: request.tools.map(tool => tool.name) })}\n`);
           if (options.stallChannel === turn.channelId && step === 0) {
             yield { type: "accepted" }; yield { type: "usage", usage: { inputTokens: 7 } };
@@ -133,8 +141,10 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
             if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
             return;
           }
+          let streamed = false;
           for await (const event of next(request, signal)) {
-            if (options.streamResponses && event.type === "response" && event.response.content)
+            if (event.type === "text_delta") streamed = true;
+            if (!streamed && options.streamResponses && event.type === "response" && event.response.content)
               yield { type: "text_delta", text: event.response.content };
             yield event;
           }

@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "responses": [
-    { "content": "Recording.", "calls": [{ "id": "rec-1", "name": "record", "arguments": { "text": "effect" } }] },
-    { "content": "First reply.", "calls": [] },
-    { "content": "Second reply.", "calls": [] },
-    { "content": "Third reply.", "calls": [] }
-  ]
-}

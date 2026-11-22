@@ -172,11 +172,15 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       const { tools, fixedToolCount } = offer();
       phase(turn.turnId, "model");
       const view = read();
-      const itemIds = view.items.filter(item => item.turnId === turn.turnId).map(item => item.itemId);
+      const taken = view.items.filter(item => item.turnId === turn.turnId);
+      const itemIds = taken.map(item => item.itemId);
+      const previousResponse = view.timeline.findLast(entry => entry.turnId === turn.turnId && entry.message.role === "assistant")?.seq ?? 0;
+      const takenItemIds = taken.filter(item => (item.entrySeq ?? 0) > previousResponse)
+        .sort((a, b) => a.entrySeq! - b.entrySeq!).map(item => item.itemId);
       const binding = getModelAttempt(services.model);
       let draftId: string | undefined;
       try {
-      const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
+      const result = await runModelCall({ turnId: String(turn.turnId), itemIds, request: { messages, tools, takenItemIds, ...(fixedToolCount === undefined ? {} : { fixedToolCount }) },
         started: callId => phase(turn.turnId, "model", callId),
         scripted: binding.scripted, store, attempt: binding.create, signal, settings: binding.settings,
         delta: ({ messageId, text }) => { draftId = messageId; emit({ channel: turn.channelId,
@@ -194,6 +198,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       } catch (error) {
         // A storage failure can occur after a draft was published but before the
         // runner can write a normal terminal outcome. The draft must still end.
+        if (error instanceof ModelCallError && error.message === "script_exhausted") throw error.message;
         if (draftId && !(error instanceof ModelCallError)) emit({ channel: turn.channelId,
           event: { type: "text_incomplete", turnId: String(turn.turnId), messageId: draftId, reason: "failed" } });
         throw error;

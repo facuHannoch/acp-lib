@@ -1,3 +1,4 @@
+import { modelScenario } from "../../src/native-harness/test/helpers/scenario.ts";
 /**
  * The shared native host against an in-process harness (same client interface as stdio, no process):
  * start once, the open sequence, channel changes made while stopped, saved submissions, reopening
@@ -24,11 +25,11 @@ const until = async (predicate: () => boolean, what: string) => {
 };
 
 /** A harness whose storage outlives each connection, and a host connected to it through the test seam. */
-async function rig(options: { steps?: unknown[]; restart?: { limit: number; windowMs: number }; startupTimeoutMs?: number; approvalResponder?: NativeApprovalResponder } = {}) {
+async function rig(options: { steps?: Parameters<typeof modelScenario>[0]; restart?: { limit: number; windowMs: number }; startupTimeoutMs?: number; approvalResponder?: NativeApprovalResponder } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "acp-native-host-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
-  const script = join(directory, "script.json"), effects = join(directory, "effects.log");
-  await writeFile(script, JSON.stringify({ version: 1, responses: options.steps ?? Array.from({ length: 8 }, (_, i) => ({ content: `reply ${i + 1}`, calls: [] })) }));
+  const script = join(directory, "script.jsonl"), effects = join(directory, "effects.log");
+  await writeFile(script, modelScenario(options.steps ?? Array.from({ length: 8 }, (_, i) => ({ content: `reply ${i + 1}`, calls: [] }))));
   const config: ProtocolConfig = { version: 1, system: "Host test", model: { protocol: "scripted", script }, defaultPolicy: "open",
     policies: { open: { fallback: "allow", tools: {} }, strict: { fallback: "deny", tools: {} }, ask: { fallback: "ask", tools: {} } } };
   // Durable through the harness's public testing entry point: SQLite sessions under this home.

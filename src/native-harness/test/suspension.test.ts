@@ -15,7 +15,7 @@ import { lastInput } from "./helpers/session.ts";
 
 const root = mkdtempSync(join(tmpdir(), "harness-suspend-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
 const setup: CreateParams = { sessionId: "paused", participants: [], channels: {}, config };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }] } });
 const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
@@ -135,7 +135,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(lines(effects).sort()).toEqual(["done:k", "done:k", "start:k", "start:k"]);
     await until(() => seen.session.length === 2, "lifecycle events");
     // Each iteration finished its tool, then checkpointed instead of inferring or taking input.
-    for (const channel of ["a", "b"]) expect(seen.types(channel)).toEqual(["turn_started", "items_receipt", "message_completed", "tool_call", "tool_call", "turn_suspended"]);
+    for (const channel of ["a", "b"]) expect(seen.types(channel)).toEqual(["turn_started", "items_receipt", "items_receipt", "message_completed", "tool_call", "tool_call", "turn_suspended"]);
     expect(seen.session.map(event => event.lifecycle)).toEqual(["suspending", "suspended"]);
     expect(seen.order.at(-1)).toBe("session:suspended");
     expect(seen.session[1]!.revision).toBe(status.revision);
@@ -163,7 +163,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(resumed.lifecycle).toBe("running");
     await until(() => seen.channel.filter(event => event.event.type === "turn_ended").length === 2, "resumed turns to end");
     // The resumed turn on a takes the pending item before its first inference; b infers directly.
-    expect(seen.types("a")).toEqual(["turn_resumed", "turn_took", "items_receipt", "message_completed", "turn_ended"]);
+    expect(seen.types("a")).toEqual(["turn_resumed", "turn_took", "items_receipt", "items_receipt", "message_completed", "turn_ended"]);
     expect(seen.types("b")).toEqual(["turn_resumed", "message_completed", "turn_ended"]);
     expect(seen.order[0]).toBe("session:running");
     expect(seen.channel.find(event => event.event.type === "turn_took")!.event).toMatchObject({ turnId: "1", items: ["a2"] });

@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const script = new URL("./fixtures/echo-scenario.json", import.meta.url).pathname;
+const script = new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname;
 const config = { version: 1 as const, system: "test", model: { protocol: "scripted" as const, script }, defaultPolicy: "ask",
   policies: { ask: { fallback: "ask" as const, tools: {} } } };
 const init = { protocolVersion: 1, host: { name: "test", version: "0" }, callbacks: [], subscription: { text: "final" as const, tools: "none" as const } };
@@ -58,7 +58,7 @@ test("default approval timer is ten minutes and disconnect records once", async 
 });
 
 test("closing the in-process approval consumer records disconnect and lets the turn continue", async () => {
-  const harness = createInProcessHarness(), events: ChannelEvent[] = [];
+  const harness = createInProcessHarness({ captureRequests: true }), events: ChannelEvent[] = [];
   harness.server.subscribe(notification => events.push(notification.params));
   try {
     await harness.client.initialize({ ...init, approval: true });
@@ -66,7 +66,7 @@ test("closing the in-process approval consumer records disconnect and lets the t
     await harness.client.push(push); await until(() => events.some(event => event.event.type === "approval_requested"));
     harness.client.close();
     await until(() => events.some(event => event.event.type === "turn_ended"));
-    const request = harness.models.get("a")!.requests()[1]!;
+    const request = harness.models.get("a")![1]!;
     const result = request.messages.findLast(message => message.role === "tool");
     expect(result?.role === "tool" && JSON.parse(result.content).code).toBe("approval_disconnected");
     expect(events.some(event => event.event.type === "tool_call" && event.event.status === "started")).toBe(false);

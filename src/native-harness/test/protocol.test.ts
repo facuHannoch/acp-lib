@@ -10,7 +10,7 @@ import type { CreateParams, ClientTransport } from "../src/contracts/protocol.ts
 import { lastInput } from "./helpers/session.ts";
 
 const setup: CreateParams = { sessionId: "test", participants: [], channels: {}, config: {
-  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } },
+  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } },
 } };
 const push = (channel: string, id: string, text = "hello") => ({ channel, item: {
   id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }],
@@ -27,7 +27,7 @@ function collect(client: HarnessClient, count = 1) {
 }
 
 for (const transport of ["in-process", "stdio"] as const) test(`${transport}: public client drives two independent scripted channels and idempotent pushes`, async () => {
-  const harness = transport === "in-process" ? createInProcessHarness() : spawnHarness(); const { client } = harness;
+  const harness = transport === "in-process" ? createInProcessHarness({ captureRequests: true }) : spawnHarness(); const { client } = harness;
   try {
     const init = await client.initialize();
     expect(init.description.capabilities).toMatchObject({ experimental: true, persistence: transport === "stdio", acceptance: transport === "stdio" ? "durable" : "memory" });
@@ -46,8 +46,8 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: pu
       expect(events.filter(e => e.type === "message_completed")).toHaveLength(2);
       expect(events.filter(e => e.type === "tool_call").map(e => e.status)).toEqual(["started", "completed"]);
       if ("models" in harness) {
-        expect(harness.models.get(channel)?.requests()).toHaveLength(2);
-        expect(harness.models.get(channel)?.requests()[1]?.messages.at(-1)).toMatchObject({ role: "tool", content: '{"ok":true,"text":"hello"}' });
+        expect(harness.models.get(channel)).toHaveLength(2);
+        expect(harness.models.get(channel)?.[1]?.messages.at(-1)).toMatchObject({ role: "tool", content: '{"ok":true,"text":"hello"}' });
       }
     }
     const before = log.events.length;

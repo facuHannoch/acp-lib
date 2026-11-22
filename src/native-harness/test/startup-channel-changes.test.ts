@@ -14,7 +14,7 @@ import { spawnHarness } from "./helpers/stdio.ts";
 const root = mkdtempSync(join(tmpdir(), "harness-startup-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const fixture = (name: string) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
-const config: ProtocolConfig = { version: 1, system: "Startup changes", model: { protocol: "scripted", script: fixture("hold-scenario.json") },
+const config: ProtocolConfig = { version: 1, system: "Startup changes", model: { protocol: "scripted", script: fixture("hold-scenario.jsonl") },
   defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} }, strict: { fallback: "deny", tools: {} } } };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: `user-${channel}`, content: [{ type: "text" as const, text }] } });
 const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];

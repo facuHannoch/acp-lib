@@ -1,3 +1,4 @@
+import { modelScenario } from "./helpers/scenario.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -6,8 +7,8 @@ import { createInProcessHarness } from "../src/testing.ts";
 import { spawnHarness } from "./helpers/stdio.ts";
 import type { ChannelEvent } from "../src/contracts/events.ts";
 for (const mode of ["in-process", "stdio"] as const) test(`${mode}: oversized completion is a stable reference readable in bounded byte pages`, async () => {
-  const home = mkdtempSync(join(tmpdir(), "large-model-")), script = join(home, "script.json"), answer = "🚀".repeat(300_000);
-  writeFileSync(script, JSON.stringify({ version: 1, responses: [{ content: answer }] }));
+  const home = mkdtempSync(join(tmpdir(), "large-model-")), script = join(home, "script.jsonl"), answer = "🚀".repeat(300_000);
+  writeFileSync(script, modelScenario([{ content: answer }]));
   const harness = mode === "stdio" ? spawnHarness({ home }) : createInProcessHarness({ home }); const events: ChannelEvent[] = [];
   try {
     harness.client.onChannelEvent(event => events.push(event)); await harness.client.initialize();

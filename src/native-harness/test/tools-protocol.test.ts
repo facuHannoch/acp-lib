@@ -1,3 +1,4 @@
+import { modelScenario } from "./helpers/scenario.ts";
 import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,8 +21,8 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
 let scripts = 0;
 /** One script file; every channel runs its own copy from the first response. */
 function script(responses: { content: string | null; calls?: { id: string; name: string; arguments: Record<string, unknown> }[] }[]) {
-  const path = join(root, `script-${++scripts}.json`);
-  writeFileSync(path, JSON.stringify({ version: 1, responses }));
+  const path = join(root, `script-${++scripts}.jsonl`);
+  writeFileSync(path, modelScenario(responses));
   return path;
 }
 const callThen = (name: string, args: Record<string, unknown>, ...more: { content: string | null; calls?: any[] }[]) =>

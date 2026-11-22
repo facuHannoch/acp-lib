@@ -1,19 +1,26 @@
 import { notifyChannelDefinition } from "../src/capabilities/tools/scenario.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createScriptedModel, loadScriptedModel } from "../src/capabilities/model/scripted.ts";
+import { createScriptedModel } from "../src/capabilities/model/scripted.ts";
+import { bindModelAttempt } from "../src/capabilities/model/attempt.ts";
+import { scenarioAttempt } from "../src/capabilities/model/scenario-attempt.ts";
+import { loadScenario } from "../src/testing.ts";
+import type { ModelRequest } from "../src/contracts/model-execution.ts";
 import { echoDefinition, executeEcho } from "../src/capabilities/tools/echo.ts";
 import { createSession } from "../src/index.ts";
 import { ask } from "./helpers/session.ts";
 import type { Message } from "../src/contracts/loop.ts";
 
 test("file scenario executes echo through the real scheduler/loop and supplies its result to the next call", async () => {
-  const scripted = await loadScriptedModel(new URL("./fixtures/echo-scenario.json", import.meta.url).pathname);
-  const session = createSession({ systemPrompt: "Test system", configureTurn: () => ({ model: scripted.model, tools: [echoDefinition], executeTool: executeEcho }) });
+  const scenario = await loadScenario(new URL("./fixtures/echo-scenario.jsonl", import.meta.url).pathname);
+  const requests: ModelRequest[] = [];
+  const model = bindModelAttempt(async () => { throw new Error("Expected a reserved step"); }, {
+    scripted: true, create: step => scenarioAttempt(scenario, "test", step!, request => requests.push(request)),
+  });
+  const session = createSession({ systemPrompt: "Test system", configureTurn: () => ({ model, tools: [echoDefinition], executeTool: executeEcho }) });
   const store = session.store;
   session.start();
   expect(await ask(session, { channelId: "test", participantId: "tester", text: "Echo hello" })).toBe("The tool returned hello.");
-  const requests = scripted.requests();
   expect(requests).toHaveLength(2);
   expect(requests[0]?.messages.at(-1)).toEqual({ role: "user", content: 'Participant: "tester"\n\nEcho hello' });
   expect(requests[1]?.messages.slice(-2)).toEqual([
@@ -22,7 +29,7 @@ test("file scenario executes echo through the real scheduler/loop and supplies i
   ]);
   expect(requests[0]?.tools).toEqual([echoDefinition, notifyChannelDefinition]);
   expect(store.snapshot().map(entry => entry.message.role)).toEqual(["user", "assistant", "tool", "assistant"]);
-  expect(scripted.remaining()).toBe(0);
+  expect(requests).toHaveLength(scenario.defaultModels.length);
 });
 
 test("script, returned responses and captured requests do not alias caller data; instances have independent positions", async () => {
@@ -66,9 +73,9 @@ test("malformed scripts fail before execution with stable errors", () => {
 test("missing files and invalid JSON have distinct error codes", async () => {
   const dir = await mkdtemp("/tmp/scripted-model-");
   try {
-    await expect(loadScriptedModel(`${dir}/missing.json`)).rejects.toMatchObject({ code: "script_load_failed" });
-    await Bun.write(`${dir}/invalid.json`, "{");
-    await expect(loadScriptedModel(`${dir}/invalid.json`)).rejects.toMatchObject({ code: "invalid_script" });
+    await expect(loadScenario(`${dir}/missing.jsonl`)).rejects.toMatchObject({ code: "script_load_failed" });
+    await Bun.write(`${dir}/invalid.jsonl`, "{");
+    await expect(loadScenario(`${dir}/invalid.jsonl`)).rejects.toMatchObject({ code: "invalid_script" });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

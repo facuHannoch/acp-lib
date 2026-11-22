@@ -16,7 +16,7 @@ import { spawnHarness } from "./helpers/stdio.ts";
 
 const root = mkdtempSync(join(tmpdir(), "harness-port-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
 const setup: CreateParams = { sessionId: "moved", participants: [], channels: {}, config };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }] } });
 const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
@@ -43,7 +43,7 @@ const big = (i: number) => `${i}:${"p".repeat(300_000)}`;
 
 test("stdio: active config and individual checkpoint survive path import after source config removal", async () => {
   const source = mkdtempSync(join(root, "source-config-")), dest = mkdtempSync(join(root, "dest-config-"));
-  const effects = join(source, "effects.log"), configPath = join(source, "config.json"), path = join(source, "copy.harness"), scriptPath = join(source, "script.json");
+  const effects = join(source, "effects.log"), configPath = join(source, "config.json"), path = join(source, "copy.harness"), scriptPath = join(source, "script.jsonl");
   if (config.model.protocol !== "scripted") throw new Error("Expected scripted test model");
   const script = readFileSync(config.model.script); writeFileSync(scriptPath, script);
   writeFileSync(configPath, JSON.stringify({ ...config, model: { ...config.model, script: scriptPath } }));
@@ -146,7 +146,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     await expect(second.client.push(push("a", "big-2", "other text"))).rejects.toMatchObject({ code: "item_conflict" });
     await second.client.resume();
     await until(() => events.some(event => event.event.type === "turn_ended"), "resumed turn");
-    expect(events.map(event => event.event.type)).toEqual(["turn_resumed", "turn_took", "items_receipt", "message_completed", "turn_ended"]);
+    expect(events.map(event => event.event.type)).toEqual(["turn_resumed", "turn_took", "items_receipt", "items_receipt", "message_completed", "turn_ended"]);
     expect(events[1]!.event).toMatchObject({ turnId: "1", items: [0, 1, 2, 3, 4].map(i => `big-${i}`) });
     // The tool that completed in the source process never ran in the destination.
     expect(lines(effects)).toEqual(["start:k", "done:k"]);

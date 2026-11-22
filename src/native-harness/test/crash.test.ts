@@ -14,7 +14,7 @@ const root = mkdtempSync(join(tmpdir(), "harness-crash-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 let n = 0;
 const setup: CreateParams = { sessionId: "crash", participants: [], channels: {}, config: {
-  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
+  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
 const push = (id: string, text: string, channel = "a") => ({ channel, item: { id, kind: "user_message" as const, sender: "ana", content: [{ type: "text" as const, text }] } });
 const effects = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
 const events = (wire: unknown[]) => (wire as RpcNotification[]).filter(message => "method" in message).map(message => message.params as ChannelEvent);
@@ -138,7 +138,7 @@ test("a committed reply the client never received is recovered by load, and the 
 
 test("crash after receipt evidence and before reply commit keeps the receipt without a reply", async () => {
   // Non-streaming evidence commits before the response transaction.
-  const crashed = await crashAt("confirm:1");
+  const crashed = await crashAt("confirm:2");
   expect(effects(crashed.log)).toEqual([]);
   const harness = await reopen(crashed.home, crashed.log);
   try {

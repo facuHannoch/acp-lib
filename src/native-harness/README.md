@@ -245,52 +245,30 @@ Run the real in-memory store, context builder, scheduler and tool loop without a
 model provider or API key:
 
 ```sh
-bun run test:scenario test/fixtures/echo-scenario.json "Echo hello"
+bun run test:scenario test/fixtures/echo-scenario.jsonl "Echo hello"
 ```
 
-The command prints JSON containing the final answer, captured model requests,
-recorded context entries and count of unused responses. It starts no servers.
-This is the first test-mode increment, not the stdio protocol implementation.
-Normal `start` still uses the live model and does not register `echo`.
+The command prints the answer, committed entries and unused response count.
+Set `HARNESS_CAPTURE_SCRIPT_REQUESTS=1` to include the full requests in this
+command or the scripted development inspector.
 
-Scenario format:
+Script files use JSONL. The first record names and versions the scenario.
+Model records can specify a channel and one of a response, provider failure,
+or cancellation wait. With no channel record, a channel uses its own
+position in the default sequence.
 
-```json
-{
-  "version": 1,
-  "responses": [
-    {
-      "content": "I'll echo that.",
-      "calls": [
-        { "id": "echo-1", "name": "echo", "arguments": { "text": "hello" } }
-      ]
-    },
-    { "content": "The tool returned hello.", "calls": [] }
-  ]
-}
+```jsonl
+{"type":"scenario","version":1,"name":"echo"}
+{"type":"model","content":"I'll echo that.","calls":[{"id":"echo-1","name":"echo","arguments":{"text":"hello"}}]}
+{"type":"model","content":"The tool returned hello."}
 ```
 
-Each response consumes one model invocation. `content` is a required string or
-null; `calls` defaults to an empty array when omitted. Calls require nonempty
-names, IDs unique within that response, and JSON object arguments. The adapter
-serializes those arguments to the existing neutral tool-call contract. Unknown
-fields and malformed scripts fail before execution. Tool arguments are still
-validated by the executor: for example, `{ "text": 42 }` reaches `echo` and
-returns a tool error that the next model invocation can inspect.
-
-`createScriptedModel(script)` in `src/capabilities/model/scripted.ts` returns
-`{ model, requests(), remaining() }`. `loadScriptedModel(path)` loads the same
-format from disk. Both use the existing `Model` interface. Captured messages and
-tool definitions are copied at invocation time; inspection returns fresh copies.
-Exhausted invocations are captured too. Script errors carry stable codes:
-`invalid_script`, `script_load_failed`, or `script_exhausted`.
-
-Responses are predetermined: the final answer does not prove the model interpreted
-a tool result. Offline tests separately assert that `echo` executed and its actual
-result reached the next captured request. No inference or API calls occur.
-Each channel reserves a script step durably for every model attempt, including
-retries. A crash after reservation consumes that step. The ordinary script
-format has no channel routing, delays or conditional steps.
+Records can include an initial delay, timed text chunks and synthetic usage.
+A malformed line fails before execution with its line number. Each attempt
+consumes one durable position, including retries and crash-abandoned attempts.
+Reopen checks the model sequence digest before recovering the session.
+Old scripted stores without a digest need a fresh test session. See
+[the scenario contract](.res/decisions/0023-long-running-mock.md).
 
 ## Experimental protocol and in-process client
 
@@ -310,7 +288,7 @@ try {
     config: {
       version: 1,
       system: "You are a test assistant.",
-      model: { protocol: "scripted", script: "test/fixtures/echo-scenario.json" },
+      model: { protocol: "scripted", script: "test/fixtures/echo-scenario.jsonl" },
       defaultPolicy: "default",
       policies: { default: { fallback: "allow", tools: {} } },
     },
