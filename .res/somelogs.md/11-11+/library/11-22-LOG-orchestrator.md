@@ -141,3 +141,5 @@ edit to `src/agent-session.ts`.
   prompt).
 - Cod1a's runtime is in progress on `3c28130` and schema 20; `flushWorkerDelivery()` is triggered by the orchestrator
   after a `replaced` result; an optional third host constructor repository argument is wired in `src/agent.ts`.
+- The user merged `pre-alpha` (`3c28130`, O1 and schema 19) into alpha. Cod1a's schema 20 now builds on alpha; the
+  orchestrator and reviews branches continue from it.
