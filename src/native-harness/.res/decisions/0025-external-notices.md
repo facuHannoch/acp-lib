@@ -348,3 +348,9 @@ A different predecessor or payload conflicts. The new reservation result
 reports whether the binding was newly reserved or existing; an existing
 reservation cannot authorize redispatch. Test rollback on a conflicting
 reservation and a crash between settlement and reservation.
+
+From beforeDispatch, proceed only when replaceAssignment reports a fresh
+reserved binding. Both replaced and old_settled reserve the binding
+directly; neither requires a separate reserve call. An existing binding
+reports the same original disposition without sending again. Conflict
+refuses the send before dispatch.
