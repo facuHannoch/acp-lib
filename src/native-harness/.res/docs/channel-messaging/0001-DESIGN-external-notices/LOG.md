@@ -155,3 +155,8 @@ redirect policy union, explicit delivery transitions, and the optional
 backend recovery hook. Typed Agent repository contracts and shared
 conformance remain required before runtime changes, after coordination
 with Core. No runtime behavior changed.
+
+The follow-up adds the standalone typed contract in
+`src/persistence/worker-delivery-contract.ts`. Placement does not claim a
+schema version or change any existing adapter. The repository stages by ID
+so the final-record recheck belongs inside the write transaction.
