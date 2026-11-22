@@ -108,3 +108,23 @@ adapter it resolved. That's an entry point the brief didn't list, and it's good 
 
 I didn't run the typecheck or the full suite. My evidence is the old-source test run (5 expected failures) and the
 pre-amendment-17 probe.
+
+## Follow-up: the schema-17 repair (`8b17fbd`)
+
+The should-fix is **resolved**. No findings.
+
+- **Change:** `CHANNEL_INTENT_SCHEMA` still runs only when `version < 17`. The
+  `PRAGMA table_info(conversations)` / `ALTER TABLE … ADD COLUMN controller_kind …` check now runs on every
+  migration pass, whatever the version. Nothing else changed in `src`.
+- **It fixes my reproduction.** I used the same probe as before, with a fresh pre-amendment 17 database created by
+  `64060fa`. I opened it with `8b17fbd` and created a native conversation: `kind native`, where before it failed
+  with "no column named controller_kind".
+- **It's idempotent.** I opened the same database a second time and created again: `kind native`, with no error,
+  and exactly **one** `controller_kind` column. `schema_migrations` stays `[17]`, and the repair doesn't insert a
+  new migration row.
+- **Fresh databases:** the column comes from `CREATE TABLE`, and the check finds it and does nothing. Create and
+  reopen both give `kind native`, and `schema_migrations` is `[17]`.
+- **16 → 17:** a real v16 database written by `44bbc25` gets the channel tables and the column in one pass, and
+  creating gives `kind native`. `schema_migrations` is `[16, 17]`, and there's one column.
+- **The regression test:** "adds controller kind to an early version 17 database and reopens it again" is in
+  `persistence-sqlite-backend.test.ts`. On the `8b17fbd` archive that file passes 33 of 33.
