@@ -33,6 +33,7 @@ export interface NativePermission {
   readonly arrival: PermissionArrival;
   readonly hostHandled: boolean;
   readonly settled: boolean;
+  readonly signal: AbortSignal;
   readonly hasWireOutcome: boolean;
   readonly resolution: Promise<PermissionResolution>;
   answer(resolution: PermissionResolution): Promise<boolean>;

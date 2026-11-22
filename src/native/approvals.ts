@@ -29,6 +29,7 @@ class Approval implements NativePermission {
     this.resolution = new Promise(resolve => { this.resolve = resolve; });
   }
 
+  get signal(): AbortSignal { return this.abort.signal; }
   get settled(): boolean { return this.abort.signal.aborted; }
   get hasWireOutcome(): boolean { return this.settled || this.observedAnswer !== undefined; }
 
@@ -141,11 +142,13 @@ export async function runNativeApproval(
     if (recording) {
       await recording(request, cancelled);
     } else if (!ticket.hostHandled && !cancelled.aborted) {
+      const signal = AbortSignal.any([cancelled, ticket.signal]);
+      if (signal.aborted) return;
       const answer = handler ? await Promise.race([
-        Promise.resolve().then(() => handler.call(handlers, request, cancelled)),
+        Promise.resolve().then(() => handler.call(handlers, request, signal)),
         ticket.resolution.then(result => result.outcome),
       ]) : deny;
-      if (!cancelled.aborted) await ticket.answer({ outcome: answer, by: handler ? "handler" : "default" });
+      if (!signal.aborted) await ticket.answer({ outcome: answer, by: handler ? "handler" : "default" });
     }
   } catch (error) {
     log.warn("native_approval_handler_failed", { requestId: event.requestId, error: String(error) });

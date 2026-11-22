@@ -3,6 +3,8 @@
  * channel (acp-client integration plan, Gate 2). The real process is exercised in `checkpoint.test.ts`.
  */
 import { describe, expect, test } from "bun:test";
+import { NativeApprovals } from "../../src/native/approvals.ts";
+import { noopLogger } from "../../src/logger.ts";
 import { NativeController, NativeTurnError } from "../../src/native/controller.ts";
 import type { ChannelPort, ChannelView, NativeHarnessHost } from "../../src/native/host.ts";
 import { createMemoryHostRecords } from "../../src/native/records.ts";
@@ -15,6 +17,7 @@ import type { PermissionOutcome, PromptHandlers } from "../../src/types.ts";
 function standIn() {
   const records = createMemoryHostRecords();
   const calls: string[] = [];
+  const approvals = new NativeApprovals(undefined, noopLogger);
   let port: ChannelPort | undefined;
   /** Each push waits here until the test accepts it. */
   const pushes: Array<{ id: string; accept(): void; refuse(error: Error): void }> = [];
@@ -32,13 +35,19 @@ function standIn() {
     },
     settle(ids: Iterable<string>) { for (const id of ids) { records.settleSubmission(id); calls.push(`settle:${id}`); } },
     async interrupt(channel: string, turn: string) { calls.push(`interrupt:${channel}:${turn}`); return true; },
-    async respondApproval(requestId: string, decision: string) { calls.push(`approval:${requestId}:${decision}`); return true; },
+    approvalFor: approvals.ticket.bind(approvals),
     async readMessage(messageId: string) { calls.push(`read:${messageId}`); return `full text of ${messageId}`; },
   };
   const controller = new NativeController({ host: host as unknown as NativeHarnessHost, channelId: "c1" });
   const turns: TurnEvent[] = [];
   controller.subscribeTurns((event) => turns.push(event));
-  const emit = (event: ChannelEvent["event"], revision?: number) => port!.event({ channel: "c1", ...(revision === undefined ? {} : { revision }), event });
+  const emit = (event: ChannelEvent["event"], revision?: number) => {
+    if (event.type === "approval_requested") {
+      approvals.observe("c1", event, async decision => { calls.push(`approval:${event.requestId}:${decision}`); return true; });
+    } else if (event.type === "approval_closed") approvals.closed(event);
+    else if (event.type === "turn_ended") approvals.end("c1", event.turnId);
+    port!.event({ channel: "c1", ...(revision === undefined ? {} : { revision }), event });
+  };
   return { controller, host, records, calls, pushes, turns, emit, reconcile: (view: Partial<ChannelView>) => port!.reconcile({ revision: 10, status: undefined, turns: [], items: [], messages: [], ...view }) };
 }
 function recorder(extra: Partial<PromptHandlers> = {}) {
@@ -226,7 +235,7 @@ describe("inputs and the turns that take them", () => {
 });
 
 describe("approvals", () => {
-  const request = (turnId: string, requestId: string): ChannelEvent["event"] =>
+  const request = (turnId: string, requestId: string): Extract<ChannelEvent["event"], { type: "approval_requested" }> =>
     ({ type: "approval_requested", requestId, channel: "c1", turnId, toolCallId: "call-1", tool: "record", arguments: "{\"text\":\"x\"}" });
 
   test("the pending call goes to the turn's permission handler and is answered once, by request id", async () => {
@@ -239,6 +248,7 @@ describe("approvals", () => {
     prepared.subscribeOutput((output) => signals.push(output.kind));
     const running = prepared.prompt();
     emit(request("1", "req-1"));
+    emit(request("1", "req-1")); // an observed copy of the same approval
     await tick();
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({ toolCallId: "call-1", title: "record", options: [{ optionId: "allow_once", kind: "allow_once" }, { optionId: "deny", kind: "reject_once" }] });
@@ -271,7 +281,7 @@ describe("approvals", () => {
   });
 
   test("a turn that ends while the consumer is deciding does not wait for the answer, and the late answer is not sent", async () => {
-    const { controller, emit, calls } = standIn();
+    const { controller, emit, calls, host } = standIn();
     await controller.start();
     emit({ type: "turn_started", turnId: "1", items: [] });
     let answer!: (outcome: PermissionOutcome) => void, aborted = false;
@@ -279,8 +289,12 @@ describe("approvals", () => {
       signal?.addEventListener("abort", () => { aborted = true; });
       return new Promise((resolve) => { answer = resolve; });
     } } }).prompt();
-    emit(request("1", "req-1"));
+    const approval = request("1", "req-1");
+    emit(approval);
     await tick();
+    emit({ type: "approval_closed", turnId: "1", requestId: "req-1", reason: "approval_timeout" });
+    expect(aborted).toBe(true);
+    expect(await host.approvalFor(approval)!.resolution).toMatchObject({ by: "timeout", outcome: { optionId: "deny" } });
     emit({ type: "turn_ended", turnId: "1", outcome: "failed", error: "approval_timeout" });
     await expect(running).rejects.toBeInstanceOf(NativeTurnError);
     expect(aborted).toBe(true);
