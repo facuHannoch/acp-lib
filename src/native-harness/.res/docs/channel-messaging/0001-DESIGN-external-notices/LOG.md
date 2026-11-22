@@ -175,3 +175,11 @@ The process-death tests are prepared against Core's beforeDispatch hook.
 On this base the peer rejects both prompts at receipt because the binding
 has not committed. This is expected until the reviewed hook is merged.
 The production process-death gate and full suite are still pending.
+
+Core's review of the prerequisite hook found that a pre-dispatch ID cannot
+in general be the final turn operation ID. The proposed contract binds each
+assignment to its worker and submitted message before dispatch. Completion
+correlates via the turn's causal message IDs and stores the final operation
+and record pointers in the final-record transaction. This supports folded
+messages sharing a final operation. Runtime changes await independent
+review of this amendment and Core's reviewed hook.

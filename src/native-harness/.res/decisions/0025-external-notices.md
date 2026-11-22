@@ -67,13 +67,20 @@ before publication, and preserve pending and taken notices with their IDs.
 The orchestrator owns assignment identity, destination and worker rules.
 Use the Agent database for the assignment binding and delivery records.
 Keep a unique indexed binding from assignment ID to the worker conversation
-and operation IDs. Store the destination and originating policy-name set
+and submitted message ID. The submitted message ID is stable before ACP
+dispatch. The worker operation ID is attached at finalization and may be
+shared by several messages folded into one turn. Store the destination and originating policy-name set
 with it. Commit the binding before sending the ACP prompt. An identical
 reservation can recover that binding. A conflicting reservation writes
 nothing. Redispatch is never a recovery action for an existing binding.
 
 Recover by assignment ID through the production index and read the
 authoritative final worker conversation record by worker and operation.
+In the same transaction that commits completed worker records, match
+bindings by worker conversation and every message ID in the turn causes,
+then attach the final operation and record pointers to each matching binding.
+Message IDs are unique within a worker conversation; operation IDs are not
+unique across assignments. A failed prompt does not attach a final pointer.
 A streamed chunk or draft cannot serve as a result. A backend may expose
 a recovery hook for an operation without a reliable final record. The
 first ACP implementation has no such hook and uses the uncertainty path.
@@ -122,6 +129,9 @@ provider-specific guarantees and is not required when the final Agent record
 is available. The harness wire and archive formats are unchanged. Agent
 schema numbering and implementation ownership are coordinated with the
 R1–R3 and orchestrator workstreams before runtime changes.
+
+Verify that folded messages with different assignment IDs each resolve to
+the shared completed operation through their own binding.
 
 Exercise both sides of final-record commit in real SIGKILL/replacement tests
 using the production index. Observe the binding on disk at ACP prompt
