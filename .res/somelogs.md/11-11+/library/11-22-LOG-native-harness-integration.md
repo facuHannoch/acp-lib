@@ -187,3 +187,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   refusing until R3. Decision needed before step 3: the order of handler and rules (handler-first, as R2's step
   text implies, vs level-first, as the Permissions design says). Recommends level-first, with an omitted setting
   meaning `{ default: "ask" }` and `"cancel"` migrating to ask. Steps 1 and 2 released to cod2a (not affected).
+- R2 step 1 in from cod2a, `ccfc32f` (amended from `3453d86`: `tool` omitted when ACP gives neither kind nor input,
+  after an empty field showed in three A1 handler callback snapshots; no snapshot edits); full `./test` 1,464 green.
+  Step 2, `7c8c18e` (the matcher; Grok source pinned); cod2a's full run in progress. Both sent to clad2a. Step 3
+  held for the user's decisions.
