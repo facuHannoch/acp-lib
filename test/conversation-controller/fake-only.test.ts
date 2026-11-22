@@ -117,6 +117,46 @@ describe("per-turn supervision", () => {
     expect(events.find((event) => event.kind === "turn_failed")).toMatchObject({ turnId: id });
   }, 20_000);
 
+  test("cancelling an ended held turn preserves its replay while a different turn stays live", async () => {
+    const fake = new FakeController({ scheduling: "backend" });
+    const b = fake.startTurn({
+      ended: true,
+      chunks: ["held ", "reply"],
+      signals: [{ kind: "update", sessionId: "fake-session" }],
+    });
+    const releaseC = Promise.withResolvers<void>();
+    const c = fake.startTurn({
+      hold: releaseC.promise,
+      chunks: ["live reply"],
+      signals: [{ kind: "request", sessionId: "fake-session" }],
+    });
+    const preparedC = fake.prepareTurn(c, { handlers: {} });
+    const seenC: string[] = [];
+    preparedC.subscribeOutput((output) => seenC.push(output.kind));
+    let cSettled = false;
+    const runningC = preparedC.prompt().finally(() => { cSettled = true; });
+    try {
+      expect(seenC).toEqual(["request"]);
+      expect(fake.held).toContain(b);
+      const chunksB: string[] = [];
+      const seenB: string[] = [];
+      const preparedB = fake.prepareTurn(b, { handlers: { onChunk: (text) => chunksB.push(text) } });
+      preparedB.subscribeOutput((output) => seenB.push(output.kind));
+      expect(preparedB.live).toBe(false);
+      preparedB.cancel();
+      expect(await preparedB.prompt()).toMatchObject({ status: "completed", text: "held reply" });
+      expect(chunksB).toEqual(["held ", "reply"]);
+      expect(seenB).toEqual(["update"]);
+      expect(preparedC.live).toBe(true);
+      expect(cSettled).toBe(false);
+    } finally {
+      releaseC.resolve();
+      await runningC;
+    }
+    expect(await runningC).toMatchObject({ status: "completed", text: "live reply" });
+    expect(seenC).toEqual(["request"]);
+  });
+
   test("signals and cancels reach only their own prepared turn; forceStop rejects every open one", async () => {
     const fake = new FakeController({ scheduling: "backend" });
     const b = fake.startTurn({ chunks: ["B"], hold: new Promise<void>(() => undefined), signals: [{ kind: "update", sessionId: "fake-session" }] });
