@@ -80,3 +80,10 @@ edit to `src/agent-session.ts`.
   repository (schema 19), the worker role, the observation surface and the one-line `agent-session.ts` edit are
   cod2a's. A migration, if any, is schema 20, after O1 merges. They pin: the durable continuation boundary, the
   discovery cursor and state, the destination kind, the immutable worker handle and the final-message projection.
+- Cod1a's draft signatures (pending Clad1a and haurness-l; no runtime edits): `reserve` with `destination: { kind:
+  'native' | 'acp', id }` and `workerHandle`; `continueAssignment(assignmentId, predecessorMessageId,
+  successorMessageId)` → `'continued' | 'existing' | 'conflict'`, committed before the successor dispatches (O3a
+  calls it from the successor's `beforeDispatch`); `discoverAssignments({ destinationKind, state: 'unstaged' |
+  'pending', after?, limit? })` with a cursor; `latestOutcome(workerConversationId)`; the ACP half marks receipt with
+  `transitionDelivery(id, { from: 'pending', to: 'delivered' })`. A migration, if any, is schema 20. Shared with
+  cod2a for planning only.
