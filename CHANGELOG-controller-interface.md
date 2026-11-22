@@ -1,5 +1,27 @@
 # Controller interface
 
+## Conversation permission events
+
+- ACP and native conversations emit `permission_requested` for a request and exactly one
+  `permission_resolved` with its outcome and source. Sources are `handler`, `consumer`, `default`,
+  `timeout`, and `turn_ended`. The last means the turn's lifecycle closed the request, including
+  force stop or conversation stop. Native host responder decisions are reported as `handler`.
+  Agent-owned permission records keep their existing format.
+- Set `answersPermissions: true` on a conversation or in `conversationDefaults` to answer an
+  open ask with `await conversation.answerPermission(id, optionId)`. The result contains
+  `accepted`. Closed, expired, unknown, handler-owned, and invalid-option answers return false.
+  Native answers use the offered `allow_once` or `deny` options.
+- `permissionTimeoutMs` defaults to five minutes and applies only to consumer waits. Those requests
+  include `expiresAt` as epoch milliseconds. Set a positive integer below 600,000 ms to override it.
+  Time starts at ACP client or native host receipt.
+  A native request recovered by observation uses the first time that host sees it, and replay
+  preserves that timestamp. Expiry refuses the request. The native harness still has its own
+  ten-minute timeout.
+- Final policy levels resolve immediately. For ask, a prompt handler takes precedence, then a
+  declared consumer can answer, and an unattended ask is refused. Prompt handlers retain their
+  existing lifetime. The permission rule callback receives the neutral native tool name and the
+  original argument string and validates its return level at runtime.
+
 ## Breaking permission configuration
 
 - `permissions: { default, rules? }` replaces `defaultPermission`. Migrate `"cancel"` to
@@ -11,8 +33,7 @@
   restrictive level wins, so a `command:` allow cannot override a stricter `kind:` rule. Invalid keys and
   levels throw when configuring the client or conversation.
 - Allow and deny are final. A prompt handler is called only for ask, so an unmatched request with
-  default allow skips the handler. An ask without a handler is refused immediately until permission
-  events are available. ACP refusal selects `reject_once` when offered, and cancels otherwise.
+  default allow skips the handler. ACP refusal selects `reject_once` when offered, and cancels otherwise.
 - Callback requests include `tool` when the producer supplies tool data. Native asks use only
   `permissionRule` and the configured default. In particular, default allow approves native asks.
   The prompt handler answers native ask when present, and native refusal sends harness `deny`.

@@ -171,14 +171,15 @@ answered with `approval/respond` (`allow_once` or `deny`) by the prompt handlers
 
 0. **Grounding.** **Gate:** the report.
 1. **The events:** `permission_requested { id, turnId, tool, title, options, expiresAt }` on the conversation's events
-   (added to `AgentSessionEvent`) for every request, ACP or native, whoever answers it; `permission_resolved { id,
-   outcome, by }` when it closes (`by`: handler, consumer, default, timeout, turn ended); the `permission` records
+   (added to `AgentSessionEvent`) for every request, ACP or native, whoever answers it. `expiresAt` is present for
+   consumer waits. `permission_resolved { id, outcome, by }` follows on close (`by`: handler, consumer, default,
+   timeout, turn ended). The `permission` records
    unchanged. **Gate:** every request has exactly one resolved event, on both kinds of conversation.
 2. **The answer and who decides:** `conversation.answerPermission(id, optionId)` returning `{ accepted }` (false when
    already resolved); `answersPermissions` and `permissionTimeoutMs` (default 5 minutes, inside the harness's 10,
-   counted from the request) on `CreateAgentConversationConfig` and `conversationDefaults`. Order: the running turn's
-   handler if it has one (the first message in its cause that brought one); else, with `answersPermissions`, wait up
-   to the timeout, then refuse; else the setting's `default` at once. For native, the answer maps to `allow_once` or
+   counted from receipt) on `CreateAgentConversationConfig` and `conversationDefaults`. Final policy levels apply
+   immediately. For ask, use the turn's first permission handler, or wait up to the deadline if
+   `answersPermissions` is true. An unattended ask is refused immediately. For native, the answer maps to `allow_once` or
    `deny`. **Gate:** an answer through the method; the timeout; no answerer; a turn ending with a request open; the
    handler shortcut (event still emitted, resolved `by: "handler"`, a later `answerPermission` not accepted); a native
    approval answered through the method over a real stdio harness.
@@ -739,7 +740,7 @@ cut off legitimate work.
 | A turn running when the harness crashed | the bounded restarts, then reconciliation settles it (or the failed state fails it); cancellable by `forceStop` or `stop` |
 | Connecting an ACP provider | cancellable the same way; no automatic time limit (Cancellable connect) |
 | A crashed process | bounded restarts, then the failed state with an explicit error, never a silent wait |
-| A permission request | acp-client's `permissionTimeoutMs` (5 min, counted from when the harness asked), then refused; while a host is connected the harness's gate has no limit of its own |
+| A permission consumer wait | acp-client's `permissionTimeoutMs` (5 min, counted from client receipt), then refused. Native approvals also have the harness's ten-minute backstop |
 | A held turn | only behind operations that are themselves bounded |
 | An idle stop | only when both sides agree there is no work; never cuts off a turn |
 | A persistence failure | waits for nothing: surfaced and recorded as far as possible |
@@ -755,11 +756,9 @@ made robust afterwards by an extensive end-to-end stress test across the library
 
 > **2026-11-21:** native approvals are built as `approval_requested` and `approval/respond` (`allow_once`, `deny`), routed to the first message's handlers. The ACP-side setting, the matcher and permissions as conversation events are brief R2 and 3; the harness's own policies are a `fallback` plus exact tool names, not the `kind:`/`command:` rules (those are acp-client's, for ACP requests and workers).
 
-Today a permission request is answered only through the callback of the prompt that started the turn
-(`handlers.onPermissionRequest`, `src/agent-session.ts:3536`), else `defaultPermission` (which refuses by default);
-the request and its answer are recorded (`permission` records, requested and resolved). A turn nobody prompted has no
-callback, so a request in it was silently refused. Permissions now go the same way as everything else the agent does:
-out on the conversation's events.
+Before R3, a conversation answered permission requests with its prompt callback or the configured policy. The
+conversation now also emits the request and its resolution. Agent-owned permission records retain their requested
+and resolved shape.
 
 ```
 harness: "may I send_email?"  →  acp-client  →  event: permission_requested { id, turnId, tool, title, options }
@@ -767,22 +766,26 @@ user answers                  →  conversation.answerPermission(id, optionId)  
 ```
 
 - **The request is an event** on the conversation, for every turn (prompted or started by the harness). Native: the
-  harness's gate decides `ask` and sends `permission/request` over the protocol; ACP: the harness's
+  harness's gate decides `ask` and sends `approval_requested` over the protocol; ACP: the harness's
   `session/request_permission`, as today.
 - **The answer is a method,** `conversation.answerPermission(id, optionId)`, callable at any time while the request is
-  open; it returns `{ accepted }`, false when the request is already resolved.
+  open for a consumer answer. Await it for `{ accepted }`. A closed ID or an option outside the offered list
+  returns false.
 - **Every request closes with an event:** `permission_resolved { id, outcome, by }`, `by` being handler, consumer,
-  default, timeout or turn ended, so a UI can always close its dialog. The request event carries `expiresAt`.
+  default, timeout or `turn_ended`, so a UI can close its dialog. `turn_ended` means the turn's lifecycle
+  closed the request, including force stop or conversation stop. Native host responder answers count as handler
+  answers. Request events carry `expiresAt` only while routing to a consumer wait.
 - **The per-prompt handler stays as a shortcut:** if the running turn's prompt brought one, it is called and nothing
   waits on events (the request event is still emitted, and resolved `by: "handler"`). When a turn took several messages, the first message in its cause that brought a permission
   handler provides it, the rule steering's combined runs use today (`src/steering/combine.ts:23`). A message folded in
   mid-turn (`turn_took`) receives the rest of the turn's stream, but doesn't change its permission handler.
 - **When nobody will answer:** a conversation says whether its consumer answers permissions (`answersPermissions:
   true` on `CreateAgentConversationConfig`, with a default in `conversationDefaults`). If so, acp-client waits up to
-  `permissionTimeoutMs` (default 5 minutes, counted from when the request was made, not from when it is shown), then
-  refuses; if not, the permission setting's `default` applies at once, so a consumer that never listens doesn't stall
-  every `ask`. **acp-client owns the timeout:** while a host is connected, the harness's gate waits for the host's
-  answer with no limit of its own; its own timeout applies only standalone or after the host disconnects.
+  `permissionTimeoutMs` (default 5 minutes), then refuses with `by: "timeout"`. An ask with no handler and no
+  declared consumer is refused immediately with `by: "default"`, including when a rule selected ask over
+  default allow. The consumer wait starts at ACP client or native host receipt. Native observations use the
+  first receipt of the request ID on that host, which is preserved on replay. Prompt handlers keep their
+  existing lifetime. The native harness has its own ten-minute timeout, including for the host responder.
 - **A request in a held turn waits with the turn** (it reaches the consumer when the session runs the turn). For
   native the wait is short in practice: only while another operation on that conversation runs, and the long ones
   hold the channel first. **Known risk, open to change:** if waits turn out long (slow persistence, an operation we
@@ -807,14 +810,15 @@ user answers                  →  conversation.answerPermission(id, optionId)  
   `allow_always` only when there is no `allow_once`, as today (`rules/11-13-RULES-permission-auto-approve.md`: the
   fallback leaves a lasting grant in the harness, an escalation documented and kept). Deny picks `reject_once`
   when offered and cancels otherwise. Allow and deny are final. Ask goes to the prompt handler or, in R3, the
-  event. Until R3, an unattended ask uses the deny selection. Native asks use `permissionRule` and the default
+  event. An unattended ask uses the deny selection. Native asks use `permissionRule` and the default
   without ACP rule matching. A default of allow therefore approves native asks. Titles aren't matched, and MCP tools over ACP (kind `other`) can't be targeted yet.
 - **The same matcher serves the orchestrator:** workers are ACP harnesses, so the policy's `worker:` rules are these
   rules with a prefix (`worker:command:bun test`, `worker:kind:read`). One matcher, tested per adapter's raw input
   shape, used in both places.
 - **An optional function** for consumers who want more: `permissionRule(request) => level | undefined` in
-  `conversationDefaults`, consulted before the rules for ACP conversations (`undefined` means no opinion). It can't
-  replace `worker:` rules, which live in the harness's JSON config.
+  `conversationDefaults`, consulted before ACP rule matching and before the default on native requests.
+  `undefined` means no opinion. Native supplies `tool.name` and the original argument string as
+  `tool.rawInput`. The callback's return level is validated. Worker rules live in the harness's JSON config.
 
 ### Messages from another channel
 
@@ -1108,7 +1112,7 @@ stage 2a):
 - `permission_resolved`, `expiresAt`, and acp-client owning the permission timeout.
 - Permissions as events: `permission_requested`, `answerPermission`, `answersPermissions`, `permissionTimeoutMs`; the
   one permission setting replacing `defaultPermission`, with the ACP matcher and the optional function; the harness's
-  `permission/request` routed to the conversation; the first-message permission-handler rule.
+  `approval_requested` routed to the conversation; the first-message permission-handler rule.
 - `setTitle`, `setPolicy` (stored in the `channels?` repository), per-channel settings through `setConfig`.
 - From the controller-interface spec: a neutral provider-session record (native: the `Agent`'s id plus the channel
   id), the neutral permission request shape, the model-call record, opaque provider data on messages; the
@@ -1142,7 +1146,7 @@ brief's gates are its acceptance, plus three end-to-end checks once R1, R3 and R
 - A native conversation deleted while the harness is stopped stays deleted across an acp-client restart: its channel
   is retired before the harness can take work on it.
 - A permission request reaches the consumer as `permission_requested` and closes with one `permission_resolved`, for
-  an ACP conversation and a native one alike; with no answerer, the setting's default applies at once.
+  an ACP conversation and a native one alike; with no answerer, an unattended ask is refused at once.
 - A tool-using native turn's metering matches the harness's model-call records exactly; `billing_required` accepts a
   native conversation whose harness confirms its certification.
 - With no native adapter configured, behaviour is unchanged and the existing suite passes.
