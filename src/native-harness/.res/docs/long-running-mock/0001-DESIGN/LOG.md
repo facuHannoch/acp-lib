@@ -208,3 +208,51 @@ The final complete root `bun test ./test` passed 1421 tests with 12110
 assertions and 35 snapshots, including the short fixture, forced deadline
 and 105-input regression. Both suites had zero failures. Independent
 review is pending.
+
+## Closure and retrospective
+
+Clad approved Gate 4 and the long-running mock slice at
+`e13b405e72e71318393cf76111b2c91e184bddad`. The accepted chain starts at
+`da59a6c8734baabf911b98014e3fc080e90ca91b`. Gate 1 approved the contract at
+`53d99b827978b8c22600dff9862b6f27793fdf54`. Gate 2 approved the loader,
+playback and storage identity at `17949137cb39999aed4726fe0d3c2239578b7bfd`.
+Gate 3 approved the shared driver and deterministic stdio checkpoints at
+`41232cd842aa08158fc86b5deb01fd61bf2b5121`.
+
+On a clean detached checkout, both independent typechecks passed and the
+full root suite passed 1421 tests with zero failures. The first independent
+harness run passed 341 tests with two load-sensitive failures while other
+agents' harness processes were running. The failing tests were the stdio
+invalid callback arguments case and the development startup controls case.
+Both passed in isolation and the full harness rerun passed 343 tests with
+zero failures. Gate 4 did not change either test file.
+
+Clad independently ran the documented fixture and deadline. The run
+completed in 128,129 ms, with approximately 2 minutes 23 seconds wall time
+and 120 MB peak RSS. The file digest matched the value recorded above.
+All five inputs completed on turns 1 through 5. The notice-only turn 6
+finished after the final scheduled turn. Four callback effects completed,
+with no tool failures or unused model records. Seven replies matched
+exactly once at revision 82 in three history pages and 3 ms. The child
+exited 0 and was reaped.
+
+The shared JSONL loader made short and timed fixtures use the same durable
+attempt reservation and permission path. Approval, steering, and crash
+barriers exposed details that elapsed time alone could not verify. The
+controlled 105-input turn verified the reconcile batch boundary separately
+from inference throughput. The timed fixture then verified unattended
+concurrent progress and completion after the final scheduled input.
+
+Accepted limits
+
+- The timed fixture has five inputs, bursts with one send per channel, and
+  at most two tool calls per turn. It covers idle gaps and overlapping
+  channels. It does not stress dense steering or many concurrent channels.
+  Hour-scale and denser fixtures use the same entry point and were not run.
+- Settlement polls every 10 ms. After idle, it reconciles input and turn
+  IDs in batches. The final reply comparison pages all history for tested
+  channels in the fresh run home. Costs grow with sends and replies.
+- The two independently observed harness failures were load-sensitive and
+  passed in isolation and in the full rerun.
+- Driver scheduling state stays in memory across child replacement. The
+  driver itself does not resume after its process exits.
