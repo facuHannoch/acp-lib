@@ -198,7 +198,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       } catch (error) {
         // A storage failure can occur after a draft was published but before the
         // runner can write a normal terminal outcome. The draft must still end.
-        if (error instanceof ModelCallError && error.message === "script_exhausted") throw error.message;
+        if (error instanceof ModelCallError && error.message === "script_exhausted") throw Object.assign(new Error(error.message), { outcome: "script_exhausted" });
         if (draftId && !(error instanceof ModelCallError)) emit({ channel: turn.channelId,
           event: { type: "text_incomplete", turnId: String(turn.turnId), messageId: draftId, reason: "failed" } });
         throw error;

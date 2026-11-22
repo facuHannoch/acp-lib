@@ -13,6 +13,7 @@ const send = '{"type":"send","atMs":0,"channelId":"a","participantId":"p","input
 test("scenario validation identifies bad lines, including invalid UTF-8", () => {
   for (const record of ["", "{", '{"type":"other"}', model({ content: null, chunks: [{ afterMs: 0, text: "" }] }),
     model({ content: "a", chunks: [{ afterMs: 0, text: "b" }] }), model({ wait: "cancel", content: "" }),
+    model({ content: "", chunks: [{ afterMs: 0, text: "" }] }),
     model({ content: "x", usage: { outputTokens: -1 } }), model({ content: "x", delayMs: 0.5 }),
     '{"type":"model","content":"x","extra":true}',
     '{"type":"model","content":"x","calls":[{"name":"echo","id":"x","arguments":{"key":1,"key":2}}]}',

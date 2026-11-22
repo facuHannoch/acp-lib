@@ -114,3 +114,38 @@ both adapters. Removing the redundant test-only file wrapper was followed
 by a 13-test scripted, JSONL and provider adapter rerun. The stand-alone echo
 command returned the expected result and captured no requests by default.
 Independent review of this submission is pending.
+
+Clad approved Gate 2 at `17949137cb39999aed4726fe0d3c2239578b7bfd`.
+Both typechecks, 343 harness tests and 1411 root tests passed independently.
+
+## Gate 3
+
+The driver uses the acp-client native host, with the real stdio transport
+and normal callback path. It pre-creates test channels, orders sends by
+monotonic offset and file order, and keeps the action position in memory
+while replacing the child. Status and targeted reconcile settle scheduled
+input IDs against durable turn outcomes. A second status read brackets the
+bounded history comparison at one revision. Consumer delivery comes from
+the host's channel port and explicit catch-up. Reporting includes callback
+outcomes and unused model positions. Failed or timed-out runs report
+blocking status and use a bounded stop and reap sequence.
+
+The deterministic checkpoint drives streaming with approval and a held
+callback, independent Bob progress, steering with exact boundary IDs,
+and targeted interruption. It also verifies a notice-only turn after
+the final scheduled sends settle, detached notice recovery, suspension and
+replacement with one effect, both real crash fences, timeout reporting,
+and unexpected tool failure. Timed rehearsal and final full offline suites
+remain Gate 4.
+
+Gate 2 follow-up: the loader rejects empty chunks with a line diagnostic.
+Script exhaustion uses an Error with a stable reason at the scheduler
+boundary. The exact reason remains covered by the JSONL harness test.
+
+Gate 3 verification passed both package typechecks, the six focused harness
+JSONL tests, and all 84 native tests including eight real-stdio rehearsal
+cases (6559 assertions, seven files). The first full native run exposed a
+driver startup RPC timing issue when it inherited the short workload
+deadline. Startup and workload budgets are separate in this submission.
+The forced-timeout case verifies active work diagnostics and a reaped child.
+Independent review is pending.

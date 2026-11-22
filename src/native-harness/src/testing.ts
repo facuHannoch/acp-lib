@@ -9,7 +9,7 @@ import { loadScenario, scriptedCompatibilityKey } from "./capabilities/model/sce
 import { scenarioAttempt } from "./capabilities/model/scenario-attempt.ts";
 import type { ModelRequest } from "./contracts/model-execution.ts";
 import type { LoadedScenario } from "./contracts/scenario.ts";
-export type { LoadedScenario, ScenarioHeader, ScenarioModelRecord, ScenarioSend } from "./contracts/scenario.ts";
+export type { LoadedScenario, ScenarioHeader, ScenarioModelRecord, ScenarioRecord, ScenarioSend } from "./contracts/scenario.ts";
 export { loadScenario, parseScenario } from "./capabilities/model/scenario-file.ts";
 import { bindModelAttempt } from "./capabilities/model/attempt.ts";
 import { openRouterAttempt } from "./capabilities/model/openrouter-stream.ts";

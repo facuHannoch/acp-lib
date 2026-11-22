@@ -894,6 +894,8 @@ export class NativeHarnessHost {
   validateConfig(config: unknown) { return this.#client().validateConfig(config); }
   suspendChannel(channel: string) { return this.#client().suspendChannel({ channel }); }
   resumeChannel(channel: string) { return this.#client().resumeChannel({ channel }); }
+  reconcileChannel(params: Parameters<HarnessClient["reconcileChannel"]>[0]) { return this.#client().reconcileChannel(params); }
+  modelCalls(params: Parameters<HarnessClient["modelCalls"]>[0] = {}) { return this.#client().modelCalls(params); }
   conversationMessages(params: Parameters<HarnessClient["channelMessages"]>[0]) { return this.#client().channelMessages(params); }
   /** Commit each page atomically with its position. On failure the caller's
    * last committed position is the retry boundary. */

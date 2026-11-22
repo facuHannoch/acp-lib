@@ -40,7 +40,7 @@ function model(raw: Record<string, unknown>): ScenarioModelRecord {
   const delayMs = raw.delayMs === undefined ? 0 : count(raw.delayMs, "delayMs");
   const chunks = list(raw.chunks, "chunks").map(value => {
     const chunk = object(value); fields(chunk, ["afterMs", "text"]);
-    if (typeof chunk.text !== "string") throw new Error("chunk.text must be a string");
+    if (typeof chunk.text !== "string" || chunk.text.length === 0) throw new Error("chunk.text must be nonempty");
     return { afterMs: count(chunk.afterMs, "afterMs"), text: chunk.text };
   });
   const usage = raw.usage === undefined ? undefined : object(raw.usage);
