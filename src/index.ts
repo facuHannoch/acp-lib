@@ -3,6 +3,8 @@
 // subpath exports (acp-lib/degraded, acp-lib/parser) so importing the core never pulls
 // in node-pty / ollama. See SPEC.md "opt-in by design".
 
+export type { OrchestratorConfig } from "./orchestrator/config.ts";
+export type { WorkerPersistence, WorkerRow } from "./persistence/workers.ts";
 export { AcpClient } from "./client.ts";
 export type {
   AcpClientConfig,

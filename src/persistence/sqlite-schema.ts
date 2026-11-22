@@ -2,7 +2,19 @@ import type { Database } from "bun:sqlite";
 import { contentText } from "../media/content.ts";
 import type { PersistedContent } from "./backend.ts";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 18;
+export const SQLITE_AGENT_SCHEMA_VERSION = 19;
+
+const WORKERS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS workers (
+  handle TEXT PRIMARY KEY NOT NULL,
+  conversation_id TEXT UNIQUE NOT NULL REFERENCES conversations(agent_conversation_id),
+  opened_by TEXT NOT NULL,
+  about TEXT,
+  last_conversation TEXT,
+  created_at TEXT NOT NULL,
+  dropped_at TEXT
+);
+`;
 
 const WORKER_DELIVERY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS worker_assignments (
@@ -645,7 +657,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -728,6 +740,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         database.exec("ALTER TABLE conversations ADD COLUMN controller_kind TEXT CHECK (controller_kind IN ('acp', 'native'))");
       }
       if (version < 18) database.exec(WORKER_DELIVERY_SCHEMA);
+      if (version < 19) database.exec(WORKERS_SCHEMA);
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

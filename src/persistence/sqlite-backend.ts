@@ -1,3 +1,4 @@
+import { SqliteWorkers } from "./sqlite-workers.ts";
 import { randomUUID } from "node:crypto";
 import { SqliteWorkerDelivery } from "./sqlite-worker-delivery.ts";
 import { Database, type Changes } from "bun:sqlite";
@@ -171,6 +172,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly identity: IdentityPersistence;
   readonly channels: ChannelPersistence;
   readonly workerDelivery?: SqliteWorkerDelivery;
+  readonly workers: NonNullable<PersistenceScope["workers"]>;
   private readonly workerOwnerId = randomUUID();
   readonly identityDelivery: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
@@ -197,6 +199,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       fullTextSearch,
       identity: true,
       channels: true,
+      workers: true,
       workerDelivery: Boolean(ownerLock),
       auditOutbox: true,
       extensions: true,
@@ -225,6 +228,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.recoveryCheckpoints = scope.recoveryCheckpoints!;
     this.identity = scope.identity!;
     this.channels = scope.channels!;
+    this.workers = scope.workers!;
     this.workerDelivery = scope.workerDelivery as SqliteWorkerDelivery | undefined;
     this.identityDelivery = scope.identityDelivery!;
     this.search = fullTextSearch ? new SqliteSearchPersistence(database) : undefined;
@@ -377,6 +381,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       ),
       identityDelivery: new SqliteIdentityDeliveryPersistence(this.database, runWrite),
       channels: new SqliteChannelPersistence(this.database, runWrite, readChannels),
+      workers: new SqliteWorkers(this.database, runWrite, readChannels),
       ...(this.ownerLock ? { workerDelivery: new SqliteWorkerDelivery(
         this.database, runWrite, readChannels, this.workerOwnerId,
       ) } : {}),

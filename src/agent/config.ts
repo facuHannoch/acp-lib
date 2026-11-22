@@ -1,3 +1,4 @@
+import type { OrchestratorConfig } from "../orchestrator/config.ts";
 import type { ConversationPermissionConfig, PermissionPolicyConfig } from "../permissions/policy.ts";
 import type { OperationLifecycleConfig } from "../operations/contracts.ts";
 import type * as schema from "@agentclientprotocol/sdk";
@@ -64,6 +65,7 @@ export type AgentConversationRuntimeDefaults = Omit<
 >;
 
 export interface AgentConfig extends PermissionPolicyConfig {
+  readonly orchestrator?: OrchestratorConfig;
   readonly media?: MediaConfig;
   readonly operationLifecycle?: OperationLifecycleConfig;
   readonly id?: AgentSessionId;

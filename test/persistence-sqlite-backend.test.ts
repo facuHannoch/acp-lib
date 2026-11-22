@@ -551,7 +551,7 @@ describe("SQLite agent persistence", () => {
     expect((await upgraded.channels.desire(conversationId, { lifecycle: "retired" })).version).toBe(1);
     await upgraded.close();
     using migrated = new Database(path, { readonly: true });
-    expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 18 });
+    expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 19 });
     expect(migrated.query("SELECT controller_kind FROM conversations").get()).toEqual({ controller_kind: null });
   });
 
@@ -563,7 +563,7 @@ describe("SQLite agent persistence", () => {
     {
       using early = new Database(path);
       early.exec("ALTER TABLE conversations DROP COLUMN controller_kind");
-      expect(early.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 18 });
+      expect(early.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 19 });
     }
 
     const upgraded = await track(SqliteAgentPersistence.open({ path }));

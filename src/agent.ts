@@ -1,3 +1,4 @@
+import { validateOrchestrator } from "./orchestrator/config.ts";
 import { validatePermissionConsumerConfig } from "./permissions/consumer-config.ts";
 import { inheritPermissionConfig, ownPermissions } from "./permissions/policy.ts";
 import { randomUUID } from "node:crypto";
@@ -143,6 +144,7 @@ export class Agent {
   ) {
     this.media = config.media ?? {};
     this.id = id;
+    if (config.orchestrator) validateOrchestrator(config.orchestrator, persistence, resolveConversationRecordCapture(config.capture).message);
     this.persistence = persistence;
     this.adapters = adapters;
     const channels = persistence.capabilities.channels ? persistence.channels : undefined;
