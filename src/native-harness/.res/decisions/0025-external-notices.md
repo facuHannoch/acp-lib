@@ -74,12 +74,24 @@ nothing. Redispatch is never a recovery action for an existing binding.
 
 Recover by assignment ID through the production index and read the
 authoritative final worker conversation record by worker and operation.
-A streamed chunk or draft cannot serve as a result. Check supported backend
-recovery when no reliable final record exists. If neither source establishes
-a reliable outcome after an abandoned dispatch, stage an uncertainty outcome
-that identifies the assignment and worker and preserves original provenance.
-Run this resolution only for abandoned work, once the original owner can
-no longer finalize it. Live operations continue under their current owner.
+A streamed chunk or draft cannot serve as a result. A backend may expose
+a recovery hook for an operation without a reliable final record. The
+first ACP implementation has no such hook and uses the uncertainty path.
+
+Use the exclusive Agent SQLite owner lock for the lifetime of the writer.
+A second writer fails to open while that lock is held and cannot recover
+or stage delivery. After acquiring ownership on open, classify unfinished
+bindings read from the prior owner as abandoned before accepting new
+dispatches. Only those bindings are eligible for uncertainty resolution.
+There is no lease timeout, and current-owner operations are ineligible.
+
+Final-record commits and uncertainty staging must serialize through the
+same Agent database. The uncertainty transaction rechecks for a reliable
+final record under its write transaction. An earlier final record selects
+the exact result. If uncertainty commits first, a later final record may
+remain inspectable in the worker transcript but cannot change the staged
+outcome or notice. Enforce uniqueness of the terminal outcome by assignment
+ID and verify both transaction orders.
 
 In one Agent database transaction record the resolved result or uncertainty
 and the exact pending notice. Enforce at most one terminal outcome and notice
@@ -87,16 +99,22 @@ intent per assignment. Repeated resolution returns the committed outcome.
 Rollback leaves neither record. Allocate one stable delivery ID at staging
 and retain it with the payload across reconnect and explicit retry.
 A redirect committed before staging supplies the destination. A redirect
-committed afterward leaves the staged payload intact. Preserve the original
-policy names and identify the worker as source. The durable result remains
+committed afterward leaves the staged payload intact. Keep the original
+policy names in the binding. As work is taken across a redirect, update the
+binding with the union of the policy names contributing on both sides.
+A redirect alone adds no contributor. Staging freezes the union, including
+the original names, and identifies the worker as source. The durable result remains
 inspectable after any delivery outcome.
 
-Flush notices through the owning host after earlier channel changes.
-Suspension and unresolved changes leave notices pending. Resume and change
-confirmation schedule eligible retries. Invalid policy blocks until explicit
-retry. Missing or retired destinations fail delivery. A receipt, including
-a duplicate receipt, confirms delivery. Retry a lost acknowledgement with
-the same ID and exact payload.
+Both result and uncertainty notices start in `pending`. Flush them through
+the owning host after earlier channel changes. Suspension, an unresolved
+change, or a lost acknowledgement leaves the notice pending. Open, resume
+and change confirmation schedule eligible pending retries with the original
+ID and exact payload. A receipt or duplicate receipt moves pending to
+`delivered`. Invalid policy moves it to `blocked_policy`, which returns to
+pending only on explicit retry. A missing or retired destination moves it
+to `failed_destination`. Delivered and failed_destination are terminal.
+A connection loss cannot reopen either terminal state.
 
 The fixture-local transcript scan from the feasibility proof is unsuitable
 for production lookup. A second option, provider replay, depends on
@@ -114,3 +132,10 @@ redispatch. Exercise rollback, both redirect commit orders, a crash after
 redirect, recovery after staging, and acknowledgement loss. Deterministic
 ACP peers cover the saved-record boundary offline. Live-provider
 finalization and recovery semantics remain unverified.
+
+Before runtime implementation, add typed Agent persistence records and
+repository operations for reservation, indexed lookup, outcome and delivery.
+Pin the transaction and ownership semantics in shared repository conformance,
+including idempotence, conflicts, rollback, finalization order, immutable
+notice payload and retry transitions. Run the ownership and process-death
+cases on SQLite. Coordinate the type placement and schema with Core.

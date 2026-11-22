@@ -148,3 +148,10 @@ Decision 0025 now specifies the production binding, staging and retry
 contract and the process-death gates. This revision changes documentation
 only. Core coordination for the implementation base, owned files and
 schema allocation remains pending. Worker delivery acceptance remains open.
+
+Clad withheld contract approval at `c6d4198`. The revision adds the Agent
+owner-lock rule, finalization versus uncertainty commit ordering, the
+redirect policy union, explicit delivery transitions, and the optional
+backend recovery hook. Typed Agent repository contracts and shared
+conformance remain required before runtime changes, after coordination
+with Core. No runtime behavior changed.
