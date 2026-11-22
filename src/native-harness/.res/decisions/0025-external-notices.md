@@ -62,16 +62,55 @@ accept archives 2–5. Legacy archives cannot contain external notices.
 New archives validate attribution, sorted inherited metadata and signature
 before publication, and preserve pending and taken notices with their IDs.
 
-## Deferred worker handoff contract
+## Durable ACP worker handoff
 
-Persist assignment ID, destination and originating policy names before work.
-A backend must independently recover or replay terminal completion by that
-ID. Atomically stage the result and exact notice with one stable delivery ID,
-then acknowledge the backend. A redirect committed before staging supplies the
-destination; a previously staged notice keeps its payload. Union names from
-taken work on both sides. On reopen, recover unstaged completions and retry
-staged delivery after earlier channel changes. Suspension or an unresolved
-change keeps it pending, invalid_policy blocks until explicit retry, and
-missing or retired destinations fail delivery while retaining the result.
-A duplicate receipt confirms delivery. The worker gates stay open pending
-the actual backend recovery proof.
+The orchestrator owns assignment identity, destination and worker rules.
+Use the Agent database for the assignment binding and delivery records.
+Keep a unique indexed binding from assignment ID to the worker conversation
+and operation IDs. Store the destination and originating policy-name set
+with it. Commit the binding before sending the ACP prompt. An identical
+reservation can recover that binding. A conflicting reservation writes
+nothing. Redispatch is never a recovery action for an existing binding.
+
+Recover by assignment ID through the production index and read the
+authoritative final worker conversation record by worker and operation.
+A streamed chunk or draft cannot serve as a result. Check supported backend
+recovery when no reliable final record exists. If neither source establishes
+a reliable outcome after an abandoned dispatch, stage an uncertainty outcome
+that identifies the assignment and worker and preserves original provenance.
+Run this resolution only for abandoned work, once the original owner can
+no longer finalize it. Live operations continue under their current owner.
+
+In one Agent database transaction record the resolved result or uncertainty
+and the exact pending notice. Enforce at most one terminal outcome and notice
+intent per assignment. Repeated resolution returns the committed outcome.
+Rollback leaves neither record. Allocate one stable delivery ID at staging
+and retain it with the payload across reconnect and explicit retry.
+A redirect committed before staging supplies the destination. A redirect
+committed afterward leaves the staged payload intact. Preserve the original
+policy names and identify the worker as source. The durable result remains
+inspectable after any delivery outcome.
+
+Flush notices through the owning host after earlier channel changes.
+Suspension and unresolved changes leave notices pending. Resume and change
+confirmation schedule eligible retries. Invalid policy blocks until explicit
+retry. Missing or retired destinations fail delivery. A receipt, including
+a duplicate receipt, confirms delivery. Retry a lost acknowledgement with
+the same ID and exact payload.
+
+The fixture-local transcript scan from the feasibility proof is unsuitable
+for production lookup. A second option, provider replay, depends on
+provider-specific guarantees and is not required when the final Agent record
+is available. The harness wire and archive formats are unchanged. Agent
+schema numbering and implementation ownership are coordinated with the
+R1–R3 and orchestrator workstreams before runtime changes.
+
+Exercise both sides of final-record commit in real SIGKILL/replacement tests
+using the production index. Observe the binding on disk at ACP prompt
+receipt, prove that the post-final crash left no staged result or notice,
+and recover the exact result and original provenance twice. For the
+pre-final crash, confirm one uncertainty notice, stable retry ID, and no
+redispatch. Exercise rollback, both redirect commit orders, a crash after
+redirect, recovery after staging, and acknowledgement loss. Deterministic
+ACP peers cover the saved-record boundary offline. Live-provider
+finalization and recovery semantics remain unverified.

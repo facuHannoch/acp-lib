@@ -133,3 +133,18 @@ Verification under normal local subprocess permissions passed three serial
 runs of the focused test (2 tests and 28 assertions per run) and both
 package typechecks. The restricted sandbox did not finish the ACP prompt;
 the successful runs used local process escalation.
+
+## Production worker handoff contract gate
+
+Clad independently ran the two process-death tests at
+`8fd669711290a5290df40050be52959f4ecf229e` three times (2/0 each).
+Haurness-l accepted that revision as a feasibility proof of the Agent
+saved-record boundary. The fixture lookup scans conversations and the
+first 100 records of each. It does not establish production indexed
+correlation, strict pre-dispatch persistence, uncertainty staging, or
+live-provider semantics.
+
+Decision 0025 now specifies the production binding, staging and retry
+contract and the process-death gates. This revision changes documentation
+only. Core coordination for the implementation base, owned files and
+schema allocation remains pending. Worker delivery acceptance remains open.
