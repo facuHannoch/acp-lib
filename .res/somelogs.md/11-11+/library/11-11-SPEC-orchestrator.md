@@ -625,6 +625,8 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 
 ## Limitations
 
+- Direct `agent.conversations.open(id)` on an evicted worker can bypass the pool limit. Use the worker controls for pool-managed dispatch.
+
 - **No native workers in v1** (Roles).
 - **No "ask the agent" level for worker permissions in v1:** the agent can't approve its own worker's requests
   (no answering tool, and the harness's policies have no such level). Allow, deny and ask me only.

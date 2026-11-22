@@ -41,6 +41,7 @@ export async function updateConversationIdentity(
   conversationId: AgentConversationId,
   records: readonly ConversationRecord[],
 ): Promise<void> {
+  if (settings.role === "worker") return;
   await agent.identity.update({
     agentSessionId: agent.id,
     agentConversationId: conversationId,

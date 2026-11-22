@@ -28,7 +28,7 @@ for (const legacy of [16, 17, "early 17"] as const) test(`worker repository upgr
     expect((await backend.conversations.get(conversationId))?.controllerKind).toBe(legacy === 17 ? "native" : undefined);
     {
       using migrated = new Database(path, { readonly: true });
-      expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 18 });
+      expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 19 });
     }
     const repo = backend.workerDelivery!;
     const binding = { assignmentId: "assignment", workerConversationId: "worker", messageId: "operation",

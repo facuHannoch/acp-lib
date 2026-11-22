@@ -1,3 +1,4 @@
+import type { WorkerPersistence } from "./workers.ts";
 import type { WorkerDeliveryRepository } from "./worker-delivery-contract.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { CancelOutcome, CancelReason } from "../operations/contracts.ts";
@@ -313,6 +314,7 @@ export interface AgentPersistenceIdentity {
 }
 
 export interface AgentConversationSummary {
+  readonly role?: "worker";
   /** Absent on rows written before controller kinds were recorded. */
   readonly controllerKind?: "acp" | "native";
   readonly agentConversationId: AgentConversationId;
@@ -331,6 +333,7 @@ export interface AgentConversationSummary {
 }
 
 export interface CreateAgentConversationInput {
+  readonly role?: AgentConversationSummary["role"];
   readonly controllerKind?: AgentConversationSummary["controllerKind"];
   readonly agentConversationId: AgentConversationId;
   readonly agentSessionId: AgentSessionId;
@@ -772,6 +775,7 @@ export interface PersistenceCapabilities {
   readonly identity: boolean;
   readonly channels: boolean;
   readonly workerDelivery?: boolean;
+  readonly workers?: boolean;
   readonly auditOutbox: boolean;
   readonly extensions: boolean;
   readonly vectorSearch: boolean;
@@ -798,6 +802,7 @@ export interface PersistenceScope {
   readonly identity?: IdentityPersistence;
   readonly channels?: ChannelPersistence;
   readonly workerDelivery?: WorkerDeliveryRepository;
+  readonly workers?: WorkerPersistence;
   readonly identityDelivery?: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox?: AuditOutboxPersistence;

@@ -1,3 +1,4 @@
+import type { WorkerEvent } from "../orchestrator/contracts.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import {
   isConversationRecordKind,
@@ -20,26 +21,30 @@ export interface ConversationRecordCommittedEvent {
   readonly record: ConversationRecord;
 }
 
-export type AgentEvent = ConversationRecordCommittedEvent;
+export type AgentEvent = ConversationRecordCommittedEvent | WorkerEvent;
 
-export interface AgentEventNotification {
+export interface AgentEventNotification<Event extends AgentEvent = ConversationRecordCommittedEvent> {
   /** Process-local order assigned before subscriber filtering. Not a durable cursor. */
   readonly deliverySequence: number;
-  /** Time at which the committed record was offered to listeners. */
+  /** Time at which the event was offered to listeners. */
   readonly emittedAt: string;
   readonly agentSessionId: AgentSessionId;
-  readonly event: AgentEvent;
+  readonly event: Event;
 }
+
+export type WorkerEventNotification = AgentEventNotification<WorkerEvent>;
 
 export type AgentEventListener = (notification: AgentEventNotification) => void;
 
 export interface AgentEventBus extends Subscribable<AgentEventNotification> {
   subscribe(listener: AgentEventListener, options?: AgentEventSubscriptionOptions): Unsubscribe;
+  /** Observe process-local worker facts independently of committed-record filters. */
+  subscribeWorkers(listener: (notification: WorkerEventNotification) => void): Unsubscribe;
 }
 
 export interface AgentEventBusOptions {
   readonly agentSessionId: AgentSessionId;
-  readonly onListenerError?: (failure: SubscriptionListenerError<AgentEventNotification>) => void;
+  readonly onListenerError?: (failure: SubscriptionListenerError<AgentEventNotification<AgentEvent>>) => void;
 }
 
 type RecordFilter = (record: ConversationRecord) => boolean;
@@ -96,12 +101,15 @@ function compileRecordKinds(
  */
 export class CommittedRecordEventBus implements AgentEventBus {
   private readonly hub: SubscriptionHub<AgentEventNotification>;
+  private readonly workerHub: SubscriptionHub<WorkerEventNotification>;
+  private workerSubscriptions = 0;
   private deliverySequence = 0;
   private subscriptionCount = 0;
   private closed = false;
 
   constructor(private readonly options: AgentEventBusOptions) {
-    this.hub = new SubscriptionHub(options.onListenerError);
+    this.hub = new SubscriptionHub<AgentEventNotification>(options.onListenerError);
+    this.workerHub = new SubscriptionHub<WorkerEventNotification>(options.onListenerError);
   }
 
   subscribe(listener: AgentEventListener, options: AgentEventSubscriptionOptions = {}): Unsubscribe {
@@ -123,6 +131,34 @@ export class CommittedRecordEventBus implements AgentEventBus {
     };
   }
 
+  subscribeWorkers(listener: (notification: WorkerEventNotification) => void): Unsubscribe {
+    if (typeof listener !== "function") throw new TypeError("worker event subscription listener must be a function");
+    this.workerSubscriptions++;
+    const unsubscribe = this.workerHub.subscribe(notification => listener(notification));
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      this.workerSubscriptions--;
+      unsubscribe();
+    };
+  }
+
+  /** @internal Publish a worker fact after the corresponding state change. */
+  publishWorker(event: WorkerEvent): void {
+    if (this.closed || this.workerSubscriptions === 0) return;
+    this.workerHub.emit(this.envelope(event));
+  }
+
+  private envelope<Event extends AgentEvent>(event: Event): AgentEventNotification<Event> {
+    return Object.freeze({
+      deliverySequence: ++this.deliverySequence,
+      emittedAt: new Date().toISOString(),
+      agentSessionId: this.options.agentSessionId,
+      event: Object.freeze(event),
+    });
+  }
+
   /** @internal Publish records whose persistence transaction has already committed. */
   publish(records: readonly ConversationRecord[]): void {
     // No subscribers means no notification to allocate; the delivery sequence is
@@ -131,18 +167,7 @@ export class CommittedRecordEventBus implements AgentEventBus {
     const ordered = records.length > 1
       ? [...records].sort((left, right) => left.sequence - right.sequence)
       : records;
-    for (const record of ordered) {
-      const notification: AgentEventNotification = Object.freeze({
-        deliverySequence: (this.deliverySequence += 1),
-        emittedAt: new Date().toISOString(),
-        agentSessionId: this.options.agentSessionId,
-        event: Object.freeze({
-          kind: "conversation_record_committed" as const,
-          record,
-        }),
-      });
-      this.hub.emit(notification);
-    }
+    for (const record of ordered) this.hub.emit(this.envelope({ kind: "conversation_record_committed", record }));
   }
 
   /** @internal Prevent further publication and drop every subscription. */
@@ -150,5 +175,6 @@ export class CommittedRecordEventBus implements AgentEventBus {
     this.closed = true;
     this.subscriptionCount = 0;
     this.hub.clear();
+    this.workerHub.clear();
   }
 }

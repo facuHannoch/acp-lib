@@ -136,7 +136,7 @@ export class CheckpointBackedIdentityRuntime implements AgentIdentityRuntime {
         ...(pageCursor ? { cursor: pageCursor } : {}),
       });
       for (const conversation of page.conversations) {
-        if (conversation.agentConversationId === targetConversationId || conversation.deletedAt) continue;
+        if (conversation.agentConversationId === targetConversationId || conversation.deletedAt || conversation.role === "worker") continue;
         const [cursor, checkpoint, latestMessageSequence] = await Promise.all([
           this.persistence.identityDelivery!.get(
             targetConversationId,

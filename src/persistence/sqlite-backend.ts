@@ -1,3 +1,4 @@
+import { SqliteWorkers } from "./sqlite-workers.ts";
 import { randomUUID } from "node:crypto";
 import { SqliteWorkerDelivery } from "./sqlite-worker-delivery.ts";
 import { Database, type Changes } from "bun:sqlite";
@@ -121,6 +122,7 @@ interface ConversationRow {
   adopted: number;
   adopt_provider_session_id: string | null;
   controller_kind: NonNullable<AgentConversationSummary["controllerKind"]> | null;
+  role: NonNullable<AgentConversationSummary["role"]> | null;
 }
 
 interface IdentityRow {
@@ -171,6 +173,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly identity: IdentityPersistence;
   readonly channels: ChannelPersistence;
   readonly workerDelivery?: SqliteWorkerDelivery;
+  readonly workers: NonNullable<PersistenceScope["workers"]>;
   private readonly workerOwnerId = randomUUID();
   readonly identityDelivery: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
@@ -197,6 +200,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       fullTextSearch,
       identity: true,
       channels: true,
+      workers: true,
       workerDelivery: Boolean(ownerLock),
       auditOutbox: true,
       extensions: true,
@@ -225,6 +229,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
     this.recoveryCheckpoints = scope.recoveryCheckpoints!;
     this.identity = scope.identity!;
     this.channels = scope.channels!;
+    this.workers = scope.workers!;
     this.workerDelivery = scope.workerDelivery as SqliteWorkerDelivery | undefined;
     this.identityDelivery = scope.identityDelivery!;
     this.search = fullTextSearch ? new SqliteSearchPersistence(database) : undefined;
@@ -377,6 +382,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       ),
       identityDelivery: new SqliteIdentityDeliveryPersistence(this.database, runWrite),
       channels: new SqliteChannelPersistence(this.database, runWrite, readChannels),
+      workers: new SqliteWorkers(this.database, runWrite, readChannels),
       ...(this.ownerLock ? { workerDelivery: new SqliteWorkerDelivery(
         this.database, runWrite, readChannels, this.workerOwnerId,
       ) } : {}),
@@ -488,8 +494,8 @@ class SqliteConversationPersistence implements ConversationPersistence {
       runSql(this.database,
         `INSERT INTO conversations(
           agent_conversation_id, agent_session_id, title, created_at, updated_at, metadata,
-          adopted, adopt_provider_session_id, controller_kind
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          adopted, adopt_provider_session_id, controller_kind, role
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         input.agentConversationId,
         input.agentSessionId,
         input.title ?? null,
@@ -499,6 +505,7 @@ class SqliteConversationPersistence implements ConversationPersistence {
         input.adoptProviderSessionId === undefined ? 0 : 1,
         input.adoptProviderSessionId ?? null,
         input.controllerKind ?? null,
+        input.role ?? null,
       );
       const participants = input.participants?.length
         ? input.participants
@@ -2107,6 +2114,7 @@ function summaryFromRowWithParticipants(
     agentSessionId: row.agent_session_id as AgentSessionId,
     ...(row.title !== null ? { title: row.title } : {}),
     ...(row.controller_kind !== null ? { controllerKind: row.controller_kind } : {}),
+    ...(row.role !== null ? { role: row.role } : {}),
     participants: Object.freeze(participants),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
