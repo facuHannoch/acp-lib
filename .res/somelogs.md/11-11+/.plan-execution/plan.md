@@ -150,9 +150,9 @@ The report or review that found it links the file.
 | --- | --- | --- |
 | Controller interface (`library/11-11-SPEC-controller-interface.md`) | implemented and merged (`9668cf7`, base `004cc7f`); spec updated to the code 2026-11-21 | done |
 | Harness protocol (`11-12-SPEC-harness-protocol.md`) | first design; shared by integration and harness part 1 | (no code of its own) |
-| Native harness integration (`library/11-11-SPEC-native-harness-integration.md`) | stage 2a core built by the harness's integration work (approved `7133c5c`); revised 2026-11-21; Remaining work 1–7 listed, briefs to write | next: Remaining work 1 (durable channel intents) |
+| Native harness integration (`library/11-11-SPEC-native-harness-integration.md`) | stage 2a core built by the harness's integration work (approved `7133c5c`); revised 2026-11-21; plan for what remains: briefs R1–R3 written, R4–R6 outlined | next: R1, then R2 and R3; R4–R6 in parallel with the orchestrator |
 | Harness project setup and harness part 1 (`harness/11-11-SPEC-harness-project.md`, `harness/11-11-SPEC-harness-v1.md`) | not yet reviewed on their own | next, in parallel |
-| Orchestrator (`library/11-11-SPEC-orchestrator.md`) | reviewed, plan written (G, O1–O6); route revised 2026-11-21 to registered tools | after integration Remaining work 1–3 |
+| Orchestrator (`library/11-11-SPEC-orchestrator.md`) | reviewed, plan written (G, O1–O6); route revised 2026-11-21 to registered tools | blocked on integration R1–R3 and on the harness's callback policy amendment and external notices |
 | Integration stage 2b, harness part 2 | after 2a and part 1 | later |
 | CLI (`library/11-11-SPEC-cli.md`) | lowest priority | last |
 | End-to-end robustness (`11-12-SPEC-end-to-end-robustness.md`) | after everything that builds is done | last |

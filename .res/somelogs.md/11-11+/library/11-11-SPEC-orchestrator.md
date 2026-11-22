@@ -2,9 +2,11 @@
 
 Status: agreed, not started. Written 2026-11-11; grounded in code 2026-11-12; review 1 and implementation plan
 2026-11-13; revised 2026-11-21 against the built harness and integration: **the orchestrator stands; only its route
-to the harness changed** (Delegation as registered tools, below). Starts after the integration's Remaining work 2 and
-3 (the permission matcher and permission events) and needs the harness's consumer-registered tools
-(`../../../../src/native-harness/.res/docs/tools-and-callbacks/0001-DESIGN/`) for its route. Its core is tested
+to the harness changed** (Delegation as registered tools, below). Starts after the integration's briefs R2 and
+R3 (the permission matcher and permission events) and after two harness proposals are accepted and built: the
+callback policy amendment (`policyNames` on `functions/call`) and external notices (`channel/notify`); its route uses
+the harness's consumer-registered tools (`../../../../src/native-harness/.res/docs/tools-and-callbacks/0001-DESIGN/`,
+built). Its core is tested
 through the consumer API with workers on the offline fixture agents, with no harness and no provider key.
 
 ## Problem
@@ -396,10 +398,11 @@ src/persistence/    the optional workers? repository (WorkerPersistence) with ca
 Written 2026-11-13; not yet reviewed. Seven briefs, each about one agent run, run in order by one trio
 (`../.plan-execution/plan.md`; its code-quality and triage rules apply).
 
-**Dependencies.** Starts after the integration's Remaining work 1–3: it uses the turn-based controller interface, the
-permission events and `answerPermission` (integration Remaining work 3), the permission matcher with `worker:`
-rules (Remaining work 2), pushing onto native channels (the built host), and the optional-repository pattern
-(`channels?`, Durable channel intents). O1–O5 need no harness: workers are
+**Dependencies.** Starts after the integration's briefs R1–R3: it uses the turn-based controller interface, the
+permission events and `answerPermission` (R3), the permission matcher with `worker:` rules (R2), and the
+optional-repository pattern (`channels?`, R1). **Also blocked on two harness proposals,** accepted and built: the
+[callback policy amendment](../../../../src/native-harness/.res/docs/tools-and-callbacks/0002-AMENDMENT-callback-policy/SPEC.md) (`policyNames` on `functions/call`, used by O6's route) and
+[external notices](../../../../src/native-harness/.res/docs/channel-messaging/0001-DESIGN-external-notices/SPEC.md) (`channel/notify`, used by O3's way back). O1–O5 need no harness: workers are
 ordinary conversations on the existing offline fixture ACP agents (`test/fixtures/`: `steer-agent`,
 `permission-agent`, `stalling-prompt-agent`, …), so they are tested as real conversations, not fakes. O6 needs the harness's
 consumer-registered tools (`functions/call`) for its route.
@@ -429,8 +432,9 @@ Read on `beta` 2026-11-13; line numbers move once the controller-interface and i
 
 ### Brief G: grounding
 
-The implementer checks The code as it is and every reuse point in the briefs against the code after integration 2a
-(the delivery port's real shape, the permission events, the matcher's `worker:` prefix, the `channels?` pattern),
+The implementer checks The code as it is and every reuse point in the briefs against the code after integration R1–R3
+(the permission events, the matcher's `worker:` prefix, the `channels?` pattern), checks that `policyNames` on
+`functions/call` and `channel/notify` are built as their harness specs say,
 decides the `agent_action` question with a recommendation, and reports what moved or doesn't exist
 (`library/reports/<date>-REPORT-OG.md`). Corrections go to the spec owner before O1.
 
@@ -439,8 +443,11 @@ decides the `agent_action` question with a recommendation, and reports what move
 **Scope:** steps 1–4.
 
 1. **The `workers?` repository** with `capabilities.workers`, its SQLite implementation (schema 18, upgrade from 17,
-   tested on a version-17 database); the orchestrator refused at `Agent` construction on a backend without it.
-   **Gate:** suite green; the upgrade test.
+   tested on a version-17 database); the orchestrator refused at `Agent` construction on a backend without it. It
+   holds from the start everything What it keeps lists: the workers rows, each assignment's identity, destination and
+   originating policy names (written before the work starts), and each result with its staged notice (written in
+   one transaction, used by O3 and O5). **Gate:** suite green; the upgrade test; a result and its staged notice
+   written together or not at all.
 2. **The worker marker:** worker conversations created with `role: "worker"`; identity `load`, `update` and member
    registration skip them; `agent.conversations.list()` shows the role. **Gate:** a worker's records never reach the
    identity runtime; its prompts get no preamble.
@@ -485,8 +492,8 @@ decides the `agent_action` question with a recommendation, and reports what move
 **Scope:** steps 1–2.
 
 1. **The handler** passed with each prompt to a worker: the level from the giving conversation's `worker:` rules
-   (integration Remaining work 2's matcher); allow and deny answered at once; ask me as `permission_requested` on the giving
-   conversation, marked with the worker (integration Remaining work 3); ask the agent as a `permission_request` item; a giving
+   (integration R2's matcher); allow and deny answered at once; ask me as `permission_requested` on the giving
+   conversation, marked with the worker (integration R3); ask the agent as a `permission_request` item; a giving
    conversation that doesn't answer permissions gets its default at once. **Gate:** each level; the timeout; a
    headless giving conversation.
 2. **Allow always:** stripped from the options shown when a non-owner conversation is asked; automatic allow follows
