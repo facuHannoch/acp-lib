@@ -33,6 +33,7 @@ export interface BackendTurnItem {
   /** The messages the session sent that this turn took: from its cause and from `turn_took`. */
   readonly messageIds: Set<string>;
   readonly controller: ConversationController;
+  readonly permissionHandler?: PromptHandlers["onPermissionRequest"];
 }
 
 /** The backend-turn path's state: reported turns not yet ended, and messages waiting for the turn that takes them. */
@@ -108,6 +109,13 @@ export class BackendTurns {
     return undefined;
   }
 
+  permissionHandlerOf(ids: Iterable<string>): PromptHandlers["onPermissionRequest"] {
+    for (const id of ids) {
+      const handler = this.#messages.get(id)?.item.handlers?.onPermissionRequest;
+      if (handler) return handler;
+    }
+  }
+
   /** One accepted, unclaimed message leaves (to be dropped as cancelled); undefined for any other (in flight, taken, unknown). */
   take(messageId: string): PromptQueueItem | undefined {
     const message = this.#messages.get(messageId);
@@ -179,6 +187,7 @@ export function reportBackendTurn(host: BackendTurnHost, controller: Conversatio
     turnId: event.turnId,
     cause: event.cause,
     messageIds: new Set(event.cause.messageIds ?? []),
+    permissionHandler: host.turns.permissionHandlerOf(event.cause.messageIds ?? []),
     controller,
   };
   host.turns.report(item);
@@ -248,7 +257,8 @@ export async function runBackendTurn(host: BackendTurnHost, current: Conversatio
     host.emit({ kind: "turn_started", turnId: item.turnId, cause: item.cause });
     // The consumer's own handlers, when a message the turn took brought them: its stream and its
     // permission requests reach the consumer that sent the message, as for a turn the session sends.
-    const handlers = host.turns.handlersOf(item.messageIds);
+    const streamHandlers = host.turns.handlersOf(item.messageIds);
+    const handlers = streamHandlers && { ...streamHandlers, onPermissionRequest: item.permissionHandler };
     const result = await host.run({ turnId: item.turnId, get cause() { return item.cause; }, ...(handlers ? { handlers } : {}) });
     host.emit({ kind: "turn_completed", turnId: item.turnId, result: copyPromptResult(result) });
     host.turns.end(item, { result }, host.log);

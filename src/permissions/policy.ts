@@ -5,6 +5,7 @@ import { selectPermissionOutcome } from "./outcome.ts";
 export interface PermissionPolicyConfig {
   /** The whole setting replaces any inherited setting. Defaults to ask. */
   readonly permissions?: PermissionSettings;
+  /** ACP and native requests. Native supplies tool.name and the original arguments as string tool.rawInput. */
   readonly permissionRule?: (request: PermissionRequest) => PermissionLevel | undefined;
 }
 
@@ -49,6 +50,7 @@ export function ownPermissions(settings: PermissionSettings | undefined): Permis
 
 export function permissionLevel(request: PermissionRequest, config: PermissionPolicyConfig, native = false): PermissionLevel {
   const override = config.permissionRule?.(request);
+  if (override !== undefined && !isLevel(override)) throw new Error("permissionRule must return deny, ask, allow, or undefined");
   const settings = config.permissions ?? DEFAULT_PERMISSIONS;
   return override ?? (native ? settings.default : matchPermissionLevel(request, settings));
 }

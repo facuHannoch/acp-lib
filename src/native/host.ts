@@ -1,3 +1,4 @@
+import { NativeApprovals } from "./approvals.ts";
 /**
  * The shared native harness host: one per Agent (acp-client integration spec, Ownership).
  *
@@ -147,6 +148,7 @@ export class NativeHarnessHost {
   /** The harness's channels as last seen (load view, control responses, `channel_state`). */
   readonly #channels = new Map<string, ChannelStatusResult>();
   readonly #changes: NativeChannelChanges;
+  readonly #approvals: NativeApprovals;
   /** Callers waiting for a submission's acceptance, across reopens. */
   readonly #waiters = new Map<string, Deferred<ItemStatus>>();
   readonly #stateListeners = new Set<() => void>();
@@ -158,6 +160,7 @@ export class NativeHarnessHost {
     this.#config = config;
     this.sessionId = config.sessionId;
     this.#log = config.logger ?? noopLogger;
+    this.#approvals = new NativeApprovals(config.approvalResponder, this.#log);
     const records = config.records ?? createMemoryHostRecords();
     this.records = channels ? submissionRecords(records) : records;
     this.#changes = new NativeChannelChanges(channels ?? channelStore(records), this.#channels, () => this.#client(),
@@ -183,30 +186,17 @@ export class NativeHarnessHost {
     for (const listener of [...this.#stateListeners]) { try { listener(); } catch { /* an observer never breaks the host */ } }
   }
 
-  readonly #pendingApprovals = new Map<string, AbortController>();
-  get hasApprovalResponder(): boolean { return this.#config.approvalResponder !== undefined; }
-
-  #closeApprovals(): void {
-    for (const pending of this.#pendingApprovals.values()) pending.abort();
-    this.#pendingApprovals.clear();
+  approvalFor(event: Extract<ChannelEvent["event"], { type: "approval_requested" }>) {
+    return this.#approvals.ticket(event);
   }
 
-  #approval(connection: NativeConnection, request: NativeApprovalRequest): void {
-    const responder = this.#config.approvalResponder;
-    if (!responder || this.#pendingApprovals.has(request.requestId)) return;
-    const pending = new AbortController();
-    this.#pendingApprovals.set(request.requestId, pending);
-    let answered = false;
-    const answer = async (decision: "allow_once" | "deny") => {
-      if (answered || pending.signal.aborted || this.#connection !== connection) return false;
-      answered = true;
-      return this.#answerApproval(request.requestId, decision);
-    };
-    void Promise.resolve().then(() => {
-      if (!pending.signal.aborted) return responder(request, answer, pending.signal);
-    }).catch(error => {
-      this.#log.warn("native_approval_responder_failed", { requestId: request.requestId, error: String(error) });
-    });
+  #observeApproval(connection: NativeConnection, { channel, event }: ChannelEvent): void {
+    if (event.type === "approval_requested") {
+      this.#approvals.observe(channel, event, async decision =>
+        this.#connection === connection && this.#answerApproval(event.requestId, decision));
+    } else if (event.type === "approval_closed") {
+      this.#approvals.closed(event);
+    }
   }
 
   /** The channel as the harness last reported it; undefined before the first open or for a channel it has not seen. */
@@ -245,8 +235,10 @@ export class NativeHarnessHost {
       port.reconcile({ ...recovered, status, revision: observation.revision });
       for (const request of observation.approvals) {
         if (buffered.slice(boundary).some(({ event }) => event.type === "approval_closed" && event.requestId === request.requestId)) continue;
-        this.#approval(connection, request);
-        port.event({ channel, event: { type: "approval_requested", ...request } });
+        const event = { channel, event: { type: "approval_requested" as const, ...request } };
+        this.#observeApproval(connection, event);
+        this.#approvals.start(event.event);
+        port.event(event);
       }
       for (const [index, event] of buffered.entries()) {
         if (event.revision === undefined ? index >= boundary : event.revision > observation.revision) port.event(event);
@@ -288,7 +280,7 @@ export class NativeHarnessHost {
     const error = new HarnessUnavailableError("the native harness was stopped", { code: "stopped" });
     this.#rejectWaiters(error);
     for (const port of [...this.#ports.values()]) port.failed(error);
-    this.#closeApprovals();
+    this.#approvals.stop();
     const live = connection ?? this.#connection;
     this.#connection = null;
     try {
@@ -446,7 +438,9 @@ export class NativeHarnessHost {
         view.messages.push(...recovered.messages);
         for (const request of observation.approvals) {
           const boundary = boundaries.get(channel)!;
-          this.#early?.splice(boundary, 0, { channel, event: { type: "approval_requested", ...request } });
+          const event = { channel, event: { type: "approval_requested" as const, ...request } };
+          this.#observeApproval(connection, event);
+          this.#early?.splice(boundary, 0, event);
         }
       } catch (error) {
         if (codeOf(error) !== "not_found") throw error;
@@ -459,6 +453,9 @@ export class NativeHarnessHost {
     for (const channel of view.status.channels) this.#channels.set(channel.channel, channel);
     this.#connection = connection;
     this.#reconcile(view, observed);
+    for (const turn of view.turns) {
+      if (turn.state !== "running" && turn.state !== "suspended") this.#approvals.end(turn.channel, turn.turnId);
+    }
 
     // Events received while the view was being read and applied: the ones it already includes are
     // dropped; the rest follow in delivery order. Several events can share a revision, so the
@@ -563,7 +560,7 @@ export class NativeHarnessHost {
   #lost(connection: NativeConnection): void {
     if (this.#connection !== connection) return;
     this.#connection = null;
-    this.#closeApprovals();
+    this.#approvals.disconnected();
     if (this.#stopped) return;
     this.#setState("stopped");
     this.#log.warn("native_harness_connection_lost", { sessionId: this.sessionId });
@@ -607,19 +604,15 @@ export class NativeHarnessHost {
   #route(connection: NativeConnection, event: ChannelEvent): void {
     // A late event of a connection that was replaced is not this session's present.
     if (this.#stopped || (this.#connection !== null && this.#connection !== connection)) return;
+    this.#observeApproval(connection, event);
     if (this.#early) { this.#early.push(event); return; }
     this.#deliver(event);
   }
 
   #deliver(event: ChannelEvent): void {
-    if (event.event.type === "approval_requested" && this.#connection) {
-      const { type: _type, ...request } = event.event;
-      this.#approval(this.#connection, { ...request, channel: event.channel });
-    }
-    if (event.event.type === "approval_closed") {
-      this.#pendingApprovals.get(event.event.requestId)?.abort();
-      this.#pendingApprovals.delete(event.event.requestId);
-    }
+    if (event.event.type === "approval_requested") this.#approvals.start(event.event);
+    if (event.event.type === "approval_closed") this.#approvals.closed(event.event);
+    if (event.event.type === "turn_ended") this.#approvals.end(event.channel, event.event.turnId);
     if (event.event.type === "channel_state") {
       const known = this.#channels.get(event.channel);
       const { displayName, policy, lifecycle } = event.event;
@@ -849,7 +842,7 @@ export class NativeHarnessHost {
 
   /** Answers one approval request. False when the answer was late: the request is closed and stays closed. */
   async respondApproval(requestId: string, decision: "allow_once" | "deny"): Promise<boolean> {
-    if (this.hasApprovalResponder) return false;
+    if (this.#config.approvalResponder) return false;
     return this.#answerApproval(requestId, decision);
   }
 

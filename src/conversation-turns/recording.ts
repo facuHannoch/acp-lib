@@ -1,4 +1,5 @@
-import { answerPermissionLevel, permissionLevel, recordingPermissionHandlers } from "../permissions/policy.ts";
+import { nativePermissionRequests, permissionOutcome } from "../permissions/conversation.ts";
+import { recordingPermissionHandlers } from "../permissions/policy.ts";
 /**
  * Phase 3 of a turn: the handlers that record and present what the provider streams (assistant
  * messages, activity, permissions), wrapping the consumer's own handlers. Moved unchanged from
@@ -10,8 +11,6 @@ import { ResponseAccumulator } from "../response.ts";
 import type { PromptHandlers } from "../types.ts";
 import type { TurnRunContext } from "./context.ts";
 import {
-  permissionRecordOutcome,
-  permissionWithAbort,
   toPersistenceJsonValue,
 } from "./record-helpers.ts";
 
@@ -160,10 +159,11 @@ export function createTurnRecording(
     },
     onPermissionRequest: async (request, signal) => {
       const permissionBase = `${turnId}:permission:${request.toolCallId}`;
-      if (ctx.owner.agentSessionId) {
-        await ctx.owner.recordNow({
+      const agentSessionId = nativePermissionRequests.get(request)?.hostHandled ? null : ctx.owner.agentSessionId;
+      const resolution = await ctx.permissions.request(turnId, request, ctx.session.permissionPolicy, consumer, signal,
+        agentSessionId ? () => ctx.owner.recordNow({
           recordId: `${permissionBase}:requested`,
-          agentSessionId: ctx.owner.agentSessionId,
+          agentSessionId,
           agentConversationId: ctx.owner.agentConversationId,
           kind: "permission",
           timestamp: new Date().toISOString(),
@@ -176,30 +176,21 @@ export function createTurnRecording(
             options: request.options,
             raw: request.raw,
           }),
-        });
-      }
-      const level = signal?.aborted ? undefined
-        : permissionLevel(request, ctx.session.permissionPolicy, ctx.controller.conversationCapabilities.nativeSteering);
-      const handler = consumer?.onPermissionRequest;
-      const answer = level === undefined ? { outcome: "cancelled" as const }
-        : answerPermissionLevel(level, request, handler
-          && (() => permissionWithAbort(() => handler.call(consumer, request, signal), signal)));
-      const outcome = answer instanceof Promise ? await answer : answer;
-      if (ctx.owner.agentSessionId) {
+        }) : undefined);
+      if (agentSessionId) {
         await ctx.owner.recordNow({
           recordId: `${permissionBase}:resolved`,
-          agentSessionId: ctx.owner.agentSessionId,
+          agentSessionId,
           agentConversationId: ctx.owner.agentConversationId,
           kind: "permission",
           timestamp: new Date().toISOString(),
           operationId: turnId,
           permissionId: request.toolCallId,
           state: "resolved",
-          // In R2 an unattended ask is a policy refusal even when the wire has no reject_once.
-          outcome: level === "ask" && !handler ? "denied" : permissionRecordOutcome(request, outcome),
+          outcome: permissionOutcome(request, resolution),
         });
       }
-      return outcome;
+      return resolution.outcome;
     },
   };
 

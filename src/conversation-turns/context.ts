@@ -1,3 +1,4 @@
+import type { ConversationPermissions } from "../permissions/conversation.ts";
 import type { PermissionPolicyConfig } from "../permissions/policy.ts";
 /**
  * The narrow context `runTurn` receives from `AgentSession` (controller-interface spec, Brief A2
@@ -77,6 +78,7 @@ export interface TurnRunContext {
     ): Promise<void>;
   };
 
+  readonly permissions: ConversationPermissions;
   readonly presentation: AgentConversationPresentation;
 
   readonly metering: {

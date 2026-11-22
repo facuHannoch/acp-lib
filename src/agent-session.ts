@@ -12,6 +12,7 @@
 import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
 import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
 import { UnsupportedError } from "./errors.ts";
+import { ConversationPermissions } from "./permissions/conversation.ts";
 import { ownPermissions, type PermissionPolicyConfig } from "./permissions/policy.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
@@ -554,6 +555,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private providerFailedTurnId: string | null = null;
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
+  private readonly permissions = new ConversationPermissions(event => this.emit(event), () => this.log);
   private ownerRecordWrite: Promise<void> = Promise.resolve();
 
   private constructor(
@@ -780,14 +782,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   private async recordOwned(record: NewConversationRecord): Promise<void> {
     if (!this.ownerLifecycle?.record) return;
-    const write = this.ownerRecordWrite
-      .then(() => this.ownerLifecycle!.record!(record))
-      .catch((error) => {
-        this.markManagedPersistenceUnhealthy();
-        throw error;
-      });
-    this.ownerRecordWrite = write;
-    await write;
+    this.queueOwnedRecord(record);
+    await this.ownerRecordWrite;
   }
 
   private markManagedPersistenceUnhealthy(): void {
@@ -3428,6 +3424,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         persist: () => this.persist(),
         finishV2Prompt: (status, record, errorCode) => this.finishV2Prompt(status, record, errorCode),
       },
+      permissions: this.permissions,
       presentation: this.presentation,
       metering: {
         open: (item) => this.openMeteredOperation(item),
@@ -3821,7 +3818,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     try {
       const kind = operationKind === "conversation_checkpoint" ? "recap" : "internal_inference";
       const result = await this.supervisedPrompt(controller, operationId, kind,
-        prepareInternalPrompt({ input: { text }, handlers: {} }));
+        prepareInternalPrompt({ input: { text }, handlers: this.permissions.internalHandler(operationId, this.controllerDefaults) }));
       const record = await this.closeOperation(
         operation,
         result.status,
@@ -3878,6 +3875,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       }
       throw err;
     } finally {
+      this.permissions.end(operationId);
       this.runningOperationId = enclosingOperationId;
     }
   }
@@ -3965,6 +3963,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
 
   private endTurn(turnId: string, handlers?: PromptHandlers): void {
+    this.permissions.end(turnId);
     this.queueActivityRecords(turnId, this.presentation.endTurn(handlers));
   }
 
@@ -4059,6 +4058,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (failures.length > 1) throw new AggregateError(failures, "AgentSession shutdown failed");
     });
     this.stopPromise = completion;
+    this.permissions.stop();
     try {
       this.cancelRunning("stop", { clearQueue: true });
     } catch (error) {

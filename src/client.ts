@@ -838,6 +838,7 @@ export class AcpClient implements AgentClient {
         usage: usage.ok ? usage.usage : null,
       };
     } finally {
+      this.cancelPendingPermissions();
       this.active = null;
     }
   }
@@ -1008,7 +1009,6 @@ export class AcpClient implements AgentClient {
     }
     return { outcome: { outcome: "cancelled" } };
   }
-
 
   private beginCommandTransition(): void {
     // Session operations are serialized by their callers. Preserve the last snapshot so

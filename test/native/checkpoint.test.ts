@@ -70,6 +70,61 @@ describe("the first end-to-end checkpoint", () => {
     expect(rig.effects()).toEqual(["ran"]);
   }, 30_000);
 
+  for (const action of ["responder", "external denial", "forceStop", "stop", "disconnect"] as const) {
+    test(`native permission events settle once on ${action}`, async () => {
+      const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });
+      const trace = traceStdio(rig);
+      rig.script([record("effect"), reply("Done.")]);
+      const hostAnswer = Promise.withResolvers<Parameters<NativeApprovalResponder>[1]>();
+      if (action === "responder") {
+        rig.harness.approvalResponder = ((_request, answer) => {
+          hostAnswer.resolve(answer);
+        }) satisfies NativeApprovalResponder;
+      }
+      const agent = await rig.open();
+      const conversation = await agent.conversations.create();
+      const events = rig.watch(conversation);
+      const requested = Promise.withResolvers<Seen>();
+      const resolved = Promise.withResolvers<Seen>();
+      conversation.subscribe(({ event }) => {
+        if (event.kind === "permission_requested") requested.resolve(event);
+        if (event.kind === "permission_resolved") resolved.resolve(event);
+      });
+      const handled = Promise.withResolvers<string>();
+      const supplied = Promise.withResolvers<PermissionOutcome>();
+      const work = track(conversation.prompt("request approval", {
+        onPermissionRequest(request) {
+          handled.resolve((request.raw as { requestId: string }).requestId);
+          return supplied.promise;
+        },
+      }));
+      const request = await requested.promise;
+      if (action === "responder") expect(await (await hostAnswer.promise)("allow_once")).toBe(true);
+      else {
+        const harnessId = await handled.promise;
+        if (action === "external denial") {
+          expect(await agent.nativeHarness!.respondApproval(harnessId, "deny")).toBe(true);
+        } else if (action === "forceStop") {
+          await conversation.connection.forceStop();
+        } else if (action === "stop") {
+          await conversation.stop();
+        } else {
+          trace.children.at(-1)!.child.kill("SIGKILL");
+        }
+      }
+      expect(await resolved.promise).toEqual({
+        kind: "permission_resolved", id: request.id,
+        by: action === "responder" ? "handler" : action === "external denial" ? "consumer" : "turn_ended",
+        outcome: action === "responder" ? "approved" : action === "external denial" ? "denied" : "cancelled",
+      });
+      supplied.resolve({ outcome: "selected", optionId: "allow_once" });
+      await until(() => work.settled, "native turn settled");
+      const bridgeEvents = events.filter(event => event.kind.startsWith("permission_") && event.id === request.id);
+      expect(bridgeEvents).toHaveLength(2);
+      expect(rig.effects()).toEqual(action === "responder" ? ["effect"] : []);
+    }, 30_000);
+  }
+
   test("1-3: two conversations share one process and one durable session; input sent while a turn works is accepted and taken by that turn; one approval dispatches one call", async () => {
     const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });
     rig.script([record("approved", "rec-1"), reply("Done."), reply("Later.")]);
@@ -973,14 +1028,23 @@ describe("operator controls over real stdio", () => {
     await host.push({ id: "operator-input", channel: alice.id, sender: "operator", text: "approval" });
     await until(() => requests.size === 1, "detached approval");
     const [id, answer] = [...requests][0]!;
+    const permissions = rig.watch(alice);
+    const requested = Promise.withResolvers<void>();
+    alice.subscribe(({ event }) => { if (event.kind === "permission_requested") requested.resolve(); });
     const view = await alice.attachObservation();
+    await requested.promise;
+    // A second observation still contains the open harness request. Reattaching must not republish it.
+    view.dispose();
+    const reattached = await alice.attachObservation();
     expect((await host.status()).channels.find(channel => channel.channel === alice.id)?.activeTurn?.phase?.id).toBe(id);
     expect(await host.respondApproval(id, "allow_once")).toBe(false);
-    view.dispose();
+    reattached.dispose();
     expect(await answer("allow_once")).toBe(true);
     expect(await answer("allow_once")).toBe(false);
     await until(() => rig.effects().includes("operator-approval"), "approved effect");
     expect(requests.size).toBe(1);
+    expect(permissions.filter(event => event.kind === "permission_requested")).toHaveLength(1);
+    expect(permissions.filter(event => event.kind === "permission_resolved")).toHaveLength(1);
     await until(async () => (await host.status()).execution === "idle", "approved turn to finish");
 
     await alice.attachObservation();

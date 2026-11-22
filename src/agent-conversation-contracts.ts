@@ -1,3 +1,4 @@
+import type { ConversationPermissionEvent } from "./permissions/conversation.ts";
 import type { OperationActivity } from "./operations/contracts.ts";
 import type { TurnCause } from "./conversation-controller/contracts.ts";
 import type { AgentMode } from "./controller.ts";
@@ -206,6 +207,7 @@ export interface HandoffResult {
 
 /** Conversation-owned lifecycle events. Harness activity remains in PromptHandlers.onActivity. */
 export type AgentSessionEvent =
+  | ConversationPermissionEvent
   | { kind: "provider_reconnected"; via: "loaded" | "recovered" | "fresh"; internalSessionId: string }
   | { kind: "operation_stage_changed"; activity: OperationActivity }
   | { kind: "state_changed"; state: AgentSessionState }

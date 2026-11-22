@@ -9,8 +9,6 @@ import type { PersistenceJsonValue } from "../persistence/backend.ts";
 import type { OperationKind } from "../persistence/records.ts";
 import type {
   Attachment,
-  PermissionOutcome,
-  PermissionRequest,
   ResponseMessage,
   PromptResult,
 } from "../types.ts";
@@ -62,35 +60,6 @@ export function snapshotConsumerMetadata(
   const serialized = JSON.stringify(value);
   if (serialized === undefined) throw new Error("consumerMetadata must be a JSON value");
   return JSON.parse(serialized) as PersistenceJsonValue;
-}
-
-export function permissionRecordOutcome(
-  request: PermissionRequest,
-  outcome: PermissionOutcome,
-): "approved" | "denied" | "cancelled" {
-  if (outcome.outcome === "cancelled") return "cancelled";
-  const selected = request.options.find((option) => option.optionId === outcome.optionId);
-  return selected?.kind === "allow_once" || selected?.kind === "allow_always"
-    ? "approved"
-    : "denied";
-}
-
-/** Settle our wrapper too, so cancelled permission decisions are durably recorded. */
-export async function permissionWithAbort(
-  handler: () => PermissionOutcome | Promise<PermissionOutcome>,
-  signal?: AbortSignal,
-): Promise<PermissionOutcome> {
-  if (signal?.aborted) return { outcome: "cancelled" };
-  let abort!: () => void;
-  const cancelled = new Promise<PermissionOutcome>((resolve) => {
-    abort = () => resolve({ outcome: "cancelled" });
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-  try {
-    return await Promise.race([Promise.resolve().then(handler), cancelled]);
-  } finally {
-    signal?.removeEventListener("abort", abort);
-  }
 }
 
 /** Do not let one notification observer mutate the PromptResult another observer sees. */

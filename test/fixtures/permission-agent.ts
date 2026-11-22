@@ -115,13 +115,19 @@ async function runTurn(message: any): Promise<void> {
     rawInput: {},
   });
 
-  const response: any = await request("session/request_permission", {
+  const permission = request("session/request_permission", {
     sessionId,
     toolCall: key === "execute"
       ? { toolCallId: "call-1", title: "Run tests", kind: "execute", rawInput: { command: "bun test" } }
       : { toolCallId: "call-1", title: "Write config.json" },
     options,
   });
+
+  if (key === "end-while-asking") {
+    send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+    return;
+  }
+  const response: any = await permission;
 
   // Echo what we got. `__error` means the client failed the request outright, which is a
   // distinct failure from being refused, and the tests need to tell them apart.

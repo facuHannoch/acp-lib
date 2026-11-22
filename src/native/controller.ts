@@ -1,3 +1,5 @@
+import { runNativeApproval } from "./approvals.ts";
+import { recordingPermissionHandlers } from "../permissions/policy.ts";
 /**
  * The native `ConversationController`: one conversation as one channel of the Agent's harness session
  * (acp-client integration spec, Controller behavior). Translation only: the shared `NativeHarnessHost`
@@ -27,7 +29,7 @@ import { UnsupportedError } from "../errors.ts";
 import { noopLogger, type Logger } from "../logger.ts";
 import { isMediaPart, mediaKind, type MediaKind } from "../media/parts.ts";
 import type { OutputListener, ProviderOutput } from "../operations/contracts.ts";
-import type { PermissionRequest, PromptHandlers, PromptResult, ResponseMessage } from "../types.ts";
+import type { PromptHandlers, PromptResult, ResponseMessage } from "../types.ts";
 import type { ChannelPort, ChannelView, NativeHarnessHost } from "./host.ts";
 
 /** A native turn that ended failed or interrupted without this conversation cancelling it. */
@@ -67,6 +69,7 @@ interface Turn {
   sink: ((event: TurnScoped) => void) | null;
   /** Message ids whose completion was received: a reconciled reply is restored once, by id. */
   readonly completed: Set<string>;
+  readonly approvals: Set<string>;
   ended: Outcome | null;
   /** This conversation asked for the interruption, so an interrupted end is a cancel, not a failure. */
   cancelRequested: boolean;
@@ -78,11 +81,6 @@ interface Turn {
 
 const sessionTurnId = (harnessId: string) => `native-turn-${harnessId}`;
 const NO_OPTIONS = new Map() as ConfigOptions;
-const APPROVAL_OPTIONS: PermissionRequest["options"] = [
-  { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
-  { optionId: "deny", name: "Deny", kind: "reject_once" },
-];
-
 export class NativeController implements ConversationController, ChannelPort {
   readonly #host: NativeHarnessHost;
   readonly #channel: string;
@@ -101,7 +99,7 @@ export class NativeController implements ConversationController, ChannelPort {
   #stopped = false;
   #attachment: Promise<void> | null = null;
   #attachmentHandle?: { dispose(): void };
-  readonly #approvalSignals = new Map<string, AbortController>();
+  #attachmentApprovals = new AbortController();
 
   constructor(config: NativeControllerConfig) {
     this.#config = config;
@@ -160,9 +158,10 @@ export class NativeController implements ConversationController, ChannelPort {
   }
 
   disposeAttachment(): void {
+    this.#attachmentApprovals.abort();
+    this.#attachmentApprovals = new AbortController();
     this.#attachment = null;
     this.#attachmentHandle = undefined;
-    this.#endApprovals();
     this.#detach?.();
     this.#detach = null;
     this.#unsubscribeHost?.();
@@ -279,7 +278,7 @@ export class NativeController implements ConversationController, ChannelPort {
   #begin(harnessId: string, items: readonly string[]): Turn {
     const turn: Turn = {
       id: sessionTurnId(harnessId), harnessId, items: new Set(items), held: [], sink: null,
-      completed: new Set(), ended: null, cancelRequested: false, released: false, fail: null,
+      completed: new Set(), approvals: new Set(), ended: null, cancelRequested: false, released: false, fail: null,
     };
     this.#turns.set(turn.id, turn);
     this.#report({ kind: "turn_started", turnId: turn.id, cause: this.#cause(items), sentBySession: false });
@@ -291,11 +290,7 @@ export class NativeController implements ConversationController, ChannelPort {
   event(event: ChannelEvent): void {
     const payload = event.event;
     if (payload.type === "channel_state") { this.#notifyConnection(); return; }
-    if (payload.type === "approval_closed") {
-      this.#approvalSignals.get(payload.requestId)?.abort();
-      this.#approvalSignals.delete(payload.requestId);
-      return;
-    }
+    if (payload.type === "approval_closed") return; // The host settles the shared approval ticket.
     if (payload.type === "item_withdrawn") { this.#host.settle([payload.item]); return; }
     if (payload.type === "turn_started") {
       if (!this.#turns.has(sessionTurnId(payload.turnId))) this.#begin(payload.turnId, payload.items);
@@ -377,10 +372,9 @@ export class NativeController implements ConversationController, ChannelPort {
   }
 
   /** The connection was lost. Turns stay pending: the reopen's view gives each its outcome. */
-  disconnected(): void { this.#endApprovals(); this.#notifyConnection(); }
+  disconnected(): void { this.#notifyConnection(); }
 
   failed(error: Error): void {
-    this.#endApprovals();
     this.#release(error, false);
     this.#notifyConnection();
   }
@@ -422,6 +416,7 @@ export class NativeController implements ConversationController, ChannelPort {
     /** Text already streamed for a message id: its completion sends only what is missing. */
     const drafts = new Map<string, string>();
     const approvals = new AbortController();
+    const approvalWork = new Set<Promise<void>>();
     return new Promise<PromptResult>((resolve, reject) => {
       let settled = false;
       const finish = (act: () => void) => {
@@ -431,7 +426,8 @@ export class NativeController implements ConversationController, ChannelPort {
         turn.fail = null;
         approvals.abort();
         if (turn.ended) this.#turns.delete(turn.id);
-        act();
+        if (approvalWork.size) void Promise.allSettled(approvalWork).then(act);
+        else act();
       };
       turn.fail = (error) => finish(() => reject(error));
       const text = (chunk: string, messageId: string, startsMessage: boolean) => {
@@ -479,7 +475,14 @@ export class NativeController implements ConversationController, ChannelPort {
           case "approval_requested":
             // Not awaited: the turn can end (interrupted, timed out) while the consumer decides, and
             // that end must not wait behind the question.
-            if (!this.#host.hasApprovalResponder) void this.#approve(event, handlers, approvals.signal, signal);
+            if (turn.approvals.has(event.requestId)) return;
+            turn.approvals.add(event.requestId);
+            const approval = this.#approve(event, handlers,
+              AbortSignal.any([approvals.signal, this.#attachmentApprovals.signal]), signal);
+            if (recordingPermissionHandlers.has(handlers.onPermissionRequest!)) {
+              approvalWork.add(approval);
+              void approval.then(() => approvalWork.delete(approval));
+            }
             return;
           case "turn_resumed":
             signal({ kind: "update", sessionId });
@@ -513,35 +516,14 @@ export class NativeController implements ConversationController, ChannelPort {
     });
   }
 
-  #endApprovals(): void {
-    for (const pending of this.#approvalSignals.values()) pending.abort();
-    this.#approvalSignals.clear();
-  }
-
-  /** Routes one pending call to the conversation's approval handler and answers it once. */
+  /** Translate an approval without blocking terminal events behind the answer. */
   async #approve(event: Extract<TurnScoped, { type: "approval_requested" }>, handlers: PromptHandlers, cancelled: AbortSignal, signal: (output: ProviderOutput) => void): Promise<void> {
-    if (this.#approvalSignals.has(event.requestId)) return;
-    const pending = new AbortController();
-    this.#approvalSignals.set(event.requestId, pending);
-    cancelled = AbortSignal.any([cancelled, pending.signal]);
+    const ticket = this.#host.approvalFor(event);
+    if (!ticket) return;
     const sessionId = this.#host.sessionId;
     signal({ kind: "permission_started", sessionId });
-    let decision: "allow_once" | "deny" = "deny";
-    try {
-      // Without a handler the call stays unapproved and is answered at once.
-      const outcome = await handlers.onPermissionRequest?.({ toolCallId: event.toolCallId, title: event.tool, options: APPROVAL_OPTIONS, tool: { name: event.tool, rawInput: event.arguments }, raw: event }, cancelled);
-      if (outcome?.outcome === "selected" && outcome.optionId === "allow_once") decision = "allow_once";
-    } catch (error) {
-      this.#log.warn("native_approval_handler_failed", { requestId: event.requestId, error: String(error) });
-    }
-    try {
-      // A late answer finds the request closed: the harness ignores it, and so does the host.
-      if (!cancelled.aborted) await this.#host.respondApproval(event.requestId, decision);
-    } catch (error) {
-      this.#log.warn("native_approval_response_failed", { requestId: event.requestId, error: String(error) });
-    } finally {
-      signal({ kind: "permission_ended", sessionId });
-    }
+    try { await runNativeApproval(ticket, event, handlers, cancelled, this.#log); }
+    finally { signal({ kind: "permission_ended", sessionId }); }
   }
 
   /** Interrupts exactly this turn. Does nothing once it has ended in the harness. */
