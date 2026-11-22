@@ -162,3 +162,45 @@ tests and 3595 assertions across 45 files. Full root `bun test ./test` passed
 1411 tests, 12054 assertions and 35 snapshots across 131 files, including all
 six new real-stdio operator cases. Both suites had zero failures.
 Independent review is pending.
+
+## Closure and retrospective
+
+Clad approved Gate 4 and the operator controls slice at
+`95670a277aa1f2461e37e3fe3cb798edb0952f0d`. The independent clean-checkout
+gate passed both typechecks, all 334 harness tests with
+`bun test ./test --timeout 30000`, and all 1,411 root tests with
+`bun test ./test`. The root run included all six real-stdio operator
+checkpoints. The reviewer confirmed that the snapshot counter measures actual
+successful storage snapshot calls.
+
+The accepted chain starts at base `3585cf3`. Gate 1 approved the contract at
+`6f04767fbdd240f6f685a70ff3fb47d41d839916`. Gate 2 approved the focused
+protocol and SQLite reads at `47a0c1802d2d5aadc63586ad48ab7e26d3aa797e`.
+Gate 3 approved host controls and attachment at
+`d107412cebc90380a5e8a43638ce1e5a1c1bf113`. Gate 4 is the accepted behavior
+revision. This closure records that approval without changing behavior.
+
+Moving the minimal host cutover into Gate 2 kept the wire replacement and
+its existing consumers on the same verification gate. Review found that
+indexed entry ranges still depended on parsing the large model metadata
+record. The scalar metadata query, sequence-keyed reply ID projection, and
+committed query-plan regression closed that gap. Real stdio barriers then
+verified observation and recovery while another channel could continue,
+as well as durable catch-up after losing a stream.
+
+Accepted limits and coverage caveats
+
+- Explicit usage reads scan every model-call page, including when scoped to
+  a channel.
+- Repair of an abandoned running turn reads the full model metadata record
+  once during recovery. Clean reopen skips that record.
+- Inference context assembly reads a full snapshot per inference, with a cost
+  that grows with history. The 10,000-record gate measured open, observe,
+  paging, and targeted recovery separately from that inference work.
+- Catch-up callers own the durable commit of each page and its position, and
+  use stable message IDs to deduplicate.
+- The 10,000-record fixture pages backward after the held turn is
+  interrupted. The reattachment and catch-up tests cover the overlap with
+  live delivery.
+- The unconfirmed Restart checkpoint exercises connection loss before
+  interruption confirmation.
