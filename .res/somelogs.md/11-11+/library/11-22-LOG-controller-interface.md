@@ -93,3 +93,10 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   extracted to `src/handoff-options.ts`; report `9016c0c`, [report](reports/11-22-REPORT-native-fixes.md)). Two
   full `./test` runs green, 1,406 in 131 files; snapshots unchanged; `agent-session.ts` 4,641 → 4,604, `host.ts`
   761. Sent to clad2a for review.
+- Native fixes review in from clad2a, `b3519fb` ([review](reports/11-22-REVIEW-native-fixes.md)): no blocking
+  findings; the new tests fail on the old code; both probes now refuse. M2 note: native send pushes only text, so
+  turning on image support must forward the parts in the same change.
+- **B1 and B2 gate passed** ([gate](../.plan-execution/status/11-22-GATE-B-verify.md)) on `9016c0c`: two full
+  `./test` runs green, 1,406 in 131 files; no snapshot changes; no large file grew.
+- **Spec 1 verification complete.** Ready for the user to merge `controller-interface-verify` (and this log and the
+  reviews) into alpha.
