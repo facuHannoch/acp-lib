@@ -781,3 +781,5 @@ export type { MediaStore, MediaInfo, StoredMedia, MediaConfig } from "./media/st
 export type { MediaCaptureLevel } from "./media/capture.ts";
 
 export type { SharedFile, SharedFilePage, SharedFileQuery, SharedFilesPersistence } from "./media/files.ts";
+
+export type * from "./persistence/worker-delivery-contract.ts";

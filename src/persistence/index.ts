@@ -120,3 +120,5 @@ export type { MediaStore, MediaInfo, StoredMedia } from "../media/store.ts";
 export type { ChannelPersistence } from "./channels.ts";
 
 export type { SharedFile, SharedFilePage, SharedFileQuery, SharedFilesPersistence } from "../media/files.ts";
+
+export type * from "./worker-delivery-contract.ts";

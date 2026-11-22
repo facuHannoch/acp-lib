@@ -12,11 +12,11 @@ owns assignment identity, completion recovery, and selection of the target
 channel. Worker delivery uses the agreed
 [callback policy metadata](../../tools-and-callbacks/0002-AMENDMENT-callback-policy/SPEC.md).
 
-The generic `channel/notify` path can be built and verified before the
-orchestrator is ready. The worker-delivery milestone needs an actual worker
-backend that can recover a completed result after acp-client exits. A fake
-worker can test the delivery contract during development. Acceptance of the
-restart guarantee requires the first supported backend's recovery path.
+The generic `channel/notify` path is implemented independently of the
+orchestrator. The worker-delivery milestone uses a supported ACP worker's
+committed final conversation record as the recovery source. A fake worker can
+test delivery mechanics, but the recovery gate exercises an actual supported
+ACP worker path and a replacement acp-client process.
 
 Follow the [architecture](../../../../ARCHITECTURE.md) and
 [contribution rules](../../../../AGENTS.md). Record contract changes and shared
@@ -51,20 +51,23 @@ different destination and acknowledgment contract.
 
 | Gate | Work | Evidence required |
 | --- | --- | --- |
-| **1. Contracts and recovery proof** | Record notice shape, owning host authority, read-only duplicate lookup, signature semantics, typed refusals, and storage and archive compatibility. Define assignment correlation, redirect versus staging commit order, and delivery transitions. Trace worker completion to a durable recovery source on the first supported backend. | Typecheck changed contracts. Demonstrate that a replacement acp-client can retrieve the completed result by assignment ID after the first process loses the event before staging. Pin the backend and document the path. If no backend provides it, the generic harness work can proceed and worker-delivery acceptance stays open. |
+| **1. Contracts and recovery proof** | Record notice shape, authority, duplicate lookup, signatures, refusals and compatibility. Define durable assignment-to-worker-operation correlation, redirect and staging order, and the uncertainty outcome. Trace the final worker record to a supported ACP backend. | Typecheck changed contracts. Kill acp-client after the worker's final record commits but before result/notice staging; recover the exact result and provenance by assignment ID without redispatch. Separately kill before the final record commits and verify an uncertainty notice when no reliable result is recoverable. Pin the backend and evidence. |
 | **2. Harness inbox, rendering, and wire** | Extend storage and rendering behind the agreed contracts, then wire the scheduler and public client in separate dependent changes. Preserve message and internal-notice behavior. | Run shared memory and SQLite inbox conformance and a golden context test. Verify duplicate receipts during suspension and read-only incompatible opens. Test conflicts, refusal of new work, inherited policy, legacy signatures, and archive round-trips. Exercise both transports, including detached idle and active-turn delivery. |
 | **3. acp-client durable handoff** | Wire assignment recovery, result and notice staging, and delivery through the native host. Keep worker results and delivery outcomes inspectable. | Test transaction rollback, repeated completion, both redirect/staging commit orders, and a crash after redirect. Verify one intent per completion, channel changes before delivery, retries after resume or confirmation of an earlier change on the same connection, and explicit retry after `invalid_policy`. |
 | **4. Public checkpoint** | Drive a worker completion through the supported recovery path and a real scripted stdio harness. Use deterministic barriers at the commit boundaries. | Pass the crash scenarios below. Verify the committed reply is recoverable after reattach and that notices stay outside the conversation count. Run both packages' typechecks and full offline test suites. Record the reviewed revision, backend, and test evidence. |
 
 ## Final driven acceptance
 
-Use a persisted Agent and a worker completion that can be recovered independently
-of the acp-client process. Use the public client to drive the real harness and
+Use a persisted Agent and a committed final ACP worker conversation record that
+a replacement acp-client can recover. Use the public client to drive the real harness and
 SQLite for Agent and harness persistence. Run without inference credentials.
 
-1. Have a guest-delegated worker complete for an owner channel while the
-   harness is offline. Kill acp-client before it stages the notice. Reopen and
-   recover the completion by assignment ID with the original provenance.
+1. Have a guest-delegated ACP worker complete for an owner channel while the
+   harness is offline. Kill acp-client after its final worker record commits
+   and before result and notice staging. Reopen and recover the completion by
+   assignment ID with the original provenance. Separately kill before the
+   final record commits and verify the uncertain-outcome fallback if no
+   reliable completion can be recovered.
 2. In a separate run, kill acp-client after result and notice staging commit
    and before any send. Reopen with a pending channel suspension. Verify the
    suspension applies first, then resume live and deliver the retained notice.

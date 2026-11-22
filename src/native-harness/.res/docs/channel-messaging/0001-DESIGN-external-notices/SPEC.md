@@ -105,19 +105,31 @@ notices join through normal inbox steering when delivered.
 
 ## Durable worker handoff
 
-For persisted Agents, a completed worker result must survive an acp-client
-crash before the harness accepts its notice. Before work starts, persist the
-stable assignment identity and delivery provenance needed to recover the
-completion, including the destination and originating policy names. Use a
-worker backend that retains completion until acknowledgment or can recover
-the result by assignment ID. Verify that capability for the first backend.
+For persisted Agents, record the assignment identity, worker and operation
+correlation, destination, and originating policy names before dispatch. An
+ACP worker's final result becomes recoverable when its final worker conversation
+record commits to the Agent database. A replacement acp-client uses the
+persisted assignment correlation to find that record and stage its notice.
+Prove this path for the first supported ACP worker backend.
 
-In one Agent database transaction, record the worker result and stage its
-pending notice with a stable delivery ID, destination, and exact payload.
-Confirm staging to the worker backend only after the transaction commits.
-On restart, recover completed assignments that have not been staged, and
-retry notices already staged. A repeated completion resolves to the same
-result and notice ID.
+If the process dies before a reliable final record commits, the outcome is
+uncertain even if the worker may have completed or changed its environment.
+On restart, inspect the worker's saved records and use any supported backend
+recovery path. If no reliable final result is found, durably stage an
+interruption notice that identifies the assignment and worker and states that
+the outcome is uncertain. The agent may inspect the worker or choose what to
+do next. Do not automatically repeat the work. Provider-side recovery of a
+result that never reached a durable worker record is a separate follow-up.
+
+In one Agent database transaction, record the assignment result and stage its
+pending notice with a stable delivery ID, destination, and exact payload. The
+worker conversation's final record may already be committed and is the source
+for recovering a result before staging. Confirm staging to a worker backend
+that requires acknowledgment only after the transaction commits. On restart,
+recover finalized assignments that have not been staged, and retry notices
+already staged. A repeated completion resolves to the same result and notice
+ID. An uncertainty notice likewise has a stable delivery ID and is retried
+without replaying the assignment.
 
 When a redirect takes effect, persist the assignment's destination and policy
 provenance together. Staging reads that assignment state in the same
@@ -174,12 +186,15 @@ record shape.
    available through worker status.
 6. Verify the external notice appears in the agent timeline and does not
    consume the conversation page's message count.
-7. Crash acp-client after the worker finishes but before staging, after the
-   staging transaction commits but before sending, and after harness acceptance
-   but before acknowledgment. Verify the result is recoverable at each boundary
-   and a deliverable notice has exactly one accepted inbox item. In the last
-   case, retry must start no additional turn, even if the original turn was
-   interrupted. Reply recovery is exercised separately in case 1.
+7. Crash acp-client after the worker's final record commits but before result
+   and notice staging, after staging commits but before sending, and after
+   harness acceptance but before acknowledgment. Recover by assignment ID
+   from durable state and verify one accepted inbox item. In the last case,
+   retry must start no additional turn, even if the original turn was
+   interrupted. Separately crash before the final worker record commits: if no
+   reliable result can be recovered, verify one durable uncertainty notice,
+   original provenance, and no automatic redispatch. Reply recovery is
+   exercised separately in case 1.
 8. Export and import a pending notice and an already taken notice. Verify
    attribution and policy metadata survive and retries return duplicate
    receipts without taking either notice twice.
