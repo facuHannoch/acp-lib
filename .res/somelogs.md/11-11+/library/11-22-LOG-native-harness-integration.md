@@ -206,3 +206,6 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   `"cancel"` → ask, `"approve"` → allow; deny selects `reject_once` on ACP (native: harness `deny`); ask refuses at
   once until R3; native approvals use only `permissionRule` and the default, never the ACP rules (matching R3's
   order), with `default: "allow"` documented as also approving native. Step 3 released to cod2a.
+- R2 step 3 in from cod2a: implementation and migration `0ef8da4`, raw ACP permission assertions `43db21a` (their own
+  commit), report `928f865`. Full `./test` 1,488 in 136 files green, A1 snapshots unchanged; `client.ts` 1,077 →
+  1,062, `agent-session.ts` 4,567 → 4,565. Sent to clad2a with the final R2 review.
