@@ -201,3 +201,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   `kind:execute`; a changelog line for `tool`.
 - cod2a merged alpha `29715a3` (`e87907f`), report `ead74b8`. **Steps 1–2 gate passed**
   ([gate](../.plan-execution/status/11-22-GATE-R2-steps1-2.md)): 1,484 in 136 files. Step 3 waits on the user.
+- User decisions for R2 step 3: rules first (the level comes from `permissionRule`, then the most restrictive rule,
+  then the default; only ask goes to the prompt's handler); an omitted setting means `{ default: "ask" }`;
+  `"cancel"` → ask, `"approve"` → allow; deny selects `reject_once` on ACP (native: harness `deny`); ask refuses at
+  once until R3; native approvals use only `permissionRule` and the default, never the ACP rules (matching R3's
+  order), with `default: "allow"` documented as also approving native. Step 3 released to cod2a.
