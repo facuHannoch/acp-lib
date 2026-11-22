@@ -43,3 +43,31 @@ and assignment policy retention remain orchestrator acceptance dependencies.
 Final root `bun test ./test` passed 1422 tests with no failures, 12113
 assertions, and 35 snapshots. Both typechecks passed on the final tree.
 Independent implementation review is pending.
+
+## Closure and retrospective
+
+Clad approved implementation `aca1fe5e524181b2e9c72023b8a6c7d62a9c2a34`
+on contract `cc1105a4591dee18d200c488e4a822bf3246dbda`, from base
+`2b5dea11749dbc1f3968c323093d87e92d5f4930`. Both independent package
+typechecks passed. The independent full harness suite passed 351 tests
+with zero failures, including the five tests that failed under load in
+the implementer's broad run and passed on isolated rerun.
+
+The independent full root run passed 1421 tests with one load-sensitive
+failure in the unchanged operator 10,000-record stdio checkpoint. Its
+two-second wait for held inference expired. Two isolated reruns passed.
+The implementer's full root run passed all 1422 tests. Test deadlines were
+kept as configured.
+
+Capturing contributors at authorization kept approval and dispatch tied to
+the same policy evidence even when a pending input arrived. The mixed
+notice test verified both sides of that boundary: the authorized callback
+received guest and owner, then the pending input's deny applied after take.
+Shared client validation gave both transports the same typed failure path.
+Malformed metadata reaches no handler, and a consumer rejection is paired
+once without retry.
+
+Orchestrator acceptance remains separately owned, including worker-rule
+composition, empty-list defaults, unknown-name refusal, session-bound
+mappings, and retaining each assignment's resolved rules. This closure
+covers the harness wire and acp-client handler context.
