@@ -24,7 +24,7 @@ CREATE UNIQUE INDEX one_live_turn ON turns(channel_id) WHERE status IN ('running
 CREATE TABLE entries (
   seq INTEGER PRIMARY KEY, at TEXT NOT NULL, channel_id TEXT NOT NULL REFERENCES channels(channel_id),
   turn_id INTEGER NOT NULL REFERENCES turns(turn_id), sender TEXT NOT NULL, kind TEXT,
-  source_channel_id TEXT, item_id TEXT, message TEXT NOT NULL);
+  source_channel_id TEXT, item_id TEXT, message TEXT NOT NULL, external_source TEXT);
 CREATE INDEX entries_by_turn ON entries(turn_id, seq);
 CREATE TABLE items (
   item_id TEXT PRIMARY KEY, kind TEXT NOT NULL, channel_id TEXT NOT NULL REFERENCES channels(channel_id),
@@ -32,7 +32,7 @@ CREATE TABLE items (
   accepted_seq INTEGER NOT NULL UNIQUE, accepted_at TEXT NOT NULL,
   milestone TEXT NOT NULL CHECK (milestone IN ('received','taken','delivered','seen','withdrawn')),
   turn_id INTEGER REFERENCES turns(turn_id), entry_seq INTEGER REFERENCES entries(seq),
-  withdrawn_at TEXT, policy_metadata TEXT NOT NULL,
+  withdrawn_at TEXT, policy_metadata TEXT NOT NULL, external_source TEXT,
   CHECK ((milestone IN ('received','withdrawn')) = (turn_id IS NULL)),
   CHECK ((milestone = 'withdrawn') = (withdrawn_at IS NOT NULL)));
 CREATE INDEX items_pending ON items(channel_id, accepted_seq) WHERE milestone = 'received';
@@ -84,6 +84,9 @@ function upgradeFromFormat3(db: Database): void {
     updateTurn.run(JSON.stringify(state), turn.turn_id);
   }
 }
+function addExternalSource(db: Database): void {
+  db.exec("ALTER TABLE items ADD COLUMN external_source TEXT; ALTER TABLE entries ADD COLUMN external_source TEXT");
+}
 const NUMERIC: (keyof Meta)[] = ["formatVersion", "revision", "nextTurnId", "nextItemNumber"];
 const KEYS: (keyof Meta)[] = ["sessionId", "createdAt", "compatibilityKey", "lifecycle", ...NUMERIC];
 
@@ -91,6 +94,8 @@ type Row = Record<string, any>;
 const item = (row: Row): StoredItem => ({
   itemId: row.item_id, kind: row.kind, channelId: row.channel_id, senderId: row.sender_id,
   ...(row.source_channel_id === null ? {} : { sourceChannelId: row.source_channel_id }), text: row.text,
+  ...(row.external_source == null ? {} : { externalSource: row.external_source }),
+  ...(row.kind === "external_notice" ? { inheritedPolicyNames: JSON.parse(row.policy_metadata).inherited } : {}),
   signature: row.signature, acceptedSeq: row.accepted_seq, acceptedAt: row.accepted_at, milestone: row.milestone,
   policy: JSON.parse(row.policy_metadata),
   ...(JSON.parse(row.policy_metadata).explicit === undefined ? {} : { explicitPolicy: JSON.parse(row.policy_metadata).explicit }),
@@ -101,6 +106,7 @@ const channel = (row: Row): ChannelRow => ({ channelId: row.channel_id,
 const turn = (row: Row): TurnRow => ({ turnId: row.turn_id, channelId: row.channel_id, startedSeq: row.started_seq,
   startedAt: row.started_at, compatibilityKey: row.compatibility_key, state: JSON.parse(row.state) });
 const entry = (row: Row): TimelineEntry => ({ seq: row.seq, at: row.at, channelId: row.channel_id, turnId: row.turn_id, from: row.sender,
+  ...(row.external_source == null ? {} : { externalSource: row.external_source }),
   ...(row.kind === null ? {} : { kind: row.kind }), ...(row.source_channel_id === null ? {} : { sourceChannelId: row.source_channel_id }),
   ...(row.item_id === null ? {} : { itemId: row.item_id }), ...(typeof row.reply_id === "string" ? { messageId: row.reply_id } : {}), message: JSON.parse(row.message) });
 
@@ -164,7 +170,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     addParticipant: q("INSERT OR IGNORE INTO participants VALUES (?, (SELECT COUNT(*) FROM participants))"),
     participants: q("SELECT participant_id FROM participants ORDER BY position"),
     item: q("SELECT * FROM items WHERE item_id = ?"),
-    putItem: q(`INSERT INTO items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    putItem: q(`INSERT INTO items (item_id, kind, channel_id, sender_id, source_channel_id, text, signature, accepted_seq, accepted_at, milestone, turn_id, entry_seq, withdrawn_at, policy_metadata, external_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(item_id) DO UPDATE SET milestone = excluded.milestone, turn_id = excluded.turn_id, entry_seq = excluded.entry_seq,
         withdrawn_at = excluded.withdrawn_at, signature = excluded.signature, policy_metadata = excluded.policy_metadata`),
     pending: q("SELECT * FROM items WHERE channel_id = ? AND milestone = 'received' ORDER BY accepted_seq"),
@@ -175,7 +181,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     live: q("SELECT * FROM turns WHERE channel_id = ? AND status IN ('running','suspended')"), turns: q("SELECT * FROM turns ORDER BY turn_id"),
     markReplyIdsClean: q("UPDATE meta SET value = '0' WHERE key = 'replyIdsDirty'"),
     addReplyId: q("INSERT INTO entry_reply_ids VALUES (?, ?)"),
-    addEntry: q("INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+    addEntry: q("INSERT INTO entries (seq, at, channel_id, turn_id, sender, kind, source_channel_id, item_id, message, external_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
     entriesOf: q("SELECT * FROM entries WHERE turn_id = ? ORDER BY seq"), entries: q("SELECT * FROM entries ORDER BY seq"),
   };
   let depth = 0;
@@ -227,7 +233,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     participants: () => s.participants.all().map(row => row.participant_id),
     item(id) { const row = s.item.get(id); return row ? item(row) : undefined; },
     putItem(i) { s.putItem.run(i.itemId, i.kind, i.channelId, i.senderId, i.sourceChannelId ?? null, i.text, i.signature,
-      i.acceptedSeq, i.acceptedAt, i.milestone, i.turnId ?? null, i.entrySeq ?? null, i.withdrawnAt ?? null, JSON.stringify(i.policy ?? { resolved: "__legacy_allow", inherited: [] })); },
+      i.acceptedSeq, i.acceptedAt, i.milestone, i.turnId ?? null, i.entrySeq ?? null, i.withdrawnAt ?? null, JSON.stringify(i.policy ?? { resolved: "__legacy_allow", inherited: [] }), i.externalSource ?? null); },
     pendingItems: channelId => s.pending.all(channelId).map(item),
     itemsOfTurn: turnId => s.ofTurn.all(turnId).map(item),
     items: () => s.items.all().map(item),
@@ -243,7 +249,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     policyNames: () => s.policyNames.all().map(row => String(row.name)),
 
     addEntry(e) { s.addEntry.run(e.seq, e.at, e.channelId, e.turnId, e.from, e.kind ?? null, e.sourceChannelId ?? null,
-      e.itemId ?? null, JSON.stringify(e.message));
+      e.itemId ?? null, JSON.stringify(e.message), e.externalSource ?? null);
       if (e.messageId !== undefined) s.addReplyId.run(e.seq, e.messageId); },
     entriesOfTurn: turnId => s.entriesOf.all(turnId).map(entry),
     entries: () => s.entries.all().map(entry),
@@ -310,7 +316,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           || (options.mode !== "create" && options.mode !== "open")) throw new Fail("invalid_input", "Open needs a mode, sessionId and compatibilityKey");
         let config; try { config = options.config === undefined ? undefined : validateManagedConfig(options.config); } catch (error) { throw new Fail("invalid_input", String(error)); }
         if (options.mode === "create") checkScriptIdentity(identity.compatibilityKey, options.requiredScriptDigest);
-        if (options.mode === "create") publish(path, { sessionId: identity.sessionId, formatVersion: 5, createdAt: new Date().toISOString(),
+        if (options.mode === "create") publish(path, { sessionId: identity.sessionId, formatVersion: 6, createdAt: new Date().toISOString(),
           compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         else if (!existsSync(path)) throw new Fail("not_found", `No session exists at ${path}`);
         db = new Database(path, { readwrite: true, create: false });
@@ -322,7 +328,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         try {
           try { meta = inspect.getMeta(); }
           catch { throw new Fail("incompatible", "File is not a readable harness session"); }
-          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
+          if (meta.formatVersion !== 2 && meta.formatVersion !== 3 && meta.formatVersion !== 4 && meta.formatVersion !== 5 && meta.formatVersion !== 6) throw new Fail("incompatible", `Unsupported storage format: ${meta.formatVersion}`);
           if (meta.sessionId !== identity.sessionId) throw new Fail("incompatible", "File holds a different session");
           checkScriptIdentity(meta.compatibilityKey, options.requiredScriptDigest);
         } finally { inspect.dispose(); db.exec("ROLLBACK"); }
@@ -335,7 +341,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           const owner = db, clone = Database.deserialize(owner.serialize());
           try {
             const view = sqliteTables(clone);
-            view.transaction(() => { if (meta.formatVersion === 2) upgradeFromFormat2(clone); upgradeFromFormat3(clone);
+            view.transaction(() => { if (meta.formatVersion === 2) upgradeFromFormat2(clone); upgradeFromFormat3(clone); addExternalSource(clone);
               view.setMeta({ ...view.getMeta(), formatVersion: 4 }); refreshReplyIds(clone); });
             return { ok: true, value: createEngine(view, identity.compatibilityKey, () => { view.dispose(); clone.close(true); owner.close(true); }, config, true), revision: meta.revision };
           } catch (error) { clone.close(); throw error; }
@@ -343,8 +349,10 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
         const tables = sqliteTables(db), owner = db;
         tables.transaction(() => {
           refreshReplyIds(owner);
-          if (meta.formatVersion < 4 || referencesCompatible(tables, config))
-            recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); } : undefined);
+          const compatible = meta.formatVersion < 4 || referencesCompatible(tables, config);
+          if (meta.formatVersion >= 4 && meta.formatVersion < 6 && compatible) addExternalSource(owner);
+          if (compatible)
+            recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined);
         });
         return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config), revision: tables.getMeta().revision };
       } catch (error) {

@@ -462,7 +462,7 @@ function seedOperatorHistory(path: string, alice: string, bob: string) {
   try {
     db.transaction(() => {
       const addTurn = db.prepare("INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)");
-      const addEntry = db.prepare("INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      const addEntry = db.prepare("INSERT INTO entries (seq, at, channel_id, turn_id, sender, kind, source_channel_id, item_id, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
       const reason = "Interrupted fixture with durable outcome ".repeat(5);
       const timestamp = new Date(0).toISOString();
       const key = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='compatibilityKey'").get()!.value;

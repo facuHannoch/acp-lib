@@ -144,7 +144,7 @@ export function createMemoryStorageAdapter(): SessionStorageAdapter {
         if (options.mode === "create") {
           if (data) throw new Fail("already_exists", "A session already exists at this location");
           checkScriptIdentity(identity.compatibilityKey, options.requiredScriptDigest);
-          data = empty({ sessionId: identity.sessionId, formatVersion: 5, createdAt: new Date().toISOString(),
+          data = empty({ sessionId: identity.sessionId, formatVersion: 6, createdAt: new Date().toISOString(),
             compatibilityKey: identity.compatibilityKey, lifecycle: "running", revision: 0, nextTurnId: 1, nextItemNumber: 1 });
         } else {
           if (!data) throw new Fail("not_found", "No session exists at this location");

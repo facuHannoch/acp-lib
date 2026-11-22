@@ -85,3 +85,12 @@ test("every inference rebuilds from committed storage, including continuation af
   expect(JSON.stringify(b[1])).toContain("Design changed");
   expect(b[1]?.at(-1)).toEqual({ role: "tool", callId: "t", content: "result" });
 });
+
+test("external notice golden context uses host attribution without a participant or source turn", () => {
+  const entries: ContextEntry[] = [{ seq: 2, at, channelId: "alice", turnId: 1, from: "worker",
+    kind: "external_notice", externalSource: "worker", message: { role: "user", content: "checked" } }];
+  const context = buildContext(entries, "system", { channelId: "alice", turnId: 1 });
+  expect(context[1]?.content).toStartWith('Current channel: "alice"\nTurn triggered by an external notice\n');
+  expect(context[2]).toEqual({ role: "user", content: 'External notice from "worker" to channel "alice":\nchecked' });
+  expect(buildSharedContext(entries, "system")[1]?.content).toContain('"externalSource":"worker"');
+});

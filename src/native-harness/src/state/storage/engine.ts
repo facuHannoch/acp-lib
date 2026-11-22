@@ -1,7 +1,7 @@
 import type { OperatorStorageReads } from "../../contracts/operator-controls.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import type { ManagedConfig } from "../../contracts/config-permissions.ts";
-import { policyItemSignature, contributingPolicies, fingerprint } from "./policy-metadata.ts";
+import { externalNoticeSignature, policyItemSignature, contributingPolicies, fingerprint } from "./policy-metadata.ts";
 import { validateManagedConfig } from "../../util/config.ts";
 import type {
   AcceptItem, ChannelLifecycle, SessionArchive, SessionLifecycle, SessionStorage, StorageErrorCode, StorageResult,
@@ -102,8 +102,8 @@ function cleanName(name: unknown): string {
 }
 
 /** The contract's exact signature; identical for both adapters and archives. */
-export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy">): string {
-  return policyItemSignature(item);
+export function signatureOf(item: Pick<AcceptItem, "kind" | "channelId" | "senderId" | "sourceChannelId" | "text" | "explicitPolicy" | "externalSource" | "inheritedPolicyNames">): string {
+  return item.kind === "external_notice" ? externalNoticeSignature(item.channelId, item.externalSource, item.text, item.inheritedPolicyNames ?? []) : policyItemSignature(item);
 }
 
 /** Strict JSON data: what survives a JSON round trip unchanged. */
@@ -153,7 +153,7 @@ function checkMessage(message: unknown): Stored {
 }
 
 function session(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 5, createdAt: meta.createdAt,
+  return { sessionId: meta.sessionId, formatVersion: 6, createdAt: meta.createdAt,
     lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }
 
@@ -220,6 +220,7 @@ export function recover(tables: Tables, upgrade?: () => void): void {
       }
       if (changed) tables.setModelState(state);
     }
+    if (meta.formatVersion < 6) { meta.formatVersion = 6; changed = true; }
     if (changed) tables.setMeta({ ...meta, revision: meta.revision + 1 });
   });
 }
@@ -273,7 +274,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     for (const item of pending) {
       const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId: turn.turnId,
         from: item.senderId, kind: item.kind, ...(item.sourceChannelId ? { sourceChannelId: item.sourceChannelId } : {}),
-        itemId: item.itemId, message: { role: "user", content: item.kind === "channel_notice" ? item.text
+        ...(item.externalSource !== undefined ? { externalSource: item.externalSource } : {}),
+        itemId: item.itemId, message: { role: "user", content: item.kind !== "participant_message" ? item.text
           : `Participant: ${JSON.stringify(item.senderId)}\n\n${item.text}` } };
       tables.addEntry(entry);
       const taken: StoredItem = { ...item, milestone: "taken", turnId: turn.turnId, entrySeq: entry.seq };
@@ -419,7 +421,13 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       const page = calls.slice(at + 1, at + 1 + limit); return { calls: page, ...(at + 1 + limit < calls.length ? { next: page.at(-1)!.callId } : {}) };
     }, true),
     acceptItem: input => run(meta => {
-      requireCompatible();
+      const external = input?.kind === "external_notice";
+      if (!external) requireCompatible();
+      if (external && (!text(input.itemId) || !text(input.channelId) || !text(input.text)
+        || (input.externalSource !== undefined && !text(input.externalSource))
+        || !Array.isArray(input.inheritedPolicyNames) || !Array.from(input.inheritedPolicyNames).every(text)
+        || input.sourceChannelId !== undefined || input.sourceTurnId !== undefined || input.explicitPolicy !== undefined))
+        fail("invalid_input", "Invalid external notice");
       const shaped = !!input && typeof input === "object"
         && [input.kind, input.channelId, input.senderId, input.text].every(value => typeof value === "string")
         && (input.sourceChannelId === undefined || typeof input.sourceChannelId === "string")
@@ -432,15 +440,24 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         }
       }
       const notice = shaped && input.kind === "channel_notice";
-      if (!shaped || !(notice || input.kind === "participant_message") || ![input.channelId, input.senderId, input.text].every(text)
+      if (!shaped || !(notice || external || input.kind === "participant_message") || ![input.channelId, input.senderId, input.text].every(text)
         || (input.itemId !== undefined && !text(input.itemId))
         || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
         fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
+      if (external) {
+        if (incompatibleViewOnly) fail("incompatible", "Stored policy is not available in the open configuration");
+        requireCompatible();
+        if (meta.lifecycle !== "running") fail("not_running", `Session is ${meta.lifecycle}; new work is not admitted`);
+        const channel = channelOf(input.channelId);
+        if (channel.lifecycle !== "open") fail("channel_suspended", `Channel ${channel.channelId} is ${channel.lifecycle}`);
+      }
       const target = tables.channel(input.channelId);
       if (notice && input.explicitPolicy != null) fail("invalid_input", "Notices cannot override policy");
       if (notice && ownerSnapshot && input.sourceTurnId === undefined) fail("invalid_input", "A notice needs its executing source turn");
       const resolved = resolve(input.explicitPolicy, target?.policy);
-      let inherited: string[] = [];
+      let inherited: string[] = external ? [...new Set(input.inheritedPolicyNames!)].sort() : [];
+      if (external) for (const name of inherited)
+        if (name === "__legacy_allow" || !Object.hasOwn(activeConfig.policies, name)) fail("invalid_policy", `Unknown or reserved policy: ${name}`);
       if (notice && input.sourceTurnId !== undefined) {
         const source = tables.turn(input.sourceTurnId);
         if (!source || source.channelId !== input.sourceChannelId || source.state.status !== "running") fail("invalid_input", "Invalid notice source turn");
@@ -461,17 +478,18 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
           if (n >= meta.nextItemNumber) meta.nextItemNumber = n + 1;
         }
       }
-      const item: StoredItem = { itemId, kind: input.kind, channelId: input.channelId, senderId: input.senderId,
+      const item: StoredItem = { itemId, kind: input.kind, channelId: input.channelId, senderId: external ? input.externalSource ?? "host" : input.senderId,
+        ...(external ? { inheritedPolicyNames: inherited, ...(input.externalSource === undefined ? {} : { externalSource: input.externalSource }) } : {}),
         ...(notice ? { sourceChannelId: input.sourceChannelId } : {}), ...(input.explicitPolicy == null ? {} : { explicitPolicy: input.explicitPolicy }), text: input.text,
         signature: signatureOf(input), policy: { ...(input.explicitPolicy == null ? {} : { explicit: input.explicitPolicy }), resolved, inherited },
         acceptedSeq: seq(meta), acceptedAt: now(), milestone: "received" };
-      if (!notice) {
+      if (!notice && !external) {
         if (!target) tables.putChannel({ channelId: item.channelId, lifecycle: "open" });
         tables.addParticipant(item.senderId);
       }
       tables.putItem(item);
       return { item, duplicate: false };
-    }),
+    }, input?.kind === "external_notice"),
 
     beginTurn: channelId => run(meta => {
       requireCompatible();
@@ -759,7 +777,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         && !snapshot.channels.some(channel => channel.lifecycle === "suspending")
         && !snapshot.items.some(item => item.milestone === "received");
       if (meta.lifecycle !== "suspended" && !idle) fail("busy", "Export needs an idle or cleanly suspended session");
-      const archive: SessionArchive = { format: "harness-session", archiveVersion: 4, exportedAt: now(), snapshot,
+      const archive: SessionArchive = { format: "harness-session", archiveVersion: 5, exportedAt: now(), snapshot,
         allocation: { nextTurnId: meta.nextTurnId, nextSeq: meta.revision + 1, nextItemNumber: meta.nextItemNumber } };
       return archive;
     }),

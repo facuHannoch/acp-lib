@@ -141,9 +141,9 @@ export interface AcceptItem {
  * retained for deduplication, so a retry cannot make it pending again. */
 export interface StoredItem extends Required<Pick<AcceptItem, "itemId">>, Omit<AcceptItem, "itemId"> {
   policy?: import("./config-permissions.ts").ItemPolicy;
-  /** Lowercase hex SHA-256 of the UTF-8 bytes of
-   * `JSON.stringify([kind, channelId, senderId, sourceChannelId ?? null, text])`
-   * (a JSON array, no extra whitespace). Identical in every adapter and archive. */
+  /** Lowercase SHA-256 of the UTF-8 identity array in decision 0025.
+   * External notices use source and the sorted inherited set. Existing
+   * participant and internal notice formulas retain their explicit override. */
   signature: string;
   /** Global sequence position of acceptance; acceptance order within a channel. */
   acceptedSeq: number;
@@ -223,7 +223,8 @@ export interface StorageSnapshot {
 }
 
 /** Logical, adapter-independent session copy. JSON-serializable. Versioned
- * independently of `formatVersion`. Version 4 adds model call records and script reservations. */
+ * independently of `formatVersion`. Version 4 adds model call records and script reservations.
+ * Version 5 adds external notices. */
 export interface SessionArchive {
   format: "harness-session";
   archiveVersion: 5;

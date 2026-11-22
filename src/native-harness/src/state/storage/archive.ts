@@ -5,6 +5,7 @@ import { legacyItemSignature, policyItemSignature } from "./policy-metadata.ts";
 
 const bad = (message: string): never => { throw new Fail("invalid_archive", message); };
 const str = (value: unknown): value is string => typeof value === "string" && value.length > 0;
+const nonblank = (value: unknown): value is string => str(value) && value.trim().length > 0;
 const int = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 const MILESTONES = ["received", "taken", "delivered", "seen", "withdrawn"];
 const CHANNEL_STATES = ["open", "suspended", "retired"];
@@ -13,7 +14,7 @@ const CHANNEL_STATES = ["open", "suspended", "retired"];
 export function validateSessionPayload(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "archive,config") bad("Invalid session file payload");
   const payload = value as { archive: SessionArchive; config: unknown };
-  if (![2, 3, 4].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
+  if (![2, 3, 4, 5].includes((payload.archive as { archiveVersion?: number })?.archiveVersion ?? 0)) bad("Invalid session file archive version");
   const archive = validateArchive(payload.archive);
   let config: ReturnType<typeof validateConfig>;
   try { config = validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { return bad(String(error)); }
@@ -29,7 +30,7 @@ export function validateSessionPayload(value: unknown) {
 export function validateArchive(value: unknown): SessionArchive {
   if (!isJson(value) || !value || typeof value !== "object") bad("Archive is not JSON data");
   const raw = value as any;
-  if (raw.format !== "harness-session" || ![1, 2, 3, 4].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
+  if (raw.format !== "harness-session" || ![1, 2, 3, 4, 5].includes(raw.archiveVersion)) bad("Unsupported archive format or version");
   const v1 = raw.archiveVersion === 1;
   const legacy = raw.archiveVersion < 3;
   if (!raw.snapshot || !raw.allocation || !raw.snapshot.session || !Array.isArray(raw.snapshot.channels)) bad("Archive is missing its snapshot or allocation state");
@@ -46,11 +47,14 @@ export function validateArchive(value: unknown): SessionArchive {
   const positions: Record<string, number> = {};
   if (old && Array.isArray(policyArchive.snapshot.timeline)) for (const entry of policyArchive.snapshot.timeline)
     if (entry.message?.role === "assistant") Object.defineProperty(positions, entry.channelId, { value: (Object.hasOwn(positions, entry.channelId) ? positions[entry.channelId]! : 0) + 1, writable: true, configurable: true, enumerable: true });
-  const archive: SessionArchive = old ? { ...policyArchive, archiveVersion: 4, snapshot: { ...policyArchive.snapshot,
-    session: { ...policyArchive.snapshot.session, formatVersion: 5 }, modelCalls: [], scriptPositions: positions } } : raw;
+  const previousFormat = [0, 2, 3, 4, 5, 6][raw.archiveVersion];
+  if (raw.snapshot.session.formatVersion !== previousFormat) bad("Unsupported session format");
+  const archive: SessionArchive = { ...policyArchive, archiveVersion: 5, snapshot: { ...policyArchive.snapshot,
+    session: { ...policyArchive.snapshot.session, formatVersion: 6 },
+    ...(old ? { modelCalls: [], scriptPositions: positions } : {}) } };
   const snapshot = archive.snapshot, allocation = archive.allocation;
   const { session, revision } = snapshot;
-  if (session.formatVersion !== 5 || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
+  if (session.formatVersion !== 6 || !str(session.sessionId) || !str(session.createdAt) || typeof session.compatibilityKey !== "string")
     bad("Unsupported session format");
   if (session.lifecycle !== "running" && session.lifecycle !== "suspended") bad("Archive was not exported from an idle or suspended session");
   if (!Number.isSafeInteger(revision) || revision < 0 || allocation.nextSeq !== revision + 1 || !int(allocation.nextTurnId) || !int(allocation.nextItemNumber))
@@ -94,6 +98,10 @@ export function validateArchive(value: unknown): SessionArchive {
     const turn = entry && turns.get(entry.turnId), message = entry?.message;
     if (!turn || !int(entry.seq) || entry.seq <= previous || entry.seq > revision || entry.channelId !== turn.channelId
       || !str(entry.at) || !str(entry.from) || !message) bad("Invalid timeline entry");
+    if (entry.kind === "external_notice" && (raw.archiveVersion !== 5 || message.role !== "user"
+      || !nonblank(entry.itemId) || entry.sourceChannelId !== undefined || (entry.externalSource !== undefined && !nonblank(entry.externalSource))
+      || entry.from !== (entry.externalSource ?? "host"))) bad("Invalid external timeline entry");
+    if (entry.kind !== "external_notice" && entry.externalSource !== undefined) bad("Unexpected external attribution");
     if (message.role === "user") { if (typeof message.content !== "string") bad("Invalid input entry"); }
     else if (message.role === "assistant") {
       if (!Array.isArray(message.calls)) bad("Invalid assistant entry");
@@ -155,13 +163,24 @@ export function validateArchive(value: unknown): SessionArchive {
   }
   for (const entry of snapshot.timeline) if (entry.messageId && !messageIds.has(entry.messageId)) bad("Unknown model message ID");
 
-  const ids = new Set<string>(), accepted = new Set<number>();
+  const ids = new Set<string>(), accepted = new Set<number>(), externalEntries = new Set<number>();
   for (const item of [...snapshot.items].sort((a, b) => (a?.entrySeq ?? 0) - (b?.entrySeq ?? 0))) {
     if (!item || !str(item.itemId) || ids.has(item.itemId) || !channels.has(item.channelId) || !MILESTONES.includes(item.milestone)
       || !int(item.acceptedSeq) || item.acceptedSeq > revision || accepted.has(item.acceptedSeq) || !str(item.acceptedAt)
       || (v1 && item.milestone === "withdrawn") || (item.milestone === "withdrawn") !== (item.withdrawnAt !== undefined)
       || (item.withdrawnAt !== undefined && !str(item.withdrawnAt))) bad("Invalid or duplicate item");
     accepted.add(item.acceptedSeq);
+    if (item.kind === "external_notice") {
+      const names = item.inheritedPolicyNames;
+      if (raw.archiveVersion !== 5 || item.sourceChannelId !== undefined || item.sourceTurnId !== undefined
+        || item.explicitPolicy !== undefined || item.senderId !== (item.externalSource ?? "host")
+        || !nonblank(item.itemId) || !nonblank(item.text)
+        || (item.externalSource !== undefined && !nonblank(item.externalSource))
+        || !Array.isArray(names) || names.some(name => !nonblank(name) || name === "__legacy_allow")
+        || JSON.stringify(names) !== JSON.stringify([...new Set(names)].sort())
+        || JSON.stringify(names) !== JSON.stringify(item.policy?.inherited)) bad("Invalid external notice metadata");
+    } else if (!["participant_message", "channel_notice"].includes(item.kind)
+      || item.externalSource !== undefined || item.inheritedPolicyNames !== undefined) bad("Invalid item kind or attribution");
     if (![item.kind, item.senderId, item.text].every(str) || item.signature !== signatureOf(item)) bad(`Item ${item.itemId} does not match its signature`);
     if (!item.policy || !str(item.policy.resolved) || !Array.isArray(item.policy.inherited) || item.policy.inherited.some(name => !str(name))
       || (item.policy.explicit !== undefined && !str(item.policy.explicit)) || (item.policy.explicit ?? null) !== (item.explicitPolicy ?? null)) bad(`Item ${item.itemId} has invalid policy metadata`);
@@ -175,9 +194,14 @@ export function validateArchive(value: unknown): SessionArchive {
     } else {
       const entry = entries.get(item.entrySeq as number), turn = turns.get(item.turnId as number);
       if (!turn || !entry || entry.itemId !== item.itemId || entry.turnId !== item.turnId) bad(`Item ${item.itemId} has no matching timeline entry`);
+      if (item.kind === "external_notice" && (entry!.kind !== item.kind || entry!.externalSource !== item.externalSource
+        || entry!.channelId !== item.channelId || entry!.message.content !== item.text)) bad("External notice and timeline disagree");
+      if (item.kind === "external_notice") externalEntries.add(entry!.seq);
       turn!.itemIds.push(item.itemId);
     }
   }
+  for (const entry of snapshot.timeline)
+    if (entry.kind === "external_notice" && !externalEntries.has(entry.seq)) bad("External timeline entry has no inbox item");
   for (const turn of snapshot.turns)
     if (JSON.stringify(turn.itemIds) !== JSON.stringify(turns.get(turn.turnId)!.itemIds)) bad(`Turn ${turn.turnId} does not match its items`);
   return archive;
@@ -185,7 +209,7 @@ export function validateArchive(value: unknown): SessionArchive {
 
 export function archiveMeta(archive: SessionArchive, sessionId?: string): Meta {
   const { session, revision } = archive.snapshot;
-  return { sessionId: sessionId ?? session.sessionId, formatVersion: 5, createdAt: session.createdAt,
+  return { sessionId: sessionId ?? session.sessionId, formatVersion: 6, createdAt: session.createdAt,
     compatibilityKey: session.compatibilityKey, lifecycle: session.lifecycle, revision,
     nextTurnId: archive.allocation.nextTurnId, nextItemNumber: archive.allocation.nextItemNumber };
 }
@@ -207,5 +231,5 @@ export function restoreArchive(tables: Tables, archive: SessionArchive): void {
 }
 
 export function storedSession(meta: Meta): StoredSession {
-  return { sessionId: meta.sessionId, formatVersion: 5, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
+  return { sessionId: meta.sessionId, formatVersion: 6, createdAt: meta.createdAt, lifecycle: meta.lifecycle, compatibilityKey: meta.compatibilityKey };
 }

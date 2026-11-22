@@ -67,7 +67,7 @@ test("unreadable or unsupported files are refused without being modified", () =>
   { const db = new Database(foreign); db.exec("CREATE TABLE notes (body TEXT)"); db.close(); }
   const future = fresh();
   { const first = createSqliteStorageAdapter(future).open({ mode: "create", identity }); if (first.ok) first.value.close(); }
-  { const db = new Database(future); db.exec("UPDATE meta SET value = '6' WHERE key = 'formatVersion'"); db.close(); }
+  { const db = new Database(future); db.exec("UPDATE meta SET value = '7' WHERE key = 'formatVersion'"); db.close(); }
   for (const path of [junk, foreign, future]) {
     const before = readFileSync(path);
     const adapter = createSqliteStorageAdapter(path);
@@ -147,7 +147,7 @@ test("a format 2 database with a session-wide suspension opens, upgrades once an
   const adapter = createSqliteStorageAdapter(path);
   const s = must(adapter.open({ mode: "open", identity }));
   const view = must(s.snapshot());
-  expect(view.session).toMatchObject({ formatVersion: 5, lifecycle: "suspended" });
+  expect(view.session).toMatchObject({ formatVersion: 6, lifecycle: "suspended" });
   expect(view.channels).toEqual([{ channelId: "c1", lifecycle: "open", participantIds: ["ana"] }, { channelId: "c2", lifecycle: "open", participantIds: [] }]);
   expect(view.turns[0]!.state.status).toBe("suspended"); // untouched by the upgrade
   expect(view.items.map(item => [item.itemId, item.milestone])).toEqual([["i1", "taken"], ["i2", "received"]]);
@@ -156,7 +156,7 @@ test("a format 2 database with a session-wide suspension opens, upgrades once an
   expect(must(s.withdrawItem("c2", "i2")).outcome).toBe("withdrawn");
   expect(must(s.beginChannelSuspend("c2")).lifecycle).toBe("suspended");
   s.close();
-  expect(rawFormat(path)).toBe("5"); // upgraded durably, readable only by this revision from now on
+  expect(rawFormat(path)).toBe("6"); // upgraded durably, readable only by this revision from now on
   const again = must(adapter.open({ mode: "open", identity }));
   expect(must(again.snapshot()).items.find(item => item.itemId === "i2")!.milestone).toBe("withdrawn");
   again.close();
@@ -265,4 +265,24 @@ test("focused SQLite reads use bounded ranges and skip the model history blob", 
     expect(metadataQueries.every(sql => sql.startsWith("SELECT key, value FROM meta WHERE key IN") && !sql.includes("modelState") && !sql.includes("importedConfig"))).toBe(true);
     expect(rangeStatements.mock.calls.every(([sql]) => !sql.includes("modelState"))).toBe(true);
   } finally { queries.mockRestore(); rangeStatements.mockRestore(); }
+});
+
+test("format 5 adds external attribution columns without changing existing signatures", () => {
+  const path = fresh(), adapter = createSqliteStorageAdapter(path);
+  const created = adapter.open({ mode: "create", identity });
+  if (!created.ok) throw new Error(created.error.message);
+  const original = { kind: "participant_message" as const, channelId: "c1", senderId: "ana", text: "hello", itemId: "old" };
+  const accepted = created.value.acceptItem(original);
+  if (!accepted.ok) throw new Error(accepted.error.message);
+  created.value.close();
+  const db = new Database(path);
+  db.exec("ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source; UPDATE meta SET value='5' WHERE key='formatVersion'");
+  db.close();
+  const reopened = adapter.open({ mode: "open", identity });
+  if (!reopened.ok) throw new Error(reopened.error.message);
+  const duplicate = reopened.value.acceptItem(original);
+  expect(duplicate).toMatchObject({ ok: true, value: { duplicate: true, item: { signature: accepted.value.item.signature } } });
+  expect(reopened.value.acceptItem({ kind: "external_notice", itemId: "new", channelId: "c1", senderId: "host", text: "notice", inheritedPolicyNames: [] }).ok).toBe(true);
+  reopened.value.close();
+  expect(rawFormat(path)).toBe("6");
 });
