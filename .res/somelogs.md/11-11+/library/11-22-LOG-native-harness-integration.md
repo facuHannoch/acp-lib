@@ -82,3 +82,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   `afterPrompt` transaction after `persistObservationsInTransaction`, on completed status (it depends on their
   repository interface). Conditions: transaction-scoped persistence only; a no-op without the repository or for an
   unbound op; no other edits. R1–R3 stay off that file meanwhile.
+- `beforeDispatch` in from cod2a, `acc6d5d`: ACP awaits it after the durable preparation and before
+  `prepareTurn`; a rejection runs `abandonTurn` and `turn_failed`; native awaits it before any push. Full `./test` green
+  (1,446, on RAM); `agent-session.ts` 4,600. Queued for clad2a after the step 2 review. Question raised: ACP passes the
+  operation id, native each input's message id; is it the same identifier Cod1a keys on?
