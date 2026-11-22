@@ -109,3 +109,10 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   intent) a delete can't tell it is native and doesn't retire its channel. Persisting the descriptor at create
   would change first-attachment behaviour: not folded in. cod2a to establish the consequence (an idle leftover, or
   can it take work or block?); if idle, an error note and a Limitations line; otherwise escalate.
+- The gap is not idle: in a scripted fixture, the deleted, never-prompted conversation's channel reopened as open,
+  accepted `host.push` and committed a reply. Escalated to the user. Proposed: keep channel rows in `channels?` after
+  confirm (marked applied), so a delete can identify a native conversation; alternatives: persist the descriptor at
+  create (changes first attachment), or accept (not recommended).
+- R1 step 3 in from cod2a: implementation `c600199`, report `49b5a1c`. Scoped create/delete rollback, a single version
+  delivered after commit, pending retirement precedence; full `./test` green (1,451 in 132 files); `host.ts` 887 →
+  884, `conversation-manager.ts` 1,098 → 1,092. Sent to clad2a, with their view on the gap fix.
