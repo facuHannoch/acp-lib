@@ -199,3 +199,5 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   command matching held against 40 of 40 bypass attempts; most restrictive across kind and command. For step 3:
   validate rule values and key prefixes at config time; document that a `command:` allow can't override a stricter
   `kind:execute`; a changelog line for `tool`.
+- cod2a merged alpha `29715a3` (`e87907f`), report `ead74b8`. **Steps 1–2 gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R2-steps1-2.md)): 1,484 in 136 files. Step 3 waits on the user.
