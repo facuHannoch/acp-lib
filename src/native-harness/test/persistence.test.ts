@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +19,7 @@ import { lastInput, turnsEnd } from "./helpers/session.ts";
 const root = mkdtempSync(join(tmpdir(), "harness-persist-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const setup: CreateParams = { sessionId: "kept", participants: [], channels: {}, config: {
-  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
+  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }] } });
 function ended(client: HarnessClient, count: number) {
   const events: ChannelEvent[] = [];
@@ -34,13 +35,13 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
   const home = mkdtempSync(join(root, "home-")), effects = join(home, "effects.log");
   const locations = new Map<string, SessionStorageAdapter>();
   const adapter = (id: string) => locations.get(id) ?? locations.set(id, createMemoryStorageAdapter()).get(id)!;
-  const open = () => transport === "stdio" ? spawnHarness({ home, effects }) : createInProcessHarness({ adapter, effects });
+  const open = () => transport === "stdio" ? spawnHarness({ home, effects }) : createInProcessHarness({ adapter, effects, captureRequests: true });
 
   const first = open();
   try {
     const init = await first.client.initialize();
     expect(init.description.capabilities).toMatchObject({ acceptance: "durable", persistence: true });
-    expect(init.description.capabilities.methods).toContain("session/load");
+    expect(init.description.capabilities.methods).toContain("session/open");
     await first.client.createSession(setup);
     const log = ended(first.client, 2);
     await Promise.all([first.client.push(push("a", "a1", "alpha question")), first.client.push(push("b", "b1", "beta question"))]);
@@ -51,9 +52,9 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
   try {
     await second.client.initialize();
     await expect(second.client.createSession(setup)).rejects.toMatchObject({ code: "already_exists" });
-    await expect(second.client.loadSession({ sessionId: "absent", config: setup.config })).rejects.toMatchObject({ code: "not_found" });
+    await expect(second.client.openSession({ sessionId: "absent", config: setup.config })).rejects.toMatchObject({ code: "not_found" });
     await expect(second.client.status()).rejects.toMatchObject({ code: "not_ready" });
-    const loaded = await second.client.loadSession({ sessionId: "kept", config: setup.config });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "kept", config: setup.config });
     expect(loaded.status).toMatchObject({ sessionId: "kept", lifecycle: "running", execution: "idle",
       channels: [{ channel: "a", pending: [] }, { channel: "b", pending: [] }] });
     expect(loaded.turns).toMatchObject([{ turnId: "1", state: "completed" }, { turnId: "2", state: "completed" }]);
@@ -78,24 +79,21 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: tw
     expect(loaded.messages.map(message => message.messageId)).not.toContain(messageId);
     if ("models" in second) {
       // The next inference is built from both restored conversations.
-      const request = JSON.stringify(second.models.get("a")!.requests()[0]!.messages);
+      const request = JSON.stringify(second.models.get("a")![0]!.messages);
       expect(request).toContain("alpha question"); expect(request).toContain("beta question"); expect(request).toContain("follow up");
     }
 
-    // Paging stays anchored to the revision of the load it continues.
-    const paged = await second.client.loadSession({ sessionId: "kept", config: setup.config, messagesLimit: 2 });
-    expect(paged.messages).toHaveLength(2); expect(paged.nextMessage).toBe(paged.messages[1]!.messageId);
-    const rest = await second.client.messages({ revision: loaded.status.revision, after: paged.nextMessage! });
-    expect([...paged.messages, ...rest.messages]).toEqual(loaded.messages);
-    expect(rest.nextMessage).toBeUndefined();
-    const all = await second.client.messages({ revision: paged.status.revision, after: "0", limit: 1000 });
-    expect(all.messages.at(-1)).toMatchObject({ messageId, turnId: "3" });
-    await expect(second.client.messages({ revision: paged.status.revision + 1000, after: "0" })).rejects.toMatchObject({ code: "not_found" });
-    await expect(second.client.loadSession({ sessionId: "other", config: setup.config })).rejects.toMatchObject({ code: "already_exists" });
+    const newest = await second.client.channelMessages({ channel: "a", limit: 2 });
+    expect(newest.messages).toHaveLength(2);
+    expect(newest.messages.at(-1)).toMatchObject({ messageId, turnId: "3" });
+    const older = await second.client.channelMessages({ channel: "a", cursor: newest.next! });
+    expect(older.messages.length).toBeGreaterThan(0);
+    expect(older.messages.every(message => !newest.messages.some(newer => newer.messageId === message.messageId))).toBe(true);
+    await expect(second.client.openSession({ sessionId: "other", config: setup.config })).rejects.toMatchObject({ code: "already_exists" });
   } finally { await second.close(); }
 }, 15000);
 
-test("a load during execution is one snapshot: earlier events precede the response and later events follow it", async () => {
+test("an observation during execution is one snapshot: earlier events precede the response and later events follow it", async () => {
   let release!: () => void;
   let gate = new Promise<void>(resolve => { release = resolve; });
   const session = createSession({ systemPrompt: "test", configureTurn: () => ({ tools: [], executeTool: async () => "unused",
@@ -109,20 +107,17 @@ test("a load during execution is one snapshot: earlier events precede the respon
     await client.push(push("a", "1", "first"));
     while (!wire.some(message => message.params?.event?.type === "turn_started")) await new Promise(resolve => setTimeout(resolve, 1));
     // Commit more work in the same tick the load is answered: it must not overtake the response.
-    const loading = client.loadSession({ sessionId: "memory", config: setup.config });
+    const loading = client.observeChannel({ channel: "a" });
     queueMicrotask(() => { session.agent.send({ channelId: "b", participantId: "bob", text: "racing", itemId: "2" }); release(); });
     const loaded = await loading;
     await log.done;
     await new Promise(resolve => setTimeout(resolve, 5));
-    const at = wire.findIndex(message => message.result?.status);
+    const at = wire.findIndex(message => message.result?.sessionLifecycle && message.result?.channel);
     const revisions = (messages: any[]) => messages.flatMap(message => message.params?.revision === undefined ? [] : [message.params.revision]);
-    expect(revisions(wire.slice(0, at)).every(revision => revision <= loaded.status.revision)).toBe(true);
+    expect(revisions(wire.slice(0, at)).every(revision => revision <= loaded.revision)).toBe(true);
     expect(revisions(wire.slice(at + 1)).length).toBeGreaterThan(2);
-    expect(revisions(wire.slice(at + 1)).every(revision => revision > loaded.status.revision)).toBe(true);
-    // The view itself is consistent with that revision: the running turn, nothing from later commits.
-    expect(loaded.turns).toMatchObject([{ turnId: "1", state: "running", items: ["1"] }]);
-    expect(loaded.status).toMatchObject({ execution: "working", channels: [{ channel: "a", activeTurn: { turnId: "1", state: "running" } }] });
-    expect(loaded.messages).toEqual([]);
+    expect(revisions(wire.slice(at + 1)).every(revision => revision > loaded.revision)).toBe(true);
+    expect(loaded.channel.activeTurn).toMatchObject({ turnId: "1", state: "running" });
   } finally { release(); client.close(); }
 });
 
@@ -158,7 +153,7 @@ test("load views that cannot fit one frame fail whole; message pages respect the
   expect(() => loadView(sessionStatus(view(), false), view(), 100)).toThrow("turns and items do not fit");
 });
 
-test("a load that cannot be answered opens nothing and reports transfer_limit", async () => {
+test("open readiness fits even when the legacy full view exceeds a frame", async () => {
   const location = createMemoryStorageAdapter();
   const seeded = location.open({ mode: "create", identity: { sessionId: "big", compatibilityKey: "" } });
   if (!seeded.ok) throw new Error(seeded.error.message);
@@ -175,12 +170,9 @@ test("a load that cannot be answered opens nothing and reports transfer_limit", 
   const client = new HarnessClient(createInProcessTransport(server));
   try {
     await client.initialize();
-    await expect(client.loadSession({ sessionId: "big", config: setup.config })).rejects.toMatchObject({ code: "transfer_limit" });
-    await new Promise(resolve => setTimeout(resolve, 10));
-    // Pending input was not made eligible and ownership was released.
-    expect(ran).toBe(0);
-    await expect(client.status()).rejects.toMatchObject({ code: "not_ready" });
-    expect(location.open({ mode: "open", identity: { sessionId: "big", compatibilityKey: "" } }).ok).toBe(true);
+    const opened = await client.openSession({ sessionId: "big" });
+    expect(opened).toMatchObject({ sessionId: "big", lifecycle: "running", revision: expect.any(Number) });
+    expect(opened).not.toHaveProperty("messages");
   } finally { client.close(); }
 });
 

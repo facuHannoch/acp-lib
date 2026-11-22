@@ -24,7 +24,7 @@ function validResponse(response: ModelResponse): boolean {
 }
 export interface RunModelCallOptions {
   turnId: string; itemIds: readonly string[]; request: ModelRequest; scripted: boolean;
-  store: ModelCallStore; attempt: (scriptStep?: number) => ModelAttempt;
+  store: ModelCallStore; attempt: (scriptStep?: number, ordinal?: number) => ModelAttempt;
   signal?: AbortSignal; settings?: Partial<ModelExecutionSettings>;
   /** Called synchronously; never wait for a reader. */
   delta?: (event: { messageId: string; text: string }) => void;
@@ -40,7 +40,7 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
   const call = take(options.store.startCall(options.turnId, options.itemIds));
   options.started?.(call.callId);
   let deadline = 0, output = false;
-  const finish = (outcome: Exclude<CallOutcome, "running" | "succeeded">, detail = outcome): never => {
+  const finish = (outcome: Exclude<CallOutcome, "running" | "succeeded">, detail: string = outcome): never => {
     const result = options.store.finishCall(call.callId, outcome);
     if (!result.ok && !(outcome === "interrupted" && result.error.code === "invalid_state")) take(result);
     if (output) options.incomplete?.({ messageId: call.messageId, reason: outcome });
@@ -60,7 +60,7 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
     let terminal: ModelAttemptEvent | undefined;
     let cancellation: "timeout" | "interrupted" | undefined;
     try {
-      const iterator = options.attempt(attempt.scriptStep)(structuredClone(request), controller.signal)[Symbol.asyncIterator]();
+      const iterator = options.attempt(attempt.scriptStep, attempt.ordinal)(structuredClone(request), controller.signal)[Symbol.asyncIterator]();
       while (true) {
         const next = await Promise.race([iterator.next().then(value => ({ value })), cancelled]);
         if ("reason" in next) { cancellation = next.reason; break; }
@@ -101,6 +101,7 @@ export async function runModelCall(options: RunModelCallOptions): Promise<{ resp
     const failure = terminal?.type === "failure" ? terminal.kind : "incomplete";
     const attemptOutcome = failure === "transient" ? "transient_failure" : failure === "provider" ? "provider_failure" : failure;
     take(options.store.finishAttempt(call.callId, attempt.attemptId, attemptOutcome));
+    if (terminal?.type === "failure" && terminal.message === "script_exhausted" && options.scripted) return finish("failed", "script_exhausted");
     if (failure !== "transient" || output || ordinal >= Math.min(1, settings.maxRetries)) return finish(failure === "incomplete" ? "incomplete" : "failed");
     if (deadline - Date.now() < settings.retryDelayMs) return finish("timeout");
     const delay = await new Promise<"ready" | "interrupted">(resolve => {

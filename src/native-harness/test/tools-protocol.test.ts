@@ -1,8 +1,10 @@
+import { modelScenario } from "./helpers/scenario.ts";
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FunctionError, type ChannelEvent, type FunctionCall, type FunctionResult, type HarnessClient, type ProtocolConfig, type ResultRead, type ToolCatalogInput, type ToolRegistration } from "../src/client.ts";
+import { FunctionError, HarnessClient, createStdioTransport, type ClientTransport, type ChannelEvent, type FunctionCall, type FunctionResult, type ProtocolConfig, type ResultRead, type ToolCatalogInput, type ToolRegistration } from "../src/client.ts";
 import { createInProcessHarness } from "../src/testing.ts";
 import { spawnHarness } from "./helpers/stdio.ts";
 
@@ -19,8 +21,8 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
 let scripts = 0;
 /** One script file; every channel runs its own copy from the first response. */
 function script(responses: { content: string | null; calls?: { id: string; name: string; arguments: Record<string, unknown> }[] }[]) {
-  const path = join(root, `script-${++scripts}.json`);
-  writeFileSync(path, JSON.stringify({ version: 1, responses }));
+  const path = join(root, `script-${++scripts}.jsonl`);
+  writeFileSync(path, modelScenario(responses));
   return path;
 }
 const callThen = (name: string, args: Record<string, unknown>, ...more: { content: string | null; calls?: any[] }[]) =>
@@ -56,6 +58,7 @@ for (const transport of ["in-process", "stdio"] as const) {
       await client.push(push("a", "a1")); await client.push(push("b", "b1"));
       await until(() => calls.length === 2, "both callbacks");
       expect(calls.map(call => [call.channel, call.tool, call.handler, call.sessionId, call.arguments])).toContainEqual(["a", "lookup", "lookup_handler", "s", { q: "x" }]);
+      expect(calls.map(call => call.policyNames)).toEqual([["main"], ["main"]]);
       const ids = Object.fromEntries(calls.map(call => [call.channel, call.invocationId]));
       expect(new Set(Object.values(ids)).size).toBe(2);
       // The control connection answers while both handlers are quiet.
@@ -209,7 +212,7 @@ test("stdio: revoking a tool while its approval is pending skips the call; the n
   expect(seen.toolEvents("a").map(event => event.status)).toEqual(["skipped"]);
   expect(seen.output("a", "skipped")).toMatchObject({ ok: false, code: "tool_unavailable" });
   expect((await first.client.toolInvocation("1:t1")).invocation).toMatchObject({ state: "skipped", code: "tool_unavailable", effect: "none" });
-  expect(offered()).toEqual([["echo", "record", "hold", "lookup", "read_tool_result", "send"], ["echo", "record", "hold", "lookup", "read_tool_result"]]);
+  expect(offered()).toEqual([["echo", "record", "hold", "notify_channel", "lookup", "read_tool_result", "send"], ["echo", "record", "hold", "notify_channel", "lookup", "read_tool_result"]]);
   await expect(first.client.revokeTool("lookup")).rejects.toMatchObject({ code: "invalid_state" });
   await expect(first.client.removeTool("send")).rejects.toMatchObject({ code: "invalid_state" });
   await expect(first.client.revokeTool("nope")).rejects.toMatchObject({ code: "not_found" });
@@ -220,7 +223,7 @@ test("stdio: revoking a tool while its approval is pending skips the call; the n
   const second = spawnHarness({ home, requests }), again = watch(second.client);
   try {
     await second.client.initialize(hello(["send_handler"]));
-    await second.client.loadSession({ sessionId: "s", tools });
+    await inspectOperatorView(second.client, { sessionId: "s", tools });
     expect((await second.client.tools()).tools).toEqual([
       { name: "send", group: "revocable", handler: "send_handler", available: false, reason: "revoked" },
       { name: "lookup", group: "fixed", handler: "lookup_handler", available: false, reason: "handler_missing" },
@@ -228,10 +231,10 @@ test("stdio: revoking a tool while its approval is pending skips the call; the n
     expect((await second.client.toolInvocation("1:t1")).invocation).toMatchObject({ state: "skipped", code: "tool_unavailable" });
     await second.client.push(push("a", "a2"));
     await until(() => again.ended("a"), "second turn");
-    expect(offered().at(-1)).toEqual(["echo", "record", "hold", "read_tool_result"]);
+    expect(offered().at(-1)).toEqual(["echo", "record", "hold", "notify_channel", "read_tool_result"]);
     // A repeated load with the same catalog is a view; a different one is refused.
-    await second.client.loadSession({ sessionId: "s", tools });
-    await expect(second.client.loadSession({ sessionId: "s", tools: { catalog: [tool("other")] } })).rejects.toMatchObject({ code: "invalid_state" });
+    await inspectOperatorView(second.client, { sessionId: "s", tools });
+    await expect(second.client.openSession({ sessionId: "s", tools: { catalog: [tool("other")] } })).rejects.toMatchObject({ code: "invalid_state" });
     expect((await second.client.restoreTool("send")).tool.available).toBe(true);
   } finally { await second.close(); }
 });
@@ -254,7 +257,7 @@ test("stdio: a callback whose outcome is lost stays uncertain after reopen and i
   second.client.serveFunctions(() => { handled++; return { output: "again" }; });
   try {
     await second.client.initialize(hello(["lookup_handler"]));
-    const loaded = await second.client.loadSession({ sessionId: "s", tools });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "s", tools });
     expect(loaded.status.channels[0]!.unresolved).toMatchObject({ state: "interrupted", uncertainCalls: ["t1"] });
     expect((await second.client.toolInvocation("1:t1")).invocation).toMatchObject({ state: "interrupted", effect: "unknown", tool: "lookup", arguments: '{"q":"x"}' });
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -303,5 +306,113 @@ test("stdio: invalid callback arguments are paired without approval or dispatch"
     const paired = next.messages.find((message: { role: string }) => message.role === "tool");
     expect(paired.callId).toBe("t1");
     expect(JSON.parse(paired.content)).toMatchObject({ code: "invalid_arguments" });
+  } finally { await harness.close(); }
+});
+
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: notice contributors freeze across approval and pending deny applies after take`, async () => {
+  const path = join(root, `policy-snapshot-${transport}.jsonl`);
+  const lookup = (id: string) => ({ channelId: "owner", content: null, calls: [{ id, name: "lookup", arguments: { q: "x", policyNames: ["forged"] } }] });
+  writeFileSync(path, modelScenario([
+    { channelId: "guest", content: null, calls: [{ id: "notice", name: "notify_channel", arguments: { channelId: "owner", text: "wake" } }] },
+    { channelId: "guest", content: "sent" }, lookup("first"), lookup("second"), { channelId: "owner", content: "done" },
+    { ...lookup("refused"), channelId: "deny" }, { channelId: "deny", content: "done" },
+  ]));
+  const harness = open(transport), { client } = harness, seen = watch(client);
+  const callbacks: FunctionCall[] = [];
+  client.serveFunctions(call => { callbacks.push(call); return { output: true }; });
+  try {
+    await client.initialize(hello(["lookup_handler"]));
+    await client.createSession({ sessionId: "s", participants: [], channels: {}, tools: { catalog: [tool("lookup", "fixed", {
+      parameters: { type: "object" },
+    })] }, config: { ...config(path), defaultPolicy: "guest", policies: {
+      guest: { fallback: "allow", tools: {} }, owner: { fallback: "allow", tools: { lookup: "ask" } },
+      blocked: { fallback: "allow", tools: { lookup: "deny" } },
+    } } });
+    await client.createChannel({ channel: "owner", policy: "owner" });
+    await client.push(push("guest", "start"));
+    await until(() => seen.events.some(({ event }) => event.type === "approval_requested"), "notice approval");
+    const request = seen.events.find(({ event }) => event.type === "approval_requested")!.event;
+    if (request.type !== "approval_requested") throw new Error("Missing approval");
+    const pending = push("owner", "pending");
+    await client.push({ ...pending, item: { ...pending.item, policy: "blocked" } });
+    expect((await client.status()).channels.find(channel => channel.channel === "owner")?.pending).toContain("pending");
+    expect(callbacks).toHaveLength(0);
+    await client.respondApproval(request.requestId, "allow_once");
+    await until(() => seen.ended("owner"), "owner completion");
+    expect(callbacks).toHaveLength(1);
+    expect(callbacks[0]).toMatchObject({ policyNames: ["guest", "owner"], arguments: { policyNames: ["forged"] } });
+    expect(seen.events.some(({ event }) => event.type === "turn_took" && event.items.includes("pending"))).toBe(true);
+    expect(seen.output("owner", "skipped")).toMatchObject({ code: "policy_denied" });
+
+    await client.createChannel({ channel: "deny", policy: "owner" });
+    await client.push(push("deny", "refuse"));
+    await until(() => seen.events.some(({ channel, event }) => channel === "deny" && event.type === "approval_requested"), "denial request");
+    const denied = seen.events.find(({ channel, event }) => channel === "deny" && event.type === "approval_requested")!.event;
+    if (denied.type !== "approval_requested") throw new Error("Missing denial request");
+    await client.respondApproval(denied.requestId, "deny");
+    await until(() => seen.ended("deny"), "denied turn completion");
+    expect(seen.output("deny", "skipped")).toMatchObject({ code: "approval_denied" });
+    expect(callbacks).toHaveLength(1);
+  } finally { await harness.close(); }
+}, 15000);
+
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: legacy authorization sends an explicit empty policy list`, async () => {
+  const harness = open(transport), { client } = harness, seen = watch(client);
+  const policies: string[][] = [];
+  client.serveFunctions(call => { policies.push(call.policyNames); return { output: true }; });
+  try {
+    await client.initialize(hello(["lookup_handler"]));
+    await client.createSession({ sessionId: "s", participants: [], channels: {}, tools: { catalog: [tool("lookup")] },
+      config: { ...config(callThen("lookup", { q: "legacy" })), defaultPolicy: "__legacy_allow",
+        policies: { __legacy_allow: { fallback: "allow", tools: {} } } } });
+    await client.push(push("a", "legacy"));
+    await until(() => seen.ended("a"), "legacy turn");
+    expect(policies).toEqual([[]]);
+  } finally { await harness.close(); }
+});
+
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: malformed callback policy fields return invalid_params before the handler`, async () => {
+  const answers: { id: number; error?: { data?: { code?: string } } }[] = [];
+  let receive!: Parameters<NonNullable<ClientTransport["subscribeCallbacks"]>>[0];
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const local: ClientTransport = {
+    send() {}, close() {}, onClose: () => () => {}, subscribe: () => () => {},
+    subscribeCallbacks(listener) { receive = listener; return () => {}; },
+    respond(answer) { answers.push(answer); },
+  };
+  const client = new HarnessClient(transport === "in-process" ? local : createStdioTransport({
+    readable: new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+    async write(bytes) { answers.push(JSON.parse(new TextDecoder().decode(bytes))); },
+    async end() { stream.close(); },
+  }));
+  let invoked = 0;
+  client.serveFunctions(() => { invoked++; return { output: true }; });
+  try {
+    const malformed = [undefined, "main", [1], [""], ["main", "main"], ["__legacy_allow"]];
+    for (const [index, policyNames] of malformed.entries()) {
+      const request = { jsonrpc: "2.0", id: index + 1, method: "functions/call", params: {
+        invocationId: `1:${index}`, sessionId: "s", channel: "a", turnId: "1", tool: "lookup", handler: "lookup_handler",
+        arguments: {}, ...(policyNames === undefined ? {} : { policyNames }),
+      } };
+      if (transport === "stdio") stream.enqueue(new TextEncoder().encode(JSON.stringify(request) + "\n"));
+      else receive(request as Parameters<typeof receive>[0]);
+    }
+    await until(() => answers.length === malformed.length, "invalid_params replies");
+    expect(answers.map(answer => answer.error?.data?.code)).toEqual(malformed.map(() => "invalid_params"));
+    expect(invoked).toBe(0);
+  } finally { client.close(); }
+});
+
+for (const transport of ["in-process", "stdio"] as const) test(`${transport}: consumer invalid_params records one paired failure without retry`, async () => {
+  const harness = open(transport), { client } = harness, seen = watch(client);
+  let dispatched = 0;
+  client.serveFunctions(() => { dispatched++; throw new FunctionError("invalid_params", "Rejected policy metadata"); });
+  try {
+    await client.initialize(hello(["lookup_handler"]));
+    await client.createSession({ sessionId: "s", config: config(callThen("lookup", { q: "x" })), participants: [], channels: {}, tools: { catalog: [tool("lookup")] } });
+    await client.push(push("a", "first"));
+    await until(() => seen.ended("a"), "failed tool result followed by successful turn");
+    expect(dispatched).toBe(1);
+    expect(seen.output("a", "failed")).toMatchObject({ ok: false, code: "invalid_params" });
   } finally { await harness.close(); }
 });

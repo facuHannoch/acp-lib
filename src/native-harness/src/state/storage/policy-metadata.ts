@@ -26,3 +26,7 @@ export function fingerprint(config: ManagedConfig, references: readonly string[]
     return [name, policy.fallback, Object.keys(policy.tools).sort().map(tool => [tool, policy.tools[tool]])];
   }));
 }
+
+export function externalNoticeSignature(channel: string, source: string | undefined, text: string, names: readonly string[]): string {
+  return digest(["external_notice", channel, source ?? null, text, [...new Set(names)].sort()]);
+}

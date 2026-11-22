@@ -16,4 +16,4 @@ export type {
 } from "./contracts.ts";
 export { createController } from "./factory.ts";
 export type { NativeControllerBinding } from "./factory.ts";
-export { acpCapabilitiesOf, availableCommandsOf, harnessControllerOf, isDegradedController, stallLimitsFor, listAgentSessions, reloadProviderSession, requireFreshContext, requireMember } from "./guards.ts";
+export { acpCapabilitiesOf, availableCommandsOf, harnessControllerOf, isDegradedController, stallLimitsFor, listAgentSessions, reloadProviderSession, restartConversation, requireFreshContext, requireMember } from "./guards.ts";

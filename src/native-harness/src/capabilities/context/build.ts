@@ -8,6 +8,10 @@ export function renderContextEntry(entry: ContextEntry): Message {
     role: "user",
     content: `Internal notice from channel ${JSON.stringify(entry.sourceChannelId)} to channel ${JSON.stringify(entry.channelId)} (another execution of this same agent):\n${entry.message.content}`,
   };
+  if (entry.kind === "external_notice") return {
+    role: "user",
+    content: `External notice from ${entry.externalSource === undefined ? "host" : JSON.stringify(entry.externalSource)} to channel ${JSON.stringify(entry.channelId)}:\n${entry.message.content}`,
+  };
   return structuredClone(entry.message);
 }
 
@@ -26,7 +30,7 @@ export function buildSharedContext(entries: readonly ContextEntry[], systemPromp
   const shared = entries.map((entry) => {
     const { providerState: _opaque, ...message } = renderContextEntry(entry) as Message & { providerState?: unknown };
     return { seq: entry.seq, at: entry.at, channelId: entry.channelId, turnId: entry.turnId, from: entry.from,
-      kind: entry.kind, sourceChannelId: entry.sourceChannelId, message };
+      kind: entry.kind, sourceChannelId: entry.sourceChannelId, externalSource: entry.externalSource, message };
   });
   return [
     { role: "system", content: systemPrompt },
@@ -45,7 +49,7 @@ export function buildContext(entries: readonly ContextEntry[], systemPrompt: str
   const base = buildSharedContext(entries.filter((entry) => !own(entry)), systemPrompt, turns);
   const origin = first?.kind === "channel_notice"
     ? `Turn triggered by an internal notice from channel: ${JSON.stringify(first.sourceChannelId)}`
-    : `Current participant: ${JSON.stringify(first?.from)}`;
+    : first?.kind === "external_notice" ? "Turn triggered by an external notice" : `Current participant: ${JSON.stringify(first?.from)}`;
   base[1]!.content = `Current channel: ${JSON.stringify(input.channelId)}\n${origin}\n${base[1]!.content}`;
   return [
     ...base,

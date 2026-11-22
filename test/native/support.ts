@@ -1,3 +1,4 @@
+import { modelScenario } from "../../src/native-harness/test/helpers/scenario.ts";
 /**
  * Shared rig for the native tests: an Agent with one native adapter over a real `serve --stdio` harness
  * child process (scripted model, SQLite session in a temporary home). No provider credentials.
@@ -52,7 +53,7 @@ export interface NativeRig {
 
 export async function nativeRig(options: { policies?: ProtocolConfig["policies"]; defaultPolicy?: string } = {}): Promise<NativeRig> {
   const directory = await mkdtemp(join(tmpdir(), "acp-native-"));
-  const home = join(directory, "harness-home"), scriptPath = join(directory, "script.json"), effectsPath = join(directory, "effects.log");
+  const home = join(directory, "harness-home"), scriptPath = join(directory, "script.jsonl"), effectsPath = join(directory, "effects.log");
   const env: Record<string, string> = { HARNESS_TEST_EFFECTS: effectsPath };
   const logs: NativeRig["logs"] = [];
   const harness: Record<string, unknown> = {};
@@ -69,7 +70,7 @@ export async function nativeRig(options: { policies?: ProtocolConfig["policies"]
       return { command: [...request.targetCommand], spawnCwd: directory, spawnEnv: { ...(process.env as Record<string, string>), ...env } };
     },
   };
-  const script = (steps: Step[]) => writeFileSync(scriptPath, JSON.stringify({ version: 1, responses: steps }));
+  const script = (steps: Step[]) => writeFileSync(scriptPath, modelScenario(steps));
   script(Array.from({ length: 12 }, (_, index) => reply(`reply ${index + 1}`)));
   const config: ProtocolConfig = {
     version: 1, system: "Native integration test", model: { protocol: "scripted", script: scriptPath },

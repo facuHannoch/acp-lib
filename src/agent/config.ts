@@ -113,6 +113,7 @@ export interface AgentHarnessConfig {
   readonly text?: "final" | "stream";
   /** Functions the model can call in native conversations, served by this process. */
   readonly functions?: import("../native/functions.ts").NativeFunctionsConfig;
+  readonly approvalResponder?: import("../native/host.ts").NativeApprovalResponder;
   readonly startupTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
   readonly restart?: { readonly limit: number; readonly windowMs: number };

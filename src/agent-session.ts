@@ -11,6 +11,7 @@
 
 import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
 import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
+import { UnsupportedError } from "./errors.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
 import type { HarnessController, AgentControllerConfig, ControllerStartEvent, AgentMode } from "./controller.ts";
@@ -3596,6 +3597,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
     const result = await this.controller.startFresh();
     if (!result.sessionId) throw new Error("provider returned no fresh session");
     this.installProviderAttachment(result.sessionId, "runtime_only", true);
+  }
+
+  /** Observe an existing backend channel without changing its lifecycle. */
+  async attachObservation(): Promise<{ dispose(): void }> {
+    const controller = this.controller;
+    if (!controller.attachObservation) throw new UnsupportedError("The controller does not support observation-only attachment");
+    return controller.attachObservation();
   }
 
   private async ensureProvider(): Promise<void> {

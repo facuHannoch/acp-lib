@@ -260,7 +260,7 @@ export type {
 export { ADAPTERS, buildSpawnCommand, isNativeAdapter } from "./adapters.ts";
 export type { Adapter, AdapterPreset, AgentAdapter, NativeAdapter } from "./adapters.ts";
 export { HarnessIncompatibleError, HarnessUnavailableError, NativeHarnessHost } from "./native/host.ts";
-export type { ChannelChangeOutcome, NativeHarnessHostConfig, NativeHostState } from "./native/host.ts";
+export type { ChannelChangeOutcome, NativeApprovalRequest, NativeApprovalResponder, NativeHarnessHostConfig, NativeHostState } from "./native/host.ts";
 export { NativeTurnError } from "./native/controller.ts";
 export { FunctionError, NATIVE_FUNCTION_DEFAULTS } from "./native/functions.ts";
 export type { NativeFunction, NativeFunctionContext, NativeFunctionsConfig } from "./native/functions.ts";
@@ -720,6 +720,7 @@ export type {
 export type { UsageNormalization } from "./metering/usage.ts";
 
 export { ProcessCrashError, NotConnectedError, TimeoutError, UnsupportedError } from "./errors.ts";
+export { restartConversation } from "./conversation-controller/index.ts";
 export type {
   BackendCapabilities,
   ConversationCapabilities,

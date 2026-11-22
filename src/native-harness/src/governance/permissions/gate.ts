@@ -17,7 +17,7 @@ export const skipped = (code: string, detail?: string) => JSON.stringify({ ok: f
 
 /** Requests and unused grants belong to one session's active consumer. Close
  * callbacks record the paired result synchronously before lifecycle termination. */
-export function createApprovalService(publish: (request: ApprovalRequest) => void, timeoutMs = 600_000) {
+export function createApprovalService(publish: (request: ApprovalRequest) => void, timeoutMs = 600_000, publishClosed?: (request: ApprovalRequest, reason: ClosedCode | "dispatched") => void) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Approval timeout must be positive");
   let consumer = false;
   const pending = new Map<string, Entry>();
@@ -39,7 +39,7 @@ export function createApprovalService(publish: (request: ApprovalRequest) => voi
     },
     /** Register before publishing, so even a synchronous consumer can answer. */
     request(request: ApprovalRequest, signal: AbortSignal, suspension: AbortSignal, record: (content: string, code: string) => void) {
-      if (!consumer) { const content = skipped("approval_unhandled"); record(content, "approval_unhandled"); return { answer: Promise.resolve({ allowed: false as const, content }), consume: () => false, discard: () => {} }; }
+      if (!consumer) { const content = skipped("approval_unhandled"); record(content, "approval_unhandled"); return { answer: Promise.resolve({ allowed: false as const, content }), consume: () => false, discard: (_code?: ClosedCode) => false, dispatchClosed: () => {}, dispatchFailed: () => {} }; }
       let settle!: (answer: Answer) => void, reject!: (error: unknown) => void;
       const answer = new Promise<Answer>((resolve, fail) => { settle = resolve; reject = fail; });
       let timer: ReturnType<typeof setTimeout>;
@@ -47,23 +47,35 @@ export function createApprovalService(publish: (request: ApprovalRequest) => voi
       const onAbort = () => close(entry, signal.reason?.approvalCloseCode === "approval_cancelled_by_stop"
         ? "approval_cancelled_by_stop" : "approval_cancelled_by_interrupt");
       const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", onAbort); suspension.removeEventListener("abort", onSuspend); pending.delete(request.requestId); };
+      let announced = false;
+      const announceClose = (reason: ClosedCode | "dispatched") => {
+        if (announced) { announced = false; publishClosed?.(request, reason); }
+      };
       const entry: Entry = { request, granted: false, closed: false, resolve: settle, reject, cleanup, clearTimer: () => clearTimeout(timer),
         close(code) {
           entry.closed = true; cleanup(); const content = skipped(code);
-          try { record(content, code); } catch (error) { entry.recordError = error; reject(error); return content; }
-          settle({ allowed: false, content }); return content;
+          try { record(content, code); } catch (error) { entry.recordError = error; reject(error); announceClose(code); return content; }
+          settle({ allowed: false, content }); announceClose(code); return content;
         } };
       pending.set(request.requestId, entry);
       signal.addEventListener("abort", onAbort, { once: true }); suspension.addEventListener("abort", onSuspend, { once: true });
       timer = setTimeout(() => close(entry, "approval_timeout"), timeoutMs);
-      if (signal.aborted) onAbort(); else if (suspension.aborted) onSuspend(); else publish(request);
+      if (signal.aborted) onAbort(); else if (suspension.aborted) onSuspend(); else { announced = true; publish(request); }
       return { answer, consume() { if (entry.recordError !== undefined) throw entry.recordError; if (entry.closed || !entry.granted) return false; entry.closed = true; cleanup(); return true; },
-        discard() { if (!entry.closed) { entry.closed = true; cleanup(); } } };
+        dispatchClosed() { announceClose("dispatched"); },
+        dispatchFailed() { announceClose("approval_cancelled_by_interrupt"); },
+        discard(code: ClosedCode = "approval_cancelled_by_interrupt") {
+          if (entry.closed) return false;
+          entry.closed = true;
+          cleanup();
+          announceClose(code);
+          return true;
+        } };
     },
   };
 }
 
-/** Policy is read at the dispatch boundary from items already taken by this
+/** Policy is read before authorization from items already taken by this
  * turn. The synchronous span after the final signal checks is the linearization
  * point: durable evidence, invocation, started event, then await the promise. */
 export async function dispatchWithPolicy(options: {
@@ -73,16 +85,16 @@ export async function dispatchWithPolicy(options: {
   execute(call: ToolCall, signal?: AbortSignal): Promise<string | { content: string; outcome: ToolOutcome }>;
   recordSkip(content: string, code: string): void; mark(): void; started(): void; beforeDispatch?: () => Promise<void>;
   /** Decision 0021: a reason this call cannot be dispatched (not offered, not
-   * available, invalid arguments), or undefined. Read after policy and before
-   * approval, and again at the dispatch boundary. */
+   * available, invalid arguments), or undefined. Read before authorization
+   * and again at the dispatch boundary. Policy denial retains precedence. */
   refuse?(): { code: string; detail?: string } | undefined;
 }): Promise<{ content: string; dispatched: boolean; outcome?: ToolOutcome }> {
   const { call, signal, suspension } = options;
-  const rule = options.decide();
   const skip = (code: string, detail?: string) => { const content = skipped(code, detail); options.recordSkip(content, code); return { content, dispatched: false }; };
   signal.throwIfAborted();
-  if (rule === "deny") return skip("policy_denied");
   const refused = options.refuse?.();
+  const rule = options.decide();
+  if (rule === "deny") return skip("policy_denied");
   if (refused) return skip(refused.code, refused.detail);
   let request: ReturnType<typeof options.approvals.request> | undefined;
   if (rule === "ask") {
@@ -102,15 +114,16 @@ export async function dispatchWithPolicy(options: {
   // approval was given: the grant is discarded and the one paired result says why.
   const late = options.refuse?.();
   if (late) {
-    if (request) { if (!request.consume()) return { content: "", dispatched: false }; }
+    if (request && !request.discard("tool_unavailable")) return { content: "", dispatched: false };
     return skip(late.code, late.detail);
   }
   if (request && !request.consume()) return { content: "", dispatched: false };
-  options.mark();
+  try { options.mark(); } catch (error) { request?.dispatchFailed(); throw error; }
   let result: ReturnType<typeof options.execute>;
   try { result = options.execute(call, signal); }
-  catch (error) { options.started(); throw error; }
+  catch (error) { options.started(); request?.dispatchClosed(); throw error; }
   options.started();
+  request?.dispatchClosed();
   const settled = await result;
   return typeof settled === "string" ? { content: settled, dispatched: true } : { content: settled.content, dispatched: true, outcome: settled.outcome };
 }

@@ -32,7 +32,7 @@ for (const kind of ["memory", "sqlite"] as const) test(`${kind}: model calls ret
     const committed = take(storage.snapshot()); expect(committed.modelCalls.at(-1)?.outcome).toBe("succeeded");
     expect(committed.timeline.at(-1)?.messageId).toBe(next.messageId);
     take(storage.finishTurn(nextTurn.turnId, { status: "completed" }));
-    const archive = take(storage.exportArchive()); expect(archive.archiveVersion).toBe(4);
+    const archive = take(storage.exportArchive()); expect(archive.archiveVersion).toBe(5);
     const destination = kind === "memory" ? createMemoryStorageAdapter() : createSqliteStorageAdapter(join(dir, "copy.db"));
     take(destination.importArchive(archive));
     const copy = take(destination.open({ mode: "open", identity })); expect(take(copy.snapshot()).timeline.at(-1)?.messageId).toBe(next.messageId); take(copy.close());
@@ -92,7 +92,7 @@ test("format 4 upgrades its script counter once from assistant history", async (
     take(storage.appendMessage(turn.turnId, { role: "assistant", content: "one", calls: [] }));
     take(storage.appendMessage(turn.turnId, { role: "assistant", content: "two", calls: [] }));
     take(storage.finishTurn(turn.turnId, { status: "completed" })); take(storage.close());
-    const db = new Database(path); db.exec("UPDATE meta SET value = '4' WHERE key = 'formatVersion'; DELETE FROM meta WHERE key = 'modelState'"); db.close();
+    const db = new Database(path); db.exec("UPDATE meta SET value = '4' WHERE key = 'formatVersion'; DELETE FROM meta WHERE key = 'modelState'; ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source"); db.close();
     storage = take(adapter.open({ mode: "open", identity })); expect(take(storage.snapshot()).scriptPositions.a).toBe(2); take(storage.close());
     storage = take(adapter.open({ mode: "open", identity })); expect(take(storage.snapshot()).scriptPositions.a).toBe(2); take(storage.close());
   } finally { rmSync(dir, { recursive: true, force: true }); }

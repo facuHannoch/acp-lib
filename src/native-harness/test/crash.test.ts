@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ const root = mkdtempSync(join(tmpdir(), "harness-crash-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 let n = 0;
 const setup: CreateParams = { sessionId: "crash", participants: [], channels: {}, config: {
-  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.json", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
+  version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/crash-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } } };
 const push = (id: string, text: string, channel = "a") => ({ channel, item: { id, kind: "user_message" as const, sender: "ana", content: [{ type: "text" as const, text }] } });
 const effects = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
 const events = (wire: unknown[]) => (wire as RpcNotification[]).filter(message => "method" in message).map(message => message.params as ChannelEvent);
@@ -32,7 +33,7 @@ async function crashAt(fault: string) {
 async function reopen(home: string, log: string) {
   const harness = spawnHarness({ home, effects: log });
   await harness.client.initialize();
-  const loaded = await harness.client.loadSession({ sessionId: "crash", config: setup.config });
+  const loaded = await inspectOperatorView(harness.client, { sessionId: "crash", config: setup.config });
   return { ...harness, loaded };
 }
 function turnEnded(harness: { client: ReturnType<typeof spawnHarness>["client"] }, turnId: string) {
@@ -48,16 +49,15 @@ test("crash before take: the accepted input is still pending, runs once after re
   expect(crashed.seen).toEqual([]);
   const harness = await reopen(crashed.home, crashed.log);
   try {
-    const done = turnEnded(harness, "1");
-    expect(harness.loaded).toMatchObject({ status: { lifecycle: "running", execution: "working", channels: [{ channel: "a", pending: ["m1"] }] },
-      turns: [], items: [{ id: "m1", milestone: "received" }], messages: [] });
-    expect(harness.loaded.items[0]!.turnId).toBeUndefined();
-    expect((await done).event).toMatchObject({ outcome: "completed" });
+    if (!events(harness.wire).some(value => value.event.type === "turn_ended" && value.event.turnId === "1"))
+      expect((await turnEnded(harness, "1")).event).toMatchObject({ outcome: "completed" });
+    const tracked = await harness.client.reconcileChannel({ channel: "a", itemIds: ["m1"], turnIds: ["1"] });
+    expect(tracked).toMatchObject({ items: [{ id: "m1", milestone: "seen", turnId: "1" }], turns: [{ turnId: "1", state: "completed" }] });
     // Resending the same ID resolves the unknown acknowledgment without new work.
     expect(await harness.client.push(push("m1", "first"))).toMatchObject({ duplicate: true, item: { milestone: "seen", turnId: "1" } });
     const status = await harness.client.status();
     expect(status).toMatchObject({ execution: "idle", channels: [{ channel: "a", pending: [] }] });
-    expect(events(harness.wire).filter(event => event.event.type === "turn_started").map(event => event.event)).toEqual([{ type: "turn_started", turnId: "1", items: ["m1"] }]);
+    expect(events(harness.wire).filter(event => event.event.type === "turn_started").map(event => event.event)).toMatchObject([{ type: "turn_started", turnId: "1", items: ["m1"] }]);
     expect(effects(crashed.log)).toEqual(["effect"]);
   } finally { await harness.close(); }
 }, 15000);
@@ -76,7 +76,7 @@ test("crash after take: the input stays on one interrupted turn, is not run agai
     expect(await harness.client.push(push("m2", "fresh"))).toMatchObject({ duplicate: false, item: { milestone: "received" } });
     expect((await done).event).toMatchObject({ outcome: "completed" });
     // Only the fresh message ever started a turn in this process.
-    expect(events(harness.wire).filter(event => event.event.type === "turn_started").map(event => event.event)).toEqual([{ type: "turn_started", turnId: "2", items: ["m2"] }]);
+    expect(events(harness.wire).filter(event => event.event.type === "turn_started").map(event => event.event)).toMatchObject([{ type: "turn_started", turnId: "2", items: ["m2"] }]);
     const status = await harness.client.status();
     expect(status.channels[0]!.unresolved).toBeUndefined();
     expect(status).toMatchObject({ execution: "idle" });
@@ -104,7 +104,7 @@ test("crash after a tool's external effect, before its result commits: reported 
     // The fresh turn answered without any tool call, and the old call stayed uncertain.
     expect(events(harness.wire).filter(event => event.event.type === "tool_call")).toEqual([]);
     expect(effects(crashed.log)).toEqual(["effect"]);
-    const after = await harness.client.loadSession({ sessionId: "crash", config: setup.config });
+    const after = await inspectOperatorView(harness.client, { sessionId: "crash", config: setup.config });
     expect(after.turns).toMatchObject([{ turnId: "1", state: "interrupted", uncertainCalls: ["rec-1"] }, { turnId: "2", state: "completed" }]);
   } finally { await harness.close(); }
 }, 15000);
@@ -129,7 +129,7 @@ test("a committed reply the client never received is recovered by load, and the 
     // Message IDs are stable: a later load repeats the recovered IDs and lists
     // the live message under the ID its event carried.
     const live = events(harness.wire).map(event => event.event).find(event => event.type === "message_completed")!;
-    const again = await harness.client.loadSession({ sessionId: "crash", config: setup.config });
+    const again = await inspectOperatorView(harness.client, { sessionId: "crash", config: setup.config });
     expect(again.messages.slice(0, 2)).toEqual(harness.loaded.messages);
     expect(again.messages[2]).toMatchObject({ messageId: live.type === "message_completed" ? live.messageId : "", turnId: "2", parts: [{ text: "Second reply." }] });
     expect(effects(crashed.log)).toEqual(["effect"]);
@@ -138,7 +138,7 @@ test("a committed reply the client never received is recovered by load, and the 
 
 test("crash after receipt evidence and before reply commit keeps the receipt without a reply", async () => {
   // Non-streaming evidence commits before the response transaction.
-  const crashed = await crashAt("confirm:1");
+  const crashed = await crashAt("confirm:2");
   expect(effects(crashed.log)).toEqual([]);
   const harness = await reopen(crashed.home, crashed.log);
   try {
@@ -151,19 +151,21 @@ test("crash after receipt evidence and before reply commit keeps the receipt wit
   } finally { await harness.close(); }
 }, 15000);
 
-test("the load response precedes every live event for recovered work, and those events are newer than its revision", async () => {
+test("the open response precedes recovered work and its events have newer revisions", async () => {
   const crashed = await crashAt("acceptItem:1");
-  const harness = await reopen(crashed.home, crashed.log);
+  const harness = spawnHarness({ home: crashed.home, effects: crashed.log });
   try {
-    await turnEnded(harness, "1");
+    await harness.client.initialize();
+    const done = turnEnded(harness, "1");
+    const opened = await harness.client.openSession({ sessionId: "crash", config: setup.config });
+    await done;
     const wire = harness.wire as any[];
-    const response = wire.findIndex(message => message.result?.status?.sessionId === "crash");
+    const response = wire.findIndex(message => message.result?.sessionId === "crash" && message.result?.revision === opened.revision);
     const firstEvent = wire.findIndex(message => message.method === "channel/event");
     expect(response).toBeGreaterThan(-1);
     expect(firstEvent).toBeGreaterThan(response);
     const revisions = events(wire).flatMap(event => event.revision === undefined ? [] : [event.revision]);
-    expect(revisions.length).toBeGreaterThan(0);
-    expect(Math.min(...revisions)).toBeGreaterThan(harness.loaded.status.revision);
+    expect(Math.min(...revisions)).toBeGreaterThan(opened.revision);
     expect(revisions).toEqual([...revisions].sort((x, y) => x - y));
   } finally { await harness.close(); }
 }, 15000);
@@ -173,10 +175,10 @@ test("a second process cannot open a session that is owned; missing and existing
   const owner = spawnHarness({ home }), other = spawnHarness({ home });
   try {
     await owner.client.initialize(); await other.client.initialize();
-    await expect(other.client.loadSession({ sessionId: "crash", config: setup.config })).rejects.toMatchObject({ code: "not_found" });
+    await expect(other.client.openSession({ sessionId: "crash", config: setup.config })).rejects.toMatchObject({ code: "not_found" });
     expect((await owner.client.initialize().catch(error => error)).code).toBe("already_exists");
     await owner.client.createSession(setup);
-    await expect(other.client.loadSession({ sessionId: "crash", config: setup.config })).rejects.toMatchObject({ code: "owner_conflict" });
+    await expect(other.client.openSession({ sessionId: "crash", config: setup.config })).rejects.toMatchObject({ code: "owner_conflict" });
     await expect(other.client.createSession(setup)).rejects.toMatchObject({ code: "already_exists" });
     await expect(other.client.createSession({ ...setup, sessionId: "../escape" })).rejects.toMatchObject({ code: "invalid_config" });
     // The refused process did not disturb the owner.

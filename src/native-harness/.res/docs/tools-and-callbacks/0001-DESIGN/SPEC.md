@@ -98,6 +98,9 @@ resume. An interrupted turn retains its records and starts no further work.
 
 ## Host callback
 
+The proposed [callback policy amendment](../0002-AMENDMENT-callback-policy/SPEC.md)
+adds contributing policy names for downstream authorization.
+
 After authorizing and recording dispatch, send `functions/call` to the host
 over the same connection. Include the invocation ID, session, channel, turn,
 tool name, and validated arguments. The handler returns inline structured

@@ -6,7 +6,8 @@ import type { Model } from "../../contracts/loop.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import { buildSharedContext } from "../../capabilities/context/build.ts";
 import { openRouter } from "../../capabilities/model/openrouter.ts";
-import { createScriptedModel, scriptedAttempt } from "../../capabilities/model/scripted.ts";
+import { loadScenario, scriptedCompatibilityKey } from "../../capabilities/model/scenario-file.ts";
+import { scenarioAttempt } from "../../capabilities/model/scenario-attempt.ts";
 import { bindModelAttempt } from "../../capabilities/model/attempt.ts";
 import { openRouterAttempt } from "../../capabilities/model/openrouter-stream.ts";
 import { createDashboardWork } from "../../capabilities/tools/dashboard.ts";
@@ -66,20 +67,12 @@ export async function openDevelopment(options: DevelopmentOptions) {
   const providerModel = managedConfig?.model.protocol === "openrouter" ? managedConfig.model : undefined;
   const apiKey = providerModel ? (useLegacyCredential ? options.provider!.apiKey : resolveCredential(providerModel, options.environment ?? process.env)) : undefined;
   if (providerModel && !apiKey) throw new Error(`config.model.apiKeyEnv: environment variable ${providerModel.apiKeyEnv} is missing or empty`);
-  let scripts: { channels: Record<string, unknown>; fallback?: unknown } | undefined;
-  if (scriptPath) {
-    const loaded = await Bun.file(scriptPath).json() as Record<string, unknown>;
-    scripts = loaded && typeof loaded === "object" && "channels" in loaded
-      ? { channels: loaded.channels as Record<string, unknown>, fallback: loaded.default } : { channels: {}, fallback: loaded };
-    for (const script of [...Object.values(scripts.channels), ...(scripts.fallback ? [scripts.fallback] : [])]) createScriptedModel(script);
-  } else if (!providerModel) throw new Error("Development needs provider credentials or a script");
-
-  // Compatible means the same prompt, the same model (or scripts) and the same tools.
-  const compatibility = managedConfig && scriptPath
-    ? [systemPrompt, await Bun.file(scriptPath).json()]
-    : [systemPrompt, providerModel!.model, scenarioDefinitions.map(tool => tool.name)];
-  const compatibilityKey = createHash("sha256").update(JSON.stringify(compatibility)).digest("hex");
-  const opened = adapter.open({ mode: options.database && !options.create ? "open" : "create", identity: { sessionId: "development", compatibilityKey }, config: managedConfig });
+  const script = scriptPath ? await loadScenario(scriptPath) : undefined;
+  if (!script && !providerModel) throw new Error("Development needs provider credentials or a script");
+  const compatibilityKey = script ? scriptedCompatibilityKey(script.modelDigest, systemPrompt)
+    : createHash("sha256").update(JSON.stringify([systemPrompt, providerModel!.model, scenarioDefinitions.map(tool => tool.name)])).digest("hex");
+  const opened = adapter.open({ mode: options.database && !options.create ? "open" : "create",
+    identity: { sessionId: "development", compatibilityKey }, config: managedConfig, requiredScriptDigest: script?.modelDigest });
   if (!opened.ok) throw new Error(`Cannot open session storage (${opened.error.code}): ${opened.error.message}`);
   const storage = opened.value;
   if (managedConfig) {
@@ -94,22 +87,17 @@ export async function openDevelopment(options: DevelopmentOptions) {
     configureTurn(turn, notify) {
       const scenario = createScenarioTools(turn, dashboard, notify);
       const model = observeModel(inspection, turn.channelId, onRequest => {
-        if (!scripts) {
-          const provider = (options.providerFactory ?? openRouter)(apiKey!, providerModel!.model, onRequest);
-          return (messages, tools, signal) => { scenario.beginInference(); return provider(messages, tools, signal); };
-        }
-        const script = scripts.channels[turn.channelId] ?? scripts.fallback;
-        if (!script) throw new Error(`No script for channel ${turn.channelId}`);
-        const next = createScriptedModel(script).model;
-        return (messages, tools, signal) => { scenario.beginInference(); onRequest(JSON.stringify({ messages, tools })); return next(messages, tools, signal); };
+        if (script) return async () => { throw new Error("Scripted model requires a reserved attempt"); };
+        const provider = (options.providerFactory ?? openRouter)(apiKey!, providerModel!.model, onRequest);
+        return (messages, tools, signal) => { scenario.beginInference(); return provider(messages, tools, signal); };
       }, turn.turnId);
-      if (scripts) {
-        const script = scripts.channels[turn.channelId] ?? scripts.fallback;
-        if (!script) throw new Error(`No script for channel ${turn.channelId}`);
+      if (script) {
         bindModelAttempt(model, { scripted: true, create: step => {
-          const next = scriptedAttempt(script, step!);
+          const next = scenarioAttempt(script, turn.channelId, step!);
           return async function* (request, signal) {
-            scenario.beginInference(); inspection.request(turn.channelId, JSON.stringify(request), turn.turnId);
+            scenario.beginInference();
+            if ((options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1")
+              inspection.request(turn.channelId, JSON.stringify(request), turn.turnId);
             for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; }
           };
         } });

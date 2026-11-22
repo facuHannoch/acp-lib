@@ -1,3 +1,4 @@
+import type { OperatorMethods } from "./operator-controls.ts";
 import type { ModelExecutionMethods } from "./model-execution.ts";
 import type { ChannelEvent, SessionEvent } from "./events.ts";
 import type { ItemKind, ItemMilestone } from "./agent.ts";
@@ -31,6 +32,11 @@ export interface CreateParams {
   /** Decision 0021. Bound before the session starts. */
   tools?: import("./tools.ts").ToolCatalogInput;
 }
+/** Owning host submission. policyNames is a set of user-facing names, including an explicit empty set. */
+export interface NotifyParams {
+  channel: string;
+  notice: { id: string; text: string; source?: string; policyNames: string[] };
+}
 export interface PushParams {
   channel: string;
   item: { id: string; kind: "user_message"; sender: string; content: { type: "text"; text: string }[]; policy?: string | null; delivery?: "queue"; wake?: true };
@@ -40,7 +46,7 @@ export interface Description {
   /** Advertise only implemented guarantees: `durable`/`true` are reported by a
    * server only once its acceptance commits to storage before acknowledging. */
   capabilities: { experimental: true; acceptance: "memory" | "durable"; methods: string[]; events: string[]; persistence: boolean;
-    /** Decision 0020: `session/create` and `session/load` accept `channelChanges`
+    /** Decision 0020: `session/create` and `session/open` accept `channelChanges`
      * and apply them before the session starts. Absent on older servers, which
      * reject the field. */
     startupChannelChanges?: true;
@@ -99,6 +105,7 @@ export interface ItemStatus {
   id: string; channel: string; kind: ItemKind; sender: string;
   milestone: ItemMilestone; turnId?: string;
   policy?: import("./config-permissions.ts").ItemPolicy;
+  externalSource?: string;
 }
 export interface TurnStatus {
   turnId: string; channel: string; items: string[];
@@ -131,18 +138,7 @@ export interface ChannelStatusResult {
 export type StoredMessage = { messageId: string; channel: string; turnId: string } &
   ({ parts: { type: "text"; text: string }[]; reference?: never } | { parts?: never; reference: true });
 
-/** One consistent view at `status.revision`. Ordering guarantee on a
- * connection: every event whose commit is included in this revision was
- * published before this response or is not published at all; every later
- * event (revision greater than `status.revision`) follows the response. The
- * server makes pending input eligible for execution only after writing the
- * response, so live events for recovered work always come after it. Loading
- * never resumes a suspended session. `messages` holds committed assistant
- * text in timeline order, up to `messagesLimit`; `nextMessage` continues with
- * `session/messages`, which stays anchored to the same revision.
- * Only messages are paged. If `status`, `turns` and `items` together, or any
- * single message record, cannot be sent within MAX_FRAME_BYTES (1 MiB), the
- * request fails `transfer_limit` and no partial result is returned. */
+/** Internal view retained for development and test projections. The wire uses OpenResult and focused reads. */
 export interface LoadResult {
   status: StatusResult;
   turns: TurnStatus[];
@@ -164,7 +160,7 @@ export interface LoadResult {
 export interface TransferLimits { chunkBytes: 524288; maxBytes: 268435456; idleMs: 60000 }
 export type ArchiveLocation = { type: "path"; path: string } | { type: "transfer" };
 
-export interface DurableMethods extends ModelExecutionMethods {
+export interface DurableMethods extends ModelExecutionMethods, Omit<OperatorMethods, "session/create"> {
   /** Open an existing session with runtime configuration. Returns the load
    * view; a second load on the same endpoint returns a fresh view only.
    * `channelChanges` (decision 0020) is validated as a whole, then applied
@@ -173,9 +169,6 @@ export interface DurableMethods extends ModelExecutionMethods {
    * request with nothing changed and the session not opened. A repeated load
    * with the same batch, or none, reports the recorded results and applies
    * nothing; a different batch fails `invalid_state`. */
-  "session/load": { params: { sessionId: string; config?: ProtocolConfig; messagesLimit?: number; channelChanges?: PendingChannelChange[];
-    /** Decision 0021. Bound before recovered work can start. A repeated load repeats it or omits it. */
-    tools?: import("./tools.ts").ToolCatalogInput }; result: LoadResult };
   // ---- Tools, decision 0021.
   /** Every catalog entry and built-in with its availability. */
   "session/tools": { params: Record<string, never>; result: { tools: import("./tools.ts").ToolAvailability[] } };
@@ -193,7 +186,6 @@ export interface DurableMethods extends ModelExecutionMethods {
   "session/tool-invocations": { params: { turn: string }; result: { invocations: import("./tools.ts").ToolInvocation[] } };
   /** Only records committed at or before `revision`, after message `after`.
    * `not_found` for a revision the session has not reached. */
-  "session/messages": { params: { revision: number; after: string; limit?: number }; result: { messages: StoredMessage[]; nextMessage?: string } };
   "session/status": { params: Record<string, never>; result: StatusResult };
   /** Responds after `suspended` commits. Repeating it is harmless. Fails
    * `stopped` if the session is stopped before suspension commits. */
@@ -256,12 +248,13 @@ export interface Methods {
   "config/validate": { params: { config: unknown }; result: { valid: true } };
   "approval/respond": { params: { requestId: string; decision: import("./config-permissions.ts").ApprovalAnswer }; result: { accepted: true } };
   /** `channelChanges` (decision 0020) follows the same rules as on load. */
-  "session/create": { params: CreateParams; result: { sessionId: string; channelChanges?: ChannelChangeResult[] } };
+  "session/create": OperatorMethods["session/create"];
   /** With durable acceptance the response is sent only after the inbox commit
    * and includes `item` (Received, or the original item's current state for a
    * retry). It never waits for or reports a reply. There is one delivery
    * behavior: `delivery` and `wake` are accepted for compatibility and ignored. */
   "channel/push": { params: PushParams; result: { accepted: true; item?: ItemStatus; duplicate?: boolean } };
+  "channel/notify": { params: NotifyParams; result: { accepted: true; item: ItemStatus; duplicate: boolean } };
   "session/idle": { params: Record<string, never>; result: { idle: boolean } };
 }
 export interface RpcRequest { jsonrpc: "2.0"; id: number; method: string; params: unknown }

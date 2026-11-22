@@ -30,6 +30,9 @@ export interface NativeFunctionContext {
   readonly channel: string;
   readonly turnId: string;
   readonly tool: string;
+  /** Configured contributors from the harness authorization snapshot.
+   * Order grants no precedence. An empty list means none contributed. */
+  readonly policyNames: readonly string[];
   /** Aborts when the harness stops waiting: the tool's deadline, an interrupt, a stop or a lost connection. */
   readonly signal: AbortSignal;
 }
@@ -73,7 +76,7 @@ const RESULT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 export interface NativeFunctionHost {
   /** Handler names advertised at `initialize`. */
   handlers(): string[];
-  /** The catalog for `session/create` and `session/load`, with the current runtime selection. */
+  /** The catalog for `session/create` and `session/open`, with the current runtime selection. */
   catalog(): ToolCatalogInput;
   /** Remember a runtime selection so the next open supplies it again. */
   select(name: string, enabled: boolean): void;
@@ -109,7 +112,7 @@ export function createNativeFunctionHost(config: NativeFunctionsConfig): NativeF
       if (!tool) throw new FunctionError("handler_missing", `No function is registered as ${call.handler}`);
       active.add(call.invocationId);
       try {
-        const output = await tool.handler(call.arguments, { invocationId: call.invocationId, channel: call.channel, turnId: call.turnId, tool: call.tool, signal });
+        const output = await tool.handler(call.arguments, { invocationId: call.invocationId, channel: call.channel, turnId: call.turnId, tool: call.tool, policyNames: [...call.policyNames], signal });
         const text = JSON.stringify(output ?? null);
         const bytes = Buffer.byteLength(text);
         if (bytes <= inlineBytes) return { output: output ?? null };
