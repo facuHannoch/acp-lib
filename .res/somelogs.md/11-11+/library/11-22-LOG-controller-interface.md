@@ -83,3 +83,8 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   changelog and conformance header corrected. No `src/` or snapshot changes. Each touched file five times green;
   full `./test`: run 1 four other timeouts (committed event bus tests, new error notes), runs 2 and 3 green, 1,403 in
   131 files. Sent to clad2a for review; cod2a started the native fixes.
+- Flake-fix review in from clad2a, `189eea6` ([review](reports/11-22-REVIEW-flake-fixes.md)): no blocking findings;
+  each fix removes its timing cause, except the two continuation tests, which only get a longer bound (accepted:
+  they await real work and have no fixed delays); fixture changes opt-in; the new fake case fails on the old fake.
+  The event bus and native host timeouts are load (default 5 s exceeded, teardown errors after); if they recur,
+  give those files explicit bounds.
