@@ -154,3 +154,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   idempotent; fresh and 16 → 17 databases fine). **Step 3b gate passed**
   ([gate](../.plan-execution/status/11-22-GATE-R1-step3b.md)): 1,457 in 132 files.
 - Step 4 (restart tests over a real stdio harness) released to cod2a.
+- Step 4 case (b): the harness's startup handling creates and retires a channel in the same open batch, before
+  admission, so a conversation deleted before the harness first opened shows as a retired tombstone, not absent.
+  Decided by the coordinator: the tombstone satisfies (b) (nothing can run, a retired id can't be reopened); assert
+  no open channel, the tombstone, a refused push and no turn; a report line; no protocol change.
