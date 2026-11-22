@@ -21,3 +21,10 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 - `src/native/host.ts` is 984 lines at the base (761 when R1 was written; grew with the harness's operator
   controls): R1 must not grow it (extract the records adapter).
 - R1 (durable channel intents) assigned to cod2a.
+- R1 step 0 in from cod2a, `1bac66c` ([report](reports/11-22-REPORT-R1-grounding.md)): baseline green (1,426 in 132
+  files, 243 s). Recommends making the channel half asynchronous, with no mirror: a separate adapter module, delivery
+  code extracted out of `host.ts` and the delete transaction helper out of `conversation-manager.ts` first, delivery
+  scheduled only after the delete transaction commits. Two ordering constraints to test (edit order registered
+  before any await; the startup cutoff scan kept atomic). Open points: the public sync `NativeHostRecords` API, file-store
+  pending changes under a durable backend, `harness.records` vs the repository, operator suspend/resume. Sent to
+  clad2a for review.
