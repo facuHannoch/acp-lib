@@ -9,7 +9,7 @@ import { join } from "node:path";
 const main = new URL("../../src/native-harness/src/interfaces/cli/main.ts", import.meta.url).pathname;
 type Outcome = "completed" | "failed" | "interrupted";
 type ExpectedOutcome = Outcome | "timeout";
-type Send = { inputId: string; channel: string; scheduled: number; issued: number; turnId?: string; outcome?: Outcome; reason?: string };
+type Send = { inputId: string; channel: string; scheduled: number; issued: number; accepted?: boolean; turnId?: string; outcome?: Outcome; reason?: string };
 type Evidence = { channel: string; turnId: string; kind: "started" | "text_delta" | Outcome; elapsed: number; characters?: number };
 
 export interface RehearsalOptions {
@@ -146,25 +146,33 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
     await host.start();
     started = performance.now();
   };
+  let stage = "startup";
   const issue = (send: typeof scenario.sends[number]) => {
-    sends.push({ inputId: send.inputId, channel: send.channelId, scheduled: send.atMs, issued: elapsed() });
+    const record: Send = { inputId: send.inputId, channel: send.channelId, scheduled: send.atMs, issued: elapsed() };
+    sends.push(record);
     const request = host.push({ id: send.inputId, channel: send.channelId, sender: send.participantId, text: send.text });
-    requests.push(request.catch(error => { failure ??= error; }));
+    requests.push(request.then(() => { record.accepted = true; }, error => { failure ??= error; }));
     return request;
   };
-  const schedule = async () => {
+  const schedule = async (beforeBurst?: (offset: number) => Promise<void>) => {
+    stage = "scheduled sends";
+    let previous: number | undefined;
     const ordered = [...scenario.sends].sort((a, b) => a.atMs - b.atMs);
     for (const send of ordered) {
       while (send.atMs > elapsed()) await Bun.sleep(Math.min(50, send.atMs - elapsed()));
+      if (send.atMs !== previous) await beforeBurst?.(send.atMs);
+      previous = send.atMs;
       if (elapsed() >= options.deadlineMs) throw new Error("rehearsal deadline before all sends");
       void issue(send).catch(() => undefined);
     }
+    stage = "inbox acknowledgments";
     await Promise.all(requests);
   };
   const settled = async () => {
     if (failure) throw failure;
     const status = await host.status();
     if (status.execution !== "idle" || status.channels.some(channel => channel.pending.length || channel.activeTurn)) return;
+    stage = "input reconciliation";
     for (const channel of channels) {
       const submitted = sends.filter(send => send.channel === channel);
       const inputTurns = new Map<string, string>();
@@ -193,10 +201,12 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
   };
   const finish = async () => {
     while (elapsed() < options.deadlineMs) {
+      stage = "channel settlement";
       const status = await settled();
       if (!status) { await Bun.sleep(10); continue; }
       // The driver owns a fresh home for the whole run, including replacements.
       // A tested channel's entire history is exactly its run delivery window.
+      stage = "reply comparison";
       const comparisonStarted = performance.now();
       let historyPages = 0;
       const expectedReplies = new Map<string, string[]>();
@@ -236,7 +246,8 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
       }
       const unused = Object.fromEntries([...channels].map(channel => [channel, Math.max(0,
         (scenario.channelModels.get(channel) ?? scenario.defaultModels).length - (consumed.get(channel) ?? 0))]));
-      if (options.exactConsumption && Object.values(unused).some(count => count !== 0)) throw new Error("Unused model records");
+      if (options.exactConsumption && Object.values(unused).some(count => count !== 0))
+        throw new Error(`Unused model records: ${JSON.stringify(unused)}`);
       return { fixture: scenario.name, fileDigest: scenario.fileDigest, durationMs: elapsed(), revision: status.revision, sends, activity,
         replies: Object.fromEntries(expectedReplies), historyPages, comparisonMs, effects, toolFailures, unused };
     }
@@ -255,16 +266,32 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
     } finally { clearTimeout(timer); }
     await rm(home, { recursive: true, force: true });
   };
-  const run = async () => {
+  const run = async (beforeBurst?: (offset: number) => Promise<void>) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await setup();
-      return await Promise.race([(async () => { await schedule(); return finish(); })(),
+      return await Promise.race([(async () => { await schedule(beforeBurst); return finish(); })(),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("rehearsal deadline")), options.deadlineMs); })]);
     } catch (error) {
-      let status: Awaited<ReturnType<typeof host.operatorStatus>> | undefined;
-      try { status = await host.operatorStatus(); } catch { /* last error still carries the failed stage */ }
-      throw new Error(`${String(error)}; blocking status: ${JSON.stringify(status)}`, { cause: error });
+      let diagnosticTimer: ReturnType<typeof setTimeout> | undefined;
+      const status = await Promise.race([
+        host.operatorStatus().then(view => ({
+          process: view.process, stale: view.stale, workingChannels: view.workingChannels,
+          revision: view.session?.revision, execution: view.session?.execution, lifecycle: view.session?.lifecycle,
+          channels: view.session?.channels.filter(channel => channel.pending.length || channel.activeTurn || channel.waitingForResume)
+            .slice(0, 12).map(channel => ({
+              channel: channel.channel, lifecycle: channel.lifecycle, waitingForResume: channel.waitingForResume,
+              pendingCount: channel.pending.length, pending: channel.pending.slice(0, 5), activeTurn: channel.activeTurn,
+            })),
+        }), error => ({ statusError: String(error).slice(0, 200) })),
+        new Promise(resolve => { diagnosticTimer = setTimeout(() => resolve({ statusError: "operator status timed out" }), 250); }),
+      ]);
+      clearTimeout(diagnosticTimer);
+      const unissued = scenario.sends.length - sends.length;
+      const awaitingReceipt = sends.filter(send => !send.accepted);
+      const unresolved = sends.filter(send => !send.outcome);
+      throw new Error(`${String(error)}; blocking status: ${JSON.stringify({ stage, unissued, awaitingReceipt: awaitingReceipt.length,
+        unresolved: unresolved.length, sample: unresolved.slice(0, 8).map(send => send.inputId), ...status })}`, { cause: error });
     } finally { clearTimeout(timer); await close(); }
   };
   return { host, env, children, exits, effects, sends, activity, scenario, setup, issue, schedule, finish, observe, unobserve, recover, close, run,
