@@ -144,9 +144,10 @@ export class ConversationPermissions {
       return false;
     };
     const record = Promise.resolve().then(recordRequested);
+    const recordReady = () => Promise.race([record.then(() => true), result.then(() => false)]);
     const sendAfterRecord = async (decision: PermissionResolution) => {
       try {
-        await record;
+        if (!await recordReady()) return false;
       } catch (error) {
         this.log().warn("conversation_permission_record_failed", { turnId, id, error: String(error) });
         await send(refuse("default"));
@@ -163,7 +164,7 @@ export class ConversationPermissions {
         return true;
       };
       const expire = () => {
-        if (claim()) void sendAfterRecord(refuse("timeout")).catch(failed);
+        if (claim()) void send(refuse("timeout")).catch(failed);
       };
       entry.answer = async optionId => {
         if (remaining() <= 0) expire();
@@ -191,7 +192,7 @@ export class ConversationPermissions {
 
     const runHandler = async () => {
       try {
-        await record;
+        if (!await recordReady()) return;
       } catch (error) {
         this.log().warn("conversation_permission_record_failed", { turnId, id, error: String(error) });
         await send(refuse("default"));

@@ -1,6 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { resolve } from "node:path";
 import { AgentSession } from "../src/agent-session.ts";
+import type { AgentConversationOwnerLifecycle } from "../src/agent-conversation-owner.ts";
 import { Agent } from "../src/agent.ts";
 import { noopLogger } from "../src/logger.ts";
 import { acpPermissionArrivals, permissionArrival } from "../src/permissions/arrival.ts";
@@ -169,10 +170,13 @@ test("an already-expired request keeps its ingress deadline when delivered late"
   };
   const arrival = permissionArrival();
   acpPermissionArrivals.set(request, { wallTime: arrival.wallTime - 5_000, monotonicTime: arrival.monotonicTime - 5_000 });
-  const resolved = coordinator.request("held-turn", request, { answersPermissions: true, permissionTimeoutMs: 1_000 }, undefined);
+  const record = Promise.withResolvers<void>();
+  const resolved = coordinator.request("held-turn", request,
+    { answersPermissions: true, permissionTimeoutMs: 1_000 }, undefined, undefined, () => record.promise);
   expect(events[0]).toMatchObject({ kind: "permission_requested", expiresAt: arrival.wallTime - 4_000 });
   expect(await coordinator.answer(events[0]!.id, "allow")).toEqual({ accepted: false });
   expect(await resolved).toMatchObject({ by: "timeout", outcome: { outcome: "selected", optionId: "deny" } });
+  record.resolve();
 });
 
 test("Agent conversation permission options inherit and explicit false disables the wait", async () => {
@@ -194,6 +198,42 @@ test("Agent conversation permission options inherit and explicit false disables 
     expect(notices[0]).not.toHaveProperty("expiresAt");
     expect(notices[1]).toMatchObject({ kind: "permission_resolved", by: "default" });
   } finally {
+    await agent.close();
+  }
+}, 10_000);
+
+test("a consumer expiry reaches the ACP agent while requested-record persistence is held", async () => {
+  const agent = await Agent.open({
+    persistence: { kind: "sqlite", path: ":memory:" },
+    adapters: { permission: { command: ["bun", fixture] } },
+    capture: { permission: "content" },
+  });
+  const release = Promise.withResolvers<void>();
+  try {
+    const conversation = await agent.conversations.create({ answersPermissions: true, permissionTimeoutMs: 50 });
+    const lifecycle = (conversation as unknown as { ownerLifecycle: AgentConversationOwnerLifecycle }).ownerLifecycle;
+    const record = lifecycle.record!.bind(lifecycle);
+    const writingRequested = Promise.withResolvers<void>();
+    spyOn(lifecycle, "record").mockImplementation(async (entry, parts) => {
+      if (entry.kind === "permission" && entry.state === "requested") {
+        writingRequested.resolve();
+        await release.promise;
+      }
+      await record(entry, parts);
+    });
+    const response = Promise.withResolvers<string>();
+    const work = conversation.prompt("reject-first", { onChunk: chunk => response.resolve(chunk) });
+    await writingRequested.promise;
+    expect(JSON.parse(await response.promise)).toEqual({ outcome: "selected", optionId: "reject" });
+    release.resolve();
+    await work;
+    const { records } = await agent.persistence.records.list(conversation.id, { kinds: ["permission"] });
+    expect(records).toEqual([
+      expect.objectContaining({ kind: "permission", state: "requested" }),
+      expect.objectContaining({ kind: "permission", state: "resolved", outcome: "denied" }),
+    ]);
+  } finally {
+    release.resolve();
     await agent.close();
   }
 }, 10_000);

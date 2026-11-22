@@ -178,7 +178,7 @@ export function createTurnRecording(
           }),
         }) : undefined);
       if (agentSessionId) {
-        await ctx.owner.recordNow({
+        const recorded = ctx.owner.recordNow({
           recordId: `${permissionBase}:resolved`,
           agentSessionId,
           agentConversationId: ctx.owner.agentConversationId,
@@ -189,6 +189,9 @@ export function createTurnRecording(
           state: "resolved",
           outcome: permissionOutcome(request, resolution),
         });
+        // The owner tail keeps the record ordered. A timed-out refusal can reach the provider now.
+        if (resolution.by === "timeout") void recorded.catch(() => undefined);
+        else await recorded;
       }
       return resolution.outcome;
     },
