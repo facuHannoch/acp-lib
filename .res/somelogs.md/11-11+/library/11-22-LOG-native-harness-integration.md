@@ -129,3 +129,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   ([gate](../.plan-execution/status/11-22-GATE-R1-step3.md)): 1,451 in 132 files.
 - Worker delivery: Cod1a's implementation `b53abf2` (hook merged at `56ac47a`) is with Clad1a for review; repository
   level only, the host flush and wire integration go to the orchestrator.
+- Worker delivery repository and lifecycle **approved** by Clad1a at `b53abf2` (root 1,457, harness 360). Our hook
+  commits `acc6d5d` and `7be9456` merged unchanged; `recordFinal` and `recordFailure` run inside the terminal
+  transaction as granted. Left to the orchestrator: the host flush through `channel/notify`, retries after a lost
+  acknowledgement or a resume, and a live provider run. Merge order: R1 into alpha before `b53abf2` (it contains R1
+  up to `7be9456`).
