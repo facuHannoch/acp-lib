@@ -100,3 +100,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   included, with no failure-kind field. Cod1a's `persisted-lifecycle.ts` grant extended to `recordFailure` in the
   `promptFailed` transaction and in non-completed terminal `afterPrompt` statuses; same conditions; never both final
   and failure for one binding.
+- Hook fix in from cod2a, `7be9456`: own message id per hook; causal `messageIds` on every terminal result and
+  `promptFailed`. Review from clad2a, `40bab3f`: blocking finding resolved; probes show the hook id in the terminal
+  `messageIds` in every case. **Gate passed** ([gate](../.plan-execution/status/11-22-GATE-beforeDispatch.md)): 1,448
+  in 132 files. Sent to Cod1a and haurness-l.
