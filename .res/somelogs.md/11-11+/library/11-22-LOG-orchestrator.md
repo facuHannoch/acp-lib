@@ -114,3 +114,9 @@ edit to `src/agent-session.ts`.
   a new assignment (the running one ends interrupted, steered, notice to its destination). So Cod1a's continuation
   contract (`18df7e1`) stands and the hold on it is lifted; `closeContinuation` also serves `assignment: "new"`.
   Spec updated (Operations, Flow 2, O2, O3a).
+- Cod1a's `assignment: "new"` addition (`0c9ce89`, on `25b0126`; Clad1a reviewing): `closeContinuation(old, expected,
+  failure, mode?: "replace")` plus `reserve`, in one transaction; the old final wins if first, otherwise the old
+  assignment stages an interrupted notice with the public reason "worker interrupted by steering" and
+  possiblePartialEffects true; an idle worker only reserves; redirect plus new changes only the new destination.
+  Asked: O3a runs both calls in one `persistence.transaction` on the scoped repositories, from the successor's
+  `beforeDispatch`: confirm and add a rollback test to the contract.
