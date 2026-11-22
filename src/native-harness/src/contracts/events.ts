@@ -1,6 +1,6 @@
 /** Loop facts; composition supplies channel/turn IDs and message IDs. */
 export type LoopEvent =
-  | ({ type: "message_completed" } & ({ parts: { type: "text"; text: string }[]; reference?: never } | { parts?: never; reference: true }))
+  | ({ type: "message_completed"; position?: import("./operator-controls.ts").MessagePosition } & ({ parts: { type: "text"; text: string }[]; reference?: never } | { parts?: never; reference: true }))
   /** Decision 0021 adds `invocationId` and, for catalog tools, `skipped` (never
    * dispatched) and `interrupted` (the wait ended after dispatch: effect unknown). */
   | { type: "tool_call"; id: string; name: string; status: "started" | "completed" | "failed" | "skipped" | "interrupted"; input?: string; output?: string; invocationId?: string };
@@ -30,11 +30,12 @@ export interface ChannelEvent {
   revision?: number;
   event: (LoopEvent & { turnId: string; messageId?: string })
     | import("./model-execution.ts").ModelTextEvent
-    | { type: "turn_started" | "turn_took"; turnId: string; items: string[] }
+    | { type: "turn_started" | "turn_took"; turnId: string; items: string[]; messages?: { itemId: string; messageId: string; position: import("./operator-controls.ts").MessagePosition }[] }
     | { type: "items_receipt"; turnId: string; items: string[]; milestone: "delivered" | "seen" }
     | { type: "turn_suspended" | "turn_resumed"; turnId: string }
     | { type: "channel_state"; lifecycle: "open" | "suspending" | "suspended" | "retired"; displayName?: string; policy?: string }
     | { type: "item_withdrawn"; item: string }
+    | import("./operator-controls.ts").ApprovalClosedEvent
     | ({ type: "approval_requested" } & import("./config-permissions.ts").ApprovalRequest)
     | { type: "turn_ended"; turnId: string; outcome: "completed" | "failed" | "interrupted"; error?: string; uncertainCalls?: string[] };
 }

@@ -1,15 +1,16 @@
-import type { ApprovalRequest } from "./config-permissions.ts";
-import type { ChannelChangeResult, ChannelStatusResult, ItemStatus, LoadResult, StoredMessage, TurnStatus } from "./protocol.ts";
+import type { ApprovalCloseReason, ApprovalRequest } from "./config-permissions.ts";
+import type { ChannelChangeResult, ChannelStatusResult, ItemStatus, StoredMessage, PendingChannelChange, ProtocolConfig, TurnStatus } from "./protocol.ts";
 
 export interface OpenResult {
   sessionId: string;
-  lifecycle: LoadResult["status"]["lifecycle"];
+  lifecycle: import("./storage.ts").SessionLifecycle;
   revision: number;
   channelChanges?: ChannelChangeResult[];
 }
 
 export interface ChannelObservation {
   revision: number;
+  sessionLifecycle: import("./storage.ts").SessionLifecycle;
   channel: Omit<ChannelStatusResult, "pending" | "unresolved"> & { pendingCount: number };
   approvals: ApprovalRequest[];
 }
@@ -18,7 +19,9 @@ export interface ChannelObservation {
 export type MessagePosition = string;
 export type ConversationMessage = (StoredMessage | {
   messageId: string; channel: string; turnId: string; omitted: true;
-}) & { position: MessagePosition; actor: { kind: "participant" | "agent"; id: string } };
+}) & { position: MessagePosition; actor: { kind: "participant"; id: string }; itemId: string } |
+  ((StoredMessage | { messageId: string; channel: string; turnId: string; omitted: true }) &
+    { position: MessagePosition; actor: { kind: "agent"; id: string }; itemId?: never });
 
 export type ConversationPageRequest = { channel: string; limit?: number } & (
   | { cursor?: never; after?: never; throughRevision?: never }
@@ -34,7 +37,8 @@ export interface TimelineEvent {
   kind: "participant_message" | "assistant_message" | "channel_notice" | "tool_call" | "tool_result";
   sourceChannel?: string;
   messageId?: string;
-  payload?: unknown;
+  /** Protocol bounds encoded payload bytes before publication. */
+  payload?: import("./loop.ts").Message;
   omitted?: true;
   resultReference?: import("./tools.ts").ResultReference;
 }
@@ -52,7 +56,12 @@ export interface OperatorMethods {
   "session/timeline": { params: { limit?: number; cursor?: string }; result: { events: TimelineEvent[]; next?: string } };
 }
 
-type LoadResultOpenParams = Pick<import("./protocol.ts").DurableMethods["session/load"]["params"], "sessionId" | "config" | "channelChanges" | "tools">;
+export interface LoadResultOpenParams {
+  sessionId: string;
+  config?: ProtocolConfig;
+  channelChanges?: PendingChannelChange[];
+  tools?: import("./tools.ts").ToolCatalogInput;
+}
 
 /** Internal read side. Results are detached and each read observes one revision.
  * Store adapters use the numeric bounds internally. Wire cursors are decoded
@@ -75,7 +84,6 @@ export interface OperatorStorageReads {
     direction: "older" | "newer";
     kind: "conversation" | "timeline" | "replies";
     limit: number;
-    byteBudget: number;
   }): import("./storage.ts").StorageResult<{ entries: import("./storage.ts").TimelineEntry[]; more: boolean }>;
 }
 
@@ -84,4 +92,5 @@ export interface ApprovalClosedEvent {
   type: "approval_closed";
   turnId: string;
   requestId: string;
+  reason: ApprovalCloseReason | "dispatched";
 }

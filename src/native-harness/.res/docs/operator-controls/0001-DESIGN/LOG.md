@@ -7,3 +7,9 @@ gate before dependent implementation begins.
 
 Both package typechecks passed. The proposed method and storage read types
 are separate from the active dispatch map until implementation.
+
+Clad requested changes at 89fe68c. The follow-up specifies approval closure
+on the event union, observe response ordering including ephemeral events,
+participant identity and live positions, session lifecycle in observation,
+indexed range bounds, and explicit wire replacement and validation behavior.
+Both package typechecks passed again. Gate 2 awaits independent approval.
