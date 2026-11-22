@@ -19,6 +19,7 @@ import type { Agent } from "../../src/agent.ts";
 import type { AgentSession } from "../../src/agent-session.ts";
 import { UnsupportedError } from "../../src/errors.ts";
 import { NativeTurnError } from "../../src/native/controller.ts";
+import { createFileHostRecords } from "../../src/native/records.ts";
 import type { PermissionOutcome, PermissionRequest } from "../../src/types.ts";
 import { hold, nativeRig, record, reply, until, type NativeRig, type Seen } from "./support.ts";
 
@@ -192,7 +193,7 @@ describe("the first end-to-end checkpoint", () => {
     const bobChannel = status.channels.find((channel) => channel.channel === bob.id)!;
     expect(bobChannel).toMatchObject({ lifecycle: "suspended", waitingForResume: true, pending: [b2.id] });
     expect(bobChannel.activeTurn).toBeUndefined();
-    expect(host.records.pendingChanges()).toEqual([]); // confirmed by the open
+    expect(await host.pendingChannelChanges()).toEqual([]); // confirmed by the open
     await Bun.sleep(100);
     expect((await host.status()).channels.find((channel) => channel.channel === bob.id)).toMatchObject({ lifecycle: "suspended", pending: [b2.id] });
     expect(b2State.settled).toBe(false);
@@ -238,7 +239,7 @@ describe("the first end-to-end checkpoint", () => {
     const host = agent.nativeHarness!;
     const [alice, bob] = await two(agent);
     expect(await host.changeChannel(bob.id, { lifecycle: "suspended" })).toEqual({ state: "pending" });
-    const before = host.records.pendingChange(bob.id)!;
+    const before = (await host.pendingChannelChanges()).find((change) => change.channel === bob.id)!;
     expect(before.desire).toEqual({ displayName: "Bob", lifecycle: "suspended" });
     rig.env.HARNESS_TEST_FAULT = "beginChannelSuspend:1"; // dies inside the open, after the suspension commits
     const failed = await alice.prompt("a1").catch((error) => error);
@@ -246,14 +247,14 @@ describe("the first end-to-end checkpoint", () => {
     delete rig.env.HARNESS_TEST_FAULT;
     expect(host.state).toBe("stopped");
     // Unconfirmed, so still the host's pending state, unchanged.
-    expect(host.records.pendingChange(bob.id)).toEqual(before);
+    expect((await host.pendingChannelChanges()).find((change) => change.channel === bob.id)).toEqual(before);
     // The prompt that failed was never handed over, so it must not run later.
     expect(host.records.submissions()).toEqual([]);
 
     const result = await alice.prompt("a2");
     expect(result).toMatchObject({ status: "completed", text: "reply 1" });
     expect(host.launches).toBe(2);
-    expect(host.records.pendingChanges()).toEqual([]);
+    expect(await host.pendingChannelChanges()).toEqual([]);
     const status = await host.status();
     expect(status.channels.map((channel) => [channel.channel, channel.lifecycle, channel.displayName]).sort()).toEqual(
       [[alice.id, "open", "Alice"], [bob.id, "suspended", "Bob"]].sort());
@@ -314,7 +315,7 @@ describe("the native conversation at the Agent", () => {
     const conversation = await agent.conversations.create() as AgentSession;
     // The adapter's default policy and the conversation are stored for the channel without starting anything.
     expect(agent.nativeHarness!.state).toBe("stopped");
-    expect(agent.nativeHarness!.records.pendingChange(conversation.id)?.desire).toEqual({ policy: "open" });
+    expect((await agent.nativeHarness!.pendingChannelChanges()).find((change) => change.channel === conversation.id)?.desire).toEqual({ policy: "open" });
     expect(conversation.harnessConnection()).toBeNull();
   }, 30_000);
 
@@ -361,10 +362,63 @@ describe("the native conversation at the Agent", () => {
     await agent.conversations.delete(bob.id);
     expect(host.state).toBe("stopped");
     expect(host.launches).toBe(1);
-    expect(host.records.pendingChange(bob.id)?.desire).toMatchObject({ lifecycle: "retired" });
+    expect((await host.pendingChannelChanges()).find((change) => change.channel === bob.id)?.desire).toMatchObject({ lifecycle: "retired" });
     expect(await alice.prompt("a2")).toMatchObject({ status: "completed" });
-    expect(host.records.pendingChanges()).toEqual([]);
+    expect(await host.pendingChannelChanges()).toEqual([]);
     expect((await host.status()).channels.find((channel) => channel.channel === bob.id)).toMatchObject({ lifecycle: "retired" });
+  }, 30_000);
+
+  test("SQLite ignores pending file intents once and still uses explicit records for submissions", async () => {
+    const rig = await rigWith();
+    const path = join(rig.directory, "host-records.json");
+    const original = createFileHostRecords(path);
+    const ignored = original.desire("file-only", { lifecycle: "suspended" });
+    rig.harness.records = createFileHostRecords(path);
+    const agent = await rig.open();
+    const host = agent.nativeHarness!;
+    expect(await host.pendingChannelChanges()).toEqual([]);
+    expect(() => host.records.pendingChanges()).toThrow("pendingChannelChanges");
+    expect(() => host.records.pendingChange("file-only")).toThrow("pendingChannelChanges");
+    expect(() => host.records.desire("file-only", { lifecycle: "open" })).toThrow("use persistence");
+    expect(() => host.records.confirmChange("file-only", ignored.version)).toThrow("use persistence");
+
+    const conversation = await agent.conversations.create({ title: "Repository channel" });
+    expect(await host.pendingChannelChanges()).toMatchObject([{ channel: conversation.id, desire: { displayName: "Repository channel" } }]);
+    const saved = { id: "file-submission", channel: conversation.id, sender: "ana", text: "saved in file", state: "saved" } as const;
+    host.records.saveSubmission(saved);
+    expect(createFileHostRecords(path).submission(saved.id)).toEqual(saved);
+    expect(host.records.submission(saved.id)).toEqual(saved);
+    host.records.settleSubmission(saved.id);
+
+    for (let open = 0; open < 2; open++) {
+      await host.ensureStarted();
+      expect((await host.status()).channels.map(({ channel }) => channel)).toEqual([conversation.id]);
+      await host.stop();
+    }
+    expect(createFileHostRecords(path).pendingChanges()).toEqual([ignored]);
+    expect(rig.logs.filter(([level, event]) => level === "warn" && event === "native_file_channel_changes_ignored")).toHaveLength(1);
+  }, 30_000);
+
+  test("the conversation delete caller propagates a durable channel write failure", async () => {
+    const rig = await rigWith();
+    const agent = await rig.open();
+    const host = agent.nativeHarness!;
+    const conversation = await agent.conversations.create({ title: "Keep this conversation" });
+    expect(await conversation.prompt("first")).toMatchObject({ status: "completed" });
+    await host.stop();
+
+    const error = new Error("could not store retirement");
+    const write = spyOn(agent.persistence.channels!, "desire").mockRejectedValueOnce(error);
+    try {
+      await expect(agent.conversations.delete(conversation.id)).rejects.toBe(error);
+      expect(write).toHaveBeenCalledWith(conversation.id, { lifecycle: "retired" });
+      expect((await agent.persistence.conversations.get(conversation.id))?.title).toBe("Keep this conversation");
+      expect(await host.pendingChannelChanges()).toEqual([]);
+    } finally {
+      write.mockRestore();
+    }
+    const { conversation: reopened } = await agent.conversations.open(conversation.id);
+    expect(await reopened.prompt("after the failure")).toMatchObject({ status: "completed", text: "reply 2" });
   }, 30_000);
 
   test("a new Agent process over the same persistence and harness home reopens the conversation on the same session and channel", async () => {

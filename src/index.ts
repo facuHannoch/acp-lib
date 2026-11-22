@@ -260,6 +260,7 @@ export type {
 export { ADAPTERS, buildSpawnCommand, isNativeAdapter } from "./adapters.ts";
 export type { Adapter, AdapterPreset, AgentAdapter, NativeAdapter } from "./adapters.ts";
 export { HarnessIncompatibleError, HarnessUnavailableError, NativeHarnessHost } from "./native/host.ts";
+export type { HarnessUnavailableCode } from "./native/errors.ts";
 export type { ChannelChangeOutcome, NativeApprovalRequest, NativeApprovalResponder, NativeHarnessHostConfig, NativeHostState } from "./native/host.ts";
 export { NativeTurnError } from "./native/controller.ts";
 export { FunctionError, NATIVE_FUNCTION_DEFAULTS } from "./native/functions.ts";

@@ -142,6 +142,10 @@ export class Agent {
     this.id = id;
     this.persistence = persistence;
     this.adapters = adapters;
+    const channels = persistence.capabilities.channels ? persistence.channels : undefined;
+    if (config.harness && persistence.capabilities.channels && !channels) {
+      throw new Error("The persistence backend advertises channel intents but provides no channels repository");
+    }
     this.nativeHarness = config.harness
       ? new NativeHarnessHost({
         sessionId: id,
@@ -150,7 +154,7 @@ export class Agent {
           ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
           : {}),
         ...(config.conversationDefaults?.logger ? { logger: config.conversationDefaults.logger } : {}),
-      })
+      }, channels)
       : null;
     this.audit = audit;
     const logger = config.conversationDefaults?.logger ?? noopLogger;

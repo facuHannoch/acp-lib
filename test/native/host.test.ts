@@ -15,17 +15,30 @@ import { HarnessIncompatibleError, HarnessUnavailableError, NativeHarnessHost, t
 import { NativeController } from "../../src/native/controller.ts";
 import { createFileHostRecords, createMemoryHostRecords } from "../../src/native/records.ts";
 import { prepareNativeLaunch } from "../../src/launcher.ts";
+import { SqliteAgentPersistence, type ChannelPersistence } from "../../src/persistence/index.ts";
 
 const cleanups: Array<() => Promise<unknown> | unknown> = [];
 afterEach(async () => { for (const clean of cleanups.splice(0).reverse()) await Promise.resolve(clean()).catch(() => undefined); });
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
+function barrier() {
+  let release!: () => void;
+  const reached = new Promise<void>((resolve) => { release = resolve; });
+  return { reached, release };
+}
 const until = async (predicate: () => boolean, what: string) => {
   for (let i = 0; i < 600; i++) { if (predicate()) return; await tick(); }
   throw new Error(`timed out waiting for ${what}`);
 };
 
 /** A harness whose storage outlives each connection, and a host connected to it through the test seam. */
-async function rig(options: { steps?: Parameters<typeof modelScenario>[0]; restart?: { limit: number; windowMs: number }; startupTimeoutMs?: number; approvalResponder?: NativeApprovalResponder } = {}) {
+async function rig(options: {
+  steps?: Parameters<typeof modelScenario>[0];
+  restart?: { limit: number; windowMs: number };
+  startupTimeoutMs?: number;
+  approvalResponder?: NativeApprovalResponder;
+  durable?: boolean;
+  configureChannels?: (channels: ChannelPersistence) => void;
+} = {}) {
   const directory = await mkdtemp(join(tmpdir(), "acp-native-host-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const script = join(directory, "script.jsonl"), effects = join(directory, "effects.log");
@@ -60,10 +73,15 @@ async function rig(options: { steps?: Parameters<typeof modelScenario>[0]; resta
     return { client, closed: gone, async kill() { end(); } };
   };
   const records = createMemoryHostRecords();
+  const persistence = options.durable ? await SqliteAgentPersistence.open({ path: join(directory, "agent.sqlite") }) : undefined;
+  if (persistence) {
+    cleanups.push(() => persistence.close());
+    options.configureChannels?.(persistence.channels);
+  }
   const blocked: unknown[] = [];
   const host = new NativeHarnessHost({ sessionId: "agent-1", config, home: directory, records, connect, requestTimeoutMs: 2000,
     approvalResponder: options.approvalResponder, onChannelChangeBlocked: (result) => blocked.push(result), ...(options.restart ? { restart: options.restart } : {}),
-    ...(options.startupTimeoutMs ? { startupTimeoutMs: options.startupTimeoutMs } : {}) });
+    ...(options.startupTimeoutMs ? { startupTimeoutMs: options.startupTimeoutMs } : {}) }, persistence?.channels);
   cleanups.push(() => host.stop());
   const attach = (channel: string, busy = false) => {
     const events: ChannelEvent[] = [], views: ChannelView[] = [], notes: string[] = [];
@@ -154,17 +172,17 @@ describe("starting", () => {
   });
 });
 
-describe("channel changes", () => {
+for (const durable of [false, true]) describe(durable ? "channel changes (SQLite)" : "channel changes (memory)", () => {
   test("changes made while stopped never start the harness, are coalesced, go inside the open, and are cleared when confirmed", async () => {
-    const { host, records, calls } = await rig();
+    const { host, records, calls } = await rig({ durable });
     expect(await host.changeChannel("a", { displayName: "First" })).toEqual({ state: "pending" });
     expect(await host.changeChannel("a", { displayName: "Alice", policy: "strict" })).toEqual({ state: "pending" });
     expect(await host.changeChannel("b", { lifecycle: "suspended" })).toEqual({ state: "pending" });
     expect(host.state).toBe("stopped");
-    expect(records.pendingChanges().map((change) => [change.channel, change.desire])).toEqual([
+    expect((await host.pendingChannelChanges()).map((change) => [change.channel, change.desire])).toEqual([
       ["a", { displayName: "Alice", policy: "strict" }], ["b", { lifecycle: "suspended" }]]);
     await host.ensureStarted();
-    expect(records.pendingChanges()).toEqual([]);
+    expect(await host.pendingChannelChanges()).toEqual([]);
     const status = await host.status();
     expect(status.channels).toMatchObject([{ channel: "a", displayName: "Alice", policy: "strict", lifecycle: "open" }, { channel: "b", lifecycle: "suspended" }]);
     // Nothing went through the live channel methods: the open carried it all.
@@ -174,19 +192,24 @@ describe("channel changes", () => {
   });
 
   test("an edit made during the open is not cleared by the open's acknowledgment; it is sent live, before fresh input", async () => {
-    const { host, records, calls, intercept } = await rig();
+    const { host, calls, intercept } = await rig({ durable });
     await host.changeChannel("a", { displayName: "Sent with open" });
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    intercept.createSession = async (real, ...args) => { const result = await real(...args); await gate; return result; };
+    const created = barrier(), acknowledge = barrier();
+    cleanups.push(acknowledge.release);
+    intercept.createSession = async (real, ...args) => {
+      const result = await real(...args);
+      created.release();
+      await acknowledge.reached;
+      return result;
+    };
     const pushed = host.push(input("m1", "a"));
-    await until(() => calls.includes("createSession"), "the open to be in flight");
+    await created.reached;
     // Past the cutoff: this version was not in the batch.
     expect(await host.changeChannel("a", { displayName: "Edited during open" })).toEqual({ state: "pending" });
-    expect(records.pendingChange("a")).toMatchObject({ version: 2 });
-    release();
+    expect(await host.pendingChannelChanges()).toMatchObject([{ channel: "a", version: 2 }]);
+    acknowledge.release();
     await pushed;
-    expect(records.pendingChanges()).toEqual([]);
+    expect(await host.pendingChannelChanges()).toEqual([]);
     expect((await host.status()).channels).toMatchObject([{ channel: "a", displayName: "Edited during open", pending: expect.any(Array) }]);
     // The live edit reached the harness before the input that was waiting for the open.
     expect(calls.indexOf("editChannel")).toBeGreaterThan(calls.indexOf("createSession"));
@@ -194,7 +217,7 @@ describe("channel changes", () => {
   });
 
   test("while running, a change is applied live in order with that channel's inputs; null clears and a missing field is left alone", async () => {
-    const { host, records, calls } = await rig();
+    const { host, calls } = await rig({ durable });
     await host.ensureStarted();
     expect(await host.changeChannel("a", { displayName: "Alice", policy: "strict" })).toEqual({ state: "applied" });
     expect(await host.changeChannel("a", { policy: null })).toEqual({ state: "applied" });
@@ -207,24 +230,24 @@ describe("channel changes", () => {
     expect(await resumed).toEqual({ state: "applied" });
     expect(await pushed).toMatchObject({ id: "m2" });
     expect(calls.lastIndexOf("resumeChannel")).toBeLessThan(calls.lastIndexOf("push"));
-    expect(records.pendingChanges()).toEqual([]);
+    expect(await host.pendingChannelChanges()).toEqual([]);
   });
 
   test("a retired channel cannot be reopened: the change is blocked, reported, and stays pending for the host; a repeated retirement is applied", async () => {
-    const { host, records, blocked } = await rig();
+    const { host, blocked } = await rig({ durable });
     await host.ensureStarted();
     expect(await host.changeChannel("a", { displayName: "Alice" })).toEqual({ state: "applied" });
     expect(await host.changeChannel("a", { lifecycle: "retired" })).toEqual({ state: "applied" });
     expect(await host.changeChannel("a", { lifecycle: "retired" })).toEqual({ state: "applied" });
     expect(await host.changeChannel("a", { displayName: "Back", lifecycle: "open" })).toEqual({ state: "blocked", reason: "channel_retired" });
     expect(blocked).toEqual([{ channel: "a", changeId: expect.any(String), outcome: "blocked", reason: "channel_retired" }]);
-    expect(records.pendingChange("a")).toMatchObject({ desire: { displayName: "Back", lifecycle: "open" } });
+    expect(await host.pendingChannelChanges()).toMatchObject([{ channel: "a", desire: { displayName: "Back", lifecycle: "open" } }]);
     expect((await host.status()).channels[0]).toMatchObject({ channel: "a", displayName: "Alice", lifecycle: "retired" });
   });
 
   test("a delete that finds pending work suspends the channel instead, keeps the work, is reported and stays pending; the next open sends it again", async () => {
     const steps = [{ content: "Working.", calls: [{ id: "hold-1", name: "hold", arguments: { key: "k" } }] }, { content: "Finished.", calls: [] }, { content: "Next.", calls: [] }];
-    const { host, records, blocked, attach, effects } = await rig({ steps });
+    const { host, blocked, attach, effects } = await rig({ steps, durable });
     const channel = attach("a", true);
     await host.push(input("a1", "a", "start"));
     await until(() => channel.events.some((event) => event.event.type === "tool_call"), "the tool to start");
@@ -235,7 +258,7 @@ describe("channel changes", () => {
     writeFileSync(`${effects}.release-k`, "");
     expect(await deleting).toEqual({ state: "blocked", reason: "channel_busy" });
     expect(blocked).toEqual([{ channel: "a", changeId: expect.any(String), outcome: "blocked", reason: "channel_busy" }]);
-    expect(records.pendingChange("a")).toMatchObject({ desire: { lifecycle: "retired" } });
+    expect(await host.pendingChannelChanges()).toMatchObject([{ channel: "a", desire: { lifecycle: "retired" } }]);
     const status = (await host.status()).channels[0]!;
     expect(status).toMatchObject({ channel: "a", lifecycle: "suspended", waitingForResume: true });
     expect([...status.pending, ...(status.activeTurn ? ["checkpoint"] : [])].length).toBeGreaterThan(0);
@@ -243,8 +266,114 @@ describe("channel changes", () => {
     await host.stop();
     await host.ensureStarted();
     expect(blocked).toHaveLength(2);
-    expect(records.pendingChange("a")).toMatchObject({ desire: { lifecycle: "retired" } });
+    expect(await host.pendingChannelChanges()).toMatchObject([{ channel: "a", desire: { lifecycle: "retired" } }]);
     expect((await host.status()).channels[0]).toMatchObject({ lifecycle: "suspended" });
+  });
+});
+
+describe("durable channel ordering", () => {
+  test("an old live acknowledgement leaves a newer durable edit pending for delivery", async () => {
+    const { host, intercept, calls } = await rig({ durable: true });
+    await host.changeChannel("a", { displayName: "Initial" });
+    await host.ensureStarted();
+    const edited = barrier(), acknowledge = barrier();
+    cleanups.push(acknowledge.release);
+    intercept.editChannel = async (real, ...args) => {
+      const result = await real(...args);
+      if (args[0].displayName === "Earlier") {
+        edited.release();
+        await acknowledge.reached;
+      }
+      return result;
+    };
+    const earlier = host.changeChannel("a", { displayName: "Earlier" });
+    await edited.reached;
+    const [{ version }] = await host.pendingChannelChanges();
+    const newer = host.changeChannel("a", { displayName: "Newer", policy: "strict" });
+    const [pending] = await host.pendingChannelChanges();
+    expect(pending).toMatchObject({ desire: { displayName: "Newer", policy: "strict" } });
+    expect(pending.version).toBeGreaterThan(version);
+    acknowledge.release();
+    expect(await Promise.all([earlier, newer])).toEqual([{ state: "applied" }, { state: "applied" }]);
+    expect(calls.filter((call) => call === "editChannel")).toHaveLength(2);
+    expect((await host.status()).channels).toMatchObject([{ channel: "a", displayName: "Newer", policy: "strict" }]);
+    expect(await host.pendingChannelChanges()).toEqual([]);
+  });
+
+  test("a live edit reserves its position before its durable write resolves", async () => {
+    const writing = barrier(), commit = barrier();
+    const { host, calls } = await rig({ durable: true, configureChannels(channels) {
+      const desire = channels.desire.bind(channels);
+      channels.desire = async (channel, edit) => {
+        writing.release();
+        await commit.reached;
+        return desire(channel, edit);
+      };
+    } });
+    cleanups.push(commit.release);
+    await host.ensureStarted();
+    const changing = host.changeChannel("a", { lifecycle: "suspended" });
+    await writing.reached;
+    const pushed = host.push(input("m1"));
+    void pushed.catch(() => undefined);
+    commit.release();
+    expect(await changing).toEqual({ state: "applied" });
+    await expect(pushed).rejects.toMatchObject({ code: "channel_suspended" });
+    expect(calls.indexOf("suspendChannel")).toBeLessThan(calls.indexOf("push"));
+  });
+
+  test("an edit committed during the post-open scan is delivered before a newer push", async () => {
+    const scanned = barrier(), finishScan = barrier();
+    let reads = 0;
+    const { host, calls } = await rig({ durable: true, configureChannels(channels) {
+      const pendingChanges = channels.pendingChanges.bind(channels);
+      channels.pendingChanges = async () => {
+        const changes = await pendingChanges();
+        if (++reads === 2) {
+          scanned.release();
+          await finishScan.reached;
+        }
+        return changes;
+      };
+    } });
+    cleanups.push(finishScan.release);
+    const started = host.ensureStarted();
+    await scanned.reached;
+    expect(host.state).toBe("starting");
+    expect(await host.changeChannel("a", { lifecycle: "suspended" })).toEqual({ state: "pending" });
+    const pushed = host.push(input("m1"));
+    void pushed.catch(() => undefined);
+    finishScan.release();
+    await started;
+    await expect(pushed).rejects.toMatchObject({ code: "channel_suspended" });
+    expect(calls.indexOf("suspendChannel")).toBeLessThan(calls.indexOf("push"));
+    expect(await host.pendingChannelChanges()).toEqual([]);
+  });
+
+  test("a failed durable live edit rejects its caller and releases the next push", async () => {
+    const error = new Error("channel write failed");
+    const { host } = await rig({ durable: true, configureChannels(channels) {
+      channels.desire = async () => { throw error; };
+    } });
+    await host.ensureStarted();
+    const changing = host.changeChannel("a", { lifecycle: "suspended" });
+    const pushed = host.push(input("m1"));
+    await expect(changing).rejects.toBe(error);
+    await expect(pushed).resolves.toMatchObject({ id: "m1" });
+    expect(await host.pendingChannelChanges()).toEqual([]);
+  });
+
+  test("stopped operator suspend and resume reject with not_running and preserve a pending retirement", async () => {
+    const { host, calls } = await rig({ durable: true });
+    await host.changeChannel("a", { lifecycle: "retired" });
+    const before = await host.pendingChannelChanges();
+    for (const invoke of [host.suspendChannel.bind(host), host.resumeChannel.bind(host)]) {
+      const operation = invoke("a");
+      await expect(operation).rejects.toBeInstanceOf(HarnessUnavailableError);
+      await expect(operation).rejects.toMatchObject({ code: "not_running" });
+    }
+    expect(await host.pendingChannelChanges()).toEqual(before);
+    expect(calls).toEqual([]);
   });
 });
 

@@ -17,7 +17,6 @@
 import {
   aggregateUsage,
   HarnessClient,
-  HarnessClientError,
   createStdioTransport,
   type ChannelChangeResult,
   type ChannelEvent,
@@ -36,17 +35,15 @@ import { recoverChannel } from "./recovery.ts";
 import { createNativeFunctionHost, type NativeFunctionHost, type NativeFunctionsConfig } from "./functions.ts";
 import { prepareNativeLaunch, onceDispose, type AcpLauncher } from "../launcher.ts";
 import { noopLogger, type Logger } from "../logger.ts";
-import { createMemoryHostRecords, type ChannelDesire, type NativeHostRecords, type PendingChange, type Submission } from "./records.ts";
+import type { ChannelDesire, ChannelPersistence, PendingChange } from "../persistence/channels.ts";
+import { createMemoryHostRecords, fileHasPendingChannelChanges, submissionRecords, type NativeHostRecords, type Submission } from "./records.ts";
+import { channelStore, NativeChannelChanges, type ChannelChangeOutcome } from "./channel-changes.ts";
+import { ambiguous, codeOf, HarnessUnavailableError } from "./errors.ts";
+
+export { HarnessUnavailableError } from "./errors.ts";
+export type { ChannelChangeOutcome } from "./channel-changes.ts";
 
 export type NativeHostState = "stopped" | "starting" | "running" | "failed";
-
-/** The harness cannot be used: its start failed, it was stopped, or its restarts ran out. */
-export class HarnessUnavailableError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "HarnessUnavailableError";
-  }
-}
 
 /** The running harness lacks something this integration requires (durable sessions, channel controls, approvals, startup changes). */
 export class HarnessIncompatibleError extends Error {
@@ -80,12 +77,6 @@ export interface ChannelPort {
   busy(): boolean;
   trackedTurns?(): string[];
 }
-
-export type ChannelChangeOutcome =
-  | { readonly state: "applied" }
-  /** Stored; goes out with the next open. The harness is not running and a channel change never starts it. */
-  | { readonly state: "pending" }
-  | { readonly state: "blocked"; readonly reason: NonNullable<ChannelChangeResult["reason"]> };
 
 /** What a live connection to a harness is, for the host. Tests substitute it; production spawns a process. */
 export interface NativeConnection {
@@ -145,11 +136,6 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-const codeOf = (error: unknown): string | undefined => error instanceof HarnessClientError ? error.code : undefined;
-/** The request's outcome is unknown: it may or may not have been applied. */
-const ambiguous = (error: unknown) => { const code = codeOf(error); return code === "timeout" || code === "transport_closed" || code === "closed"; };
-const toWire = (change: PendingChange): PendingChannelChange => ({ channel: change.channel, changeId: String(change.version), ...change.desire });
-
 export class NativeHarnessHost {
   readonly sessionId: string;
   readonly records: NativeHostRecords;
@@ -168,8 +154,7 @@ export class NativeHarnessHost {
   #early: ChannelEvent[] | null = null;
   /** The harness's channels as last seen (load view, control responses, `channel_state`). */
   readonly #channels = new Map<string, ChannelStatusResult>();
-  /** Per channel: live edits and pushes run one at a time, in order, so an edit lands before later input. */
-  readonly #queues = new Map<string, Promise<unknown>>();
+  readonly #changes: NativeChannelChanges;
   /** Callers waiting for a submission's acceptance, across reopens. */
   readonly #waiters = new Map<string, Deferred<ItemStatus>>();
   readonly #stateListeners = new Set<() => void>();
@@ -177,11 +162,17 @@ export class NativeHarnessHost {
   /** How many processes this host has started (observability and tests). */
   launches = 0;
 
-  constructor(config: NativeHarnessHostConfig) {
+  constructor(config: NativeHarnessHostConfig, channels?: ChannelPersistence) {
     this.#config = config;
     this.sessionId = config.sessionId;
-    this.records = config.records ?? createMemoryHostRecords();
     this.#log = config.logger ?? noopLogger;
+    const records = config.records ?? createMemoryHostRecords();
+    this.records = channels ? submissionRecords(records) : records;
+    this.#changes = new NativeChannelChanges(channels ?? channelStore(records), this.#channels, () => this.#client(),
+      this.#log, config.onChannelChangeBlocked);
+    if (channels && fileHasPendingChannelChanges(records)) {
+      this.#log.warn("native_file_channel_changes_ignored", { sessionId: this.sessionId });
+    }
   }
 
   get state(): NativeHostState { return this.#state; }
@@ -283,7 +274,7 @@ export class NativeHarnessHost {
   /** Starts the harness if it is not running. Concurrent callers share one start. */
   ensureStarted(): Promise<void> {
     if (this.#state === "running") return Promise.resolve();
-    if (this.#state === "failed") return Promise.reject(new HarnessUnavailableError("the native harness is unavailable; call restart()", { cause: this.#failure }));
+    if (this.#state === "failed") return Promise.reject(new HarnessUnavailableError("the native harness is unavailable; call restart()", { cause: this.#failure, code: "failed" }));
     this.#stopped = false;
     this.#starting ??= this.#start().finally(() => { this.#starting = null; });
     return this.#starting;
@@ -302,7 +293,7 @@ export class NativeHarnessHost {
     this.#connection = null;
     await this.#starting?.catch(() => undefined);
     this.#setState("stopped");
-    const error = new HarnessUnavailableError("the native harness was stopped");
+    const error = new HarnessUnavailableError("the native harness was stopped", { code: "stopped" });
     this.#rejectWaiters(error);
     for (const port of [...this.#ports.values()]) port.failed(error);
     this.#closeApprovals();
@@ -333,12 +324,23 @@ export class NativeHarnessHost {
           await connection.kill();
           return;
         }
-        await this.#open(connection, deadline.signal);
+        const live = connection;
+        await this.#open(live, deadline.signal);
+        await this.#changes.afterOpen(deadline.signal, () => {
+          this.#connection = live;
+          this.#replaySubmissions();
+          this.#setState("running");
+          void live.closed.then(async () => {
+            // A loss at the open boundary must reopen after the old start has retired.
+            await this.#starting?.catch(() => undefined);
+            this.#lost(live);
+          });
+        });
       })();
       opening.catch(() => undefined);
       await Promise.race([opening, new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
-          const error = new HarnessUnavailableError(`the native harness did not open within ${limit} ms`);
+          const error = new HarnessUnavailableError(`the native harness did not open within ${limit} ms`, { code: "open_timeout" });
           deadline.abort(error);
           reject(error);
         }, limit);
@@ -354,11 +356,6 @@ export class NativeHarnessHost {
     } finally {
       clearTimeout(timer);
     }
-    const live = connection!;
-    this.#connection = live;
-    this.#setState("running");
-    void live.closed.then(() => this.#lost(live));
-    this.#afterOpen();
   }
 
   async #launch(): Promise<NativeConnection> {
@@ -370,7 +367,7 @@ export class NativeHarnessHost {
       child = Bun.spawn(launch.command, { cwd: launch.spawnCwd, env: launch.spawnEnv, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     } catch (error) {
       await dispose();
-      throw new HarnessUnavailableError(`the native harness could not be started: ${String(error)}`, { cause: error });
+      throw new HarnessUnavailableError(`the native harness could not be started: ${String(error)}`, { cause: error, code: "start_failed" });
     }
     void (async () => {
       // Diagnostics only: the protocol is on stdout.
@@ -430,22 +427,11 @@ export class NativeHarnessHost {
 
     // The startup cutoff: what is pending now goes inside the open and is applied before any work
     // can run. An edit made after this line is sent through the live channel methods once open.
-    const cutoff = this.records.pendingChanges();
-    const batch = cutoff.map(toWire);
+    const batch = await this.#changes.startupBatch(signal);
     const opened = await this.#openOrCreate(client, batch, signal);
     signal.throwIfAborted();
-
-    this.#blockedVersions.clear();
-    for (const result of opened.channelChanges ?? []) {
-      // Cleared only when this exact version was applied: an edit made during the open stays pending.
-      if (result.outcome === "applied") this.records.confirmChange(result.channel, Number(result.changeId));
-      else {
-        // Stays pending for the host: a later open re-evaluates it once its obstacle is resolved.
-        this.#blockedVersions.set(result.channel, Number(result.changeId));
-        this.#log.warn("native_channel_change_blocked", { ...result });
-        try { this.#config.onChannelChangeBlocked?.(result); } catch { /* observer */ }
-      }
-    }
+    await this.#changes.acknowledgeOpen(opened.channelChanges ?? [], signal);
+    signal.throwIfAborted();
 
     const status = await client.status();
     signal.throwIfAborted();
@@ -494,8 +480,6 @@ export class NativeHarnessHost {
     }
   }
 
-  /** Per channel, the version of a change the harness reported blocked. That version is not resent while running. */
-  readonly #blockedVersions = new Map<string, number>();
   #functions: NativeFunctionHost | null = null;
 
   /** The function host, created on first use so a host without functions makes no result directory. */
@@ -573,20 +557,14 @@ export class NativeHarnessHost {
     }
   }
 
-  /** Once running: edits made after the cutoff, then submissions the harness does not have. Queued per channel, in that order. */
-  #afterOpen(): void {
-    for (const change of this.records.pendingChanges()) {
-      // A change the open just reported blocked is not retried at once: its obstacle is still there.
-      // A newer version of it (an edit made after the cutoff) is a different request and is sent.
-      if (this.#blockedVersions.get(change.channel) === change.version) continue;
-      void this.#enqueue(change.channel, () => this.#flushChange(change.channel)).catch(() => undefined);
-    }
+  /** Queue unresolved submissions behind the post-cutoff edits. */
+  #replaySubmissions(): void {
     for (const submission of this.records.submissions()) {
       if (submission.state === "accepted") continue;
       // Saved and never written, with nobody waiting (its caller was told it failed, or is gone):
       // it is not sent now.
       if (submission.state === "saved" && !this.#waiters.has(submission.id)) { this.records.settleSubmission(submission.id); continue; }
-      void this.#enqueue(submission.channel, () => this.#submit(submission.id)).catch(() => undefined);
+      void this.#changes.enqueue(submission.channel, () => this.#submit(submission.id)).catch(() => undefined);
     }
   }
   /** The connection is gone. Reopen if work is outstanding; otherwise wait for the next use. */
@@ -621,7 +599,7 @@ export class NativeHarnessHost {
       }
     }
     // Never a silent wait: restarts ran out, so everything pending fails with an explicit error.
-    this.#failure = new HarnessUnavailableError("the native harness could not be reopened");
+    this.#failure = new HarnessUnavailableError("the native harness could not be reopened", { code: "reopen_failed" });
     this.#setState("failed");
     this.#rejectWaiters(this.#failure);
     for (const port of [...this.#ports.values()]) port.failed(this.#failure);
@@ -671,19 +649,10 @@ export class NativeHarnessHost {
 
   // --- channel work -----------------------------------------------------------------------------
 
-  #enqueue<T>(channel: string, work: () => Promise<T>): Promise<T> {
-    const previous = this.#queues.get(channel) ?? Promise.resolve();
-    const next = previous.then(work, work);
-    const tail = next.catch(() => undefined);
-    this.#queues.set(channel, tail);
-    void tail.then(() => { if (this.#queues.get(channel) === tail) this.#queues.delete(channel); });
-    return next;
-  }
-
   #client(): HarnessClient {
     // Also during an open, once the view is in: reconciliation may read a message by reference.
     const client = this.#connection?.client;
-    if (!client) throw new HarnessUnavailableError("the native harness is not running");
+    if (!client) throw new HarnessUnavailableError("the native harness is not running", { code: "not_running" });
     return client;
   }
 
@@ -706,7 +675,7 @@ export class NativeHarnessHost {
       throw error;
     }
     // Behind the channel's queued live edits: an edit made before this input reaches the harness first.
-    void this.#enqueue(input.channel, () => this.#submit(input.id)).catch(() => undefined);
+    void this.#changes.enqueue(input.channel, () => this.#submit(input.id)).catch(() => undefined);
     return waiter.promise;
   }
 
@@ -769,77 +738,11 @@ export class NativeHarnessHost {
    * the harness.
    */
   changeChannel(channel: string, desire: ChannelDesire): Promise<ChannelChangeOutcome> {
-    this.records.desire(channel, desire);
-    // Not running, or an open is in progress past its cutoff: the change stays pending. An open in
-    // progress sends it through the live methods as soon as it completes, before fresh input.
-    if (this.#state !== "running") return Promise.resolve({ state: "pending" });
-    return this.#enqueue(channel, () => this.#flushChange(channel));
+    return this.#changes.change(channel, desire, this.#state === "running");
   }
 
-  async #flushChange(channel: string): Promise<ChannelChangeOutcome> {
-    for (;;) {
-      const pending = this.records.pendingChange(channel);
-      if (!pending) return { state: "applied" };
-      const outcome = await this.#applyLive(pending);
-      if (outcome.state !== "applied") {
-        if (outcome.state === "blocked") this.#blockedVersions.set(channel, pending.version);
-        return outcome;
-      }
-      // An older acknowledgment cannot clear a newer edit: if the state changed meanwhile, go again.
-      if (this.records.confirmChange(channel, pending.version)) return outcome;
-    }
-  }
-
-  async #applyLive(change: PendingChange): Promise<ChannelChangeOutcome> {
-    const { channel, desire } = change;
-    const client = this.#client();
-    const seen = (result: { channel: ChannelStatusResult }) => { this.#channels.set(channel, result.channel); };
-    const known = this.#channels.get(channel);
-    const blocked = (reason: NonNullable<ChannelChangeResult["reason"]>): ChannelChangeOutcome => {
-      const result: ChannelChangeResult = { channel, changeId: String(change.version), outcome: "blocked", reason };
-      try { this.#config.onChannelChangeBlocked?.(result); } catch { /* observer */ }
-      return { state: "blocked", reason };
-    };
-    try {
-      if (known?.lifecycle === "retired") return desire.lifecycle === "retired" ? { state: "applied" } : blocked("channel_retired");
-      if (desire.lifecycle === "retired") {
-        if (!known) seen(await client.createChannel({ channel }));
-        try {
-          seen(await client.deleteChannel({ channel }));
-        } catch (error) {
-          if (codeOf(error) !== "channel_busy") throw error;
-          // The same rule as at open: pending work must neither run nor be lost.
-          seen(await client.suspendChannel({ channel }));
-          return blocked("channel_busy");
-        }
-        return { state: "applied" };
-      }
-      if (!known) {
-        seen(await client.createChannel({ channel,
-          ...(typeof desire.displayName === "string" ? { displayName: desire.displayName } : {}),
-          ...(typeof desire.policy === "string" ? { policy: desire.policy } : {}) }));
-      } else if (desire.displayName !== undefined || desire.policy !== undefined) {
-        // The edit replaces the name, so a change that omits it restates the current one.
-        seen(await client.editChannel({ channel,
-          displayName: desire.displayName === undefined ? known.displayName ?? null : desire.displayName,
-          ...(desire.policy === undefined ? {} : { policy: desire.policy }) }));
-      }
-      if (desire.lifecycle === "suspended") seen(await client.suspendChannel({ channel }));
-      if (desire.lifecycle === "open") {
-        try { seen(await client.resumeChannel({ channel })); }
-        catch (error) {
-          if (codeOf(error) !== "incompatible") throw error;
-          return blocked("incompatible");
-        }
-      }
-      return { state: "applied" };
-    } catch (error) {
-      if (codeOf(error) === "channel_retired") return blocked("channel_retired");
-      // Unknown outcome or no connection: the change stays pending and goes with the next open.
-      if (ambiguous(error) || error instanceof HarnessUnavailableError) return { state: "pending" };
-      throw error;
-    }
-  }
+  /** The pending channel intents from the host's active store. */
+  async pendingChannelChanges(): Promise<PendingChange[]> { return this.#changes.pendingChanges(); }
 
   /** The session's status as the running harness reports it now. */
   #lastStatus?: StatusResult;
@@ -892,8 +795,8 @@ export class NativeHarnessHost {
     return status;
   }
   validateConfig(config: unknown) { return this.#client().validateConfig(config); }
-  suspendChannel(channel: string) { return this.#client().suspendChannel({ channel }); }
-  resumeChannel(channel: string) { return this.#client().resumeChannel({ channel }); }
+  async suspendChannel(channel: string) { return this.#client().suspendChannel({ channel }); }
+  async resumeChannel(channel: string) { return this.#client().resumeChannel({ channel }); }
   reconcileChannel(params: Parameters<HarnessClient["reconcileChannel"]>[0]) { return this.#client().reconcileChannel(params); }
   modelCalls(params: Parameters<HarnessClient["modelCalls"]>[0] = {}) { return this.#client().modelCalls(params); }
   conversationMessages(params: Parameters<HarnessClient["channelMessages"]>[0]) { return this.#client().channelMessages(params); }

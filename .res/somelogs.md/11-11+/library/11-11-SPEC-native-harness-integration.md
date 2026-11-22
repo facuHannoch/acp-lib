@@ -1175,6 +1175,9 @@ the agent or a channel stuck nor silently lose data in normal operation, are rec
   mounts a durable volume (Where the session lives).
 - **Offline channel changes are eventually applied, not immediate.** A running harness can take work before a
   retirement or suspension arrives (Durable channel intents).
+- **Switching to a durable backend ignores pending file-store channel changes.** The host warns once when the
+  configured file store has pending changes. Only changes that had yet to be delivered at upgrade are affected.
+  The file store still supplies submissions when configured.
 - **Message submissions don't survive an acp-client restart,** and turns that ended while no acp-client process
   existed aren't recorded in acp-client's records (the harness has them; the two logs disagree). Follow-ups.
 - **Fixed time limits for native** (built, 2026-11-21): a 30 s startup deadline and a 30 s request timeout, both
