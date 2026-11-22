@@ -100,3 +100,15 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   `./test` runs green, 1,406 in 131 files; no snapshot changes; no large file grew.
 - **Spec 1 verification complete.** Ready for the user to merge `controller-interface-verify` (and this log and the
   reviews) into alpha.
+
+### 2026-11-22: rebase onto alpha `713a76a`
+
+- alpha fast-forwarded `d11cd18` → `713a76a` (harness operator controls `95670a2`, long-running mock `e13b405`,
+  callback policy names `aca1fe5`, generic external notices `f522072`), at the user's request through haurness-l;
+  the spec 1 acceptance runs move to it. Operator controls replaced the `session/load` and `session/messages` wire
+  paths. Trial merge with `9016c0c`: conflicts in `src/native/controller.ts` and `test/native/checkpoint.test.ts`.
+  `host.ts` grew on alpha 761 → ~1,040 (not this pass's change).
+- cod2a assigned the merge into `controller-interface-verify` (merge commit, no history rewrite), the conflict
+  resolutions, a check of test assumptions on the new wire paths, and a full re-run; clad2a to review it.
+- Not counted: generic notices are not the worker-backend recovery proof; durable worker delivery stays open
+  (orchestrator O1, O3, O5).
