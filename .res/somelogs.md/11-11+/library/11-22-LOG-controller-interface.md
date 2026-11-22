@@ -27,3 +27,8 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   a fixed 50 ms wait in the bridge test. Error notes: ID numbering order, the fixed PTY wait, sandboxed fixture
   connections.
 - A1 sent to clad2a for review.
+- A1 review in from clad2a, `d2ba93c` ([review](reports/11-22-REVIEW-A1-verify.md)): no blocking findings; all
+  open points accepted for Limitations; characterization file 35/35 three times on a clean copy.
+- **A1 gate passed** ([gate](../.plan-execution/status/11-22-GATE-A1-verify.md)): first full run had one failure
+  (the bridge test timed out waiting for a status, load-dependent), second full run green, 1,402 tests in 131 files
+  for `./test` (1,727 in 175 from the repo root). Flake recorded, left to the user.
