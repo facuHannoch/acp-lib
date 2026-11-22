@@ -99,3 +99,20 @@ Both still refuse.
 - `bun run typecheck` on the merge archive: passes.
 - `bun test test/native`: 90 pass, 0 fail, 7 files, 85.6 s.
 - I didn't run the full suite. cod2a has two green `./test` runs (1,426) and a green root run (1,786).
+
+## Follow-up: alpha `ac52dbc` merge (`035b7d7`, report `58389dd`)
+
+Merge `035b7d7`'s parents are `32d30d0` (the `4cd3ce9` line plus its report) and alpha `ac52dbc`. Alpha's
+`27c7166` changes test files only: the rehearsal now waits on explicit barriers and prints diagnostics at its
+deadline.
+
+- **The source diff is only our two native fixes.** `git diff ac52dbc 035b7d7 -- src` touches exactly
+  `src/agent-session.ts`, `src/handoff-options.ts` and `src/native/controller.ts`, with 57 lines added and 41
+  removed. It's **byte-identical** to `git diff 713a76a 4cd3ce9 -- src`, which I compared with `diff`. `58389dd`
+  only adds to the report.
+- **Rehearsal.** I ran `bun test test/native/rehearsal.test.ts` 6 times on a clean archive of `58389dd`
+  (`/tmp/clad2a-r2.qp3r`). All 6 passed 10 of 10 (13–35 s). The two failure modes I saw before (1 in 5 on
+  `4cd3ce9`, 1 in 6 on `713a76a`) didn't occur. The sample is small, but it's consistent with the barrier fix
+  removing the timing cause.
+
+No blocking findings.
