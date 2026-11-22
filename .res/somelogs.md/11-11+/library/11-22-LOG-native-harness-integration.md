@@ -141,3 +141,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   (switches between ACP adapters unchanged; native has none). A Limitations line for rows from before. cod2a may edit
   `sqlite-schema.ts` and the conversations repository for this; Cod1a told (re-runs migrations on R1's final
   revision).
+- Step 3b in from cod2a: implementation `f0e589a`, report `e701ba0`. All three restart cases over SQLite, the v16
+  upgrade with fallback to the old detection, both refusals writing nothing; Limitations for rows from before and
+  for custom backends that omit the kind. Full `./test` green, 1,456 in 132 files; `agent-session.ts` 4,600 →
+  4,567, `conversation-manager.ts` 1,092 → 1,089. Sent to clad2a.
