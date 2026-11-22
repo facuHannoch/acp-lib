@@ -229,3 +229,10 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 - User decisions: handlers stay unlimited (the harness's 10 minutes still applies on native); `permissionTimeoutMs`
   bounds only the consumer wait; an ask nobody can answer is refused at once (`by: "default"`), never falling back to
   a looser default (replaces the spec's "else the setting's default"). Steps 1–3 released to cod2a.
+- R3 step 1 in from cod2a, `c0fcf62` (the events on ACP and both native routes, one resolution per id, replay
+  deduplication). Review from clad2a, `b6e5b9d`: no blocking findings, exactly one resolved per requested on every
+  path they could reach. **Coordinator gate failed:** full `./test` on a clean copy, 3 deterministic failures in
+  `test/native/controller.test.ts` (the fake host lacks the new `approvalFor`); the focused suites missed it. Fix
+  assigned to cod2a in its own commit; full runs required before each report from now on. clad2a's notes into step
+  2: deny on a local close so the harness gate is released; `expiresAt`; the resolved event a microtask after
+  close; test the harness's `approval_timeout` mapping.
