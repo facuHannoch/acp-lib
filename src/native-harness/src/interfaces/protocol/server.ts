@@ -9,6 +9,10 @@ import { FrameLimit, loadView, pageMessages, turnStatus, wireStatus } from "./lo
 import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
 import type { ChannelChangeResult, PendingChannelChange, TransferLimits } from "../../contracts/protocol.ts";
 import { ChannelChangeFault, applyChannelChanges, checkPolicies, parseChannelChanges, sameBatch } from "./channel-changes.ts";
+import type { RpcCallbackCancel, RpcCallbackRequest } from "../../contracts/protocol.ts";
+import type { ToolCatalogInput } from "../../contracts/tools.ts";
+import { CatalogError, parseCatalog, sameCatalog } from "../../capabilities/tools/catalog.ts";
+import { ToolFault, createCallbackBridge, isToolMethod, toolMethods, toolRequest } from "./functions.ts";
 
 class Fault extends Error {
   constructor(readonly tag: string, message: string, readonly rpc = -32602) { super(message); }
@@ -17,7 +21,10 @@ class Fault extends Error {
 export class SessionOpenError extends Error {
   constructor(readonly code: DurableErrorCode, message: string) { super(message); }
 }
-export interface SessionRequest { mode: "create" | "open"; sessionId: string; config?: ProtocolConfig }
+export interface SessionRequest { mode: "create" | "open"; sessionId: string; config?: ProtocolConfig;
+  /** Decision 0021: a catalog whose shape is valid. The factory checks its names
+   * against its built-in tools and passes it to the session. */
+  tools?: ToolCatalogInput }
 /** `close` releases storage ownership; the endpoint calls it when it is disposed
  * or when a load cannot be answered. */
 export interface OpenedSession {
@@ -36,6 +43,8 @@ export interface ProtocolServerOptions {
   transferDirectory?: string;
   /** Smaller limits for tests; defaults are the contract's. */
   limits?: Partial<{ chunkBytes: number; maxBytes: number; idleMs: number }>;
+  /** Decision 0021: the session factory accepts tool catalogs. */
+  functions?: boolean;
 }
 
 const bad = (message: string): never => { throw new Fault("invalid_params", message); };
@@ -57,13 +66,13 @@ function count(value: unknown, fallback: number): number {
 }
 /** Capabilities describe this server instance: durable acceptance and load are
  * advertised only when its sessions are opened from durable storage. */
-export function describe(durable: boolean, archives = false): Description {
+export function describe(durable: boolean, archives = false, functions = false): Description {
   return {
     configOptions: [], commands: [], policies: [],
-    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true,
+    capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, ...(functions ? { functions: true as const } : {}),
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
         "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
-        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : [])],
+        ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : [])],
       events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "session/event"] },
   };
 }
@@ -71,7 +80,7 @@ export function describe(durable: boolean, archives = false): Description {
 export function createProtocolServer(open: (request: SessionRequest) => Promise<OpenedSession>, options: ProtocolServerOptions = {}): ProtocolEndpoint & { dispose(): void } {
   const limits = { ...TRANSFER_LIMITS, ...options.limits } as TransferLimits;
   const transfers = options.importArchive && options.transferDirectory ? createTransfers(options.transferDirectory, limits) : undefined;
-  const description = describe(!!options.durable, !!transfers);
+  const description = describe(!!options.durable, !!transfers, !!options.functions);
   let initialized = false;
   let approvalConsumer = false;
   let opening = false;
@@ -86,6 +95,15 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
   // While a load response is on its way out, later notifications wait behind it.
   let held: (() => void)[] | undefined;
   const publish = (deliver: () => void) => { if (held) held.push(deliver); else deliver(); };
+  // Decision 0021: callbacks to this connection's host share the event order.
+  const callbackListeners = new Set<(message: RpcCallbackRequest | RpcCallbackCancel) => void>();
+  const bridge = createCallbackBridge(message => publish(() => { for (const listener of callbackListeners) listener(structuredClone(message)); }));
+  let served: string[] | undefined, startupTools: ToolCatalogInput | undefined;
+  const catalogOf = (raw: unknown) => {
+    if (raw === undefined) return undefined;
+    if (!options.functions) bad("This server does not accept tool catalogs");
+    try { return parseCatalog(raw, []); } catch (error) { throw error instanceof CatalogError ? new Fault(error.code, error.message) : error; }
+  };
 
   async function attach(request: SessionRequest): Promise<OpenedSession> {
     if (current || opening) throw new Fault("already_exists", "One session per endpoint");
@@ -94,7 +112,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     // On success `opening` stays set: the caller clears it once the session is
     // published as `current` (or abandoned), leaving no gap for a second open.
     try { opened = await open(request); }
-    catch (error) { opening = false; throw error instanceof SessionOpenError ? new Fault(error.code, error.message) : new Fault("invalid_config", String(error)); }
+    catch (error) { opening = false; throw error instanceof SessionOpenError || error instanceof CatalogError ? new Fault(error.code, error.message) : new Fault("invalid_config", String(error)); }
+    // Handlers are bound before any recovered work can start.
+    opened.session.tools?.serve(served ?? [], served ? bridge.executor : undefined);
+    startupTools = request.tools;
     opened.session.subscribe(value => {
       const event = structuredClone(value);
       // Filtering is downstream of inference and its retry cutoff: a final-mode
@@ -157,11 +178,16 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     if (!description.capabilities.methods.includes(method)) throw new Fault("method_not_found", `Unsupported method: ${method}`, -32601);
     const p = obj(raw);
     if (method === "initialize") {
-      keys(p, ["protocolVersion", "host", "callbacks", "subscription", "approval"]);
+      keys(p, ["protocolVersion", "host", "callbacks", "subscription", "approval", "functions"]);
       if (p.protocolVersion !== 1) throw new Fault("version_mismatch", "Only experimental protocol version 1 is supported");
       if (initialized) throw new Fault("already_exists", "Already initialized");
       const host = obj(p.host); keys(host, ["name", "version"]); text(host.name); text(host.version);
-      if (!Array.isArray(p.callbacks) || p.callbacks.length) bad("Host callbacks are not supported yet");
+      const callbacks = Array.isArray(p.callbacks) && (p.callbacks.length === 0 || (options.functions && p.callbacks.length === 1 && p.callbacks[0] === "functions/call"));
+      if (!callbacks) bad(options.functions ? "The only supported host callback is functions/call" : "Host callbacks are not supported yet");
+      const handlers = p.functions === undefined ? [] : p.functions;
+      if (!Array.isArray(handlers) || handlers.some((name: unknown) => typeof name !== "string" || !name.trim()) || new Set(handlers).size !== handlers.length) bad("functions must list distinct handler names");
+      if (handlers.length && !p.callbacks.length) bad("functions needs the functions/call callback");
+      served = p.callbacks.length ? [...handlers] : undefined;
       const sub = obj(p.subscription); keys(sub, ["text", "tools"]);
       if (!["final", "stream"].includes(sub.text) || !["none", "summary", "full"].includes(sub.tools)) bad("Only final/stream text and none/summary/full tools are supported");
       subscription = { text: sub.text, tools: sub.tools };
@@ -176,7 +202,8 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { valid: true };
     }
     if (method === "session/create") {
-      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges"]);
+      keys(p, ["sessionId", "config", "participants", "channels", "channelChanges", "tools"]);
+      const tools = catalogOf(p.tools);
       const sessionId = text(p.sessionId);
       if (current || opening) throw new Fault("already_exists", "One session per endpoint");
       if (p.config !== undefined) { try { validateManagedConfig(p.config); } catch (error) { throw new Fault("invalid_config", String(error)); } }
@@ -193,7 +220,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       // effective configuration is known.
       const batch = p.channelChanges === undefined ? undefined : parseChannelChanges(p.channelChanges);
       if (batch && p.config?.policies) checkPolicies(batch, Object.keys(p.config.policies));
-      const opened = await attach({ mode: "create", sessionId, config: p.config });
+      const opened = await attach({ mode: "create", sessionId, config: p.config, ...(tools ? { tools } : {}) });
       let results: ChannelChangeResult[] | undefined;
       try {
         const finish = batch && await prepare(opened, batch);
@@ -207,7 +234,8 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { sessionId, ...(results ? { channelChanges: results } : {}) };
     }
     if (method === "session/load") {
-      keys(p, ["sessionId", "config", "messagesLimit", "channelChanges"]);
+      keys(p, ["sessionId", "config", "messagesLimit", "channelChanges", "tools"]);
+      const tools = catalogOf(p.tools);
       const sessionId = text(p.sessionId), limit = count(p.messagesLimit, 100);
       const batch = p.channelChanges === undefined ? undefined : parseChannelChanges(p.channelChanges);
       // A repeated load of the open session is a fresh view of it, nothing more:
@@ -216,9 +244,10 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       if (current) {
         if (current.session.snapshot().session.sessionId !== sessionId) throw new Fault("already_exists", "One session per endpoint");
         if (batch && !sameBatch(startup?.batch ?? [], batch)) throw new Fault("invalid_state", "The session is already open; send newer channel changes through the channel methods");
+        if (tools && !(startupTools && sameCatalog(startupTools, tools))) throw new Fault("invalid_state", "The session is already open with another tool catalog; use the tool methods");
         return { ...load(current, limit, false), ...(startup ? { channelChanges: startup.results } : {}) };
       }
-      const opened = await attach({ mode: "open", sessionId, config: p.config });
+      const opened = await attach({ mode: "open", sessionId, config: p.config, ...(tools ? { tools } : {}) });
       try {
         const finish = batch && await prepare(opened, batch);
         // From here to the end of the block nothing is awaited: the resumes, the
@@ -272,6 +301,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { bytes: bytes.length, sha256, transferId: transfers.offer(bytes, sha256) };
     }
     const session = current.session;
+    if (isToolMethod(method)) return toolRequest(session, method, p);
     if (method === "approval/respond") {
       keys(p, ["requestId", "decision"]);
       if (p.decision !== "allow_once" && p.decision !== "deny") bad("Expected allow_once or deny");
@@ -387,14 +417,17 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { jsonrpc: "2.0", id: request.id, result };
       } catch (error) {
         const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message)
-          : error instanceof TransferFault || error instanceof SessionFileError || error instanceof ChannelChangeFault ? new Fault(error.code, error.message) : error;
+          : error instanceof TransferFault || error instanceof SessionFileError || error instanceof ChannelChangeFault || error instanceof ToolFault ? new Fault(error.code, error.message) : error;
         return { jsonrpc: "2.0", id, error: { code: fault instanceof Fault ? fault.rpc : -32603,
           message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error" } } };
       }
     },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     subscribeSession(listener) { sessionListeners.add(listener); return () => { sessionListeners.delete(listener); }; },
-    disconnect() { approvalConsumer = false; current?.session.approvals.disconnect(); },
-    dispose() { approvalConsumer = false; current?.session.approvals.disconnect(); transfers?.dispose(); current?.close(); current = undefined; },
+    subscribeCallbacks(listener) { callbackListeners.add(listener); return () => { callbackListeners.delete(listener); }; },
+    respond(response) { bridge.respond(response); },
+    // A connection that is gone serves no handler and answers no callback.
+    disconnect() { approvalConsumer = false; current?.session.approvals.disconnect(); current?.session.tools?.serve([]); bridge.disconnect(); },
+    dispose() { approvalConsumer = false; current?.session.approvals.disconnect(); bridge.disconnect(); transfers?.dispose(); current?.close(); current = undefined; },
   };
 }

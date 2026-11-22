@@ -21,7 +21,8 @@ export function wireStatus(status: SessionStatus, view: StorageSnapshot): Status
       return { channel: channel.channelId, pending: channel.pendingItemIds, lifecycle: channel.lifecycle, waitingForResume: channel.waitingForResume,
         ...(channel.displayName === undefined ? {} : { displayName: channel.displayName }),
         ...(channel.policy === undefined ? {} : { policy: channel.policy }),
-        ...(channel.activeTurn ? { activeTurn: { turnId: String(channel.activeTurn.turnId), state: channel.activeTurn.status } } : {}),
+        ...(channel.activeTurn ? { activeTurn: { turnId: String(channel.activeTurn.turnId), state: channel.activeTurn.status,
+          ...(channel.activeTurn.phase ? { phase: channel.activeTurn.phase } : {}) } } : {}),
         ...(unresolved ? { unresolved: turnStatus(unresolved) } : {}) };
     }) };
 }

@@ -6,8 +6,12 @@ export interface Subscription { text: "final" | "stream"; tools: "none" | "summa
 export interface InitializeParams {
   protocolVersion: number;
   host: { name: string; version: string };
+  /** Empty, or `["functions/call"]` (decision 0021) to receive callbacks. */
   callbacks: string[];
   approval?: boolean;
+  /** Decision 0021: the handler names this connection serves. A catalog tool
+   * whose handler is missing here is unavailable. */
+  functions?: string[];
   subscription: Subscription;
 }
 export interface ProtocolConfig {
@@ -24,6 +28,8 @@ export interface CreateParams {
   channels: Record<string, never>;
   /** Decision 0020. Applied before the new session starts. */
   channelChanges?: PendingChannelChange[];
+  /** Decision 0021. Bound before the session starts. */
+  tools?: import("./tools.ts").ToolCatalogInput;
 }
 export interface PushParams {
   channel: string;
@@ -37,7 +43,9 @@ export interface Description {
     /** Decision 0020: `session/create` and `session/load` accept `channelChanges`
      * and apply them before the session starts. Absent on older servers, which
      * reject the field. */
-    startupChannelChanges?: true };
+    startupChannelChanges?: true;
+    /** Decision 0021: tool catalogs, `functions/call` callbacks and invocation records. */
+    functions?: true };
 }
 
 // ---- Channel changes applied at open, decision 0020.
@@ -116,7 +124,8 @@ export interface StatusResult {
 export interface ChannelStatusResult {
   channel: string; displayName?: string; policy?: string;
   lifecycle: "open" | "suspending" | "suspended" | "retired";
-  activeTurn?: { turnId: string; state: "running" | "suspended" };
+  /** `phase` (decision 0021) says what a running turn is doing and since when. */
+  activeTurn?: { turnId: string; state: "running" | "suspended"; phase?: import("./tools.ts").TurnPhase };
   pending: string[]; waitingForResume: boolean; unresolved?: TurnStatus;
 }
 export type StoredMessage = { messageId: string; channel: string; turnId: string } &
@@ -164,7 +173,24 @@ export interface DurableMethods extends ModelExecutionMethods {
    * request with nothing changed and the session not opened. A repeated load
    * with the same batch, or none, reports the recorded results and applies
    * nothing; a different batch fails `invalid_state`. */
-  "session/load": { params: { sessionId: string; config?: ProtocolConfig; messagesLimit?: number; channelChanges?: PendingChannelChange[] }; result: LoadResult };
+  "session/load": { params: { sessionId: string; config?: ProtocolConfig; messagesLimit?: number; channelChanges?: PendingChannelChange[];
+    /** Decision 0021. Bound before recovered work can start. A repeated load repeats it or omits it. */
+    tools?: import("./tools.ts").ToolCatalogInput }; result: LoadResult };
+  // ---- Tools, decision 0021.
+  /** Every catalog entry and built-in with its availability. */
+  "session/tools": { params: Record<string, never>; result: { tools: import("./tools.ts").ToolAvailability[] } };
+  /** Revocable entries only (`invalid_state` otherwise; unknown name `not_found`).
+   * Durable. Takes effect at the next inference and at any dispatch not yet made:
+   * a pending approval for the tool is closed and its call skipped. */
+  "tool/revoke": { params: { name: string }; result: { tool: import("./tools.ts").ToolAvailability } };
+  "tool/restore": { params: { name: string }; result: { tool: import("./tools.ts").ToolAvailability } };
+  /** Runtime entries only, from the catalog bound at open. In memory. */
+  "tool/enable": { params: { name: string }; result: { tool: import("./tools.ts").ToolAvailability } };
+  "tool/remove": { params: { name: string }; result: { tool: import("./tools.ts").ToolAvailability } };
+  /** One call by invocation ID, from committed records. `not_found` if unknown. */
+  "session/tool-invocation": { params: { invocationId: string }; result: { invocation: import("./tools.ts").ToolInvocation } };
+  /** The calls of one turn, in request order. */
+  "session/tool-invocations": { params: { turn: string }; result: { invocations: import("./tools.ts").ToolInvocation[] } };
   /** Only records committed at or before `revision`, after message `after`.
    * `not_found` for a revision the session has not reached. */
   "session/messages": { params: { revision: number; after: string; limit?: number }; result: { messages: StoredMessage[]; nextMessage?: string } };
@@ -242,6 +268,16 @@ export interface RpcRequest { jsonrpc: "2.0"; id: number; method: string; params
 export type RpcResponse = { jsonrpc: "2.0"; id: number; result: unknown } |
   { jsonrpc: "2.0"; id: number | null; error: { code: number; message: string; data: { code: string } } };
 export interface RpcNotification { jsonrpc: "2.0"; method: "channel/event"; params: ChannelEvent }
+// ---- Requests from the harness to the host, decision 0021. IDs are numeric,
+// per connection, and separate from the IDs of host requests: direction tells
+// them apart. A response for a request that is no longer outstanding is ignored.
+export type RpcCallbackRequest =
+  | { jsonrpc: "2.0"; id: number; method: "functions/call"; params: import("./tools.ts").FunctionCall }
+  | { jsonrpc: "2.0"; id: number; method: "results/read"; params: import("./tools.ts").ResultRead };
+/** Ends the harness's wait for `invocationId`; the handler may stop. No reply. */
+export interface RpcCallbackCancel { jsonrpc: "2.0"; method: "functions/cancel"; params: { invocationId: string; reason: string } }
+export type RpcCallbackResponse = { jsonrpc: "2.0"; id: number; result: unknown }
+  | { jsonrpc: "2.0"; id: number; error: { code: number; message: string; data: { code: string } } };
 /** Transport carries envelopes; client owns correlation and request timeouts. */
 export interface ClientTransport {
   send(request: RpcRequest): void;
@@ -251,6 +287,11 @@ export interface ClientTransport {
    * `subscribe`. Relative order with channel events and responses is the wire
    * order. Optional only until the transports implement it. */
   subscribeSession?(listener: (notification: RpcSessionNotification) => void): () => void;
+  /** Decision 0021. Requests and cancellations from the harness, in wire order
+   * with events. Required of a transport once `functions` is advertised. */
+  subscribeCallbacks?(listener: (message: RpcCallbackRequest | RpcCallbackCancel) => void): () => void;
+  /** Answer a callback request by its ID. */
+  respond?(response: RpcCallbackResponse): void;
   onClose(listener: (error?: Error) => void): () => void;
   close(): void;
 }
@@ -269,4 +310,8 @@ export interface ProtocolEndpoint {
   subscribe(listener: (notification: RpcNotification) => void): () => void;
   /** Lifecycle notifications, published after their commit. See ClientTransport. */
   subscribeSession?(listener: (notification: RpcSessionNotification) => void): () => void;
+  /** Decision 0021: callback requests and cancellations for this connection's host. */
+  subscribeCallbacks?(listener: (message: RpcCallbackRequest | RpcCallbackCancel) => void): () => void;
+  /** The host's answer to a callback request. Unknown or closed IDs are ignored. */
+  respond?(response: RpcCallbackResponse): void;
 }

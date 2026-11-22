@@ -33,6 +33,9 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
 export interface Tables {
   getModelState(): ModelState | undefined;
   setModelState(state: ModelState): void;
+  /** Decision 0021: sorted names of revoked revocable tools; undefined if never written. */
+  getRevokedTools(): string[] | undefined;
+  setRevokedTools(names: string[]): void;
   getConfig(): import("../../contracts/session-file.ts").PortableSessionConfig | undefined;
   setConfig(config: import("../../contracts/session-file.ts").PortableSessionConfig): void;
   transaction<T>(run: () => T): T;
@@ -122,8 +125,19 @@ function checkMessage(message: unknown): Stored {
   const m = message as Record<string, unknown>;
   const keys = Object.keys(m);
   if (m.role === "tool") {
-    if (typeof m.content !== "string" || !text(m.callId) || keys.some(key => !["role", "content", "callId"].includes(key)))
+    if (typeof m.content !== "string" || !text(m.callId) || keys.some(key => !["role", "content", "callId", "outcome"].includes(key)))
       fail("invalid_input", "Tool result needs content and callId");
+    // Decision 0021: an optional, typed outcome. Checked here so a stored
+    // result never claims a status the invocation view cannot interpret.
+    if (m.outcome !== undefined) {
+      const outcome = m.outcome as Record<string, any>, reference = outcome?.reference;
+      if (!outcome || typeof outcome !== "object" || Array.isArray(outcome) || !["succeeded", "failed", "skipped", "interrupted"].includes(outcome.status)
+        || Object.keys(outcome).some(key => !["status", "code", "reference"].includes(key)) || (outcome.code !== undefined && !text(outcome.code))
+        || (reference !== undefined && (!reference || typeof reference !== "object" || !text(reference.resultId) || !Number.isSafeInteger(reference.bytes) || reference.bytes < 0
+          || !["temporary", "durable"].includes(reference.retention) || (reference.expiresAt !== undefined && !text(reference.expiresAt))
+          || Object.keys(reference).some(key => !["resultId", "bytes", "retention", "expiresAt"].includes(key)))))
+        fail("invalid_input", "Invalid tool outcome");
+    }
   } else if (m.role === "assistant") {
     const calls = m.calls;
     if (!(m.content === null || typeof m.content === "string") || !Array.isArray(calls)
@@ -159,6 +173,7 @@ export function readSnapshot(tables: Tables): StorageSnapshot {
       return id ? { ...entry, messageId: id } : entry;
     }),
     modelCalls: tables.getModelState()?.calls ?? [], scriptPositions: tables.getModelState()?.scriptPositions ?? {},
+    ...(tables.getRevokedTools() === undefined ? {} : { revokedTools: tables.getRevokedTools()! }),
   };
 }
 
@@ -587,6 +602,15 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (suspending) meta.lifecycle = "running";
       if (ended.length || suspending || reopened.length) seq(meta);
       return ended;
+    }),
+
+    setToolRevoked: (name, revoked) => run(meta => {
+      if (!text(name) || typeof revoked !== "boolean") fail("invalid_input", "Tool revocation needs a name and a boolean");
+      const current = tables.getRevokedTools() ?? [];
+      if (current.includes(name) === revoked) return current;
+      const next = revoked ? [...current, name].sort() : current.filter(value => value !== name);
+      tables.setRevokedTools(next); seq(meta);
+      return next;
     }),
 
     createChannel: input => run(meta => {

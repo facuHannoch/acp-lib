@@ -65,3 +65,20 @@ These defaults are proposed for the
 
 Forward catch-up is an explicit history request. Live subscription and
 targeted reconciliation for tracked inputs or turns are independent of it.
+
+## Tools and host callbacks
+
+These rules are implemented from the
+[tools and callbacks spec](tools-and-callbacks/0001-DESIGN/SPEC.md) and
+[decision 0021](../decisions/0021-tools-and-host-callbacks.md).
+
+| Rule | Current choice | Why | Code |
+| --- | --- | --- | --- |
+| Tool execution deadline | None unless the tool (`deadlineMs`) or the session (`defaultDeadlineMs`) sets one. The tool's value wins. | A host function can legitimately run for a long time. A consumer that wants a bound says so. | `runFunction` in `src/capabilities/tools/functions.ts` |
+| Deadline expiry | Cancel, commit one paired `tool_timeout` result with unknown effect, continue the turn. | The model can react. The effect is not assumed either way. | Same |
+| Inline result limit | 16384 bytes of serialized output. More must come as a preview and a reference. Inline bytes over the limit fail as `result_too_large`. | Keeps a callback response well inside one frame and the context small. | `TOOL_LIMITS.inlineBytes` |
+| Preview size | At most 1024 bytes, cut by the harness if longer. | Enough to judge whether to read more. | `TOOL_LIMITS.previewBytes` |
+| Result read size | At most 16384 bytes per `read_tool_result` call. | Same bound as an inline result. | `TOOL_LIMITS.readBytes` |
+| Result access | Only the channel that produced a result can read it. | A result ID seen in shared history must not grant access. | `readResult` |
+| Offered order | Built-ins, fixed entries by name, `read_tool_result`, then changeable entries by name. | A stable prefix for providers that cache it. | `offer` in `src/index.ts` |
+| Skipped built-in calls | Emit no `tool_call` event, as before. Catalog tools emit `skipped`. | Existing consumers see no new event for existing tools. | `recordSkip` in `src/index.ts` |

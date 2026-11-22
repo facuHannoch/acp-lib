@@ -9,7 +9,7 @@ export interface ToolCall {
 export type Message =
   | { role: "system" | "user"; content: string }
   | { role: "assistant"; content: string | null; calls: ToolCall[]; providerState?: unknown }
-  | { role: "tool"; content: string; callId: string };
+  | { role: "tool"; content: string; callId: string; /** Decision 0021; absent means a legacy success. */ outcome?: import("./tools.ts").ToolOutcome };
 
 /** JSON schema describing the arguments accepted by a configured tool. */
 export interface ToolDefinition {

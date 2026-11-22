@@ -407,6 +407,50 @@ export function storageConformance(name: string, location: () => SessionStorageA
       expect(snap(again).turns[0]!.state).toMatchObject({ status: "interrupted", uncertainCallIds: ["effect"] });
     });
 
+    test("decision 0021: revoked tools are a durable sorted set; a repeat writes nothing; they survive reopen, export and import", () => {
+      const { adapter, s } = create();
+      expect(snap(s).revokedTools).toBeUndefined();
+      refused(s.setToolRevoked("", true), "invalid_input");
+      unchanged(s, () => { expect(ok(s.setToolRevoked("never-revoked", false))).toEqual([]); });
+      expect(ok(s.setToolRevoked("zeta", true))).toEqual(["zeta"]);
+      expect(ok(s.setToolRevoked("alpha", true))).toEqual(["alpha", "zeta"]);
+      unchanged(s, () => { expect(ok(s.setToolRevoked("alpha", true))).toEqual(["alpha", "zeta"]); });
+      expect(ok(s.setToolRevoked("zeta", false))).toEqual(["alpha"]);
+      const reopened = reopen(adapter, s);
+      expect(snap(reopened).revokedTools).toEqual(["alpha"]);
+      const archive = ok(reopened.exportArchive());
+      expect(archive.snapshot.revokedTools).toEqual(["alpha"]);
+      const copy = location();
+      ok(copy.importArchive(archive));
+      const imported = ok(copy.open({ mode: "open", identity: id() }));
+      expect(snap(imported).revokedTools).toEqual(["alpha"]);
+      for (const bad of [["b", "a"], ["a", "a"], [""], "a"]) {
+        const broken = structuredClone(archive) as any; broken.snapshot.revokedTools = bad;
+        refused(location().importArchive(broken), "invalid_archive");
+      }
+      ok(imported.close()); ok(reopened.close());
+    });
+
+    test("decision 0021: a tool result may carry a typed outcome; a malformed one is refused with nothing written", () => {
+      const { adapter, s } = create();
+      msg(s, "go"); const turn = begin(s).turn.turnId;
+      ok(s.appendMessage(turn, { role: "assistant", content: null, calls: [{ id: "a", name: "lookup", arguments: "{}" }, { id: "b", name: "lookup", arguments: "{}" }, { id: "c", name: "lookup", arguments: "{}" }] }));
+      for (const outcome of [{ status: "done" }, { status: "skipped", code: "" }, { status: "succeeded", extra: 1 }, "skipped",
+        { status: "succeeded", reference: { resultId: "r", bytes: -1, retention: "temporary" } }, { status: "succeeded", reference: { resultId: "r", bytes: 1, retention: "forever" } }])
+        unchanged(s, () => refused(s.appendMessage(turn, { role: "tool", callId: "a", content: "x", outcome } as any), "invalid_input"));
+      const reference = { resultId: "res-1", bytes: 40000, retention: "temporary" as const, expiresAt: "2026-11-21T00:00:00.000Z" };
+      ok(s.appendMessage(turn, { role: "tool", callId: "a", content: "{}", outcome: { status: "skipped", code: "tool_unavailable" } }));
+      ok(s.appendMessage(turn, { role: "tool", callId: "b", content: "preview", outcome: { status: "succeeded", reference } }));
+      ok(s.appendMessage(turn, { role: "tool", callId: "c", content: "legacy" }));
+      const results = (view: ReturnType<typeof snap>) => view.timeline.filter(entry => entry.message.role === "tool").map(entry => entry.message);
+      const expected = [{ role: "tool", callId: "a", content: "{}", outcome: { status: "skipped", code: "tool_unavailable" } },
+        { role: "tool", callId: "b", content: "preview", outcome: { status: "succeeded", reference } }, { role: "tool", callId: "c", content: "legacy" }];
+      expect(results(snap(s))).toEqual(expected as any);
+      const reopened = reopen(adapter, s);
+      expect(results(snap(reopened))).toEqual(expected as any);
+      ok(reopened.close());
+    });
+
     test("export needs an idle or cleanly suspended session", () => {
       const { s } = create();
       expect(ok(s.exportArchive())).toMatchObject({ format: "harness-session", archiveVersion: 4, allocation: { nextTurnId: 1, nextSeq: 1, nextItemNumber: 1 } });

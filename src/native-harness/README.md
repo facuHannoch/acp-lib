@@ -580,6 +580,68 @@ Run `bun test test/protocol.test.ts test/stdio.test.ts` for transport parity and
 framing/process lifecycle checks. Child stdin in Bun uses IPC and may require
 local IPC permissions in sandboxed environments. All scenarios are offline.
 
+## Consumer tools and host callbacks
+
+A host can register functions for the model to call
+([decision 0021](.res/decisions/0021-tools-and-host-callbacks.md),
+[spec](.res/docs/tools-and-callbacks/0001-DESIGN/SPEC.md)). A server that
+supports this advertises `capabilities.functions`.
+
+```ts
+client.serveFunctions(
+  async (call, signal) => ({ output: await lookup(call.arguments, signal) }),
+  read => readStoredResult(read),               // only if handlers return references
+);
+await client.initialize({ protocolVersion: 1, host: { name: "app", version: "1" },
+  callbacks: ["functions/call"], functions: ["lookup_handler"],
+  approval: true, subscription: { text: "final", tools: "full" } });
+await client.loadSession({ sessionId, tools: { catalog: [
+  { name: "lookup", description: "...", parameters: { type: "object" },
+    handler: "lookup_handler", group: "fixed" } ] } });
+```
+
+- **Catalog.** `tools` goes on every `session/create` and `session/load`.
+  Definitions are not stored. `group` is `fixed`, `revocable` (`tool/revoke`
+  and `tool/restore`, stored with the session and its archives) or `runtime`
+  (`tool/enable` and `tool/remove`, in memory, listed in `tools.enabled`).
+  An invalid catalog, a duplicate name or a clash with a built-in rejects the
+  open and opens nothing.
+- **Availability.** `session/tools` lists each tool with `available` and a
+  reason: `revoked`, `not_enabled` or `handler_missing` (the connection did not
+  name its handler at `initialize`). Policy is reported separately.
+- **What the model sees.** Each inference offers the built-ins, then fixed
+  entries, then `read_tool_result`, then changeable entries, each group by
+  name. Unavailable tools and tools the turn's policy denies are left out. A
+  retry of the same model call offers the same list.
+- **Dispatch.** The existing permission gate decides. A catalog call must have
+  been offered by its request, be available, and have arguments that match its
+  schema; otherwise it is skipped with a paired result (`tool_unavailable`,
+  `invalid_arguments`). Availability is checked again after an approval, and
+  revoking a tool closes its pending approval.
+- **Callback.** After dispatch evidence commits, the harness sends
+  `functions/call` with an invocation ID (`<turnId>:<toolCallId>`). The answer
+  is `{ output }`, `{ preview, reference }` or an error with a code. Answers
+  are matched by request ID, so concurrent callbacks cannot be mixed up.
+  `functions/cancel` tells the host the harness stopped waiting.
+- **Deadlines.** `deadlineMs` per tool, else `tools.defaultDeadlineMs`, else
+  none. On expiry the turn continues with one paired `tool_timeout` result
+  whose effect is unknown. A late answer is ignored.
+- **Records.** `session/tool-invocation` and `session/tool-invocations` return
+  calls with their state: `requested`, `waiting_for_approval`, `started`,
+  `succeeded`, `failed`, `skipped`, `interrupted`. A dispatched call with no
+  committed result is `interrupted` with `effect: "unknown"` and is never
+  repeated. `tool_call` events carry `invocationId`.
+- **Phase.** `session/status` reports `activeTurn.phase`: `model`, `approval`
+  or `tool`, since when, and the model call, approval request or invocation ID.
+- **Large results.** Above 16384 bytes the handler stores the result itself
+  and returns a preview and a reference. The model reads parts with
+  `read_tool_result`; the harness accepts only IDs recorded for the requesting
+  channel and forwards the read to the host as `results/read`.
+
+Adjustable defaults are in
+[BUSINESS_RULES.md](.res/docs/BUSINESS_RULES.md). The work log is
+[here](.res/docs/tools-and-callbacks/0001-DESIGN/LOG.md).
+
 ## acp-client integration
 
 On the `acp-client-integration` review branch, acp-client hosts one harness

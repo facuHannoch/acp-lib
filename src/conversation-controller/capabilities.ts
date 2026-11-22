@@ -22,6 +22,12 @@ export interface ConversationCapabilities {
    * and has no context reset.
    */
   freshContext?: false;
+  /**
+   * `"backend"`: the backend enforces its own deadlines at the model, approval and tool boundaries and
+   * reports each turn's outcome, so the host's output-silence limits do not apply to its turns. A
+   * tool can run for a long time while producing no output. Absent: the host's stall limits apply.
+   */
+  supervision?: "backend";
 }
 
 export interface BackendCapabilities {

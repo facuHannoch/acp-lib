@@ -203,6 +203,9 @@ export interface StorageSnapshot {
   /** Durable call records and each channel's next zero-based scripted step. */
   modelCalls: import("./model-execution.ts").ModelCallSummary[];
   scriptPositions: Record<string, number>;
+  /** Decision 0021: names of revocable tools whose grant is revoked, sorted.
+   * Absent when none ever was. Carried by export and import. */
+  revokedTools?: string[];
 }
 
 /** Logical, adapter-independent session copy. JSON-serializable. Versioned
@@ -398,6 +401,12 @@ export interface SessionStorage extends ModelCallStore {
    * calls become `uncertainCallIds`. Pending items stay pending.
    * Returns the turns interrupted by this call. */
   interruptActive(reason: string): StorageResult<StoredTurn[]>;
+
+  /** Decision 0021. Record that a revocable tool's grant is revoked or
+   * restored. Names only: definitions are not stored. A repeat writes nothing.
+   * An empty name is `invalid_input`. Allowed in every lifecycle. Returns the
+   * sorted revoked set. */
+  setToolRevoked(name: string, revoked: boolean): StorageResult<string[]>;
 
   /** Explicit channel creation. Creation starts no turn and takes nothing.
    * A new ID gets an `open` channel with the optional name. An existing open,

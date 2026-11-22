@@ -16,6 +16,7 @@ import { createMemoryStorageAdapter } from "./state/storage/memory.ts";
 import { createSqliteStorageAdapter } from "./state/storage/sqlite.ts";
 import { validateSessionPayload } from "./state/storage/archive.ts";
 import { createProtocolServer, SessionOpenError } from "./interfaces/protocol/server.ts";
+import { parseCatalog } from "./capabilities/tools/catalog.ts";
 import { HarnessClient, createInProcessTransport } from "./client.ts";
 import { chooseManagedConfig, managedSessionPaths } from "./runtime/config/paths.ts";
 import { resolveCredential } from "./runtime/config/managed.ts";
@@ -67,6 +68,7 @@ function withFaults(storage: SessionStorage, hit: (point: string) => void): Sess
 
 /** Real execution with scripted models per channel, exposed through the
  * protocol. In memory by default; durable when given a home or an adapter. */
+const BUILTINS = [echoDefinition, recordDefinition, holdDefinition];
 export function createScriptedServer(options: ScriptedServerOptions = {}) {
   const models = new Map<string, ReturnType<typeof createScriptedModel>>();
   const durable = !!(options.home || options.adapter);
@@ -76,7 +78,9 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
   const locate = (sessionId: string) => {
     return options.adapter?.(sessionId) ?? (options.home ? createSqliteStorageAdapter(managedSessionPaths(sessionId, options.home).database) : memory);
   };
-  const server = createProtocolServer(async ({ mode, sessionId, config: inline }) => {
+  const server = createProtocolServer(async ({ mode, sessionId, config: inline, tools }) => {
+    // Decision 0021: the catalog's names must not collide with the built-ins.
+    const catalog = tools && parseCatalog(tools, BUILTINS.map(tool => tool.name));
     const paths = options.home ? managedSessionPaths(sessionId, options.home) : undefined;
     const adapter = locate(sessionId);
     const stored = mode === "open" ? adapter.readSavedConfig() : undefined;
@@ -102,7 +106,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       hit("tool");
       return result;
     };
-    const session = createSession({ systemPrompt: config.system, config, storage, configureTurn(turn) {
+    const session = createSession({ systemPrompt: config.system, config, storage, ...(catalog ? { catalog } : {}), configureTurn(turn) {
       if (config.model.protocol === "openrouter") {
         const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
         if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "") });
@@ -118,7 +122,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       bindModelAttempt(model, { scripted: true, ...(options.modelTimeoutMs === undefined ? {} : { settings: { timeoutMs: options.modelTimeoutMs } }), create: step => {
         const next = completeModelAttempt(scripted!.modelAt(step!));
         return async function* (request, signal) {
-          if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages: request.messages })}\n`);
+          if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages: request.messages, tools: request.tools.map(tool => tool.name) })}\n`);
           if (options.stallChannel === turn.channelId && step === 0) {
             yield { type: "accepted" }; yield { type: "usage", usage: { inputTokens: 7 } };
             yield { type: "text_delta", text: "Partial reply" };
@@ -138,7 +142,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       const saved = storage.saveConfig(config);
       if (!saved.ok && saved.error.code !== "incompatible") throw new SessionOpenError("storage_failure", saved.error.message);
     }, exportArchive: () => storage.exportArchive() };
-  }, { durable, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
+  }, { durable, functions: true, limits: options.limits, transferDirectory: durable ? options.home ?? options.transfers ?? mkdtempSync(join(tmpdir(), "harness-transfers-")) : undefined,
     importArchive(payload, sessionId) {
       let createdDirectory: string | undefined;
       try {

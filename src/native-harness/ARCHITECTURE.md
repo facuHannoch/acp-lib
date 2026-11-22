@@ -176,6 +176,15 @@ tool definitions into the provider's native tools field; definitions do not need
 to be duplicated in the system prompt. The kernel receives prepared inputs and
 coordinates execution without owning prompt text or specific tools.
 
+Consumer functions (decision 0021) are data in a catalog supplied at open, under
+`src/capabilities/tools/`. Session assembly builds each inference's offered
+list from it and routes a call through the same permission gate as a built-in.
+Execution is a `FunctionExecutor` contract. The protocol server implements it
+as a request to the host on the same connection (`src/interfaces/protocol/functions.ts`).
+The kernel knows neither callbacks nor result storage: it sees a tool result
+with an optional outcome. Bytes of a large result stay with the process that
+produced them; the harness stores only the reference.
+
 Coding workers and their orchestration belong to the consumer, initially
 acp-client. The harness has no built-in delegation subsystem. A consumer can
 expose workers through configured tools and describe their use in its system

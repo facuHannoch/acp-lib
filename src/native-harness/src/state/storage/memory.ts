@@ -4,6 +4,7 @@ import { archiveMeta, restoreArchive, storedSession, validateArchive, validateSe
 import { validateManagedConfig } from "../../util/config.ts";
 
 interface Data {
+  revokedTools?: string[];
   modelState?: ModelState;
   config?: import("../../contracts/session-file.ts").PortableSessionConfig;
   meta: Meta;
@@ -22,6 +23,8 @@ function memoryTables(data: Data): Tables {
   return {
     getModelState: () => copy(data.modelState),
     setModelState(state) { const old = data.modelState; log(() => { data.modelState = old; }); data.modelState = copy(state); },
+    getRevokedTools: () => copy(data.revokedTools),
+    setRevokedTools(names) { const old = data.revokedTools; log(() => { data.revokedTools = old; }); data.revokedTools = [...names]; },
     getConfig: () => copy(data.config),
     setConfig(config) { const old = data.config; log(() => { data.config = old; }); data.config = copy(config); },
     transaction(run) {

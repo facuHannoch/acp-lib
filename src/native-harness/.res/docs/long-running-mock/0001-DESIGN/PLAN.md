@@ -21,11 +21,11 @@ permission gate, tool dispatch, scheduler, and recovery paths.
 
 | Area | Code seam | Work |
 | --- | --- | --- |
-| Scenario loading and model behavior | Harness `src/capabilities/model/scripted.ts` and `src/testing.ts` | Use a single parser and validation path for model-only and timed JSONL files. Keep selection, delays, stream chunks, failures, and cancellation in the scripted adapter. Expose scenario loading to the driver through the public testing entry point. Keep parsing separate from running attempts if the adapter needs a focused module. |
+| Scenario loading and model behavior | Harness `src/capabilities/model/scripted.ts` and `src/testing.ts` | Use one loader and reuse validated sequences across attempts. Keep playback and opt-in request capture in the scripted adapter. Expose scenario loading to the driver through the public testing entry point. |
 | Launch paths and fixtures | Harness `src/interfaces/cli/scenario.ts`, `development.ts`, `serve.ts`, and both packages' scripted fixtures | Route all file-based scripts through the shared loader, including the development channel fixtures. Replace on-disk JSON scripts. Preserve named channel and default-sequence behavior. Keep CLI code limited to arguments, configuration, and assembly. |
 | Model execution and storage | Harness `src/capabilities/model/runner.ts` and `src/state/storage/` | Reuse durable per-channel attempt reservations, deadlines, usage, and response commits. Derive scripted compatibility from the validated model sequences used at open. Keep driver scheduling state outside the session store. |
 | Built-in notices and test tools | Harness `src/capabilities/tools/` and session composition in `src/index.ts`; acp-client test fixtures for host callbacks | Supply one harness-owned `notify_channel` definition and handler across session entry points. Reuse notice admission and the permission gate. Reuse hold and effect-recording helpers and put host callback fixtures on the consumer side. |
-| Rehearsal driver and reports | acp-client `test/native/`, sharing `support.ts` and the existing native host setup | Add a focused test driver that schedules sends, owns the child for the run, and records outcomes and cleanup. Keep an opt-in entry point here for longer runs. Reuse the native host and public harness APIs for observation, approvals, and replacement. |
+| Rehearsal driver and reports | acp-client `test/native/`, sharing `support.ts` and the existing native host setup | Schedule sends, track outcomes through a final revision, and own diagnostics and child cleanup. Keep an opt-in timed entry point with documented handlers and policy. Reuse the native host and public harness APIs. |
 
 Use the same loader for the model adapter and driver. Reuse the driver's
 scheduling and reporting code for short tests and longer runs. The driver
@@ -37,10 +37,10 @@ and tool details behind their existing contracts.
 
 | Gate | Work | Evidence required |
 | --- | --- | --- |
-| **1. Contract and fixture inventory** | Define JSONL record shapes and validation, delay and stream timing, channel selection, script identity, and the run's completion and error report. Inventory every file loader, generated fixture, and in-process test helper. Agree how the built-in notice is composed on the accepted base. | Review representative model-only, multichannel, timed, malformed, and restart examples. Confirm each launch path uses the same format and document any public contract changes. Typecheck changed contracts. |
-| **2. Harness adapter and built-in notice** | Implement shared script loading and model playback. Convert existing fixtures and route all script entry points to the loader. Reuse attempt reservation and default tool composition. | Verify line diagnostics, independent channel positions, stream events, synthetic usage, cancellation, exhaustion, retry consumption, child reopen, and rejection of changed model sequences on reopen. Verify a scripted `notify_channel` request reaches its target through admission and policy. Run harness typecheck and the offline suite. |
-| **3. acp-client driver and deterministic checkpoint** | Schedule sends, collect outcomes, and exercise controls in test code using the existing native host setup. Add compact reporting and deterministic cleanup. | Verify same-timestamp submission order, overlap between channels, timed-run deadline, and cleanup after success and failure. Pass the deterministic real-stdio scenarios below. Run acp-client typecheck and its native tests. |
-| **4. Full driven rehearsal** | Run the same driver against a real stdio child with a multi-minute JSONL file. Exercise the public acp-client path and produce a compact report. Update usage docs with a verified command and fixture. | Verify concurrent progress, terminal outcome accounting, and process cleanup. Compare observed committed messages with bounded harness reads for the channels under test. Run both packages' full offline suites and record the independently reviewed revision, test commands, and rehearsal evidence. |
+| **1. Contract and fixture inventory** | Define JSONL shapes, playback timing, channel selection, script identity, and completion reporting. Inventory file loaders and fixtures. Confirm whether existing status and idle operations can establish the final revision consistently. Add a focused status contract only if needed. | Review model-only, multichannel, timed, malformed, and restart examples. Record public contract changes and typecheck them. |
+| **2. Harness adapter and built-in notice** | Implement loading and playback, convert fixtures, and reuse attempt reservation and default tool composition. | Verify line diagnostics, channel positions, streaming, usage, cancellation, exhaustion, and retry consumption. Reject a changed script after a crash with pending input and no checkpoint. Prove capture-off skips full-request copying and multiple attempts reuse one validated scenario. Verify an ordinary session offers `notify_channel` once, enforces denial, and rejects name collisions. Run harness typecheck and offline tests. |
+| **3. acp-client driver and deterministic checkpoint** | Schedule sends, collect outcomes, and exercise controls in test code using the existing native host. | Verify submission order, overlap, exact inputs at the inference boundary after steering, and completion when a notice starts work after the last scheduled input settles. Verify deadline diagnostics and cleanup after success and failure. Run the real-stdio cases below, acp-client typecheck, and native tests. |
+| **4. Full driven rehearsal** | Run the same driver against a real stdio child with a multi-minute JSONL file and its documented tool and policy setup. Publish a verified usage command and fixture. | Verify unattended operation, concurrent progress, terminal outcomes, and process cleanup. Compare consumer delivery with committed replies at the final revision through bounded reads. Run both packages' full offline suites and record the independently reviewed revision, commands, and evidence. |
 
 ## Final acceptance runs
 
@@ -61,6 +61,9 @@ and tool details behind their existing contracts.
    uncertain effect.
 
 Use test-code barriers and the real approval, notice, and callback paths.
+Assert which input IDs reached the inference after steering. Verify the driver
+stays alive until a notice-driven turn finishes after the final scheduled input
+has settled.
 Record expected interruption or failure as an assertion. Fail if later work on
 another channel stops progressing or a completed operation is delivered twice.
 
@@ -70,12 +73,15 @@ Run a checked-in synthetic JSONL fixture for multiple minutes through the
 same driver. Use bursts, idle gaps, overlapping channels, and both short and
 tool-heavy turns. Run a short version in CI and record the actual multi-minute
 run before acceptance. Hour-scale files use the same entry point. Full request
-capture is off during the long run.
+capture is off during the long run. The command supplies bounded test handlers
+and a fixture policy that allows the tools and built-in notices it uses. Manual
+approval responses, hold and release, and deliberate stalls stay in CI cases.
 
-Record fixture identity, elapsed time, accepted and terminal outcomes,
-callback effects, unused model records, and any duplicate or missing committed
-replies. Verify the child exits and cleanup also runs after a forced timeout.
-The run uses a scripted model and controlled handlers without provider credentials.
+Record fixture identity, elapsed time, accepted inputs and terminal outcomes,
+callback effects, unused model records, and the final revision used to compare
+committed replies. Verify the child exits. In a separate forced timeout case,
+report which work was blocking and verify the child is reaped within the
+cleanup budget. Both runs use a scripted model without provider credentials.
 
 ## Handoff and closure
 

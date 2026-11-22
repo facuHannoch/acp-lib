@@ -19,8 +19,8 @@ export async function serveProtocolStdio(endpoint: ProtocolEndpoint, input: Read
   function send(value: unknown) { try { queue.send(value); } catch (error) { fail(error); } }
   // One writer for responses and both notification kinds keeps wire order
   // equal to publication order.
-  const unsubscribeChannel = endpoint.subscribe(send), unsubscribeSession = endpoint.subscribeSession?.(send);
-  const unsubscribe = () => { unsubscribeChannel(); unsubscribeSession?.(); };
+  const unsubscribeChannel = endpoint.subscribe(send), unsubscribeSession = endpoint.subscribeSession?.(send), unsubscribeCallbacks = endpoint.subscribeCallbacks?.(send);
+  const unsubscribe = () => { unsubscribeChannel(); unsubscribeSession?.(); unsubscribeCallbacks?.(); };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     while (true) {
@@ -39,6 +39,14 @@ export async function serveProtocolStdio(endpoint: ProtocolEndpoint, input: Read
             continue;
           }
           send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Invalid JSON", data: { code: "parse_error" } } });
+          continue;
+        }
+        // Decision 0021: a line without a method that carries a result or an
+        // error answers one of our callback requests. It is matched by ID to an
+        // open wait; anything else is dropped there.
+        const answer = request as unknown as { method?: unknown; id?: unknown; result?: unknown; error?: unknown };
+        if (answer && typeof answer === "object" && answer.method === undefined && Number.isSafeInteger(answer.id) && ("result" in answer || "error" in answer)) {
+          endpoint.respond?.(answer as never);
           continue;
         }
         // Dispatch concurrently: one slow request must not block other channels.

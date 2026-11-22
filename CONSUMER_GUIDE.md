@@ -993,6 +993,64 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   replies it missed, settles interrupted turns as failed, and keeps accepted
   input pending. Interrupted tool calls are never replayed.
 
+### Functions the model can call
+
+Register functions in `harness.functions`. The harness offers them to the
+model, applies the conversation's policy and asks for approval where the policy
+says `ask`, validates the arguments against `parameters`, and then calls the
+handler in this process.
+
+```ts
+harness: {
+  home, config,
+  functions: {
+    defaultDeadlineMs: 60_000,                    // optional; without it a call has no deadline
+    tools: {
+      lookup: {
+        description: "Look up an order",
+        parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        handler: async ({ id }, { signal, channel }) => findOrder(id, signal),
+      },
+      refund: { group: "revocable", description: "...", parameters: {...}, handler: refund },
+      export: { group: "runtime", enabled: false, description: "...", parameters: {...}, handler: exportData },
+    },
+  },
+},
+```
+
+- **Groups.** `fixed` (default) cannot be removed while running. `revocable`:
+  `agent.nativeHarness.revokeTool(name)` and `restoreTool(name)`; the harness
+  stores this with the session, so it survives restarts. `runtime`:
+  `enableTool(name)` and `removeTool(name)`; the selection lives in this
+  process and is sent again when the harness reopens.
+- **Why a tool cannot run.** `agent.nativeHarness.tools()` lists each tool
+  with `available` and a reason (`revoked`, `not_enabled`, `handler_missing`).
+  Policy is separate: a tool the conversation's policy denies is not offered.
+- **Handlers.** Return any JSON value. Throw `FunctionError(code, message)` for
+  a failure the model should see. `signal` aborts when the harness stops
+  waiting: the tool's deadline passed, the turn was interrupted, or the harness
+  stopped. A value returned after that is ignored.
+- **Quiet handlers are fine.** A native turn is not cancelled by
+  `operationLifecycle` silence limits. The harness enforces the model,
+  approval and tool deadlines. `agent.nativeHarness.status()` shows each
+  running turn's `activeTurn.phase` (`model`, `approval` or `tool`, since when,
+  and the ID it concerns).
+- **Deadlines.** `deadlineMs` on a tool overrides `defaultDeadlineMs`. When it
+  passes, the model receives a timeout result that says the effect is unknown,
+  and the turn continues.
+- **Large results.** A result over 16 384 bytes is written to a private
+  directory (`resultDirectory`, or a temporary one removed on stop) and the
+  model receives a preview and an ID. It reads parts with the built-in
+  `read_tool_result` tool. Only the conversation that produced a result can
+  read it. Results expire after `resultTtlMs` (24 hours by default).
+- **Records.** `agent.nativeHarness.toolInvocation(id)` and
+  `toolInvocations(turn)` return each call's state. A call that was dispatched
+  but has no recorded result (crash, lost connection, interrupt) is
+  `interrupted` with `effect: "unknown"`. It is never run again automatically.
+
+Tool changes need a running harness: `revokeTool` and the others fail with
+`HarnessUnavailableError` while it is stopped.
+
 Not available on a native conversation yet: `startFresh` and anything that
 needs a fresh context (`conversationCapabilities.freshContext` is `false`),
 handoff, modes, config options, session listing, adoption, usage metering

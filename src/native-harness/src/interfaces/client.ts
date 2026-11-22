@@ -1,6 +1,19 @@
 import type { ClientTransport, Methods, DurableMethods, InitializeParams, CreateParams, PushParams } from "../contracts/protocol.ts";
 import type { EventSink, SessionEventSink } from "../contracts/events.ts";
 import { createHash } from "node:crypto";
+import type { FunctionCall, FunctionResult, ResultPage, ResultRead } from "../contracts/tools.ts";
+import { MAX_FRAME_BYTES } from "./protocol/framing.ts";
+
+/** A typed failure a function handler reports to the model (decision 0021). */
+export class FunctionError extends Error {
+  constructor(public readonly code: string, message: string) { super(message); this.name = "FunctionError"; }
+}
+/** Runs one authorized call. `signal` aborts when the harness stops waiting
+ * (deadline, interrupt, stop): the answer is then ignored. Throw
+ * `FunctionError` for a typed failure. Return `{ preview, reference }` for a
+ * result the handler stored itself. */
+export type FunctionHandler = (call: FunctionCall, signal: AbortSignal) => Promise<FunctionResult> | FunctionResult;
+export type ResultReader = (read: ResultRead) => Promise<ResultPage> | ResultPage;
 
 type Calls = Methods & DurableMethods;
 
@@ -19,6 +32,11 @@ export class HarnessClient {
   private unsubscribeSession = () => {};
   private readonly waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   private readonly unsubscribe: () => void;
+  private unsubscribeCallbacks = () => {};
+  private functionHandler: FunctionHandler | undefined;
+  private resultReader: ResultReader | undefined;
+  /** Calls being handled, by invocation ID, so a cancellation reaches the right one. */
+  private readonly running = new Map<string, AbortController>();
   constructor(private readonly transport: ClientTransport, private readonly timeoutMs = 30000) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Request timeout must be positive");
     this.unsubscribe = transport.subscribe(message => {
@@ -35,6 +53,34 @@ export class HarnessClient {
     });
     this.unsubscribeSession = transport.subscribeSession?.(message => {
       for (const listener of this.sessionListeners) { try { listener(structuredClone(message.params)); } catch { /* Consumer isolation. */ } }
+    }) ?? (() => {});
+    this.unsubscribeCallbacks = transport.subscribeCallbacks?.(message => {
+      if (message.method === "functions/cancel") { this.running.get(message.params.invocationId)?.abort(new Error(message.params.reason)); return; }
+      const answer = (work: () => Promise<unknown>, signal?: AbortSignal) => {
+        // Each handler runs in its own task. The answer carries the request's
+        // ID, so concurrent calls cannot be mixed up. Nothing is sent for a
+        // call the harness already cancelled.
+        void (async () => work())().then(result => {
+          if (signal?.aborted) return;
+          if (new TextEncoder().encode(JSON.stringify(result ?? null)).length > MAX_FRAME_BYTES - 1024) throw new FunctionError("result_too_large", "The result does not fit one protocol frame; store it and return a reference");
+          transport.respond?.({ jsonrpc: "2.0", id: message.id, result });
+        }).catch(error => {
+          if (signal?.aborted) return;
+          const code = typeof (error as { code?: unknown })?.code === "string" && (error as { code: string }).code ? (error as { code: string }).code : "handler_failed";
+          try { transport.respond?.({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error), data: { code } } }); } catch { /* Connection closed. */ }
+        });
+      };
+      if (message.method === "results/read") {
+        const reader = this.resultReader;
+        answer(async () => { if (!reader) throw new FunctionError("result_unavailable", "This host stores no results"); return reader(message.params); });
+        return;
+      }
+      const handler = this.functionHandler, control = new AbortController(), id = message.params.invocationId;
+      this.running.set(id, control);
+      answer(async () => {
+        try { if (!handler) throw new FunctionError("handler_missing", "This host serves no functions"); return await handler(message.params, control.signal); }
+        finally { if (this.running.get(id) === control) this.running.delete(id); }
+      }, control.signal);
     }) ?? (() => {});
     this.unsubscribeClose = transport.onClose(error => {
       if (this.closed) return;
@@ -56,6 +102,16 @@ export class HarnessClient {
     return this.request("initialize", params);
   }
   createSession(params: CreateParams) { return this.request("session/create", params); }
+  /** Decision 0021. Serve `functions/call` requests. Set before `initialize`
+   * advertises handler names. One handler routes by `call.handler`. */
+  serveFunctions(handler: FunctionHandler, reader?: ResultReader) { this.functionHandler = handler; this.resultReader = reader; }
+  tools() { return this.request("session/tools", {}); }
+  revokeTool(name: string) { return this.request("tool/revoke", { name }); }
+  restoreTool(name: string) { return this.request("tool/restore", { name }); }
+  enableTool(name: string) { return this.request("tool/enable", { name }); }
+  removeTool(name: string) { return this.request("tool/remove", { name }); }
+  toolInvocation(invocationId: string) { return this.request("session/tool-invocation", { invocationId }); }
+  toolInvocations(turn: string) { return this.request("session/tool-invocations", { turn }); }
   validateConfig(config: unknown) { return this.request("config/validate", { config }); }
   respondApproval(requestId: string, decision: "allow_once" | "deny") { return this.request("approval/respond", { requestId, decision }); }
   /** Open an existing session. The returned view precedes every live event
@@ -119,7 +175,10 @@ export class HarnessClient {
   onSessionEvent(listener: SessionEventSink) { this.sessionListeners.add(listener); return () => { this.sessionListeners.delete(listener); }; }
   close() {
     if (this.closed) return;
-    this.closed = true; this.unsubscribe(); this.unsubscribeSession(); this.unsubscribeClose(); this.transport.close(); this.listeners.clear(); this.sessionListeners.clear();
+    this.closed = true; this.unsubscribe(); this.unsubscribeSession(); this.unsubscribeCallbacks(); this.unsubscribeClose(); this.transport.close();
+    // The harness no longer waits for anything this connection was handling.
+    for (const control of this.running.values()) control.abort(this.terminalError);
+    this.running.clear(); this.listeners.clear(); this.sessionListeners.clear();
     for (const pending of this.waiting.values()) { clearTimeout(pending.timer); pending.reject(this.terminalError); }
     this.waiting.clear();
   }
