@@ -70,5 +70,7 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 - `AgentSession.listSessions()` before the agent connects still throws `NotConnectedError`.
 - A controller without `reconnect`, such as NativeController, is handled as a provider that lost the session: the conversation's
   continuation rule decides (`ProviderSessionReloadUnsupportedError`, an `UnsupportedError`).
+- Native prompts with unsupported media parts or attachments reject with `UnsupportedError` before any message in
+  the run is submitted. This applies to queued and steered prompts.
 - Test-only: the A1 characterization snapshots are unchanged except `cause`, plus a reviewed ordering exception for the
   two non-contractual orders (metering vs presentation events / the last in-progress assistant snapshot).

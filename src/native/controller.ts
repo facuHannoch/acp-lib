@@ -25,6 +25,7 @@ import type {
 import type { ConfigOptions } from "../config-options.ts";
 import { UnsupportedError } from "../errors.ts";
 import { noopLogger, type Logger } from "../logger.ts";
+import { isMediaPart, mediaKind, type MediaKind } from "../media/parts.ts";
 import type { OutputListener, ProviderOutput } from "../operations/contracts.ts";
 import type { PermissionRequest, PromptHandlers, PromptResult, ResponseMessage } from "../types.ts";
 import type { ChannelPort, ChannelView, NativeHarnessHost } from "./host.ts";
@@ -188,6 +189,17 @@ export class NativeController implements ConversationController, ChannelPort {
   async send(run: TurnRun): Promise<void> {
     if (new Set(run.messageIds).size !== run.messageIds.length) throw new Error("a run repeats a message id");
     if (this.#stopped) throw new Error("the conversation is stopped");
+    const media = this.conversationCapabilities.backend?.media;
+    const requireMedia = (kind: MediaKind) => {
+      if (!media?.[kind]) throw new UnsupportedError(`a native conversation does not support ${kind} input`);
+    };
+    // Validate the whole run before the host can persist or deliver any of its messages.
+    for (const message of run.messages) {
+      for (const part of message.messageParts ?? []) {
+        if (isMediaPart(part)) requireMedia(part.mimeType === "image/svg+xml" ? "file" : part.kind);
+      }
+      for (const attachment of message.attachments ?? []) requireMedia(mediaKind(attachment.mimeType));
+    }
     for (const message of run.messages) {
       await this.#host.push({
         id: message.id,

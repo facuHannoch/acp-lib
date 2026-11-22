@@ -7,7 +7,7 @@
  * policy keeps a turn waiting for the consumer's approval; `HARNESS_TEST_FAULT=<storage point>:<n>`
  * kills the harness process, without unwinding, right after that commit.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { Agent } from "../../src/agent.ts";
 import type { AgentSession } from "../../src/agent-session.ts";
 import { UnsupportedError } from "../../src/errors.ts";
@@ -257,6 +257,45 @@ describe("the first end-to-end checkpoint", () => {
 });
 
 describe("the native conversation at the Agent", () => {
+  test("queued and steered prompts with file parts are refused before push, and text still runs", async () => {
+    const rig = await rigWith();
+    rig.script([hold("media-guard"), reply("Finished."), reply("Next.")]);
+    const agent = await rig.open();
+    const session = await agent.conversations.create() as AgentSession;
+    const host = agent.nativeHarness!;
+    const push = spyOn(host, "push");
+    const first = session.prompt("hold the first turn");
+    const firstOutcome = track(first);
+    try {
+      await until(() => session.state.operation?.stage === "tool_running", "the first turn's held tool");
+      const media = {
+        text: "read the attached file",
+        parts: [{ kind: "file" as const, data: new TextEncoder().encode("fixture file") }],
+      };
+      const queued = session.prompt({ ...media, delivery: "queue" });
+      const queuedOutcome = track(queued);
+      const steered = session.prompt({ ...media, delivery: "steer" });
+      const steeredOutcome = track(steered);
+      await until(() => steeredOutcome.settled || push.mock.calls.length > 1, "steer refusal before a host push");
+      expect(steeredOutcome.error).toBeInstanceOf(UnsupportedError);
+      expect(firstOutcome.settled).toBe(false);
+      expect(queuedOutcome.settled).toBe(false);
+      expect(push.mock.calls.map(([input]) => input.id)).toEqual([first.id]);
+
+      const next = session.prompt({ text: "text after the refused queue entry", delivery: "queue" });
+      const nextOutcome = track(next);
+      rig.release("media-guard");
+      await until(() => firstOutcome.settled && queuedOutcome.settled && nextOutcome.settled, "the queue to drain");
+      expect(firstOutcome.value).toMatchObject({ status: "completed", text: "Working.\n\nFinished." });
+      expect(queuedOutcome.error).toBeInstanceOf(UnsupportedError);
+      expect(nextOutcome.value).toMatchObject({ status: "completed", text: "Next." });
+      expect(push.mock.calls.map(([input]) => input.id)).toEqual([first.id, next.id]);
+    } finally {
+      rig.release("media-guard");
+      push.mockRestore();
+    }
+  }, 45_000);
+
   test("a native adapter needs AgentConfig.harness; ACP adapters in the same Agent are unaffected by it", async () => {
     const rig = await rigWith();
     await expect(rig.open({ harness: undefined })).rejects.toThrow("requires AgentConfig.harness");
