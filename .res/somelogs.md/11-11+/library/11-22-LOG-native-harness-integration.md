@@ -217,3 +217,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 ### 2026-11-22: R3
 
 - R3 (permissions as conversation events, ACP and native) assigned to cod2a, on `928f865`: step 0 grounding first.
+- R3 step 0 in from cod2a, `757e062` ([report](reports/11-22-REPORT-R3-grounding.md)): both native approval routes,
+  replay and close deduplication with attribution, one resolution point on ACP, the config and API wiring, the two
+  R2 notes. Review points: a native `requestedAt` (a first-receipt fallback for older harnesses: does it need a
+  harness wire change?); bounding handlers by the deadline; host responder → `by: "handler"`, force stop and stop →
+  `turn_ended`; the harness's 10-minute timer is armed today, contradicting two spec paragraphs. Sent to clad2a.
