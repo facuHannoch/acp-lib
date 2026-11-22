@@ -4,6 +4,7 @@ import type { ResolvedPart } from "./media/parts.ts";
 // render against these regardless of which mode is active. See SPEC.md.
 
 import type { ApplyResult } from "./activity.ts";
+import type { PermissionOption, PermissionTool } from "./permissions/request.ts";
 
 /**
  * A slash command exposed by the replaceable ACP-backed internal session (e.g. codex
@@ -234,18 +235,15 @@ export type PermissionOutcome =
  * The open arm keeps a kind we don't know yet from failing to typecheck; branch with a
  * fallback rather than assuming the four.
  */
-export type PermissionOptionKind =
-  | "allow_once"
-  | "allow_always"
-  | "reject_once"
-  | "reject_always"
-  | (string & {});
+export type { PermissionOptionKind } from "./permissions/request.ts";
 
 /** A permission request surfaced to the caller. The agent BLOCKS until this resolves. */
 export interface PermissionRequest {
   toolCallId: string;
   title?: string;
-  options: Array<{ optionId: string; name: string; kind: PermissionOptionKind }>;
+  options: PermissionOption[];
+  /** Neutral tool data when the producer supplies it. */
+  tool?: PermissionTool;
   /** The raw SDK request, for callers that need fields we haven't surfaced. */
   raw: unknown;
 }

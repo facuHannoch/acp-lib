@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { AcpClient } from "../src/client.ts";
 import type { AcpClientConfig } from "../src/client.ts";
 import type { PermissionRequest, PromptHandlers } from "../src/types.ts";
+import { toPermissionRequest } from "../src/permissions/acp.ts";
 
 const AGENT = resolve(import.meta.dir, "fixtures/permission-agent.ts");
 
@@ -35,6 +36,18 @@ async function ask(
 }
 
 describe("permission requests", () => {
+  test("projects ACP tool data and keeps the original wire request", () => {
+    const params = {
+      sessionId: "s1",
+      toolCall: { toolCallId: "t1", title: "Run tests", kind: "execute" as const, rawInput: { command: "bun test" } },
+      options: [{ optionId: "once", name: "Allow once", kind: "allow_once" as const }],
+    };
+    const request = toPermissionRequest(params);
+    expect(request.tool).toEqual({ kind: "execute", rawInput: { command: "bun test" } });
+    expect(request.options).toEqual(params.options);
+    expect(request.raw).toBe(params);
+  });
+
   describe("defaultPermission: approve", () => {
     const approve = { defaultPermission: "approve" as const };
 
@@ -121,6 +134,7 @@ describe("permission requests", () => {
       expect(request).not.toBeNull();
       expect(request!.toolCallId).toBe("call-1");
       expect(request!.title).toBe("Write config.json");
+      expect(request).not.toHaveProperty("tool");
       expect(request!.options).toEqual([
         { optionId: "reject", name: "No", kind: "reject_once" },
         { optionId: "allow", name: "Yes", kind: "allow_once" },

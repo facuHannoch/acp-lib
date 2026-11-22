@@ -43,6 +43,7 @@ import { resolveParts } from "./media/store.ts";
 import { assertPartCapabilities, attachmentParts, partsToAcp } from "./media/acp.ts";
 import { redactMedia } from "./media/redact.ts";
 import type { ClientPrompt } from "./agent-client.ts";
+import { toPermissionRequest } from "./permissions/acp.ts";
 
 export interface AcpClientConfig {
   /** How to launch the agent binary. */
@@ -1073,20 +1074,4 @@ function sameAvailableCommands(
       command.input?.kind === other.input?.kind &&
       command.input?.hint === other.input?.hint;
   });
-}
-
-function toPermissionRequest(
-  params: schema.RequestPermissionRequest,
-): PermissionRequest {
-  const p = params as Record<string, any>;
-  return {
-    toolCallId: p.toolCall?.toolCallId ?? "",
-    title: p.toolCall?.title,
-    options: (p.options ?? []).map((o: Record<string, any>) => ({
-      optionId: o.optionId,
-      name: o.name,
-      kind: o.kind,
-    })),
-    raw: params,
-  };
 }
