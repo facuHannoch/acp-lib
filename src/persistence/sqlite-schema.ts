@@ -741,6 +741,9 @@ export function migrateSqliteAgentSchema(database: Database): void {
       }
       if (version < 18) database.exec(WORKER_DELIVERY_SCHEMA);
       if (version < 19) database.exec(WORKERS_SCHEMA);
+      if (!columns.some(({ name }) => name === "role")) {
+        database.exec("ALTER TABLE conversations ADD COLUMN role TEXT CHECK (role = 'worker')");
+      }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

@@ -314,6 +314,7 @@ export interface AgentPersistenceIdentity {
 }
 
 export interface AgentConversationSummary {
+  readonly role?: "worker";
   /** Absent on rows written before controller kinds were recorded. */
   readonly controllerKind?: "acp" | "native";
   readonly agentConversationId: AgentConversationId;
@@ -332,6 +333,7 @@ export interface AgentConversationSummary {
 }
 
 export interface CreateAgentConversationInput {
+  readonly role?: AgentConversationSummary["role"];
   readonly controllerKind?: AgentConversationSummary["controllerKind"];
   readonly agentConversationId: AgentConversationId;
   readonly agentSessionId: AgentSessionId;

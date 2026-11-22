@@ -94,7 +94,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
     const participants: ParticipantRef[] = [];
     for (const part of parts) participants.push(await this.resolveParticipant(part.participantId));
     const participant = participants[0]!;
-    const identity = await this.agent.identity.load({
+    const identity = this.settings.role === "worker" ? {} : await this.agent.identity.load({
       agentSessionId: this.agent.id,
       agentConversationId: this.conversationId,
       targetProviderContextId: input.targetProviderContextId,

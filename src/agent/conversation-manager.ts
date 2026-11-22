@@ -116,6 +116,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       ...(summary.title !== undefined && summary.title !== null ? { title: summary.title } : {}),
       ...(summary.metadata !== undefined && summary.metadata !== null ? { metadata: summary.metadata } : {}),
       adopted: summary.adopted === true,
+      ...(summary.role ? { role: summary.role } : {}),
     };
   }
 
@@ -150,8 +151,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
   async create(config: CreateAgentConversationConfig = {}): Promise<AgentConversation> {
     const id = config.id ?? createAgentConversationId();
     const participants = normalizeParticipants(config.participants);
-    // What this conversation persists is decided before any write, so a resolver that throws or
-    // returns something invalid leaves no row, no error record and no provider session behind.
+    if (config.role === "worker" && config.adopt) throw new UnsupportedError("workers cannot adopt provider sessions");
     const adoption = config.adopt
       ? normalizeAdoption(config.adopt, { recap: !(this.agent.identity instanceof NoopAgentIdentityRuntime) })
       : undefined;
@@ -161,6 +161,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       ...(config.title !== undefined ? { title: config.title } : {}),
       ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
       adopted: adoption !== undefined,
+      ...(config.role ? { role: config.role } : {}),
     });
     if (adoption) {
       // An adopted conversation joins the Agent's memory, which is built from stored messages; one that
@@ -170,9 +171,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         throw new Error(`adopting a provider session requires message capture "content" or "raw", not "${level}"`);
       }
     }
-    // Validate caller input before the durable row: a mistake must not orphan a
-    // conversation, and must not be recorded as a provider-session failure.
     const adapterId = this.prepareStart({ ...config, providerSession: adoption ? "load" : "new" });
+    if (config.role === "worker" && this.agent.adapters.native(adapterId)) throw new UnsupportedError("workers require an ACP adapter");
     if (adoption) return await this.createAdopting(id, participants, config, adoption, settings);
     const channelIntentCommitted = await createConversationWithChannel(this.agent, {
       agentSessionId: this.agent.id,
@@ -180,6 +180,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       participants,
       ...(config.title !== undefined ? { title: config.title } : {}),
       ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
+      ...(config.role ? { role: config.role } : {}),
     }, this.agent.adapters.native(adapterId));
     const attemptId = `provider-create-${randomUUID()}`;
     try {
@@ -425,8 +426,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         `conversation ${id} is active on ${active.adapterId}; use a conversation switch instead of loading it with ${config.adapterId}`,
       );
     }
-    // Resolved once for this open, before any write: the load-failure and recovery records below and the
-    // recovered provider thread all follow this conversation's policy, and the resolver is not called again.
+    // Resolve once before the load-failure and recovery paths can write.
     const settings = this.policies.settingsFor(this.contextOf(summary));
     const startConfig = {
       ...config,

@@ -125,6 +125,7 @@ export interface AgentHarnessConfig {
 }
 
 export interface CreateAgentConversationConfig extends ConversationPermissionConfig {
+  readonly role?: "worker";
   readonly id?: AgentConversationId;
   readonly adapterId?: string;
   readonly mode?: AgentMode;
