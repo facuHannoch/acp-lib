@@ -4,7 +4,8 @@
  *
  * A prompt containing `[lifecycle:<mode>]` (or `LIFECYCLE_MODE`) selects the behaviour:
  * `silent` and `ignore` never answer, `partial` sends one chunk and then nothing (all three ignore
- * cancel), `permission` asks for permission, `tool` runs a tool for `LIFECYCLE_TOOL_MS` (and, with
+ * cancel), `permission` asks for permission, `tool` runs a tool for `LIFECYCLE_TOOL_MS` or until
+ * `LIFECYCLE_TOOL_GATE_FILE` exists (and, with
  * `LIFECYCLE_END_GATE_FILE`, ends the turn after its last chunk only once that file exists, so a
  * test can release the end on an event it observed). Any other prompt
  * echoes the process id and the session's history, so a test can kill the process and check context.
@@ -144,8 +145,13 @@ function prompt(m: any): void {
   }
   if (mode === "tool") {
     update(session, { sessionUpdate: "tool_call", toolCallId: "sleep", title: "sleep", status: "in_progress" });
-    setTimeout(() => {
+    const toolGate = process.env.LIFECYCLE_TOOL_GATE_FILE;
+    const finishTool = () => {
       if (pending?.id !== m.id) return;
+      if (toolGate && !existsSync(toolGate)) {
+        setTimeout(finishTool, 5);
+        return;
+      }
       update(session, { sessionUpdate: "tool_call_update", toolCallId: "sleep", status: "completed" });
       text(session, "tool finished");
       const end = () => {
@@ -164,7 +170,9 @@ function prompt(m: any): void {
         else setTimeout(waitForGate, 2);
       };
       waitForGate();
-    }, Number(process.env.LIFECYCLE_TOOL_MS ?? 150));
+    };
+    if (toolGate) finishTool();
+    else setTimeout(finishTool, Number(process.env.LIFECYCLE_TOOL_MS ?? 150));
     return;
   }
   text(session, `pid=${process.pid}; history=${sessions[session]!.join(" | ")}`);

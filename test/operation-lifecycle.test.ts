@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { Agent, type AgentConfig } from "../src/agent.ts";
 import { AgentConversation, AgentSession, type AgentConversationConfig } from "../src/agent-session.ts";
 import { createConversationRecoveryCheckpointId } from "../src/checkpointing/ids.ts";
+import type { OperationStage } from "../src/operations/contracts.ts";
 
 const FIXTURE = resolve(import.meta.dir, "fixtures/lifecycle-agent.ts");
 const command = [process.execPath, FIXTURE];
@@ -64,6 +65,33 @@ async function until(predicate: () => boolean): Promise<void> {
   while (!predicate()) {
     if (Date.now() > end) throw new Error("condition timed out");
     await Bun.sleep(5);
+  }
+}
+
+async function waitForTurnStage(
+  session: AgentSession,
+  turn: ReturnType<AgentSession["prompt"]>,
+  stage: OperationStage,
+): Promise<void> {
+  const reached = Promise.withResolvers<void>();
+  const timeoutMs = 15_000;
+  const timer = setTimeout(() => reached.reject(new Error(`turn ${turn.id} did not reach ${stage} within ${timeoutMs} ms`)), timeoutMs);
+  const check = (activity: AgentSession["state"]["operation"]) => {
+    if (activity?.operationId === turn.id && activity.stage === stage) reached.resolve();
+  };
+  const detach = session.subscribe(({ event }) => {
+    if (event.kind === "operation_stage_changed") check(event.activity);
+  });
+  check(session.state.operation);
+  void turn.then(
+    () => reached.reject(new Error(`turn ${turn.id} completed before reaching ${stage}`)),
+    (error: unknown) => reached.reject(error),
+  );
+  try {
+    await reached.promise;
+  } finally {
+    clearTimeout(timer);
+    detach();
   }
 }
 
@@ -329,6 +357,7 @@ test("a SessionManager conversation whose provider lost the session applies its 
     agentSessionId: "reconnect-continuation",
   };
   const created = await AgentSession.create({ ...base, creationId: "reconnect-continuation-1" });
+  cleanups.push(() => created.stop());
   await created.prompt("remember quince");
   await created.stop();
 
@@ -370,7 +399,7 @@ test("a SessionManager conversation whose provider lost the session applies its 
   expect(built).toBe(1);
   expect(rebuilt.internalSessionId).not.toBe(previous);
   expect(events.some((event) => event.kind === "provider_reconnected" && event.via === "recovered")).toBe(true);
-});
+}, 30_000);
 
 test("an Agent-owned conversation without checkpoint recovery reports it cannot continue", async () => {
   const directory = await tempDir("acp-owned-missing-");
@@ -382,7 +411,7 @@ test("an Agent-owned conversation without checkpoint recovery reports it cannot 
   await writeFile(state, "{}");
   expect((await value.prompt("after crash").catch((error) => error)).code).toBe("provider_session_missing");
   expect(value.promptability.blockers).toContain("continuation_unavailable");
-});
+}, 30_000);
 
 test("a stall combines recovery steers, holds queued messages, then releases them in order", async () => {
   const value = await conversation({ operationLifecycle: { turns: { firstOutputMs: 40, nextOutputMs: 40 } } });
@@ -517,29 +546,31 @@ test("a failed harness listing is reported by the deprecated merged listSessions
 
 test("a cancelled turn records why it was cancelled and how the cancel ended", async () => {
   const directory = await tempDir("acp-lifecycle-cancellation-");
+  const toolGate = join(directory, "finish-tool");
   const agent = await ownedAgent(directory, {
     LIFECYCLE_STATE: join(directory, "sessions.json"),
-    LIFECYCLE_TOOL_MS: "300",
-  });
+    LIFECYCLE_TOOL_GATE_FILE: toolGate,
+  }, {}, FIXTURE, 1_000);
   const value = await agent.conversations.create();
 
   // Stop during a tool: the harness acknowledges.
   const stopped = value.prompt("[lifecycle:tool]");
-  await until(() => value.state.operation?.stage === "tool_running");
+  await waitForTurnStage(value, stopped, "tool_running");
   value.interrupt();
   const stoppedResult = await stopped;
 
   // A steer waits for the running tool to settle. This fixture answers in the same instant, so
   // the cancel is recorded as requested and too late; the steer is the next turn.
   const redirected = value.prompt("[lifecycle:tool]");
-  await until(() => value.state.operation?.stage === "tool_running");
+  await waitForTurnStage(value, redirected, "tool_running");
   const steer = value.prompt({ text: "focus on something else", delivery: "steer" });
+  await writeFile(toolGate, "");
   const redirectedResult = await redirected;
   const steerResult = await steer;
 
   // A harness that ignores the cancel is killed at the end of the grace period.
   const ignored = value.prompt("[lifecycle:ignore]");
-  await until(() => value.state.operation?.kind === "turn" && value.state.operation.stage === "waiting");
+  await waitForTurnStage(value, ignored, "waiting");
   value.interrupt();
   const ignoredResult = await ignored;
 
@@ -556,7 +587,7 @@ test("a cancelled turn records why it was cancelled and how the cancel ended", a
     [ignoredResult.operationId, "resolved", "interrupt", "forced"],
   ]);
   expect(steerResult.operationId).not.toBe(redirectedResult.operationId);
-}, 20_000);
+}, 55_000);
 
 test("a JSONL transcript records the cancellation of a turn", async () => {
   const root = await tempDir("acp-lifecycle-cancellation-jsonl-");
