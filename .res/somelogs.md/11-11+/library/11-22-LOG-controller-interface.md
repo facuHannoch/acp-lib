@@ -112,3 +112,11 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   resolutions, a check of test assumptions on the new wire paths, and a full re-run; clad2a to review it.
 - Not counted: generic notices are not the worker-backend recovery proof; durable worker delivery stays open
   (orchestrator O1, O3, O5).
+- Merge in from cod2a, `4cd3ce9` (report `32d30d0`, [report](reports/11-22-REPORT-alpha-713a76a-merge.md)): both
+  conflicts resolved, keeping both sides; the media preflight runs before the lazy attach and every push. Review
+  from clad2a, `de0b059` ([review](reports/11-22-REVIEW-alpha-713a76a-merge.md)): no blocking findings;
+  `NativeController.send` is the only library path to a push; no test assumes the old wire paths; alpha's
+  rehearsal test is intermittent on alpha itself.
+- **Gate passed on `4cd3ce9`** ([gate](../.plan-execution/status/11-22-GATE-alpha-713a76a-merge.md)): run 1 one
+  unrelated failure (SQLite cross-process ownership), run 2 green, 1,426 in 132 files.
+- **Spec 1 verification complete on alpha `713a76a`.** Ready for the user to merge.
