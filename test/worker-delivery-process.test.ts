@@ -176,3 +176,39 @@ for (const mode of ["fail", "interrupt"] as const) test(`live ACP ${mode} stages
     await rm(directory, { recursive: true, force: true });
   }
 }, 15_000);
+
+for (const mode of ["steer-gap", "linked-gap", "replacement-rollback"] as const) {
+  test(`SIGKILL at ${mode} preserves the durable continuation boundary`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "worker-continuation-crash-"));
+    const path = join(directory, "agent.sqlite");
+    const child = Bun.spawn([process.execPath, fixture, path, mode, assignmentId], { stdout: "pipe", stderr: "inherit" });
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    const reader = child.stdout.getReader();
+    try {
+      const barrier = await reader.read();
+      expect(new TextDecoder().decode(barrier.value)).toContain(mode);
+      child.kill("SIGKILL");
+      await child.exited;
+      expect(child.signalCode).toBe("SIGKILL");
+      const backend = await SqliteAgentPersistence.open({ path });
+      try {
+        const repo = backend.workerDelivery!;
+        expect(await repo.readBinding(assignmentId)).toMatchObject({
+          messageId: mode === "linked-gap" ? "new-message" : "old-message", originatingPolicyNames: ["guest"],
+        });
+        expect(await repo.readBinding("replacement")).toBeUndefined();
+        expect(await repo.readStaged(assignmentId)).toBeUndefined();
+        const outcome = await repo.stage(assignmentId);
+        expect(outcome).toMatchObject({ outcome: { kind: "uncertain" },
+          delivery: { id: `worker-result:${assignmentId}`, source: "label", state: "pending" } });
+        expect(await repo.stage(assignmentId)).toEqual(outcome);
+      } finally { await backend.close(); }
+    } finally {
+      clearTimeout(timeout);
+      reader.releaseLock();
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await child.exited;
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+}
