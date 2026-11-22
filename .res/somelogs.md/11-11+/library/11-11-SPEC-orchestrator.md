@@ -148,7 +148,8 @@ workers
   conversation_id    the worker's ordinary conversation
   opened_by          the conversation (or "consumer") where the work started
   about              the agent's short description; updated on any send that gives one
-  last_conversation  the conversation that gave its latest work: where its reply and notices go
+  last_conversation  the conversation that gave its latest work: only the default destination of its next
+                     assignment; delivery reads the assignment's own destination, which redirect retargets
   created_at, dropped_at
 ```
 
@@ -245,7 +246,7 @@ send(w1, text) from conversation X:
   w1 busy, X gave its running work ────────────────► steer into it         → "steered"
   w1 busy, other work, no redirect ────────────────► nothing sent          → "busy" + about, where, for whom, how long
   w1 busy, other work, redirect: true ─────────────► policy allows?
-                                                       yes → steer; last_conversation = X;
+                                                       yes → steer; assignment destination and last_conversation = X;
                                                              the previous conversation gets "w1 was redirected"
                                                        no  → refused
   w1 evicted ──────────────────────────────────────► take a slot, reload, then as above
@@ -271,9 +272,9 @@ The user never sees the worker's text directly; the agent reads it and decides w
 
 | When | Item | To |
 | --- | --- | --- |
-| a worker's turn ends normally | `worker_reply`: its final message | `last_conversation` |
-| a turn fails (stalled, crashed, error) | `worker_failed` with the error kind | `last_conversation` |
-| another conversation redirects the worker | `worker_redirected` | the previous `last_conversation` |
+| a worker's turn ends normally | `worker_reply`: its final message | the assignment's destination |
+| a turn fails (stalled, crashed, error) | `worker_failed` with the error kind | the assignment's destination |
+| another conversation redirects the worker | `worker_redirected` | the assignment's previous destination |
 | restart finds an assignment with no reliable final record | an uncertainty notice: the assignment and worker, outcome uncertain; the work isn't repeated | its destination |
 
 - **The port:** for a native conversation it delivers the result through `channel/notify`, as an external notice
@@ -496,7 +497,7 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 **Scope:** steps 1–2.
 
 1. **Busy rules:** steer when the same conversation gave the running work; `busy` with the listing otherwise;
-   `redirect: true` steers, moves `last_conversation`, and pushes `worker_redirected` to the previous one. **Gate:**
+   `redirect: true` steers, retargets the running assignment (`redirect`), moves `last_conversation`, and pushes `worker_redirected` to the previous one. **Gate:**
    each case, with two conversations on one worker.
 2. **Policy checks:** `use`, `scope`, `redirect` (also gating stop by others and drop), `maxOpen`. **Gate:** a
    refusal for each.
@@ -530,7 +531,7 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 2. **The delivery port's ACP half** (`src/orchestrator/contracts.ts`): out-of-band messages with a kind and a sender
    in their metadata, delivered with the next prompt. **Gate:** an item reaches an ACP conversation.
 3. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
-   `last_conversation`; a stop asked by the conversation itself produces none; a gone target keeps the reply on the
+   the assignment's destination; a stop asked by the conversation itself produces none; a gone target keeps the reply on the
    worker (`check`, `list`). **Gate:** each item; a deleted target.
 
 **Done:** report commits and each item.

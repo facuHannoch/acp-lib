@@ -42,3 +42,6 @@ edit to `src/agent-session.ts`.
   side (the flush, retries, recovery at open), built by the harness work in parallel. G also writes the interface
   with that remainder and sizes O4's forwarding entry (the only change to R3's code).
 - G resumed on cod2a (from `4e88243`; the spec is read from `orchestrator-status`).
+- Gap in the coordinator's first fixes, found by clad2a: the spec still sent results to `workers.last_conversation`.
+  Fixed: delivery reads only the assignment's destination (which `redirect` retargets); `last_conversation` is the
+  default destination of the next assignment (the workers table, the Flow 3 table, O2 and O3a).
