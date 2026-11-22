@@ -1,9 +1,11 @@
+import type { AssignmentPlan, WorkerAssignmentPort } from "./assignments.ts";
+import { planAssignment } from "./busy.ts";
 import type { AgentConversationManager } from "../agent/config.ts";
 import { workerTerminalFailure } from "../persistence/worker-terminal-reason.ts";
 import type { Logger } from "../logger.ts";
 import type { WorkerPersistence, WorkerRow } from "../persistence/workers.ts";
 import type { OrchestratorConfig } from "./config.ts";
-import type { OpenWorkerResult, SendWorkerResult, WorkerActor, WorkerEvent, WorkerInput, WorkerSummary } from "./contracts.ts";
+import type { OpenWorkerResult, SendWorkerInput, SendWorkerResult, WorkerActor, WorkerEvent, WorkerInput, WorkerSummary } from "./contracts.ts";
 import { WorkerPool } from "./pool.ts";
 
 export class Orchestrator {
@@ -17,6 +19,7 @@ export class Orchestrator {
     private readonly options: OrchestratorConfig["workers"],
     private readonly log: Logger,
     private readonly emit: (event: WorkerEvent) => void,
+    private readonly assignments?: WorkerAssignmentPort,
   ) {
     this.pool = new WorkerPool(options.limit);
   }
@@ -49,18 +52,22 @@ export class Orchestrator {
       }
       const slot = this.pool.attach(row, conversation);
       this.emit({ ...this.identity(row), kind: "worker_opened" });
-      this.dispatch(slot, actor, input.text);
+      this.dispatch(slot, actor, input.text, planAssignment(actor, input)!);
       return { status: "sent", handle };
     });
   }
 
-  send(actor: WorkerActor, handle: string, input: WorkerInput): Promise<SendWorkerResult> {
+  send(actor: WorkerActor, handle: string, input: SendWorkerInput): Promise<SendWorkerResult> {
     return this.run(async () => {
       this.assertInput(input);
       const row = await this.requireWorker(handle);
       let slot = this.pool.get(handle);
-      if (slot && this.pool.busy(slot)) return { status: "busy", worker: this.pool.summary(row) };
+      const running = slot?.work?.assignment;
+      const plan = planAssignment(actor, input, running);
+      if (!plan || (slot && this.pool.busy(slot) && !running)) return { status: "busy", worker: this.pool.summary(row) };
       if (!slot) {
+        const summary = await this.conversations.get(row.conversationId);
+        if (!summary || summary.deletedAt) throw new Error(`worker conversation is unavailable: ${handle}`);
         if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries() };
         const { conversation } = await this.conversations.open(row.conversationId, this.startOptions());
         slot = this.pool.attach(row, conversation);
@@ -72,8 +79,12 @@ export class Orchestrator {
       };
       if (!await this.workers.update(handle, change)) throw new Error(`worker is unavailable: ${handle}`);
       slot.row = { ...row, ...change };
-      this.dispatch(slot, actor, input.text);
-      return { status: "sent" };
+      if (running && running.destination !== plan.assignment.destination) {
+        this.emit({ ...this.identity(slot.row), kind: "worker_redirected",
+          ...(running.destination ? { previousConversation: running.destination } : {}) });
+      }
+      this.dispatch(slot, actor, input.text, plan);
+      return { status: running ? "steered" : "sent" };
     });
   }
 
@@ -125,7 +136,7 @@ export class Orchestrator {
     const slot = this.pool.get(handle);
     if (!slot || !this.pool.busy(slot)) return false;
     slot.conversation.interrupt({ clearQueue: true });
-    await slot.completion;
+    await Promise.allSettled(slot.completions);
     return true;
   }
 
@@ -152,23 +163,29 @@ export class Orchestrator {
     return (await this.workers.list()).filter(row => !row.droppedAt).map(row => this.pool.summary(row));
   }
 
-  private dispatch(slot: ReturnType<WorkerPool["attach"]>, actor: WorkerActor, text: string): void {
+  private dispatch(slot: ReturnType<WorkerPool["attach"]>, actor: WorkerActor, text: string, plan: AssignmentPlan): void {
     const sender = actor.kind === "conversation" ? actor.sender : undefined;
-    this.pool.start(slot, sender);
-    const identity = this.identity(slot.row);
-    this.emit({ ...identity, kind: "worker_busy" });
-    const work = sender === undefined
-      ? slot.conversation.prompt({ text, delivery: "queue" })
-      : slot.conversation.promptFrom({ text, participantId: sender, delivery: "queue" });
-    slot.completion = work.then(result => {
+    const active = this.pool.start(slot, plan.assignment, sender);
+    const row = slot.row;
+    const identity = this.identity(row);
+    if (plan.kind === "start") this.emit({ ...identity, kind: "worker_busy" });
+    const input = {
+      text,
+      delivery: plan.kind === "start" ? "queue" as const : "steer" as const,
+      ...(this.assignments ? { beforeDispatch: (messageId: string) => this.assignments!.beforeDispatch(row, plan, messageId) } : {}),
+    };
+    const work = sender === undefined ? slot.conversation.prompt(input) : slot.conversation.promptFrom({ ...input, participantId: sender });
+    const completion = work.then(result => {
       if (result.status === "completed") this.emit({ ...identity, kind: "worker_replied" });
       else if (result.status === "error") this.emit({ ...identity, kind: "worker_failed", reason: workerTerminalFailure(false).reason });
     }, (error: unknown) => {
       this.log.warn("worker_prompt_failed", { conversationId: slot.conversation.id, error: String(error) });
       this.emit({ ...identity, kind: "worker_failed", reason: workerTerminalFailure(false, error).reason });
     }).finally(() => {
-      this.pool.finish(slot);
-      if (slot.conversation.state.phase !== "stopped") this.emit({ ...identity, kind: "worker_idle" });
+      slot.completions.delete(completion);
+      if (this.pool.finish(slot, active) && slot.conversation.state.phase !== "stopped") this.emit({ ...identity, kind: "worker_idle" });
     });
+    slot.completions.add(completion);
+    void completion.catch(() => undefined);
   }
 }

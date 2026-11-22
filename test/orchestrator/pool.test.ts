@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { Agent, type AgentConversation, type WorkerEvent } from "../../src/index.ts";
+import { Agent, createAgentConversationId, type AgentConversation, type WorkerEvent } from "../../src/index.ts";
 
 const actor = { kind: "consumer" } as const;
 
@@ -41,7 +41,8 @@ test("two opens racing for the last slot admit one, with the busy worker in the 
       pool.open(actor, { text: "[lifecycle:tool]", about: "second" })]);
     expect(results[0]).toEqual({ status: "sent", handle: "w1" });
     expect(results[1]).toMatchObject({ status: "no_worker_free", workers: [{ handle: "w1", state: "busy", about: "first" }] });
-    expect(await pool.send(actor, "w1", { text: "unexpected second prompt" })).toMatchObject({ status: "busy" });
+    expect(await pool.send({ kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "other" },
+      "w1", { text: "unexpected second prompt" })).toMatchObject({ status: "busy" });
     const worker = await pool.check("w1");
     const { conversation } = await agent.conversations.open(worker.conversationId);
     const settled = idle(conversation);
@@ -89,6 +90,10 @@ test("idle eviction is least-recently used and send reloads the same conversatio
     expect(events).toContainEqual(expect.objectContaining({ kind: "worker_stopped", handle: "w2", reason: "eviction" }));
     expect(events).toContainEqual(expect.objectContaining({ kind: "worker_reloaded", handle: "w2", conversationId: older.conversationId }));
     expect(events).toContainEqual(expect.objectContaining({ kind: "worker_replied", handle: "w2" }));
+    await agent.conversations.delete(recent.conversationId);
+    await expect(pool.send(actor, "w1", { text: "gone" })).rejects.toThrow("worker conversation is unavailable");
+    expect(await pool.check("w2")).toMatchObject({ state: "idle" });
+    expect(await pool.check("w3")).toMatchObject({ state: "idle" });
   } finally {
     await close();
   }

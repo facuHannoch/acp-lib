@@ -1,3 +1,4 @@
+import type { RunningAssignment } from "./assignments.ts";
 import type { AgentConversation } from "../agent-session.ts";
 import type { WorkerRow } from "../persistence/workers.ts";
 import type { WorkerSummary } from "./contracts.ts";
@@ -5,9 +6,9 @@ import type { WorkerSummary } from "./contracts.ts";
 interface Slot {
   readonly conversation: AgentConversation;
   row: WorkerRow;
-  completion?: Promise<void>;
+  readonly completions: Set<Promise<void>>;
   touched: number;
-  work?: { readonly started: number; readonly sender?: string };
+  work?: { readonly started: number; readonly sender?: string; readonly assignment: RunningAssignment };
 }
 
 export class WorkerPool {
@@ -24,7 +25,7 @@ export class WorkerPool {
   }
 
   attach(row: WorkerRow, conversation: AgentConversation): Slot {
-    const slot = { row, conversation, touched: ++this.access };
+    const slot: Slot = { row, conversation, touched: ++this.access, completions: new Set() };
     this.slots.set(row.handle, slot);
     return slot;
   }
@@ -55,15 +56,16 @@ export class WorkerPool {
     return Boolean(slot.work || slot.conversation.isBusy);
   }
 
-  start(slot: Slot, sender?: string): void {
+  start(slot: Slot, assignment: RunningAssignment, sender?: string): NonNullable<Slot["work"]> {
     slot.touched = ++this.access;
-    slot.work = { started: performance.now(), sender };
+    return slot.work = { started: performance.now(), sender, assignment };
   }
 
-  finish(slot: Slot): void {
+  finish(slot: Slot, work: Slot["work"]): boolean {
+    if (slot.work !== work) return false;
     slot.work = undefined;
-    slot.completion = undefined;
     slot.touched = ++this.access;
+    return true;
   }
 
   summary(row: WorkerRow): WorkerSummary {
