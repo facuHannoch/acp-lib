@@ -25,9 +25,14 @@ const handlers: NativeFunctionsConfig = {
   },
 };
 
-export function createTimedRehearsal(fixture: string, deadlineMs: number) {
+export function createTimedRehearsal(fixture: string, deadlineMs: number, beforeQuiet?: (channel: string) => Promise<void>) {
   return createRehearsal(resolve(fixture), {
-    deadlineMs, cleanupMs: 2000, functions: handlers,
+    deadlineMs, cleanupMs: 2000, functions: beforeQuiet ? { ...handlers, tools: { quiet: {
+      ...handlers.tools.quiet!, async handler(args, context) {
+        await beforeQuiet(context.channel);
+        return handlers.tools.quiet!.handler(args, context);
+      },
+    } } } : handlers,
     policies: { rehearsal: { fallback: "deny", tools: { quiet: "allow", notify_channel: "allow" } } },
     exactConsumption: true,
   });
