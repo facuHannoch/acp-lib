@@ -73,3 +73,7 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   stale conformance header.
 - B1 and B2 gates held: one combined gate will run on the commit with the fixes (the code under test is otherwise
   identical to `d11cd18`).
+- User authorized both native `src/` fixes: refuse unsupported media in `NativeController.send` before any push
+  (checked against the media flags, so M2 image support only flips a flag), and refuse an unsupported fresh handoff
+  at the top of `runHandoff` with a bare `UnsupportedError`, before any event or record. Queued to cod2a after the
+  test/doc batch.
