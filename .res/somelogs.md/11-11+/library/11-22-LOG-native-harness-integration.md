@@ -175,3 +175,9 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 
 - R1 merged into alpha by the user (fast-forward to `a180301`). The three branches continue for R2 from `a180301`.
 - R2 (the permission setting and matcher, ACP side) assigned to cod2a: step 0 grounding first.
+- R2 step 0 in from cod2a, `2619e12` ([report](reports/11-22-REPORT-R2-grounding.md)): every `defaultPermission`
+  line mapped; two fallback paths (the session's recording handler and the raw client's `defaultOutcome`); adapter
+  input evidence (Claude captures, OpenCode and Grok from source); exact normalization; a pure match-to-level API for
+  the orchestrator's `worker:` rules; a neutral request reusable by R3. Behaviour points for the user: native asks
+  leave the ACP setting (removing the old approve opt-in); deny selects `reject_once` (recorded denied, not
+  cancelled); ask refuses at once until R3. Sent to clad2a.
