@@ -1,3 +1,4 @@
+import type { WorkerDeliveryRepository } from "./worker-delivery-contract.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { CancelOutcome, CancelReason } from "../operations/contracts.ts";
 import type { OperationMeteringRecord } from "../metering/record.ts";
@@ -767,6 +768,7 @@ export interface PersistenceCapabilities {
   readonly fullTextSearch: boolean;
   readonly identity: boolean;
   readonly channels: boolean;
+  readonly workerDelivery?: boolean;
   readonly auditOutbox: boolean;
   readonly extensions: boolean;
   readonly vectorSearch: boolean;
@@ -792,6 +794,7 @@ export interface PersistenceScope {
   readonly recoveryCheckpoints?: ConversationRecoveryCheckpointRepository;
   readonly identity?: IdentityPersistence;
   readonly channels?: ChannelPersistence;
+  readonly workerDelivery?: WorkerDeliveryRepository;
   readonly identityDelivery?: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox?: AuditOutboxPersistence;

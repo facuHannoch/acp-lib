@@ -2,7 +2,26 @@ import type { Database } from "bun:sqlite";
 import { contentText } from "../media/content.ts";
 import type { PersistedContent } from "./backend.ts";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 17;
+export const SQLITE_AGENT_SCHEMA_VERSION = 18;
+
+const WORKER_DELIVERY_SCHEMA = `
+CREATE TABLE IF NOT EXISTS worker_assignments (
+  assignment_id TEXT PRIMARY KEY NOT NULL,
+  worker_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  original_destination TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  originating_policies TEXT NOT NULL,
+  contributing_policies TEXT NOT NULL,
+  final_record_id TEXT,
+  final_text TEXT,
+  staged_json TEXT,
+  delivery_id TEXT UNIQUE,
+  delivery_state TEXT CHECK (delivery_state IN ('pending','delivered','blocked_policy','failed_destination')),
+  UNIQUE (worker_id, operation_id)
+);
+`;
 
 const CHANNEL_INTENT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS native_channel_intent_clock (
@@ -625,7 +644,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -702,6 +721,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         }
       }
       if (version < 17) database.exec(CHANNEL_INTENT_SCHEMA);
+      if (version < 18) database.exec(WORKER_DELIVERY_SCHEMA);
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

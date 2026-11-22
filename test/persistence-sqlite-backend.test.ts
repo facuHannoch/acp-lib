@@ -546,7 +546,7 @@ describe("SQLite agent persistence", () => {
     expect((await upgraded.channels.desire(conversationId, { lifecycle: "retired" })).version).toBe(1);
     await upgraded.close();
     using migrated = new Database(path, { readonly: true });
-    expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 17 });
+    expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 18 });
   });
 
   test("searches records through an external-content FTS5 index", async () => {

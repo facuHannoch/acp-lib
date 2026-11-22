@@ -32,6 +32,8 @@ export interface StagedWorkerAssignment {
 /** Implementations share the reservation, staging and transition conformance cases in decision 0025. */
 export interface WorkerDeliveryRepository {
   reserve(binding: WorkerAssignmentBinding): Promise<"reserved" | "existing" | "conflict">;
+  /** Record completed output in the same transaction as the final conversation records. */
+  recordFinal(workerConversationId: string, operationId: string, text: string): Promise<void>;
   readBinding(assignmentId: string): Promise<WorkerAssignmentBinding | undefined>;
   /** Update the destination only before staging. */
   redirect(assignmentId: string, destination: string): Promise<boolean>;
