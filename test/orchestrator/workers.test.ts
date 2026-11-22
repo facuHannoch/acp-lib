@@ -17,7 +17,7 @@ for (const version of [16, 18]) test(`worker rows migrate from schema ${version}
     await backend.close();
     {
       using db = new Database(path);
-      db.exec("DROP TABLE workers");
+      db.exec("DROP TABLE workers; ALTER TABLE conversations DROP COLUMN role");
       if (version === 16) db.exec("DROP TABLE worker_assignments; DROP TABLE native_channel_intents; DROP TABLE native_channel_intent_clock; ALTER TABLE conversations DROP COLUMN controller_kind");
       db.query("DELETE FROM schema_migrations WHERE version > ?").run(version);
       db.query("INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)").run(version, new Date().toISOString());

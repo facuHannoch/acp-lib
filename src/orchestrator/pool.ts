@@ -4,6 +4,8 @@ import type { WorkerSummary } from "./contracts.ts";
 
 interface Slot {
   readonly conversation: AgentConversation;
+  row: WorkerRow;
+  completion?: Promise<void>;
   touched: number;
   work?: { readonly started: number; readonly sender?: string };
 }
@@ -21,23 +23,23 @@ export class WorkerPool {
     return result;
   }
 
-  attach(handle: string, conversation: AgentConversation): Slot {
-    const slot = { conversation, touched: ++this.access };
-    this.slots.set(handle, slot);
+  attach(row: WorkerRow, conversation: AgentConversation): Slot {
+    const slot = { row, conversation, touched: ++this.access };
+    this.slots.set(row.handle, slot);
     return slot;
   }
 
   get(handle: string): Slot | undefined {
     const slot = this.slots.get(handle);
-    if (slot?.conversation.state.phase === "stopped") {
-      this.slots.delete(handle);
-      return;
-    }
-    return slot;
+    return slot?.conversation.state.phase === "stopped" ? undefined : slot;
   }
 
-  async makeRoom(): Promise<boolean> {
-    for (const handle of this.slots.keys()) this.get(handle);
+  async makeRoom(onEvicted: (row: WorkerRow) => void): Promise<boolean> {
+    for (const [handle, slot] of this.slots) {
+      if (slot.conversation.state.phase !== "stopped") continue;
+      await slot.conversation.stop();
+      this.slots.delete(handle);
+    }
     if (this.slots.size < this.limit) return true;
     const oldest = [...this.slots.entries()].filter(([, slot]) => !this.busy(slot))
       .sort(([, left], [, right]) => left.touched - right.touched)[0];
@@ -45,6 +47,7 @@ export class WorkerPool {
     const [handle, slot] = oldest;
     await slot.conversation.stop();
     this.slots.delete(handle);
+    onEvicted(slot.row);
     return true;
   }
 
@@ -59,6 +62,7 @@ export class WorkerPool {
 
   finish(slot: Slot): void {
     slot.work = undefined;
+    slot.completion = undefined;
     slot.touched = ++this.access;
   }
 

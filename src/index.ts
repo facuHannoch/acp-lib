@@ -1,3 +1,5 @@
+export type { WorkerConsumerApi } from "./orchestrator/consumer-api.ts";
+export type { WorkerEvent, WorkerSummary } from "./orchestrator/contracts.ts";
 // PUBLIC SURFACE of the core ACP library — re-exports only.
 // NOTE: this barrel must NOT reference ./degraded or ./parser. Those are separate
 // subpath exports (acp-lib/degraded, acp-lib/parser) so importing the core never pulls

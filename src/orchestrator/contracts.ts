@@ -26,3 +26,16 @@ export type OpenWorkerResult = { readonly status: "sent"; readonly handle: strin
 export type SendWorkerResult = { readonly status: "sent" } |
   { readonly status: "busy"; readonly worker: WorkerSummary } |
   { readonly status: "no_worker_free"; readonly workers: readonly WorkerSummary[] };
+
+interface WorkerEventIdentity {
+  readonly handle: string;
+  readonly conversationId: AgentConversationId;
+  readonly openedBy: WorkerRow["openedBy"];
+  readonly lastConversation?: AgentConversationId;
+}
+
+export type WorkerEvent = WorkerEventIdentity & (
+  | { readonly kind: "worker_opened" | "worker_busy" | "worker_idle" | "worker_replied" | "worker_reloaded" | "worker_dropped" }
+  | { readonly kind: "worker_failed"; readonly reason: string }
+  | { readonly kind: "worker_stopped"; readonly reason: "eviction" | "requested" | "idle" }
+);
