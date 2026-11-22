@@ -41,7 +41,7 @@ const agent = await Agent.open({
   adapters: { [adapterId]: adapter },
   defaultAdapterId: adapterId,
   capture: { message: "content", tool_call: "content", thinking: "content", activity: "content" },
-  conversationDefaults: { cwd: process.cwd(), defaultPermission: "cancel" },
+  conversationDefaults: { cwd: process.cwd(), permissions: { default: "ask" } },
 });
 
 let failures = 0;

@@ -48,7 +48,7 @@ describe("HarnessInternalInferenceRuntime", () => {
     expect(result.internalSessionId).toBe("fresh-session");
     expect(effective?.adapterId).toBe("test");
     expect(effective?.mcpServers).toEqual([]);
-    expect(effective?.defaultPermission).toBe("cancel");
+    expect(effective?.permissions).toEqual({ default: "ask" });
     expect(effective?.clientHandlers).toEqual({});
   });
 

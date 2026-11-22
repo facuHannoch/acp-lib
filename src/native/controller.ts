@@ -529,7 +529,7 @@ export class NativeController implements ConversationController, ChannelPort {
     let decision: "allow_once" | "deny" = "deny";
     try {
       // Without a handler the call stays unapproved and is answered at once.
-      const outcome = await handlers.onPermissionRequest?.({ toolCallId: event.toolCallId, title: event.tool, options: APPROVAL_OPTIONS, raw: event }, cancelled);
+      const outcome = await handlers.onPermissionRequest?.({ toolCallId: event.toolCallId, title: event.tool, options: APPROVAL_OPTIONS, tool: { name: event.tool, rawInput: event.arguments }, raw: event }, cancelled);
       if (outcome?.outcome === "selected" && outcome.optionId === "allow_once") decision = "allow_once";
     } catch (error) {
       this.#log.warn("native_approval_handler_failed", { requestId: event.requestId, error: String(error) });

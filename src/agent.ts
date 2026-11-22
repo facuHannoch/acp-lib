@@ -1,3 +1,4 @@
+import { inheritPermissionPolicy, ownPermissions } from "./permissions/policy.ts";
 import { randomUUID } from "node:crypto";
 import {
   type AgentSessionId,
@@ -210,6 +211,7 @@ export class Agent {
       ...(config.conversationPersistence ? { conversationPersistence: config.conversationPersistence } : {}),
       defaults: {
         ...config.conversationDefaults,
+        ...inheritPermissionPolicy(config, config.conversationDefaults),
         ...(config.operationLifecycle ? { operationLifecycle: config.operationLifecycle } : {}),
       },
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
@@ -337,6 +339,14 @@ export class Agent {
   }
 
   static async open(config: AgentConfig): Promise<Agent> {
+    config = {
+      ...config,
+      permissions: ownPermissions(config.permissions),
+      conversationDefaults: config.conversationDefaults && {
+        ...config.conversationDefaults,
+        permissions: ownPermissions(config.conversationDefaults.permissions),
+      },
+    };
     const auditLog = config.auditLog && resolveAgentAuditLogConfig(config.auditLog);
     if (auditLog && config.persistence.kind === "custom") {
       throw new PersistenceCapabilityError("auditOutbox");

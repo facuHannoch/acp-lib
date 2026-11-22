@@ -44,7 +44,7 @@ export async function listProviderSessions(
   const limit = options.limit ?? DEFAULT_PROVIDER_SESSION_LIMIT;
   if (!Number.isInteger(limit) || limit < 1) throw new Error("limit must be a positive integer");
   const cwd = options.cwd ?? listing.client.cwd;
-  const client = new AcpClient({ adapter: listing.adapter, ...listing.client, ...(cwd ? { cwd } : {}), defaultPermission: "cancel" });
+  const client = new AcpClient({ adapter: listing.adapter, ...listing.client, ...(cwd ? { cwd } : {}), permissions: { default: "ask" } });
   const sessions: ProviderSessionSummary[] = [];
   try {
     await client.connect();

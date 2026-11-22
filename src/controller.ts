@@ -1,3 +1,4 @@
+import { ownPermissions, type PermissionPolicyConfig } from "./permissions/policy.ts";
 import { ForcedStopError } from "./operations/errors.ts";
 import type { OperationLifecycleConfig, OutputListener, SupervisedProvider } from "./operations/contracts.ts";
 import type {
@@ -51,7 +52,7 @@ type ObservableLeaf = AgentClient & {
   subscribeOutput?(listener: OutputListener): () => void;
 };
 
-export interface AgentControllerConfig {
+export interface AgentControllerConfig extends PermissionPolicyConfig {
   operationLifecycle?: OperationLifecycleConfig;
   /** The single adapter this controller drives. Switching adapter = a new AgentSession. */
   adapter: Adapter;
@@ -75,7 +76,6 @@ export interface AgentControllerConfig {
   onSessionReplay?: (notification: unknown) => void;
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
   mcpServers?: schema.McpServer[];
-  defaultPermission?: "approve" | "cancel";
   clientInfo?: AcpClientConfig["clientInfo"];
   /** What we let the agent do through us (terminals, filesystem). All on by default. */
   clientCapabilities?: AcpClientConfig["clientCapabilities"];
@@ -153,8 +153,8 @@ export class HarnessController implements AgentClient, ConversationController {
   private readonly reportedTurns = new Set<string>();
   private detachOutput: (() => void) | null = null;
   private detachUsageUpdates: (() => void) | null = null;
-
   constructor(private readonly config: AgentControllerConfig) {
+    this.config = { ...config, permissions: ownPermissions(config.permissions) };
     this.mode = config.mode ?? "normal";
   }
 
@@ -660,7 +660,7 @@ export class HarnessController implements AgentClient, ConversationController {
       additionalDirectories: this.config.additionalDirectories,
       sessionId,
       sessionLoadFailure: loadFailure,
-      defaultPermission: this.config.defaultPermission,
+      permissions: this.config.permissions, permissionRule: this.config.permissionRule,
       clientInfo: this.config.clientInfo,
       clientCapabilities: this.config.clientCapabilities,
       clientHandlers: this.config.clientHandlers,

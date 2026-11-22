@@ -149,8 +149,11 @@ this.defaultPermission)` (`src/agent-session.ts`). `defaultPermission` is `"appr
    Tests per adapter's raw input shape (Codex, Claude, OpenCode, Grok fixtures), including commands that can't be
    normalized. **Gate:** matcher tests green.
 3. **Replace `defaultPermission`** with the setting on `AgentConfig`, `CreateAgentConversationConfig` and
-   `conversationDefaults` (`"approve"` → `{ default: "allow" }`, `"cancel"` → `{ default: "deny" }`), in both places it
-   is read; the optional `permissionRule(request) => level | undefined` consulted first. **Gate:** suite green; the A1
+   `conversationDefaults` (`"approve"` → `{ default: "allow" }`, `"cancel"` → `{ default: "ask" }`), in both places it
+   is read. An omitted setting defaults to ask. The Agent, conversation defaults, conversation, and runtime
+   settings replace each other in that order. The optional `permissionRule(request) => level | undefined` wins
+   over matching rules and the default. Only ask reaches a prompt handler. Until R3, an unattended ask is
+   refused using the deny selection and recorded as denied. Native asks use the callback and default only. **Gate:** suite green; the A1
    permission snapshots unchanged. Changelog: the setting (breaking).
 
 **Done:** report commits, test count and time, the normalization table per adapter, every place `defaultPermission`
@@ -790,7 +793,7 @@ user answers                  →  conversation.answerPermission(id, optionId)  
 - **One permission setting, everywhere.** The harness's policies use `permissions: { default, rules }` (rules by
   pattern; levels deny, ask, ask the agent, allow; `../harness/11-11-SPEC-harness-v1.md`, Policies). acp-client's own
   ACP conversations use the same shape, replacing today's `defaultPermission: "approve" | "cancel"` (a breaking
-  change): `"approve"` becomes `default: "allow"`, `"cancel"` becomes `default: "deny"`. Ask the agent doesn't apply
+  change): `"approve"` becomes `default: "allow"`, `"cancel"` becomes `default: "ask"`. Omission defaults to ask. Ask the agent doesn't apply
   there (no agent above an ACP conversation).
 - **Matching an ACP request.** An ACP permission request (`src/types.ts:245`) has no stable tool name: a tool call
   id, a free-text title, its options, and in the raw request the tool call's kind (read, edit, delete, move, search,
@@ -802,8 +805,10 @@ user answers                  →  conversation.answerPermission(id, optionId)  
   When several rules match, the most restrictive level wins; when none matches, `default` applies. A command that
   can't be normalized matches no `command:` rule. Allow picks the request's `allow_once` option, falling back to
   `allow_always` only when there is no `allow_once`, as today (`rules/11-13-RULES-permission-auto-approve.md`: the
-  fallback leaves a lasting grant in the harness, an escalation documented and kept); deny picks `reject_once`; ask goes to the handler or
-  the event. Titles aren't matched, and MCP tools over ACP (kind `other`) can't be targeted yet.
+  fallback leaves a lasting grant in the harness, an escalation documented and kept). Deny picks `reject_once`
+  when offered and cancels otherwise. Allow and deny are final. Ask goes to the prompt handler or, in R3, the
+  event. Until R3, an unattended ask uses the deny selection. Native asks use `permissionRule` and the default
+  without ACP rule matching. A default of allow therefore approves native asks. Titles aren't matched, and MCP tools over ACP (kind `other`) can't be targeted yet.
 - **The same matcher serves the orchestrator:** workers are ACP harnesses, so the policy's `worker:` rules are these
   rules with a prefix (`worker:command:bun test`, `worker:kind:read`). One matcher, tested per adapter's raw input
   shape, used in both places.

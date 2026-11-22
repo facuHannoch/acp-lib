@@ -102,7 +102,7 @@ function turns(updates: readonly Update[]) {
 async function open(adapterName: string): Promise<AcpClient> {
   const adapter = (ADAPTERS as Record<string, Adapter>)[adapterName];
   if (!adapter) throw new Error(`unknown adapter: ${adapterName}`);
-  const client = new AcpClient({ adapter, cwd: process.cwd(), defaultPermission: "cancel" });
+  const client = new AcpClient({ adapter, cwd: process.cwd(), permissions: { default: "ask" } });
   await client.connect();
   return client;
 }

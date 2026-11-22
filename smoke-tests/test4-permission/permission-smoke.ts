@@ -367,7 +367,7 @@ async function run(agent: AgentId, scenario: Scenario): Promise<Report> {
       cwd: workDir,
       transcriptPath,
       // The whole point: no onPermissionRequest, so the library's own approve path answers.
-      defaultPermission: "approve",
+      permissions: { default: "allow" },
       mcpServers: scenario.mcp
         ? [
             {

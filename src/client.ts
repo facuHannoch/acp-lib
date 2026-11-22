@@ -30,7 +30,6 @@ import type {
   ActivityEvent,
   PromptResult,
   PromptHandlers,
-  PermissionRequest,
   PermissionOutcome,
   Attachment,
   SessionListPage,
@@ -43,9 +42,10 @@ import { resolveParts } from "./media/store.ts";
 import { assertPartCapabilities, attachmentParts, partsToAcp } from "./media/acp.ts";
 import { redactMedia } from "./media/redact.ts";
 import type { ClientPrompt } from "./agent-client.ts";
+import { answerPermissionLevel, ownPermissions, permissionLevel, recordingPermissionHandlers, type PermissionPolicyConfig } from "./permissions/policy.ts";
 import { toPermissionRequest } from "./permissions/acp.ts";
 
-export interface AcpClientConfig {
+export interface AcpClientConfig extends PermissionPolicyConfig {
   /** How to launch the agent binary. */
   adapter: Adapter;
   /** Runtime-specific launcher for exact ACP/PTY host process preparation. */
@@ -65,8 +65,6 @@ export interface AcpClientConfig {
   sessionId?: string;
   /** Policy when config.sessionId cannot be loaded. Default "new" for compatibility. */
   sessionLoadFailure?: SessionLoadFailure;
-  /** Fallback when a prompt has no onPermissionRequest handler. Default "cancel". */
-  defaultPermission?: "approve" | "cancel";
   /** Identification sent in initialize. */
   clientInfo?: { name: string; title?: string; version?: string };
   /**
@@ -252,6 +250,7 @@ export class AcpClient implements AgentClient {
   private readonly handlers: ResolvedClientHandlers;
 
   constructor(private config: AcpClientConfig) {
+    this.config = { ...config, permissions: ownPermissions(config.permissions) };
     this.log = config.logger ?? noopLogger;
     this.handlers = resolveClientHandlers(config.clientHandlers, config.clientCapabilities);
     this.clientCapabilities = {
@@ -993,7 +992,9 @@ export class AcpClient implements AgentClient {
         cancelled,
         Promise.resolve().then(() => {
           if (abort.signal.aborted) return { outcome: "cancelled" as const };
-          return handler ? handler(request, abort.signal) : this.defaultOutcome(request);
+          if (handler && recordingPermissionHandlers.has(handler)) return handler(request, abort.signal);
+          return answerPermissionLevel(permissionLevel(request, this.config), request,
+            handler && (() => handler(request, abort.signal)));
         }),
       ]);
     } finally {
@@ -1008,22 +1009,6 @@ export class AcpClient implements AgentClient {
     return { outcome: { outcome: "cancelled" } };
   }
 
-  private defaultOutcome(request: PermissionRequest): PermissionOutcome {
-    if ((this.config.defaultPermission ?? "cancel") !== "approve") return { outcome: "cancelled" };
-
-    // By KIND, never by position. Agents order their options differently and Claude leads
-    // with reject, so taking `options[0]` auto-REFUSED every call it meant to approve.
-    //
-    // `allow_once` first is deliberate: `allow_always` writes a rule into the agent's own
-    // settings that outlives this session, and an auto-approver must not quietly make
-    // policy on the user's behalf. It is the fallback, never the preference.
-    const allow =
-      request.options.find((o) => o.kind === "allow_once") ??
-      request.options.find((o) => o.kind === "allow_always");
-
-    // Nothing recognizable to approve: refuse rather than guess. Guessing is the bug above.
-    return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
-  }
 
   private beginCommandTransition(): void {
     // Session operations are serialized by their callers. Preserve the last snapshot so

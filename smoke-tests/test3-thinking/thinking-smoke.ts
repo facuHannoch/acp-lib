@@ -302,7 +302,7 @@ async function runAgent(agent: AgentId): Promise<Report> {
       cwd: workDir,
       transcriptPath,
       transcriptActivity: true,
-      defaultPermission: "approve",
+      permissions: { default: "allow" },
       logger: createConsoleLogger({ minLevel: "error" }),
       wire,
     }));

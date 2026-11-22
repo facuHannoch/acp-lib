@@ -25,7 +25,7 @@ async function open(config: { busyDelivery?: "steer" | "queue" } = {}) {
     adapterId: "steer",
     agentSessionId: `steer-${Math.random().toString(36).slice(2)}`,
     cwd,
-    defaultPermission: "approve",
+    permissions: { default: "allow" },
     ...config,
   });
   const events: AgentSessionNotification["event"][] = [];
@@ -231,7 +231,7 @@ describe("steering: what a combined prompt records", () => {
       persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
       adapters: { steer: adapter },
       defaultAdapterId: "steer",
-      conversationDefaults: { cwd: directory, defaultPermission: "approve" },
+      conversationDefaults: { cwd: directory, permissions: { default: "allow" } },
     });
     cleanups.push(async () => {
       await agent.close().catch(() => {});
@@ -278,7 +278,7 @@ describe("a cancel that loses the race with the end of the turn", () => {
       persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
       adapters: { steer: adapter },
       defaultAdapterId: "steer",
-      conversationDefaults: { cwd: directory, defaultPermission: "approve" },
+      conversationDefaults: { cwd: directory, permissions: { default: "allow" } },
     });
     cleanups.push(async () => {
       delete process.env.STEER_AGENT_IGNORE_CANCEL;

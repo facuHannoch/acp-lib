@@ -352,7 +352,7 @@ describe("Agent owner", () => {
         permission: "content",
         protocol: "raw",
       },
-      conversationDefaults: { defaultPermission: "approve" },
+      conversationDefaults: { permissions: { default: "allow" } },
     }));
     const conversation = await agent.conversations.create();
     await conversation.prompt("run the tool");
@@ -370,6 +370,44 @@ describe("Agent owner", () => {
       record.kind === "protocol" && record.method === "session/request_permission"
     )).toBe(true);
   });
+
+  test("replaces inherited permission settings and records level-first decisions", async () => {
+    const directory = await makeDirectory();
+    let rulesCalled = 0;
+    const agent = await track(Agent.open({
+      persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+      adapters: { permission: { command: ["bun", resolve(import.meta.dir, "fixtures/permission-agent.ts")] } },
+      permissions: { default: "deny" },
+      conversationDefaults: {
+        permissions: { default: "allow", rules: { "kind:execute": "deny" } },
+        permissionRule: () => { rulesCalled++; return undefined; },
+      },
+      capture: { permission: "content" },
+    }));
+    const handler = () => { throw new Error("a final level must skip the prompt handler"); };
+    const inherited = await agent.conversations.create();
+    expect(JSON.parse((await inherited.prompt("execute", { onPermissionRequest: handler })).text))
+      .toEqual({ outcome: "selected", optionId: "reject" });
+
+    const override = await agent.conversations.create({
+      permissions: { default: "deny" },
+      runtime: { permissions: { default: "allow" } },
+    });
+    expect(JSON.parse((await override.prompt("execute", { onPermissionRequest: handler })).text))
+      .toEqual({ outcome: "selected", optionId: "allow" });
+
+    const unattended = await agent.conversations.create({ permissions: { default: "ask" } });
+    expect(JSON.parse((await unattended.prompt("allow-first")).text)).toEqual({ outcome: "selected", optionId: "reject" });
+    const permissions = (await agent.persistence.records.list(unattended.id, { kinds: ["permission"] })).records;
+    expect(permissions.map((entry) => entry.kind === "permission" && entry.state)).toEqual(["requested", "resolved"]);
+    expect(permissions[1]).toMatchObject({ outcome: "denied" });
+    expect(rulesCalled).toBe(3);
+
+    await expect(agent.conversations.create({ runtime: {
+      permissions: { default: "ask", rules: { "kind:exectue": "allow" } },
+    } })).rejects.toThrow("invalid permission rule key");
+    expect((await agent.conversations.list()).conversations).toHaveLength(3);
+  }, 20_000);
 
   test("filters high-volume protocol methods before persistence", async () => {
     const directory = await makeDirectory();

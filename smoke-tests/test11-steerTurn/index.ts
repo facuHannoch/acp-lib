@@ -286,7 +286,7 @@ async function openTarget(name: string, cwd: string): Promise<Target> {
     adapters: { [name]: adapter },
     defaultAdapterId: name,
     capture: CAPTURE as any,
-    conversationDefaults: { cwd, defaultPermission: "approve", ...defaults } as any,
+    conversationDefaults: { cwd, permissions: { default: "allow" }, ...defaults } as any,
     ...(args.has("checkpoint") ? { checkpointing: { schedule: { milestones: [1], everyAfterMilestones: 50 } } } : {}),
   });
 

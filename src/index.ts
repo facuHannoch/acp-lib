@@ -783,3 +783,5 @@ export type { MediaCaptureLevel } from "./media/capture.ts";
 export type { SharedFile, SharedFilePage, SharedFileQuery, SharedFilesPersistence } from "./media/files.ts";
 
 export type * from "./persistence/worker-delivery-contract.ts";
+export type { PermissionLevel, PermissionSettings } from "./permissions/matcher.ts";
+export type { PermissionPolicyConfig } from "./permissions/policy.ts";

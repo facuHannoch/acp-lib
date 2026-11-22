@@ -12,6 +12,7 @@
 import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
 import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
 import { UnsupportedError } from "./errors.ts";
+import { ownPermissions, type PermissionPolicyConfig } from "./permissions/policy.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
 import type { HarnessController, AgentControllerConfig, ControllerStartEvent, AgentMode } from "./controller.ts";
@@ -319,7 +320,7 @@ export interface AgentSessionOpenResult {
   readonly repairs: readonly PersistenceRepair[];
 }
 
-export interface AgentSessionConfig {
+export interface AgentSessionConfig extends PermissionPolicyConfig {
   /** The resolved adapter this conversation talks to. */
   adapter: Adapter;
   /** Stable adapter id for the catalog/display (e.g. "codex"). */
@@ -344,7 +345,6 @@ export interface AgentSessionConfig {
   additionalDirectories?: string[];
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */
   mcpServers?: schema.McpServer[];
-  defaultPermission?: "approve" | "cancel";
   /**
    * How a prompt sent while a turn is running waits when the prompt does not say. `queue` runs it after
    * the turn ends; `steer` delivers it at the next tool boundary. Default `steer`.
@@ -555,7 +555,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
   private ownerRecordWrite: Promise<void> = Promise.resolve();
-  private readonly defaultPermission: "approve" | "cancel";
 
   private constructor(
     config: AgentSessionConfig,
@@ -606,7 +605,6 @@ export class AgentConversation implements AgentClient, Bridgeable {
       ?? (isAgentSessionId(this.agentSessionId) ? this.agentSessionId : null);
     this.operationLifecycle = config.operationLifecycle ?? {};
     this.ownerLifecycle = config.ownerLifecycle;
-    this.defaultPermission = config.defaultPermission ?? "cancel";
     this.steering = new SteeringController<QueueItem>(
       {
         queue: this.operations,
@@ -683,7 +681,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       cwd: config.cwd,
       additionalDirectories: config.additionalDirectories,
       mcpServers: config.mcpServers,
-      defaultPermission: config.defaultPermission,
+      permissions: ownPermissions(config.permissions), permissionRule: config.permissionRule,
       clientInfo: config.clientInfo,
       clientCapabilities: config.clientCapabilities,
       clientHandlers: config.clientHandlers,
@@ -3453,7 +3451,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       },
       session: {
         get cwd() { return session.controllerDefaults.cwd; },
-        get defaultPermission() { return session.defaultPermission; },
+        permissionPolicy: this.controllerDefaults,
         get internalSessionId() { return session._internalSessionId; },
         setInternalSessionId: (next) => this.setInternalSessionId(next),
         get title() { return session._title; },

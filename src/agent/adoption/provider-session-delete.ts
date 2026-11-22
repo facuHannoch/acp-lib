@@ -13,7 +13,7 @@ export async function deleteProviderSession(
   access: Omit<ProviderSessionListing, "owners">,
   providerSessionId: string,
 ): Promise<true | false | "unsupported"> {
-  const client = new AcpClient({ adapter: access.adapter, ...access.client, defaultPermission: "cancel" });
+  const client = new AcpClient({ adapter: access.adapter, ...access.client, permissions: { default: "ask" } });
   try {
     await client.connect();
     if (!client.capabilities.agent.sessionCapabilities.delete) return "unsupported";

@@ -1,3 +1,4 @@
+import { answerPermissionLevel, permissionLevel, recordingPermissionHandlers } from "../permissions/policy.ts";
 /**
  * Phase 3 of a turn: the handlers that record and present what the provider streams (assistant
  * messages, activity, permissions), wrapping the consumer's own handlers. Moved unchanged from
@@ -9,7 +10,6 @@ import { ResponseAccumulator } from "../response.ts";
 import type { PromptHandlers } from "../types.ts";
 import type { TurnRunContext } from "./context.ts";
 import {
-  defaultPermissionOutcome,
   permissionRecordOutcome,
   permissionWithAbort,
   toPersistenceJsonValue,
@@ -178,9 +178,13 @@ export function createTurnRecording(
           }),
         });
       }
-      const outcome = consumer?.onPermissionRequest
-        ? await permissionWithAbort(() => consumer!.onPermissionRequest!(request, signal), signal)
-        : defaultPermissionOutcome(request, ctx.session.defaultPermission);
+      const level = signal?.aborted ? undefined
+        : permissionLevel(request, ctx.session.permissionPolicy, ctx.controller.conversationCapabilities.nativeSteering);
+      const handler = consumer?.onPermissionRequest;
+      const answer = level === undefined ? { outcome: "cancelled" as const }
+        : answerPermissionLevel(level, request, handler
+          && (() => permissionWithAbort(() => handler.call(consumer, request, signal), signal)));
+      const outcome = answer instanceof Promise ? await answer : answer;
       if (ctx.owner.agentSessionId) {
         await ctx.owner.recordNow({
           recordId: `${permissionBase}:resolved`,
@@ -191,13 +195,15 @@ export function createTurnRecording(
           operationId: turnId,
           permissionId: request.toolCallId,
           state: "resolved",
-          outcome: permissionRecordOutcome(request, outcome),
+          // In R2 an unattended ask is a policy refusal even when the wire has no reject_once.
+          outcome: level === "ask" && !handler ? "denied" : permissionRecordOutcome(request, outcome),
         });
       }
       return outcome;
     },
   };
 
+  recordingPermissionHandlers.add(handlers.onPermissionRequest!);
   return {
     chunks,
     response,

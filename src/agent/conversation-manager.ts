@@ -1,3 +1,4 @@
+import { inheritPermissionPolicy, ownPermissions, type PermissionPolicyConfig } from "../permissions/policy.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -869,7 +870,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     try {
       const adapterId = this.resolveAdapterId(config.adapterId);
       const adapter = this.agent.adapters.require(adapterId);
-      const runtime = { ...this.settings.defaults, ...config.runtime };
+      const runtime = { ...this.settings.defaults, ...config.runtime, ...inheritPermissionPolicy(this.settings.defaults, config, config.runtime) };
       // A native adapter makes this conversation a channel of the Agent's harness session. Nothing is
       // started here: channel settings decided now are stored and reach the harness with its next open.
       const nativeAdapter = this.agent.adapters.native(adapterId);
@@ -998,20 +999,15 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     return writeConversationError(this.agent, this.settings, input);
   }
 
-  /**
-   * Validate caller-supplied start configuration before any durable write or recorded
-   * region.
-   *
-   * Adapter resolution and mode/provider-thread compatibility are caller mistakes, not
-   * conversation failures. Persisting them as provider-session errors would violate the
-   * spec and mislead a UI (for example, `retryable` for an adapter that can never resolve).
-   */
+  /** Reject invalid caller configuration before any durable row or provider-session failure record. */
   private prepareStart(config: {
     readonly adapterId?: string;
     readonly mode?: AgentMode;
     readonly runtime?: AgentConversationRuntimeDefaults;
     readonly providerSession: "new" | "load";
-  }): string {
+  } & PermissionPolicyConfig): string {
+    ownPermissions(config.permissions);
+    ownPermissions(config.runtime?.permissions);
     const adapterId = this.resolveAdapterId(config.adapterId);
     this.agent.adapters.require(adapterId);
     const mode = config.mode ?? config.runtime?.mode ?? this.settings.defaults.mode;

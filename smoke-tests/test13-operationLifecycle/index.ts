@@ -165,7 +165,7 @@ async function s5(): Promise<void> {
   console.log(`${adapterId} s5: running a tool longer than both silence limits`);
   const limitMs = mock ? 100 : 15000;
   const conversation = await newConversation({
-    runtime: { defaultPermission: "approve", operationLifecycle: { turns: { firstOutputMs: limitMs, nextOutputMs: limitMs } } },
+    runtime: { permissions: { default: "allow" }, operationLifecycle: { turns: { firstOutputMs: limitMs, nextOutputMs: limitMs } } },
   });
   const started = Date.now();
   let toolSeen = false;

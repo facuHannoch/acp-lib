@@ -117,7 +117,9 @@ async function runTurn(message: any): Promise<void> {
 
   const response: any = await request("session/request_permission", {
     sessionId,
-    toolCall: { toolCallId: "call-1", title: "Write config.json" },
+    toolCall: key === "execute"
+      ? { toolCallId: "call-1", title: "Run tests", kind: "execute", rawInput: { command: "bun test" } }
+      : { toolCallId: "call-1", title: "Write config.json" },
     options,
   });
 

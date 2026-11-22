@@ -64,16 +64,6 @@ export function snapshotConsumerMetadata(
   return JSON.parse(serialized) as PersistenceJsonValue;
 }
 
-export function defaultPermissionOutcome(
-  request: PermissionRequest,
-  policy: "approve" | "cancel",
-): PermissionOutcome {
-  if (policy === "cancel") return { outcome: "cancelled" };
-  const allow = request.options.find((option) => option.kind === "allow_once")
-    ?? request.options.find((option) => option.kind === "allow_always");
-  return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
-}
-
 export function permissionRecordOutcome(
   request: PermissionRequest,
   outcome: PermissionOutcome,

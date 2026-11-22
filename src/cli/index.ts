@@ -123,7 +123,7 @@ async function chat(args: Args): Promise<void> {
     execPrefix: args.execPrefix,
     cwd: args.cwd,
     sessionId: args.sessionId,
-    defaultPermission: args.approve ? "approve" : "cancel",
+    permissions: { default: args.approve ? "allow" : "ask" },
     logger,
     wire,
   });

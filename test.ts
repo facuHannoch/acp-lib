@@ -10,7 +10,7 @@
 //     adapters: ADAPTERS,
 //     initialAdapter: 'codex',
 //     cwd: process.cwd(),
-//     defaultPermission: "approve",
+//     permissions: { default: "allow" },
 //     logger: createConsoleLogger({ minLevel: "info" })
 // })
 
@@ -63,7 +63,7 @@ const controller = new AgentController({
   // cwd: process.cwd(),
   cwd: "/workspace",
   execPrefix: ["docker", "exec", "-i", "-u", "devuser", "-w", "/workspace", "agents-atlas-a-d2e4b5"],
-  defaultPermission: "cancel",
+  permissions: { default: "ask" },
   logger: createConsoleLogger({ minLevel: "debug" }),
 });
 

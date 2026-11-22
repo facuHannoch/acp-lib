@@ -41,7 +41,7 @@ export class HarnessInternalInferenceRuntime implements InternalInferenceRuntime
       cwd: request.cwd ?? inherited.cwd,
       mode: "normal",
       mcpServers: [],
-      defaultPermission: "cancel",
+      permissions: { default: "ask" },
       clientHandlers: {},
     };
     const controller = this.config.createController?.(controllerConfig)

@@ -41,7 +41,7 @@ async function agentConversation(fixture: string, env: Record<string, string> = 
     adapters: { fixture: { command: ["bun", fixture], cancelGraceMs: 80 } },
     defaultAdapterId: "fixture",
     checkpointing: { enabled: false },
-    conversationDefaults: { metering: { pricing: false }, env, cwd: directory, defaultPermission: "approve" },
+    conversationDefaults: { metering: { pricing: false }, env, cwd: directory, permissions: { default: "allow" } },
   });
   cleanups.push(() => agent.close());
   const conversation = await agent.conversations.create();

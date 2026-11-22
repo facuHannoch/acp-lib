@@ -26,7 +26,7 @@ const session = await AgentSession.create({
   adapterId: "codex",
   cwd: process.cwd(),
   transcriptPath,
-  defaultPermission: "cancel",
+  permissions: { default: "ask" },
   transcriptActivity: true,
   logger: createConsoleLogger({ minLevel: "info" }),
 });

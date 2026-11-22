@@ -1,5 +1,22 @@
 # Controller interface
 
+## Breaking permission configuration
+
+- `permissions: { default, rules? }` replaces `defaultPermission`. Migrate `"cancel"` to
+  `{ default: "ask" }` and `"approve"` to `{ default: "allow" }`. Omitting the setting defaults to ask.
+  Raw clients and direct sessions accept it alongside Agent settings. For Agent conversations, the
+  Agent setting is overridden by `conversationDefaults`, then the conversation setting, then its
+  `runtime` setting. Each setting replaces the whole previous object, including its rule map.
+- `permissionRule(request)` can return a level before rule matching. Among matching rules, the most
+  restrictive level wins, so a `command:` allow cannot override a stricter `kind:` rule. Invalid keys and
+  levels throw when configuring the client or conversation.
+- Allow and deny are final. A prompt handler is called only for ask, so an unmatched request with
+  default allow skips the handler. An ask without a handler is refused immediately until permission
+  events are available. ACP refusal selects `reject_once` when offered, and cancels otherwise.
+- Callback requests include `tool` when the producer supplies tool data. Native asks use only
+  `permissionRule` and the configured default. In particular, default allow approves native asks.
+  The prompt handler answers native ask when present, and native refusal sends harness `deny`.
+
 A refactor with no new behaviour for ACP conversations, in any of the three persistence modes (Agent-owned,
 managed, detached). It separates a message going in from a turn running, puts the session on a turn-based
 `ConversationController` interface, and makes ACP-only features optional or capability-gated, so a second

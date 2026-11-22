@@ -272,8 +272,7 @@ export interface PromptHandlers {
    */
   onUpdate?: (notification: unknown) => void;
   /**
-   * Blocking permission request. Must return an outcome. If omitted, the client
-   * falls back to its configured `defaultPermission`.
+   * Blocking callback for a request whose configured permission level is ask.
    */
   onPermissionRequest?: (
     request: PermissionRequest,

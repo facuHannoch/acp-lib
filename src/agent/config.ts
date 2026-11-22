@@ -1,3 +1,4 @@
+import type { PermissionPolicyConfig } from "../permissions/policy.ts";
 import type { OperationLifecycleConfig } from "../operations/contracts.ts";
 import type * as schema from "@agentclientprotocol/sdk";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
@@ -62,7 +63,7 @@ export type AgentConversationRuntimeDefaults = Omit<
   OwnerControlledConversationKey
 >;
 
-export interface AgentConfig {
+export interface AgentConfig extends PermissionPolicyConfig {
   readonly media?: MediaConfig;
   readonly operationLifecycle?: OperationLifecycleConfig;
   readonly id?: AgentSessionId;
@@ -121,7 +122,7 @@ export interface AgentHarnessConfig {
   readonly onChannelChangeBlocked?: (result: import("../native-harness/src/client.ts").ChannelChangeResult) => void;
 }
 
-export interface CreateAgentConversationConfig {
+export interface CreateAgentConversationConfig extends PermissionPolicyConfig {
   readonly id?: AgentConversationId;
   readonly adapterId?: string;
   readonly mode?: AgentMode;
@@ -137,7 +138,7 @@ export interface CreateAgentConversationConfig {
   readonly adopt?: AdoptProviderSessionConfig;
 }
 
-export interface OpenAgentConversationConfig {
+export interface OpenAgentConversationConfig extends PermissionPolicyConfig {
   readonly adapterId?: string;
   readonly mode?: AgentMode;
   readonly mcpServers?: schema.McpServer[];

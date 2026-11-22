@@ -40,7 +40,7 @@ async function runTurn(client: AcpClient, name: string, input: ClientPrompt, exp
 }
 function client(directories = false) {
   return new AcpClient({ adapter: ADAPTERS[adapterId as "claude" | "codex" | "opencode" | "grok"], cwd,
-    ...(directories ? { additionalDirectories: [outside] } : {}), defaultPermission: "cancel" });
+    ...(directories ? { additionalDirectories: [outside] } : {}), permissions: { default: "ask" } });
 }
 async function initialize(client: AcpClient) {
   const caps = await client.connect();

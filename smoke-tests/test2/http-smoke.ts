@@ -147,7 +147,7 @@ const session = await AgentSession.create({
   cwd: workDir,
   transcriptPath,
   transcriptActivity: true,
-  defaultPermission: "approve",
+  permissions: { default: "allow" },
   logger: createConsoleLogger({ minLevel: "warn" }),
   wire,
 }).catch((err) => bail("could not start a session", err));

@@ -58,7 +58,7 @@ interface OpenOptions {
   readonly env?: Record<string, string>;
   readonly cancelGraceMs?: number;
   readonly operationLifecycle?: OperationLifecycleConfig;
-  readonly defaultPermission?: "approve" | "cancel";
+  readonly permissionDefault?: "allow" | "ask";
 }
 
 interface Opened {
@@ -139,7 +139,7 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
     cwd: directory,
     metering: { pricing: false },
     ...(options.operationLifecycle ? { operationLifecycle: options.operationLifecycle } : {}),
-    ...(options.defaultPermission ? { defaultPermission: options.defaultPermission } : {}),
+    ...(options.permissionDefault ? { permissions: { default: options.permissionDefault } } : {}),
   } satisfies Partial<AgentSessionConfig>;
 
   if (mode === "agent-owned") {
@@ -156,7 +156,7 @@ async function openMode(mode: Mode, options: OpenOptions): Promise<Opened> {
         metering: { pricing: false },
         env,
         cwd: directory,
-        ...(options.defaultPermission ? { defaultPermission: options.defaultPermission } : {}),
+        ...(options.permissionDefault ? { permissions: { default: options.permissionDefault } } : {}),
       },
       ...(options.operationLifecycle ? { operationLifecycle: options.operationLifecycle } : {}),
     });
@@ -312,7 +312,7 @@ for (const mode of MODES) {
     }, 20_000);
 
     test("two steer messages combined into one run", async () => {
-      const opened = await openMode(mode, { fixture: STEER, defaultPermission: "approve" });
+      const opened = await openMode(mode, { fixture: STEER, permissionDefault: "allow" });
       const { events } = capture(opened.conversation);
       let a!: ReturnType<AgentSession["prompt"]>;
       let b!: ReturnType<AgentSession["prompt"]>;

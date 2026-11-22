@@ -53,6 +53,23 @@ async function recordedReplies(agent: Agent, conversation: AgentSession): Promis
 }
 
 describe("the first end-to-end checkpoint", () => {
+  test("native asks use the default and override callback without ACP rules", async () => {
+    const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });
+    rig.script([record("ran"), reply("Done.")]);
+    const agent = await rig.open({ permissions: { default: "allow", rules: { "kind:execute": "deny" } } });
+    const approved = await agent.conversations.create();
+    let handlers = 0;
+    const handler = () => { handlers++; return { outcome: "selected", optionId: "deny" } as const; };
+    await approved.prompt("run", { onPermissionRequest: handler });
+    expect(rig.effects()).toEqual(["ran"]);
+    let tool: string | undefined;
+    const refused = await agent.conversations.create({ permissionRule(request) { tool = request.tool?.name; return "deny"; } });
+    await refused.prompt("refuse", { onPermissionRequest: handler });
+    expect(tool).toBe("record");
+    expect(handlers).toBe(0);
+    expect(rig.effects()).toEqual(["ran"]);
+  }, 30_000);
+
   test("1-3: two conversations share one process and one durable session; input sent while a turn works is accepted and taken by that turn; one approval dispatches one call", async () => {
     const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });
     rig.script([record("approved", "rec-1"), reply("Done."), reply("Later.")]);
