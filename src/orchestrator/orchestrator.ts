@@ -1,4 +1,5 @@
-import { checkWorkerOpenLimit, requireWorkerRedirect, requireWorkerScope, requireWorkerUse } from "./policy.ts";
+import { WorkerPolicyError } from "../errors.ts";
+import { canSeeWorker, checkWorkerOpenLimit, requireWorkerRedirect, requireWorkerUse } from "./policy.ts";
 import type { AssignmentPlan, WorkerAssignmentPort } from "./assignments.ts";
 import { planAssignment } from "./busy.ts";
 import type { AgentConversationManager } from "../agent/config.ts";
@@ -31,7 +32,7 @@ export class Orchestrator {
       this.assertInput(input);
       const rows = await this.workers.list();
       checkWorkerOpenLimit(actor, rows);
-      if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries() };
+      if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries(actor) };
       const ordinal = rows.reduce((highest, row) => /^w[1-9][0-9]*$/.test(row.handle)
         ? Math.max(highest, Number(row.handle.slice(1))) : highest, 0) + 1;
       if (!Number.isSafeInteger(ordinal)) throw new RangeError("worker handle space exhausted");
@@ -64,16 +65,16 @@ export class Orchestrator {
     return this.run(async () => {
       requireWorkerUse(actor);
       this.assertInput(input);
-      const row = await this.requireWorker(handle);
+      const row = await this.requireWorker(actor, handle);
       let slot = this.pool.get(handle);
       const running = slot?.work?.assignment;
       const plan = planAssignment(actor, input, running);
       if (!plan || (slot && this.pool.busy(slot) && !running)) return { status: "busy", worker: this.pool.summary(row) };
-      if (running && input.redirect) requireWorkerRedirect(actor);
+      if (running && running.destination !== plan.assignment.destination) requireWorkerRedirect(actor);
       if (!slot) {
         const summary = await this.conversations.get(row.conversationId);
         if (!summary || summary.deletedAt) throw new Error(`worker conversation is unavailable: ${handle}`);
-        if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries() };
+        if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries(actor) };
         const { conversation } = await this.conversations.open(row.conversationId, this.startOptions());
         slot = this.pool.attach(row, conversation);
         this.emit({ ...this.identity(row), kind: "worker_reloaded" });
@@ -95,22 +96,19 @@ export class Orchestrator {
 
   check(actor: WorkerActor, handle: string): Promise<WorkerSummary> {
     return this.run(async () => {
-      requireWorkerScope(actor);
-      return this.pool.summary(await this.requireWorker(handle));
+      return this.pool.summary(await this.requireWorker(actor, handle));
     });
   }
 
   list(actor: WorkerActor): Promise<readonly WorkerSummary[]> {
     return this.run(async () => {
-      requireWorkerScope(actor);
-      return this.summaries();
+      return this.summaries(actor);
     });
   }
 
   stop(actor: WorkerActor, handle: string): Promise<void> {
     return this.run(async () => {
-      requireWorkerScope(actor);
-      const row = await this.requireWorker(handle);
+      const row = await this.requireWorker(actor, handle);
       const running = this.pool.get(handle)?.work;
       if (actor.kind === "conversation" && running && running.assignment.destination !== actor.conversationId) {
         requireWorkerRedirect(actor);
@@ -121,9 +119,8 @@ export class Orchestrator {
 
   drop(actor: WorkerActor, handle: string): Promise<void> {
     return this.run(async () => {
-      requireWorkerScope(actor);
       requireWorkerRedirect(actor);
-      const row = await this.requireWorker(handle);
+      const row = await this.requireWorker(actor, handle);
       await this.interrupt(handle);
       try {
         await this.conversations.delete(row.conversationId);
@@ -171,14 +168,17 @@ export class Orchestrator {
     if (!input.text.trim()) throw new Error("worker prompt cannot be blank");
   }
 
-  private async requireWorker(handle: string): Promise<WorkerRow> {
+  private async requireWorker(actor: WorkerActor, handle: string): Promise<WorkerRow> {
     const row = await this.workers.get(handle);
+    if (actor.kind === "conversation" && actor.policy.scope === "none" &&
+      (!row || !canSeeWorker(actor, row, this.pool.get(handle)?.work?.assignment))) throw new WorkerPolicyError("scope");
     if (!row || row.droppedAt) throw new Error(`unknown active worker: ${handle}`);
     return row;
   }
 
-  private async summaries(): Promise<readonly WorkerSummary[]> {
-    return (await this.workers.list()).filter(row => !row.droppedAt).map(row => this.pool.summary(row));
+  private async summaries(actor: WorkerActor): Promise<readonly WorkerSummary[]> {
+    return (await this.workers.list()).filter(row => !row.droppedAt && canSeeWorker(actor, row, this.pool.get(row.handle)?.work?.assignment))
+      .map(row => this.pool.summary(row));
   }
 
   private dispatch(slot: ReturnType<WorkerPool["attach"]>, actor: WorkerActor, text: string, plan: AssignmentPlan): void {
@@ -187,10 +187,11 @@ export class Orchestrator {
     const row = slot.row;
     const identity = this.identity(row);
     if (plan.kind === "start") this.emit({ ...identity, kind: "worker_busy" });
+    const policyNames = actor.kind === "conversation" ? [...actor.policyNames] : [];
     const input = {
       text,
       delivery: plan.kind === "start" ? "queue" as const : "steer" as const,
-      ...(this.assignments ? { beforeDispatch: (messageId: string) => this.assignments!.beforeDispatch(row, plan, messageId) } : {}),
+      ...(this.assignments ? { beforeDispatch: (messageId: string) => this.assignments!.beforeDispatch(row, plan, messageId, policyNames) } : {}),
     };
     const work = sender === undefined ? slot.conversation.prompt(input) : slot.conversation.promptFrom({ ...input, participantId: sender });
     const completion = work.then(result => {

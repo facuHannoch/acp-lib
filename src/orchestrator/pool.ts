@@ -58,7 +58,8 @@ export class WorkerPool {
 
   start(slot: Slot, assignment: RunningAssignment, sender?: string): NonNullable<Slot["work"]> {
     slot.touched = ++this.access;
-    return slot.work = { started: performance.now(), sender, assignment };
+    const started = slot.work?.started ?? performance.now();
+    return slot.work = { started, sender, assignment };
   }
 
   finish(slot: Slot, work: Slot["work"]): boolean {

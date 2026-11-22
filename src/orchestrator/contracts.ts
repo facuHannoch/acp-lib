@@ -14,6 +14,7 @@ export type WorkerActor = { readonly kind: "consumer" } | {
   readonly conversationId: AgentConversationId;
   readonly sender: string;
   readonly invocationId: string;
+  readonly policyNames: readonly string[];
   readonly policy: DelegationPolicy;
 };
 

@@ -13,5 +13,5 @@ export type AssignmentPlan =
 
 /** The assignment implementation is supplied separately. The pool only knows the dispatch boundary. */
 export interface WorkerAssignmentPort {
-  beforeDispatch(row: WorkerRow, plan: AssignmentPlan, messageId: string): Promise<void>;
+  beforeDispatch(row: WorkerRow, plan: AssignmentPlan, messageId: string, policyNames: readonly string[]): Promise<void>;
 }

@@ -9,6 +9,10 @@ export interface PermissionSettings {
 
 const weight: Record<PermissionLevel, number> = { deny: 0, ask: 1, allow: 2 };
 
+export function mostRestrictivePermissionLevel(left: PermissionLevel, right: PermissionLevel): PermissionLevel {
+  return weight[left] <= weight[right] ? left : right;
+}
+
 /** Match explicit ACP kind and exact command keys. No match uses the configured default. */
 export function matchPermissionLevel(
   request: Partial<Pick<NeutralPermissionRequest, "tool">>,
@@ -22,7 +26,7 @@ export function matchPermissionLevel(
   const byCommand = command === undefined ? undefined : lookup(rules, `command:${command}`);
   if (byKind === undefined) return byCommand ?? settings.default;
   if (byCommand === undefined) return byKind;
-  return weight[byKind] <= weight[byCommand] ? byKind : byCommand;
+  return mostRestrictivePermissionLevel(byKind, byCommand);
 }
 
 function lookup(rules: NonNullable<PermissionSettings["rules"]>, key: string): PermissionLevel | undefined {

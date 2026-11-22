@@ -23,7 +23,7 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
       checkpointing: { enabled: false },
       conversationDefaults: { env: { LIFECYCLE_TOOL_GATE_FILE: boundary, LIFECYCLE_END_GATE_FILE: join(directory, "hold-end") } },
     });
-    const planned: Array<{ plan: AssignmentPlan; messageId: string }> = [];
+    const planned: Array<{ plan: AssignmentPlan; messageId: string; policyNames: readonly string[] }> = [];
     const events: WorkerEvent[] = [];
     const tool = Promise.withResolvers<void>();
     const successor = Promise.withResolvers<void>();
@@ -32,13 +32,13 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
     });
     const orchestrator = new Orchestrator(agent.persistence.workers!, agent.conversations, { limit: 1 }, noopLogger,
       event => events.push(event), {
-        async beforeDispatch(_row, plan, messageId) {
-          planned.push({ plan, messageId });
+        async beforeDispatch(_row, plan, messageId, policyNames) {
+          planned.push({ plan, messageId, policyNames });
           if (planned.length === 2) successor.resolve();
         },
       });
-    const giver: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "first", policy: allowed };
-    const other: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "next", policy: allowed };
+    const giver: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "first", policyNames: ["owner"], policy: allowed };
+    const other: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "next", policyNames: ["trusted"], policy: allowed };
     try {
       expect(await orchestrator.open(giver, { text: "[lifecycle:tool]" })).toEqual({ status: "sent", handle: "w1" });
       await tool.promise;
@@ -48,10 +48,15 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
       expect(planned).toHaveLength(1);
       const takeover = scenario === "redirect" || scenario === "take over with new assignment";
       const replace = scenario === "replace" || scenario === "take over with new assignment";
-      const sender = takeover ? other : { ...giver, invocationId: "next" };
-      const input: SendWorkerInput = { text: "successor", about: scenario, ...(takeover ? { redirect: true } : {}),
+      const sender = takeover ? other : { ...giver, invocationId: "next", policy: { ...allowed, redirect: false } };
+      const input: SendWorkerInput = { text: "successor", about: scenario, redirect: true,
         ...(replace ? { assignment: "new" } : {}) };
+      const busyBefore = (await orchestrator.check(giver, "w1")).busyMs!;
       expect(await orchestrator.send(sender, "w1", input)).toEqual({ status: "steered" });
+      expect((await orchestrator.check(giver, "w1")).busyMs).toBeGreaterThanOrEqual(busyBefore);
+      const restricted = { ...sender, policy: { ...sender.policy, scope: "none" as const } };
+      expect((await orchestrator.list(restricted)).map(row => row.handle)).toEqual(["w1"]);
+      expect((await orchestrator.check(restricted, "w1")).state).toBe("busy");
       await writeFile(boundary, "");
       await successor.promise;
       expect(planned.map(entry => entry.plan)).toEqual([
@@ -63,6 +68,7 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
         },
       ]);
       expect(new Set(planned.map(entry => entry.messageId)).size).toBe(2);
+      expect(planned.map(entry => entry.policyNames)).toEqual([giver.policyNames, sender.policyNames]);
       expect(await orchestrator.check(giver, "w1")).toMatchObject({ lastConversation: sender.conversationId, about: scenario });
       expect(events.filter(event => event.kind === "worker_redirected")).toHaveLength(takeover ? 1 : 0);
     } finally {

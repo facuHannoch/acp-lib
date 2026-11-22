@@ -41,7 +41,7 @@ test("two opens racing for the last slot admit one, with the busy worker in the 
       pool.open(actor, { text: "[lifecycle:tool]", about: "second" })]);
     expect(results[0]).toEqual({ status: "sent", handle: "w1" });
     expect(results[1]).toMatchObject({ status: "no_worker_free", workers: [{ handle: "w1", state: "busy", about: "first" }] });
-    expect(await pool.send({ kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "other",
+    expect(await pool.send({ kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "other", policyNames: ["trusted"],
       policy: { use: true, scope: "all", redirect: false } },
       "w1", { text: "unexpected second prompt" })).toMatchObject({ status: "busy" });
     const worker = await pool.check(actor, "w1");
@@ -160,10 +160,10 @@ test("worker failure notifications expose a fixed reason and the worker returns 
 test("conversation policy enforces use, scope, redirect, other-giver stop/drop and maxOpen", async () => {
   const { agent, pool, close } = await rig(2);
   const giver = {
-    kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "give",
-    policy: { use: true, scope: "all", redirect: false, maxOpen: 1 },
+    kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "give", policyNames: ["trusted"],
+    policy: { use: true, scope: "none", redirect: false, maxOpen: 1 },
   } as const;
-  const other = { ...giver, conversationId: createAgentConversationId(), sender: "other", invocationId: "other" };
+  const other = { ...giver, conversationId: createAgentConversationId(), sender: "other", invocationId: "other", policy: { ...giver.policy, scope: "all" as const } };
   const noUse = { ...other, policy: { ...other.policy, use: false } };
   const hidden = { ...other, policy: { ...other.policy, scope: "none" as const } };
   const tool = Promise.withResolvers<void>();
@@ -172,11 +172,10 @@ test("conversation policy enforces use, scope, redirect, other-giver stop/drop a
   });
   try {
     await expect(pool.open(noUse, { text: "no" })).rejects.toMatchObject({ rule: "use" });
-    await expect(pool.open(hidden, { text: "hidden" })).rejects.toMatchObject({ rule: "scope" });
     expect(await pool.open(giver, { text: "[lifecycle:tool]" })).toEqual({ status: "sent", handle: "w1" });
     await tool.promise;
     await expect(pool.send(noUse, "w1", { text: "no" })).rejects.toMatchObject({ rule: "use" });
-    await expect(pool.list(hidden)).rejects.toMatchObject({ rule: "scope" });
+    expect(await pool.list(hidden)).toEqual([]);
     await expect(pool.check(hidden, "unknown")).rejects.toMatchObject({ rule: "scope" });
     await expect(pool.send(hidden, "w1", { text: "hidden" })).rejects.toMatchObject({ rule: "scope" });
     await expect(pool.send(other, "w1", { text: "take it", redirect: true })).rejects.toMatchObject({ rule: "redirect" });
