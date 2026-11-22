@@ -1,6 +1,6 @@
 # Gate: R1 step 2 (host records over the repository), coordinator run
 
-Commit `a902ccf` on `native-integration-r` (implementation `56c1b3a`). Review: clad2a, pending.
+Commit `a902ccf` on `native-integration-r` (implementation `56c1b3a`). Review: clad2a, `e003573`, no blocking findings.
 
 | Check | Result |
 | --- | --- |
@@ -11,3 +11,7 @@ Commit `a902ccf` on `native-integration-r` (implementation `56c1b3a`). Review: c
 
 cod2a's three disk-backed runs timed out in different tests (ACP, native session/create, audit); a RAM-backed run
 and this disk-backed run were green. Verdict held for the reviewer's answer on whether step 2 slowed anything.
+
+**Verdict: passed.** The reviewer found the timeouts are the machine, not step 2: `test/native` per-test minimums
+55.9 s before and 54.4 s after across 85 common tests, and the committed reads hold nothing across an await; the
+three failures were in code step 2 doesn't touch.

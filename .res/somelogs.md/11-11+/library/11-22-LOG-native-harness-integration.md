@@ -86,3 +86,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   `prepareTurn`; a rejection runs `abandonTurn` and `turn_failed`; native awaits it before any push. Full `./test` green
   (1,446, on RAM); `agent-session.ts` 4,600. Queued for clad2a after the step 2 review. Question raised: ACP passes the
   operation id, native each input's message id; is it the same identifier Cod1a keys on?
+- Step 2 review in from clad2a, `e003573` ([review](reports/11-22-REVIEW-R1-step2.md)): no blocking findings; both
+  barriers really raced in the tests; the timeouts are the machine (timings unchanged against `e55afcf`).
+- **Step 2 gate passed** ([gate](../.plan-execution/status/11-22-GATE-R1-step2.md)).
+- Step 3 (the delete and its intent in one transaction) released to cod2a, on top of `acc6d5d`.
