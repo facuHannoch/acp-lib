@@ -124,3 +124,8 @@ edit to `src/agent-session.ts`.
   two calls. Agreed: `replaceAssignment` returning `replaced`, `old_settled` or `conflict`; O3a calls that one method
   from the successor's `beforeDispatch`. Asked Cod1a to pin the orchestrator's action for each result and the
   idempotent retry. Next owner: Cod1a.
+- Clad1a approved Cod1a's contract at `88ef0fb` (one atomic `replaceAssignment` from `beforeDispatch`; dispatch only
+  on a fresh reservation; a conflict refuses the send). cod2a's O1 follow-up `9fa7745` gated (1,521 green). O2
+  complete from cod2a, HEAD `ce28ee5` ([report](reports/11-22-REPORT-O2.md)): busy rules on real ACP steering with a
+  fake assignment port, and the policy checks; 1,527 in 141 files green on cod2a's runs; not yet reviewed.
+- **O1 combined as `pre-alpha` at `9fa7745`** (O1 only, so Cod1a's schema 20 can build on schema 19).
