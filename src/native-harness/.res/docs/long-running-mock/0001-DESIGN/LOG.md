@@ -149,3 +149,62 @@ driver startup RPC timing issue when it inherited the short workload
 deadline. Startup and workload budgets are separate in this submission.
 The forced-timeout case verifies active work diagnostics and a reaped child.
 Independent review is pending.
+
+Clad approved Gate 3 at `41232cd842aa08158fc86b5deb01fd61bf2b5121`.
+Independent checks passed both typechecks, 343 harness tests, 1419 root
+tests and the stdio process cleanup check.
+
+## Gate 4 timed run
+
+From the root:
+
+```sh
+bun run test/native/rehearsal-cli.ts test/native/fixtures/rehearsal-two-minutes.jsonl 150000
+```
+
+The fixture `two-minute-operations` has file SHA-256
+`083a7dd529dcaec05c3ef1c435a4dbbb191ec426d3d48846541700769d0a7634`.
+The actual offline run finished in **127,467 ms** under its 150,000 ms
+deadline. All five scheduled inputs were accepted and completed.
+
+| Input | Scheduled ms | Issued ms | Turn | Outcome |
+| --- | ---: | ---: | ---: | --- |
+| a-early | 0 | 0 | 1 | completed |
+| b-early | 0 | 1 | 2 | completed |
+| b-mid | 45,000 | 45,000 | 3 | completed |
+| a-mid | 45,000 | 45,000 | 4 | completed |
+| a-final | 125,000 | 125,000 | 5 | completed |
+
+Bob's first turn completed at 284 ms while Alice continued until 2,281 ms.
+The final scheduled turn completed at 125,746 ms. The notice-only
+follow-up turn 6 finished at 127,451 ms. Four bounded callback invocations
+completed with IDs `1:a-work-1`, `1:a-work-2`, `3:b-work`, and
+`6:follow-work`. There were no tool failures or unused records on Alice,
+Bob or follow-up. Full request capture was off. The one child exited with
+code 0 and was reaped before the report was emitted.
+
+Final revision **82** matched seven consumer reply IDs to history. Alice
+received `model:1`, `model:4`, `model:6`, and `model:10`, Bob received
+`model:2` and `model:7`, and follow-up received `model:11`. Comparison
+took 4 ms over 3 pages. The driver creates a fresh home and checks only
+the tested channels, so their history is bounded by the current run's
+delivery window, including child replacement. Final settlement reconciles
+each distinct input or turn in batches of up to 100 per request, and
+only after the status is idle. The CI regression uses 105 inputs. The
+short rehearsal scales the checked-in schedule and callback waits and uses
+the same driver, policy and handlers. The separate deterministic deadline
+case checks blocking work diagnostics and verifies reap.
+
+The first root run had one failure. Its 105-input regression let the model
+start a new turn throughout the verification burst, which hit the workload
+deadline under load. The regression now holds one tool until all 105
+inputs are accepted and then verifies that every input resolves to that
+turn. The focused rerun passed in 5.2 seconds. This isolates the request
+batch boundary from model throughput.
+
+The Gate 4 submission passed both package typechecks. Complete harness
+`bun test ./test --timeout 30000` passed 343 tests with 3653 assertions.
+The final complete root `bun test ./test` passed 1421 tests with 12110
+assertions and 35 snapshots, including the short fixture, forced deadline
+and 105-input regression. Both suites had zero failures. Independent
+review is pending.

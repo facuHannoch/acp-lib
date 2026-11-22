@@ -165,16 +165,29 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
     if (failure) throw failure;
     const status = await host.status();
     if (status.execution !== "idle" || status.channels.some(channel => channel.pending.length || channel.activeTurn)) return;
-    for (const send of sends) {
-      const item = (await host.reconcileChannel({ channel: send.channel, itemIds: [send.inputId] })).items[0];
-      if (!item?.turnId) return;
-      const turn = (await host.reconcileChannel({ channel: send.channel, turnIds: [item.turnId] })).turns[0];
-      if (!turn || turn.state === "running" || turn.state === "suspended") return;
-      send.turnId = turn.turnId; send.outcome = turn.state; send.reason = turn.reason;
-      const expected = options.expected?.[send.inputId] ?? "completed";
-      const actual = expected === "timeout" && turn.state === "failed" && turn.reason === "timeout" ? "timeout" : turn.state;
-      if (actual !== expected)
-        throw new Error(`Unexpected outcome for ${send.inputId}: ${turn.state}`);
+    for (const channel of channels) {
+      const submitted = sends.filter(send => send.channel === channel);
+      const inputTurns = new Map<string, string>();
+      for (let offset = 0; offset < submitted.length; offset += 100) {
+        const itemIds = submitted.slice(offset, offset + 100).map(send => send.inputId);
+        const page = await host.reconcileChannel({ channel, itemIds });
+        for (const item of page.items) if (item.turnId) inputTurns.set(item.id, item.turnId);
+      }
+      if (inputTurns.size !== submitted.length) return;
+      const turnIds = [...new Set(inputTurns.values())];
+      const outcomes = new Map<string, Awaited<ReturnType<typeof host.reconcileChannel>>["turns"][number]>();
+      for (let offset = 0; offset < turnIds.length; offset += 100) {
+        const page = await host.reconcileChannel({ channel, turnIds: turnIds.slice(offset, offset + 100) });
+        for (const turn of page.turns) outcomes.set(turn.turnId, turn);
+      }
+      for (const send of submitted) {
+        const turn = outcomes.get(inputTurns.get(send.inputId)!);
+        if (!turn || turn.state === "running" || turn.state === "suspended") return;
+        send.turnId = turn.turnId; send.outcome = turn.state; send.reason = turn.reason;
+        const expected = options.expected?.[send.inputId] ?? "completed";
+        const actual = expected === "timeout" && turn.state === "failed" && turn.reason === "timeout" ? "timeout" : turn.state;
+        if (actual !== expected) throw new Error(`Unexpected outcome for ${send.inputId}: ${turn.state}`);
+      }
     }
     return status;
   };
@@ -182,10 +195,15 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
     while (elapsed() < options.deadlineMs) {
       const status = await settled();
       if (!status) { await Bun.sleep(10); continue; }
+      // The driver owns a fresh home for the whole run, including replacements.
+      // A tested channel's entire history is exactly its run delivery window.
+      const comparisonStarted = performance.now();
+      let historyPages = 0;
       const expectedReplies = new Map<string, string[]>();
-      for (const { channel } of status.channels) {
+      for (const channel of channels) {
         const ids: string[] = [];
         for (let cursor: string | undefined; ;) {
+          historyPages++;
           const page = await host.conversationMessages(cursor === undefined ? { channel } : { channel, cursor });
           for (const message of page.messages) if (message.actor.kind === "agent") ids.push(message.messageId);
           if (!page.next) break;
@@ -194,6 +212,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
         expectedReplies.set(channel, ids);
       }
       if ((await host.status()).revision !== status.revision) continue;
+      const comparisonMs = Math.round(performance.now() - comparisonStarted);
       for (const [channel, ids] of expectedReplies) {
         const matches = deliveries.get(channel) ?? new Map();
         if (matches.size !== ids.length || ids.some(id => matches.get(id) !== 1))
@@ -219,7 +238,7 @@ export async function createRehearsal(path: string, options: RehearsalOptions) {
         (scenario.channelModels.get(channel) ?? scenario.defaultModels).length - (consumed.get(channel) ?? 0))]));
       if (options.exactConsumption && Object.values(unused).some(count => count !== 0)) throw new Error("Unused model records");
       return { fixture: scenario.name, fileDigest: scenario.fileDigest, durationMs: elapsed(), revision: status.revision, sends, activity,
-        replies: Object.fromEntries(expectedReplies), effects, toolFailures, unused };
+        replies: Object.fromEntries(expectedReplies), historyPages, comparisonMs, effects, toolFailures, unused };
     }
     throw new Error("rehearsal deadline before all work settled");
   };

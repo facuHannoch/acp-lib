@@ -185,3 +185,59 @@ test("an explicitly expected model timeout is reported as a terminal input outco
   expect(output.replies.alice).toEqual([]);
   expect(run.exits).toEqual([0]);
 }, 12_000);
+
+test("the timed fixture runs in CI with shortened offsets and the same bounded handlers", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "rehearsal-short-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const long = new URL("./fixtures/rehearsal-two-minutes.jsonl", import.meta.url);
+  const { loadScenario } = await import("../../src/native-harness/src/testing.ts");
+  const { createTimedRehearsal } = await import("./rehearsal-cli.ts");
+  const scenario = await loadScenario(long.pathname);
+  const lines = readFileSync(long, "utf8").trimEnd().split("\n").map(line => {
+    const record = JSON.parse(line) as ScenarioRecord;
+    if (record.type === "send") return JSON.stringify({ ...record, atMs: record.atMs / 25 });
+    if (record.type === "model" && record.calls)
+      return JSON.stringify({ ...record, calls: record.calls.map(call => call.name === "quiet"
+        ? { ...call, arguments: { delayMs: Number(call.arguments.delayMs) / 10 } } : call) });
+    return line;
+  });
+  const path = join(directory, "short.jsonl");
+  await writeFile(path, lines.join("\n") + "\n");
+  const run = await createTimedRehearsal(path, 12_000);
+  cleanup.push(() => run.close());
+  const output = await run.run();
+  expect(output.fileDigest).not.toBe(scenario.fileDigest);
+  expect(output.sends.map(send => send.inputId)).toEqual(["a-early", "b-early", "b-mid", "a-mid", "a-final"]);
+  expect(output.sends.every(send => send.outcome === "completed")).toBe(true);
+  expect(output.unused).toEqual({ alice: 0, bob: 0, "follow-up": 0 });
+  expect(output.effects).toHaveLength(4);
+  const earlyAlice = output.sends.find(send => send.inputId === "a-early")!;
+  const earlyBob = output.sends.find(send => send.inputId === "b-early")!;
+  const completedAt = (channel: string, turnId?: string) =>
+    output.activity.find(event => event.channel === channel && event.kind === "completed" && (turnId === undefined || event.turnId === turnId))!.elapsed;
+  expect(completedAt("bob", earlyBob.turnId)).toBeLessThan(completedAt("alice", earlyAlice.turnId));
+  expect(completedAt("follow-up")).toBeGreaterThan(completedAt("alice", output.sends.at(-1)?.turnId));
+  expect(output.replies["follow-up"]).toHaveLength(1);
+  expect(output.historyPages).toBe(3);
+  expect(run.exits).toEqual([0]);
+}, 20_000);
+
+test("settlement accounts for more than one reconcile page of inputs", async () => {
+  const release = hold();
+  const records = Array.from({ length: 105 }, (_, index) => send("alice", `input-${index}`));
+  const run = await rehearsal([...records, call("alice", "batch", "hold_batch"), reply("alice", "ok")], {
+    deadlineMs: 20_000,
+    functions: { tools: { hold_batch: {
+      description: "Hold one turn while the test submits a batch of inputs", parameters: { type: "object" },
+      async handler() { await release.waiting; return { done: true }; },
+    } } },
+  });
+  await run.setup();
+  try { await run.schedule(); } finally { release.release(); }
+  const report = await run.finish();
+  expect(report.sends).toHaveLength(105);
+  expect(report.sends.every(send => send.outcome === "completed" && send.turnId !== undefined)).toBe(true);
+  expect(new Set(report.sends.map(send => send.turnId)).size).toBe(1);
+  await run.close();
+  expect(run.exits).toEqual([0]);
+}, 30_000);

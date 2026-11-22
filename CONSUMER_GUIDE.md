@@ -1012,6 +1012,25 @@ The default acp-client transcript remains available independently. Use
 totals, missing field counts, and completeness. Usage is an explicit scan
 of the model-call pages.
 
+### Offline native rehearsal
+
+From the repository root, run the checked-in multi-minute fixture:
+
+```sh
+bun run test/native/rehearsal-cli.ts test/native/fixtures/rehearsal-two-minutes.jsonl 150000
+```
+
+The driver creates a fresh local harness home and uses a scripted stdio child.
+The fixture schedules two bursts and a final notice after idle gaps. Its
+policy allows only `notify_channel` and the test callback `quiet`, which
+waits up to two seconds and has a five-second tool deadline. The command
+requires no provider credentials or manual answers. It checks exact
+consumption, reports input outcomes and callback effects, compares reply IDs
+against bounded history reads at a settled revision, and reports the child
+exit code. Full inference-request capture is off. Longer JSONL fixtures use
+the same command with a deadline in milliseconds. Deterministic tests handle
+manual barriers and process replacement in code.
+
 ### Functions the model can call
 
 Register functions in `harness.functions`. The harness offers them to the
