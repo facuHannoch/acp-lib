@@ -87,7 +87,7 @@ import {
   type ProviderSessionSummary,
 } from "./adoption/index.ts";
 import { NoopAgentIdentityRuntime } from "../identity.ts";
-import type { ConversationPersistenceContext } from "./persistence-policy/index.ts";
+import { conversationPersistenceContext } from "./persistence-policy/context.ts";
 import { forgetPendingParts, pendingOutOfBandParts } from "../media/pending.ts";
 import { resolveParts } from "../media/store.ts";
 import { persistParts } from "../media/content.ts";
@@ -107,17 +107,6 @@ export class DefaultAgentConversationManager implements AgentConversationManager
 
   constructor(private readonly agent: Agent, private readonly settings: ManagerSettings) {
     this.policies = new ConversationSettingsResolver(settings, settings.conversationPersistence);
-  }
-
-  private contextOf(summary: AgentConversationSummary): ConversationPersistenceContext {
-    return {
-      agentConversationId: summary.agentConversationId,
-      participants: summary.participants,
-      ...(summary.title !== undefined && summary.title !== null ? { title: summary.title } : {}),
-      ...(summary.metadata !== undefined && summary.metadata !== null ? { metadata: summary.metadata } : {}),
-      adopted: summary.adopted === true,
-      ...(summary.role ? { role: summary.role } : {}),
-    };
   }
 
   /**
@@ -145,7 +134,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
   /** Settings for a write about a conversation: the live conversation's own, or what the resolver says now. */
   private writeSettings(summary: AgentConversationSummary): ManagerSettings {
     return (this.live.has(summary.agentConversationId) && this.liveSettings.get(summary.agentConversationId))
-      || this.policies.settingsFor(this.contextOf(summary));
+      || this.policies.settingsFor(conversationPersistenceContext(summary));
   }
 
   async create(config: CreateAgentConversationConfig = {}): Promise<AgentConversation> {
@@ -155,6 +144,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     const adoption = config.adopt
       ? normalizeAdoption(config.adopt, { recap: !(this.agent.identity instanceof NoopAgentIdentityRuntime) })
       : undefined;
+    // Resolve persistence before writes so invalid policy leaves no row, error record, or provider session.
     const settings = this.policies.settingsFor({
       agentConversationId: id,
       participants,
@@ -171,6 +161,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         throw new Error(`adopting a provider session requires message capture "content" or "raw", not "${level}"`);
       }
     }
+    // Validate before the durable row so caller errors neither orphan a conversation nor look like provider failures.
     const adapterId = this.prepareStart({ ...config, providerSession: adoption ? "load" : "new" });
     if (config.role === "worker" && this.agent.adapters.native(adapterId)) throw new UnsupportedError("workers require an ACP adapter");
     if (adoption) return await this.createAdopting(id, participants, config, adoption, settings);
@@ -426,8 +417,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         `conversation ${id} is active on ${active.adapterId}; use a conversation switch instead of loading it with ${config.adapterId}`,
       );
     }
-    // Resolve once before the load-failure and recovery paths can write.
-    const settings = this.policies.settingsFor(this.contextOf(summary));
+    // Resolve once before writes so the load-failure records, recovery records, and recovered thread share this policy.
+    const settings = this.policies.settingsFor(conversationPersistenceContext(summary));
     const startConfig = {
       ...config,
       runtime: {

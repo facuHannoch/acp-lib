@@ -1,5 +1,10 @@
 # Controller interface
 
+## Worker observation
+
+- `AgentEvent` includes worker lifecycle facts. Subscribe with `agent.events.subscribeWorkers` for
+  worker events. Existing committed-record subscriptions retain their record payloads.
+
 ## Conversation permission events
 
 - ACP and native conversations emit `permission_requested` for a request and exactly one
