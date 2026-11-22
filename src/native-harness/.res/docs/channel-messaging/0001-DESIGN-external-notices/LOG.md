@@ -101,3 +101,43 @@ proof of completion recovery by assignment ID after lost delivery before
 staging. Assignment correlation, backend selection, and the worker staging
 transaction remain with the orchestrator workstream. Haurness-l coordinates
 that dependency.
+
+## Worker prerequisite on alpha 44bbc25
+
+Reviewed `44bbc25baa1f64ff31263291e94d15ed62371028` and confirmed scope
+with core-p. The committed orchestrator Roles section limits v1 workers
+to external ACP conversations. ACP session reload addresses the provider
+session. No supported committed ACP path correlates or redelivers a
+terminal result by an assignment ID after loss before Agent persistence.
+There are no assignment-ID bindings in the pinned production source.
+Local operation queries only see already recorded operations.
+
+The native candidate has a different recovery seam. NativeHarnessHost.push
+takes a caller-chosen input ID. channel/reconcile can find its linked turn
+and committed reply IDs, and session/message/read can recover their bytes.
+Host submission records default to memory, and file records persist inputs
+separately from the Agent database. Neither establishes a supported worker
+assignment mapping and its provenance. Existing child-restart tests prove
+native inbox or reply recovery only. No prerequisite process-death test
+was run and no recovery acceptance is claimed.
+
+Two options require a backend decision. Select native as a supported worker
+and approve durable assignment-to-input correlation before dispatch, or
+retain ACP workers and select one provider that can retrieve or replay a
+terminal completion by assignment ID. Provider session replay alone does
+not establish that contract. The spec owner must decide the first backend.
+
+After that decision, persist assignment identity, exact input correlation,
+destination and originating policy names before dispatch. Hold the first
+acp-client at a barrier before result saving or staging. Independently
+confirm that the real backend has a terminal result, then SIGKILL and reap
+the first acp-client. Inspect its Agent database for the provenance row and
+absence of both result and notice before launching the replacement. Have
+the replacement recover using only the assignment ID and durable state.
+Assert terminal outcome, exact result, original provenance, and equality
+on repeated recovery. Prove that recovery caused no new dispatch. Any
+native proof must use the approved mapping, rather than infer assignment
+identity from a reply ID or use a test-local lookup shortcut.
+
+Only this log changed. No R1–R3 files, migrations, atomic staging or
+worker delivery implementation are included.
