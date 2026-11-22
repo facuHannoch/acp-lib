@@ -32,6 +32,11 @@ export interface CreateParams {
   /** Decision 0021. Bound before the session starts. */
   tools?: import("./tools.ts").ToolCatalogInput;
 }
+/** Owning host submission. policyNames is a set, including an explicit empty set. */
+export interface NotifyParams {
+  channel: string;
+  notice: { id: string; text: string; source?: string; policyNames: string[] };
+}
 export interface PushParams {
   channel: string;
   item: { id: string; kind: "user_message"; sender: string; content: { type: "text"; text: string }[]; policy?: string | null; delivery?: "queue"; wake?: true };
@@ -100,6 +105,7 @@ export interface ItemStatus {
   id: string; channel: string; kind: ItemKind; sender: string;
   milestone: ItemMilestone; turnId?: string;
   policy?: import("./config-permissions.ts").ItemPolicy;
+  externalSource?: string;
 }
 export interface TurnStatus {
   turnId: string; channel: string; items: string[];
@@ -248,6 +254,7 @@ export interface Methods {
    * retry). It never waits for or reports a reply. There is one delivery
    * behavior: `delivery` and `wake` are accepted for compatibility and ignored. */
   "channel/push": { params: PushParams; result: { accepted: true; item?: ItemStatus; duplicate?: boolean } };
+  "channel/notify": { params: NotifyParams; result: { accepted: true; item: ItemStatus; duplicate: boolean } };
   "session/idle": { params: Record<string, never>; result: { idle: boolean } };
 }
 export interface RpcRequest { jsonrpc: "2.0"; id: number; method: string; params: unknown }

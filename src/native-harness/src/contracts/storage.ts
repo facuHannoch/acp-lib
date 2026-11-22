@@ -77,7 +77,7 @@ export interface StoredSession {
   sessionId: string;
   /** Storage contract/data format revision, distinct from RPC and archive versions.
    * Revision 5 stores model calls and script reservations. Formats 2–4 upgrade on open. */
-  formatVersion: 5;
+  formatVersion: 6;
   createdAt: string;
   lifecycle: SessionLifecycle;
   /** The key supplied at create. Immutable; open never rewrites it. */
@@ -126,6 +126,9 @@ export interface AcceptItem {
   explicitPolicy?: string | null;
   /** Internal source turn of a notice; never supplied by model arguments. */
   sourceTurnId?: number;
+  /** External notice attribution and submitted policy set only. */
+  externalSource?: string;
+  inheritedPolicyNames?: readonly string[];
   /** Original payload, kept unrendered for the life of the item. */
   text: string;
 }
@@ -223,7 +226,7 @@ export interface StorageSnapshot {
  * independently of `formatVersion`. Version 4 adds model call records and script reservations. */
 export interface SessionArchive {
   format: "harness-session";
-  archiveVersion: 4;
+  archiveVersion: 5;
   exportedAt: string;
   snapshot: StorageSnapshot;
   /** ID allocation state so the copy never reissues a turn ID, seq or item ID. */
@@ -256,6 +259,12 @@ export interface SessionArchiveV3 {
   format: "harness-session"; archiveVersion: 3; exportedAt: string;
   snapshot: Omit<StorageSnapshot, "session" | "modelCalls" | "scriptPositions"> & { session: Omit<StoredSession, "formatVersion"> & { formatVersion: 4 } };
   allocation: SessionArchive["allocation"];
+}
+
+/** Import-only model execution archive, before external notices. */
+export interface SessionArchiveV4 extends Omit<SessionArchive, "archiveVersion" | "snapshot"> {
+  archiveVersion: 4;
+  snapshot: Omit<StorageSnapshot, "session"> & { session: Omit<StoredSession, "formatVersion"> & { formatVersion: 5 } };
 }
 
 /** Result of `withdrawItem`. The two outcomes are the two sides of the race with
@@ -308,6 +317,8 @@ export interface SessionStorage extends ModelCallStore, OperatorStorageReads {
    *    its StoredChannel (open, unnamed) and StoredParticipant; `participantIds`
    *    is unaffected until take.
    * Nothing is added to the timeline and no turn is created or changed. */
+  /** External notice retries compare durable identity before admission or
+   * policy validation for new work, through a path that writes nothing. */
   acceptItem(input: AcceptItem): StorageResult<{ item: StoredItem; duplicate: boolean }>;
 
   /** Start the channel's next turn by taking ALL its pending items, in
@@ -529,7 +540,7 @@ export interface SessionStorageAdapter {
   /** Read the saved configuration without creating or recovering a session. */
   readSavedConfig(): StorageResult<import("./session-file.ts").PortableSessionConfig | undefined>;
   /** Atomically publish the logical archive and validated portable config. */
-  importSessionFile(payload: import("./session-file.ts").SessionFilePayload<SessionArchive | SessionArchiveV2 | SessionArchiveV3>, options?: { sessionId?: string }): StorageResult<StoredSession>;
+  importSessionFile(payload: import("./session-file.ts").SessionFilePayload<SessionArchive | SessionArchiveV2 | SessionArchiveV3 | SessionArchiveV4>, options?: { sessionId?: string }): StorageResult<StoredSession>;
   /** Acquire exclusive ownership, then check format and session ID, before any
    * write. A second owner (`owner_conflict`), unreadable or unsupported format
    * and a different session ID (`incompatible`) leave the data untouched.
@@ -561,5 +572,5 @@ export interface SessionStorageAdapter {
    * revision) import as channels `open` and unnamed; version 2 preserves
    * channel lifecycle, names, withdrawn items and retired IDs.
    * Any failure leaves no partial session. The result is not opened or owned. */
-  importArchive(archive: SessionArchive | SessionArchiveV1 | SessionArchiveV2 | SessionArchiveV3, options?: { sessionId?: string }): StorageResult<StoredSession>;
+  importArchive(archive: SessionArchive | SessionArchiveV1 | SessionArchiveV2 | SessionArchiveV3 | SessionArchiveV4, options?: { sessionId?: string }): StorageResult<StoredSession>;
 }

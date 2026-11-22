@@ -34,8 +34,11 @@ export interface TimelineEvent {
   channel: string;
   turnId: string;
   actor: { kind: "participant" | "agent"; id: string };
-  kind: "participant_message" | "assistant_message" | "channel_notice" | "tool_call" | "tool_result";
+  kind: "participant_message" | "assistant_message" | "channel_notice" | "external_notice" | "tool_call" | "tool_result";
   sourceChannel?: string;
+  externalSource?: string;
+  /** Stable accepted identity of an external notice. */
+  itemId?: string;
   messageId?: string;
   /** Protocol bounds encoded payload bytes before publication. */
   payload?: import("./loop.ts").Message;

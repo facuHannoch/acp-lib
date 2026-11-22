@@ -18,7 +18,16 @@ export interface ChannelNotice {
 
 // ---- Durable delivery, decision 0013.
 
-export type ItemKind = "participant_message" | "channel_notice";
+/** An owning host's external inbox input, with no harness source turn. */
+export interface ExternalNotice {
+  channelId: string;
+  itemId: string;
+  text: string;
+  source?: string;
+  policyNames: readonly string[];
+}
+
+export type ItemKind = "participant_message" | "channel_notice" | "external_notice";
 
 /** Last confirmed evidence for an accepted input. `received`: committed to the
  * durable inbox. `taken`: committed to the timeline and linked to its turn.
@@ -57,6 +66,8 @@ export interface SessionAgent {
   send(input: ChannelInput): SendResult;
   /** Same acceptance for an internal notice; never waits for the target turn. */
   notify(notice: ChannelNotice): SendResult;
+  /** Accepts or returns a recorded receipt without waiting for a reply. */
+  notifyExternal(notice: ExternalNotice): SendResult;
 }
 
 /** Identity of a live turn handed to composition. `resumed` marks continuation
