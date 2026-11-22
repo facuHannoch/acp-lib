@@ -101,3 +101,35 @@ proof of completion recovery by assignment ID after lost delivery before
 staging. Assignment correlation, backend selection, and the worker staging
 transaction remain with the orchestrator workstream. Haurness-l coordinates
 that dependency.
+
+## ACP worker recovery prerequisite
+
+Base `5274d5466e81e0ff27f9dbf4bab8ba0ddb547393` amends the recovery
+boundary to use finalized ACP worker conversation records. The proof uses
+the production Agent lifecycle, SQLite persistence and stdio ACP transport
+with deterministic fixture peers. It adds no schema or runtime changes
+and does not touch the R1–R3 integration files.
+
+Before ACP dispatch, the Agent persists the user record with its operation
+ID and consumer metadata. The fixture uses that metadata for the assignment
+ID, destination and originating policy names. The supervisor kills and
+reaps the Agent process after the final commit and inspects SQLite before
+starting a replacement. The replacement uses only stored operation and
+conversation records and has no runnable ACP command. It recovers the
+same final record ID, exact response and provenance on repeated lookup.
+An unknown assignment returns no match. A second case kills after a
+provider chunk and before finalization. The mapping survives, but no
+completed result is available.
+
+Run `bun test test/worker-recovery-process.test.ts` from the repo root.
+The lookup is a test fixture scoped to one conversation and one page.
+No live provider was exercised. The post-prompt kill covers the finalized
+operation and its completion evidence together, with no result staged
+for delivery. It does not cover every intermediate persistence write
+or implement uncertainty staging. Worker delivery remains open pending
+independent review and subsequent staging and delivery gates.
+
+Verification under normal local subprocess permissions passed three serial
+runs of the focused test (2 tests and 28 assertions per run) and both
+package typechecks. The restricted sandbox did not finish the ACP prompt;
+the successful runs used local process escalation.
