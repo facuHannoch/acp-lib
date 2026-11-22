@@ -332,13 +332,19 @@ inherit the old assignment merely because the worker is the same.
 Where terminal output actually reflects taken inputs subject to earlier
 restrictions, keep the applicable contributing policy union.
 
-The orchestrator runs closeContinuation in replace mode and reserve
-inside one Agent persistence.transaction from the new prompt's
-beforeDispatch hook, using only that transaction's scoped workerDelivery
-repository. If the close did not stage, a scoped read must establish that
-the expected predecessor already finalized or settled before proceeding;
-a stale live predecessor conflicts. If reserve conflicts, throw in the
-transaction so the old binding (including awaiting continuation state)
-and any old notice remain exactly as they were before the attempt. The
-old interruption notice uses "worker interrupted by steering" as its
-public reason.
+The orchestrator calls replaceAssignment before dispatch. The repository
+owns the atomic transaction for the old settlement and new reservation.
+Ordinary closeContinuation still only closes awaiting continuation.
+A stale predecessor or conflicting reservation returns conflict without
+writes. If the expected predecessor already finalized or settled, reserve
+the new assignment and return old_settled without changing or staging the
+old result. Otherwise stage its interruption and return replaced. The old
+notice uses "worker interrupted by steering" as its public reason.
+
+Persist the replacement relation with the new reservation in that
+transaction, including the predecessor IDs and disposition. An identical
+retry reports existing and the original replaced or old_settled disposition.
+A different predecessor or payload conflicts. The new reservation result
+reports whether the binding was newly reserved or existing; an existing
+reservation cannot authorize redispatch. Test rollback on a conflicting
+reservation and a crash between settlement and reservation.

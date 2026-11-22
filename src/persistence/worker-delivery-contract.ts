@@ -56,15 +56,23 @@ export interface StagedWorkerAssignment {
   readonly delivery: WorkerDelivery;
 }
 
+export type WorkerAssignmentReservation = Omit<WorkerAssignmentBinding, "operationId" | "finalRecordId">;
+
+export type WorkerAssignmentReplacement =
+  | { readonly kind: "replaced" | "old_settled"; readonly reservation: "reserved" | "existing" }
+  | { readonly kind: "conflict" };
+
 /** Implementations share the reservation, staging and transition conformance cases in decision 0025. */
 export interface WorkerDeliveryRepository {
-  reserve(binding: Omit<WorkerAssignmentBinding, "operationId" | "finalRecordId">): Promise<"reserved" | "existing" | "conflict">;
+  reserve(binding: WorkerAssignmentReservation): Promise<"reserved" | "existing" | "conflict">;
   markSteered(workerConversationId: string, messageIds: readonly string[]): Promise<void>;
   continueAssignment(assignmentId: string, predecessorMessageId: string, successorMessageId: string):
     Promise<"continued" | "existing" | "conflict">;
-  closeContinuation(assignmentId: string, expectedMessageId: string, failure: WorkerAssignmentFailure,
-    mode?: "replace"):
+  closeContinuation(assignmentId: string, expectedMessageId: string, failure: WorkerAssignmentFailure):
     Promise<StagedWorkerAssignment | undefined>;
+  /** Atomically settles the predecessor if unfinished and reserves the new assignment. */
+  replaceAssignment(oldAssignmentId: string, expectedMessageId: string, replacement: WorkerAssignmentReservation):
+    Promise<WorkerAssignmentReplacement>;
   discoverAssignments(query: WorkerAssignmentDiscovery):
     Promise<{ readonly assignments: readonly DiscoveredWorkerAssignment[]; readonly next?: string }>;
   latestOutcome(workerConversationId: string): Promise<StagedWorkerAssignment | undefined>;
