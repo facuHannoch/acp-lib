@@ -56,3 +56,9 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   narrow proof of recovery by assignment id after acp-client exits before staging. Sent Cod1a our file map and the
   constraints: keep off `host.ts`, `records.ts`, `conversation-manager.ts` and the schema until R1 lands; schema 18 if
   they need a table; submissions aren't durable across an acp-client restart today. Waiting for their file list.
+- Cod1a: no shared runtime or schema edits; only the external-notices `LOG.md` (gap and proof plan). Backend
+  selection escalated to haurness-l and the spec owner. Correction: the orchestrator spec's Roles says "No native
+  workers in v1", so my earlier native-worker suggestion contradicted the spec. Candidate raised instead: recover a
+  finalized ACP worker completion from the worker conversation's own records in the Agent database, keyed by an
+  assignment → worker turn id persisted before the work starts (O1); a death before finalization is
+  `worker_interrupted`.
