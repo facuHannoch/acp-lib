@@ -32,7 +32,7 @@ export interface CreateParams {
   /** Decision 0021. Bound before the session starts. */
   tools?: import("./tools.ts").ToolCatalogInput;
 }
-/** Owning host submission. policyNames is a set, including an explicit empty set. */
+/** Owning host submission. policyNames is a set of user-facing names, including an explicit empty set. */
 export interface NotifyParams {
   channel: string;
   notice: { id: string; text: string; source?: string; policyNames: string[] };

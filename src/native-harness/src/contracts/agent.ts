@@ -24,6 +24,7 @@ export interface ExternalNotice {
   itemId: string;
   text: string;
   source?: string;
+  /** Configured user-facing names. Reserved internal names are invalid. */
   policyNames: readonly string[];
 }
 

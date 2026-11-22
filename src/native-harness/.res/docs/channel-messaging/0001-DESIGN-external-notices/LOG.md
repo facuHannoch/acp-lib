@@ -28,3 +28,11 @@ Both package typechecks were run on the contract-only tree. Each reports
 eight errors in existing consumers still missing the new operation or
 writing the previous format. Implementation will update those consumers
 after contract approval. No runtime paths have changed.
+
+Clad declined Gate 1 at `09c7e3dfa5382940015d3f15e768558dd447f569`
+because session drain admission needed an explicit external-notice rule.
+The follow-up pins the full validation order, duplicate lookup before the
+inspection fence, rejection of reserved inherited names, and the format 6
+columns and migration. Both typechecks still report the same eight
+expected contract-only errors. Worker recovery remains unproven on the
+pinned backend. Independent re-review is pending.

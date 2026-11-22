@@ -29,23 +29,36 @@ take, or wake. A different payload or kind returns item_conflict. Inspection
 and suspended sessions support the same lookup. Keep check and commit fenced
 by the inbox transaction so competing accepts cannot create duplicates.
 
-For a new ID, use existing session admission codes. An absent channel is
-not_found, a retired one channel_retired, and a suspended or suspending one
-channel_suspended. Return invalid_policy for an unknown inherited name on
-an eligible channel. Resolve the channel or default policy at acceptance
-and store inherited names alongside it. The scheduler takes the notice
-with ordinary inbox ordering. Make the external kind and accepted ID visible
-in the timeline and render host attribution in context. Conversation pages
-exclude it. Internal notice admission remains unchanged.
+Apply checks in this order: request shape, owning endpoint, read-only
+duplicate or conflict lookup, session admission, channel admission,
+policy validation, then commit. Duplicate lookup precedes the inspection
+write fence. Identical accepted notices return their receipt in every
+lifecycle that still permits inspection. A new ID in an incompatible
+inspection open returns incompatible. A new external notice while the
+session is suspending or suspended returns not_running. Internal notices
+retain their existing exception during session suspension drain.
+An absent channel returns not_found, a retired channel channel_retired,
+and a suspended or suspending channel channel_suspended.
+
+For an eligible destination, unknown or reserved internal inherited names,
+including __legacy_allow, return invalid_policy. Resolve the channel or
+default policy and store it with the inherited names. The scheduler takes
+the notice in ordinary inbox order. Expose the external kind and accepted
+ID in the timeline and render host attribution in context. Conversation
+pages exclude external notices.
 
 ## Compatibility
 
 Write SQLite format 6 and archive 5, with envelope 1 unchanged. Older readers
-must refuse new versions since they cannot safely take this kind. Upgrade
-formats 2–5 in the existing migration and recovery transaction, without
-changing format 5 signatures. Older formats retain their existing migration
-rules. Adapter import accepts archive 1–5 and
-session files accept 2–5. Legacy archives cannot contain external notices.
+must refuse new versions since they cannot safely take this kind. Add
+nullable external_source columns to items and timeline entries. Persist
+the normalized submitted policy set using the item's existing inherited
+policy metadata. Both tables' kind domain includes external_notice.
+Upgrade formats 2–5 in the existing migration and recovery transaction.
+Add the columns and update kind constraints where present, preserving
+format 5 signatures byte for byte. Older formats retain their existing
+migration rules. Adapter import accepts archives 1–5 and session files
+accept archives 2–5. Legacy archives cannot contain external notices.
 New archives validate attribution, sorted inherited metadata and signature
 before publication, and preserve pending and taken notices with their IDs.
 
