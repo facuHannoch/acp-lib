@@ -45,3 +45,14 @@ edit to `src/agent-session.ts`.
 - Gap in the coordinator's first fixes, found by clad2a: the spec still sent results to `workers.last_conversation`.
   Fixed: delivery reads only the assignment's destination (which `redirect` retargets); `last_conversation` is the
   default destination of the next assignment (the workers table, the Flow 3 table, O2 and O3a).
+- Brief G in from cod2a, `0640c38` ([report](reports/11-22-REPORT-OG.md)); sent to clad2a. Findings: the repository
+  signatures are mapped; Gate 3 owns `stage`, discovery, transitions and the native flush (O1–O5a call none of them).
+  **But** the repository lacks three things that O2, O3a and O5a need: carrying an assignment's causal binding to a
+  successor run after a steer (it can stage the old ACP operation at a steer boundary), durably suppressing the
+  notice of an explicit stop (interrupted assignments are staged unconditionally), and a separate redirect notice to
+  the previous destination. Also: the staged source is the worker conversation id, not its handle; the result text
+  is all completed assistant messages, not "the final message"; ACP and native routing needs a boundary so Gate 3's
+  scan never sends an ACP destination to `channel/notify`; per-invocation sender attribution has no source on the
+  callback. `agent_action` records exist in the code (the spec's absence claim is wrong; v1 still adds none). O4
+  needs one small reviewed exception to the no-edit rule on `agent-session.ts` (a forwarding delegate beside
+  `answerPermission`).
