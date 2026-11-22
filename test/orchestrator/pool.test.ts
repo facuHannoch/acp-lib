@@ -41,15 +41,16 @@ test("two opens racing for the last slot admit one, with the busy worker in the 
       pool.open(actor, { text: "[lifecycle:tool]", about: "second" })]);
     expect(results[0]).toEqual({ status: "sent", handle: "w1" });
     expect(results[1]).toMatchObject({ status: "no_worker_free", workers: [{ handle: "w1", state: "busy", about: "first" }] });
-    expect(await pool.send({ kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "other" },
+    expect(await pool.send({ kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "other",
+      policy: { use: true, scope: "all", redirect: false } },
       "w1", { text: "unexpected second prompt" })).toMatchObject({ status: "busy" });
-    const worker = await pool.check("w1");
+    const worker = await pool.check(actor, "w1");
     const { conversation } = await agent.conversations.open(worker.conversationId);
     const settled = idle(conversation);
     await release();
     await settled;
-    expect(await pool.check("w1")).toMatchObject({ state: "idle" });
-    expect(await pool.list()).toHaveLength(1);
+    expect(await pool.check(actor, "w1")).toMatchObject({ state: "idle" });
+    expect(await pool.list(actor)).toHaveLength(1);
   } finally {
     await close();
   }
@@ -63,37 +64,37 @@ test("idle eviction is least-recently used and send reloads the same conversatio
     await release();
     for (const handle of ["w1", "w2"]) {
       expect(await pool.open(actor, { text: "[lifecycle:tool]" })).toMatchObject({ handle });
-      const row = await pool.check(handle);
+      const row = await pool.check(actor, handle);
       const { conversation } = await agent.conversations.open(row.conversationId);
       await idle(conversation);
     }
     expect(await pool.send(actor, "w1", { text: "[lifecycle:tool]", about: "recent" })).toEqual({ status: "sent" });
-    const recent = await pool.check("w1");
+    const recent = await pool.check(actor, "w1");
     await idle((await agent.conversations.open(recent.conversationId)).conversation);
-    const older = await pool.check("w2");
+    const older = await pool.check(actor, "w2");
     const original = (await agent.conversations.open(older.conversationId)).conversation;
 
     expect(await pool.open(actor, { text: "[lifecycle:tool]" })).toMatchObject({ handle: "w3" });
     expect(original.state.phase).toBe("stopped");
-    expect(await pool.check("w2")).toMatchObject({ state: "offline" });
-    const newest = await pool.check("w3");
+    expect(await pool.check(actor, "w2")).toMatchObject({ state: "offline" });
+    const newest = await pool.check(actor, "w3");
     await idle((await agent.conversations.open(newest.conversationId)).conversation);
 
     expect(await pool.send(actor, "w2", { text: "[lifecycle:tool]", about: "reopened" })).toEqual({ status: "sent" });
-    const reopened = await pool.check("w2");
+    const reopened = await pool.check(actor, "w2");
     expect(reopened).toMatchObject({ conversationId: older.conversationId, about: "reopened" });
     const replacement = (await agent.conversations.open(reopened.conversationId)).conversation;
     expect(replacement).not.toBe(original);
     await idle(replacement);
-    expect(await pool.check("w1")).toMatchObject({ state: "offline", about: "recent" });
-    expect(await pool.list()).toHaveLength(3);
+    expect(await pool.check(actor, "w1")).toMatchObject({ state: "offline", about: "recent" });
+    expect(await pool.list(actor)).toHaveLength(3);
     expect(events).toContainEqual(expect.objectContaining({ kind: "worker_stopped", handle: "w2", reason: "eviction" }));
     expect(events).toContainEqual(expect.objectContaining({ kind: "worker_reloaded", handle: "w2", conversationId: older.conversationId }));
     expect(events).toContainEqual(expect.objectContaining({ kind: "worker_replied", handle: "w2" }));
     await agent.conversations.delete(recent.conversationId);
     await expect(pool.send(actor, "w1", { text: "gone" })).rejects.toThrow("worker conversation is unavailable");
-    expect(await pool.check("w2")).toMatchObject({ state: "idle" });
-    expect(await pool.check("w3")).toMatchObject({ state: "idle" });
+    expect(await pool.check(actor, "w2")).toMatchObject({ state: "idle" });
+    expect(await pool.check(actor, "w3")).toMatchObject({ state: "idle" });
   } finally {
     await close();
   }
@@ -155,3 +156,41 @@ test("worker failure notifications expose a fixed reason and the worker returns 
     await close();
   }
 }, 15_000);
+
+test("conversation policy enforces use, scope, redirect, other-giver stop/drop and maxOpen", async () => {
+  const { agent, pool, close } = await rig(2);
+  const giver = {
+    kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "give",
+    policy: { use: true, scope: "all", redirect: false, maxOpen: 1 },
+  } as const;
+  const other = { ...giver, conversationId: createAgentConversationId(), sender: "other", invocationId: "other" };
+  const noUse = { ...other, policy: { ...other.policy, use: false } };
+  const hidden = { ...other, policy: { ...other.policy, scope: "none" as const } };
+  const tool = Promise.withResolvers<void>();
+  agent.events.subscribe(({ event }) => {
+    if (event.record.kind === "tool_call" && event.record.state === "announced") tool.resolve();
+  });
+  try {
+    await expect(pool.open(noUse, { text: "no" })).rejects.toMatchObject({ rule: "use" });
+    await expect(pool.open(hidden, { text: "hidden" })).rejects.toMatchObject({ rule: "scope" });
+    expect(await pool.open(giver, { text: "[lifecycle:tool]" })).toEqual({ status: "sent", handle: "w1" });
+    await tool.promise;
+    await expect(pool.send(noUse, "w1", { text: "no" })).rejects.toMatchObject({ rule: "use" });
+    await expect(pool.list(hidden)).rejects.toMatchObject({ rule: "scope" });
+    await expect(pool.check(hidden, "unknown")).rejects.toMatchObject({ rule: "scope" });
+    await expect(pool.send(hidden, "w1", { text: "hidden" })).rejects.toMatchObject({ rule: "scope" });
+    await expect(pool.send(other, "w1", { text: "take it", redirect: true })).rejects.toMatchObject({ rule: "redirect" });
+    await expect(pool.send(other, "w1", { text: "take it", redirect: true, assignment: "new" })).rejects.toMatchObject({ rule: "redirect" });
+    await expect(pool.stop(other, "w1")).rejects.toMatchObject({ rule: "redirect" });
+    await expect(pool.drop(giver, "w1")).rejects.toMatchObject({ rule: "redirect" });
+    expect(await pool.check(giver, "w1")).toMatchObject({ state: "busy", lastConversation: giver.conversationId });
+    await pool.stop(giver, "w1");
+    await expect(pool.open(giver, { text: "second" })).rejects.toMatchObject({ rule: "maxOpen" });
+    expect(await pool.check(giver, "w1")).toMatchObject({ state: "idle" });
+    await pool.drop({ ...other, policy: { ...other.policy, redirect: true } }, "w1");
+    expect(await pool.open(giver, { text: "after drop" })).toEqual({ status: "sent", handle: "w2" });
+    expect((await agent.workers!.list()).map(worker => worker.handle)).toEqual(["w2"]);
+  } finally {
+    await close();
+  }
+}, 20_000);

@@ -9,10 +9,11 @@ export interface WorkerConsumerApi {
 }
 
 export function workerConsumerApi(orchestrator: Orchestrator): WorkerConsumerApi {
+  const consumer = { kind: "consumer" } as const;
   return Object.freeze({
-    list: () => orchestrator.list(),
-    check: (handle: string) => orchestrator.check(handle),
-    stop: (handle: string) => orchestrator.stop(handle),
-    delete: (handle: string) => orchestrator.drop(handle),
+    list: () => orchestrator.list(consumer),
+    check: (handle: string) => orchestrator.check(consumer, handle),
+    stop: (handle: string) => orchestrator.stop(consumer, handle),
+    delete: (handle: string) => orchestrator.drop(consumer, handle),
   });
 }

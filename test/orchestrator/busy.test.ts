@@ -9,6 +9,7 @@ import type { SendWorkerInput, WorkerActor, WorkerEvent } from "../../src/orches
 import { Orchestrator } from "../../src/orchestrator/orchestrator.ts";
 import { WORKER_SEND_DESCRIPTION } from "../../src/orchestrator/tool-descriptions.ts";
 
+const allowed = { use: true, scope: "all", redirect: true } as const;
 const fixture = resolve(import.meta.dir, "../fixtures/lifecycle-agent.ts");
 
 for (const scenario of ["continue", "redirect", "replace", "take over with new assignment"] as const) {
@@ -36,8 +37,8 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
           if (planned.length === 2) successor.resolve();
         },
       });
-    const giver: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "first" };
-    const other: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "next" };
+    const giver: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "first", policy: allowed };
+    const other: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "next", policy: allowed };
     try {
       expect(await orchestrator.open(giver, { text: "[lifecycle:tool]" })).toEqual({ status: "sent", handle: "w1" });
       await tool.promise;
@@ -62,7 +63,7 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
         },
       ]);
       expect(new Set(planned.map(entry => entry.messageId)).size).toBe(2);
-      expect(await orchestrator.check("w1")).toMatchObject({ lastConversation: sender.conversationId, about: scenario });
+      expect(await orchestrator.check(giver, "w1")).toMatchObject({ lastConversation: sender.conversationId, about: scenario });
       expect(events.filter(event => event.kind === "worker_redirected")).toHaveLength(takeover ? 1 : 0);
     } finally {
       try { await agent.close(); }

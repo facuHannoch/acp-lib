@@ -49,3 +49,11 @@ export class ProviderSessionReloadUnsupportedError extends UnsupportedError {
     this.name = "ProviderSessionReloadUnsupportedError";
   }
 }
+
+/** The governing conversation policy refused a worker operation. */
+export class WorkerPolicyError extends Error {
+  constructor(readonly rule: "use" | "scope" | "redirect" | "maxOpen") {
+    super(`worker operation refused by ${rule} policy`);
+    this.name = "WorkerPolicyError";
+  }
+}

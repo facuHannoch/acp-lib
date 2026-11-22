@@ -2,11 +2,19 @@ import type { AgentConversationId } from "../agent-ids.ts";
 import type { OperationActivity } from "../operations/contracts.ts";
 import type { WorkerRow } from "../persistence/workers.ts";
 
+export interface DelegationPolicy {
+  readonly use: boolean;
+  readonly scope: "none" | "all";
+  readonly redirect: boolean;
+  readonly maxOpen?: number;
+}
+
 export type WorkerActor = { readonly kind: "consumer" } | {
   readonly kind: "conversation";
   readonly conversationId: AgentConversationId;
   readonly sender: string;
   readonly invocationId: string;
+  readonly policy: DelegationPolicy;
 };
 
 export interface WorkerInput {

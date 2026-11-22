@@ -1,3 +1,4 @@
+import { checkWorkerOpenLimit, requireWorkerRedirect, requireWorkerScope, requireWorkerUse } from "./policy.ts";
 import type { AssignmentPlan, WorkerAssignmentPort } from "./assignments.ts";
 import { planAssignment } from "./busy.ts";
 import type { AgentConversationManager } from "../agent/config.ts";
@@ -26,9 +27,11 @@ export class Orchestrator {
 
   open(actor: WorkerActor, input: WorkerInput): Promise<OpenWorkerResult> {
     return this.run(async () => {
+      requireWorkerUse(actor);
       this.assertInput(input);
-      if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries() };
       const rows = await this.workers.list();
+      checkWorkerOpenLimit(actor, rows);
+      if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries() };
       const ordinal = rows.reduce((highest, row) => /^w[1-9][0-9]*$/.test(row.handle)
         ? Math.max(highest, Number(row.handle.slice(1))) : highest, 0) + 1;
       if (!Number.isSafeInteger(ordinal)) throw new RangeError("worker handle space exhausted");
@@ -59,12 +62,14 @@ export class Orchestrator {
 
   send(actor: WorkerActor, handle: string, input: SendWorkerInput): Promise<SendWorkerResult> {
     return this.run(async () => {
+      requireWorkerUse(actor);
       this.assertInput(input);
       const row = await this.requireWorker(handle);
       let slot = this.pool.get(handle);
       const running = slot?.work?.assignment;
       const plan = planAssignment(actor, input, running);
       if (!plan || (slot && this.pool.busy(slot) && !running)) return { status: "busy", worker: this.pool.summary(row) };
+      if (running && input.redirect) requireWorkerRedirect(actor);
       if (!slot) {
         const summary = await this.conversations.get(row.conversationId);
         if (!summary || summary.deletedAt) throw new Error(`worker conversation is unavailable: ${handle}`);
@@ -88,23 +93,36 @@ export class Orchestrator {
     });
   }
 
-  check(handle: string): Promise<WorkerSummary> {
-    return this.run(async () => this.pool.summary(await this.requireWorker(handle)));
-  }
-
-  list(): Promise<readonly WorkerSummary[]> {
-    return this.run(() => this.summaries());
-  }
-
-  stop(handle: string): Promise<void> {
+  check(actor: WorkerActor, handle: string): Promise<WorkerSummary> {
     return this.run(async () => {
+      requireWorkerScope(actor);
+      return this.pool.summary(await this.requireWorker(handle));
+    });
+  }
+
+  list(actor: WorkerActor): Promise<readonly WorkerSummary[]> {
+    return this.run(async () => {
+      requireWorkerScope(actor);
+      return this.summaries();
+    });
+  }
+
+  stop(actor: WorkerActor, handle: string): Promise<void> {
+    return this.run(async () => {
+      requireWorkerScope(actor);
       const row = await this.requireWorker(handle);
+      const running = this.pool.get(handle)?.work;
+      if (actor.kind === "conversation" && running && running.assignment.destination !== actor.conversationId) {
+        requireWorkerRedirect(actor);
+      }
       if (await this.interrupt(handle)) this.emit({ ...this.identity(row), kind: "worker_stopped", reason: "requested" });
     });
   }
 
-  drop(handle: string): Promise<void> {
+  drop(actor: WorkerActor, handle: string): Promise<void> {
     return this.run(async () => {
+      requireWorkerScope(actor);
+      requireWorkerRedirect(actor);
       const row = await this.requireWorker(handle);
       await this.interrupt(handle);
       try {
