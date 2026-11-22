@@ -77,3 +77,25 @@ A live native conversation can be identified before its first prompt. A separate
 ### Clean archive gate
 
 Clean archive of `c600199` using a private RAM-backed checkout and fixture directory. `bun run typecheck` passed. `bun test ./test` passed **1,451 tests across 132 files** in 97.76 s. All 35 snapshot hashes matched the hook-fix baseline and the archived files before the run. Logs are at `/tmp/acp-r1-step3-gate.ALQrzm/typecheck.log` and `/tmp/acp-r1-step3-gate.ALQrzm/full.log`. The focused rollback and delivery checks also passed in the disk-backed worktree.
+
+## Step 3b. Stored controller kind
+
+Implementation commit `f0e589a` on `native-integration-r`. Conversation creation stores `controllerKind` from the Agent's native adapter selection. SQLite stores it in the nullable `conversations.controller_kind` column, constrained to `acp` or `native`. Schema 17 is still unreleased. New schemas include the column, and upgrading from 16 adds it with null values for existing rows. The persisted summary represents those nulls as an absent kind.
+
+Deletion reads the stored kind through the same transaction scope that stages retirement and deletes the conversation. Legacy rows and custom backends that omit the kind fall back to the provider descriptor or live adapter. The Agent passes the kind to custom stores through the shared repository contract. This repository has no separate in-memory Agent conversation store. The spec's Limitations section records the legacy and custom fallback. Native startup and first provider attachment retain their existing behavior.
+
+The SQLite restart tests cover an unused native conversation with an acknowledged creation intent, a still-pending creation intent, and no title or policy. Each test opens a new Agent on the same database and verifies that deletion stages retirement without launching the harness. The first case simulates acknowledgement at the repository boundary. A separate legacy test verifies native retirement using an old row's active provider descriptor. The v16 upgrade test checks SQL null, summary shape, and soft deletion of the migrated row.
+
+Handoff and switch reject cross-kind transitions with `UnsupportedError` before recording a transition or emitting its events. The tests exercise both methods in both directions. The guard also keeps native-to-native switches unsupported. Reopening a row with a persisted kind likewise rejects a route that selects the other kind.
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `src/agent/conversation-manager.ts` | 1,092 | 1,089 |
+| `src/agent-session.ts` | 4,600 | 4,567 |
+| `src/native/host.ts` | 884 | 884 |
+
+Handoff option normalization moved to `src/handoff-options.ts`. The changelog covers the schema and transition behavior.
+
+### Clean archive gate
+
+Clean RAM-backed archive of `f0e589a`. Typecheck passed. `bun test ./test` passed **1,456 tests across 132 files** in 91.98 s. All 35 snapshots matched both the archive before the run and the step 3 baseline. Logs are at `/tmp/acp-r1-kind-gate.VjyYGG/typecheck.log` and `/tmp/acp-r1-kind-gate.VjyYGG/full.log`.
