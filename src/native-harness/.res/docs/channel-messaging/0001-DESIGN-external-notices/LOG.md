@@ -36,3 +36,40 @@ inspection fence, rejection of reserved inherited names, and the format 6
 columns and migration. Both typechecks still report the same eight
 expected contract-only errors. Worker recovery remains unproven on the
 pinned backend. Independent re-review is pending.
+
+Clad approved Gate 1 at `56285d81d0e53f8ec54590fb7ab5ec433a011b39`
+after confirming the same eight contract-only errors in both packages.
+
+## Generic Gate 2
+
+Storage, archive and context rendering landed in
+`131ad3a1ee7539b6f86b917d0fea5797f04739f4`, before the dependent scheduler
+and wire changes. The format 6 migration adds nullable attribution columns
+and preserves existing format 5 signatures. SQLite and memory share
+admission, signature and policy composition. A known external ID returns
+its recorded receipt before the execution fence even on an inspection
+open. Archives preserve the submitted inherited set, attributed item and
+matching timeline entry. Protocol delivery uses ordinary wake and take.
+
+Shared storage coverage checks conflicts, set normalization, admission
+during drain, the internal notice exception, inspection-only duplicate
+receipts with unchanged revision, and pending/taken archive round trips.
+The format 5 SQLite fixture has no external columns before upgrade.
+A golden context test pins user-role rendering with external attribution.
+Both transports exercise detached wake and active-turn steering with
+inherited denial, timeline attribution and conversation counting.
+The real child receipt-loss test kills after inbox acceptance and retries
+over a fresh connection.
+
+The coordinator and reviewer confirmed that worker recovery is still
+unproven. A native worker conversation is only a candidate. The stable
+assignment-to-input mapping and recovery after completion before staging
+are unimplemented and unapproved. ACP replay has no equivalent proof.
+No worker staging or orchestration changes are included. Worker Gates 3
+and 4 remain open. Haurness-l coordinates backend selection.
+
+Generic Gate 2 verification passed both package typechecks. Full harness
+`bun test ./test --timeout 30000` passed 360 tests with 3777 assertions
+across 47 files. Root `bun test ./test/native` passed 87 tests with 6576
+assertions across seven files. Both suites had zero failures. Independent
+review of the generic harness behavior is pending.

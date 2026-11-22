@@ -65,7 +65,7 @@ export function operatorRead(session: PersistentSession, method: string, p: Reco
     const tracked = cursor ? undefined : readValue(storage.readTracked(channel!, inputIds, turns)).value;
     const page = readValue(storage.readTimeline({ kind: "replies", channel, turnIds: turns, direction: "newer", throughRevision: revision,
       exclusiveSeq: cursor ? sequence(cursor[4]) : undefined, limit: 50 })).value;
-    const items = tracked?.items.map(item => ({ id: item.itemId, channel: item.channelId, kind: item.kind, sender: item.senderId,
+    const items = tracked?.items.map(item => ({ id: item.itemId, channel: item.channelId, kind: item.kind, sender: item.senderId, ...(item.externalSource === undefined ? {} : { externalSource: item.externalSource }),
       milestone: item.milestone, ...(item.policy ? { policy: item.policy } : {}), ...(item.turnId !== undefined ? { turnId: String(item.turnId) } : {}) })) ?? [];
     const foundTurns = tracked?.turns.map(turnStatus) ?? [];
     const result = { revision, items, turns: foundTurns, unknownItemIds: inputIds.filter(id => !items.some(item => item.id === id)),
@@ -92,12 +92,12 @@ export function operatorRead(session: PersistentSession, method: string, p: Reco
   const records = [];
   for (const entry of page.entries) {
     const participant = entry.kind === "participant_message";
-    const actor = participant ? { kind: "participant", id: entry.from } : { kind: "agent", id: entry.sourceChannelId ?? scope };
+    const actor = entry.kind === "external_notice" ? { kind: "agent", id: entry.externalSource ?? "host" } : participant ? { kind: "participant", id: entry.from } : { kind: "agent", id: entry.sourceChannelId ?? scope };
     const base = { channel: entry.channelId, turnId: String(entry.turnId), actor, position: position(entry) };
     const message = entry.message;
     const content = participant && message.role === "user" ? message.content.slice(`Participant: ${JSON.stringify(entry.from)}\n\n`.length) : message.content;
     const identity = { ...base, messageId: messageId(entry), ...(participant ? { itemId: entry.itemId } : {}) };
-    const activity = { ...base, ...(entry.sourceChannelId ? { sourceChannel: entry.sourceChannelId } : {}),
+    const activity = { ...base, ...(entry.kind === "external_notice" ? { itemId: entry.itemId, externalSource: entry.externalSource } : {}), ...(entry.sourceChannelId ? { sourceChannel: entry.sourceChannelId } : {}),
       kind: entry.kind ?? (message.role === "tool" ? "tool_result" : message.role === "assistant" && !message.content ? "tool_call" : "assistant_message"),
       ...(message.role === "assistant" || participant ? { messageId: messageId(entry) } : {}) };
     let record: object = channel ? { ...identity, parts: [{ type: "text", text: content }] } : { ...activity, payload: message };

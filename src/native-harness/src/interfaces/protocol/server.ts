@@ -72,7 +72,7 @@ export function describe(durable: boolean, archives = false, functions = false):
     configOptions: [], commands: [], policies: [],
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, ...(functions ? { functions: true as const } : {}),
       methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/open"] : []), ...operatorMethods, "session/status",
-        "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
+        "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/notify", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : [])],
       events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "session/event"] },
   };
@@ -287,7 +287,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       else if (from.type === "transfer") { keys(from, ["type", "transferId"]); bytes = transfers.consume(from.transferId); }
       else return bad("Import source must be a path or a transfer");
       const payload = decodeArchive(bytes, limits.maxBytes) as SessionFilePayload<SessionArchive>;
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4].includes(payload.archive?.archiveVersion))
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).sort().join() !== "archive,config" || ![2, 3, 4, 5].includes(payload.archive?.archiveVersion))
         throw new Fault("invalid_archive", "Invalid session file payload");
       try { validateConfig(payload.config, (payload.archive as { archiveVersion: number }).archiveVersion === 2); } catch (error) { throw new Fault("invalid_archive", String(error)); }
       const sessionId = p.sessionId ?? payload.archive?.snapshot?.session?.sessionId;
@@ -295,6 +295,25 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const imported = options.importArchive!(payload, sessionId);
       if (!imported.ok) throw new Fault(imported.error.code === "invalid_input" ? "invalid_params" : imported.error.code, imported.error.message);
       return { sessionId: imported.value.sessionId, lifecycle: imported.value.lifecycle, revision: imported.revision };
+    }
+    if (method === "channel/notify") {
+      keys(p, ["channel", "notice"]);
+      const channel = text(p.channel), notice = obj(p.notice);
+      keys(notice, ["id", "text", "source", "policyNames"]);
+      const id = text(notice.id), content = text(notice.text);
+      const source = notice.source === undefined ? undefined : text(notice.source);
+      if (!Array.isArray(notice.policyNames)) bad("Expected a policy name array");
+      const policyNames = notice.policyNames.map((name: unknown) => text(name));
+      if (!current) throw new Fault("invalid_state", "Open a session first");
+      const session = current.session;
+      const result = session.agent.notifyExternal({ channelId: channel, itemId: id, text: content, source, policyNames });
+      if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
+      const saved = session.operatorReads
+        ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]
+        : session.snapshot().items.find(item => item.itemId === id);
+      return { accepted: true, duplicate: result.duplicate, item: { id, channel, kind: "external_notice", sender: source ?? "host",
+        ...(source === undefined ? {} : { externalSource: source }), ...(saved?.policy ? { policy: saved.policy } : {}),
+        milestone: result.milestone, ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };
     }
     if (!current) throw new Fault("not_ready", "Create or load a session first");
     if (transfers && method === "session/export") {
@@ -326,7 +345,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       if (!session.approvals.respond(text(p.requestId), p.decision)) throw new Fault("not_found", "Approval request is no longer available");
       return { accepted: true };
     }
-    if (method.startsWith("channel/") && method !== "channel/push") {
+    if (method.startsWith("channel/") && method !== "channel/push" && method !== "channel/notify") {
       const channel = text(p.channel);
       let result;
       if (method === "channel/create") {

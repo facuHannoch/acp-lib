@@ -318,7 +318,7 @@ uses the same session assembly with OpenRouter, its tools and inspector wrappers
 The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
 requests are `initialize`, `config/validate`, `session/create`, `session/open` (durable servers
 only), `channel/observe`, `channel/reconcile`, `channel/messages`, `session/timeline`, `session/message/read`, `session/model-calls`, `session/status`, `session/suspend`,
-`session/resume`, `session/stop`, `channel/push` and `session/idle`, plus
+`session/resume`, `session/stop`, `channel/push`, `channel/notify` and `session/idle`, plus
 `channel/create`, `channel/edit`, `channel/suspend`, `channel/resume`,
 `channel/delete`, `channel/withdraw`, `channel/interrupt` and
 `approval/respond`, plus
@@ -394,6 +394,14 @@ inbox and reports it as `received`; it never carries a reply. Storage
 deduplicates item IDs, across restarts on a durable server: the same ID and
 content returns the original item's current milestone and turn, and different
 content fails with `item_conflict`. Unknown senders are recorded as IDs.
+
+The owning host can submit `channel/notify` with a stable notice ID, text,
+optional source label, and an explicit inherited policy-name array. New
+notices require an existing open channel and a running session. An identical
+retry returns the original receipt even during suspension or an incompatible
+inspection open. Accepted notices appear in the timeline and enter the
+receiving turn as attributed external input. Conversation pages count only
+participant and assistant messages.
 
 `session/open` opens an existing session and returns its lifecycle, revision,
 and any startup channel-change results. Opening recovers unfinished turns

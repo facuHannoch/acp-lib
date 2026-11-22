@@ -112,7 +112,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     const document = payload.archive;
     expect(payload.config).toEqual(config);
     expect(Object.keys(document).sort()).toEqual(["allocation", "archiveVersion", "exportedAt", "format", "snapshot"]);
-    expect(document).toMatchObject({ format: "harness-session", archiveVersion: 4, snapshot: { revision: before.status.revision, session: { sessionId: "moved", lifecycle: "suspended" } } });
+    expect(document).toMatchObject({ format: "harness-session", archiveVersion: 5, snapshot: { revision: before.status.revision, session: { sessionId: "moved", lifecycle: "suspended" } } });
     // Export by path writes the same document; its reported length and hash are those of the file.
     const path = join(source.directory, "moved.harness");
     const byPath = await first.client.exportTo(path);
@@ -194,7 +194,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: in
     await refused(client.importArchive(edited(document => { document.snapshot.items[1].text = "tampered"; })), "invalid_archive");
     await refused(client.importArchive(edited(document => { document.snapshot.session.lifecycle = "suspending"; })), "invalid_archive");
     await refused(client.importArchive(edited(document => { document.snapshot.items[2].acceptedSeq = document.snapshot.items[1].acceptedSeq; })), "invalid_archive");
-    await refused(client.importArchive(edited(document => { document.archiveVersion = 5; })), "invalid_archive");
+    await refused(client.importArchive(edited(document => { document.archiveVersion = 6; })), "invalid_archive");
     const invalidConfig = decodeSessionFile(archive, 268435456) as any;
     invalidConfig.config.model.script = "  ";
     await refused(client.importArchive(encodeSessionFile(invalidConfig, 268435456)), "invalid_archive");

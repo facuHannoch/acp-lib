@@ -191,7 +191,12 @@ export function createChannelScheduler(
   }
 
   function accept(item: AcceptItem): SendResult {
-    if (stopped) return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
+    if (stopped && item.kind !== "external_notice") return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
+    if (stopped) {
+      const known = storage.snapshot();
+      if (!known.ok || !known.value.items.some(stored => stored.itemId === item.itemId))
+        return { accepted: false, code: "stopped", error: "This process has stopped accepting work" };
+    }
     const result = storage.acceptItem(item);
     if (!result.ok) {
       const code = result.error.code;
@@ -312,6 +317,8 @@ export function createChannelScheduler(
       idle: () => live.size === 0 && (!compatible() || !started || stopped || lifecycle !== "running" || waiting.size === 0),
       send: (input: ChannelInput) => accept({ kind: "participant_message", channelId: input?.channelId, senderId: input?.participantId,
         text: input?.text, ...(input?.policy == null ? {} : { explicitPolicy: input.policy }), ...(input?.itemId === undefined ? {} : { itemId: input.itemId }) }),
+      notifyExternal: notice => accept({ kind: "external_notice", itemId: notice.itemId, channelId: notice.channelId,
+        senderId: notice.source ?? "host", externalSource: notice.source, inheritedPolicyNames: notice.policyNames, text: notice.text }),
       notify: (notice: ChannelNotice) => accept({ kind: "channel_notice", channelId: notice?.channelId,
         senderId: `channel:${notice?.fromChannelId}`, sourceChannelId: notice?.fromChannelId, sourceTurnId: notice?.sourceTurnId, text: notice?.text }),
     },
