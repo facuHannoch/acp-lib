@@ -88,3 +88,8 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   they await real work and have no fixed delays); fixture changes opt-in; the new fake case fails on the old fake.
   The event bus and native host timeouts are load (default 5 s exceeded, teardown errors after); if they recur,
   give those files explicit bounds.
+- Native fixes in from cod2a (`6f4c6c6` media preflight in `NativeController.send`, queued, steered and
+  multi-message tests; `9bfaf27` fresh-handoff refusal before any event or record, bare `UnsupportedError`, options
+  extracted to `src/handoff-options.ts`; report `9016c0c`, [report](reports/11-22-REPORT-native-fixes.md)). Two
+  full `./test` runs green, 1,406 in 131 files; snapshots unchanged; `agent-session.ts` 4,641 → 4,604, `host.ts`
+  761. Sent to clad2a for review.
