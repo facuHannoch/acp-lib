@@ -243,3 +243,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   helper); `ce5e3d5` (a timed-out refusal reaches the provider while a record write is held); step 3 `c5b10b0`
   (changelog, spec, [report](reports/11-22-REPORT-R3.md)). Full `./test` on `ce5e3d5`: 1,507 in 137 files green.
   Sent to clad2a for the final R3 review.
+- Final R3 review in from clad2a, `9039369` (complete; full suite 1,507 green on `c5b10b0`); cod2a's follow-ups
+  `a95f82a` and `fcd6f09`, reviewed in `aad1f10` (resolved). **R3 gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R3-final.md)): 1,509 in 137 files.
+- **R1–R3 complete.** Combined as `pre-alpha` for the user. R4–R6 remain (can run in parallel with the orchestrator).
