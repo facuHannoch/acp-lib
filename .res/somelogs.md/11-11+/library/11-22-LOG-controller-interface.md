@@ -77,3 +77,9 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   (checked against the media flags, so M2 image support only flips a flag), and refuse an unsupported fresh handoff
   at the top of `runHandoff` with a bare `UnsupportedError`, before any event or record. Queued to cod2a after the
   test/doc batch.
+- Test/doc batch in from cod2a (`d3f7544`, `6f7fddf`, `49aa652`, `a12a47d`, `3c6dc8f`, `66fa496`; report `f30f3e3`,
+  [report](reports/11-22-REPORT-flake-fixes.md)): the bridge waits on events, the checkpoint deadline uses a
+  monotonic clock, lifecycle bounds raised with event waits, the fake's ended-turn cancel fixed with a new case,
+  changelog and conformance header corrected. No `src/` or snapshot changes. Each touched file five times green;
+  full `./test`: run 1 four other timeouts (committed event bus tests, new error notes), runs 2 and 3 green, 1,403 in
+  131 files. Sent to clad2a for review; cod2a started the native fixes.
