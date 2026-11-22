@@ -48,8 +48,8 @@ describe("permission requests", () => {
     expect(request.raw).toBe(params);
   });
 
-  describe("defaultPermission: approve", () => {
-    const approve = { defaultPermission: "approve" as const };
+  describe("default allow", () => {
+    const approve = { permissions: { default: "allow" as const } };
 
     // THE REGRESSION. Claude leads with its reject option, so a client that took
     // `options[0]` auto-refused every call it meant to auto-approve — which made MCP
@@ -88,31 +88,46 @@ describe("permission requests", () => {
     });
   });
 
-  describe("defaultPermission: cancel", () => {
-    test("never selects an option, whatever is on offer", async () => {
-      expect(await ask("reject-first", { defaultPermission: "cancel" })).toEqual({
-        outcome: "cancelled",
+  describe("refusal", () => {
+    test("deny selects reject_once and cancels when it is unavailable", async () => {
+      expect(await ask("reject-first", { permissions: { default: "deny" } })).toEqual({
+        outcome: "selected", optionId: "reject",
       });
-      expect(await ask("allow-first", { defaultPermission: "cancel" })).toEqual({
+      expect(await ask("empty", { permissions: { default: "deny" } })).toEqual({
         outcome: "cancelled",
       });
     });
 
-    test("is the default when nothing is configured", async () => {
-      expect(await ask("allow-first")).toEqual({ outcome: "cancelled" });
+    test("omitted settings ask and refuse immediately without a handler", async () => {
+      expect(await ask("reject-first")).toEqual({ outcome: "selected", optionId: "reject" });
+      expect(await ask("empty")).toEqual({ outcome: "cancelled" });
     });
   });
 
   describe("onPermissionRequest handler", () => {
-    test("wins over defaultPermission", async () => {
-      const outcome = await ask("reject-first", { defaultPermission: "approve" }, {
-        onPermissionRequest: () => ({ outcome: "selected", optionId: "reject" }),
-      });
-      expect(outcome).toEqual({ outcome: "selected", optionId: "reject" });
+    test("allow and deny bypass the prompt handler", async () => {
+      const handler = { onPermissionRequest() { throw new Error("must not run"); } };
+      expect(await ask("reject-first", { permissions: { default: "allow" } }, handler))
+        .toEqual({ outcome: "selected", optionId: "allow" });
+      expect(await ask("reject-first", { permissions: { default: "deny" } }, handler))
+        .toEqual({ outcome: "selected", optionId: "reject" });
     });
 
-    test("may cancel even when the default would approve", async () => {
-      const outcome = await ask("allow-first", { defaultPermission: "approve" }, {
+    test("permissionRule can choose ask before matching rules and the default", async () => {
+      const outcome = await ask("execute", {
+        permissions: { default: "deny", rules: { "kind:execute": "deny", "command:bun test": "deny" } },
+        permissionRule: (request) => {
+          expect(request.tool).toEqual({ kind: "execute", rawInput: { command: "bun test" } });
+          return "ask";
+        },
+      }, {
+        onPermissionRequest: () => ({ outcome: "selected", optionId: "allow" }),
+      });
+      expect(outcome).toEqual({ outcome: "selected", optionId: "allow" });
+    });
+
+    test("may cancel an ask", async () => {
+      const outcome = await ask("allow-first", {}, {
         onPermissionRequest: () => ({ outcome: "cancelled" }),
       });
       expect(outcome).toEqual({ outcome: "cancelled" });
@@ -153,5 +168,16 @@ describe("permission requests", () => {
       });
       expect(outcome).toEqual({ outcome: "selected", optionId: "always" });
     });
+  });
+
+  test("validates rule keys and levels when constructing the client", () => {
+    const adapter = { command: ["bun", AGENT] };
+    for (const key of ["kind:exectue", "command:", "worker:kind:read"]) {
+      expect(() => new AcpClient({ adapter, permissions: { default: "ask", rules: { [key]: "allow" } } }))
+        .toThrow("invalid permission rule key");
+    }
+    expect(() => new AcpClient({
+      adapter, permissions: { default: "ask", rules: { "kind:read": "alow" as never } },
+    })).toThrow("invalid permission level");
   });
 });
