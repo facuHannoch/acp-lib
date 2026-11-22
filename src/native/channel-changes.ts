@@ -22,7 +22,7 @@ export function channelStore(records: NativeHostRecords): ChannelPersistence {
 export class NativeChannelChanges {
   readonly #queues = new Map<string, Promise<unknown>>();
   readonly #blockedVersions = new Map<string, number>();
-  readonly #writes = new Set<Promise<PendingChange>>();
+  readonly #writes = new Set<Promise<unknown>>();
   #revision = 0;
 
   constructor(
@@ -48,17 +48,34 @@ export class NativeChannelChanges {
   async change(channel: string, desire: ChannelDesire, running: boolean): Promise<ChannelChangeOutcome> {
     // Start persisting immediately, even if an older RPC is outstanding. That RPC's confirmation
     // must see the new version. Register delivery synchronously so a subsequent push queues behind it.
+    const lifecycle = desire.lifecycle;
     const write = this.store.desire(channel, desire);
+    this.#trackWrite(write);
+    const deliver = async (): Promise<ChannelChangeOutcome> => {
+      const committed = await write;
+      if ((lifecycle === "suspended" || lifecycle === "open") && committed.desire.lifecycle === "retired") {
+        return { state: "blocked", reason: "channel_retired" };
+      }
+      return running ? this.#flushChange(channel) : { state: "pending" };
+    };
+    return running ? this.enqueue(channel, deliver) : deliver();
+  }
+
+  async deliverCommitted<T>(channel: string, commit: Promise<T>, running: () => boolean): Promise<T> {
+    this.#trackWrite(commit);
+    if (!running()) return commit;
+    return this.enqueue(channel, async () => {
+      const result = await commit;
+      if (running()) await this.#deliverPending(channel);
+      return result;
+    });
+  }
+
+  #trackWrite(write: Promise<unknown>): void {
     this.#revision++;
     this.#writes.add(write);
     const finished = () => { this.#writes.delete(write); };
     void write.then(finished, finished);
-    if (running) return this.enqueue(channel, async () => {
-      await write;
-      return this.#flushChange(channel);
-    });
-    await write;
-    return { state: "pending" };
   }
 
   startupBatch(signal: AbortSignal): Promise<PendingChannelChange[]> {
@@ -86,12 +103,19 @@ export class NativeChannelChanges {
     return this.#scan(signal, (changes) => {
       for (const change of changes) {
         if (this.#blockedVersions.get(change.channel) === change.version) continue;
-        void this.enqueue(change.channel, () => this.#flushChange(change.channel)).catch((error) => {
-          this.log.warn("native_channel_change_delivery_failed", { channel: change.channel, error: String(error) });
-        });
+        void this.enqueue(change.channel, () => this.#deliverPending(change.channel));
       }
       ready();
     });
+  }
+
+  async #deliverPending(channel: string): Promise<void> {
+    try {
+      await this.#flushChange(channel);
+    } catch (error) {
+      // The local commit is already authoritative. A failed delivery leaves the intent for retry.
+      this.log.warn("native_channel_change_delivery_failed", { channel, error: String(error) });
+    }
   }
 
   async #scan<T>(signal: AbortSignal, use: (changes: PendingChange[]) => T): Promise<T> {

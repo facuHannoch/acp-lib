@@ -38,20 +38,12 @@ import { noopLogger, type Logger } from "../logger.ts";
 import type { ChannelDesire, ChannelPersistence, PendingChange } from "../persistence/channels.ts";
 import { createMemoryHostRecords, fileHasPendingChannelChanges, submissionRecords, type NativeHostRecords, type Submission } from "./records.ts";
 import { channelStore, NativeChannelChanges, type ChannelChangeOutcome } from "./channel-changes.ts";
-import { ambiguous, codeOf, HarnessUnavailableError } from "./errors.ts";
+import { ambiguous, codeOf, HarnessIncompatibleError, HarnessUnavailableError } from "./errors.ts";
 
-export { HarnessUnavailableError } from "./errors.ts";
+export { HarnessIncompatibleError, HarnessUnavailableError } from "./errors.ts";
 export type { ChannelChangeOutcome } from "./channel-changes.ts";
 
 export type NativeHostState = "stopped" | "starting" | "running" | "failed";
-
-/** The running harness lacks something this integration requires (durable sessions, channel controls, approvals, startup changes). */
-export class HarnessIncompatibleError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "HarnessIncompatibleError";
-  }
-}
 
 /** One channel's part of a load view, as reconciled after an open. */
 export interface ChannelView {
@@ -743,6 +735,11 @@ export class NativeHarnessHost {
 
   /** The pending channel intents from the host's active store. */
   async pendingChannelChanges(): Promise<PendingChange[]> { return this.#changes.pendingChanges(); }
+
+  /** Reserve delivery now, then read the intent only after its transaction commits. */
+  deliverCommittedChannelChange<T>(channel: string, commit: Promise<T>): Promise<T> {
+    return this.#changes.deliverCommitted(channel, commit, () => this.#state === "running");
+  }
 
   /** The session's status as the running harness reports it now. */
   #lastStatus?: StatusResult;

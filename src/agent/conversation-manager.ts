@@ -90,6 +90,7 @@ import { forgetPendingParts, pendingOutOfBandParts } from "../media/pending.ts";
 import { resolveParts } from "../media/store.ts";
 import { persistParts } from "../media/content.ts";
 import { isMediaPart, promptParts, partsText } from "../media/parts.ts";
+import { createConversationWithChannel, deleteConversationWithChannel, initialChannelDesire } from "./native-channel-lifecycle.ts";
 
 export class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
@@ -169,20 +170,21 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     }
     // Validate caller input before the durable row: a mistake must not orphan a
     // conversation, and must not be recorded as a provider-session failure.
-    this.prepareStart({ ...config, providerSession: adoption ? "load" : "new" });
+    const adapterId = this.prepareStart({ ...config, providerSession: adoption ? "load" : "new" });
     if (adoption) return await this.createAdopting(id, participants, config, adoption, settings);
-    await this.agent.persistence.conversations.create({
+    const channelIntentCommitted = await createConversationWithChannel(this.agent, {
       agentSessionId: this.agent.id,
       agentConversationId: id,
       participants,
       ...(config.title !== undefined ? { title: config.title } : {}),
       ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
-    });
+    }, this.agent.adapters.native(adapterId));
     const attemptId = `provider-create-${randomUUID()}`;
     try {
       return await this.start(id, participants, {
         ...config,
         providerSession: "new",
+        channelIntentCommitted,
         settings,
       });
     } catch (error) {
@@ -625,19 +627,14 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     const descriptor = providerSession === "best-effort" || nativeHost
       ? await this.agent.persistence.providerSessions.active(id)
       : null;
-    const isNative = !!descriptor && !!nativeHost && this.agent.adapters.native(descriptor.adapterId) !== null;
+    const live = this.live.get(id);
+    const adapterId = descriptor?.adapterId ?? live?.adapterId;
+    const isNative = !!nativeHost && !!adapterId && this.agent.adapters.native(adapterId) !== null;
     // A native conversation has no provider session of its own to delete: its channel is retired instead.
     const active = providerSession === "best-effort" && !isNative ? descriptor : null;
-    const live = this.live.get(id);
     if (live) await live.stop();
     this.live.delete(id);
-    // Deleting the conversation retires its channel; the entity's timeline keeps its entries. Stored
-    // while the harness is stopped, so a delete never starts a process on its own.
-    if (isNative) await nativeHost!.changeChannel(id, { lifecycle: "retired" });
-    const checkpointsDeleted = checkpoints
-      ? (await this.agent.persistence.recoveryCheckpoints?.deleteForConversation?.(id)) ?? 0
-      : 0;
-    await this.agent.persistence.conversations.delete(id, deletedAt);
+    const checkpointsDeleted = await deleteConversationWithChannel(this.agent, id, isNative ? nativeHost : null, checkpoints, deletedAt);
     // A deleted conversation runs no next turn, so its waiting out-of-band parts would never leave.
     forgetPendingParts(this.agent, id);
     let providerDeleted: boolean | "unsupported" = false;
@@ -863,6 +860,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     participants: readonly ParticipantRef[],
     config: (CreateAgentConversationConfig | OpenAgentConversationConfig) & {
       readonly providerSession: "new" | "load";
+      readonly channelIntentCommitted?: boolean;
       readonly internalSessionId?: string;
       /** What this conversation persists, resolved before it started. */
       readonly settings: ManagerSettings;
@@ -881,14 +879,9 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       const nativeAdapter = this.agent.adapters.native(adapterId);
       const nativeHost = nativeAdapter ? this.agent.nativeHarness : null;
       if (nativeAdapter && !nativeHost) throw new Error("a native adapter requires AgentConfig.harness");
-      if (nativeHost && config.providerSession !== "load") {
-        const title = "title" in config ? config.title : undefined;
-        if (title !== undefined || nativeAdapter!.defaultPolicy !== undefined) {
-          await nativeHost.changeChannel(id, {
-            ...(title !== undefined ? { displayName: title } : {}),
-            ...(nativeAdapter!.defaultPolicy !== undefined ? { policy: nativeAdapter!.defaultPolicy } : {}),
-          });
-        }
+      if (nativeHost && config.providerSession !== "load" && !config.channelIntentCommitted) {
+        const desire = initialChannelDesire(nativeAdapter!, "title" in config ? config.title : undefined);
+        if (desire) await nativeHost.changeChannel(id, desire);
       }
       await this.detachedMeteringBarriers.get(id);
       const persistedMetering = await this.agent.persistence.metering.state(id);
@@ -1021,13 +1014,14 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     readonly mode?: AgentMode;
     readonly runtime?: AgentConversationRuntimeDefaults;
     readonly providerSession: "new" | "load";
-  }): void {
+  }): string {
     const adapterId = this.resolveAdapterId(config.adapterId);
     this.agent.adapters.require(adapterId);
     const mode = config.mode ?? config.runtime?.mode ?? this.settings.defaults.mode;
     if (mode === "degraded" && config.providerSession === "load") {
       throw new Error("providerSession.kind=load requires ACP (normal) mode");
     }
+    return adapterId;
   }
 
   /**
