@@ -116,3 +116,11 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 - R1 step 3 in from cod2a: implementation `c600199`, report `49b5a1c`. Scoped create/delete rollback, a single version
   delivered after commit, pending retirement precedence; full `./test` green (1,451 in 132 files); `host.ts` 887 →
   884, `conversation-manager.ts` 1,098 → 1,092. Sent to clad2a, with their view on the gap fix.
+- Step 3 review in from clad2a, `9e53d13` ([review](reports/11-22-REVIEW-R1-step3.md)): the transaction work is
+  correct (the rollback tests really fail the write). Should fix: an operator `resumeChannel` ignores a pending
+  retirement, so a busy delete's channel can be resumed and run pending input on a deleted conversation; assigned
+  to cod2a (reject with `channel_retired`). The gap is wider: (i) a delete after a restart, before the harness ever
+  opened, leaves the creation intent pending, and the next open creates the channel; (ii) a native conversation with
+  no title and no policy never gets a row. Fix endorsed, with additions: always register a row at create; on
+  confirm keep the row (desire cleared, marked applied); delete checks `known(id)` in its transaction; retired rows
+  stay as tombstones. Waiting on the user.
