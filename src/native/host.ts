@@ -1,3 +1,5 @@
+import { NativeWorkerDelivery } from "./worker-delivery.ts";
+import type { WorkerDeliveryRepository } from "../persistence/worker-delivery-contract.ts";
 import { NativeApprovals } from "./approvals.ts";
 /**
  * The shared native harness host: one per Agent (acp-client integration spec, Ownership).
@@ -149,6 +151,7 @@ export class NativeHarnessHost {
   readonly #channels = new Map<string, ChannelStatusResult>();
   readonly #changes: NativeChannelChanges;
   readonly #approvals: NativeApprovals;
+  readonly #workerDelivery?: NativeWorkerDelivery;
   /** Callers waiting for a submission's acceptance, across reopens. */
   readonly #waiters = new Map<string, Deferred<ItemStatus>>();
   readonly #stateListeners = new Set<() => void>();
@@ -156,7 +159,7 @@ export class NativeHarnessHost {
   /** How many processes this host has started (observability and tests). */
   launches = 0;
 
-  constructor(config: NativeHarnessHostConfig, channels?: ChannelPersistence) {
+  constructor(config: NativeHarnessHostConfig, channels?: ChannelPersistence, workerDelivery?: WorkerDeliveryRepository) {
     this.#config = config;
     this.sessionId = config.sessionId;
     this.#log = config.logger ?? noopLogger;
@@ -165,6 +168,21 @@ export class NativeHarnessHost {
     this.records = channels ? submissionRecords(records) : records;
     this.#changes = new NativeChannelChanges(channels ?? channelStore(records), this.#channels, () => this.#client(),
       this.#log, config.onChannelChangeBlocked);
+    if (workerDelivery) this.#workerDelivery = new NativeWorkerDelivery(
+      workerDelivery, () => this.#state === "running",
+      ({ id, destination, source, text, policyNames }) => this.#changes.enqueue(destination.id, async () => {
+        if (this.#state !== "running" || await this.#changes.pendingChange(destination.id)) return false;
+        const client = this.#client();
+        const params = { channel: destination.id, notice: { id, source, text, policyNames: [...policyNames] } };
+        try {
+          await client.notify(params);
+        } catch (error) {
+          if (codeOf(error) !== "timeout" || client !== this.#connection?.client) throw error;
+          await client.notify(params);
+        }
+        return true;
+      }),
+    );
     if (channels && fileHasPendingChannelChanges(records)) {
       this.#log.warn("native_file_channel_changes_ignored", { sessionId: this.sessionId });
     }
@@ -314,6 +332,7 @@ export class NativeHarnessHost {
           this.#connection = live;
           this.#replaySubmissions();
           this.#setState("running");
+          void this.flushWorkerDelivery();
           void live.closed.then(async () => {
             // A loss at the open boundary must reopen after the old start has retired.
             await this.#starting?.catch(() => undefined);
@@ -569,6 +588,9 @@ export class NativeHarnessHost {
     // before this host saw that turn start: its `turn_started` may never have been written.
     const outstanding = this.#waiters.size > 0 || [...this.#ports.values()].some((port) => port.busy()) || this.records.submissions().length > 0;
     if (outstanding) void this.#reopen();
+    else if (this.#workerDelivery) void this.#workerDelivery.hasWork().then(hasWork => {
+      if (hasWork && this.#state === "stopped" && !this.#stopped) void this.#reopen();
+    }).catch(error => this.#log.warn("native_worker_delivery_discovery_failed", { error: String(error) }));
   }
 
   async #reopen(): Promise<void> {
@@ -722,16 +744,20 @@ export class NativeHarnessHost {
    * in order with that channel's inputs. Stopped: stored, and sent with the next open; it never starts
    * the harness.
    */
-  changeChannel(channel: string, desire: ChannelDesire): Promise<ChannelChangeOutcome> {
-    return this.#changes.change(channel, desire, this.#state === "running");
+  async changeChannel(channel: string, desire: ChannelDesire): Promise<ChannelChangeOutcome> {
+    const result = await this.#changes.change(channel, desire, this.#state === "running");
+    if (result.state === "applied") void this.flushWorkerDelivery();
+    return result;
   }
 
   /** The pending channel intents from the host's active store. */
   async pendingChannelChanges(): Promise<PendingChange[]> { return this.#changes.pendingChanges(); }
 
   /** Reserve delivery now, then read the intent only after its transaction commits. */
-  deliverCommittedChannelChange<T>(channel: string, commit: Promise<T>, deliver: (result: T) => boolean = () => true): Promise<T> {
-    return this.#changes.deliverCommitted(channel, commit, () => this.#state === "running", deliver);
+  async deliverCommittedChannelChange<T>(channel: string, commit: Promise<T>, deliver: (result: T) => boolean = () => true): Promise<T> {
+    const result = await this.#changes.deliverCommitted(channel, commit, () => this.#state === "running", deliver);
+    void this.flushWorkerDelivery();
+    return result;
   }
 
   /** The session's status as the running harness reports it now. */
@@ -782,11 +808,22 @@ export class NativeHarnessHost {
   async resume(): Promise<StatusResult> {
     const status = await this.#client().resume();
     this.#lastStatus = status;
+    void this.flushWorkerDelivery();
     return status;
   }
   validateConfig(config: unknown) { return this.#client().validateConfig(config); }
   async suspendChannel(channel: string) { return this.#client().suspendChannel({ channel }); }
-  resumeChannel(channel: string) { return this.#changes.resume(channel); }
+  async resumeChannel(channel: string) {
+    const status = await this.#changes.resume(channel);
+    void this.flushWorkerDelivery();
+    return status;
+  }
+
+  async flushWorkerDelivery(): Promise<void> {
+    if (this.#state !== "running") return;
+    try { await this.#workerDelivery?.flush(); }
+    catch (error) { this.#log.warn("native_worker_delivery_failed", { error: String(error) }); }
+  }
   reconcileChannel(params: Parameters<HarnessClient["reconcileChannel"]>[0]) { return this.#client().reconcileChannel(params); }
   modelCalls(params: Parameters<HarnessClient["modelCalls"]>[0] = {}) { return this.#client().modelCalls(params); }
   conversationMessages(params: Parameters<HarnessClient["channelMessages"]>[0]) { return this.#client().channelMessages(params); }

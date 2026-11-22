@@ -52,11 +52,25 @@ for (const mode of ["final", "partial"] as const) test(`production worker delive
         await replacement.exited;
       }
     }
-    const recovered = await recover();
-    expect(recovered).toMatchObject({ binding: { assignmentId, destination: "owner-channel", originatingPolicyNames: ["guest"] },
+    const stager = launch("stage-and-hold");
+    const stageReader = stager.stdout.getReader();
+    let recovered: Awaited<ReturnType<typeof recover>>;
+    try {
+      const chunk = await stageReader.read();
+      if (chunk.done) throw new Error("Replacement exited before staging");
+      recovered = JSON.parse(new TextDecoder().decode(chunk.value));
+      stager.kill("SIGKILL");
+      await stager.exited;
+      expect(stager.signalCode).toBe("SIGKILL");
+    } finally {
+      stageReader.releaseLock();
+      if (stager.exitCode === null && stager.signalCode === null) stager.kill("SIGKILL");
+      await stager.exited;
+    }
+    expect(recovered).toMatchObject({ binding: { assignmentId, destination: { kind: "native" as const, id: "owner-channel" }, originatingPolicyNames: ["guest"] },
       staged: { assignmentId, outcome: { kind: mode === "final" ? "result" : "uncertain" },
-        delivery: { id: `worker-result:${assignmentId}`, destination: "owner-channel", policyNames: ["guest"], state: "pending" } } });
-    expect(recovered.staged.delivery.source).toBe(recovered.binding.workerConversationId);
+        delivery: { id: `worker-result:${assignmentId}`, destination: { kind: "native" as const, id: "owner-channel" }, policyNames: ["guest"], state: "pending" } } });
+    expect(recovered.staged.delivery.source).toBe(recovered.binding.workerHandle);
     if (mode === "final") expect(recovered.staged.outcome.text).toBe("Exact worker result");
     else expect(recovered.staged.delivery.text).toContain(assignmentId);
     expect(await recover()).toEqual(recovered);
@@ -84,11 +98,16 @@ for (const mode of ["final", "partial"] as const) test(`production worker delive
         const operationId = "folded-operation";
         for (const name of ["guest", "owner", "unrelated"]) {
           expect(await repository.reserve({
-            assignmentId: name, workerConversationId, messageId: `${name}-message`,
-            destination: `${name}-channel`, originatingPolicyNames: [name], contributingPolicyNames: [],
+            assignmentId: name, workerConversationId, workerHandle: "worker-handle", messageId: `${name}-message`,
+            destination: { kind: "native" as const, id: `${name}-channel` }, originatingPolicyNames: [name], contributingPolicyNames: [],
           })).toBe("reserved");
         }
         await backend.transaction(async scope => {
+          await scope.records.append({
+            recordId: "intermediate-assistant", kind: "message", role: "assistant", status: "completed",
+            agentSessionId: backend.identityRecord.agentSessionId, agentConversationId: workerConversationId,
+            operationId, timestamp: new Date().toISOString(), content: "Intermediate output must not be delivered",
+          });
           await scope.records.append({
             recordId: "folded-assistant", kind: "message", role: "assistant", status: "completed",
             agentSessionId: backend.identityRecord.agentSessionId, agentConversationId: workerConversationId,
@@ -101,10 +120,26 @@ for (const mode of ["final", "partial"] as const) test(`production worker delive
         for (const name of ["guest", "owner"]) {
           expect(await repository.stage(name)).toMatchObject({
             outcome: { kind: "result", finalRecordId: "folded-assistant", text: "Shared folded result" },
-            delivery: { id: `worker-result:${name}`, destination: `${name}-channel`, policyNames: ["guest", "owner"] },
+            delivery: { id: `worker-result:${name}`, destination: { kind: "native" as const, id: `${name}-channel` }, policyNames: ["guest", "owner"] },
           });
         }
         expect(await repository.stage("unrelated")).toBeUndefined();
+      }
+      for (const [id, content] of [["missing", undefined], ["blank", "   "]] as const) {
+        const workerConversationId = recovered.binding.workerConversationId;
+        await repository.reserve({ assignmentId: id, workerConversationId, workerHandle: "label", messageId: id,
+          destination: { kind: "native", id: "target" }, originatingPolicyNames: [], contributingPolicyNames: [] });
+        await backend.transaction(async scope => {
+          if (content !== undefined) {
+            await scope.records.append({ recordId: `${id}-assistant`, kind: "message", role: "assistant", status: "completed",
+              agentSessionId: backend.identityRecord.agentSessionId, agentConversationId: workerConversationId,
+              operationId: id, timestamp: new Date().toISOString(), content });
+          }
+          await scope.workerDelivery!.recordFinal(workerConversationId, id, [id]);
+        });
+        expect(await repository.stage(id)).toMatchObject({
+          outcome: { kind: "failed", reason: "worker produced no saved result" }, delivery: { state: "pending" },
+        });
       }
       expect(await repository.transitionDelivery(recovered.staged.delivery.id, { from: "pending", to: "delivered" })).toBe(true);
       expect((await repository.stage(assignmentId))?.delivery).toEqual({ ...recovered.staged.delivery, state: "delivered" });

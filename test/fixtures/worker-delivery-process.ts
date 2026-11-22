@@ -1,7 +1,7 @@
 import { Agent } from "../../src/index.ts";
 
 const [path, mode, assignmentId] = process.argv.slice(2) as [string, string, string];
-const recovering = mode === "recover";
+const recovering = mode === "recover" || mode === "stage-and-hold";
 const writeBarrier = (value: object) => console.log(JSON.stringify(value));
 const agent = await Agent.open({
   persistence: { kind: "sqlite", path },
@@ -15,6 +15,7 @@ const repository = agent.persistence.workerDelivery!;
 if (recovering) {
   try {
     writeBarrier({ binding: await repository.readBinding(assignmentId), staged: await repository.stage(assignmentId) });
+    if (mode === "stage-and-hold") await new Promise<void>(() => setInterval(() => {}, 1000));
   } finally { await agent.close(); }
 } else {
   const worker = await agent.conversations.create({ title: "Worker" });
@@ -22,7 +23,7 @@ if (recovering) {
     text: "assignment result",
     async beforeDispatch(messageId: string) {
       const reservation = await repository.reserve({
-        assignmentId, workerConversationId: worker.id, messageId, destination: "owner-channel",
+        assignmentId, workerConversationId: worker.id, workerHandle: "worker-handle", messageId, destination: { kind: "native" as const, id: "owner-channel" },
         originatingPolicyNames: ["guest"], contributingPolicyNames: [],
       });
       if (reservation !== "reserved") throw new Error(`Assignment reservation returned ${reservation}`);
