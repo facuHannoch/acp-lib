@@ -51,7 +51,7 @@ agent its delegation capacity from outside:
 ```
 harness (the agent)                        acp-client (orchestrator + workers table)
   delegate / check / list / stop  ───────► functions/call (tools acp-client registered)
-  ◄──────────────────────────────────────  replies, failures, redirected, uncertain outcomes:
+  ◄──────────────────────────────────────  replies, failures, uncertain outcomes:
                                            external notices (channel/notify) on the agent's channel
 ```
 
@@ -95,7 +95,8 @@ behaves as today.
 
 **What this spec owns beyond the pool:**
 
-- **The delegation tools.** Their registration and system prompt section; the `functions/call` route from
+- **The delegation tools.** Their registration in the per-open tool catalog, with usage guidance in their
+  descriptions (no system prompt section); the `functions/call` route from
   `src/native/` to the orchestrator; building the `Actor` from the call (the channel's conversation, the sender of
   the turn's input, and the call's contributing `policyNames`); mapping results back as tool output. Delegation calls
   aren't idempotent (`delegate` opens a worker): the harness never repeats an uncertain callback, which is what they
@@ -105,7 +106,14 @@ behaves as today.
 - **Not owned here: the native durable handoff.** Persisting assignments, staging results and notices, delivering
   them through `channel/notify` and recovering after a restart is a small acp-client module built by the harness's
   external notices work (its plan's Gate 3, "acp-client durable handoff"; decided 2026-11-22). The orchestrator
-  uses it: it creates assignments and reports their results.
+  uses it: it creates assignments and reports their results. **Built so far (in `alpha`, `d403bf4`, approved):** the
+  `workerDelivery?` repository (`src/persistence/worker-delivery-contract.ts`, SQLite schema 18, capability
+  `capabilities.workerDelivery`): assignments reserved before dispatch (idempotent by `assignmentId`, bound to the
+  worker's message id through the `beforeDispatch` hook), `redirect`, `addContributingPolicies`, the final and
+  failure outcomes written by the lifecycle (`recordFinal`, `recordFailure`, in the turn's terminal transaction), and
+  the staged notice with its delivery states. **Still to build (Gate 3):** the host flush through `channel/notify`,
+  retries after a lost acknowledgement or a resume, explicit retry after `invalid_policy`, and recovery at open
+  (the uncertainty notice). O3b's native delivery and O5b's restart gate need that remainder.
 
 ## Roles
 
@@ -130,8 +138,9 @@ behaves as today.
 Everything about a worker's progress is already in the worker's own conversation (its state, operation, messages,
 tool calls, records); `check` and `list` read it from there. The orchestrator stores only what nobody else knows and
 what must survive a restart, in an optional `workers?` repository with a `capabilities.workers` flag (the same
-pattern as `identity?` and the integration spec's `channels?`; SQLite implements it, schema version 18; a custom
-backend without it can't enable the orchestrator: creating the `Agent` fails with a clear error):
+pattern as `identity?` and the integration spec's `channels?`; SQLite implements it, schema version 19, after worker delivery's 18; a custom
+backend without it, or without `workerDelivery?`, can't enable the orchestrator: creating the `Agent` fails with a clear
+error):
 
 ```
 workers
@@ -139,7 +148,8 @@ workers
   conversation_id    the worker's ordinary conversation
   opened_by          the conversation (or "consumer") where the work started
   about              the agent's short description; updated on any send that gives one
-  last_conversation  the conversation that gave its latest work: where its reply and notices go
+  last_conversation  the conversation that gave its latest work: only the default destination of its next
+                     assignment; delivery reads the assignment's own destination, which redirect retargets
   created_at, dropped_at
 ```
 
@@ -148,8 +158,10 @@ assignment's id, its link to the worker and the worker operation, its destinatio
 written before dispatch; then its result and staged notice, written together (The way back). **The assignment id is
 the `delegate` or `send` call's invocation id** (`<turnId>:<toolCallId>`, decision 0021): stable and unique, and the
 harness never repeats an uncertain callback. A steer from the same conversation joins the running assignment and
-adds its policy names; a redirect retargets it to the redirecting conversation, with that conversation's names
-added; it ends when the worker's turn ends. In memory only: which slot a worker holds, the resolved worker rules of
+adds its policy names: **one assignment spans a steer chain**, the steered turn's end produces no notice, and the
+successor run's result is the assignment's one final notice (worker delivery gains a call that carries the
+assignment's binding to the successor's message ids); a redirect retargets it to the redirecting conversation, with
+that conversation's names added; it ends when the worker's final turn ends. In memory only: which slot a worker holds, the resolved worker rules of
 the running assignment, pending permission requests (refused on restart). Busy or idle is read from the worker
 conversation's state. No `agent_action` records in v1: the events and the `workers` row say what happened.
 
@@ -189,7 +201,7 @@ it can send work to an idle worker if both allow it, but guest restrictions prev
 ```ts
 interface Orchestrator {
   open(actor: Actor, input: { text: string; about?: string }): Promise<OpenResult>;
-  send(actor: Actor, handle: string, input: { text: string; about?: string; redirect?: boolean }): Promise<SendResult>;
+  send(actor: Actor, handle: string, input: { text: string; about?: string; redirect?: boolean; assignment?: "new" }): Promise<SendResult>;
   check(actor: Actor, handle: string): Promise<WorkerStatus>;
   stop(actor: Actor, handle: string): Promise<void>;
   drop(actor: Actor, handle: string): Promise<void>;
@@ -232,16 +244,26 @@ owner (agc-1): "The /login page returns 403, fix it"
 ```
 send(w1, text) from conversation X:
 
-  w1 idle ─────────────────────────────────────────► prompt it             → "sent"
-  w1 busy, X gave its running work ────────────────► steer into it         → "steered"
+  w1 idle ─────────────────────────────────────────► prompt it             → "sent" (a new assignment)
+  w1 busy, X gave its running work ────────────────► steer into it         → "steered" (the SAME assignment
+                                                       continues, with the steer's policy names added)
   w1 busy, other work, no redirect ────────────────► nothing sent          → "busy" + about, where, for whom, how long
   w1 busy, other work, redirect: true ─────────────► policy allows?
-                                                       yes → steer; last_conversation = X;
-                                                             the previous conversation gets "w1 was redirected"
+                                                       yes → steer into the same assignment; its destination
+                                                             and last_conversation = X (X's names added)
                                                        no  → refused
   w1 evicted ──────────────────────────────────────► take a slot, reload, then as above
+
+  assignment: "new" (optional, any busy case above that is allowed):
+                                                       the running assignment ends as interrupted (steered), its
+                                                       notice going to ITS destination; the text starts a NEW
+                                                       assignment (destination X, X's names), with its own result
 ```
 
+- **By default a send continues the running assignment:** a steer doesn't break it, and `redirect` only moves where
+  its result goes (with the redirecting conversation's names added). The agent starts separate tracking only by
+  asking for it with `assignment: "new"`; the tool description says so. A redirect with a new assignment is how
+  another conversation takes a worker over and tells the previous owner (its assignment ends interrupted, steered).
 - Queueing behind another conversation's work is not offered: it suits users rarely and agent-to-agent never.
 - The agent turns "busy" into words for its user ("I'm in the middle of something you asked in our other chat; should
   I drop it?"). Renderers say "another conversation with Bob", never "another agent".
@@ -262,9 +284,8 @@ The user never sees the worker's text directly; the agent reads it and decides w
 
 | When | Item | To |
 | --- | --- | --- |
-| a worker's turn ends normally | `worker_reply`: its final message | `last_conversation` |
-| a turn fails (stalled, crashed, error) | `worker_failed` with the error kind | `last_conversation` |
-| another conversation redirects the worker | `worker_redirected` | the previous `last_conversation` |
+| a worker's turn ends normally | `worker_reply`: its final message | the assignment's destination |
+| a turn fails (stalled, crashed, error) | `worker_failed` with the error kind | the assignment's destination |
 | restart finds an assignment with no reliable final record | an uncertainty notice: the assignment and worker, outcome uncertain; the work isn't repeated | its destination |
 
 - **The port:** for a native conversation it delivers the result through `channel/notify`, as an external notice
@@ -281,7 +302,8 @@ The user never sees the worker's text directly; the agent reads it and decides w
   - delivery: a suspension or an unresolved channel change keeps the notice pending; `invalid_policy` blocks it until
     an explicit retry; a missing or retired destination fails it, the result kept for `check` and `list`; a duplicate
     receipt counts as delivered.
-- A stop asked by the conversation itself produces no item: the tool result said "stopped".
+- A stop asked by the conversation itself may still produce an interrupted notice (worker delivery doesn't know who
+  asked for the stop); accepted in v1, the agent knows it asked (the tool result said "stopped").
 - Several items arriving together are taken in one turn: the harness drains what waits at each model call.
 - Pull stays available: `check` and `list`. What a reply contains is tuned by the test run; v1 sends the final message.
 - **Target gone:** the reply is kept on the worker and shows on `check` and `list`.
@@ -300,8 +322,8 @@ w1 wants to run `bun test` → ACP request_permission → acp-client
 ```
 
 - **When the conversation that gave the work doesn't answer permissions** (`answersPermissions: false`, for example
-  one driven by an API integration with no human watching), its permission default applies at once, usually deny:
-  the rule every conversation follows (integration spec, Permissions). No routing to another conversation; a headless
+  one driven by an API integration with no human watching), an ask is refused at once, whatever its default says
+  (decided in integration R3: an ask nobody can answer is never loosened to the default). No routing to another conversation; a headless
   conversation gets worker approvals through rules instead (the policy allows the specific commands). The levels are
   allow, deny and ask me; "ask the agent" (the agent approving its own worker) is not in v1 (Limitations).
 - **Forwarded requests use the conversation's own events:** `permission_requested` on the giving conversation, marked
@@ -397,34 +419,39 @@ src/orchestrator/
   restart.ts        rebuild on start
   consumer-api.ts   agent.workers.*
   index.ts
-src/persistence/    the optional workers? repository (WorkerPersistence) with capabilities.workers; SQLite schema 18
+src/persistence/    the optional workers? repository (WorkerPersistence) with capabilities.workers; SQLite schema 19 (worker delivery took 18)
 ```
 
 - **Touches existing code:** `src/agent.ts` (construct when configured, expose `agent.workers`); `src/agent/config.ts`
   (the `orchestrator` option); `src/persistence/` (one optional repository, like the others); the worker marker on
   conversations, and identity skipping marked conversations (`src/agent/persisted-lifecycle.ts`,
-  `src/agent/record-capture.ts`); `src/index.ts` (exports). The conversation manager is used through its public methods; `agent-session.ts` is not edited.
+  `src/agent/record-capture.ts`); `src/index.ts` (exports). The conversation manager is used through its public methods; `agent-session.ts` is not edited, **except O4's one-line change** (below).
 - Each file under ~400 lines; the module under ~2,000.
 - Tests: `test/orchestrator/` with workers on the offline fixture ACP agents (turn ends, permission requests, stalls) and a
   temp-file SQLite.
 
 ## Implementation plan
 
-Written 2026-11-13; revised in review 2 (2026-11-22). Seven briefs, each about one agent run, run in order by one trio
+Written 2026-11-13; revised in review 2 (2026-11-22). Nine briefs (O3 and O5 each split in two), each about one agent run, run in order by one trio
 (`../.plan-execution/plan.md`; its code-quality and triage rules apply).
 
 **Dependencies.** Starts after the integration's briefs R1–R3: it uses the turn-based controller interface, the
 permission events and `answerPermission` (R3), the permission matcher with `worker:` rules (R2), and the
 optional-repository pattern (`channels?`, R1). **Also blocked on two harness proposals,** accepted and built: the
 [callback policy amendment](../../../../src/native-harness/.res/docs/tools-and-callbacks/0002-AMENDMENT-callback-policy/SPEC.md) (`policyNames` on `functions/call`, used by O6's route) and
-[external notices](../../../../src/native-harness/.res/docs/channel-messaging/0001-DESIGN-external-notices/SPEC.md) (`channel/notify`, and its Gate 3's durable handoff module, used by O3 and O5). O1–O5 need no harness: workers are
+[external notices](../../../../src/native-harness/.res/docs/channel-messaging/0001-DESIGN-external-notices/SPEC.md) (`channel/notify`, and its Gate 3's durable handoff module, used by O3b and O5b). O1–O5a need no harness: workers are
 ordinary conversations on the existing offline fixture ACP agents (`test/fixtures/`: `steer-agent`,
 `permission-agent`, `stalling-prompt-agent`, …), so they are tested as real conversations, not fakes. O6 needs the harness's
 consumer-registered tools (`functions/call`) for its route.
 
 **Common to every brief.** Clean-copy gates (`bun run typecheck`, full `bun test`, output saved); the integration
-spec's final gate is the baseline; no edit to `src/agent-session.ts`; no live harness runs except O6's step 3, with
+spec's final gate is the baseline; no edit to `src/agent-session.ts` except O4's one reviewed one-line change (the constructor passes `this` to the permissions module's registry, so `forwardPermission(conversation, …)` can reach the conversation's coordinator; it adds no lines); no live harness runs except O6's step 3, with
 the owner's authorization.
+
+**Order** (revised 2026-11-22, with worker delivery in `alpha`): G, O1, O2, **O4**, O3a, O5a, O3b, O5b, O6. Gate 3's
+host side (the flush through `channel/notify`, retries, recovery at open) is built by the harness work in parallel;
+everything through O5a needs none of it, and only O3b, O5b and O6 wait for it. O4 comes before the way back because it
+needs no harness and its forwarding entry is the one change to integration R3's code (reviewed on its own).
 
 ### The code as it is (for these briefs)
 
@@ -440,26 +467,33 @@ Read on `beta` 2026-11-13; line numbers move once the controller-interface and i
 - **Out-of-band messages:** `src/out-of-band-messages.ts` (`pendingOutOfBandMessages`, `composeProviderParts`):
   the ACP half of delivery.
 - **Record kinds** (`src/persistence/records.ts:507`): `header`, `operation`, `reasoning`, `activity`,
-  `configuration`, `permission`, `transition`, `metering_reference`, `lifecycle`, `cancellation`. There is no
-  `agent_action` kind, and v1 adds none (decided in review 2).
+  `configuration`, `permission`, `transition`, `metering_reference`, `lifecycle`, `cancellation`. The canonical Agent
+  kinds in `src/persistence/backend.ts` also include `agent_action` (`AgentActionRecord`); v1 emits no delegation
+  records (decided in review 2).
 - **Persistence:** optional repositories with capability flags (`src/persistence/backend.ts`), as `channels?`.
 
 ### Brief G: grounding
 
 The implementer checks The code as it is and every reuse point in the briefs against the code after integration R1–R3
-(the permission events, the matcher's `worker:` prefix, the `channels?` pattern), checks that `policyNames` on
-`functions/call`, `channel/notify` and the durable handoff module are built as their harness specs say, and
-reports what moved or doesn't exist
-(`library/reports/<date>-REPORT-OG.md`). Corrections go to the spec owner before O1.
+(the permission events, the matcher's `worker:` prefix, the `channels?` pattern) and worker delivery (the
+`workerDelivery?` repository and the lifecycle's `recordFinal` and `recordFailure`, in `alpha`), checks that
+`policyNames` on `functions/call` and `channel/notify` are built as their harness specs say, and reports what moved or
+doesn't exist (`library/reports/<date>-REPORT-OG.md`). It also writes **the interface with Gate 3's remainder**: the
+calls the orchestrator makes (reserve before dispatch, report the result or failure, redirect, add policies) and the
+ones it expects from the host side (flush through `channel/notify`, retries, recovery at open), so both sides build
+to the same contract; and sizes **O4's forwarding entry** on the conversation's permission handling (R3 emits
+events only for a conversation's own turns). Corrections go to the spec owner before O1.
 
 ### Brief O1: the pool and the workers table
 
 **Scope:** steps 1–4.
 
-1. **The `workers?` repository** with `capabilities.workers`, its SQLite implementation (schema 18, upgrade from 17,
-   tested on a version-17 database); the orchestrator refused at `Agent` construction on a backend without it. It
-   holds the workers rows; assignments, results and staged notices are the durable handoff module's. **Gate:** suite
-   green; the upgrade test.
+1. **The `workers?` repository** with `capabilities.workers`, its SQLite implementation (schema 19, upgrade from 18,
+   tested on a version-18 database and on the chain from 16); the orchestrator refused at `Agent` construction on a
+   backend without `capabilities.workers` **or `capabilities.workerDelivery`**, and on an `Agent` whose message
+   capture isn't `content` (a worker's final text must be recoverable for its result). It holds the workers rows;
+   assignments, results and staged notices are `workerDelivery?`'s. **Gate:** suite green; the upgrade tests; the
+   refusal for each missing capability and for a lower capture setting.
 2. **The worker marker:** worker conversations created with `role: "worker"`; identity `load`, `update` and member
    registration skip them; `agent.conversations.list()` shows the role. **Gate:** a worker's records never reach the
    identity runtime; its prompts get no preamble.
@@ -476,28 +510,14 @@ reports what moved or doesn't exist
 
 **Scope:** steps 1–2.
 
-1. **Busy rules:** steer when the same conversation gave the running work; `busy` with the listing otherwise;
-   `redirect: true` steers, moves `last_conversation`, and pushes `worker_redirected` to the previous one. **Gate:**
-   each case, with two conversations on one worker.
+1. **Busy rules:** steer (the same assignment continues) when the same conversation gave the running work; `busy`
+   with the listing otherwise; `redirect: true` steers into the same assignment, retargets it (`redirect`) and moves
+   `last_conversation`; `assignment: "new"` ends the running assignment as interrupted (steered) and starts a new
+   one. **Gate:** each case, and the combinations, with two conversations on one worker.
 2. **Policy checks:** `use`, `scope`, `redirect` (also gating stop by others and drop), `maxOpen`. **Gate:** a
    refusal for each.
 
 **Done:** report commits and each case.
-
-### Brief O3: the way back
-
-**Scope:** steps 1–2.
-
-1. **The delivery port** (`src/orchestrator/contracts.ts`): native results handed to the durable handoff module
-   (assignment created before dispatch with the invocation id, result reported at the turn's end); out-of-band
-   messages with a kind and a sender in their metadata for ACP conversations, delivered with the next prompt.
-   **Gate:** a result reaches a native channel as one notice; an item reaches an ACP conversation; a steer joins the
-   running assignment and a redirect retargets it.
-2. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
-   `last_conversation`; a stop asked by the conversation itself produces none; a gone target keeps the reply on the
-   worker (`check`, `list`). **Gate:** each item; a deleted target.
-
-**Done:** report commits and each item.
 
 ### Brief O4: permission forwarding
 
@@ -505,27 +525,73 @@ reports what moved or doesn't exist
 
 1. **The handler** passed with each prompt to a worker: the level from the giving conversation's `worker:` rules
    (integration R2's matcher); allow and deny answered at once; ask me as `permission_requested` on the giving
-   conversation, marked with the worker (integration R3); a giving conversation that doesn't answer permissions gets
-   its default at once. **Gate:** each level; the timeout; a
-   headless giving conversation.
+   conversation, marked with the worker (`permission_requested` gains a `source` mark, and `turnId` is optional for a
+   forwarded request), through a forwarding entry on the conversation's permission handling that O4
+   adds (R3 emits events only for a conversation's own turns, so this is a small extension of it: a pending request
+   with a source mark and a resolver that answers the worker's request); a giving conversation that doesn't answer
+   permissions has the ask refused at once. **Gate:** each level; the timeout; a headless giving conversation.
 2. **Allow always:** stripped from the options shown when a non-owner conversation is asked; automatic allow follows
    the auto-approve rule. **Gate:** both.
 
 **Done:** report commits and each case.
 
-### Brief O5: stop, drop, idle stop, restart
+### Brief O3a: the way back, assignments and the ACP half
 
-**Scope:** steps 1–3.
+**Scope:** steps 1–3. Needs no Gate 3 remainder.
+
+1. **Assignments:** each delegated `delegate` or `send` reserves its assignment (id = the call's invocation id) in
+   `workerDelivery?` before dispatch, through the `beforeDispatch` hook, with the destination and the call's
+   contributing `policyNames`; a steer joins the running assignment (`addContributingPolicies`, and the binding carried to the successor run; with `assignment: "new"` the awaiting continuation is closed as interrupted, steered, and the new text reserves its own assignment) and a
+   redirect retargets it (`redirect`). **Gate:** an assignment exists before the worker's prompt reaches the provider; a steer
+   and a redirect each change it; a refused hook sends nothing.
+2. **The delivery port's ACP half** (`src/orchestrator/contracts.ts`): out-of-band messages with a kind and a sender
+   in their metadata, delivered with the next prompt, **through the same store steps as native** (stage, deliver,
+   mark delivered in `workerDelivery?`), so recovery after a restart is uniform; the host side's scan skips ACP
+   destinations (a destination-kind filter). The append is **keyed by the delivery id and idempotent** (the current
+   `appendAssistantMessage` mints a random id, so O3a adds a stable-id, deduplicated out-of-band append): the delivery
+   is marked delivered only after the append commits, an unconfirmed append leaves it pending, and a retry appends
+   nothing twice. **Gate:** an item reaches an ACP conversation and is marked delivered; a retry after a kill between
+   the append and the mark appends once; after a kill between the final record and the append, the restart finishes
+   the delivery once.
+3. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
+   the assignment's destination; a gone target keeps the reply on the
+   worker (`check`, `list`). **Gate:** each item; a deleted target.
+
+**Done:** report commits and each item.
+
+### Brief O5a: stop, drop, idle stop
+
+**Scope:** steps 1–2. Needs no Gate 3 remainder.
 
 1. **`stop`** (`interrupt({ clearQueue })`, allowed for the giver or with `redirect`) and **`drop`** (stop, delete the
    conversation and provider session, mark the row dropped). **Gate:** each, and a refusal.
 2. **Idle stop:** `workers.idleStopMs` (default 10 minutes, `false` off); the next send reloads; `worker_stopped` with
    the reason. **Gate:** a worker idle past the limit has no process and reloads on the next send.
-3. **Restart:** workers read from the repository; the durable handoff module's recovery run at open; pending
-   permission requests refused. **Gate:** the harness plan's two crash cases through the orchestrator: acp-client
-   killed after a worker's final record commits but before staging (the result recovered by assignment id, nothing
-   redispatched), and killed before the final record commits (one uncertainty notice); a staged notice not yet
-   accepted, delivered once.
+
+**Done:** report commits and each case.
+
+### Brief O3b: the way back, native delivery
+
+**Scope:** steps 1–2. After Gate 3's host side lands (the flush, retries and recovery at open).
+
+1. **Native delivery through the durable handoff:** a native conversation's result reaches its channel as one notice
+   (`channel/notify`, stable id, source label, the assignment's composed policies frozen at staging), delivered by the
+   host side from the staged notice. **Gate:** a result reaches a native channel as one notice; a steer's policies
+   are in it; a redirect retargets it, whichever order it meets staging.
+2. **Outcomes:** `pending`, blocked on `invalid_policy` (explicit retry after the policy is fixed), failed for a
+   missing or retired channel, the result kept for `check` and `list`. **Gate:** each.
+
+**Done:** report commits and each case.
+
+### Brief O5b: restart
+
+**Scope:** one step. After Gate 3's host side lands.
+
+1. **Restart:** workers read from the repository; the durable handoff's recovery run at open; pending permission
+   requests refused. **Gate:** the harness plan's two crash cases through the orchestrator: acp-client killed after a
+   worker's final record commits but before staging (the result recovered by assignment id, nothing redispatched),
+   and killed before the final record commits (one uncertainty notice); a staged notice not yet accepted, delivered
+   once.
 
 **Done:** report commits and each case.
 
@@ -533,7 +599,7 @@ reports what moved or doesn't exist
 
 **Scope:** steps 1–3.
 
-1. **The route:** the delegation tools registered at session open with their prompt section; `functions/call` from
+1. **The route:** the delegation tools registered in the per-open tool catalog (guidance in their descriptions); `functions/call` from
    the harness routed to the orchestrator, the `Actor` built from the call, its `policyNames` resolved to the
    session's worker rules (most restrictive; empty list → defaults; missing or unknown → declined); results returned
    as tool output. **Gate:** with the in-process harness, including a two-policy turn.
@@ -570,6 +636,9 @@ reports what moved or doesn't exist
   owner may steer are later, as worker kinds a policy can be limited to (how such workers are created, and which
   policies they accept).
 
+- **No notice to the previous conversation on a redirect, and a stop the giver asked for may still produce an
+  interrupted notice:** all conversations of the entity are the same agent, so neither is needed in v1.
+
 ## Decided in review 2 (2026-11-22)
 
 - Delegation tools go in the tool catalog supplied at each open; usage guidance in their descriptions, no system
@@ -581,7 +650,6 @@ reports what moved or doesn't exist
 ## Decided in review 1
 
 - Only the pool prompts workers (Slots); the consumer reads, stops and deletes them.
-- Whether a `worker_redirected` item wakes the agent is the harness's per-kind default, as for every item.
 
 ## Open
 

@@ -165,11 +165,12 @@ only).
 
 **Scope:** steps 0–3 (Permissions). Covers ACP requests and native approvals alike.
 
-**Build on the host's approval responder** (noted 2026-11-22): the harness's operator controls work (decision 0022,
-accepted, merged into `haurness-l`, not yet into `alpha`) built one host-level approval responder for all channels,
-which answers approvals before they reach a conversation and closes each pending request with a notification. R3's
-events and `answerPermission` are built on top of it, not beside it; step 0 grounds R3 on it once it reaches
-`alpha`.
+**Built on the host's approval responder** (corrected 2026-11-22): the harness's operator controls work (decision
+0022, in `alpha` since `713a76a`) built one host-level approval responder for all channels, which answers approvals
+before they reach a conversation and closes each pending request with a notification. R3 was grounded on it and
+built on top of it (it is one of the two native routes: its answers are `by: "handler"`, its closes resolve once).
+**R3 is done:** gated at `fcd6f09` (1,509 tests), merged in `alpha` `4e88243`; its decisions are in its
+changelog and `library/11-22-LOG-native-harness-integration.md`.
 
 **The code as it is:** ACP requests as in R2. Native approvals arrive as the harness's `approval_requested` and are
 answered with `approval/respond` (`allow_once` or `deny`) by the prompt handlers of the first message the turn took
