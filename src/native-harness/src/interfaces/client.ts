@@ -75,6 +75,12 @@ export class HarnessClient {
         answer(async () => { if (!reader) throw new FunctionError("result_unavailable", "This host stores no results"); return reader(message.params); });
         return;
       }
+      const names = message.params.policyNames;
+      if (!Array.isArray(names) || names.some(name => typeof name !== "string" || !name.trim() || name === "__legacy_allow")
+        || new Set(names).size !== names.length) {
+        answer(async () => { throw new FunctionError("invalid_params", "Expected unique configured policy names"); });
+        return;
+      }
       const handler = this.functionHandler, control = new AbortController(), id = message.params.invocationId;
       this.running.set(id, control);
       answer(async () => {

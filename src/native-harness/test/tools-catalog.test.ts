@@ -195,7 +195,7 @@ test("a consumer call runs once through the gate: validated arguments, invocatio
     s.send("a", 'call lookup {"q":"weather"}');
     await until(() => s.calls.length === 1, "the callback");
     const { request } = s.calls[0]!;
-    expect(request).toEqual({ invocationId: "1:c1-1", sessionId: "s", channel: "a", turnId: "1", tool: "lookup", handler: "lookup_handler", arguments: { q: "weather" } });
+    expect(request).toEqual({ invocationId: "1:c1-1", sessionId: "s", channel: "a", turnId: "1", tool: "lookup", handler: "lookup_handler", policyNames: ["open"], arguments: { q: "weather" } });
     expect(s.session.tools!.invocation("1:c1-1")).toMatchObject({ state: "started", tool: "lookup", toolCallId: "c1-1", channel: "a", arguments: '{"q":"weather"}' });
     // The status shows what the turn is doing and which call it concerns.
     expect(s.session.status().channels[0]!.activeTurn).toMatchObject({ turnId: 1, status: "running", phase: { kind: "tool", id: "1:c1-1" } });

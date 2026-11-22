@@ -86,15 +86,16 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   let agent: SessionAgent;
   const run: TurnExecutor = (turn, port) => {
     const services = options.configureTurn(turn, notice => agent.notify({ ...notice, fromChannelId: turn.channelId, sourceTurnId: turn.turnId }));
-    // Policy is read from the items this turn has taken, at the moment of use.
-    const decide = (tool: string) => toolDecision(config, read().items.filter(item => item.turnId === turn.turnId).flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"]), tool);
+    const policySnapshot = () => [...new Set(read().items.filter(item => item.turnId === turn.turnId)
+      .flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"]))].sort();
     /** The names offered by this turn's latest inference: what a call must match. */
     let offered = new Set<string>();
     /** One snapshot per inference: built-ins and available catalog entries the
      * turn's policy does not deny, the stable group first. The model call runner
      * freezes it, so a retry of the request offers the same list. */
     const offer = (): { tools: ToolDefinition[]; fixedToolCount?: number } => {
-      const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => decide(tool.name) !== "deny");
+      const policies = policySnapshot();
+      const allowed = <T extends ToolDefinition>(tools: readonly T[]) => tools.filter(tool => toolDecision(config, policies, tool.name) !== "deny");
       const definition = ({ name, description, parameters }: ToolDefinition): ToolDefinition => ({ name, description, parameters });
       const builtins = allowed([...services.tools.filter(tool => tool.name !== "notify_channel"), notifyChannelDefinition]);
       if (!catalog) { offered = new Set(builtins.map(tool => tool.name)); return { tools: [...builtins] }; }
@@ -122,9 +123,10 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
       dispatchTool(call, execute) {
         const registration = catalog?.get(call.name), reader = !!catalog && call.name === READ_TOOL_RESULT;
         const id = invocationId(turn.turnId, call.id);
+        let policies: string[];
         return dispatchWithPolicy({ channel: turn.channelId, turnId: turn.turnId, call,
           signal: port.signal, suspension: port.suspensionSignal, approvals, beforeDispatch: options.beforeToolDispatch,
-          decide: () => decide(call.name),
+          decide: () => toolDecision(config, policies = policySnapshot(), call.name),
           // Catalog tools and the reader must have been offered by this request,
           // still be available, and carry arguments their definition accepts.
           ...(registration || reader ? { refuse: () => {
@@ -139,8 +141,8 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
             // Dispatch evidence is committed. From here the effect is the host's.
             if (!executor) throw new CallbackLost("No connection serves this tool's handler");
             return runFunction({ executor, registration, limits, signal: signal ?? port.signal, defaultDeadlineMs: catalog!.defaultDeadlineMs,
-              request: { invocationId: id, sessionId: read().session.sessionId, channel: turn.channelId, turnId: String(turn.turnId),
-                tool: call.name, handler: registration.handler, arguments: JSON.parse(call.arguments) } });
+              request: { invocationId: id, sessionId: identity.value.sessionId, channel: turn.channelId, turnId: String(turn.turnId),
+                tool: call.name, handler: registration.handler, policyNames: policies.filter(name => name !== "__legacy_allow"), arguments: JSON.parse(call.arguments) } });
           } : reader ? (_call, signal) => readResult({ executor, view: read(), channel: turn.channelId, arguments: call.arguments, limits, signal: signal ?? port.signal })
             : call.name === "notify_channel" ? async () => {
               try { return JSON.stringify(executeNotice(JSON.parse(call.arguments), (channelId, text) =>

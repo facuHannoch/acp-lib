@@ -23,14 +23,16 @@ Existing denial, cancellation, and one-time dispatch rules still apply.
 The callback carries the same set with the internal `__legacy_allow`
 fallback omitted. The fallback still participates in authorization as
 before. Empty explicitly means no configured policy contributed. Names
-retain their exact spelling and order grants no precedence. The harness
+retain their exact spelling and are sorted lexically for reproducible
+output. Order grants no precedence. The harness
 sets the field independently of model arguments, including any argument
 that happens to be named policyNames.
 
 Both stdio and in-process validate the required top-level field before
 invoking a handler. It must be an array of unique nonblank strings. A
 missing field, wrong type, duplicate, or leaked legacy sentinel is
-`invalid_params`. Expose the received names as read-only metadata in
+`invalid_params`. The harness records one paired failed tool result
+through the existing callback error path, without retrying. Expose the received names as read-only metadata in
 `NativeFunctionContext`. The orchestrator owns name lookup against the
 mapping bound at open, refusal of unknown names, default worker rules for
 the empty list, and retaining resolved assignment rules. These are separate

@@ -112,7 +112,7 @@ export function createNativeFunctionHost(config: NativeFunctionsConfig): NativeF
       if (!tool) throw new FunctionError("handler_missing", `No function is registered as ${call.handler}`);
       active.add(call.invocationId);
       try {
-        const output = await tool.handler(call.arguments, { invocationId: call.invocationId, channel: call.channel, turnId: call.turnId, tool: call.tool, signal });
+        const output = await tool.handler(call.arguments, { invocationId: call.invocationId, channel: call.channel, turnId: call.turnId, tool: call.tool, policyNames: [...call.policyNames], signal });
         const text = JSON.stringify(output ?? null);
         const bytes = Buffer.byteLength(text);
         if (bytes <= inlineBytes) return { output: output ?? null };

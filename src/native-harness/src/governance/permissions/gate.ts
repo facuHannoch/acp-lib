@@ -75,7 +75,7 @@ export function createApprovalService(publish: (request: ApprovalRequest) => voi
   };
 }
 
-/** Policy is read at the dispatch boundary from items already taken by this
+/** Policy is read before authorization from items already taken by this
  * turn. The synchronous span after the final signal checks is the linearization
  * point: durable evidence, invocation, started event, then await the promise. */
 export async function dispatchWithPolicy(options: {
@@ -85,16 +85,16 @@ export async function dispatchWithPolicy(options: {
   execute(call: ToolCall, signal?: AbortSignal): Promise<string | { content: string; outcome: ToolOutcome }>;
   recordSkip(content: string, code: string): void; mark(): void; started(): void; beforeDispatch?: () => Promise<void>;
   /** Decision 0021: a reason this call cannot be dispatched (not offered, not
-   * available, invalid arguments), or undefined. Read after policy and before
-   * approval, and again at the dispatch boundary. */
+   * available, invalid arguments), or undefined. Read before authorization
+   * and again at the dispatch boundary. Policy denial retains precedence. */
   refuse?(): { code: string; detail?: string } | undefined;
 }): Promise<{ content: string; dispatched: boolean; outcome?: ToolOutcome }> {
   const { call, signal, suspension } = options;
-  const rule = options.decide();
   const skip = (code: string, detail?: string) => { const content = skipped(code, detail); options.recordSkip(content, code); return { content, dispatched: false }; };
   signal.throwIfAborted();
-  if (rule === "deny") return skip("policy_denied");
   const refused = options.refuse?.();
+  const rule = options.decide();
+  if (rule === "deny") return skip("policy_denied");
   if (refused) return skip(refused.code, refused.detail);
   let request: ReturnType<typeof options.approvals.request> | undefined;
   if (rule === "ask") {
