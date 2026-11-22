@@ -184,7 +184,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
       await this.persistObservationsInTransaction(persistence, prepared, true, persisted);
       if (status === "completed") {
         await persistence.workerDelivery?.recordFinal(
-          this.conversationId, input.operationId, input.result.messages.map((message) => message.text).join("\n"),
+          this.conversationId, input.operationId,
         );
       }
       // Delivery is tracked per provider context, so it holds when no user or assistant text is captured.

@@ -15,7 +15,6 @@ interface Row {
   originating_policies: string;
   contributing_policies: string;
   final_record_id: string | null;
-  final_text: string | null;
   staged_json: string | null;
   delivery_state: WorkerDeliveryState | null;
 }
@@ -69,7 +68,7 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
     });
   }
 
-  recordFinal(workerId: string, operationId: string, text: string): Promise<void> {
+  recordFinal(workerId: string, operationId: string): Promise<void> {
     return this.write(() => {
       if (!this.database.query("SELECT 1 FROM worker_assignments WHERE worker_id = ? AND operation_id = ? AND staged_json IS NULL AND final_record_id IS NULL").get(workerId, operationId)) return;
       const record = this.database.query<{ record_id: string }, [string, string]>(`
@@ -80,9 +79,9 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
         ORDER BY r.sequence DESC LIMIT 1
       `).get(workerId, operationId);
       if (!record) return;
-      this.database.query(`UPDATE worker_assignments SET final_record_id = ?, final_text = ?
+      this.database.query(`UPDATE worker_assignments SET final_record_id = ?
         WHERE worker_id = ? AND operation_id = ? AND final_record_id IS NULL AND staged_json IS NULL
-      `).run(record.record_id, text, workerId, operationId);
+      `).run(record.record_id, workerId, operationId);
     });
   }
 
@@ -104,6 +103,17 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
     });
   }
 
+  private finalText(row: Row): string {
+    return this.database.query<{ search_text: string }, [string, string, string]>(`
+      SELECT m.search_text FROM conversation_records r
+      JOIN conversation_messages m ON m.record_row_id = r.row_id
+      WHERE r.agent_conversation_id = ? AND r.operation_id = ?
+        AND m.role = 'assistant' AND m.status = 'completed'
+        AND r.sequence <= (SELECT sequence FROM conversation_records WHERE record_id = ?)
+      ORDER BY r.sequence
+    `).all(row.worker_id, row.operation_id, row.final_record_id!).map(message => message.search_text).join("\n");
+  }
+
   stage(id: string): Promise<StagedWorkerAssignment | undefined> {
     return this.write(() => {
       const row = this.row(id);
@@ -112,7 +122,7 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
       if (row.final_record_id === null && row.owner_id === this.ownerId) return;
       const outcome: WorkerAssignmentOutcome = row.final_record_id === null
         ? { kind: "uncertain" }
-        : { kind: "result", finalRecordId: row.final_record_id, text: row.final_text! };
+        : { kind: "result", finalRecordId: row.final_record_id, text: this.finalText(row) };
       const deliveryId = `worker-result:${id}`;
       const value: StagedWorkerAssignment = {
         assignmentId: id, outcome,

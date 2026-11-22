@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS worker_assignments (
   originating_policies TEXT NOT NULL,
   contributing_policies TEXT NOT NULL,
   final_record_id TEXT,
-  final_text TEXT,
   staged_json TEXT,
   delivery_id TEXT UNIQUE,
   delivery_state TEXT CHECK (delivery_state IN ('pending','delivered','blocked_policy','failed_destination')),

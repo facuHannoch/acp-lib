@@ -160,3 +160,18 @@ The follow-up adds the standalone typed contract in
 `src/persistence/worker-delivery-contract.ts`. Placement does not claim a
 schema version or change any existing adapter. The repository stages by ID
 so the final-record recheck belongs inside the write transaction.
+
+Clad approved the contract at `89f873dae1c221f0889641ef1cde3a46314d41cb`.
+Merge `b3c9be8` carries that history onto Core's R1 base `a902ccf`.
+Core assigned Agent schema 18 and authorized the single finalization call
+in the existing Agent transaction. The first repository commit is
+`5ec4cf004374e055610cdc3d702e11bc4d374193`.
+
+The repository stores a final record pointer in the conversation commit
+and reads the result from the conversation records when staging. Before
+staging, the assignment contains no separate copy of the result bytes.
+Both typechecks and 34 focused repository/SQLite persistence tests passed.
+The process-death tests are prepared against Core's beforeDispatch hook.
+On this base the peer rejects both prompts at receipt because the binding
+has not committed. This is expected until the reviewed hook is merged.
+The production process-death gate and full suite are still pending.

@@ -14,6 +14,7 @@ for (const version of [16, 17]) test(`worker repository upgrades schema ${versio
     const db = new Database(path);
     try {
       db.exec("DROP TABLE worker_assignments");
+      if (version === 16) db.exec("DROP TABLE native_channel_intents; DROP TABLE native_channel_intent_clock");
       db.query("DELETE FROM schema_migrations WHERE version > ?").run(version);
       db.query("INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)").run(version, new Date().toISOString());
     } finally { db.close(); }
@@ -26,6 +27,9 @@ for (const version of [16, 17]) test(`worker repository upgrades schema ${versio
     expect(await repo.reserve(binding)).toBe("existing");
     expect(await repo.reserve({ ...binding, destination: "different" })).toBe("conflict");
     expect(await repo.stage(binding.assignmentId)).toBeUndefined();
+    expect(await repo.reserve({ ...binding, assignmentId: "other" })).toBe("conflict");
+    const undeliverable = { ...binding, assignmentId: "missing-destination", operationId: "other-operation" };
+    expect(await repo.reserve(undeliverable)).toBe("reserved");
     await expect(backend.transaction(async scope => {
       await scope.workerDelivery!.redirect(binding.assignmentId, "rollback");
       throw new Error("rollback");
@@ -36,6 +40,11 @@ for (const version of [16, 17]) test(`worker repository upgrades schema ${versio
     await backend.close();
     backend = await SqliteAgentPersistence.open({ path });
     const reopened = backend.workerDelivery!;
+    await expect(backend.transaction(async scope => {
+      expect(await scope.workerDelivery!.stage(binding.assignmentId)).toBeDefined();
+      throw new Error("stage rollback");
+    })).rejects.toThrow("stage rollback");
+    expect(await reopened.readStaged(binding.assignmentId)).toBeUndefined();
     const result = await reopened.stage(binding.assignmentId);
     expect(result).toMatchObject({ outcome: { kind: "uncertain" },
       delivery: { destination: "next", source: "worker", policyNames: ["guest", "owner"], state: "pending" } });
@@ -48,6 +57,10 @@ for (const version of [16, 17]) test(`worker repository upgrades schema ${versio
     expect(await reopened.transitionDelivery(id, { from: "pending", to: "delivered" })).toBe(true);
     expect(await reopened.transitionDelivery(id, { from: "pending", to: "failed_destination" })).toBe(false);
     expect((await reopened.readStaged(binding.assignmentId))?.delivery).toEqual({ ...result!.delivery, state: "delivered" });
+    const failed = (await reopened.stage(undeliverable.assignmentId))!;
+    expect(await reopened.transitionDelivery(failed.delivery.id, { from: "pending", to: "failed_destination" })).toBe(true);
+    expect(await reopened.transitionDelivery(failed.delivery.id, { from: "pending", to: "delivered" })).toBe(false);
+    expect((await reopened.stage(undeliverable.assignmentId))?.delivery.state).toBe("failed_destination");
   } finally {
     await backend.close();
     await rm(dir, { recursive: true, force: true });
