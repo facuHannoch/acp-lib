@@ -197,3 +197,68 @@ Conformance verifies recognized safe reasons, fallback for absent or
 untrusted details, and absence of provider-supplied secrets and oversized
 reason text in both the outcome and notice. A known interrupted outcome
 keeps the same delivery ID and reason on repeated staging.
+
+## Gate 3 amendment
+
+An assignment may span a steer chain. The lifecycle records an observed
+steered cancellation as awaiting continuation, without staging a notice.
+This is distinct from explicit interruption. Under the writer lock,
+`continueAssignment` checks the current predecessor, claims the successor
+worker/message key, and durably moves the active binding before successor
+dispatch. The same committed triple is idempotent. A different successor,
+an already claimed message, or a terminal predecessor is a conflict.
+Keep predecessor keys as superseded for uniqueness and retries. Late
+terminal records for superseded messages remain inspectable and cannot
+settle the assignment. Linkage is an authorization fence, not evidence
+that the successor actually ran.
+
+If the successor will not run, the current owner explicitly closes the
+awaiting continuation with a known failure or interruption and stages its
+notice atomically. If the owner dies before an authoritative terminal
+record, the next owner can settle the abandoned assignment as uncertain.
+Neither recovery nor an idempotent continuation sends the prompt again.
+Test both commit orders against predecessor finalization, a crash after
+steer cancellation and before linkage, and a crash after linkage before
+the successor's terminal commit. An assignment emits one terminal notice.
+Original provenance survives a move. Policies attributed to taken work
+survive the chain; terminal folded work unions the active causal policies
+and staging freezes the applicable union.
+
+Use typed native and ACP destinations. Native flush reads only native
+destinations and respects earlier unresolved channel changes. ACP
+delivery shares staging and compare-and-set transitions. It marks
+delivered only on durable acceptance at the destination keyed by the
+stable delivery ID, with idempotent retries; an unconfirmed append leaves
+the notice pending. Until that receipt and deduplication path exists,
+ACP delivery remains pending. Persist the worker handle before dispatch
+as immutable attribution; staging and every retry use the same source,
+ID, destination, text and policy set.
+
+Discovery is read-only and indexed. Pages are oldest first using an
+exclusive cursor over immutable increasing reservation sequence, scoped to
+the destination kind and discovery state. Default 50, maximum 100. The
+unstaged filter includes finalized but unstaged work and abandoned
+bindings that the current owner may settle. It excludes unfinished work
+owned by the current process, including awaiting continuation. Pending
+means pending only; blocked_policy requires explicit retry. Concurrent
+changes can make earlier rows eligible after a cursor has passed them,
+so each new drain starts at the beginning. Latest outcome per worker is
+the last staged outcome by greatest reservation sequence, with assignment
+ID retained in the result. This supports restoring the worker view and
+does not replace exact lookup by assignment ID.
+
+Project only the last completed assistant message in the final operation,
+by committed timeline sequence. Preserve its text exactly. A missing
+message or an empty/whitespace-only text projection is a known failure
+with the public reason "worker produced no saved result". Do not fall
+back to intermediate output. A crash without reliable terminal evidence
+remains uncertain.
+
+Keep the existing harness wire contract. Prefer a typed, indexed additive
+Agent migration for continuations, eligibility and provenance over
+encoding searchable fields inside unrelated text columns. Core owns
+schema 19. Allocate any new migration with Core, after the orchestrator
+schema, before implementation. Legacy rows default to native destinations.
+Legacy source falls back to the persisted worker conversation ID where
+no handle was recorded. Existing staged results and notices retain their
+original bytes and IDs, including their original text projection.

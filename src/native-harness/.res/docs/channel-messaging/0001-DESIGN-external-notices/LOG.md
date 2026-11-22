@@ -310,3 +310,13 @@ and the harness case were load-sensitive in these runs. Neither test or
 its timeout settings changed in this delta. The same on-open column
 repair also covers pre-merge schema 18 databases missing controller kind.
 Haurness-l owns integration into alpha.
+
+## Gate 3 amendment contract
+
+Branch `aiagent/cod1a-worker-delivery-amendment` starts at alpha
+`3fd2db2` with the plan cherry-pick `8abd58d` from `2b63dc2`.
+The contract adds steer continuation, typed destinations and immutable
+worker handles, bounded recovery, final-message projection and delivery
+acknowledgement rules. No runtime changes. Core retains schema 19 and
+shared host/orchestrator integration. Migration allocation and an ACP
+durable acceptance seam remain to be coordinated before implementation.

@@ -1,11 +1,28 @@
+export interface WorkerDestination {
+  readonly kind: "native" | "acp";
+  readonly id: string;
+}
+
+export interface WorkerAssignmentDiscovery {
+  readonly destinationKind: WorkerDestination["kind"];
+  readonly state: "unstaged" | "pending";
+  readonly after?: string;
+  readonly limit?: number;
+}
+
+export type DiscoveredWorkerAssignment =
+  | { readonly state: "unstaged"; readonly binding: WorkerAssignmentBinding }
+  | { readonly state: "pending"; readonly staged: StagedWorkerAssignment };
+
 /** Assignment provenance committed before the ACP prompt is sent. */
 export interface WorkerAssignmentBinding {
   readonly assignmentId: string;
   readonly workerConversationId: string;
+  readonly workerHandle: string;
   readonly messageId: string;
   readonly operationId?: string;
   readonly finalRecordId?: string;
-  readonly destination: string;
+  readonly destination: WorkerDestination;
   readonly originatingPolicyNames: readonly string[];
   readonly contributingPolicyNames: readonly string[];
 }
@@ -26,7 +43,7 @@ export type WorkerDeliveryState = "pending" | "delivered" | "blocked_policy" | "
 
 export interface WorkerDelivery {
   readonly id: string;
-  readonly destination: string;
+  readonly destination: WorkerDestination;
   readonly source: string;
   readonly text: string;
   readonly policyNames: readonly string[];
@@ -42,6 +59,14 @@ export interface StagedWorkerAssignment {
 /** Implementations share the reservation, staging and transition conformance cases in decision 0025. */
 export interface WorkerDeliveryRepository {
   reserve(binding: Omit<WorkerAssignmentBinding, "operationId" | "finalRecordId">): Promise<"reserved" | "existing" | "conflict">;
+  markSteered(workerConversationId: string, messageIds: readonly string[]): Promise<void>;
+  continueAssignment(assignmentId: string, predecessorMessageId: string, successorMessageId: string):
+    Promise<"continued" | "existing" | "conflict">;
+  closeContinuation(assignmentId: string, expectedMessageId: string, failure: WorkerAssignmentFailure):
+    Promise<StagedWorkerAssignment | undefined>;
+  discoverAssignments(query: WorkerAssignmentDiscovery):
+    Promise<{ readonly assignments: readonly DiscoveredWorkerAssignment[]; readonly next?: string }>;
+  latestOutcome(workerConversationId: string): Promise<StagedWorkerAssignment | undefined>;
   /** Record completed output in the same transaction as the final conversation records. */
   recordFinal(workerConversationId: string, operationId: string, messageIds: readonly string[]): Promise<void>;
   /** Stage failure for each causal binding inside its failed terminal commit. */
@@ -50,7 +75,7 @@ export interface WorkerDeliveryRepository {
   ): Promise<void>;
   readBinding(assignmentId: string): Promise<WorkerAssignmentBinding | undefined>;
   /** Update the destination only before staging. */
-  redirect(assignmentId: string, destination: string): Promise<boolean>;
+  redirect(assignmentId: string, destination: WorkerDestination): Promise<boolean>;
   /** Add policies from taken work before staging. */
   addContributingPolicies(assignmentId: string, names: readonly string[]): Promise<boolean>;
   /** Look up final evidence by causal worker/message ID and write the outcome and notice in the same transaction.
