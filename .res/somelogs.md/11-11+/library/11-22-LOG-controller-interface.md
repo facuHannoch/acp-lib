@@ -57,3 +57,11 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   `freshContext` check at the top of `runHandoff`, before `handoff_started`. B1 gate held until the user decides on
   the fixes.
 - B2 assigned to cod2a (report only, in parallel with the decision).
+- User authorized fixing the intermittent test failures (tests only: bridge, checkpointing/strategy,
+  operation-lifecycle); queued to cod2a after B2. Media and handoff fixes still waiting on the user.
+- B2 report in, `7c00cb7` (report only; [report](reports/11-22-REPORT-B2-verify.md)): full `./test` green on the first
+  run (1,402, 165 s). The nine shared conformance cases run on the fake, HarnessController (lifecycle fixture, not
+  echo) and NativeController. Gaps: steer not in the shared nine; fake usage never emitted; late output after force
+  stop only weakly asserted (a probe shows the fake can get a late chunk recorded on the old turn); the fake's
+  ended-turn cancel replays as cancelled; stale changelog lines. Sent to clad2a for review.
+- cod2a started the flake fixes.
