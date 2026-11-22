@@ -95,3 +95,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   combined runs pass the first message's id to every hook. Fix assigned to cod2a ahead of step 3: the hook receives
   its own message id on both paths, and `OwnedPromptCompleted` and `promptFailed` gain `messageIds`. Cod1a told to key
   by message id (a contract amendment for Clad1a); haurness-l informed.
+- Worker contract (haurness-l): folded operations carry the union of the assignments' policies plus redirect
+  restrictions, frozen at staging; a live terminal outcome is `failed` (distinct from abandoned), user cancellation
+  included, with no failure-kind field. Cod1a's `persisted-lifecycle.ts` grant extended to `recordFailure` in the
+  `promptFailed` transaction and in non-completed terminal `afterPrompt` statuses; same conditions; never both final
+  and failure for one binding.
