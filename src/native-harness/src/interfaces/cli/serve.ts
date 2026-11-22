@@ -7,7 +7,7 @@ import { join } from "node:path";
  * HARNESS_TEST_* settings support deterministic offline process tests. */
 export async function serve(home?: string) {
   const { server } = createScriptedServer({ home: home ?? join(homedir(), ".harness"), fault: process.env.HARNESS_TEST_FAULT, effects: process.env.HARNESS_TEST_EFFECTS,
-    requests: process.env.HARNESS_TEST_REQUESTS, stallChannel: process.env.HARNESS_TEST_STALL_CHANNEL,
+    requests: process.env.HARNESS_TEST_REQUESTS, snapshotLog: process.env.HARNESS_TEST_SNAPSHOT_LOG, stallChannel: process.env.HARNESS_TEST_STALL_CHANNEL,
     streamResponses: process.env.HARNESS_TEST_STREAM_RESPONSES === "1",
     modelTimeoutMs: process.env.HARNESS_TEST_MODEL_TIMEOUT_MS === undefined ? undefined : Number(process.env.HARNESS_TEST_MODEL_TIMEOUT_MS) });
   const output = Bun.stdout.writer();

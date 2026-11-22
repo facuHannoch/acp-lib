@@ -1,3 +1,4 @@
+import type { OperatorStorageReads } from "../../contracts/operator-controls.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import type { ManagedConfig } from "../../contracts/config-permissions.ts";
 import { policyItemSignature, contributingPolicies, fingerprint } from "./policy-metadata.ts";
@@ -31,6 +32,8 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
 export interface Tables {
+  readRange(range: Parameters<OperatorStorageReads["readTimeline"]>[0]): TimelineEntry[];
+  pendingCount(channel: string): number;
   getModelState(): ModelState | undefined;
   setModelState(state: ModelState): void;
   /** Decision 0021: sorted names of revoked revocable tools; undefined if never written. */
@@ -63,6 +66,9 @@ export interface Tables {
   /** The channel's running or suspended turn. */
   liveTurn(channelId: string): TurnRow | undefined;
   turns(): TurnRow[];
+  liveTurns(): TurnRow[];
+  latestTurn(channel: string): TurnRow | undefined;
+  policyNames(): string[];
   addEntry(entry: TimelineEntry): void;
   entriesOfTurn(turnId: number): TimelineEntry[];
   entries(): TimelineEntry[];
@@ -73,9 +79,7 @@ export interface Tables {
  * that particular checkpoint would actually resume. */
 export function referencesCompatible(tables: Tables, config?: ManagedConfig): boolean {
   if (!config) return true;
-  const names = [...tables.channels().flatMap(channel => channel.policy ? [channel.policy] : []),
-    ...tables.items().flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"])];
-  return names.every(name => Object.hasOwn(config.policies, name));
+  return tables.policyNames().every(name => Object.hasOwn(config.policies, name));
 }
 
 export class Fail extends Error {
@@ -190,10 +194,12 @@ export function recover(tables: Tables, upgrade?: () => void): void {
     const meta = tables.getMeta();
     let changed = !!upgrade;
     if (upgrade) meta.formatVersion = 4;
+    let abandonedModel = false;
     if (meta.lifecycle !== "suspended") {
       const kept = (turn: TurnRow) => turn.state.status === "suspended"
         && tables.channel(turn.channelId)?.lifecycle === "suspended";
-      const live = tables.turns().filter(turn => (turn.state.status === "running" || turn.state.status === "suspended") && !kept(turn));
+      const live = tables.liveTurns().filter(turn => !kept(turn));
+      abandonedModel = live.some(turn => turn.state.status === "running");
       for (const turn of live) tables.putTurn({ ...turn, state: { status: "interrupted",
         reason: "The owning process exited before this turn finished", uncertainCallIds: uncertain(tables, turn) } });
       const reopened = tables.channels().filter(channel => channel.lifecycle === "suspending");
@@ -205,7 +211,7 @@ export function recover(tables: Tables, upgrade?: () => void): void {
       for (const entry of tables.entries()) if (entry.message.role === "assistant")
         Object.defineProperty(state.scriptPositions, entry.channelId, { value: (Object.hasOwn(state.scriptPositions, entry.channelId) ? state.scriptPositions[entry.channelId]! : 0) + 1, writable: true, configurable: true, enumerable: true });
       tables.setModelState(state); meta.formatVersion = 5; changed = true;
-    } else {
+    } else if (abandonedModel) {
       const state = tables.getModelState() ?? emptyModelState();
       for (const call of state.calls) if (call.outcome === "running") {
         call.outcome = "interrupted"; call.endedAt = new Date().toISOString();
@@ -396,7 +402,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       }
       if (message.calls.length && turn.state.status === "running" && turn.state.dispatchedCallIds === undefined) tables.putTurn({ ...turn, state: { ...turn.state, dispatchedCallIds: [] } });
       const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId: turn.turnId, from: "agent", message };
-      tables.addEntry(entry); state.entryIds[String(entry.seq)] = call.messageId; call.outcome = "succeeded"; call.endedAt = now();
+      tables.addEntry({ ...entry, messageId: call.messageId }); state.entryIds[String(entry.seq)] = call.messageId; call.outcome = "succeeded"; call.endedAt = now();
       attempt.outcome = "succeeded"; attempt.endedAt = call.endedAt; if (!attempt.providerRequestId && requestId) attempt.providerRequestId = requestId;
       tables.setModelState(state); return { ...entry, messageId: call.messageId };
     }),
@@ -705,6 +711,44 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (!referencesCompatible(tables, checked)) fail("incompatible", "A stored policy no longer exists");
       tables.setConfig(checked);
     }),
+    readExecution: () => run(meta => {
+      const channels = tables.channels().map(channel => ({ ...channel, participantIds: [] }));
+      const turns = channels.flatMap(({ channelId }) => {
+        const active = tables.liveTurn(channelId), last = tables.latestTurn(channelId);
+        return [active?.turnId === last?.turnId ? undefined : active, last].flatMap(turn => turn ? [{ ...turn, itemIds: turn.state.status === "failed" || turn.state.status === "interrupted" ? tables.itemsOfTurn(turn.turnId).map(item => item.itemId) : [] }] : []);
+      });
+      return { revision: meta.revision, session: session(meta), channels, turns,
+        items: channels.flatMap(channel => tables.pendingItems(channel.channelId)) };
+    }, true),
+    readReadyChannels: () => run(meta => ({ lifecycle: meta.lifecycle,
+      channels: tables.channels().filter(channel => channel.lifecycle === "open" && tables.pendingCount(channel.channelId) > 0).map(channel => channel.channelId) }), true),
+    readRevokedTools: () => run(() => tables.getRevokedTools() ?? [], true),
+    readSession: () => run(meta => session(meta), true),
+    readChannel: channelId => run(() => {
+      const channel = tables.channel(channelId);
+      if (!channel) return fail("not_found", "Unknown channel");
+      const activeTurn = tables.liveTurn(channelId);
+      return { channel, pendingCount: tables.pendingCount(channelId), ...(activeTurn ? { activeTurn } : {}) };
+    }, true),
+    readTracked: (channelId, itemIds, turnIds) => run(() => {
+      if (itemIds.length + turnIds.length > 100) fail("invalid_input", "Too many tracked IDs");
+      const items = itemIds.flatMap(id => {
+        const item = tables.item(id);
+        return item?.channelId === channelId ? [item] : [];
+      });
+      const turns = turnIds.flatMap(id => {
+        const turn = tables.turn(id);
+        return turn?.channelId === channelId ? [full(turn)] : [];
+      });
+      return { items, turns };
+    }, true),
+    readTimeline: range => run(meta => {
+      if (!Number.isSafeInteger(range.limit) || range.limit < 1 || range.limit > 100
+        || !Number.isSafeInteger(range.throughRevision) || range.throughRevision < 0 || range.throughRevision > meta.revision)
+        fail("invalid_input", "Invalid timeline bounds");
+      const rows = tables.readRange(range);
+      return { entries: rows.slice(0, range.limit), more: rows.length > range.limit };
+    }, true),
     snapshot: () => run(() => readSnapshot(tables), true),
 
     exportArchive: () => run(meta => {

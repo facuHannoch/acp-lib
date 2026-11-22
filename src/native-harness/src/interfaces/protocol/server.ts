@@ -1,3 +1,4 @@
+import { OperatorFault, operatorMethods, operatorRead, readValue } from "./operator.ts";
 import type { ProtocolEndpoint, RpcRequest, RpcResponse, RpcNotification, RpcSessionNotification, ProtocolConfig, Description, Subscription, DurableErrorCode } from "../../contracts/protocol.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import type { SessionArchive, StorageResult, StoredSession } from "../../contracts/storage.ts";
@@ -5,7 +6,7 @@ import type { SessionFilePayload } from "../../contracts/session-file.ts";
 import { SessionFileError, validateConfig } from "../../state/storage/session-file.ts";
 import { validateManagedConfig } from "../../runtime/config/managed.ts";
 import { MAX_FRAME_BYTES } from "./framing.ts";
-import { FrameLimit, loadView, pageMessages, turnStatus, wireStatus } from "./load.ts";
+import { FrameLimit, turnStatus, wireStatus } from "./load.ts";
 import { TransferFault, createTransfers, decodeArchive, encodeArchive, readArchiveFile, writeArchiveFile, TRANSFER_LIMITS } from "./transfers.ts";
 import type { ChannelChangeResult, PendingChannelChange, TransferLimits } from "../../contracts/protocol.ts";
 import { ChannelChangeFault, applyChannelChanges, checkPolicies, parseChannelChanges, sameBatch } from "./channel-changes.ts";
@@ -70,10 +71,10 @@ export function describe(durable: boolean, archives = false, functions = false):
   return {
     configOptions: [], commands: [], policies: [],
     capabilities: { experimental: true, acceptance: durable ? "durable" : "memory", persistence: durable, startupChannelChanges: true, ...(functions ? { functions: true as const } : {}),
-      methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/load"] : []), "session/messages", "session/status",
+      methods: ["initialize", "config/validate", "session/create", ...(durable ? ["session/open"] : []), ...operatorMethods, "session/status",
         "session/model-calls", "session/message/read", "session/suspend", "session/resume", "session/stop", "channel/push", "channel/create", "channel/edit", "channel/suspend", "channel/resume", "channel/delete", "channel/withdraw", "channel/interrupt", "approval/respond", "session/idle",
         ...(archives ? ["session/export", "session/import", "transfer/open", "transfer/write", "transfer/read", "transfer/close"] : []), ...(functions ? toolMethods() : [])],
-      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "session/event"] },
+      events: ["turn_started", "turn_took", "items_receipt", "text_delta", "text_gap", "text_incomplete", "tool_call", "message_completed", "turn_suspended", "turn_resumed", "turn_ended", "channel_state", "item_withdrawn", "approval_requested", "approval_closed", "session/event"] },
   };
 }
 
@@ -118,6 +119,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     startupTools = request.tools;
     opened.session.subscribe(value => {
       const event = structuredClone(value);
+      if (!approvalConsumer && (event.event.type === "approval_requested" || event.event.type === "approval_closed")) return;
       // Filtering is downstream of inference and its retry cutoff: a final-mode
       // consumer must never see ephemeral stream events it cannot interpret.
       if (subscription.text === "final" && (event.event.type === "text_delta" || event.event.type === "text_gap" || event.event.type === "text_incomplete")) return;
@@ -161,17 +163,21 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
    * The response is handed to the transport in a microtask after this request
    * resolves; a timer runs after all of those, so releasing held notifications
    * (and, for a first load, starting execution) there places them after it. */
-  function load(opened: OpenedSession, limit: number, start: boolean) {
-    const view = opened.session.snapshot();
-    const result = loadView(opened.session.status(), view, limit);
-    if (start) opened.commitConfig?.();
-    held ??= [];
+  function ready(opened: OpenedSession) {
+    const reads = opened.session.operatorReads;
+    if (!reads) throw new Fault("invalid_state", "Focused reads are unavailable");
+    const { value, revision } = readValue(reads.readSession());
+    return { sessionId: value.sessionId, lifecycle: value.lifecycle, revision };
+  }
+
+  function holdAfterResponse(start?: () => void) {
+    if (held) { if (start) held.push(start); return; }
+    held = [];
     setTimeout(() => {
       const waiting = held ?? []; held = undefined;
       for (const deliver of waiting) deliver();
-      if (start) opened.session.start();
+      start?.();
     }, 0);
-    return result;
   }
 
   async function dispatch(method: string, raw: unknown): Promise<unknown> {
@@ -230,22 +236,23 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         if (batch) startup = { batch, results: results! };
       } catch (error) { abandon(opened, !!batch); throw error; }
       finally { opening = false; }
-      opened.session.start();
-      return { sessionId, ...(results ? { channelChanges: results } : {}) };
+      if (batch?.length) holdAfterResponse(() => opened.session.start());
+      else opened.session.start();
+      return { ...(opened.session.operatorReads ? ready(opened) : { sessionId }), ...(results ? { channelChanges: results } : {}) };
     }
-    if (method === "session/load") {
-      keys(p, ["sessionId", "config", "messagesLimit", "channelChanges", "tools"]);
+    if (method === "session/open") {
+      keys(p, ["sessionId", "config", "channelChanges", "tools"]);
       const tools = catalogOf(p.tools);
-      const sessionId = text(p.sessionId), limit = count(p.messagesLimit, 100);
+      const sessionId = text(p.sessionId);
       const batch = p.channelChanges === undefined ? undefined : parseChannelChanges(p.channelChanges);
       // A repeated load of the open session is a fresh view of it, nothing more:
       // the batch was applied by the open and is only reported again. A new
       // batch belongs to the live channel API.
       if (current) {
-        if (current.session.snapshot().session.sessionId !== sessionId) throw new Fault("already_exists", "One session per endpoint");
+        if (ready(current).sessionId !== sessionId) throw new Fault("already_exists", "One session per endpoint");
         if (batch && !sameBatch(startup?.batch ?? [], batch)) throw new Fault("invalid_state", "The session is already open; send newer channel changes through the channel methods");
         if (tools && !(startupTools && sameCatalog(startupTools, tools))) throw new Fault("invalid_state", "The session is already open with another tool catalog; use the tool methods");
-        return { ...load(current, limit, false), ...(startup ? { channelChanges: startup.results } : {}) };
+        return { ...ready(current), ...(startup ? { channelChanges: startup.results } : {}) };
       }
       const opened = await attach({ mode: "open", sessionId, config: p.config, ...(tools ? { tools } : {}) });
       try {
@@ -253,7 +260,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         // From here to the end of the block nothing is awaited: the resumes, the
         // view and the hold on later notifications are one synchronous step.
         const results = finish?.();
-        const result = load(opened, limit, true);
+        const result = ready(opened);
+        opened.commitConfig?.();
+        holdAfterResponse(() => opened.session.start());
         current = opened;
         if (batch) startup = { batch, results: results! };
         return { ...result, ...(results ? { channelChanges: results } : {}) };
@@ -301,9 +310,18 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       return { bytes: bytes.length, sha256, transferId: transfers.offer(bytes, sha256) };
     }
     const session = current.session;
+    if (operatorMethods.some(name => name === method)) {
+      const allowed = method === "channel/observe" ? ["channel"] : method === "channel/reconcile" ? ["channel", "itemIds", "turnIds", "cursor"]
+        : method === "channel/messages" ? ["channel", "limit", "cursor", "after", "throughRevision"] : ["limit", "cursor"];
+      keys(p, allowed);
+      const result = operatorRead(session, method, p, approvalConsumer);
+      if (method === "channel/observe") holdAfterResponse();
+      return result;
+    }
     if (isToolMethod(method)) return toolRequest(session, method, p);
     if (method === "approval/respond") {
       keys(p, ["requestId", "decision"]);
+      if (!approvalConsumer) throw new Fault("invalid_state", "Connection has no approval authority");
       if (p.decision !== "allow_once" && p.decision !== "deny") bad("Expected allow_once or deny");
       if (!session.approvals.respond(text(p.requestId), p.decision)) throw new Fault("not_found", "Approval request is no longer available");
       return { accepted: true };
@@ -339,20 +357,20 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { interrupted: outcome.value.interrupted, turn: turnStatus(outcome.value.turn) };
       }
       if (!result.ok) throw new Fault(result.error.code, result.error.message);
-      const status = wireStatus(session.status(), session.snapshot()).channels.find(value => value.channel === channel)!;
+      const status = wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()).channels.find(value => value.channel === channel)!;
       return { channel: status, ...(method === "channel/create" ? { created: (result.value as { created: boolean }).created } : {}) };
     }
     if (method === "session/idle") { keys(p, []); return { idle: session.agent.idle() }; }
-    if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.snapshot()); }
+    if (method === "session/status") { keys(p, []); return wireStatus(session.status(), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
     if (method === "session/suspend" || method === "session/resume") {
       keys(p, []);
       // Suspend answers only once `suspended` is committed, after in-flight
       // iterations settle; a refusal changes nothing and consumes nothing.
       const outcome = method === "session/suspend" ? await session.suspend() : session.resume();
       if (!outcome.ok) throw new Fault(outcome.error.code, outcome.error.message);
-      return wireStatus(outcome.status, session.snapshot());
+      return wireStatus(outcome.status, session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot());
     }
-    if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.snapshot()); }
+    if (method === "session/stop") { keys(p, []); return wireStatus(session.stop("Stopped by the host"), session.operatorReads ? readValue(session.operatorReads.readExecution()).value : session.snapshot()); }
     if (method === "session/model-calls") {
       keys(p, ["after", "limit"]); const calls = session.snapshot().modelCalls;
       const at = p.after === undefined ? -1 : calls.findIndex(call => call.callId === text(p.after));
@@ -380,15 +398,6 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
       const end = Math.min(bytes.length, offset + 524288);
       return { messageId: id, offset, data: Buffer.from(bytes.subarray(offset, end)).toString("base64"), ...(end < bytes.length ? { nextOffset: end } : {}) };
     }
-    if (method === "session/messages") {
-      keys(p, ["revision", "after", "limit"]);
-      const view = session.snapshot(), cursor = text(p.after);
-      const matched = view.timeline.find(entry => entry.messageId === cursor || String(entry.seq) === cursor);
-      const after = matched?.seq ?? Number(cursor);
-      if (!Number.isSafeInteger(p.revision) || p.revision < 0 || !Number.isSafeInteger(after) || after < 0) bad("Expected a revision and a message ID");
-      if (p.revision > view.revision) throw new Fault("not_found", `Session has not reached revision ${p.revision}`);
-      return pageMessages(view, p.revision, after, count(p.limit, 100));
-    }
     keys(p, ["channel", "item"]);
     const channel = text(p.channel), item = obj(p.item);
     keys(item, ["id", "kind", "sender", "content", "policy", "delivery", "wake"]);
@@ -403,7 +412,9 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
     const result = session.agent.send({ channelId: channel, participantId: sender, itemId: id, ...(item.policy == null ? {} : { policy: text(item.policy) }),
       text: parts.map((part: { text: string }) => part.text).join("\n") });
     if (!result.accepted) throw new Fault(result.code === "invalid_input" ? "invalid_params" : result.code, result.error);
-    const policy = session.snapshot().items.find(value => value.itemId === id)?.policy;
+    const policy = session.operatorReads
+      ? readValue(session.operatorReads.readTracked(channel, [id], [])).value.items[0]?.policy
+      : session.snapshot().items.find(value => value.itemId === id)?.policy;
     return { accepted: true, duplicate: result.duplicate, item: { id, channel, kind: "participant_message", sender, milestone: result.milestone,
       ...(policy === undefined ? {} : { policy }),
       ...(result.turnId === undefined ? {} : { turnId: String(result.turnId) }) } };
@@ -417,7 +428,7 @@ export function createProtocolServer(open: (request: SessionRequest) => Promise<
         return { jsonrpc: "2.0", id: request.id, result };
       } catch (error) {
         const fault = error instanceof FrameLimit ? new Fault("transfer_limit", error.message)
-          : error instanceof TransferFault || error instanceof SessionFileError || error instanceof ChannelChangeFault || error instanceof ToolFault ? new Fault(error.code, error.message) : error;
+          : error instanceof TransferFault || error instanceof SessionFileError || error instanceof OperatorFault || error instanceof ChannelChangeFault || error instanceof ToolFault ? new Fault(error.code, error.message) : error;
         return { jsonrpc: "2.0", id, error: { code: fault instanceof Fault ? fault.rpc : -32603,
           message: String(fault), data: { code: fault instanceof Fault ? fault.tag : "internal_error" } } };
       }

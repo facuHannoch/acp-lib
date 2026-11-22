@@ -90,3 +90,9 @@ export function stallLimitsFor(controller: ConversationController, limits: Stale
   if (controller.conversationCapabilities.supervision === "backend") return { firstOutputMs: false, nextOutputMs: false, toolMs: false };
   return isDegradedController(controller) ? { firstOutputMs: false, nextOutputMs: false, ...limits } : limits;
 }
+
+/** Reopens only after the controller confirms its stop. */
+export async function restartConversation(controller: Pick<ConversationController, "stop" | "start">) {
+  await controller.stop();
+  return controller.start();
+}

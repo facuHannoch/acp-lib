@@ -9,9 +9,9 @@ interface Data {
   config?: import("../../contracts/session-file.ts").PortableSessionConfig;
   meta: Meta;
   channels: Map<string, ChannelRow>; participants: Set<string>;
-  items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[];
+  items: Map<string, StoredItem>; turns: Map<number, TurnRow>; entries: TimelineEntry[]; conversation: Map<string, TimelineEntry[]>; replies: Map<number, TimelineEntry[]>;
 }
-const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [] });
+const empty = (meta: Meta): Data => ({ meta, channels: new Map(), participants: new Set(), items: new Map(), turns: new Map(), entries: [], conversation: new Map(), replies: new Map() });
 const copy = <T>(value: T): T => structuredClone(value);
 const live = (turn: TurnRow) => turn.state.status === "running" || turn.state.status === "suspended";
 
@@ -66,7 +66,45 @@ function memoryTables(data: Data): Tables {
     },
     liveTurn: channelId => copy([...data.turns.values()].find(turn => turn.channelId === channelId && live(turn))),
     turns: () => copy([...data.turns.values()].sort((a, b) => a.turnId - b.turnId)),
-    addEntry(entry) { data.entries.push(copy(entry)); log(() => { data.entries.pop(); }); },
+    latestTurn: id => copy([...data.turns.values()].findLast(turn => turn.channelId === id)),
+    liveTurns: () => copy([...data.turns.values()].filter(live)),
+    policyNames: () => [...new Set([...data.channels.values()].flatMap(channel => channel.policy ? [channel.policy] : [])
+      .concat([...data.items.values()].flatMap(item => item.policy ? [item.policy.resolved, ...item.policy.inherited] : ["__legacy_allow"])))],
+    pendingCount: id => [...data.items.values()].filter(item => item.channelId === id && item.milestone === "received").length,
+    readRange(range) {
+      const older = range.direction === "older";
+      const select = (rows: TimelineEntry[]) => {
+        const before = (seq: number) => older ? seq <= range.throughRevision && seq < (range.exclusiveSeq ?? Infinity) : seq <= (range.exclusiveSeq ?? 0);
+        let low = 0, high = rows.length;
+        while (low < high) {
+          const mid = (low + high) >>> 1;
+          if (before(rows[mid]!.seq)) low = mid + 1; else high = mid;
+        }
+        return older ? rows.slice(Math.max(0, low - range.limit - 1), low).reverse()
+          : rows.slice(low, low + range.limit + 1).filter(row => row.seq <= range.throughRevision);
+      };
+      const rows = range.kind === "conversation" ? select(data.conversation.get(range.channel!) ?? [])
+        : range.kind === "replies" ? (range.turnIds ?? []).flatMap(id => select(data.replies.get(id) ?? []))
+          .filter(row => row.channelId === range.channel).sort((a, b) => older ? b.seq - a.seq : a.seq - b.seq).slice(0, range.limit + 1)
+        : select(data.entries);
+      return copy(rows.map(row => {
+        const messageId = data.modelState?.entryIds[String(row.seq)];
+        return messageId ? { ...row, messageId } : row;
+      }));
+    },
+    addEntry(entry) {
+      const saved = copy(entry);
+      const append = (rows: TimelineEntry[]) => { rows.push(saved); log(() => { rows.pop(); }); };
+      const indexed = <K>(index: Map<K, TimelineEntry[]>, key: K) => {
+        let rows = index.get(key);
+        if (!rows) { rows = []; index.set(key, rows); log(() => { index.delete(key); }); }
+        append(rows);
+      };
+      append(data.entries);
+      const reply = entry.message.role === "assistant" && !!entry.message.content;
+      if (reply || entry.kind === "participant_message") indexed(data.conversation, entry.channelId);
+      if (reply) indexed(data.replies, entry.turnId);
+    },
     entriesOfTurn: turnId => copy(data.entries.filter(entry => entry.turnId === turnId)),
     entries: () => copy(data.entries),
   };

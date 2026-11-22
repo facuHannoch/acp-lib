@@ -101,7 +101,36 @@ const turn = (row: Row): TurnRow => ({ turnId: row.turn_id, channelId: row.chann
   startedAt: row.started_at, compatibilityKey: row.compatibility_key, state: JSON.parse(row.state) });
 const entry = (row: Row): TimelineEntry => ({ seq: row.seq, at: row.at, channelId: row.channel_id, turnId: row.turn_id, from: row.sender,
   ...(row.kind === null ? {} : { kind: row.kind }), ...(row.source_channel_id === null ? {} : { sourceChannelId: row.source_channel_id }),
-  ...(row.item_id === null ? {} : { itemId: row.item_id }), message: JSON.parse(row.message) });
+  ...(row.item_id === null ? {} : { itemId: row.item_id }), ...(typeof row.reply_id === "string" ? { messageId: row.reply_id } : {}), message: JSON.parse(row.message) });
+
+const REPLY = "json_extract(message, '$.role') = 'assistant' AND length(json_extract(message, '$.content')) > 0";
+const CHAT = `kind = 'participant_message' OR (${REPLY})`;
+const installReadIndexes = (db: Database) => db.exec(`
+  CREATE INDEX IF NOT EXISTS turns_by_channel ON turns(channel_id, turn_id);
+  CREATE INDEX IF NOT EXISTS entries_conversation ON entries(channel_id, seq) WHERE ${CHAT};
+  CREATE INDEX IF NOT EXISTS entries_replies ON entries(turn_id, seq) WHERE ${REPLY};
+  CREATE TABLE IF NOT EXISTS entry_reply_ids (seq INTEGER PRIMARY KEY REFERENCES entries(seq), message_id TEXT NOT NULL);
+  INSERT OR IGNORE INTO meta VALUES ('replyIdsDirty', '1');
+  CREATE TRIGGER IF NOT EXISTS reply_ids_legacy_insert AFTER INSERT ON meta WHEN NEW.key = 'modelState'
+    BEGIN UPDATE meta SET value = '1' WHERE key = 'replyIdsDirty'; END;
+  CREATE TRIGGER IF NOT EXISTS reply_ids_legacy_update AFTER UPDATE OF value ON meta WHEN NEW.key = 'modelState'
+    BEGIN UPDATE meta SET value = '1' WHERE key = 'replyIdsDirty'; END;
+`);
+
+// Older writers keep the blob authoritative. Rebuild only on upgrade or when
+// one of those writers changed it, under the same transaction as recovery.
+function refreshReplyIds(db: Database): void {
+  installReadIndexes(db);
+  const dirty = db.prepare("SELECT 1 FROM meta WHERE key = 'replyIdsDirty' AND value = '1'");
+  try { if (!dirty.get()) return; } finally { dirty.finalize(); }
+  db.exec(`
+    DELETE FROM entry_reply_ids;
+    INSERT INTO entry_reply_ids
+      SELECT CAST(ids.key AS INTEGER), ids.value FROM meta, json_each(meta.value, '$.entryIds') AS ids
+      WHERE meta.key = 'modelState';
+    UPDATE meta SET value = '0' WHERE key = 'replyIdsDirty';
+  `);
+}
 
 function sqliteTables(db: Database): Tables & { dispose(): void } {
   // Prepared on first use: statements for tables a format 2 file does not have
@@ -117,7 +146,16 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       run: (...args: any[]) => { prepared().run(...args); } };
   };
   const s = {
-    meta: q("SELECT key, value FROM meta"), modelState: q("SELECT value FROM meta WHERE key = 'modelState'"), revoked: q("SELECT value FROM meta WHERE key = 'revokedTools'"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+    pendingCount: q("SELECT count(*) AS n FROM items WHERE channel_id = ? AND milestone = 'received'"),
+    latestTurn: q("SELECT * FROM turns WHERE channel_id = ? ORDER BY turn_id DESC LIMIT 1"),
+    liveTurns: q("SELECT * FROM turns WHERE status IN ('running','suspended') ORDER BY turn_id"),
+    policyNames: q(`
+      SELECT policy AS name FROM channels WHERE policy IS NOT NULL
+      UNION SELECT coalesce(json_extract(policy_metadata, '$.resolved'), '__legacy_allow') FROM items
+      UNION SELECT inherited.value FROM items, json_each(items.policy_metadata, '$.inherited') AS inherited
+    `),
+
+    meta: q(`SELECT key, value FROM meta WHERE key IN (${KEYS.map(() => "?").join(", ")})`), modelState: q("SELECT value FROM meta WHERE key = 'modelState'"), revoked: q("SELECT value FROM meta WHERE key = 'revokedTools'"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
     channel: q("SELECT * FROM channels WHERE channel_id = ?"),
     addChannel: q("INSERT OR IGNORE INTO channels (channel_id, position) VALUES (?, (SELECT COUNT(*) FROM channels))"),
     putChannel: q("UPDATE channels SET display_name = ?, lifecycle = ?, policy = ? WHERE channel_id = ?"),
@@ -134,14 +172,34 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     putTurn: q(`INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(turn_id) DO UPDATE SET status = excluded.status, state = excluded.state`),
     live: q("SELECT * FROM turns WHERE channel_id = ? AND status IN ('running','suspended')"), turns: q("SELECT * FROM turns ORDER BY turn_id"),
+    markReplyIdsClean: q("UPDATE meta SET value = '0' WHERE key = 'replyIdsDirty'"),
+    addReplyId: q("INSERT INTO entry_reply_ids VALUES (?, ?)"),
     addEntry: q("INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
     entriesOf: q("SELECT * FROM entries WHERE turn_id = ? ORDER BY seq"), entries: q("SELECT * FROM entries ORDER BY seq"),
   };
   let depth = 0;
   return {
+    pendingCount(id) {
+      return Number(s.pendingCount.get(id)?.n ?? 0);
+    },
+    readRange(range) {
+      const older = range.direction === "older";
+      const order = older ? "DESC" : "ASC";
+      const read = (filter: string, params: (string | number)[]) => {
+        const statement = db.prepare<Row, (string | number)[]>(`
+        SELECT *, (SELECT message_id FROM entry_reply_ids WHERE entry_reply_ids.seq = entries.seq) AS reply_id FROM entries WHERE (${filter}) AND seq <= ? AND seq ${older ? "<" : ">"} ?
+        ORDER BY seq ${order} LIMIT ?
+      `);
+        try { return statement.all(...params, range.throughRevision, range.exclusiveSeq ?? (older ? Number.MAX_SAFE_INTEGER : 0), range.limit + 1).map(entry); } finally { statement.finalize(); }
+      };
+      if (range.kind === "conversation") return read(`channel_id = ? AND (${CHAT})`, [range.channel!]);
+      if (range.kind === "replies") return (range.turnIds ?? []).flatMap(id => read(`turn_id = ? AND channel_id = ? AND ${REPLY}`, [id, range.channel!]))
+        .sort((a, b) => older ? b.seq - a.seq : a.seq - b.seq).slice(0, range.limit + 1);
+      return read("1", []);
+    },
     dispose() { for (const finalize of finalizers.splice(0)) finalize(); },
     getModelState() { const row = s.modelState.get(); return row ? JSON.parse(row.value) : undefined; },
-    setModelState(state) { s.setMeta.run("modelState", JSON.stringify(state)); },
+    setModelState(state) { s.setMeta.run("modelState", JSON.stringify(state)); s.markReplyIdsClean.run(); },
     // A meta key, like the model state: no schema or format change (decision 0021).
     getRevokedTools() { const row = s.revoked.get(); return row ? JSON.parse(row.value) : undefined; },
     setRevokedTools(names) { s.setMeta.run("revokedTools", JSON.stringify(names)); },
@@ -157,7 +215,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     },
     getMeta() {
       const meta: Row = {};
-      for (const row of s.meta.all()) meta[row.key] = NUMERIC.includes(row.key) ? Number(row.value) : row.value;
+      for (const row of s.meta.all(...KEYS)) meta[row.key] = NUMERIC.includes(row.key) ? Number(row.value) : row.value;
       return meta as Meta;
     },
     setMeta(meta) { for (const key of KEYS) s.setMeta.run(key, String(meta[key])); },
@@ -176,8 +234,16 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     putTurn(t) { s.putTurn.run(t.turnId, t.channelId, t.startedSeq, t.startedAt, t.compatibilityKey, t.state.status, JSON.stringify(t.state)); },
     liveTurn(channelId) { const row = s.live.get(channelId); return row ? turn(row) : undefined; },
     turns: () => s.turns.all().map(turn),
+    latestTurn(id) {
+      const row = s.latestTurn.get(id);
+      return row ? turn(row) : undefined;
+    },
+    liveTurns: () => s.liveTurns.all().map(turn),
+    policyNames: () => s.policyNames.all().map(row => String(row.name)),
+
     addEntry(e) { s.addEntry.run(e.seq, e.at, e.channelId, e.turnId, e.from, e.kind ?? null, e.sourceChannelId ?? null,
-      e.itemId ?? null, JSON.stringify(e.message)); },
+      e.itemId ?? null, JSON.stringify(e.message));
+      if (e.messageId !== undefined) s.addReplyId.run(e.seq, e.messageId); },
     entriesOfTurn: turnId => s.entriesOf.all(turnId).map(entry),
     entries: () => s.entries.all().map(entry),
   };
@@ -193,8 +259,10 @@ function publish(path: string, meta: Meta, fill?: (tables: Tables) => void): voi
     const db = new Database(draft, { readwrite: true, create: true });
     try {
       db.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
-      const tables = sqliteTables((db.exec(SCHEMA), db));
-      try { tables.transaction(() => { tables.setMeta(meta); fill?.(tables); }); }
+      db.exec(SCHEMA);
+      installReadIndexes(db);
+      const tables = sqliteTables(db);
+      try { tables.transaction(() => { tables.setMeta(meta); fill?.(tables); refreshReplyIds(db); }); }
       finally { tables.dispose(); }
     } finally { db.close(); }
     try { linkSync(draft, path); }
@@ -265,13 +333,16 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           try {
             const view = sqliteTables(clone);
             view.transaction(() => { if (meta.formatVersion === 2) upgradeFromFormat2(clone); upgradeFromFormat3(clone);
-              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); });
+              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); refreshReplyIds(clone); });
             return { ok: true, value: createEngine(view, identity.compatibilityKey, () => { view.dispose(); clone.close(true); owner.close(true); }, config, true), revision: meta.revision };
           } catch (error) { clone.close(); throw error; }
         }
         const tables = sqliteTables(db), owner = db;
-        if (meta.formatVersion < 4 || referencesCompatible(tables, config))
-          recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); } : undefined);
+        tables.transaction(() => {
+          refreshReplyIds(owner);
+          if (meta.formatVersion < 4 || referencesCompatible(tables, config))
+            recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); } : undefined);
+        });
         return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config), revision: tables.getMeta().revision };
       } catch (error) {
         try { db?.close(); } catch { /* The original failure is the one to report. */ }

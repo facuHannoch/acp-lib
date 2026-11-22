@@ -151,10 +151,10 @@ test("each inference offers built-ins, then fixed entries, then changeable ones,
   const s = r.open();
   try {
     s.send("a", "hello"); await until(() => s.ended("a"), "first turn");
-    expect(s.requests[0]!.tools).toEqual(["echo", "alpha", "zeta", "read_tool_result", "extra", "send"]);
+    expect(s.requests[0]!.tools).toEqual(["echo", "notify_channel", "alpha", "zeta", "read_tool_result", "extra", "send"]);
     s.session.tools!.revoke("send"); s.session.tools!.remove("extra");
     s.send("a", "again"); await until(() => s.ended("a", 2), "second turn");
-    expect(s.requests[1]!.tools).toEqual(["echo", "alpha", "zeta", "read_tool_result"]);
+    expect(s.requests[1]!.tools).toEqual(["echo", "notify_channel", "alpha", "zeta", "read_tool_result"]);
     // A turn whose input carries a stricter policy sees only what that policy does not deny.
     s.send("b", "hello", "strict"); await until(() => s.ended("b"), "strict turn");
     expect(s.requests[2]!.tools).toEqual(["alpha"]);
@@ -182,10 +182,10 @@ test("a retry of one model call offers the list frozen for that call, even if a 
   try {
     session.agent.send({ channelId: "a", participantId: "u", text: "one" });
     await until(() => events.some(e => e.event.type === "turn_ended"), "turn");
-    expect(offered).toEqual([["read_tool_result", "send"], ["read_tool_result", "send"]]);
+    expect(offered).toEqual([["notify_channel", "read_tool_result", "send"], ["notify_channel", "read_tool_result", "send"]]);
     session.agent.send({ channelId: "a", participantId: "u", text: "two" });
     await until(() => events.filter(e => e.event.type === "turn_ended").length === 2, "second turn");
-    expect(offered[2]).toEqual(["read_tool_result"]);
+    expect(offered[2]).toEqual(["notify_channel", "read_tool_result"]);
   } finally { session.stop("test"); opened.value.close(); }
 });
 
@@ -461,4 +461,8 @@ test("a large result is stored by its producer; only the channel that produced i
     await until(() => e.ended("a", 3), "oversized inline");
     expect(e.results().at(-1)).toMatchObject({ ok: false, code: "result_too_large", outcome: { status: "failed" } });
   } finally { e.close(); }
+});
+
+test("catalog registrations cannot shadow notify_channel", () => {
+  expect(() => parseCatalog({ catalog: [tool("notify_channel", "fixed")] }, [])).toThrow(CatalogError);
 });

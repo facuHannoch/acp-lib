@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { expect, spyOn, test } from "bun:test";
 import { createInProcessHarness } from "../src/testing.ts";
 import { spawnHarness } from "./helpers/stdio.ts";
@@ -85,7 +86,7 @@ test("an approval pending at a real process crash cannot authorize work after re
     const second = spawnHarness({ home });
     try {
       await second.client.initialize({ ...init, approval: true });
-      const loaded = await second.client.loadSession({ sessionId: "s" });
+      const loaded = await inspectOperatorView(second.client, { sessionId: "s" });
       expect(loaded.turns).toMatchObject([{ turnId: "1", state: "interrupted", uncertainCalls: [] }]);
       await expect(second.client.respondApproval(request.requestId, "allow_once")).rejects.toMatchObject({ code: "not_found" });
     } finally { await second.close(); }

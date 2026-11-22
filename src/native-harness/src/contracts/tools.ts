@@ -19,7 +19,7 @@ export interface ToolRegistration extends ToolDefinition {
   deadlineMs?: number;
 }
 
-/** Supplied with `session/create` and `session/load`. */
+/** Supplied with `session/create` and `session/open`. */
 export interface ToolCatalogInput {
   catalog: ToolRegistration[];
   /** Runtime entries enabled from the start. */

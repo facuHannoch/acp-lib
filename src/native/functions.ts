@@ -73,7 +73,7 @@ const RESULT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 export interface NativeFunctionHost {
   /** Handler names advertised at `initialize`. */
   handlers(): string[];
-  /** The catalog for `session/create` and `session/load`, with the current runtime selection. */
+  /** The catalog for `session/create` and `session/open`, with the current runtime selection. */
   catalog(): ToolCatalogInput;
   /** Remember a runtime selection so the next open supplies it again. */
   select(name: string, enabled: boolean): void;

@@ -68,7 +68,7 @@ test("offline OpenRouter export and fresh-home reopen uses named secret without 
   const second = createInProcessHarness({ home: dest, environment, providerFactory: fake(calls) });
   try {
     wire.push(await second.client.initialize()); wire.push(await second.client.importArchive(bytes));
-    const loaded = await second.client.loadSession({ sessionId: "s" }); wire.push(loaded);
+    const loaded = await second.client.openSession({ sessionId: "s" }); wire.push(loaded);
     second.client.onChannelEvent(event => wire.push(event));
     wire.push(await second.client.push(push("a2"))); await until(() => calls.length === 2); await until(async () => (await second.client.idle()).idle);
     expect(calls).toEqual([{ key: secret, model: "saved/model" }, { key: secret, model: "saved/model" }]);
@@ -78,11 +78,11 @@ test("offline OpenRouter export and fresh-home reopen uses named secret without 
   expect(readFileSync(database).includes(secret)).toBe(false);
   const before = readFileSync(database);
   const missing = createInProcessHarness({ home: dest, environment: { OPENROUTER_API_KEY: different }, providerFactory: fake(calls) });
-  try { await missing.client.initialize(); await expect(missing.client.loadSession({ sessionId: "s" })).rejects.toMatchObject({ code: "invalid_config", message: expect.stringContaining("CONFIG_TEST_CUSTOM_KEY") }); }
+  try { await missing.client.initialize(); await expect(missing.client.openSession({ sessionId: "s" })).rejects.toMatchObject({ code: "invalid_config", message: expect.stringContaining("CONFIG_TEST_CUSTOM_KEY") }); }
   finally { missing.close(); }
   expect(readFileSync(database).equals(before)).toBe(true);
   const empty = createInProcessHarness({ home: dest, environment: { CONFIG_TEST_CUSTOM_KEY: "" }, providerFactory: fake(calls) });
-  try { await empty.client.initialize(); await expect(empty.client.loadSession({ sessionId: "s" })).rejects.toMatchObject({ code: "invalid_config" }); }
+  try { await empty.client.initialize(); await expect(empty.client.openSession({ sessionId: "s" })).rejects.toMatchObject({ code: "invalid_config" }); }
   finally { empty.close(); }
   expect(readFileSync(database).equals(before)).toBe(true);
   rmSync(source, { recursive: true, force: true }); rmSync(dest, { recursive: true, force: true });

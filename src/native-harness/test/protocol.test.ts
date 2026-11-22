@@ -126,7 +126,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: pr
     await expect(harness.client.createSession(invalid)).rejects.toMatchObject({ code: "invalid_config" });
     await harness.client.createSession(setup);
     await expect(harness.client.createSession(setup)).rejects.toMatchObject({ code: "already_exists" });
-    await expect(harness.client.request("session/load" as any, {})).rejects.toMatchObject({ code: transport === "stdio" ? "invalid_params" : "method_not_found" });
+    await expect(harness.client.request("session/load" as any, {})).rejects.toMatchObject({ code: "method_not_found" });
     if ("server" in harness) expect(await harness.server.request(null as any)).toMatchObject({ error: { code: -32600, data: { code: "invalid_request" } } });
     await expect(harness.client.push({ ...push("a", "1"), item: { ...push("a", "1").item, delivery: "steer" } } as any)).rejects.toMatchObject({ code: "invalid_params" });
   } finally { await harness.close(); }

@@ -8,6 +8,13 @@
  * kills the harness process, without unwinding, right after that commit.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { restartConversation } from "../../src/conversation-controller/index.ts";
+import { HarnessClientError, type HarnessClient } from "../../src/native-harness/src/client.ts";
+import { spawnHarness } from "../../src/native-harness/test/helpers/stdio.ts";
+import type { NativeApprovalResponder } from "../../src/native/host.ts";
 import type { Agent } from "../../src/agent.ts";
 import type { AgentSession } from "../../src/agent-session.ts";
 import { UnsupportedError } from "../../src/errors.ts";
@@ -335,3 +342,367 @@ describe("the native conversation at the Agent", () => {
     expect(agent.nativeHarness!.state).toBe("stopped");
   }, 30_000);
 });
+
+/** Run the normal host with a traced real stdio transport. A barrier can
+ * delay one host read without pausing the child or its notifications. */
+function traceStdio(rig: NativeRig) {
+  const children: ReturnType<typeof spawnHarness>[] = [];
+  const methods: string[] = [];
+  const intercept: Partial<Record<string, (real: () => Promise<unknown>, args: unknown[]) => Promise<unknown>>> = {};
+  rig.harness.connect = async () => {
+    const child = spawnHarness({ home: rig.home, effects: rig.effectsPath, fault: rig.env.HARNESS_TEST_FAULT, snapshotLog: rig.env.HARNESS_TEST_SNAPSHOT_LOG, stallChannel: rig.env.HARNESS_TEST_STALL_CHANNEL, modelTimeoutMs: Number(rig.env.HARNESS_TEST_MODEL_TIMEOUT_MS) || undefined });
+    children.push(child);
+    const client = new Proxy(child.client, { get(target, key) {
+      const value = Reflect.get(target, key);
+      if (typeof value !== "function" || typeof key !== "string") return value;
+      if (key.startsWith("on")) return value.bind(target);
+      return (...args: unknown[]) => {
+        methods.push(key);
+        const real = () => value.apply(target, args) as Promise<unknown>;
+        return intercept[key]?.(real, args) ?? real();
+      };
+    } }) as HarnessClient;
+    return { client, closed: child.child.exited.then(() => undefined), kill: () => child.close() };
+  };
+  return { children, methods, intercept };
+}
+
+function barrier() {
+  let open!: () => void;
+  const waiting = new Promise<void>(resolve => { open = resolve; });
+  return { open, waiting };
+}
+
+describe("operator controls over real stdio", () => {
+  test("reattachment merges completion during a targeted read while another channel stays live", async () => {
+    const rig = await rigWith();
+    const trace = traceStdio(rig);
+    rig.script([hold("attach"), reply("First reply"), reply("Later reply")]);
+    const agent = await rig.open(), host = agent.nativeHarness!;
+    const [alice, bob] = await two(agent);
+    const handle = await alice.attachObservation();
+    const pending = alice.prompt("first");
+    await until(() => rig.effects().includes("start:attach"), "Alice's tool");
+    handle.dispose();
+    expect(alice.connection.attachmentConnected).toBe(false);
+    expect(await host.operatorStatus()).toMatchObject({ process: "running", workingChannels: 1, stale: false });
+    const entered = barrier(), read = barrier();
+    trace.intercept.reconcileChannel = async (real, [params]) => {
+      if ((params as { channel: string }).channel === alice.id) { entered.open(); await read.waiting; }
+      return real();
+    };
+    const attaching = alice.attachObservation();
+    await entered.waiting;
+    const bobWork = bob.prompt("Bob remains attached");
+    try {
+      await until(async () => (await host.operatorStatus()).workingChannels === 2, "two working channels");
+      rig.release("attach");
+      const independent = await bobWork;
+      expect(independent.text).toContain("First reply");
+      await until(async () => (await host.status()).channels.find(channel => channel.channel === alice.id)?.activeTurn === undefined, "Alice's commit");
+    } finally { read.open(); }
+    const attached = await attaching;
+    expect(await alice.attachObservation()).toBe(attached);
+    const newest = await host.conversationMessages({ channel: alice.id });
+    expect(newest.messages.filter(message => message.actor.kind === "agent")).toHaveLength(2);
+    expect((await pending).text).toContain("First reply");
+    expect(await recordedReplies(agent, alice)).toEqual(["Working.", "First reply"]);
+    await host.suspendChannel(alice.id);
+    expect(alice.connection.attachmentConnected).toBe(true);
+    expect((await host.status()).channels.find(channel => channel.channel === alice.id)?.lifecycle).toBe("suspended");
+    expect(await host.operatorStatus()).toMatchObject({ process: "running", workingChannels: 0 });
+    await host.resumeChannel(alice.id);
+    expect((await alice.prompt("new")).text).toBe("Later reply");
+  }, 30_000);
+
+  test("an unattached approval is recovered by ID, and Restart refuses to start after connection loss", async () => {
+    type Answer = Parameters<NativeApprovalResponder>[1];
+    const requests = new Map<string, Answer>();
+    const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });
+    const trace = traceStdio(rig);
+    rig.harness.approvalResponder = ((request, answer) => { requests.set(request.requestId, answer); }) satisfies NativeApprovalResponder;
+    rig.script([record("operator-approval"), reply("Answered"), hold("restart"), reply("Not reached")]);
+    const agent = await rig.open(), host = agent.nativeHarness!;
+    const [alice] = await two(agent);
+    (await alice.attachObservation()).dispose();
+    await host.push({ id: "operator-input", channel: alice.id, sender: "operator", text: "approval" });
+    await until(() => requests.size === 1, "detached approval");
+    const [id, answer] = [...requests][0]!;
+    const view = await alice.attachObservation();
+    expect((await host.status()).channels.find(channel => channel.channel === alice.id)?.activeTurn?.phase?.id).toBe(id);
+    expect(await host.respondApproval(id, "allow_once")).toBe(false);
+    view.dispose();
+    expect(await answer("allow_once")).toBe(true);
+    expect(await answer("allow_once")).toBe(false);
+    await until(() => rig.effects().includes("operator-approval"), "approved effect");
+    expect(requests.size).toBe(1);
+    await until(async () => (await host.status()).execution === "idle", "approved turn to finish");
+
+    await alice.attachObservation();
+    const active = track(alice.prompt("restart must stop here"));
+    await until(() => rig.effects().includes("start:restart"), "restart tool");
+    let starts = 0;
+    trace.intercept.interruptTurn = async real => {
+      const { child } = trace.children.at(-1)!;
+      child.kill("SIGKILL");
+      await child.exited;
+      return real();
+    };
+    await expect(restartConversation({ stop: () => alice.connection.stop(), start: () => { starts++; return alice.connection.start(); } })).rejects.toThrow();
+    expect(starts).toBe(0);
+    expect(active.value?.text).not.toBe("Not reached");
+  }, 30_000);
+});
+
+/** A deterministic mixed workload. Use the published schema created by the
+ * real child, then close the fixture writer before reopening through stdio. */
+function seedOperatorHistory(path: string, alice: string, bob: string) {
+  const db = new Database(path);
+  const projected = [];
+  try {
+    db.transaction(() => {
+      const addTurn = db.prepare("INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)");
+      const addEntry = db.prepare("INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      const reason = "Interrupted fixture with durable outcome ".repeat(5);
+      const timestamp = new Date(0).toISOString();
+      const key = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key='compatibilityKey'").get()!.value;
+      for (let turn = 1; turn <= 5_000; turn++) {
+        const channel = turn % 2 === 0 ? alice : bob, start = turn * 4;
+        const state = { status: "interrupted", reason, uncertainCallIds: [] };
+        projected.push({ channel, turnId: String(turn), items: [], state: state.status, reason });
+        addTurn.run(turn, channel, start, timestamp, key, state.status, JSON.stringify(state));
+        const calls = [{ id: `effect-${turn}`, name: "echo", input: "{}" }];
+        const assistant = { role: "assistant", content: `fixture reply ${turn}`, calls };
+        const result = { role: "tool", callId: calls[0]!.id, content: turn === 5_000 ? "x".repeat(1_100_000) : "fixture result" };
+        addEntry.run(start + 1, timestamp, channel, turn, "assistant", null, null, null, JSON.stringify(assistant));
+        addEntry.run(start + 2, timestamp, channel, turn, "tool", null, null, null, JSON.stringify(result));
+      }
+      db.run("UPDATE meta SET value='20002' WHERE key='revision'");
+      db.run("UPDATE meta SET value='5001' WHERE key='nextTurnId'");
+      addTurn.finalize();
+      addEntry.finalize();
+    })();
+    expect(Buffer.byteLength(JSON.stringify({ turns: projected }))).toBeGreaterThan(1_048_576);
+  } finally { db.close(); }
+}
+
+test("operator stdio reads stay bounded on 10,000 records, catch-up retries from the committed position", async () => {
+  const rig = await rigWith();
+  const trace = traceStdio(rig);
+  rig.script([reply("Ready"), reply("Fresh")]);
+  const agent = await rig.open(), host = agent.nativeHarness!;
+  const [alice, bob] = await two(agent);
+  await host.start();
+  await host.stop();
+  const dbPath = join(rig.home, agent.id, "session.sqlite");
+  seedOperatorHistory(dbPath, alice.id, bob.id);
+  trace.methods.length = 0;
+  // Model context assembly can read a snapshot. Opening and observing must
+  // leave the count unchanged, including while that inference is held.
+  const log = join(rig.directory, "snapshots.log");
+  rig.env.HARNESS_TEST_SNAPSHOT_LOG = log;
+  const snapshots = () => existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).length : 0;
+  rig.env.HARNESS_TEST_STALL_CHANNEL = alice.id;
+  rig.env.HARNESS_TEST_MODEL_TIMEOUT_MS = "20000";
+  await host.start();
+  const handle = await alice.attachObservation();
+  expect(snapshots()).toBe(0);
+  handle.dispose();
+  await host.push({ id: "held", channel: alice.id, sender: "operator", text: "hold inference" });
+  let last: Awaited<ReturnType<typeof host.status>> | undefined;
+  await until(async () => {
+    last = await host.status();
+    return last.channels.find(channel => channel.channel === alice.id)?.activeTurn?.phase?.kind === "model";
+  }, "held inference", 2000).catch(error => { throw new Error(JSON.stringify(last), { cause: error }); });
+  const executionReads = snapshots();
+  expect(executionReads).toBeGreaterThan(0);
+  await alice.attachObservation();
+  expect(snapshots()).toBe(executionReads);
+  expect(trace.methods).toContain("reconcileChannel");
+  expect(trace.methods).not.toContain("channelMessages");
+  expect(trace.methods).not.toContain("timeline");
+  const status = await host.status();
+  const turn = status.channels.find(channel => channel.channel === alice.id)?.activeTurn?.turnId;
+  if (!turn) throw new Error("Missing held turn");
+  expect(await host.interrupt(alice.id, turn)).toBe(true);
+
+  const newest = await host.conversationMessages({ channel: alice.id, limit: 3 });
+  const before = newest.messages[0]!.position;
+  expect(newest.messages.every(message => message.channel === alice.id)).toBe(true);
+  const ids = newest.messages.map(message => message.messageId);
+  const committed: string[] = [];
+  const abort = new AbortController();
+  trace.intercept.channelMessages = async (real, args) => {
+    if ((args[0] as { after?: string }).after) {
+      Object.assign(args[0] as object, { limit: 1 });
+    }
+    return real();
+  };
+  let saved = before;
+  await expect(host.catchUp(alice.id, before, async (messages, next) => {
+    committed.push(...messages.map(message => message.messageId));
+    saved = next;
+    abort.abort();
+  }, abort.signal)).rejects.toThrow();
+  expect(committed).toHaveLength(1);
+  await host.catchUp(alice.id, saved, async (messages, next) => {
+    committed.push(...messages.map(message => message.messageId));
+    saved = next;
+  });
+  expect(committed).toEqual(ids.slice(1));
+  const older = await host.conversationMessages({ channel: alice.id, cursor: newest.next, limit: 3 });
+  expect(older.messages.some(message => ids.includes(message.messageId))).toBe(false);
+  expect([...older.messages, ...newest.messages].every(message => message.actor.kind === "agent" || message.actor.id === "operator")).toBe(true);
+
+  const activity = await host.timeline({ limit: 8 });
+  const oversized = activity.events.findIndex(event => event.omitted && event.kind === "tool_result");
+  expect(oversized).toBeGreaterThan(0);
+  expect(oversized).toBeLessThan(activity.events.length - 1);
+  expect((await host.timeline({ cursor: activity.next, limit: 8 })).events.every(event =>
+    !activity.events.some(previous => previous.position === event.position))).toBe(true);
+  expect(await host.operatorStatus()).toMatchObject({ process: "running", stale: false });
+}, 30_000);
+
+test("operator stdio suspension waits for a callback, preserves checkpoints across replacement, and stop stays responsive", async () => {
+  const rig = await rigWith();
+  const releases = [barrier(), barrier()];
+  let effects = 0;
+  rig.harness.functions = { tools: { checkpoint_tool: {
+    description: "Controlled checkpoint callback", parameters: { type: "object" },
+    async handler() { const release = releases[effects++]; await release!.waiting; return { recorded: true }; },
+  } } };
+  const tool = (id: string) => ({ content: null, calls: [{ id, name: "checkpoint_tool", arguments: {} }] });
+  rig.script([tool("one"), reply("Resumed reply"), tool("two"), reply("Unexpected reply")]);
+  const agent = await rig.open(), host = agent.nativeHarness!;
+  const [alice, bob] = await two(agent);
+  await host.start();
+  expect(host.capabilities?.methods).toContain("channel/observe");
+  await expect(host.validateConfig({ bogus: true })).rejects.toBeInstanceOf(HarnessClientError);
+  const first = track(alice.prompt("first"));
+  await until(() => effects === 1, "first callback");
+  await host.suspendChannel(bob.id);
+  await expect(host.push({ id: "closed-admission", channel: bob.id, sender: "operator", text: "blocked" })).rejects.toBeInstanceOf(HarnessClientError);
+  expect((await host.operatorStatus()).workingChannels).toBe(1);
+  const pause = host.suspend();
+  await until(async () => (await host.status()).lifecycle === "suspending", "session admission closes");
+  const blocked = (await host.status()).channels.find(channel => channel.channel === alice.id)?.activeTurn;
+  expect(blocked?.phase).toMatchObject({ kind: "tool", id: expect.any(String) });
+  expect(first.settled).toBe(false);
+  releases[0]!.open();
+  expect((await pause).lifecycle).toBe("suspended");
+  expect(await host.operatorStatus()).toMatchObject({ process: "running", workingChannels: 0 });
+  expect(alice.connection.attachmentConnected).toBe(true);
+  expect((await host.status()).channels.find(channel => channel.channel === alice.id)?.lifecycle).toBe("open");
+  await host.stop();
+  expect(await host.operatorStatus()).toMatchObject({ process: "stopped", stale: true });
+  await host.start();
+  expect((await host.status()).lifecycle).toBe("suspended");
+  expect((await host.status()).channels.find(channel => channel.channel === bob.id)?.lifecycle).toBe("suspended");
+  await host.resume();
+  await until(async () => (await host.status()).execution === "idle", "resumed checkpoint to finish");
+  expect(effects).toBe(1);
+  expect((await host.status()).channels.find(channel => channel.channel === bob.id)?.lifecycle).toBe("suspended");
+
+  const second = track(alice.prompt("second"));
+  await until(() => effects === 2, "second callback");
+  const stoppingPause = track(host.suspend());
+  await until(async () => (await host.status()).lifecycle === "suspending", "second suspension");
+  await host.stop();
+  releases[1]!.open();
+  await until(() => stoppingPause.settled && second.settled, "interrupted waiters");
+  expect(stoppingPause.error).toBeDefined();
+  const launches = host.launches;
+  expect(host.state).toBe("stopped");
+  expect(host.launches).toBe(launches);
+  await host.start();
+  expect((await host.status()).channels.find(channel => channel.channel === alice.id)?.unresolved)
+    .toMatchObject({ state: "interrupted", uncertainCalls: ["two"] });
+  expect(effects).toBe(2);
+}, 30_000);
+
+test("operator stdio notify wakes an unattached channel and leaves usage fields unknown", async () => {
+  const rig = await rigWith();
+  const agent = await rig.open(), host = agent.nativeHarness!;
+  const [alice, bob] = await two(agent);
+  rig.script([hold("notify"), { content: null, calls: [{ id: "notice", name: "notify_channel", arguments: { channelId: alice.id, text: "wake Alice" } }] },
+    reply("Initial reply"), reply("Notice reply"), reply("Later reply")]);
+  const detach = await alice.attachObservation();
+  const first = alice.prompt("initial");
+  await until(() => rig.effects().includes("start:notify"), "initial hold");
+  detach.dispose();
+  rig.release("notify");
+  await until(async () => (await host.status()).execution === "idle", "initial detached turn");
+  expect((await bob.prompt("wake Alice")).text).toContain("Initial reply");
+  await until(async () => (await host.status()).execution === "idle", "notice reply");
+  const history = await host.conversationMessages({ channel: alice.id });
+  expect(history.messages.flatMap(message => "parts" in message ? message.parts?.map(part => part.text) ?? [] : []))
+    .toContain("Notice reply");
+  expect((await host.timeline()).events).toContainEqual(expect.objectContaining({ kind: "channel_notice", sourceChannel: bob.id, channel: alice.id }));
+  await alice.attachObservation();
+  await first;
+  expect((await alice.prompt("later")).text).toBe("Later reply");
+  const usage = await host.usage(alice.id);
+  expect(usage).toMatchObject({ totals: {}, partial: true });
+  expect(usage.missing.inputTokens).toBe(usage.attempts);
+  expect((await host.operatorStatus()).workingChannels).toBe(0);
+}, 30_000);
+
+test("operator stdio catch-up persists each missed reply once after a lost stream", async () => {
+  const rig = await rigWith();
+  const trace = traceStdio(rig);
+  rig.script([reply("Baseline"), reply("Missed reply"), reply("Live reply")]);
+  const agent = await rig.open(), host = agent.nativeHarness!;
+  const [alice] = await two(agent);
+  await alice.prompt("baseline");
+  const head = await host.conversationMessages({ channel: alice.id, limit: 1 });
+  const checkpoint = join(rig.directory, "consumer-position.json");
+  const readSaved = () => JSON.parse(readFileSync(checkpoint, "utf8")) as { position: string; replies: string[] };
+  writeFileSync(checkpoint, JSON.stringify({ position: head.messages[0]!.position, replies: [] }));
+  (await alice.attachObservation()).dispose();
+  await host.stop();
+
+  rig.env.HARNESS_TEST_FAULT = "commitResponse:1";
+  await host.start();
+  delete rig.env.HARNESS_TEST_FAULT;
+  const lost = trace.children.at(-1)!;
+  await lost.client.push({ channel: alice.id, item: { id: "missed", kind: "user_message", sender: "operator", content: [{ type: "text", text: "missed" }] } }).catch(() => undefined);
+  expect(await lost.child.exited).toBeGreaterThan(0);
+  await until(() => host.state === "stopped", "untracked process loss");
+  expect(host.records.submission("missed")).toBeUndefined();
+  await host.start();
+  await alice.attachObservation();
+
+  const abort = new AbortController();
+  const entered = barrier(), release = barrier();
+  let holdFirst = true;
+  trace.intercept.channelMessages = async (real, [params]) => {
+    if ((params as { after?: string }).after) Object.assign(params as object, { limit: 1 });
+    if (holdFirst) { holdFirst = false; entered.open(); await release.waiting; }
+    return real();
+  };
+  const commit: Parameters<typeof host.catchUp>[2] = async (messages, position) => {
+    const previous = readSaved();
+    const replies = messages.flatMap(message => message.actor.kind === "agent" ? [message.messageId] : []);
+    writeFileSync(checkpoint + ".draft", JSON.stringify({ position, replies: [...new Set([...previous.replies, ...replies])] }));
+    renameSync(checkpoint + ".draft", checkpoint);
+  };
+  const interrupted = host.catchUp(alice.id, readSaved().position, async (messages, position) => {
+    await commit(messages, position);
+    abort.abort();
+  }, abort.signal);
+  const interruption = interrupted.then(() => undefined, (error: unknown) => error);
+  await entered.waiting;
+  const live = alice.prompt("live during catch-up");
+  try {
+    await until(async () => (await host.status()).execution === "idle" && host.records.submission(live.id)?.state === "accepted", "live commit during catch-up");
+  } finally { release.open(); }
+  expect(await interruption).toBeInstanceOf(Error);
+  expect((await live).text).toBe("Live reply");
+  expect(readSaved().replies).toEqual([]);
+  await host.catchUp(alice.id, readSaved().position, commit);
+  const persisted = readSaved();
+  expect(persisted.replies).toHaveLength(2);
+  await host.catchUp(alice.id, persisted.position, commit);
+  expect(readSaved()).toEqual(persisted);
+  expect((await recordedReplies(agent, alice)).filter(text => text === "Live reply")).toHaveLength(1);
+}, 30_000);

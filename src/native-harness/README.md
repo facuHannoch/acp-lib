@@ -338,8 +338,8 @@ transport factory and host types. `src/index.ts` exports host-independent
 uses the same session assembly with OpenRouter, its tools and inspector wrappers.
 
 The protocol carries JSON-RPC-shaped values with a JSON copy boundary. Supported
-requests are `initialize`, `config/validate`, `session/create`, `session/load` (durable servers
-only), `session/messages`, `session/message/read`, `session/model-calls`, `session/status`, `session/suspend`,
+requests are `initialize`, `config/validate`, `session/create`, `session/open` (durable servers
+only), `channel/observe`, `channel/reconcile`, `channel/messages`, `session/timeline`, `session/message/read`, `session/model-calls`, `session/status`, `session/suspend`,
 `session/resume`, `session/stop`, `channel/push` and `session/idle`, plus
 `channel/create`, `channel/edit`, `channel/suspend`, `channel/resume`,
 `channel/delete`, `channel/withdraw`, `channel/interrupt` and
@@ -417,23 +417,27 @@ deduplicates item IDs, across restarts on a durable server: the same ID and
 content returns the original item's current milestone and turn, and different
 content fails with `item_conflict`. Unknown senders are recorded as IDs.
 
-`session/load` opens an existing session and returns one view at a storage
-revision: status, turns, items with their last confirmed milestone, and
-committed assistant messages with stable IDs (paged with `session/messages`).
-Opening interrupts turns a previous process left unfinished; it never replays
-them. Pending input becomes eligible only after the load response is written,
-so live events for recovered work follow it, and every event carries the
-revision of the commit it reports. A view that cannot fit one frame fails with
-`transfer_limit`.
+`session/open` opens an existing session and returns its lifecycle, revision,
+and any startup channel-change results. Opening recovers unfinished turns
+without replaying them. Pending input becomes eligible after the open response.
 
-`session/create` and `session/load` accept `channelChanges`
+Use `channel/observe` for revisioned channel state, the session blocker, and
+pending approvals visible to the approval consumer. Use `channel/reconcile`
+for outcomes and committed reply identities tied to outstanding item or turn
+IDs. `channel/messages` pages participant and assistant messages, and
+`session/timeline` pages activity, including notices and tool results. Live
+message IDs and channel positions match the paged records. A large assistant
+message is returned by reference and can be read with `session/message/read`.
+A large timeline record keeps its attribution and position.
+
+`session/create` and `session/open` accept `channelChanges`
 ([decision 0020](.res/decisions/0020-startup-channel-changes.md)): the newest
 name, policy, suspension, resume or deletion a host decided for each channel
 while the harness was stopped. The batch is validated as a whole, applied
 after recovery and before any pending or recovered work can run, and answered
 with one `applied` or `blocked` result per entry. A deletion that finds pending
 input or a checkpoint suspends that channel instead and reports `channel_busy`.
-A repeated load on the same connection reports the recorded results without
+A repeated open on the same connection reports the recorded results without
 applying anything; a new connection can resend the same desired state safely.
 Servers advertise this as `capabilities.startupChannelChanges`.
 
@@ -595,12 +599,12 @@ client.serveFunctions(
 await client.initialize({ protocolVersion: 1, host: { name: "app", version: "1" },
   callbacks: ["functions/call"], functions: ["lookup_handler"],
   approval: true, subscription: { text: "final", tools: "full" } });
-await client.loadSession({ sessionId, tools: { catalog: [
+await client.openSession({ sessionId, tools: { catalog: [
   { name: "lookup", description: "...", parameters: { type: "object" },
     handler: "lookup_handler", group: "fixed" } ] } });
 ```
 
-- **Catalog.** `tools` goes on every `session/create` and `session/load`.
+- **Catalog.** `tools` goes on every `session/create` and `session/open`.
   Definitions are not stored. `group` is `fixed`, `revocable` (`tool/revoke`
   and `tool/restore`, stored with the session and its archives) or `runtime`
   (`tool/enable` and `tool/remove`, in memory, listed in `tools.enabled`).

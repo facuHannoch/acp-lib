@@ -116,8 +116,11 @@ export class HarnessClient {
   respondApproval(requestId: string, decision: "allow_once" | "deny") { return this.request("approval/respond", { requestId, decision }); }
   /** Open an existing session. The returned view precedes every live event
    * for work the session recovers; callers reconcile their own records with it. */
-  loadSession(params: Calls["session/load"]["params"]) { return this.request("session/load", params); }
-  messages(params: Calls["session/messages"]["params"]) { return this.request("session/messages", params); }
+  openSession(params: Calls["session/open"]["params"]) { return this.request("session/open", params); }
+  observeChannel(params: Calls["channel/observe"]["params"]) { return this.request("channel/observe", params); }
+  reconcileChannel(params: Calls["channel/reconcile"]["params"]) { return this.request("channel/reconcile", params); }
+  channelMessages(params: Calls["channel/messages"]["params"]) { return this.request("channel/messages", params); }
+  timeline(params: Calls["session/timeline"]["params"] = {}) { return this.request("session/timeline", params); }
   status() { return this.request("session/status", {}); }
   modelCalls(params: Calls["session/model-calls"]["params"] = {}) { return this.request("session/model-calls", params); }
   readMessage(params: Calls["session/message/read"]["params"]) { return this.request("session/message/read", params); }

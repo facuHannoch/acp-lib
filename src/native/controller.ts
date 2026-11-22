@@ -98,6 +98,9 @@ export class NativeController implements ConversationController, ChannelPort {
   #detach: (() => void) | null = null;
   #unsubscribeHost: (() => void) | null = null;
   #stopped = false;
+  #attachment: Promise<void> | null = null;
+  #attachmentHandle?: { dispose(): void };
+  readonly #approvalSignals = new Map<string, AbortController>();
 
   constructor(config: NativeControllerConfig) {
     this.#config = config;
@@ -113,7 +116,16 @@ export class NativeController implements ConversationController, ChannelPort {
   /** Attaches the conversation to its channel. Never starts the process: the first real work does. */
   async start(): Promise<StartResult> {
     this.#stopped = false;
-    this.#detach ??= this.#host.attach(this.#channel, this);
+    if (!this.#detach) {
+      const detach = this.#host.attach(this.#channel, this, true);
+      this.#detach = detach;
+      this.#attachmentHandle = { dispose: () => { if (this.#detach === detach) this.disposeAttachment(); } };
+      this.#attachment = this.#host.observeAttachment(this.#channel, this).catch(error => {
+        if (this.#detach === detach) this.disposeAttachment();
+        throw error;
+      });
+    }
+    await this.#attachment;
     this.#unsubscribeHost ??= this.#host.subscribeState(() => this.#notifyConnection());
     this.#notifyConnection();
     return { sessionId: this.#host.sessionId, resumed: this.#config.resumed ?? false };
@@ -131,9 +143,25 @@ export class NativeController implements ConversationController, ChannelPort {
   /** The conversation is done with its channel for now. The shared process keeps running for the others. */
   async stop(): Promise<void> {
     if (this.#stopped) return;
+    for (const turn of [...this.#turns.values()].filter(turn => !turn.ended && !turn.released)) {
+      turn.cancelRequested = true;
+      await this.#host.interrupt(this.#channel, turn.harnessId, "interrupted by the conversation");
+    }
     this.#stopped = true;
-    // Stopping a conversation interrupts its own turn; other channels keep working.
-    this.#release(new Error("the conversation stopped"), true);
+    this.#release(new Error("the conversation stopped"), false);
+    this.disposeAttachment();
+  }
+
+  async attachObservation(): Promise<{ dispose(): void }> {
+    await this.start();
+    if (!this.#attachmentHandle) throw new Error("Attachment was disposed during observation");
+    return this.#attachmentHandle;
+  }
+
+  disposeAttachment(): void {
+    this.#attachment = null;
+    this.#attachmentHandle = undefined;
+    this.#endApprovals();
     this.#detach?.();
     this.#detach = null;
     this.#unsubscribeHost?.();
@@ -151,6 +179,22 @@ export class NativeController implements ConversationController, ChannelPort {
     for (const listener of [...this.#connectionListeners]) { try { listener(); } catch { /* observer */ } }
   }
   readonly cancelGraceMs = undefined;
+
+  get attachmentConnected(): boolean { return this.#detach !== null; }
+  get attachmentStatus(): "disconnected" | "offline" | "suspended" | "online" {
+    if (!this.#detach) return "disconnected";
+    if (this.#host.state !== "running") return "offline";
+    return this.#host.channel(this.#channel)?.lifecycle === "suspended" || this.#host.sessionLifecycle === "suspended"
+      ? "suspended" : "online";
+  }
+
+  history(limit?: number, cursor?: string) {
+    return this.#host.conversationMessages(cursor === undefined ? { channel: this.#channel, limit } : { channel: this.#channel, cursor, limit });
+  }
+
+  catchUp(after: string, commit: Parameters<NativeHarnessHost["catchUp"]>[2], signal?: AbortSignal) {
+    return this.#host.catchUp(this.#channel, after, commit, signal);
+  }
 
   // --- settings and usage -----------------------------------------------------------------------
 
@@ -188,6 +232,7 @@ export class NativeController implements ConversationController, ChannelPort {
   async send(run: TurnRun): Promise<void> {
     if (new Set(run.messageIds).size !== run.messageIds.length) throw new Error("a run repeats a message id");
     if (this.#stopped) throw new Error("the conversation is stopped");
+    if (!this.#detach) await this.start();
     for (const message of run.messages) {
       await this.#host.push({
         id: message.id,
@@ -228,7 +273,12 @@ export class NativeController implements ConversationController, ChannelPort {
 
   event(event: ChannelEvent): void {
     const payload = event.event;
-    if (payload.type === "channel_state") return;
+    if (payload.type === "channel_state") { this.#notifyConnection(); return; }
+    if (payload.type === "approval_closed") {
+      this.#approvalSignals.get(payload.requestId)?.abort();
+      this.#approvalSignals.delete(payload.requestId);
+      return;
+    }
     if (payload.type === "item_withdrawn") { this.#host.settle([payload.item]); return; }
     if (payload.type === "turn_started") {
       if (!this.#turns.has(sessionTurnId(payload.turnId))) this.#begin(payload.turnId, payload.items);
@@ -304,17 +354,22 @@ export class NativeController implements ConversationController, ChannelPort {
     for (const status of view.turns) {
       if (this.#turns.has(sessionTurnId(status.turnId))) continue;
       // Only a turn that owns one of this conversation's unsettled inputs: older turns were settled before.
-      if (!status.items.some((id) => this.#host.records.submission(id)?.channel === this.#channel)) continue;
+      if (status.state !== "running" && status.turnId !== view.status?.activeTurn?.turnId && !status.items.some((id) => this.#host.records.submission(id)?.channel === this.#channel)) continue;
       settle(this.#begin(status.turnId, status.items), status);
     }
   }
 
   /** The connection was lost. Turns stay pending: the reopen's view gives each its outcome. */
-  disconnected(): void { this.#notifyConnection(); }
+  disconnected(): void { this.#endApprovals(); this.#notifyConnection(); }
 
   failed(error: Error): void {
+    this.#endApprovals();
     this.#release(error, false);
     this.#notifyConnection();
+  }
+
+  trackedTurns(): string[] {
+    return [...this.#turns.values()].filter(turn => !turn.ended && !turn.released).map(turn => turn.harnessId);
   }
 
   busy(): boolean {
@@ -407,7 +462,7 @@ export class NativeController implements ConversationController, ChannelPort {
           case "approval_requested":
             // Not awaited: the turn can end (interrupted, timed out) while the consumer decides, and
             // that end must not wait behind the question.
-            void this.#approve(event, handlers, approvals.signal, signal);
+            if (!this.#host.hasApprovalResponder) void this.#approve(event, handlers, approvals.signal, signal);
             return;
           case "turn_resumed":
             signal({ kind: "update", sessionId });
@@ -441,8 +496,17 @@ export class NativeController implements ConversationController, ChannelPort {
     });
   }
 
+  #endApprovals(): void {
+    for (const pending of this.#approvalSignals.values()) pending.abort();
+    this.#approvalSignals.clear();
+  }
+
   /** Routes one pending call to the conversation's approval handler and answers it once. */
   async #approve(event: Extract<TurnScoped, { type: "approval_requested" }>, handlers: PromptHandlers, cancelled: AbortSignal, signal: (output: ProviderOutput) => void): Promise<void> {
+    if (this.#approvalSignals.has(event.requestId)) return;
+    const pending = new AbortController();
+    this.#approvalSignals.set(event.requestId, pending);
+    cancelled = AbortSignal.any([cancelled, pending.signal]);
     const sessionId = this.#host.sessionId;
     signal({ kind: "permission_started", sessionId });
     let decision: "allow_once" | "deny" = "deny";

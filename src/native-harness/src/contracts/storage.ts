@@ -1,3 +1,4 @@
+import type { OperatorStorageReads } from "./operator-controls.ts";
 import type { ModelCallStore } from "./model-execution.ts";
 import type { ItemKind, ItemMilestone } from "./agent.ts";
 import type { ContextEntry } from "./context.ts";
@@ -261,7 +262,11 @@ export type InterruptOutcome =
   | { interrupted: false; turn: StoredTurn };
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
-export interface SessionStorage extends ModelCallStore {
+export interface SessionStorage extends ModelCallStore, OperatorStorageReads {
+  readSession(): StorageResult<StoredSession>;
+  readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
+  readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
+  readRevokedTools(): StorageResult<string[]>;
   /** Validated config supplied to this open, copied at bind time; undefined for
    * legacy allow-only opens. Returns a defensive copy. It is independent of
    * saved/imported config and is not retargeted by saveConfig. Failure is not

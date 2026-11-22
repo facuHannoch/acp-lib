@@ -1,3 +1,4 @@
+import { inspectOperatorView } from "./helpers/operator-view.ts";
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -209,7 +210,7 @@ test("stdio: revoking a tool while its approval is pending skips the call; the n
   expect(seen.toolEvents("a").map(event => event.status)).toEqual(["skipped"]);
   expect(seen.output("a", "skipped")).toMatchObject({ ok: false, code: "tool_unavailable" });
   expect((await first.client.toolInvocation("1:t1")).invocation).toMatchObject({ state: "skipped", code: "tool_unavailable", effect: "none" });
-  expect(offered()).toEqual([["echo", "record", "hold", "lookup", "read_tool_result", "send"], ["echo", "record", "hold", "lookup", "read_tool_result"]]);
+  expect(offered()).toEqual([["echo", "record", "hold", "notify_channel", "lookup", "read_tool_result", "send"], ["echo", "record", "hold", "notify_channel", "lookup", "read_tool_result"]]);
   await expect(first.client.revokeTool("lookup")).rejects.toMatchObject({ code: "invalid_state" });
   await expect(first.client.removeTool("send")).rejects.toMatchObject({ code: "invalid_state" });
   await expect(first.client.revokeTool("nope")).rejects.toMatchObject({ code: "not_found" });
@@ -220,7 +221,7 @@ test("stdio: revoking a tool while its approval is pending skips the call; the n
   const second = spawnHarness({ home, requests }), again = watch(second.client);
   try {
     await second.client.initialize(hello(["send_handler"]));
-    await second.client.loadSession({ sessionId: "s", tools });
+    await inspectOperatorView(second.client, { sessionId: "s", tools });
     expect((await second.client.tools()).tools).toEqual([
       { name: "send", group: "revocable", handler: "send_handler", available: false, reason: "revoked" },
       { name: "lookup", group: "fixed", handler: "lookup_handler", available: false, reason: "handler_missing" },
@@ -228,10 +229,10 @@ test("stdio: revoking a tool while its approval is pending skips the call; the n
     expect((await second.client.toolInvocation("1:t1")).invocation).toMatchObject({ state: "skipped", code: "tool_unavailable" });
     await second.client.push(push("a", "a2"));
     await until(() => again.ended("a"), "second turn");
-    expect(offered().at(-1)).toEqual(["echo", "record", "hold", "read_tool_result"]);
+    expect(offered().at(-1)).toEqual(["echo", "record", "hold", "notify_channel", "read_tool_result"]);
     // A repeated load with the same catalog is a view; a different one is refused.
-    await second.client.loadSession({ sessionId: "s", tools });
-    await expect(second.client.loadSession({ sessionId: "s", tools: { catalog: [tool("other")] } })).rejects.toMatchObject({ code: "invalid_state" });
+    await inspectOperatorView(second.client, { sessionId: "s", tools });
+    await expect(second.client.openSession({ sessionId: "s", tools: { catalog: [tool("other")] } })).rejects.toMatchObject({ code: "invalid_state" });
     expect((await second.client.restoreTool("send")).tool.available).toBe(true);
   } finally { await second.close(); }
 });
@@ -254,7 +255,7 @@ test("stdio: a callback whose outcome is lost stays uncertain after reopen and i
   second.client.serveFunctions(() => { handled++; return { output: "again" }; });
   try {
     await second.client.initialize(hello(["lookup_handler"]));
-    const loaded = await second.client.loadSession({ sessionId: "s", tools });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "s", tools });
     expect(loaded.status.channels[0]!.unresolved).toMatchObject({ state: "interrupted", uncertainCalls: ["t1"] });
     expect((await second.client.toolInvocation("1:t1")).invocation).toMatchObject({ state: "interrupted", effect: "unknown", tool: "lookup", arguments: '{"q":"x"}' });
     await new Promise(resolve => setTimeout(resolve, 100));
