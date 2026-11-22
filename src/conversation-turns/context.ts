@@ -1,5 +1,5 @@
 import type { ConversationPermissions } from "../permissions/conversation.ts";
-import type { PermissionPolicyConfig } from "../permissions/policy.ts";
+import type { ConversationPermissionConfig } from "../permissions/policy.ts";
 /**
  * The narrow context `runTurn` receives from `AgentSession` (controller-interface spec, Brief A2
  * step 1). It names exactly what the turn path reads and changes in the session, grouped as the
@@ -115,7 +115,7 @@ export interface TurnRunContext {
   /** Session state the turn reads or updates. */
   readonly session: {
     readonly cwd: string | undefined;
-    readonly permissionPolicy: PermissionPolicyConfig;
+    readonly permissionPolicy: ConversationPermissionConfig;
     readonly internalSessionId: string | null;
     setInternalSessionId(next: string | null): void;
     title: string | undefined;

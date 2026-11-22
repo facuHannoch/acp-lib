@@ -1,8 +1,10 @@
 import type { AgentSessionEvent } from "../agent-conversation-contracts.ts";
 import type { Logger } from "../logger.ts";
 import type { PermissionOutcome, PermissionRequest, PromptHandlers } from "../types.ts";
+import { acpPermissionArrivals, permissionArrival, type PermissionArrival } from "./arrival.ts";
+import { DEFAULT_PERMISSION_TIMEOUT_MS } from "./consumer-config.ts";
 import { selectPermissionOutcome } from "./outcome.ts";
-import { permissionLevel, recordingPermissionHandlers, type PermissionPolicyConfig } from "./policy.ts";
+import { permissionLevel, recordingPermissionHandlers, type ConversationPermissionConfig } from "./policy.ts";
 
 export type PermissionResolutionSource = "handler" | "consumer" | "default" | "timeout" | "turn_ended";
 export type PermissionResolution = {
@@ -28,21 +30,26 @@ export function permissionOutcome(request: PermissionRequest, resolution: Permis
 
 /** A native approval already has a request identity and a wire-level settlement. */
 export interface NativePermission {
-  readonly requestedAt: number;
+  readonly arrival: PermissionArrival;
   readonly hostHandled: boolean;
+  readonly settled: boolean;
+  readonly hasWireOutcome: boolean;
   readonly resolution: Promise<PermissionResolution>;
   answer(resolution: PermissionResolution): Promise<boolean>;
 }
+
+export const nativeProviderTurnEnded = Symbol("native provider turn ended");
 
 export const nativePermissionRequests = new WeakMap<PermissionRequest, NativePermission>();
 
 interface PermissionEntry {
   readonly turnId: string;
   close(resolution: PermissionResolution): void;
+  answer?(optionId: string): Promise<boolean>;
 }
 
 export class ConversationPermissions {
-  private readonly pending = new Set<PermissionEntry>();
+  private readonly pending = new Map<string, PermissionEntry>();
   private stopped = false;
 
   constructor(
@@ -51,15 +58,19 @@ export class ConversationPermissions {
   ) {}
 
   end(turnId: string): void {
-    for (const entry of this.pending) if (entry.turnId === turnId) entry.close(cancelledPermission);
+    for (const entry of this.pending.values()) if (entry.turnId === turnId) entry.close(cancelledPermission);
   }
 
   stop(): void {
     this.stopped = true;
-    for (const entry of this.pending) entry.close(cancelledPermission);
+    for (const entry of this.pending.values()) entry.close(cancelledPermission);
   }
 
-  internalHandler(turnId: string, policy: PermissionPolicyConfig): PromptHandlers {
+  async answer(id: string, optionId: string): Promise<{ accepted: boolean }> {
+    return { accepted: await this.pending.get(id)?.answer?.(optionId) ?? false };
+  }
+
+  internalHandler(turnId: string, policy: ConversationPermissionConfig): PromptHandlers {
     const onPermissionRequest: NonNullable<PromptHandlers["onPermissionRequest"]> = async (request, signal) =>
       (await this.request(turnId, request, policy, undefined, signal)).outcome;
     recordingPermissionHandlers.add(onPermissionRequest);
@@ -69,7 +80,7 @@ export class ConversationPermissions {
   request(
     turnId: string,
     request: PermissionRequest,
-    policy: PermissionPolicyConfig,
+    policy: ConversationPermissionConfig,
     consumer: PromptHandlers | undefined,
     signal?: AbortSignal,
     recordRequested?: () => Promise<void>,
@@ -78,15 +89,36 @@ export class ConversationPermissions {
     const native = nativePermissionRequests.get(request);
     const id = crypto.randomUUID();
     const handlerAbort = new AbortController();
-    const abort = () => entry.close(cancelledPermission);
+    const abort = () => {
+      if (signal?.reason === nativeProviderTurnEnded && native?.hasWireOutcome) return;
+      entry.close(cancelledPermission);
+    };
     const handler = consumer?.onPermissionRequest;
+    const refuse = (by: PermissionResolutionSource): PermissionResolution =>
+      ({ outcome: selectPermissionOutcome("deny", request.options)!, by, refused: true });
+    let level: ReturnType<typeof permissionLevel> | undefined;
+    if (!native?.hostHandled && !native?.settled) {
+      try {
+        level = permissionLevel(request, policy, Boolean(native));
+      } catch (error) {
+        this.log().warn("conversation_permission_rule_failed", { turnId, id, error: String(error) });
+      }
+    }
+
+    const waitForConsumer = level === "ask" && !handler && policy.answersPermissions === true;
+    const offered = Object.freeze(request.options.map(option => Object.freeze({ ...option })));
+    const arrival = native?.arrival ?? acpPermissionArrivals.get(request) ?? permissionArrival();
+    const budget = policy.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
+    const remaining = () => budget - (performance.now() - arrival.monotonicTime);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let resolve!: (resolution: PermissionResolution) => void;
     const result = new Promise<PermissionResolution>(accept => { resolve = accept; });
     const entry: PermissionEntry = {
       turnId,
       close: resolution => {
-        if (!this.pending.delete(entry)) return;
+        if (!this.pending.delete(id)) return;
         signal?.removeEventListener("abort", abort);
+        clearTimeout(timer);
         handlerAbort.abort();
         const outcome = permissionOutcome(request, resolution);
         // Finish notifying all request listeners before any reentrant stop publishes its resolution.
@@ -94,45 +126,89 @@ export class ConversationPermissions {
         resolve(resolution);
       },
     };
-    this.pending.add(entry);
+    this.pending.set(id, entry);
     signal?.addEventListener("abort", abort, { once: true });
     if (native) void native.resolution.then(entry.close);
+    if (this.stopped || signal?.aborted) abort();
 
-    const nominate = async (decision: PermissionResolution) => {
-      if (!this.pending.has(entry)) return;
-      if (native) await native.answer(decision);
-      else entry.close(decision);
+    const send = async (decision: PermissionResolution) => {
+      if (!this.pending.has(id)) return false;
+      if (native) return native.answer(decision);
+      entry.close(decision);
+      return true;
     };
-
-    this.emit({
-      kind: "permission_requested", id, turnId, tool: request.tool && Object.freeze({ ...request.tool }),
-      title: request.title, options: Object.freeze(request.options.map(option => Object.freeze({ ...option }))),
-    });
-
-    const run = async () => {
-      if (native?.hostHandled) return;
-      let by: PermissionResolutionSource = "default";
-      try {
-        await recordRequested?.();
-        if (!this.pending.has(entry)) return;
-        const level = permissionLevel(request, policy, Boolean(native));
-        if (level === "ask" && handler) {
-          by = "handler";
-          const outcome = await handler.call(consumer, request, handlerAbort.signal);
-          await nominate({ outcome, by });
-        } else {
-          const outcome = selectPermissionOutcome(level === "ask" ? "deny" : level, request.options)!;
-          await nominate({ outcome, by, refused: level === "ask" });
-        }
-      } catch (error) {
-        this.log().warn("conversation_permission_failed", { turnId, id, error: String(error) });
-        await nominate({ outcome: selectPermissionOutcome("deny", request.options)!, by, refused: true });
-      }
-    };
-    void run().catch(error => {
+    const failed = (error: unknown) => {
       this.log().warn("conversation_permission_response_failed", { turnId, id, error: String(error) });
       entry.close(cancelledPermission);
+      return false;
+    };
+    const record = Promise.resolve().then(recordRequested);
+    const sendAfterRecord = async (decision: PermissionResolution) => {
+      try {
+        await record;
+      } catch (error) {
+        this.log().warn("conversation_permission_record_failed", { turnId, id, error: String(error) });
+        await send(refuse("default"));
+        return false;
+      }
+      return send(decision);
+    };
+
+    if (waitForConsumer) {
+      const claim = () => {
+        if (!entry.answer) return false;
+        entry.answer = undefined;
+        clearTimeout(timer);
+        return true;
+      };
+      const expire = () => {
+        if (claim()) void sendAfterRecord(refuse("timeout")).catch(failed);
+      };
+      entry.answer = async optionId => {
+        if (remaining() <= 0) expire();
+        if (!offered.some(option => option.optionId === optionId) || !claim()) return false;
+        const accepted = await sendAfterRecord({ outcome: { outcome: "selected", optionId }, by: "consumer" }).catch(failed);
+        return accepted && (await result).by === "consumer";
+      };
+      timer = setTimeout(expire, Math.max(0, Math.ceil(remaining())));
+      // A failed requested record cannot leave an otherwise unclaimed request open.
+      void record.catch(() => { if (claim()) void sendAfterRecord(refuse("default")).catch(failed); });
+    }
+
+    this.emit({
+      kind: "permission_requested", id, turnId, tool: request.tool && Object.freeze(structuredClone(request.tool)),
+      title: request.title, options: offered, ...(waitForConsumer ? { expiresAt: arrival.wallTime + budget } : {}),
     });
+
+    if (native?.hostHandled || native?.settled || waitForConsumer) return result;
+    if (level !== "ask" || !handler) {
+      const decision = level === "ask" || level === undefined ? refuse("default")
+        : { outcome: selectPermissionOutcome(level, request.options)!, by: "default" as const };
+      void sendAfterRecord(decision).catch(failed);
+      return result;
+    }
+
+    const runHandler = async () => {
+      try {
+        await record;
+      } catch (error) {
+        this.log().warn("conversation_permission_record_failed", { turnId, id, error: String(error) });
+        await send(refuse("default"));
+        return;
+      }
+      if (!this.pending.has(id)) return;
+      try {
+        const outcome = await Promise.race([
+          Promise.resolve(handler.call(consumer, request, handlerAbort.signal)),
+          result.then(resolution => resolution.outcome),
+        ]);
+        await send({ outcome, by: "handler" });
+      } catch (error) {
+        this.log().warn("conversation_permission_handler_failed", { turnId, id, error: String(error) });
+        await send(refuse("handler"));
+      }
+    };
+    void runHandler().catch(failed);
     return result;
   }
 }

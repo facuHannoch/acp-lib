@@ -82,7 +82,7 @@ describe("the first end-to-end checkpoint", () => {
         }) satisfies NativeApprovalResponder;
       }
       const agent = await rig.open();
-      const conversation = await agent.conversations.create();
+      const conversation = await agent.conversations.create({ answersPermissions: true });
       const events = rig.watch(conversation);
       const requested = Promise.withResolvers<Seen>();
       const resolved = Promise.withResolvers<Seen>();
@@ -99,6 +99,8 @@ describe("the first end-to-end checkpoint", () => {
         },
       }));
       const request = await requested.promise;
+      expect(request.expiresAt).toBeUndefined();
+      expect(await conversation.answerPermission(request.id, "deny")).toEqual({ accepted: false });
       if (action === "responder") expect(await (await hostAnswer.promise)("allow_once")).toBe(true);
       else {
         const harnessId = await handled.promise;
@@ -124,6 +126,65 @@ describe("the first end-to-end checkpoint", () => {
       expect(rig.effects()).toEqual(action === "responder" ? ["effect"] : []);
     }, 30_000);
   }
+
+  test("answerPermission admits exactly one native call over stdio", async () => {
+    const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });
+    const trace = traceStdio(rig);
+    rig.script([record("approved once"), reply("Done.")]);
+    const agent = await rig.open({ conversationDefaults: { answersPermissions: true, permissionTimeoutMs: 15_000 } });
+    const conversation = await agent.conversations.create();
+    const events = rig.watch(conversation);
+    const waiting = Promise.withResolvers<Seen>();
+    conversation.subscribe(({ event }) => { if (event.kind === "permission_requested") waiting.resolve(event); });
+    const work = conversation.prompt("run the tool");
+    const request = await waiting.promise;
+    const ack = barrier();
+    trace.intercept.respondApproval = async real => {
+      const response = await real();
+      await ack.waiting;
+      return response;
+    };
+    const remoteEnd = waitForChannelEvent(trace.children.at(-1)!.client,
+      event => event.channel === conversation.id && event.event.type === "turn_ended", "native turn ended before delayed acknowledgement");
+    expect(request.tool.name).toBe("record");
+    expect(request.expiresAt).toBeGreaterThan(Date.now());
+    expect(rig.effects()).toEqual([]);
+    const answers = Promise.all([
+      conversation.answerPermission(request.id, "allow_once"),
+      conversation.answerPermission(request.id, "deny"),
+    ]);
+    try {
+      await remoteEnd;
+      expect(events.filter(event => event.kind === "permission_resolved")).toHaveLength(0);
+    } finally {
+      ack.open();
+    }
+    expect(await answers).toEqual([{ accepted: true }, { accepted: false }]);
+    expect((await work).text).toContain("Done.");
+    expect(rig.effects()).toEqual(["approved once"]);
+    expect(trace.methods.filter(method => method === "respondApproval")).toHaveLength(1);
+    expect(events.filter(event => event.kind.startsWith("permission_"))).toEqual([
+      request, { kind: "permission_resolved", id: request.id, by: "consumer", outcome: "approved" },
+    ]);
+    expect(await conversation.answerPermission(request.id, "allow_once")).toEqual({ accepted: false });
+  }, 30_000);
+
+  test("native consumer timeout denies before the harness backstop", async () => {
+    const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });
+    const trace = traceStdio(rig);
+    rig.script([record("must not run"), reply("Done.")]);
+    const agent = await rig.open();
+    const conversation = await agent.conversations.create({ answersPermissions: true, permissionTimeoutMs: 50 });
+    const events = rig.watch(conversation);
+    expect((await conversation.prompt("request approval")).text).toContain("Done.");
+    const permissions = events.filter(event => event.kind.startsWith("permission_"));
+    expect(permissions).toEqual([
+      expect.objectContaining({ kind: "permission_requested", expiresAt: expect.any(Number) }),
+      { kind: "permission_resolved", id: permissions[0]!.id, by: "timeout", outcome: "denied" },
+    ]);
+    expect(trace.methods.filter(method => method === "respondApproval")).toHaveLength(1);
+    expect(rig.effects()).toEqual([]);
+  }, 30_000);
 
   test("1-3: two conversations share one process and one durable session; input sent while a turn works is accepted and taken by that turn; one approval dispatches one call", async () => {
     const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });

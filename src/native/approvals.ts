@@ -1,3 +1,4 @@
+import { permissionArrival } from "../permissions/arrival.ts";
 import type { ChannelEvent } from "../native-harness/src/client.ts";
 import type { Logger } from "../logger.ts";
 import { cancelledPermission, nativePermissionRequests, type NativePermission, type PermissionResolution } from "../permissions/conversation.ts";
@@ -12,7 +13,7 @@ const allow = { outcome: "selected", optionId: "allow_once" } as const;
 const deny = { outcome: "selected", optionId: "deny" } as const;
 
 class Approval implements NativePermission {
-  readonly requestedAt = Date.now();
+  readonly arrival = permissionArrival();
   readonly resolution: Promise<PermissionResolution>;
   private resolve!: (result: PermissionResolution) => void;
   private readonly abort = new AbortController();
@@ -27,6 +28,9 @@ class Approval implements NativePermission {
   ) {
     this.resolution = new Promise(resolve => { this.resolve = resolve; });
   }
+
+  get settled(): boolean { return this.abort.signal.aborted; }
+  get hasWireOutcome(): boolean { return this.settled || this.observedAnswer !== undefined; }
 
   start(responder: NativeApprovalResponder, log: Logger): void {
     if (this.started) return;

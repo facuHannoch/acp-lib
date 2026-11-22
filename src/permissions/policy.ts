@@ -1,3 +1,4 @@
+import { validatePermissionConsumerConfig, type PermissionConsumerConfig } from "./consumer-config.ts";
 import type { PermissionRequest, PromptHandlers } from "../types.ts";
 import { matchPermissionLevel, type PermissionLevel, type PermissionSettings } from "./matcher.ts";
 import { selectPermissionOutcome } from "./outcome.ts";
@@ -9,17 +10,28 @@ export interface PermissionPolicyConfig {
   readonly permissionRule?: (request: PermissionRequest) => PermissionLevel | undefined;
 }
 
+export interface ConversationPermissionConfig extends PermissionPolicyConfig, PermissionConsumerConfig {}
+
+export function validateConversationPermissionConfig(config: ConversationPermissionConfig | undefined): void {
+  ownPermissions(config?.permissions);
+  validatePermissionConsumerConfig(config);
+}
+
 /** Apply policy settings from broadest to most specific without merging the rule maps. */
-export function inheritPermissionPolicy(
-  ...configs: readonly (PermissionPolicyConfig | undefined)[]
-): PermissionPolicyConfig {
+export function inheritPermissionConfig(
+  ...configs: readonly (ConversationPermissionConfig | undefined)[]
+): ConversationPermissionConfig {
   let permissions: PermissionSettings | undefined;
   let permissionRule: PermissionPolicyConfig["permissionRule"];
+  let answersPermissions: boolean | undefined;
+  let permissionTimeoutMs: number | undefined;
   for (const config of configs) {
     permissions = config?.permissions ?? permissions;
     permissionRule = config?.permissionRule ?? permissionRule;
+    answersPermissions = config?.answersPermissions ?? answersPermissions;
+    permissionTimeoutMs = config?.permissionTimeoutMs ?? permissionTimeoutMs;
   }
-  return { permissions, permissionRule };
+  return { permissions, permissionRule, answersPermissions, permissionTimeoutMs };
 }
 
 const DEFAULT_PERMISSIONS: PermissionSettings = Object.freeze({ default: "ask" });

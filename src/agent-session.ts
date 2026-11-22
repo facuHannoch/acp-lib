@@ -12,8 +12,10 @@
 import { isMissingProviderSessionError } from "./checkpointing/recovery.ts";
 import type { CancelOutcome, CancelReason, OperationLifecycleConfig } from "./operations/contracts.ts";
 import { UnsupportedError } from "./errors.ts";
+import { SubscriptionHub } from "./observation/subscription-hub.ts";
+import { validatePermissionConsumerConfig } from "./permissions/consumer-config.ts";
 import { ConversationPermissions } from "./permissions/conversation.ts";
-import { ownPermissions, type PermissionPolicyConfig } from "./permissions/policy.ts";
+import { ownPermissions, type ConversationPermissionConfig } from "./permissions/policy.ts";
 import { OperationStalledError } from "./operations/errors.ts";
 import { OperationSupervisor, type SupervisedProvider } from "./operations/supervisor.ts";
 import type { HarnessController, AgentControllerConfig, ControllerStartEvent, AgentMode } from "./controller.ts";
@@ -321,7 +323,7 @@ export interface AgentSessionOpenResult {
   readonly repairs: readonly PersistenceRepair[];
 }
 
-export interface AgentSessionConfig extends PermissionPolicyConfig {
+export interface AgentSessionConfig extends ConversationPermissionConfig {
   /** The resolved adapter this conversation talks to. */
   adapter: Adapter;
   /** Stable adapter id for the catalog/display (e.g. "codex"). */
@@ -467,7 +469,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private readonly controllerDefaults: Omit<
     AgentControllerConfig,
     "adapter" | "adapterId" | "mode" | "sessionId" | "sessionLoadFailure"
-  > & Pick<AgentConversationConfig, "native" | "isNativeAdapter">;
+  > & Pick<AgentConversationConfig, "native" | "isNativeAdapter" | "answersPermissions" | "permissionTimeoutMs">;
   private detachControllerCommands: (() => void) | null = null;
   private detachControllerUsage: (() => void) | null = null;
   private detachControllerTurns: (() => void) | null = null;
@@ -494,7 +496,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private stopPromise: Promise<void> | null = null;
   private phase: AgentSessionPhase = "idle";
   private notificationSeq = 0;
-  private readonly listeners = new Set<AgentSessionListener>();
+  private readonly listeners = new SubscriptionHub<AgentSessionNotification>(({ event, error }) =>
+    this.log.warn("agent_session_listener_failed", { kind: event.event.kind, error: String(error) }));
   private lastStateKey = "";
   private _internalSessionId: string | null;
   private providerAttachment: ProviderAttachmentState = Object.freeze({ kind: "absent" });
@@ -673,7 +676,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
       // not, and needs restored state to be attributable.
       createdActiveThread: providerSession.kind === "new",
     });
+    validatePermissionConsumerConfig(config);
     this.controllerDefaults = {
+      answersPermissions: config.answersPermissions, permissionTimeoutMs: config.permissionTimeoutMs,
       operationLifecycle: this.operationLifecycle,
       isNativeAdapter: config.isNativeAdapter,
       ...(config.native ? { native: config.native } : {}),
@@ -1900,8 +1905,11 @@ export class AgentConversation implements AgentClient, Bridgeable {
   }
   /** Subscribe to future lifecycle changes. The current snapshot is available via state. */
   subscribe(listener: AgentSessionListener): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return this.listeners.subscribe(listener);
+  }
+  /** Answer an open event-driven permission request. */
+  answerPermission(id: string, optionId: string): Promise<{ accepted: boolean }> {
+    return this.permissions.answer(id, optionId);
   }
   /** Escape hatch to the live control plane (config, caps, getCommands, login, …). */
   get connection(): ConversationController {
@@ -4394,16 +4402,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       agentSessionId: this.agentSessionId,
       event: Object.freeze(event),
     });
-    for (const listener of [...this.listeners]) {
-      try {
-        listener(notification);
-      } catch (err) {
-        this.log.warn("agent_session_listener_failed", {
-          kind: event.kind,
-          error: String(err),
-        });
-      }
-    }
+    this.listeners.emit(notification);
   }
 }
 

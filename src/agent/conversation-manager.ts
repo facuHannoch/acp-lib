@@ -1,4 +1,4 @@
-import { inheritPermissionPolicy, ownPermissions, type PermissionPolicyConfig } from "../permissions/policy.ts";
+import { inheritPermissionConfig, validateConversationPermissionConfig, type ConversationPermissionConfig } from "../permissions/policy.ts";
 import { writeConversationError } from "./error-record-writer.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -870,7 +870,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     try {
       const adapterId = this.resolveAdapterId(config.adapterId);
       const adapter = this.agent.adapters.require(adapterId);
-      const runtime = { ...this.settings.defaults, ...config.runtime, ...inheritPermissionPolicy(this.settings.defaults, config, config.runtime) };
+      const runtime = { ...this.settings.defaults, ...config.runtime, ...inheritPermissionConfig(this.settings.defaults, config, config.runtime) };
       // A native adapter makes this conversation a channel of the Agent's harness session. Nothing is
       // started here: channel settings decided now are stored and reach the harness with its next open.
       const nativeAdapter = this.agent.adapters.native(adapterId);
@@ -1005,9 +1005,9 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     readonly mode?: AgentMode;
     readonly runtime?: AgentConversationRuntimeDefaults;
     readonly providerSession: "new" | "load";
-  } & PermissionPolicyConfig): string {
-    ownPermissions(config.permissions);
-    ownPermissions(config.runtime?.permissions);
+  } & ConversationPermissionConfig): string {
+    validateConversationPermissionConfig(config);
+    validateConversationPermissionConfig(config.runtime);
     const adapterId = this.resolveAdapterId(config.adapterId);
     this.agent.adapters.require(adapterId);
     const mode = config.mode ?? config.runtime?.mode ?? this.settings.defaults.mode;

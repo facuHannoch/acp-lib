@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 import { AgentSession } from "../src/agent-session.ts";
-import type { ConversationPermissionEvent } from "../src/permissions/conversation.ts";
+import { Agent } from "../src/agent.ts";
+import { noopLogger } from "../src/logger.ts";
+import { acpPermissionArrivals, permissionArrival } from "../src/permissions/arrival.ts";
+import { ConversationPermissions, type ConversationPermissionEvent } from "../src/permissions/conversation.ts";
+import type { PermissionRequest } from "../src/types.ts";
 
 const fixture = resolve(import.meta.dir, "fixtures/permission-agent.ts");
 
@@ -76,5 +80,120 @@ test("an invalid runtime permissionRule result fails closed and closes its ACP e
     expect(events[1]).toEqual({ kind: "permission_resolved", id: events[0]!.id, by: "default", outcome: "denied" });
   } finally {
     await conversation.stop();
+  }
+}, 10_000);
+
+test("an ACP event listener can claim one offered answer while the turn is waiting", async () => {
+  const { conversation, events, requested } = await observeAcp({ answersPermissions: true });
+  const answers = Promise.withResolvers<Array<{ accepted: boolean }>>();
+  try {
+    conversation.subscribe(({ event }) => {
+      if (event.kind !== "permission_requested") return;
+      answers.resolve(Promise.all([
+        conversation.answerPermission(event.id, "missing"),
+        conversation.answerPermission(event.id, "allow"),
+        conversation.answerPermission(event.id, "reject"),
+      ]));
+    });
+    const result = conversation.prompt("reject-first");
+    const request = await requested;
+    expect(request.expiresAt).toBeGreaterThan(Date.now() + 290_000);
+    expect(await answers.promise).toEqual([{ accepted: false }, { accepted: true }, { accepted: false }]);
+    expect(JSON.parse((await result).text)).toEqual({ outcome: "selected", optionId: "allow" });
+    expect(await conversation.answerPermission(request.id, "allow")).toEqual({ accepted: false });
+    expect(events).toEqual([request, { kind: "permission_resolved", id: request.id, by: "consumer", outcome: "approved" }]);
+  } finally {
+    await conversation.stop();
+  }
+}, 10_000);
+
+test("an ACP consumer timeout refuses and rejects later answers", async () => {
+  const { conversation, events, requested } = await observeAcp({ answersPermissions: true, permissionTimeoutMs: 50 });
+  try {
+    const result = conversation.prompt("reject-first");
+    const request = await requested;
+    expect(typeof request.expiresAt).toBe("number");
+    expect(JSON.parse((await result).text)).toEqual({ outcome: "selected", optionId: "reject" });
+    expect(await conversation.answerPermission(request.id, "allow")).toEqual({ accepted: false });
+    expect(events).toEqual([request, { kind: "permission_resolved", id: request.id, by: "timeout", outcome: "denied" }]);
+  } finally {
+    await conversation.stop();
+  }
+}, 10_000);
+
+test("handler-owned requests expose no deadline and bypass answerPermission", async () => {
+  const { conversation, events, requested } = await observeAcp({ answersPermissions: true, permissionTimeoutMs: 1 });
+  const handled = Promise.withResolvers<void>();
+  const decision = Promise.withResolvers<{ outcome: "selected"; optionId: string }>();
+  try {
+    const work = conversation.prompt("reject-first", {
+      onPermissionRequest: () => { handled.resolve(); return decision.promise; },
+    });
+    const request = await requested;
+    await handled.promise;
+    expect(request.expiresAt).toBeUndefined();
+    expect(await conversation.answerPermission(request.id, "reject")).toEqual({ accepted: false });
+    decision.resolve({ outcome: "selected", optionId: "allow" });
+    expect(JSON.parse((await work).text).optionId).toBe("allow");
+    expect(events[1]).toEqual({ kind: "permission_resolved", id: request.id, by: "handler", outcome: "approved" });
+  } finally {
+    await conversation.stop();
+  }
+}, 10_000);
+
+test("an unattended ACP ask is refused even when default is allow", async () => {
+  const { conversation, events, requested } = await observeAcp({
+    permissions: { default: "allow", rules: { "kind:execute": "ask" } },
+  });
+  try {
+    const result = conversation.prompt("execute");
+    const request = await requested;
+    expect(request.expiresAt).toBeUndefined();
+    expect(JSON.parse((await result).text).optionId).toBe("reject");
+    expect(events[1]).toEqual({ kind: "permission_resolved", id: request.id, by: "default", outcome: "denied" });
+  } finally {
+    await conversation.stop();
+  }
+}, 10_000);
+
+test("an already-expired request keeps its ingress deadline when delivered late", async () => {
+  const events: ConversationPermissionEvent[] = [];
+  const coordinator = new ConversationPermissions(event => {
+    if (event.kind === "permission_requested" || event.kind === "permission_resolved") events.push(event);
+  }, () => noopLogger);
+  const request: PermissionRequest = {
+    toolCallId: "held", options: [
+      { optionId: "allow", name: "Allow", kind: "allow_once" },
+      { optionId: "deny", name: "Deny", kind: "reject_once" },
+    ], raw: {},
+  };
+  const arrival = permissionArrival();
+  acpPermissionArrivals.set(request, { wallTime: arrival.wallTime - 5_000, monotonicTime: arrival.monotonicTime - 5_000 });
+  const resolved = coordinator.request("held-turn", request, { answersPermissions: true, permissionTimeoutMs: 1_000 }, undefined);
+  expect(events[0]).toMatchObject({ kind: "permission_requested", expiresAt: arrival.wallTime - 4_000 });
+  expect(await coordinator.answer(events[0]!.id, "allow")).toEqual({ accepted: false });
+  expect(await resolved).toMatchObject({ by: "timeout", outcome: { outcome: "selected", optionId: "deny" } });
+});
+
+test("Agent conversation permission options inherit and explicit false disables the wait", async () => {
+  const agent = await Agent.open({
+    persistence: { kind: "sqlite", path: ":memory:" },
+    adapters: { permission: { command: ["bun", fixture] } },
+    conversationDefaults: { answersPermissions: true, permissionTimeoutMs: 1_000 },
+  });
+  try {
+    await expect(agent.conversations.create({ runtime: { permissionTimeoutMs: 0 } })).rejects.toThrow("permissionTimeoutMs");
+    expect((await agent.conversations.list()).conversations).toHaveLength(0);
+    const conversation = await agent.conversations.create({ answersPermissions: false });
+    const notices: ConversationPermissionEvent[] = [];
+    conversation.subscribe(({ event }) => {
+      if (event.kind === "permission_requested" || event.kind === "permission_resolved") notices.push(event);
+    });
+    expect(JSON.parse((await conversation.prompt("reject-first")).text).optionId).toBe("reject");
+    expect(notices[0]).toMatchObject({ kind: "permission_requested" });
+    expect(notices[0]).not.toHaveProperty("expiresAt");
+    expect(notices[1]).toMatchObject({ kind: "permission_resolved", by: "default" });
+  } finally {
+    await agent.close();
   }
 }, 10_000);

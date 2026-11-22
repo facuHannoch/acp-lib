@@ -43,6 +43,7 @@ import { assertPartCapabilities, attachmentParts, partsToAcp } from "./media/acp
 import { redactMedia } from "./media/redact.ts";
 import type { ClientPrompt } from "./agent-client.ts";
 import { answerPermissionLevel, ownPermissions, permissionLevel, recordingPermissionHandlers, type PermissionPolicyConfig } from "./permissions/policy.ts";
+import { stampAcpPermission } from "./permissions/arrival.ts";
 import { toPermissionRequest } from "./permissions/acp.ts";
 
 export interface AcpClientConfig extends PermissionPolicyConfig {
@@ -329,7 +330,6 @@ export class AcpClient implements AgentClient {
   get currentSessionId(): string | null {
     return this._sessionId;
   }
-  /** True once connect() has spawned + initialized (a session may not exist yet). */
   get isConnected(): boolean {
     return this.transport?.isConnected ?? false;
   }
@@ -971,9 +971,9 @@ export class AcpClient implements AgentClient {
   private async handlePermission(
     params: schema.RequestPermissionRequest,
   ): Promise<schema.RequestPermissionResponse> {
+    const request = stampAcpPermission(toPermissionRequest(params));
     this.log.debug("permission_request", { request: params });
     const handler = this.active?.handlers?.onPermissionRequest;
-    const request = toPermissionRequest(params);
 
     const abort = new AbortController();
     let cancel!: () => void;

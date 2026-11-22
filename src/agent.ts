@@ -1,4 +1,5 @@
-import { inheritPermissionPolicy, ownPermissions } from "./permissions/policy.ts";
+import { validatePermissionConsumerConfig } from "./permissions/consumer-config.ts";
+import { inheritPermissionConfig, ownPermissions } from "./permissions/policy.ts";
 import { randomUUID } from "node:crypto";
 import {
   type AgentSessionId,
@@ -211,7 +212,7 @@ export class Agent {
       ...(config.conversationPersistence ? { conversationPersistence: config.conversationPersistence } : {}),
       defaults: {
         ...config.conversationDefaults,
-        ...inheritPermissionPolicy(config, config.conversationDefaults),
+        ...inheritPermissionConfig(config, config.conversationDefaults),
         ...(config.operationLifecycle ? { operationLifecycle: config.operationLifecycle } : {}),
       },
       meteringRecords: config.meteringPersistence?.meteringRecords ?? "all",
@@ -339,6 +340,7 @@ export class Agent {
   }
 
   static async open(config: AgentConfig): Promise<Agent> {
+    validatePermissionConsumerConfig(config.conversationDefaults);
     config = {
       ...config,
       permissions: ownPermissions(config.permissions),

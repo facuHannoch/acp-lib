@@ -1,3 +1,4 @@
+import { nativeProviderTurnEnded } from "../permissions/conversation.ts";
 import { runNativeApproval } from "./approvals.ts";
 import { recordingPermissionHandlers } from "../permissions/policy.ts";
 /**
@@ -419,12 +420,12 @@ export class NativeController implements ConversationController, ChannelPort {
     const approvalWork = new Set<Promise<void>>();
     return new Promise<PromptResult>((resolve, reject) => {
       let settled = false;
-      const finish = (act: () => void) => {
+      const finish = (act: () => void, providerEnded = false) => {
         if (settled) return;
         settled = true;
         turn.sink = null;
         turn.fail = null;
-        approvals.abort();
+        approvals.abort(providerEnded ? nativeProviderTurnEnded : undefined);
         if (turn.ended) this.#turns.delete(turn.id);
         if (approvalWork.size) void Promise.allSettled(approvalWork).then(act);
         else act();
@@ -490,12 +491,12 @@ export class NativeController implements ConversationController, ChannelPort {
           case "turn_ended": {
             const joined = messages.map((message) => message.text).join("\n\n");
             if (event.outcome === "completed") {
-              finish(() => resolve({ text: joined, messages, stopReason: "end_turn", status: "completed", usage: null }));
+              finish(() => resolve({ text: joined, messages, stopReason: "end_turn", status: "completed", usage: null }), true);
             } else if (event.outcome === "interrupted" && turn.cancelRequested) {
-              finish(() => resolve({ text: joined, messages, stopReason: "cancelled", status: "cancelled", usage: null }));
+              finish(() => resolve({ text: joined, messages, stopReason: "cancelled", status: "cancelled", usage: null }), true);
             } else {
               const reason = event.error ?? event.outcome;
-              finish(() => reject(new NativeTurnError(event.outcome as "failed" | "interrupted", `native turn ${turn.harnessId} ${event.outcome}: ${reason}`, event.uncertainCalls)));
+              finish(() => reject(new NativeTurnError(event.outcome as "failed" | "interrupted", `native turn ${turn.harnessId} ${event.outcome}: ${reason}`, event.uncertainCalls)), true);
             }
             return;
           }
