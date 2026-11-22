@@ -87,3 +87,10 @@ edit to `src/agent-session.ts`.
   'pending', after?, limit? })` with a cursor; `latestOutcome(workerConversationId)`; the ACP half marks receipt with
   `transitionDelivery(id, { from: 'pending', to: 'delivered' })`. A migration, if any, is schema 20. Shared with
   cod2a for planning only.
+- haurness-l updated the external notices plan (`2b63dc2`: the Gate 3 handoff module, what is built, what remains):
+  Cod1a owns the worker repository and lifecycle and a new focused native delivery module (base alpha `3fd2db2` plus
+  that commit); the result is the final completed assistant message (missing or empty reviewed in the contract);
+  the steer linkage is durable before the successor dispatches. Settled with them: any Cod1a migration is schema 20,
+  built after O1's 19 is in alpha; the `src/native/host.ts` hook points are Cod1a's too (their own reviewed commit);
+  the only other overlap, `agent-session.ts` (O4's one line) and Cod1a's scoped `persisted-lifecycle.ts`, is by
+  grant.
