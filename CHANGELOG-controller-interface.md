@@ -14,6 +14,10 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 
 ## Added
 
+- **`beforeDispatch` prompt option:** session-scheduled turns await this hook after durable prompt preparation
+  and before provider dispatch. Combined steer messages run their hooks in order with the shared operation ID.
+  Native inputs use their message IDs and run all hooks before the first push. A rejected hook rejects the run
+  before dispatch.
 - **`cause` on `turn_started`:** `{ messageIds?, items? }`, at least one present: the messages the turn carries (a
   combined steer run lists each original message) and/or the backend items it took (a turn nobody prompted; a native
   backend often takes a worker reply and a user message into one turn, so a cause can hold both). Record and

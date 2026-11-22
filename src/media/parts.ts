@@ -96,6 +96,11 @@ export function normalizeParts(parts: readonly MessagePart[]): readonly MessageP
   });
 }
 
+/** The text of an object-form prompt: its leading text plus its text parts. */
+export function promptInputText(input: { readonly text?: string; readonly parts?: readonly MessagePart[] }): string {
+  return partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]);
+}
+
 /**
  * The text parts, concatenated as they are sent: text parts are segments of one text (separators
  * between combined messages are their own text parts), so nothing is inserted between them.

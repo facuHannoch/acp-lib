@@ -53,6 +53,17 @@ export function toPersistenceJsonValue(value: unknown): PersistenceJsonValue {
   return serialized === undefined ? String(value) : JSON.parse(serialized) as PersistenceJsonValue;
 }
 
+export function snapshotConsumerMetadata(
+  value: PersistenceJsonValue | undefined,
+  owned: boolean,
+): PersistenceJsonValue | undefined {
+  if (value === undefined) return undefined;
+  if (!owned) throw new Error("consumerMetadata requires an Agent-owned conversation");
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("consumerMetadata must be a JSON value");
+  return JSON.parse(serialized) as PersistenceJsonValue;
+}
+
 export function defaultPermissionOutcome(
   request: PermissionRequest,
   policy: "approve" | "cancel",

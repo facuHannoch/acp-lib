@@ -140,6 +140,25 @@ describe("a turn's early output is held until the prepared prompt attaches", () 
 });
 
 describe("inputs and the turns that take them", () => {
+  test("a later native dispatch hook rejects the run before pushing any inputs", async () => {
+    const { controller, pushes, records, turns } = standIn();
+    const error = new Error("hook refused native send");
+    const ids: string[] = [];
+    const sending = controller.send({
+      messageIds: ["m1", "m2"],
+      operationKind: "prompt",
+      messages: [
+        { id: "m1", text: "one", async beforeDispatch(id) { ids.push(id); } },
+        { id: "m2", text: "two", async beforeDispatch(id) { ids.push(id); throw error; } },
+      ],
+    });
+    await expect(sending).rejects.toBe(error);
+    expect(ids).toEqual(["m1", "m2"]);
+    expect(pushes).toEqual([]);
+    expect(records.submissions()).toEqual([]);
+    expect(turns).toEqual([]);
+  });
+
   test("preflights a later message's attachment before pushing any message in the run", async () => {
     const { controller, pushes, records } = standIn();
     const sending = controller.send({

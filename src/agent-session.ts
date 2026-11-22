@@ -190,19 +190,10 @@ import {
   copyPromptResult,
   persistenceOperationKind,
   toPersistenceJsonValue,
+  snapshotConsumerMetadata,
 } from "./conversation-turns/record-helpers.ts";
-import {
-  partsText,
-  promptParts,
-  type MessagePart,
-  type ResolvedPart,
-} from "./media/parts.ts";
+import { promptInputText, promptParts, type MessagePart, type ResolvedPart } from "./media/parts.ts";
 import { redactMedia } from "./media/redact.ts";
-
-/** The text of an object-form prompt: its leading text plus its text parts. */
-function promptInputText(input: { readonly text?: string; readonly parts?: readonly MessagePart[] }): string {
-  return partsText(promptParts(input) ?? [{ kind: "text", text: input.text ?? "" }]);
-}
 
 export {
   AdapterMismatchError,
@@ -258,6 +249,8 @@ export interface AgentConversationPromptInput {
   readonly attachments?: Attachment[];
   /** How this prompt waits if a turn is running. Defaults to the conversation's `busyDelivery`. */
   readonly delivery?: PromptDelivery;
+  /** Before dispatch. Combined ACP messages receive the shared operation ID. Native inputs receive their own message ID. */
+  readonly beforeDispatch?: (operationId: string) => Promise<void>;
 }
 
 export interface AgentConversationAttributedPromptInput extends AgentConversationPromptInput {
@@ -1937,7 +1930,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       ? this.enqueuePrompt(input, "prompt", handlers, attachments)
       : this.enqueuePrompt(
           promptInputText(input), "prompt", input.handlers, input.attachments,
-          undefined, input.consumerMetadata, input.delivery, promptParts(input),
+          undefined, input.consumerMetadata, input.delivery, promptParts(input), input.beforeDispatch,
         );
   }
 
@@ -1969,7 +1962,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (!input.participantId.trim()) return this.rejectedPrompt(new Error("participant id cannot be blank"));
       return this.enqueuePrompt(
         promptInputText(input), "prompt", input.handlers, input.attachments,
-        input.participantId.trim(), input.consumerMetadata, input.delivery, promptParts(input),
+        input.participantId.trim(), input.consumerMetadata, input.delivery, promptParts(input), input.beforeDispatch,
       );
     }
     const participantId = input;
@@ -1992,6 +1985,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     consumerMetadata?: PersistenceJsonValue,
     delivery?: PromptDelivery,
     messageParts?: readonly MessagePart[],
+    beforeDispatch?: AgentConversationPromptInput["beforeDispatch"],
   ): PromptHandle {
     const id = this.mintTurnId();
     const promise = new Promise<AgentSessionPromptResult>((resolve, reject) => {
@@ -2002,14 +1996,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       let stableConsumerMetadata: PersistenceJsonValue | undefined;
       try {
         this.assertPromptable();
-        if (consumerMetadata !== undefined && !this.ownerLifecycle) {
-          throw new Error("consumerMetadata requires an Agent-owned conversation");
-        }
-        if (consumerMetadata !== undefined) {
-          const serialized = JSON.stringify(consumerMetadata);
-          if (serialized === undefined) throw new Error("consumerMetadata must be a JSON value");
-          stableConsumerMetadata = JSON.parse(serialized) as PersistenceJsonValue;
-        }
+        stableConsumerMetadata = snapshotConsumerMetadata(consumerMetadata, Boolean(this.ownerLifecycle));
       } catch (error) {
         reject(error);
         return;
@@ -2028,6 +2015,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         handlers,
         attachments,
         messageParts,
+        beforeDispatch,
         resolve: (result) => {
           this.acceptedMessages.delete(id);
           resolve(result);

@@ -62,6 +62,7 @@ export type MessageEvent =
 
 /** One original message of a combined prompt. */
 export interface CombinedMessage {
+  readonly beforeDispatch?: (operationId: string) => Promise<void>;
   readonly messageParts?: readonly MessagePart[];
   readonly attachments?: readonly Attachment[];
   readonly id: PendingMessageId;
@@ -85,6 +86,7 @@ export interface SteeringPrompt {
   participantId?: string;
   consumerMetadata?: PersistenceJsonValue;
   handlers?: PromptHandlers;
+  readonly beforeDispatch?: CombinedMessage["beforeDispatch"];
   attachments?: Attachment[];
   messageParts?: readonly MessagePart[];
   /** Present only on a combined prompt: the original messages, in order. */
