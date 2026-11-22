@@ -62,7 +62,8 @@ export interface WorkerDeliveryRepository {
   markSteered(workerConversationId: string, messageIds: readonly string[]): Promise<void>;
   continueAssignment(assignmentId: string, predecessorMessageId: string, successorMessageId: string):
     Promise<"continued" | "existing" | "conflict">;
-  closeContinuation(assignmentId: string, expectedMessageId: string, failure: WorkerAssignmentFailure):
+  closeContinuation(assignmentId: string, expectedMessageId: string, failure: WorkerAssignmentFailure,
+    mode?: "replace"):
     Promise<StagedWorkerAssignment | undefined>;
   discoverAssignments(query: WorkerAssignmentDiscovery):
     Promise<{ readonly assignments: readonly DiscoveredWorkerAssignment[]; readonly next?: string }>;

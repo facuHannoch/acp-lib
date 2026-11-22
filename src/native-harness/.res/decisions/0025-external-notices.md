@@ -296,3 +296,29 @@ maps to worker_failed with "worker produced no saved result".
 
 Core allocated schema 20 after O1's schema 19. Implementation waits for
 the reviewed O1 base before changing SQLite schema.
+
+### Explicit new assignment
+
+A normal steer continues the active assignment. Redirect alone changes
+where its eventual notice goes, subject to the existing staging fence.
+An explicit new-assignment send on an idle worker only reserves the new
+assignment.
+
+On a busy worker, before dispatching an explicit new assignment, close
+the old assignment against its expected active message ID and reserve
+the new assignment. The explicit replacement may close an unfinished
+active binding or an awaiting continuation. Ordinary continuation
+cleanup may only close an awaiting continuation. Use interrupted with
+the public reason "worker interrupted by steering" and
+possiblePartialEffects true. The new assignment has its own ID,
+provenance and delivery ID. Redirect combined with new sets only the
+new assignment's destination. The old notice retains its destination.
+
+If the old final record or staged outcome commits first, it wins and
+the old outcome stays unchanged. If explicit replacement closes first,
+a later old terminal record stays inspectable but cannot settle it
+again or mark it awaiting continuation. Test each order, including old
+steered cancellation before and after the replacement transaction.
+Commit the close and new reservation together before dispatch. A crash
+after that commit leaves the old outcome staged and an unfinished new
+binding recoverable as uncertain, without redispatch.
