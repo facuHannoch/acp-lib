@@ -56,3 +56,24 @@ The second full run passed the ACP case. It finished with 1,441 passed and one f
 The third full run passed both earlier failures and finished with 1,439 passed and three audit-runtime deadlines across 132 files in 302.89 s. The system reported elevated disk I/O pressure during the failures. The first two runs passed all three cases. [Acknowledgement backoff timeout](../../../../../.agents/.artifacts/common/errors/11-22-r1-step2-audit-ack-timeout.md), [size rotation timeout](../../../../../.agents/.artifacts/common/errors/11-22-r1-step2-audit-rotation-timeout.md), [bounded-tail timeout](../../../../../.agents/.artifacts/common/errors/11-22-r1-step2-audit-tail-timeout.md)
 
 The fourth full run used a private RAM-backed clean archive and set `TMPDIR` to a private fixture directory on the same filesystem. It used the same commit, command and deadlines. `bun test ./test` passed **1,442 tests across 132 files** in 94.45 s, with zero failures and 35 snapshots. Snapshot hashes matched before and after and matched the original disk-backed archive. The run log is `/tmp/acp-r1-step2-ram-gate.CgVTVM/full.log`.
+
+## Step 3. Conversation creation, deletion, and channel intents
+
+Implementation commit `c600199` on `native-integration-r`, after the separately verified hook correction `7be9456`. The create and delete transaction helpers are in `src/agent/native-channel-lifecycle.ts`.
+
+| File | Before | After |
+| --- | ---: | ---: |
+| `src/agent/conversation-manager.ts` | 1,098 | 1,092 |
+| `src/native/host.ts` | 887 | 884 |
+
+For durable native deletion, the scoped repositories write retirement, optionally delete checkpoints, and mark the conversation deleted in one transaction. The commit promise reserves a host delivery slot and participates in the startup scan barrier. Live delivery awaits the commit and uses the existing flush and acknowledgement path with the transaction's version. An RPC failure after local commit leaves the intent pending and logs the delivery failure. A stopped host leaves the committed retirement available for the next open. The existing records fallback remains available for backends without the channel repository.
+
+New native conversations commit their initial title and default policy intent alongside their conversation row. Later declarative title, policy and lifecycle changes use the channel repository. The check for a pending retirement and a declarative suspend or reopen write share a transaction. If retirement is pending, the host returns `channel_retired` and leaves its version intact. Operator suspend and resume stay direct and return `not_running` while offline.
+
+The tests fault the scoped retirement write, force a delete validation failure after a retirement was staged, and fault the initial channel write after the creation row was staged. Each test checks the rollback through the root repositories. The live-delivery test pauses the transaction after both writes. It verifies the wire delete sees the committed state and the original version, occurs once, and precedes a later push. The stopped test confirms that subsequent suspend and reopen desires preserve the pending retirement.
+
+A live native conversation can be identified before its first prompt. A separate scripted probe reproduced an older identification gap after a full Agent restart. A different conversation had opened the harness and cleared the unused channel's initial intent. The restarted Agent soft-deleted the unused conversation without recording retirement. The still-open harness channel then accepted an operator push and committed an assistant message. This can run work on a deleted conversation, so it was escalated to the coordinator for the user's decision. The first-attachment path remains as before. [Shared error note](../../../../../.agents/.artifacts/common/errors/11-22-r1-native-unused-channel-identity-after-restart.md)
+
+### Clean archive gate
+
+Clean archive of `c600199` using a private RAM-backed checkout and fixture directory. `bun run typecheck` passed. `bun test ./test` passed **1,451 tests across 132 files** in 97.76 s. All 35 snapshot hashes matched the hook-fix baseline and the archived files before the run. Logs are at `/tmp/acp-r1-step3-gate.ALQrzm/typecheck.log` and `/tmp/acp-r1-step3-gate.ALQrzm/full.log`. The focused rollback and delivery checks also passed in the disk-backed worktree.
