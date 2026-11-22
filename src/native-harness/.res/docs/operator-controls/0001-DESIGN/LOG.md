@@ -96,3 +96,30 @@ Serial harness verification (`bun test ./test --timeout 30000`) passed
 334 tests with 3595 assertions across 45 files. Root `bun test ./test/native`
 passed 67 tests with 6423 assertions across 6 files. Both suites had zero
 failures. Independent re-review is pending.
+
+Clad approved Gate 2 at `47a0c1802d2d5aadc63586ad48ab7e26d3aa797e`.
+Independent verification passed both typechecks, 334 harness tests, and 67
+native tests. A clean SQLite reopen skips the model metadata. Repair after
+an abandoned running turn still loads the metadata once in its recovery
+transaction to close running attempts. The mixed workload checkpoint remains
+for Gate 4.
+
+Gate 3 begins from the approved revision.
+
+Gate 3 shares observation and targeted recovery between process reopen and
+attachment. The host exposes lifecycle commands, negotiated capabilities,
+status freshness, a working-channel count, and partial usage. Attachment
+disposal leaves backend work in place. The configured host responder keeps
+answer authority across detach and deduplicates pending requests; the
+conversation handler remains the fallback. Restart composes confirmed
+exact-turn interruption and start, and fails before start on an unconfirmed
+stop. Existing acp-client transcript reads stay on their existing path.
+Harness history and catch-up are explicit. The catch-up consumer commits
+each page with its position and owns the durable transaction. The real stdio
+operator checkpoint and mixed workload proof remain in Gate 4.
+
+The Gate 3 submission containing this entry passed both package typechecks.
+The combined native and persisted transcript reader gate
+(`bun test ./test/native test/persistence-transcript-reader.test.ts`) passed
+79 tests with zero failures and 6497 assertions across seven files.
+Independent review is pending.

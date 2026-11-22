@@ -15,6 +15,7 @@
  * by channel id (the conversation id) and receive that channel's events and reconciled view.
  */
 import {
+  aggregateUsage,
   HarnessClient,
   HarnessClientError,
   createStdioTransport,
@@ -31,6 +32,7 @@ import {
   type ToolAvailability,
   type ToolInvocation,
 } from "../native-harness/src/client.ts";
+import { recoverChannel } from "./recovery.ts";
 import { createNativeFunctionHost, type NativeFunctionHost, type NativeFunctionsConfig } from "./functions.ts";
 import { prepareNativeLaunch, onceDispose, type AcpLauncher } from "../launcher.ts";
 import { noopLogger, type Logger } from "../logger.ts";
@@ -94,6 +96,13 @@ export interface NativeConnection {
   kill(): Promise<void>;
 }
 
+export type NativeApprovalRequest = Omit<Extract<ChannelEvent["event"], { type: "approval_requested" }>, "type"> & { channel: string };
+export type NativeApprovalResponder = (
+  request: NativeApprovalRequest,
+  answer: (decision: "allow_once" | "deny") => Promise<boolean>,
+  signal: AbortSignal,
+) => void | Promise<void>;
+
 export interface NativeHarnessHostConfig {
   /** The durable harness session: the Agent's id. */
   readonly sessionId: string;
@@ -120,6 +129,7 @@ export interface NativeHarnessHostConfig {
   readonly onChannelChangeBlocked?: (result: ChannelChangeResult) => void;
   /** Functions the model can call, served by this process (tools and callbacks spec). */
   readonly functions?: NativeFunctionsConfig;
+  readonly approvalResponder?: NativeApprovalResponder;
   /** Test seam: replaces the process launch. */
   readonly connect?: () => Promise<NativeConnection>;
 }
@@ -184,7 +194,36 @@ export class NativeHarnessHost {
   #setState(state: NativeHostState): void {
     if (this.#state === state) return;
     this.#state = state;
+    this.#notifyState();
+  }
+  #notifyState(): void {
     for (const listener of [...this.#stateListeners]) { try { listener(); } catch { /* an observer never breaks the host */ } }
+  }
+
+  readonly #pendingApprovals = new Map<string, AbortController>();
+  get hasApprovalResponder(): boolean { return this.#config.approvalResponder !== undefined; }
+
+  #closeApprovals(): void {
+    for (const pending of this.#pendingApprovals.values()) pending.abort();
+    this.#pendingApprovals.clear();
+  }
+
+  #approval(connection: NativeConnection, request: NativeApprovalRequest): void {
+    const responder = this.#config.approvalResponder;
+    if (!responder || this.#pendingApprovals.has(request.requestId)) return;
+    const pending = new AbortController();
+    this.#pendingApprovals.set(request.requestId, pending);
+    let answered = false;
+    const answer = async (decision: "allow_once" | "deny") => {
+      if (answered || pending.signal.aborted || this.#connection !== connection) return false;
+      answered = true;
+      return this.#answerApproval(request.requestId, decision);
+    };
+    void Promise.resolve().then(() => {
+      if (!pending.signal.aborted) return responder(request, answer, pending.signal);
+    }).catch(error => {
+      this.#log.warn("native_approval_responder_failed", { requestId: request.requestId, error: String(error) });
+    });
   }
 
   /** The channel as the harness last reported it; undefined before the first open or for a channel it has not seen. */
@@ -193,14 +232,50 @@ export class NativeHarnessHost {
   // --- conversations ----------------------------------------------------------------------------
 
   /** Attaches a conversation to its channel. Starts nothing. Events held for the channel are delivered now. */
-  attach(channel: string, port: ChannelPort): () => void {
+  attach(channel: string, port: ChannelPort, observe = false): () => void {
     this.#ports.set(channel, port);
     const held = this.#backlog.get(channel);
-    if (held) {
+    if (held && (!observe || !this.#connection)) {
       this.#backlog.delete(channel);
       for (const event of held) port.event(event);
     }
     return () => { if (this.#ports.get(channel) === port) this.#ports.delete(channel); };
+  }
+
+  readonly #attaching = new Map<string, ChannelEvent[]>();
+
+  async observeAttachment(channel: string, port: ChannelPort): Promise<void> {
+    const connection = this.#connection;
+    if (!connection || this.#ports.get(channel) !== port) return;
+    const buffered = this.#backlog.get(channel) ?? [];
+    this.#backlog.delete(channel);
+    this.#attaching.set(channel, buffered);
+    let boundary = 0;
+    try {
+      const saved = this.records.submissions(channel).map(item => item.id);
+      const recovered = await recoverChannel(connection.client, channel, saved, port.trackedTurns?.() ?? [], { atObservation: () => { boundary = buffered.length; } });
+      if (this.#connection !== connection || this.#ports.get(channel) !== port) return;
+      const { observation } = recovered;
+      const { pendingCount: _pendingCount, ...state } = observation.channel;
+      const status = { pending: this.#channels.get(channel)?.pending ?? [], ...state };
+      this.#channels.set(channel, status);
+      port.reconcile({ ...recovered, status, revision: observation.revision });
+      for (const request of observation.approvals) {
+        if (buffered.slice(boundary).some(({ event }) => event.type === "approval_closed" && event.requestId === request.requestId)) continue;
+        this.#approval(connection, request);
+        port.event({ channel, event: { type: "approval_requested", ...request } });
+      }
+      for (const [index, event] of buffered.entries()) {
+        if (event.revision === undefined ? index >= boundary : event.revision > observation.revision) port.event(event);
+      }
+    } catch (error) {
+      if (this.#connection === connection) {
+        if (codeOf(error) !== "not_found") throw error;
+        for (const event of buffered) port.event(event);
+      }
+    } finally {
+      if (this.#attaching.get(channel) === buffered) this.#attaching.delete(channel);
+    }
   }
 
   // --- process lifecycle ------------------------------------------------------------------------
@@ -230,11 +305,18 @@ export class NativeHarnessHost {
     const error = new HarnessUnavailableError("the native harness was stopped");
     this.#rejectWaiters(error);
     for (const port of [...this.#ports.values()]) port.failed(error);
-    await (connection ?? this.#connection)?.kill();
+    this.#closeApprovals();
+    const live = connection ?? this.#connection;
     this.#connection = null;
-    // Stored results were temporary: a default result directory goes with the host.
-    this.#functions?.dispose();
-    this.#functions = null;
+    try {
+      if (live) {
+        try { await live.client.stop(); }
+        finally { await live.kill(); }
+      }
+    } finally {
+      this.#functions?.dispose();
+      this.#functions = null;
+    }
   }
 
   async #start(): Promise<void> {
@@ -321,6 +403,12 @@ export class NativeHarnessHost {
     const { client } = connection;
     this.#early = [];
     client.onChannelEvent((event) => this.#route(connection, event));
+    client.onSessionEvent(event => {
+      const status = this.#lastStatus;
+      if (this.#connection !== connection || !status || status.revision > event.revision) return;
+      this.#lastStatus = { ...status, lifecycle: event.lifecycle, revision: event.revision };
+      this.#notifyState();
+    });
     // Handlers are in place before `initialize` names them: a recovered call can arrive right after the open.
     const functions = this.#functionHost();
     if (functions) client.serveFunctions((call, signal) => functions.call(call, signal), (read) => functions.read(read));
@@ -364,53 +452,44 @@ export class NativeHarnessHost {
     const view: LoadResult = { status, items: [], turns: [], messages: [] };
     const submissions = this.records.submissions();
     const observed = new Map<string, number>();
+    const boundaries = new Map<string, number>();
     for (const channel of new Set([...this.#ports.keys(), ...submissions.map(item => item.channel)])) {
-      const saved = submissions.filter(item => item.channel === channel);
+      const saved = submissions.filter(item => item.channel === channel).map(item => item.id);
       try {
-        const current = await client.observeChannel({ channel });
-        signal.throwIfAborted();
-        observed.set(channel, current.revision);
+        const recovered = await recoverChannel(client, channel, saved, this.#ports.get(channel)?.trackedTurns?.() ?? [], { signal, atObservation: () => { boundaries.set(channel, this.#early?.length ?? 0); } });
+        const { observation } = recovered;
+        observed.set(channel, observation.revision);
         const known = status.channels.find(value => value.channel === channel);
-        const { pendingCount: _pendingCount, ...state } = current.channel;
+        const { pendingCount: _pendingCount, ...state } = observation.channel;
         if (known) Object.assign(known, state);
         else status.channels.push({ ...state, pending: [] });
+        view.items.push(...recovered.items);
+        view.turns.push(...recovered.turns);
+        view.messages.push(...recovered.messages);
+        for (const request of observation.approvals) {
+          const boundary = boundaries.get(channel)!;
+          this.#early?.splice(boundary, 0, { channel, event: { type: "approval_requested", ...request } });
+        }
       } catch (error) {
         if (codeOf(error) !== "not_found") throw error;
-        continue;
-      }
-      const tracked = new Set(this.#ports.get(channel)?.trackedTurns?.() ?? []);
-      for (let offset = 0; offset < saved.length; offset += 100) {
-        const page = await client.reconcileChannel({ channel, itemIds: saved.slice(offset, offset + 100).map(item => item.id) });
-        signal.throwIfAborted();
-        view.items.push(...page.items);
-        for (const item of page.items) if (item.turnId) tracked.add(item.turnId);
-      }
-      const turnIds = [...tracked];
-      for (let offset = 0; offset < turnIds.length; offset += 100) {
-        let page = await client.reconcileChannel({ channel, turnIds: turnIds.slice(offset, offset + 100) });
-        signal.throwIfAborted();
-        view.turns.push(...page.turns.map(turn => ({ ...turn, items: view.items.filter(item => item.turnId === turn.turnId).map(item => item.id) })));
-        while (true) {
-          view.messages.push(...page.replies.map(reply => ({ channel, messageId: reply.messageId, turnId: reply.turnId, reference: true as const })));
-          if (!page.next) break;
-          page = await client.reconcileChannel({ channel, cursor: page.next });
-          signal.throwIfAborted();
-        }
       }
     }
 
+    this.#lastStatus = status;
+    this.#capabilities = capabilities;
     this.#channels.clear();
     for (const channel of view.status.channels) this.#channels.set(channel.channel, channel);
     this.#connection = connection;
-    this.#reconcile(view, view.messages);
+    this.#reconcile(view, observed);
 
     // Events received while the view was being read and applied: the ones it already includes are
     // dropped; the rest follow in delivery order. Several events can share a revision, so the
     // comparison is with the view's revision, never with the previous event's.
     const early = this.#early ?? [];
     this.#early = null;
-    for (const event of early) {
-      if (event.revision !== undefined && event.revision <= (observed.get(event.channel) ?? status.revision)) continue;
+    for (const [index, event] of early.entries()) {
+      if (event.revision === undefined ? index < (boundaries.get(event.channel) ?? 0)
+        : event.revision <= (observed.get(event.channel) ?? status.revision)) continue;
       this.#deliver(event);
     }
   }
@@ -474,7 +553,7 @@ export class NativeHarnessHost {
   }
 
   /** Settles what the view answers: submissions first (they decide which turn causes are ours), then each channel. */
-  #reconcile(view: LoadResult, messages: StoredMessage[]): void {
+  #reconcile(view: LoadResult, observed: ReadonlyMap<string, number>): void {
     const items = new Map(view.items.map((item) => [item.id, item]));
     for (const submission of this.records.submissions()) {
       const item = items.get(submission.id);
@@ -485,11 +564,11 @@ export class NativeHarnessHost {
     }
     for (const [channel, port] of [...this.#ports]) {
       port.reconcile({
-        revision: view.status.revision,
+        revision: observed.get(channel) ?? view.status.revision,
         status: this.#channels.get(channel),
         turns: view.turns.filter((turn) => turn.channel === channel),
         items: view.items.filter((item) => item.channel === channel),
-        messages: messages.filter((message) => message.channel === channel),
+        messages: view.messages.filter((message) => message.channel === channel),
       });
     }
   }
@@ -514,6 +593,7 @@ export class NativeHarnessHost {
   #lost(connection: NativeConnection): void {
     if (this.#connection !== connection) return;
     this.#connection = null;
+    this.#closeApprovals();
     if (this.#stopped) return;
     this.#setState("stopped");
     this.#log.warn("native_harness_connection_lost", { sessionId: this.sessionId });
@@ -556,18 +636,28 @@ export class NativeHarnessHost {
 
   #route(connection: NativeConnection, event: ChannelEvent): void {
     // A late event of a connection that was replaced is not this session's present.
-    if (this.#connection !== null && this.#connection !== connection) return;
+    if (this.#stopped || (this.#connection !== null && this.#connection !== connection)) return;
     if (this.#early) { this.#early.push(event); return; }
     this.#deliver(event);
   }
 
   #deliver(event: ChannelEvent): void {
+    if (event.event.type === "approval_requested" && this.#connection) {
+      const { type: _type, ...request } = event.event;
+      this.#approval(this.#connection, { ...request, channel: event.channel });
+    }
+    if (event.event.type === "approval_closed") {
+      this.#pendingApprovals.get(event.event.requestId)?.abort();
+      this.#pendingApprovals.delete(event.event.requestId);
+    }
     if (event.event.type === "channel_state") {
       const known = this.#channels.get(event.channel);
       const { displayName, policy, lifecycle } = event.event;
       const { displayName: _name, policy: _policy, ...rest } = known ?? { channel: event.channel, pending: [], waitingForResume: false, lifecycle };
       this.#channels.set(event.channel, { ...rest, lifecycle, ...(displayName === undefined ? {} : { displayName }), ...(policy === undefined ? {} : { policy }) });
     }
+    const buffered = this.#attaching.get(event.channel);
+    if (buffered) { buffered.push(event); return; }
     const port = this.#ports.get(event.channel);
     if (port) { port.event(event); return; }
     // No conversation attached: keep the channel's events until one is. Bounded so an unattended
@@ -752,7 +842,102 @@ export class NativeHarnessHost {
   }
 
   /** The session's status as the running harness reports it now. */
-  status(): Promise<StatusResult> { return this.#client().status(); }
+  #lastStatus?: StatusResult;
+  #capabilities?: Awaited<ReturnType<HarnessClient["initialize"]>>["description"]["capabilities"];
+
+  get capabilities() { return this.#capabilities; }
+  get sessionLifecycle() { return this.#lastStatus?.lifecycle; }
+  async status(): Promise<StatusResult> {
+    const live = await this.#client().status();
+    this.#lastStatus = live;
+    return live;
+  }
+
+  async operatorStatus() {
+    const connection = this.#connection;
+    let confirmed = false;
+    if (connection) {
+      try { await this.status(); confirmed = true; }
+      catch (error) { if (!ambiguous(error)) throw error; }
+    }
+    const session = this.#lastStatus;
+    const workingChannels = session?.channels.filter(channel => channel.activeTurn?.state === "running").length ?? 0;
+    return { process: this.#state, stale: !confirmed || this.#connection !== connection, session, workingChannels };
+  }
+
+  async usage(channel?: string) {
+    const client = this.#client();
+    const attempts: Parameters<typeof aggregateUsage>[0][number][] = [];
+    for (let after: string | undefined; ;) {
+      const page = await client.modelCalls({ after });
+      for (const call of page.calls) if (channel === undefined || call.channel === channel) attempts.push(...call.attempts);
+      if (!page.next) break;
+      after = page.next;
+    }
+    const totals = aggregateUsage(attempts);
+    const missing = Object.fromEntries((["inputTokens", "outputTokens", "totalTokens"] as const)
+      .map(field => [field, attempts.filter(attempt => attempt.usage?.[field] === undefined).length]));
+    return { totals, missing, attempts: attempts.length, partial: Object.values(missing).some(count => count > 0) };
+  }
+
+  start(): Promise<void> { return this.ensureStarted(); }
+  async suspend(): Promise<StatusResult> {
+    const status = await this.#client().suspend();
+    this.#lastStatus = status;
+    return status;
+  }
+  async resume(): Promise<StatusResult> {
+    const status = await this.#client().resume();
+    this.#lastStatus = status;
+    return status;
+  }
+  validateConfig(config: unknown) { return this.#client().validateConfig(config); }
+  suspendChannel(channel: string) { return this.#client().suspendChannel({ channel }); }
+  resumeChannel(channel: string) { return this.#client().resumeChannel({ channel }); }
+  conversationMessages(params: Parameters<HarnessClient["channelMessages"]>[0]) { return this.#client().channelMessages(params); }
+  /** Commit each page atomically with its position. On failure the caller's
+   * last committed position is the retry boundary. */
+  async catchUp(channel: string, after: string,
+    commit: (messages: Awaited<ReturnType<HarnessClient["channelMessages"]>>["messages"], position: string) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const client = this.#client();
+    const connection = this.#connection;
+    if (this.#attaching.has(channel)) throw new Error("Channel observation is already in progress");
+    const buffered: ChannelEvent[] = [];
+    this.#attaching.set(channel, buffered);
+    let position = after;
+    const committed = new Set<string>();
+    try {
+      signal?.throwIfAborted();
+      const { revision } = await client.observeChannel({ channel });
+      let cursor: string | undefined;
+      do {
+        signal?.throwIfAborted();
+        const page = await client.channelMessages(cursor === undefined
+          ? { channel, after, throughRevision: revision } : { channel, cursor });
+        signal?.throwIfAborted();
+        if (page.messages.length) {
+          const next = page.messages.at(-1)!.position;
+          await commit(page.messages, next);
+          position = next;
+          for (const message of page.messages) committed.add(message.messageId);
+        }
+        cursor = page.next;
+      } while (cursor !== undefined);
+      return position;
+    } finally {
+      this.#attaching.delete(channel);
+      const port = this.#connection === connection ? this.#ports.get(channel) : undefined;
+      for (const event of this.#connection === connection ? buffered : []) {
+        if (event.event.type === "message_completed" && event.event.messageId && committed.has(event.event.messageId)) continue;
+        if (port) port.event(event);
+        else this.#deliver(event);
+      }
+    }
+  }
+
+  timeline(params: Parameters<HarnessClient["timeline"]>[0] = {}) { return this.#client().timeline(params); }
 
   /** Interrupts exactly this turn. False when it had already ended or was checkpointed. */
   async interrupt(channel: string, turn: string, reason?: string): Promise<boolean> {
@@ -762,6 +947,11 @@ export class NativeHarnessHost {
 
   /** Answers one approval request. False when the answer was late: the request is closed and stays closed. */
   async respondApproval(requestId: string, decision: "allow_once" | "deny"): Promise<boolean> {
+    if (this.hasApprovalResponder) return false;
+    return this.#answerApproval(requestId, decision);
+  }
+
+  async #answerApproval(requestId: string, decision: "allow_once" | "deny"): Promise<boolean> {
     try {
       await this.#client().respondApproval(requestId, decision);
       return true;

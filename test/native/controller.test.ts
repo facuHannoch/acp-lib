@@ -8,6 +8,7 @@ import type { ChannelPort, ChannelView, NativeHarnessHost } from "../../src/nati
 import { createMemoryHostRecords } from "../../src/native/records.ts";
 import { UnsupportedError } from "../../src/errors.ts";
 import type { ChannelEvent } from "../../src/native-harness/src/client.ts";
+import { restartConversation } from "../../src/conversation-controller/index.ts";
 import type { TurnEvent } from "../../src/conversation-controller/index.ts";
 import type { PermissionOutcome, PromptHandlers } from "../../src/types.ts";
 
@@ -20,6 +21,7 @@ function standIn() {
   const host = {
     sessionId: "agent-1", state: "running", records,
     attach(_channel: string, attached: ChannelPort) { port = attached; return () => { port = undefined; }; },
+    async observeAttachment() {},
     subscribeState: () => () => undefined,
     push(input: { id: string; channel: string; sender: string; text: string }) {
       // What the real host does first: the id and payload are saved before anything is sent.
@@ -365,4 +367,31 @@ describe("reconciliation after a reopen", () => {
     emit({ type: "turn_resumed", turnId: "9" });
     expect(turns).toEqual([{ kind: "turn_started", turnId: "native-turn-9", cause: { items: [{ id: "earlier" }] }, sentBySession: false }]);
   });
+});
+
+test("Restart waits for exact-turn stop confirmation and does not start on loss", async () => {
+  const { controller, host, emit, calls } = standIn();
+  await controller.start();
+  emit({ type: "turn_started", turnId: "1", items: [] });
+  let confirm!: (interrupted: boolean) => void;
+  host.interrupt = (channel, turn) => {
+    calls.push(`interrupt:${channel}:${turn}`);
+    return new Promise(resolve => { confirm = resolve; });
+  };
+  let starts = 0;
+  const restart = () => restartConversation({ stop: () => controller.stop(), start: () => { starts++; return controller.start(); } });
+  const pending = restart();
+  expect(calls).toEqual(["interrupt:c1:1"]);
+  expect(starts).toBe(0);
+  emit({ type: "turn_ended", turnId: "1", outcome: "completed" });
+  emit({ type: "turn_started", turnId: "2", items: [] });
+  confirm(false);
+  await pending;
+  expect(calls).toEqual(["interrupt:c1:1"]);
+  expect(starts).toBe(1);
+
+  emit({ type: "turn_started", turnId: "3", items: [] });
+  host.interrupt = async () => { throw new Error("connection lost"); };
+  await expect(restart()).rejects.toThrow("connection lost");
+  expect(starts).toBe(1);
 });
