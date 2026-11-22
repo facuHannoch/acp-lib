@@ -1,3 +1,4 @@
+import { Orchestrator } from "./orchestrator/orchestrator.ts";
 import { validateOrchestrator } from "./orchestrator/config.ts";
 import { validatePermissionConsumerConfig } from "./permissions/consumer-config.ts";
 import { inheritPermissionConfig, ownPermissions } from "./permissions/policy.ts";
@@ -108,6 +109,8 @@ export class Agent {
    */
   readonly nativeHarness: NativeHarnessHost | null;
   readonly conversations: AgentConversationManager;
+  /** @internal Delegation routes use this pool. */
+  readonly orchestrator?: Orchestrator;
   readonly internalInferences?: InternalInferenceManager;
   readonly checkpointing?: ConversationCheckpointCoordinator;
   readonly audit?: AgentAuditRuntime;
@@ -229,6 +232,13 @@ export class Agent {
       },
     });
     this.conversations = this.manager;
+    if (config.orchestrator) {
+      const workerOptions = config.orchestrator.workers;
+      const adapterId = workerOptions.adapterId ?? config.defaultAdapterId ?? adapters.list()[0]?.id;
+      if (!adapterId || adapters.native(adapterId)) throw new Error("orchestrator workers require an ACP adapter");
+      adapters.require(adapterId);
+      this.orchestrator = new Orchestrator(persistence.workers!, this.conversations, { ...workerOptions, adapterId }, logger);
+    }
     if (checkpointing?.enabled) {
       // Checkpoints summarize stored messages, so `metadata` (messages with no text) would checkpoint nothing
       // useful. `none` is allowed: a conversation that stores no messages has nothing to checkpoint, and the
