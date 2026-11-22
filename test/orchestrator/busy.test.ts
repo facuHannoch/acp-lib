@@ -37,8 +37,8 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
           if (planned.length === 2) successor.resolve();
         },
       });
-    const giver: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "first", policyNames: ["owner"], policy: allowed };
-    const other: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "next", policyNames: ["trusted"], policy: allowed };
+    const giver: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "first", policyNames: ["owner"], workerPermissions: [], policy: allowed };
+    const other: WorkerActor = { kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "next", policyNames: ["trusted"], workerPermissions: [], policy: allowed };
     try {
       expect(await orchestrator.open(giver, { text: "[lifecycle:tool]" })).toEqual({ status: "sent", handle: "w1" });
       await tool.promise;

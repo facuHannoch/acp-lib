@@ -41,7 +41,7 @@ test("two opens racing for the last slot admit one, with the busy worker in the 
       pool.open(actor, { text: "[lifecycle:tool]", about: "second" })]);
     expect(results[0]).toEqual({ status: "sent", handle: "w1" });
     expect(results[1]).toMatchObject({ status: "no_worker_free", workers: [{ handle: "w1", state: "busy", about: "first" }] });
-    expect(await pool.send({ kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "other", policyNames: ["trusted"],
+    expect(await pool.send({ kind: "conversation", conversationId: createAgentConversationId(), sender: "other", invocationId: "other", policyNames: ["trusted"], workerPermissions: [],
       policy: { use: true, scope: "all", redirect: false } },
       "w1", { text: "unexpected second prompt" })).toMatchObject({ status: "busy" });
     const worker = await pool.check(actor, "w1");
@@ -160,7 +160,7 @@ test("worker failure notifications expose a fixed reason and the worker returns 
 test("conversation policy enforces use, scope, redirect, other-giver stop/drop and maxOpen", async () => {
   const { agent, pool, close } = await rig(2);
   const giver = {
-    kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "give", policyNames: ["trusted"],
+    kind: "conversation", conversationId: createAgentConversationId(), sender: "giver", invocationId: "give", policyNames: ["trusted"], workerPermissions: [],
     policy: { use: true, scope: "none", redirect: false, maxOpen: 1 },
   } as const;
   const other = { ...giver, conversationId: createAgentConversationId(), sender: "other", invocationId: "other", policy: { ...giver.policy, scope: "all" as const } };

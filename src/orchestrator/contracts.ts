@@ -1,3 +1,4 @@
+import type { PermissionSettings } from "../permissions/matcher.ts";
 import type { AgentConversationId } from "../agent-ids.ts";
 import type { OperationActivity } from "../operations/contracts.ts";
 import type { WorkerRow } from "../persistence/workers.ts";
@@ -16,6 +17,7 @@ export type WorkerActor = { readonly kind: "consumer" } | {
   readonly invocationId: string;
   readonly policyNames: readonly string[];
   readonly policy: DelegationPolicy;
+  readonly workerPermissions: readonly PermissionSettings[];
 };
 
 export interface WorkerInput {

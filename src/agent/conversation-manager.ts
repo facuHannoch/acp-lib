@@ -573,6 +573,11 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     }
   }
 
+  /** @internal Resolve a live permission destination without opening its provider. */
+  liveConversation(id: AgentConversationId): AgentConversation | undefined {
+    return this.live.get(id);
+  }
+
   async get(id: AgentConversationId): Promise<AgentConversationSummary | null> {
     return await this.agent.persistence.conversations.get(id);
   }

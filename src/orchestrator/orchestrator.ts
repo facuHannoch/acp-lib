@@ -1,3 +1,4 @@
+import { workerPermissionHandler, type FindGivingConversation } from "./permissions.ts";
 import { WorkerPolicyError } from "../errors.ts";
 import { canSeeWorker, checkWorkerOpenLimit, requireWorkerRedirect, requireWorkerUse } from "./policy.ts";
 import type { AssignmentPlan, WorkerAssignmentPort } from "./assignments.ts";
@@ -22,6 +23,7 @@ export class Orchestrator {
     private readonly log: Logger,
     private readonly emit: (event: WorkerEvent) => void,
     private readonly assignments?: WorkerAssignmentPort,
+    private readonly findGivingConversation?: FindGivingConversation,
   ) {
     this.pool = new WorkerPool(options.limit);
   }
@@ -161,7 +163,15 @@ export class Orchestrator {
 
   private startOptions() {
     const { adapterId, cwd } = this.options;
-    return { adapterId, ...(cwd === undefined ? {} : { runtime: { cwd } }) };
+    return {
+      adapterId,
+      runtime: {
+        ...(cwd === undefined ? {} : { cwd }),
+        permissions: { default: "ask" as const },
+        // The delegated actor owns the worker's decision. Always enter its prompt handler.
+        permissionRule: () => "ask" as const,
+      },
+    };
   }
 
   private assertInput(input: WorkerInput): void {
@@ -190,6 +200,7 @@ export class Orchestrator {
     const policyNames = actor.kind === "conversation" ? [...actor.policyNames] : [];
     const input = {
       text,
+      handlers: { onPermissionRequest: workerPermissionHandler(actor, row, this.findGivingConversation) },
       delivery: plan.kind === "start" ? "queue" as const : "steer" as const,
       ...(this.assignments ? { beforeDispatch: (messageId: string) => this.assignments!.beforeDispatch(row, plan, messageId, policyNames) } : {}),
     };

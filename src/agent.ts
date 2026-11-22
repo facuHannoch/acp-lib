@@ -240,7 +240,7 @@ export class Agent {
       if (!adapterId || adapters.native(adapterId)) throw new Error("orchestrator workers require an ACP adapter");
       adapters.require(adapterId);
       this.orchestrator = new Orchestrator(persistence.workers!, this.conversations, { ...workerOptions, adapterId }, logger,
-        event => this.eventBus.publishWorker(event));
+        event => this.eventBus.publishWorker(event), undefined, id => this.manager.liveConversation(id));
       this.workers = workerConsumerApi(this.orchestrator);
     }
     if (checkpointing?.enabled) {
