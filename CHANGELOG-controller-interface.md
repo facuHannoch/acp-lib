@@ -44,7 +44,7 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   (`turn_completed` / `turn_failed`) stays the session's, after metering, the transcript and `afterPrompt`.
 - **Internal readers of ACP capabilities** (media in prompts, session listing) read the neutral `backend` capabilities.
 
-## Backend-scheduled controllers (for a later native backend; no ACP path reaches this)
+## Backend-scheduled controllers (including the native backend)
 
 - A reported `turn_started` with `sentBySession: false` joins the conversation's operation queue and runs in order
   (no user record, no ACP input; supervised and metered like any turn).
@@ -52,8 +52,9 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   takes it. A controller with `nativeSteering` receives each message separately (never combined, no cancel-to-steer), the
   queue operation ends when `send` resolves, and a `steer` message sent while a backend turn runs is handed over at once.
 - **The wait after acceptance** (a message a backend-scheduled controller accepted and no turn has taken) is cancellable:
-  `stop` drops it as cancelled, `handle.withdraw()` withdraws it locally (resolves cancelled; the backend is not told, and a
-  turn that later names it is ignored), and `interrupt({ clearQueue: true })` drops it like a queued message. It has no
+  `stop` drops it as cancelled, `handle.withdraw()` withdraws it locally (resolves cancelled; the backend is not told), and
+  `interrupt({ clearQueue: true })` drops it like a queued message. A later turn that names a withdrawn message still runs;
+  the session ignores that message ID for settlement. The wait has no
   time limit: it is the normal case (a message accepted while a long turn runs waits for the next turn). A backend that never
   starts a turn is a backend bug.
 - A prepared turn that isn't `live` (replaying output the backend already produced) isn't stalled while it replays; the
@@ -67,7 +68,7 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 ## Behaviour notes (unchanged for ACP unless stated)
 
 - `AgentSession.listSessions()` before the agent connects still throws `NotConnectedError`.
-- A controller without `reconnect` (none today) is handled as a provider that lost the session: the conversation's
+- A controller without `reconnect`, such as NativeController, is handled as a provider that lost the session: the conversation's
   continuation rule decides (`ProviderSessionReloadUnsupportedError`, an `UnsupportedError`).
 - Test-only: the A1 characterization snapshots are unchanged except `cause`, plus a reviewed ordering exception for the
   two non-contractual orders (metering vs presentation events / the last in-progress assistant snapshot).
