@@ -158,3 +158,5 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   admission, so a conversation deleted before the harness first opened shows as a retired tombstone, not absent.
   Decided by the coordinator: the tombstone satisfies (b) (nothing can run, a retired id can't be reopened); assert
   no open channel, the tombstone, a refused push and no turn; a report line; no protocol change.
+- Step 4 in from cod2a: tests `be36dfc`, report `79d449d` (Done section complete). Six scripted stdio restart tests
+  (4.2 s); full `./test` green, 1,463 in 132 files. Sent to clad2a with the final whole-R1 review.
