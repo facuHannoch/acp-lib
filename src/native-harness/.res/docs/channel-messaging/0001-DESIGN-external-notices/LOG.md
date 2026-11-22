@@ -73,3 +73,31 @@ Generic Gate 2 verification passed both package typechecks. Full harness
 across 47 files. Root `bun test ./test/native` passed 87 tests with 6576
 assertions across seven files. Both suites had zero failures. Independent
 review of the generic harness behavior is pending.
+
+## Generic closure and retrospective
+
+Clad approved generic Gate 2 at `f5220726f55320a1df214e5ebe46cdd5e260f548`,
+with storage and rendering at `131ad3a1ee7539b6f86b917d0fea5797f04739f4`
+and the approved contract at `56285d81d0e53f8ec54590fb7ab5ec433a011b39`.
+The clean detached review passed both typechecks, 360 harness tests
+(`bun test ./test --timeout 30000`) and 1422 root tests
+(`bun test ./test`), with zero failures.
+
+The contract review separated new notice admission from replay and pinned
+the external drain refusal. Storage conformance then verified that replay
+keeps the original receipt across suspension, incompatible inspection,
+and archive import. A real stdio crash after inbox acceptance verified one
+take and one model call on recovery. The format 5 upgrade preserves item
+signatures, and format 6 prevents older readers from taking unfamiliar
+notice records.
+
+The endpoint with the open session owns notice authority. The current
+protocol uses one endpoint per session. After stop, checking an inbox ID
+uses a full storage snapshot. This is an accepted cost on that rare path.
+
+Worker Gates 3 and 4 remain open. The accepted receipt-loss result covers
+harness inbox recovery. A supported worker backend still needs independent
+proof of completion recovery by assignment ID after lost delivery before
+staging. Assignment correlation, backend selection, and the worker staging
+transaction remain with the orchestrator workstream. Haurness-l coordinates
+that dependency.
