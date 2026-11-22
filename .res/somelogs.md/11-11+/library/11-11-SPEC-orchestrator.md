@@ -113,7 +113,7 @@ behaves as today.
   failure outcomes written by the lifecycle (`recordFinal`, `recordFailure`, in the turn's terminal transaction), and
   the staged notice with its delivery states. **Still to build (Gate 3):** the host flush through `channel/notify`,
   retries after a lost acknowledgement or a resume, explicit retry after `invalid_policy`, and recovery at open
-  (the uncertainty notice). O3's native delivery and O5's restart gate need that remainder.
+  (the uncertainty notice). O3b's native delivery and O5b's restart gate need that remainder.
 
 ## Roles
 
@@ -419,14 +419,14 @@ src/persistence/    the optional workers? repository (WorkerPersistence) with ca
 
 ## Implementation plan
 
-Written 2026-11-13; revised in review 2 (2026-11-22). Seven briefs, each about one agent run, run in order by one trio
+Written 2026-11-13; revised in review 2 (2026-11-22). Nine briefs (O3 and O5 each split in two), each about one agent run, run in order by one trio
 (`../.plan-execution/plan.md`; its code-quality and triage rules apply).
 
 **Dependencies.** Starts after the integration's briefs R1–R3: it uses the turn-based controller interface, the
 permission events and `answerPermission` (R3), the permission matcher with `worker:` rules (R2), and the
 optional-repository pattern (`channels?`, R1). **Also blocked on two harness proposals,** accepted and built: the
 [callback policy amendment](../../../../src/native-harness/.res/docs/tools-and-callbacks/0002-AMENDMENT-callback-policy/SPEC.md) (`policyNames` on `functions/call`, used by O6's route) and
-[external notices](../../../../src/native-harness/.res/docs/channel-messaging/0001-DESIGN-external-notices/SPEC.md) (`channel/notify`, and its Gate 3's durable handoff module, used by O3 and O5). O1–O5 need no harness: workers are
+[external notices](../../../../src/native-harness/.res/docs/channel-messaging/0001-DESIGN-external-notices/SPEC.md) (`channel/notify`, and its Gate 3's durable handoff module, used by O3b and O5b). O1–O5a need no harness: workers are
 ordinary conversations on the existing offline fixture ACP agents (`test/fixtures/`: `steer-agent`,
 `permission-agent`, `stalling-prompt-agent`, …), so they are tested as real conversations, not fakes. O6 needs the harness's
 consumer-registered tools (`functions/call`) for its route.
@@ -434,6 +434,11 @@ consumer-registered tools (`functions/call`) for its route.
 **Common to every brief.** Clean-copy gates (`bun run typecheck`, full `bun test`, output saved); the integration
 spec's final gate is the baseline; no edit to `src/agent-session.ts`; no live harness runs except O6's step 3, with
 the owner's authorization.
+
+**Order** (revised 2026-11-22, with worker delivery in `alpha`): G, O1, O2, **O4**, O3a, O5a, O3b, O5b, O6. Gate 3's
+host side (the flush through `channel/notify`, retries, recovery at open) is built by the harness work in parallel;
+everything through O5a needs none of it, and only O3b, O5b and O6 wait for it. O4 comes before the way back because it
+needs no harness and its forwarding entry is the one change to integration R3's code (reviewed on its own).
 
 ### The code as it is (for these briefs)
 
@@ -456,10 +461,14 @@ Read on `beta` 2026-11-13; line numbers move once the controller-interface and i
 ### Brief G: grounding
 
 The implementer checks The code as it is and every reuse point in the briefs against the code after integration R1–R3
-(the permission events, the matcher's `worker:` prefix, the `channels?` pattern), checks that `policyNames` on
-`functions/call`, `channel/notify` and the durable handoff module are built as their harness specs say, and
-reports what moved or doesn't exist
-(`library/reports/<date>-REPORT-OG.md`). Corrections go to the spec owner before O1.
+(the permission events, the matcher's `worker:` prefix, the `channels?` pattern) and worker delivery (the
+`workerDelivery?` repository and the lifecycle's `recordFinal` and `recordFailure`, in `alpha`), checks that
+`policyNames` on `functions/call` and `channel/notify` are built as their harness specs say, and reports what moved or
+doesn't exist (`library/reports/<date>-REPORT-OG.md`). It also writes **the interface with Gate 3's remainder**: the
+calls the orchestrator makes (reserve before dispatch, report the result or failure, redirect, add policies) and the
+ones it expects from the host side (flush through `channel/notify`, retries, recovery at open), so both sides build
+to the same contract; and sizes **O4's forwarding entry** on the conversation's permission handling (R3 emits
+events only for a conversation's own turns). Corrections go to the spec owner before O1.
 
 ### Brief O1: the pool and the workers table
 
@@ -494,21 +503,6 @@ reports what moved or doesn't exist
 
 **Done:** report commits and each case.
 
-### Brief O3: the way back
-
-**Scope:** steps 1–2.
-
-1. **The delivery port** (`src/orchestrator/contracts.ts`): native results handed to the durable handoff module
-   (assignment created before dispatch with the invocation id, result reported at the turn's end); out-of-band
-   messages with a kind and a sender in their metadata for ACP conversations, delivered with the next prompt.
-   **Gate:** a result reaches a native channel as one notice; an item reaches an ACP conversation; a steer joins the
-   running assignment and a redirect retargets it.
-2. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
-   `last_conversation`; a stop asked by the conversation itself produces none; a gone target keeps the reply on the
-   worker (`check`, `list`). **Gate:** each item; a deleted target.
-
-**Done:** report commits and each item.
-
 ### Brief O4: permission forwarding
 
 **Scope:** steps 1–2.
@@ -524,19 +518,56 @@ reports what moved or doesn't exist
 
 **Done:** report commits and each case.
 
-### Brief O5: stop, drop, idle stop, restart
+### Brief O3a: the way back, assignments and the ACP half
 
-**Scope:** steps 1–3.
+**Scope:** steps 1–3. Needs no Gate 3 remainder.
+
+1. **Assignments:** each delegated `delegate` or `send` reserves its assignment (id = the call's invocation id) in
+   `workerDelivery?` before dispatch, through the `beforeDispatch` hook, with the destination and the call's
+   contributing `policyNames`; a steer joins the running assignment (`addContributingPolicies`) and a redirect
+   retargets it (`redirect`). **Gate:** an assignment exists before the worker's prompt reaches the provider; a steer
+   and a redirect each change it; a refused hook sends nothing.
+2. **The delivery port's ACP half** (`src/orchestrator/contracts.ts`): out-of-band messages with a kind and a sender
+   in their metadata, delivered with the next prompt. **Gate:** an item reaches an ACP conversation.
+3. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
+   `last_conversation`; a stop asked by the conversation itself produces none; a gone target keeps the reply on the
+   worker (`check`, `list`). **Gate:** each item; a deleted target.
+
+**Done:** report commits and each item.
+
+### Brief O5a: stop, drop, idle stop
+
+**Scope:** steps 1–2. Needs no Gate 3 remainder.
 
 1. **`stop`** (`interrupt({ clearQueue })`, allowed for the giver or with `redirect`) and **`drop`** (stop, delete the
    conversation and provider session, mark the row dropped). **Gate:** each, and a refusal.
 2. **Idle stop:** `workers.idleStopMs` (default 10 minutes, `false` off); the next send reloads; `worker_stopped` with
    the reason. **Gate:** a worker idle past the limit has no process and reloads on the next send.
-3. **Restart:** workers read from the repository; the durable handoff module's recovery run at open; pending
-   permission requests refused. **Gate:** the harness plan's two crash cases through the orchestrator: acp-client
-   killed after a worker's final record commits but before staging (the result recovered by assignment id, nothing
-   redispatched), and killed before the final record commits (one uncertainty notice); a staged notice not yet
-   accepted, delivered once.
+
+**Done:** report commits and each case.
+
+### Brief O3b: the way back, native delivery
+
+**Scope:** steps 1–2. After Gate 3's host side lands (the flush, retries and recovery at open).
+
+1. **Native delivery through the durable handoff:** a native conversation's result reaches its channel as one notice
+   (`channel/notify`, stable id, source label, the assignment's composed policies frozen at staging), delivered by the
+   host side from the staged notice. **Gate:** a result reaches a native channel as one notice; a steer's policies
+   are in it; a redirect retargets it, whichever order it meets staging.
+2. **Outcomes:** `pending`, blocked on `invalid_policy` (explicit retry after the policy is fixed), failed for a
+   missing or retired channel, the result kept for `check` and `list`. **Gate:** each.
+
+**Done:** report commits and each case.
+
+### Brief O5b: restart
+
+**Scope:** one step. After Gate 3's host side lands.
+
+1. **Restart:** workers read from the repository; the durable handoff's recovery run at open; pending permission
+   requests refused. **Gate:** the harness plan's two crash cases through the orchestrator: acp-client killed after a
+   worker's final record commits but before staging (the result recovered by assignment id, nothing redispatched),
+   and killed before the final record commits (one uncertainty notice); a staged notice not yet accepted, delivered
+   once.
 
 **Done:** report commits and each case.
 
@@ -544,7 +575,7 @@ reports what moved or doesn't exist
 
 **Scope:** steps 1–3.
 
-1. **The route:** the delegation tools registered at session open with their prompt section; `functions/call` from
+1. **The route:** the delegation tools registered in the per-open tool catalog (guidance in their descriptions); `functions/call` from
    the harness routed to the orchestrator, the `Actor` built from the call, its `policyNames` resolved to the
    session's worker rules (most restrictive; empty list → defaults; missing or unknown → declined); results returned
    as tool output. **Gate:** with the in-process harness, including a two-policy turn.

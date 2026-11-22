@@ -36,3 +36,9 @@ edit to `src/agent-session.ts`.
   built part (the `workerDelivery?` repository and lifecycle in alpha) and remaining part (host flush, retries,
   recovery at open); Flow 4 and O4 now say an unanswerable ask is refused (not the default), and that O4 adds a
   forwarding entry to the conversation's permission handling (R3 emits only for a conversation's own turns).
+- User approved a revised plan (in the spec, `972bfd1` and after): G, O1, O2, **O4**, O3a, O5a, O3b, O5b, O6. O3 and
+  O5 split: O3a (assignments reserved before dispatch through `beforeDispatch`, the ACP half, the items) and O5a
+  (stop, drop, idle stop) need no Gate 3 remainder; O3b (native delivery) and O5b (restart) wait for Gate 3's host
+  side (the flush, retries, recovery at open), built by the harness work in parallel. G also writes the interface
+  with that remainder and sizes O4's forwarding entry (the only change to R3's code).
+- G resumed on cod2a (from `4e88243`; the spec is read from `orchestrator-status`).
