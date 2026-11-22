@@ -1,3 +1,4 @@
+import { messagePosition } from "../../util/message-position.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import type { StorageResult, TimelineEntry } from "../../contracts/storage.ts";
 import { MAX_FRAME_BYTES } from "./framing.ts";
@@ -41,7 +42,7 @@ export function operatorRead(session: PersistentSession, method: string, p: Reco
   const header = readValue(storage.readSession());
   const scope = header.value.sessionId;
   const channel = method === "session/timeline" ? undefined : id(p.channel);
-  const position = (entry: TimelineEntry) => encode([scope, entry.channelId, entry.seq]);
+  const position = (entry: TimelineEntry) => messagePosition(scope, entry.channelId, entry.seq);
   const messageId = (entry: TimelineEntry) => entry.itemId ? `item:${entry.itemId}` : entry.messageId ?? String(entry.seq);
   const budget = MAX_FRAME_BYTES - 1024;
   if (method === "channel/observe") {

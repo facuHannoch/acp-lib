@@ -1,3 +1,4 @@
+import { messagePosition } from "./util/message-position.ts";
 import { executeNotice, notifyChannelDefinition } from "./capabilities/tools/scenario.ts";
 import type { PersistentSession, PersistentSessionOptions } from "./contracts/session.ts";
 import type { SessionAgent, TurnExecutor } from "./contracts/agent.ts";
@@ -58,7 +59,7 @@ export function createSession(options: Omit<PersistentSessionOptions, "storage">
   // timeline projection may have changed.
   const identity = store.readSession();
   if (!identity.ok) throw new Error(identity.error.message);
-  const position = (channel: string, seq: string) => Buffer.from(JSON.stringify([identity.value.sessionId, channel, Number(seq)])).toString("base64url");
+  const position = (channel: string, seq: string) => messagePosition(identity.value.sessionId, channel, Number(seq));
   const emit: EventSink = value => {
     const { channel, event } = value;
     if ((event.type === "turn_started" || event.type === "turn_took") && event.messages)

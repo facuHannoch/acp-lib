@@ -62,7 +62,9 @@ export function storageConformance(name: string, location: () => SessionStorageA
       expect(older.more).toBe(false);
       expect(ok(owner.readTimeline({ kind: "replies", channel: "c1", turnIds: [first, second], direction: "newer", throughRevision, limit: 10 })).entries.map(entry => entry.seq)).toEqual([reply.seq]);
       expect(ok(owner.readTimeline({ kind: "timeline", direction: "newer", throughRevision, limit: 10 })).entries.map(entry => entry.message.role)).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant"]);
-      expect(ok(owner.readTracked("c1", ["a", "b"], [first, second])).items.map(item => item.itemId)).toEqual(["a"]);
+      const tracked = ok(owner.readTracked("c1", ["a", "b"], [first, second]));
+      expect(tracked.items.map(item => item.itemId)).toEqual(["a"]);
+      expect(tracked.turns.map(turn => [turn.turnId, turn.itemIds])).toEqual([[first, ["a"]]]);
       expect(ok(owner.readChannel("c1")).pendingCount).toBe(0);
       ok(owner.close());
     });

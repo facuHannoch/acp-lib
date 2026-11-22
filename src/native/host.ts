@@ -410,7 +410,7 @@ export class NativeHarnessHost {
     const early = this.#early ?? [];
     this.#early = null;
     for (const event of early) {
-      if (event.revision !== undefined && event.revision <= (observed.get(event.channel) ?? opened.revision)) continue;
+      if (event.revision !== undefined && event.revision <= (observed.get(event.channel) ?? status.revision)) continue;
       this.#deliver(event);
     }
   }

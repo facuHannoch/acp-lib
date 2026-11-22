@@ -96,7 +96,7 @@ test("focused startup and observation do not request a full storage snapshot", a
   } finally { client.close(); server.dispose(); }
 });
 
-test("stdio offers notify_channel by default and a notice wakes an unattached channel", async () => {
+for (const denied of [false, true]) test(denied ? "stdio policy deny prevents notify_channel dispatch" : "stdio offers notify_channel by default and a notice wakes an unattached channel", async () => {
   const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -112,14 +112,19 @@ test("stdio offers notify_channel by default and a notice wakes an unattached ch
   try {
     await harness.client.initialize();
     await harness.client.createSession({ sessionId: "notice", participants: [], channels: {}, config: {
-      version: 1, system: "test", model: { protocol: "scripted", script }, defaultPolicy: "allow",
+      version: 1, system: "test", model: { protocol: "scripted", script }, defaultPolicy: denied ? "receiver" : "allow",
       policies: { allow: { fallback: "allow", tools: {} }, receiver: { fallback: "allow", tools: { notify_channel: "deny" } } },
     }, channelChanges: [{ channel: "bob", changeId: "1", policy: "receiver" }] });
     await harness.client.push({ channel: "alice", item: { id: "wake", kind: "user_message", sender: "alice", content: [{ type: "text", text: "notify Bob" }] } });
-    for (let i = 0; i < 300 && !events.some(event => event.channel === "bob" && event.event.type === "turn_ended"); i++)
+    const target = denied ? "alice" : "bob";
+    for (let i = 0; i < 300 && !events.some(event => event.channel === target && event.event.type === "turn_ended"); i++)
       await new Promise(resolve => setTimeout(resolve, 10));
-    expect(events.some(event => event.channel === "bob" && event.event.type === "turn_ended" && event.event.outcome === "completed")).toBe(true);
-    expect((await harness.client.timeline()).events).toContainEqual(expect.objectContaining({
+    expect(events.some(event => event.channel === target && event.event.type === "turn_ended" && event.event.outcome === "completed")).toBe(true);
+    const activity = (await harness.client.timeline()).events;
+    if (denied) {
+      expect(activity.some(event => event.kind === "channel_notice")).toBe(false);
+      expect(events.some(({ event }) => event.type === "tool_call" && event.status === "started")).toBe(false);
+    } else expect(activity).toContainEqual(expect.objectContaining({
       kind: "channel_notice", sourceChannel: "alice", channel: "bob", actor: { kind: "agent", id: "alice" },
     }));
   } finally { await harness.close(); rmSync(directory, { recursive: true, force: true }); }

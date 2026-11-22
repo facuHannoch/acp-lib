@@ -462,3 +462,7 @@ test("a large result is stored by its producer; only the channel that produced i
     expect(e.results().at(-1)).toMatchObject({ ok: false, code: "result_too_large", outcome: { status: "failed" } });
   } finally { e.close(); }
 });
+
+test("catalog registrations cannot shadow notify_channel", () => {
+  expect(() => parseCatalog({ catalog: [tool("notify_channel", "fixed")] }, [])).toThrow(CatalogError);
+});

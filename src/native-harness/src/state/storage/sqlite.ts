@@ -109,7 +109,28 @@ const installReadIndexes = (db: Database) => db.exec(`
   CREATE INDEX IF NOT EXISTS turns_by_channel ON turns(channel_id, turn_id);
   CREATE INDEX IF NOT EXISTS entries_conversation ON entries(channel_id, seq) WHERE ${CHAT};
   CREATE INDEX IF NOT EXISTS entries_replies ON entries(turn_id, seq) WHERE ${REPLY};
+  CREATE TABLE IF NOT EXISTS entry_reply_ids (seq INTEGER PRIMARY KEY REFERENCES entries(seq), message_id TEXT NOT NULL);
+  INSERT OR IGNORE INTO meta VALUES ('replyIdsDirty', '1');
+  CREATE TRIGGER IF NOT EXISTS reply_ids_legacy_insert AFTER INSERT ON meta WHEN NEW.key = 'modelState'
+    BEGIN UPDATE meta SET value = '1' WHERE key = 'replyIdsDirty'; END;
+  CREATE TRIGGER IF NOT EXISTS reply_ids_legacy_update AFTER UPDATE OF value ON meta WHEN NEW.key = 'modelState'
+    BEGIN UPDATE meta SET value = '1' WHERE key = 'replyIdsDirty'; END;
 `);
+
+// Older writers keep the blob authoritative. Rebuild only on upgrade or when
+// one of those writers changed it, under the same transaction as recovery.
+function refreshReplyIds(db: Database): void {
+  installReadIndexes(db);
+  const dirty = db.prepare("SELECT 1 FROM meta WHERE key = 'replyIdsDirty' AND value = '1'");
+  try { if (!dirty.get()) return; } finally { dirty.finalize(); }
+  db.exec(`
+    DELETE FROM entry_reply_ids;
+    INSERT INTO entry_reply_ids
+      SELECT CAST(ids.key AS INTEGER), ids.value FROM meta, json_each(meta.value, '$.entryIds') AS ids
+      WHERE meta.key = 'modelState';
+    UPDATE meta SET value = '0' WHERE key = 'replyIdsDirty';
+  `);
+}
 
 function sqliteTables(db: Database): Tables & { dispose(): void } {
   // Prepared on first use: statements for tables a format 2 file does not have
@@ -134,7 +155,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       UNION SELECT inherited.value FROM items, json_each(items.policy_metadata, '$.inherited') AS inherited
     `),
 
-    meta: q("SELECT key, value FROM meta"), modelState: q("SELECT value FROM meta WHERE key = 'modelState'"), revoked: q("SELECT value FROM meta WHERE key = 'revokedTools'"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+    meta: q(`SELECT key, value FROM meta WHERE key IN (${KEYS.map(() => "?").join(", ")})`), modelState: q("SELECT value FROM meta WHERE key = 'modelState'"), revoked: q("SELECT value FROM meta WHERE key = 'revokedTools'"), config: q("SELECT value FROM meta WHERE key = 'importedConfig'"), setMeta: q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
     channel: q("SELECT * FROM channels WHERE channel_id = ?"),
     addChannel: q("INSERT OR IGNORE INTO channels (channel_id, position) VALUES (?, (SELECT COUNT(*) FROM channels))"),
     putChannel: q("UPDATE channels SET display_name = ?, lifecycle = ?, policy = ? WHERE channel_id = ?"),
@@ -151,6 +172,8 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     putTurn: q(`INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(turn_id) DO UPDATE SET status = excluded.status, state = excluded.state`),
     live: q("SELECT * FROM turns WHERE channel_id = ? AND status IN ('running','suspended')"), turns: q("SELECT * FROM turns ORDER BY turn_id"),
+    markReplyIdsClean: q("UPDATE meta SET value = '0' WHERE key = 'replyIdsDirty'"),
+    addReplyId: q("INSERT INTO entry_reply_ids VALUES (?, ?)"),
     addEntry: q("INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
     entriesOf: q("SELECT * FROM entries WHERE turn_id = ? ORDER BY seq"), entries: q("SELECT * FROM entries ORDER BY seq"),
   };
@@ -164,7 +187,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       const order = older ? "DESC" : "ASC";
       const read = (filter: string, params: (string | number)[]) => {
         const statement = db.prepare<Row, (string | number)[]>(`
-        SELECT *, json_extract((SELECT value FROM meta WHERE key = 'modelState'), '$.entryIds."' || seq || '"') AS reply_id FROM entries WHERE (${filter}) AND seq <= ? AND seq ${older ? "<" : ">"} ?
+        SELECT *, (SELECT message_id FROM entry_reply_ids WHERE entry_reply_ids.seq = entries.seq) AS reply_id FROM entries WHERE (${filter}) AND seq <= ? AND seq ${older ? "<" : ">"} ?
         ORDER BY seq ${order} LIMIT ?
       `);
         try { return statement.all(...params, range.throughRevision, range.exclusiveSeq ?? (older ? Number.MAX_SAFE_INTEGER : 0), range.limit + 1).map(entry); } finally { statement.finalize(); }
@@ -176,7 +199,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     },
     dispose() { for (const finalize of finalizers.splice(0)) finalize(); },
     getModelState() { const row = s.modelState.get(); return row ? JSON.parse(row.value) : undefined; },
-    setModelState(state) { s.setMeta.run("modelState", JSON.stringify(state)); },
+    setModelState(state) { s.setMeta.run("modelState", JSON.stringify(state)); s.markReplyIdsClean.run(); },
     // A meta key, like the model state: no schema or format change (decision 0021).
     getRevokedTools() { const row = s.revoked.get(); return row ? JSON.parse(row.value) : undefined; },
     setRevokedTools(names) { s.setMeta.run("revokedTools", JSON.stringify(names)); },
@@ -192,7 +215,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     },
     getMeta() {
       const meta: Row = {};
-      for (const row of s.meta.all()) meta[row.key] = NUMERIC.includes(row.key) ? Number(row.value) : row.value;
+      for (const row of s.meta.all(...KEYS)) meta[row.key] = NUMERIC.includes(row.key) ? Number(row.value) : row.value;
       return meta as Meta;
     },
     setMeta(meta) { for (const key of KEYS) s.setMeta.run(key, String(meta[key])); },
@@ -219,7 +242,8 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     policyNames: () => s.policyNames.all().map(row => String(row.name)),
 
     addEntry(e) { s.addEntry.run(e.seq, e.at, e.channelId, e.turnId, e.from, e.kind ?? null, e.sourceChannelId ?? null,
-      e.itemId ?? null, JSON.stringify(e.message)); },
+      e.itemId ?? null, JSON.stringify(e.message));
+      if (e.messageId !== undefined) s.addReplyId.run(e.seq, e.messageId); },
     entriesOfTurn: turnId => s.entriesOf.all(turnId).map(entry),
     entries: () => s.entries.all().map(entry),
   };
@@ -238,7 +262,7 @@ function publish(path: string, meta: Meta, fill?: (tables: Tables) => void): voi
       db.exec(SCHEMA);
       installReadIndexes(db);
       const tables = sqliteTables(db);
-      try { tables.transaction(() => { tables.setMeta(meta); fill?.(tables); }); }
+      try { tables.transaction(() => { tables.setMeta(meta); fill?.(tables); refreshReplyIds(db); }); }
       finally { tables.dispose(); }
     } finally { db.close(); }
     try { linkSync(draft, path); }
@@ -309,15 +333,15 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           try {
             const view = sqliteTables(clone);
             view.transaction(() => { if (meta.formatVersion === 2) upgradeFromFormat2(clone); upgradeFromFormat3(clone);
-              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); installReadIndexes(clone); });
+              view.setMeta({ ...view.getMeta(), formatVersion: 4 }); refreshReplyIds(clone); });
             return { ok: true, value: createEngine(view, identity.compatibilityKey, () => { view.dispose(); clone.close(true); owner.close(true); }, config, true), revision: meta.revision };
           } catch (error) { clone.close(); throw error; }
         }
         const tables = sqliteTables(db), owner = db;
         tables.transaction(() => {
+          refreshReplyIds(owner);
           if (meta.formatVersion < 4 || referencesCompatible(tables, config))
             recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); } : undefined);
-          installReadIndexes(owner);
         });
         return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config), revision: tables.getMeta().revision };
       } catch (error) {

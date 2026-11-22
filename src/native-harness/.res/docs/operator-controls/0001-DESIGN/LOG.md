@@ -60,3 +60,39 @@ Gate 2 submission is the revision containing this entry, based on checkpoint
 files), and root `bun test ./test/native` (67 pass, 0 fail, 6423 assertions,
 6 files). The harness run used a 30-second test runner budget. Runtime
 protocol deadlines are unchanged. Independent review is pending.
+
+Clad declined Gate 2 at `07fa2d1e32f8313de98c69d8aa87089d8d87a976`.
+Both typechecks, 331 harness tests, and 67 native tests passed independently.
+The review found that focused reads still transferred the model metadata
+blob, that reply identity used a per-row lookup into that blob, and that
+tracked turns lost their linked items. It also requested a committed query
+plan regression.
+
+The follow-up limits the SQLite scalar metadata query to explicit keys and
+joins reserved reply IDs by their indexed entry sequence. The side table is
+populated transactionally on response commit and import. Open backfills it
+on upgrade or after an older writer changes the original model record. The
+schema version and positional entries INSERT are unchanged. Clean reopen
+skips the model blob when there is no abandoned running turn. Recovery of an
+abandoned running turn still loads the model record to close its attempts.
+
+A SQLite regression observes the actual range SQL and query plans after
+seeding 10,000 model-call records, and verifies that clean reopen, observation,
+reconciliation and paging do not select the model blob. Shared adapter
+conformance now checks tracked turns' linked inputs. The host falls back to
+the status revision for channels it did not observe, and live and paged
+positions share one encoder. The submission store deletes settled entries,
+so startup batches cover outstanding submissions. The mixed workload scale
+checkpoint remains in Gate 4. Tests also check that policy deny prevents
+notify_channel dispatch and that the built-in name cannot be shadowed.
+
+The first broad fix run passed 333 tests with one failure. Fresh SQLite create
+left an owner journal because the reply-ID projection was initialized after
+publication. Initialization now finishes in the draft transaction. Both the
+journal regression and the bounded-read regression passed in isolation.
+
+The Gate 2 follow-up containing this entry passed both package typechecks.
+Serial harness verification (`bun test ./test --timeout 30000`) passed
+334 tests with 3595 assertions across 45 files. Root `bun test ./test/native`
+passed 67 tests with 6423 assertions across 6 files. Both suites had zero
+failures. Independent re-review is pending.

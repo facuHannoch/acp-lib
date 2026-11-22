@@ -194,10 +194,12 @@ export function recover(tables: Tables, upgrade?: () => void): void {
     const meta = tables.getMeta();
     let changed = !!upgrade;
     if (upgrade) meta.formatVersion = 4;
+    let abandonedModel = false;
     if (meta.lifecycle !== "suspended") {
       const kept = (turn: TurnRow) => turn.state.status === "suspended"
         && tables.channel(turn.channelId)?.lifecycle === "suspended";
       const live = tables.liveTurns().filter(turn => !kept(turn));
+      abandonedModel = live.some(turn => turn.state.status === "running");
       for (const turn of live) tables.putTurn({ ...turn, state: { status: "interrupted",
         reason: "The owning process exited before this turn finished", uncertainCallIds: uncertain(tables, turn) } });
       const reopened = tables.channels().filter(channel => channel.lifecycle === "suspending");
@@ -209,7 +211,7 @@ export function recover(tables: Tables, upgrade?: () => void): void {
       for (const entry of tables.entries()) if (entry.message.role === "assistant")
         Object.defineProperty(state.scriptPositions, entry.channelId, { value: (Object.hasOwn(state.scriptPositions, entry.channelId) ? state.scriptPositions[entry.channelId]! : 0) + 1, writable: true, configurable: true, enumerable: true });
       tables.setModelState(state); meta.formatVersion = 5; changed = true;
-    } else {
+    } else if (abandonedModel) {
       const state = tables.getModelState() ?? emptyModelState();
       for (const call of state.calls) if (call.outcome === "running") {
         call.outcome = "interrupted"; call.endedAt = new Date().toISOString();
@@ -400,7 +402,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       }
       if (message.calls.length && turn.state.status === "running" && turn.state.dispatchedCallIds === undefined) tables.putTurn({ ...turn, state: { ...turn.state, dispatchedCallIds: [] } });
       const entry: TimelineEntry = { seq: seq(meta), at: now(), channelId: turn.channelId, turnId: turn.turnId, from: "agent", message };
-      tables.addEntry(entry); state.entryIds[String(entry.seq)] = call.messageId; call.outcome = "succeeded"; call.endedAt = now();
+      tables.addEntry({ ...entry, messageId: call.messageId }); state.entryIds[String(entry.seq)] = call.messageId; call.outcome = "succeeded"; call.endedAt = now();
       attempt.outcome = "succeeded"; attempt.endedAt = call.endedAt; if (!attempt.providerRequestId && requestId) attempt.providerRequestId = requestId;
       tables.setModelState(state); return { ...entry, messageId: call.messageId };
     }),
@@ -736,7 +738,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       });
       const turns = turnIds.flatMap(id => {
         const turn = tables.turn(id);
-        return turn?.channelId === channelId ? [{ ...turn, itemIds: [] }] : [];
+        return turn?.channelId === channelId ? [full(turn)] : [];
       });
       return { items, turns };
     }, true),
