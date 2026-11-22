@@ -47,3 +47,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   tests for merge, stale acknowledgement, rollback visibility, the v16 upgrade and the version allocator across a
   reopen. Full `./test` green, 1,430 in 132 files, 265 s. Offline suspend/resume throws the shared
   `HarnessUnavailableError` today. Sent to clad2a for review.
+- Step 1 review in from clad2a, `3f2a111` ([review](reports/11-22-REVIEW-R1-step1.md)): no blocking findings; their
+  own v16 probe upgrades without loss. `HarnessUnavailableError` covers six offline cases with no code, so it isn't
+  distinguishable enough for decision (d): add a readonly `code` per throw (keeping `instanceof`).
+- **Step 1 gate passed** ([gate](../.plan-execution/status/11-22-GATE-R1-step1.md)): 1,430 in 132 files.
+- Step 2 (host records over the repository) released to cod2a, with the error code.
