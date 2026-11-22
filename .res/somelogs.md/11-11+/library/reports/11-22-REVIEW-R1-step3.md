@@ -136,3 +136,42 @@ never-prompted case.
 ## Not run by me
 
 I didn't run the typecheck or the suites. cod2a's gates stand.
+
+## Follow-up: the resume guard (`64060fa`)
+
+Finding 1 is **resolved**. No blocking findings.
+
+- **Change:**
+  - `host.resumeChannel` now delegates to `NativeChannelChanges.resume`.
+  - That method queues the work on the channel's queue. Inside the job, it reads `store.pendingChange(channel)`
+    through the committed path (wrapped by `protectPendingRetirement` under SQLite). If the newest desire is
+    `retired`, it throws `HarnessClientError("channel_retired")` before any RPC. Otherwise it calls
+    `client.resumeChannel`.
+  - The error is built by `pendingRetirementError` in `errors.ts`.
+  - `suspendChannel` is unchanged, which is fine.
+- **The test is an extended existing one, not a new test**, which is why the count stays at 1,451. The test is "a
+  delete that finds pending work suspends the channel instead…" in `host.test.ts`, and it already runs for both
+  memory and SQLite. After the busy delete it now asserts:
+  - `resumeChannel` rejects `channel_retired`;
+  - no `resumeChannel` RPC was sent;
+  - the retirement intent is unchanged;
+  - the channel is still `suspended` with `waitingForResume` and the same pending work.
+- **It fails on the old code.** I took the `64060fa` tests with `49b5a1c`'s `src`: both variants (memory and SQLite)
+  fail with "Expected promise that rejects / Received promise that resolved". On `64060fa` itself,
+  `host.test.ts` gives 32 pass, 0 fail.
+- **No race with a retirement recorded at the same time.** Retirements and resumes on a channel go through the
+  same per-channel queue, and the check reads committed state:
+  - *Retirement first* (a delete via `deliverCommitted`, or `changeChannel` while running): its job takes the slot
+    synchronously, before its commit. The resume queues behind it and reads after the commit, so it sees
+    `retired` and refuses. If the retirement was already applied and confirmed, the row is gone, but the harness
+    channel is retired, so the RPC itself fails `channel_retired`.
+  - *A delete transaction still open when the resume reads:* the committed read waits on the write queue, so it
+    sees the retirement once it commits, never an uncommitted or rolled-back one.
+  - *Resume first:* it runs before the retirement's job, and the retirement then applies, or suspends the channel
+    if it's busy. That order is consistent.
+  - *Harness stopped:* `this.client()` throws `not_running` before anything is queued (it's an async method, so it
+    rejects), and the intent is untouched. That's the step 2 test.
+- **Nit:** `resume` captures `client` before queueing. If the connection is replaced while the job waits in the
+  queue, the RPC goes to the old client and fails with a transport error instead of being sent on the new one.
+  That's harmless: the caller gets an error, and nothing changes. Resolving the client inside the job would be
+  slightly cleaner.
