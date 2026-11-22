@@ -167,3 +167,6 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   cod2a. For the spec owner: R1's "code as it is" and its steps (3b, the creation transaction, retirement precedence,
   the resume guard), and in "Durable channel intents": `controller_kind`, the kind-switch refusal, schema 17 with the
   repair, the tombstone.
+- Docs in from cod2a, `70ba71a` (changelog and Limitations; docs only). **R1 gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R1-final.md)): two full runs, 1,463 in 132 files. Combined as
+  `pre-alpha` for the user.
