@@ -134,3 +134,10 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   transaction as granted. Left to the orchestrator: the host flush through `channel/notify`, retries after a lost
   acknowledgement or a resume, and a live provider run. Merge order: R1 into alpha before `b53abf2` (it contains R1
   up to `7be9456`).
+- User decision on the orphan-channel gap: persist the conversation's controller kind. New step 3b, assigned to
+  cod2a: `conversations.controller_kind` ('acp' | 'native', null for rows from before), in schema 17 amended in
+  place, set in the creation transaction; delete decides native from it inside its transaction (covering the three
+  cases); a handoff or switch that would change the kind is refused with `UnsupportedError` before any write
+  (switches between ACP adapters unchanged; native has none). A Limitations line for rows from before. cod2a may edit
+  `sqlite-schema.ts` and the conversations repository for this; Cod1a told (re-runs migrations on R1's final
+  revision).
