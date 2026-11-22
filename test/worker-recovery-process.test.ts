@@ -27,7 +27,7 @@ for (const mode of ["produce", "partial"] as const) test(`replacement acp-client
     expect(await producer.exited).not.toBe(0);
 
     // Inspect the disk before starting the replacement. Only the worker
-    // conversation holds result bytes, and no delivery store exists in this proof.
+    // conversation holds result bytes, and the proof creates no delivery records.
     const db = new Database(join(dir, "agent.sqlite"), { readonly: true });
     try {
       const persisted = db.query<{ record_id: string; role: string; status: string; consumer_metadata_json: string | null }, []>(
@@ -41,7 +41,7 @@ for (const mode of ["produce", "partial"] as const) test(`replacement acp-client
       const operation = assignment[0]!.record_id.replace(/:user$/, "");
       expect(persisted.some(record => record.record_id === `${operation}:assistant:1` && record.status === "completed"))
         .toBe(mode === "produce");
-      expect(db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND (name LIKE '%assignment%' OR name LIKE '%notice%')").all()).toEqual([]);
+      expect(db.query("SELECT assignment_id FROM worker_assignments").all()).toEqual([]);
     } finally { db.close(); }
 
     const recover = async (id: string) => {
