@@ -78,3 +78,7 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   write before dispatch). Kept one writer: cod2a adds it on `native-integration-r` before step 3, in its own commit.
   Awaited after the durable `beforePrompt`, before dispatch; a rejection fails the prompt before dispatch through the
   existing path; combined steer runs await each message's hook in order; native awaits it before any push.
+- Granted Cod1a `src/agent/persisted-lifecycle.ts` for one change: `workerDelivery?.recordFinal(...)` in the
+  `afterPrompt` transaction after `persistObservationsInTransaction`, on completed status (it depends on their
+  repository interface). Conditions: transaction-scoped persistence only; a no-op without the repository or for an
+  unbound op; no other edits. R1–R3 stay off that file meanwhile.
