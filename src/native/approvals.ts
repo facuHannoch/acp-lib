@@ -1,7 +1,7 @@
 import { permissionArrival } from "../permissions/arrival.ts";
 import type { ChannelEvent } from "../native-harness/src/client.ts";
 import type { Logger } from "../logger.ts";
-import { cancelledPermission, nativePermissionRequests, type NativePermission, type PermissionResolution } from "../permissions/conversation.ts";
+import { cancelledPermission, nativeConversationStopping, nativePermissionRequests, refuseNativeOnClose, type NativePermission, type PermissionResolution } from "../permissions/conversation.ts";
 import { recordingPermissionHandlers } from "../permissions/policy.ts";
 import type { PermissionRequest, PromptHandlers } from "../types.ts";
 import type { NativeApprovalRequest, NativeApprovalResponder } from "./host.ts";
@@ -138,10 +138,17 @@ export async function runNativeApproval(
   nativePermissionRequests.set(request, ticket);
   const handler = handlers.onPermissionRequest;
   const recording = handler && recordingPermissionHandlers.has(handler) ? handler : undefined;
+  const close = () => refuseNativeOnClose(ticket, cancelled.reason === nativeConversationStopping, () => log);
+  if (!recording) {
+    if (cancelled.aborted) close();
+    else cancelled.addEventListener("abort", close, { once: true });
+  }
   try {
     if (recording) {
       await recording(request, cancelled);
-    } else if (!ticket.hostHandled && !cancelled.aborted) {
+    } else if (ticket.hostHandled) {
+      await ticket.resolution;
+    } else if (!cancelled.aborted) {
       const signal = AbortSignal.any([cancelled, ticket.signal]);
       if (signal.aborted) return;
       const answer = handler ? await Promise.race([
@@ -155,5 +162,7 @@ export async function runNativeApproval(
     if (!ticket.hostHandled && !cancelled.aborted && !recording) {
       await ticket.answer({ outcome: deny, by: "handler" }).catch(() => false);
     }
+  } finally {
+    cancelled.removeEventListener("abort", close);
   }
 }

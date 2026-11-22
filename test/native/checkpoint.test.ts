@@ -70,7 +70,7 @@ describe("the first end-to-end checkpoint", () => {
     expect(rig.effects()).toEqual(["ran"]);
   }, 30_000);
 
-  for (const action of ["responder", "external denial", "forceStop", "stop", "disconnect"] as const) {
+  for (const action of ["responder", "external denial", "detach", "forceStop", "stop", "disconnect"] as const) {
     test(`native permission events settle once on ${action}`, async () => {
       const rig = await rigWith({ defaultPolicy: "ask", policies: { ask: { fallback: "allow", tools: { record: "ask" } } } });
       const trace = traceStdio(rig);
@@ -106,6 +106,17 @@ describe("the first end-to-end checkpoint", () => {
         const harnessId = await handled.promise;
         if (action === "external denial") {
           expect(await agent.nativeHarness!.respondApproval(harnessId, "deny")).toBe(true);
+        } else if (action === "detach") {
+          const client = trace.children.at(-1)!.client;
+          const handle = await conversation.attachObservation();
+          const denied = waitForChannelEvent(client,
+            ({ event }) => event.type === "approval_closed" && event.requestId === harnessId && event.reason === "approval_denied",
+            "native approval denied after local detach");
+          const ended = waitForChannelEvent(client,
+            ({ channel, event }) => channel === conversation.id && event.type === "turn_ended", "detached turn ended");
+          handle.dispose();
+          await Promise.all([denied, ended]);
+          await conversation.attachObservation();
         } else if (action === "forceStop") {
           await conversation.connection.forceStop();
         } else if (action === "stop") {
@@ -124,6 +135,7 @@ describe("the first end-to-end checkpoint", () => {
       const bridgeEvents = events.filter(event => event.kind.startsWith("permission_") && event.id === request.id);
       expect(bridgeEvents).toHaveLength(2);
       expect(rig.effects()).toEqual(action === "responder" ? ["effect"] : []);
+      expect(trace.methods.filter(method => method === "respondApproval")).toHaveLength(action === "disconnect" ? 0 : 1);
     }, 30_000);
   }
 

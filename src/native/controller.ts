@@ -1,4 +1,4 @@
-import { nativeProviderTurnEnded } from "../permissions/conversation.ts";
+import { nativeConversationStopping, nativeProviderTurnEnded, refuseNativeOnClose } from "../permissions/conversation.ts";
 import { runNativeApproval } from "./approvals.ts";
 import { recordingPermissionHandlers } from "../permissions/policy.ts";
 /**
@@ -143,6 +143,7 @@ export class NativeController implements ConversationController, ChannelPort {
   /** The conversation is done with its channel for now. The shared process keeps running for the others. */
   async stop(): Promise<void> {
     if (this.#stopped) return;
+    this.#closeAttachmentApprovals(true);
     for (const turn of [...this.#turns.values()].filter(turn => !turn.ended && !turn.released)) {
       turn.cancelRequested = true;
       await this.#host.interrupt(this.#channel, turn.harnessId, "interrupted by the conversation");
@@ -159,7 +160,7 @@ export class NativeController implements ConversationController, ChannelPort {
   }
 
   disposeAttachment(): void {
-    this.#attachmentApprovals.abort();
+    this.#closeAttachmentApprovals();
     this.#attachmentApprovals = new AbortController();
     this.#attachment = null;
     this.#attachmentHandle = undefined;
@@ -168,6 +169,17 @@ export class NativeController implements ConversationController, ChannelPort {
     this.#unsubscribeHost?.();
     this.#unsubscribeHost = null;
     this.#notifyConnection();
+  }
+
+  #closeAttachmentApprovals(stopping = false): void {
+    this.#attachmentApprovals.abort(stopping ? nativeConversationStopping : undefined);
+    for (const turn of this.#turns.values()) this.#refuseHeldApprovals(turn, stopping);
+  }
+
+  #refuseHeldApprovals(turn: Turn, stopping = false): void {
+    for (const event of turn.held) if (event.type === "approval_requested") {
+      refuseNativeOnClose(this.#host.approvalFor(event), stopping, () => this.#log);
+    }
   }
 
   /** True unless this conversation stopped or the host gave up: a stopped process is started by the next work. */
@@ -449,7 +461,7 @@ export class NativeController implements ConversationController, ChannelPort {
       // Events are applied one at a time, in order: a message fetched by reference must not be
       // overtaken by the events behind it.
       let chain: Promise<void> = Promise.resolve();
-      const apply = async (event: TurnScoped): Promise<void> => {
+      const apply = async (event: TurnScoped, attachment: AbortSignal): Promise<void> => {
         switch (event.type) {
           case "text_delta":
             text(event.text, event.messageId, !drafts.has(event.messageId));
@@ -479,7 +491,7 @@ export class NativeController implements ConversationController, ChannelPort {
             if (turn.approvals.has(event.requestId)) return;
             turn.approvals.add(event.requestId);
             const approval = this.#approve(event, handlers,
-              AbortSignal.any([approvals.signal, this.#attachmentApprovals.signal]), signal);
+              AbortSignal.any([approvals.signal, attachment]), signal);
             if (recordingPermissionHandlers.has(handlers.onPermissionRequest!)) {
               approvalWork.add(approval);
               void approval.then(() => approvalWork.delete(approval));
@@ -505,7 +517,8 @@ export class NativeController implements ConversationController, ChannelPort {
         }
       };
       turn.sink = (event) => {
-        chain = chain.then(() => (settled ? undefined : apply(event))).catch((error) => {
+        const attachment = this.#attachmentApprovals.signal;
+        chain = chain.then(() => (settled ? undefined : apply(event, attachment))).catch((error) => {
           this.#log.warn("native_turn_event_failed", { turnId: turn.id, type: event.type, error: String(error) });
           // A reply that cannot be read is a failed turn for the host, never a silently shorter one.
           if (event.type === "message_completed") finish(() => reject(error));
@@ -545,6 +558,7 @@ export class NativeController implements ConversationController, ChannelPort {
     const turn = this.#turns.get(turnId);
     if (!turn || turn.released || turn.sink) return;
     turn.released = true;
+    this.#refuseHeldApprovals(turn);
     turn.held = [];
     if (turn.ended) this.#turns.delete(turnId);
   }
@@ -570,10 +584,11 @@ export class NativeController implements ConversationController, ChannelPort {
 
   #release(error: Error, interrupt: boolean): void {
     for (const turn of [...this.#turns.values()]) {
-      if (interrupt && !turn.ended) this.#interrupt(turn);
       turn.released = true;
+      this.#refuseHeldApprovals(turn);
       turn.held = [];
       turn.fail?.(error);
+      if (interrupt && !turn.ended) this.#interrupt(turn);
       if (turn.ended) this.#turns.delete(turn.id);
     }
   }

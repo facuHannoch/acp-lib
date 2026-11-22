@@ -40,12 +40,20 @@ export interface NativePermission {
 }
 
 export const nativeProviderTurnEnded = Symbol("native provider turn ended");
+export const nativeConversationStopping = Symbol("native conversation stopping");
+
+export function refuseNativeOnClose(native: NativePermission | undefined, stopping: boolean, log: () => Logger): void {
+  if (!native || native.hasWireOutcome || (native.hostHandled && !stopping)) return;
+  void native.answer(cancelledPermission).catch(error =>
+    log().warn("native_approval_local_refusal_failed", { error: String(error) }));
+}
 
 export const nativePermissionRequests = new WeakMap<PermissionRequest, NativePermission>();
 
 interface PermissionEntry {
   readonly turnId: string;
   close(resolution: PermissionResolution): void;
+  closeLocally(stopping?: boolean): void;
   answer?(optionId: string): Promise<boolean>;
 }
 
@@ -59,12 +67,12 @@ export class ConversationPermissions {
   ) {}
 
   end(turnId: string): void {
-    for (const entry of this.pending.values()) if (entry.turnId === turnId) entry.close(cancelledPermission);
+    for (const entry of this.pending.values()) if (entry.turnId === turnId) entry.closeLocally();
   }
 
   stop(): void {
     this.stopped = true;
-    for (const entry of this.pending.values()) entry.close(cancelledPermission);
+    for (const entry of this.pending.values()) entry.closeLocally(true);
   }
 
   async answer(id: string, optionId: string): Promise<{ accepted: boolean }> {
@@ -86,13 +94,16 @@ export class ConversationPermissions {
     signal?: AbortSignal,
     recordRequested?: () => Promise<void>,
   ): Promise<PermissionResolution> {
-    if (this.stopped || signal?.aborted) return Promise.resolve(cancelledPermission);
     const native = nativePermissionRequests.get(request);
+    if (this.stopped || signal?.aborted) {
+      refuseNativeOnClose(native, this.stopped || signal?.reason === nativeConversationStopping, this.log);
+      return Promise.resolve(cancelledPermission);
+    }
     const id = crypto.randomUUID();
     const handlerAbort = new AbortController();
     const abort = () => {
       if (signal?.reason === nativeProviderTurnEnded && native?.hasWireOutcome) return;
-      entry.close(cancelledPermission);
+      entry.closeLocally(signal?.reason === nativeConversationStopping);
     };
     const handler = consumer?.onPermissionRequest;
     const refuse = (by: PermissionResolutionSource): PermissionResolution =>
@@ -116,6 +127,11 @@ export class ConversationPermissions {
     const result = new Promise<PermissionResolution>(accept => { resolve = accept; });
     const entry: PermissionEntry = {
       turnId,
+      closeLocally: (stopping = false) => {
+        if (!this.pending.has(id)) return;
+        entry.close(cancelledPermission);
+        refuseNativeOnClose(native, stopping, this.log);
+      },
       close: resolution => {
         if (!this.pending.delete(id)) return;
         signal?.removeEventListener("abort", abort);

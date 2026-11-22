@@ -238,6 +238,15 @@ describe("approvals", () => {
   const request = (turnId: string, requestId: string): Extract<ChannelEvent["event"], { type: "approval_requested" }> =>
     ({ type: "approval_requested", requestId, channel: "c1", turnId, toolCallId: "call-1", tool: "record", arguments: "{\"text\":\"x\"}" });
 
+  test("detaching denies an approval held before the prepared turn starts", async () => {
+    const { controller, emit, calls } = standIn();
+    const attachment = await controller.attachObservation();
+    emit({ type: "turn_started", turnId: "1", items: [] });
+    emit(request("1", "req-1"));
+    attachment.dispose();
+    expect(calls).toEqual(["approval:req-1:deny"]);
+  });
+
   test("the pending call goes to the turn's permission handler and is answered once, by request id", async () => {
     const { controller, emit, calls } = standIn();
     await controller.start();
