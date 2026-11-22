@@ -455,8 +455,9 @@ Read on `beta` 2026-11-13; line numbers move once the controller-interface and i
 - **Out-of-band messages:** `src/out-of-band-messages.ts` (`pendingOutOfBandMessages`, `composeProviderParts`):
   the ACP half of delivery.
 - **Record kinds** (`src/persistence/records.ts:507`): `header`, `operation`, `reasoning`, `activity`,
-  `configuration`, `permission`, `transition`, `metering_reference`, `lifecycle`, `cancellation`. There is no
-  `agent_action` kind, and v1 adds none (decided in review 2).
+  `configuration`, `permission`, `transition`, `metering_reference`, `lifecycle`, `cancellation`. The canonical Agent
+  kinds in `src/persistence/backend.ts` also include `agent_action` (`AgentActionRecord`); v1 emits no delegation
+  records (decided in review 2).
 - **Persistence:** optional repositories with capability flags (`src/persistence/backend.ts`), as `channels?`.
 
 ### Brief G: grounding
@@ -477,9 +478,10 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 
 1. **The `workers?` repository** with `capabilities.workers`, its SQLite implementation (schema 19, upgrade from 18,
    tested on a version-18 database and on the chain from 16); the orchestrator refused at `Agent` construction on a
-   backend without `capabilities.workers` **or `capabilities.workerDelivery`**. It holds the workers rows;
+   backend without `capabilities.workers` **or `capabilities.workerDelivery`**, and on an `Agent` whose message
+   capture isn't `content` (a worker's final text must be recoverable for its result). It holds the workers rows;
    assignments, results and staged notices are `workerDelivery?`'s. **Gate:** suite green; the upgrade tests; the
-   refusal for each missing capability.
+   refusal for each missing capability and for a lower capture setting.
 2. **The worker marker:** worker conversations created with `role: "worker"`; identity `load`, `update` and member
    registration skip them; `agent.conversations.list()` shows the role. **Gate:** a worker's records never reach the
    identity runtime; its prompts get no preamble.
@@ -510,7 +512,8 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 
 1. **The handler** passed with each prompt to a worker: the level from the giving conversation's `worker:` rules
    (integration R2's matcher); allow and deny answered at once; ask me as `permission_requested` on the giving
-   conversation, marked with the worker, through a forwarding entry on the conversation's permission handling that O4
+   conversation, marked with the worker (`permission_requested` gains a `source` mark, and `turnId` is optional for a
+   forwarded request), through a forwarding entry on the conversation's permission handling that O4
    adds (R3 emits events only for a conversation's own turns, so this is a small extension of it: a pending request
    with a source mark and a resolver that answers the worker's request); a giving conversation that doesn't answer
    permissions has the ask refused at once. **Gate:** each level; the timeout; a headless giving conversation.

@@ -56,3 +56,14 @@ edit to `src/agent-session.ts`.
   callback. `agent_action` records exist in the code (the spec's absence claim is wrong; v1 still adds none). O4
   needs one small reviewed exception to the no-edit rule on `agent-session.ts` (a forwarding delegate beside
   `answerPermission`).
+- Brief G review in from clad2a, `68bad97` ([review](reports/11-22-REVIEW-OG.md)): accurate; **nothing blocks O1**.
+  Needs decisions before O3a: (1) `agent-session.ts` edit for O4: needed (the permission coordinator is a private
+  field); the smallest form adds no lines (one constructor line passes `this` as a registry key; a WeakMap and a
+  `forwardPermission(conversation, …)` in `permissions/conversation.ts`), its own reviewed commit; (2) steer
+  successor correlation (one assignment spans a steer chain, one final notice), explicit-stop notice suppression and
+  the redirect notice to the previous destination, none of which the worker delivery repository supports (blocks O3a
+  and O5a; ownership to decide); (3) an ACP destination's delivery has no delivered mark, so it stays pending: either
+  a best-effort ACP half, or the ACP half calls `stage` and `transitionDelivery` itself (clad2a recommends the
+  latter). Also: read-only discovery (unstaged or pending assignments) is a missing Gate 3 deliverable. Spec
+  corrections applied: the `agent_action` claim; message capture `content` required for the orchestrator;
+  `permission_requested` gains a `source` mark and an optional `turnId` for forwarded requests.
