@@ -39,3 +39,9 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   operation-lifecycle failures, run 2 one checkpointing/strategy failure, run 3 green (1,402 in 131 files). Four new
   error notes for intermittent failures. No fixes. Sent to clad2a for review, with the question whether any failure
   is a real race.
+- A2 review in from clad2a, `b1d4a33` ([review](reports/11-22-REVIEW-A2-verify.md)): no blocking findings; three
+  spec wording fixes; no race in `src/` behind the intermittent failures (load timeouts, and a wall-clock jump in the
+  checkpoint test); the three affected files 45/45 four times.
+- **A2 gate passed** ([gate](../.plan-execution/status/11-22-GATE-A2-verify.md)): full `./test` green on the first
+  run, 1,402 in 131 files, 200 s.
+- B1 assigned to cod2a.
