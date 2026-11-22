@@ -245,3 +245,37 @@ subprocess permissions. The initial root run exposed the original
 feasibility assertion that the assignment table must not exist; the
 corrected test checks that the table contains no rows. Independent
 implementation review is pending.
+
+## Worker repository closure
+
+Clad approved the repository and lifecycle gate at
+`b53abf2cf04f7848921dab59be74e26cb08a2f3c`, with runtime at
+`59e75545a02351ba0769d56f4d8be9a243c7d551`. Independent verification on
+a clean detached checkout passed both typechecks, the full root suite
+(1457/0), the full harness suite (360/0), and three consecutive focused
+worker runs (9/0 each). This closes the repository gate under the contract
+approved through `57769e522bf76e5945d840273fa7dbe78dcf3a62`.
+
+The feasibility proof established the saved-record boundary. The
+production gate added indexed causal correlation, a binding checked
+at ACP prompt receipt, and terminal settlement with safe reasons
+and the folded policy union. The two SIGKILL cases exercised the actual
+Agent and SQLite path with deterministic ACP peers. No live provider
+was exercised.
+
+The exclusive owner lock prevents a replacement from staging uncertainty
+while the previous owner can still finalize. The final pointer commits
+with the conversation records, and staging rechecks it in a write
+transaction. The tests cover both crash sides and immutability after
+late evidence. They do not race competing finalization and staging
+transactions directly.
+
+Worker configurations that need exact result text must retain assistant
+message content. The process tests enable content capture. With capture
+disabled or redacted, the saved record may lack the result text, and
+this gate does not verify exact recovery in that mode.
+
+Stable retry was verified at the repository boundary. The orchestrator
+integration gate still owns host flushing through channel/notify,
+lost wire acknowledgements, and retries after resume or earlier channel
+changes. Haurness-l coordinates integration and merge order.
