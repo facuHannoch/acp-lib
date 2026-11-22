@@ -88,9 +88,13 @@ preserving its original provenance. Each assignment gets its own outcome
 and notice. A successful folded turn supplies the full shared result to
 each binding, with its own destination and the shared policy restrictions.
 
-A terminal failure or interruption under the current owner stages an
-uncertainty outcome and stable notice per affected assignment in the
-same transaction that records the terminal operation. Use causal message
+A terminal failure or interruption observed by the current owner stages a
+`failed` outcome and stable notice per affected assignment in the same
+transaction that persists the terminal lifecycle records. The notice
+identifies the assignment and worker and says the worker did not complete
+the assignment. It does not claim the worker had no effects. Explicit
+cancellation uses this same outcome. Reserve uncertainty for abandoned
+work with no recoverable final result or committed failure. Use causal message
 IDs to find the bindings and compute the same shared policy union. Failure
 attaches no final record pointer. If that transaction never commits, the
 replacement owner resolves each abandoned binding independently.
@@ -127,7 +131,7 @@ A redirect alone adds no contributor. Staging freezes the union, including
 the original names, and identifies the worker as source. The durable result remains
 inspectable after any delivery outcome.
 
-Both result and uncertainty notices start in `pending`. Flush them through
+Result, failure and uncertainty notices start in `pending`. Flush them through
 the owning host after earlier channel changes. Suspension, an unresolved
 change, or a lost acknowledgement leaves the notice pending. Open, resume
 and change confirmation schedule eligible pending retries with the original

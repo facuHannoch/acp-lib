@@ -189,3 +189,10 @@ terminal uncertainty staging for failed or interrupted operations under
 the live owner, and typed causal message correlation. Root typecheck
 reports the expected contract-first errors in existing consumers until
 the repository and both lifecycle hooks are updated.
+
+Haurness-l confirmed that folded notices carry the complete causal policy
+union. The live terminal outcome is failed, including explicit
+cancellation, with a notice stating that the worker did not complete the
+assignment. Abandoned work without reliable final evidence is uncertain.
+The failure hook uses causal message IDs in the transaction that records
+the terminal operation. Core coordination covers this lifecycle seam.
