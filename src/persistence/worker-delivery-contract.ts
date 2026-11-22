@@ -10,9 +10,15 @@ export interface WorkerAssignmentBinding {
   readonly contributingPolicyNames: readonly string[];
 }
 
+export type WorkerAssignmentFailure = {
+  readonly kind: "failed" | "interrupted";
+  readonly reason: string;
+  readonly possiblePartialEffects: boolean;
+};
+
 export type WorkerAssignmentOutcome =
   | { readonly kind: "result"; readonly finalRecordId: string; readonly text: string }
-  | { readonly kind: "failed" }
+  | WorkerAssignmentFailure
   | { readonly kind: "uncertain" };
 
 export type WorkerDeliveryState = "pending" | "delivered" | "blocked_policy" | "failed_destination";
@@ -38,7 +44,9 @@ export interface WorkerDeliveryRepository {
   /** Record completed output in the same transaction as the final conversation records. */
   recordFinal(workerConversationId: string, operationId: string, messageIds: readonly string[]): Promise<void>;
   /** Stage failure for each causal binding inside its failed terminal commit. */
-  recordFailure(workerConversationId: string, operationId: string, messageIds: readonly string[]): Promise<void>;
+  recordFailure(
+    workerConversationId: string, operationId: string, messageIds: readonly string[], failure: WorkerAssignmentFailure,
+  ): Promise<void>;
   readBinding(assignmentId: string): Promise<WorkerAssignmentBinding | undefined>;
   /** Update the destination only before staging. */
   redirect(assignmentId: string, destination: string): Promise<boolean>;

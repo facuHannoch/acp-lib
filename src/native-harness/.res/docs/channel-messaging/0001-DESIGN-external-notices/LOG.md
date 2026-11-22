@@ -196,3 +196,9 @@ cancellation, with a notice stating that the worker did not complete the
 assignment. Abandoned work without reliable final evidence is uncertain.
 The failure hook uses causal message IDs in the transaction that records
 the terminal operation. Core coordination covers this lifecycle seam.
+
+The spec owner refined the observed terminal contract after `06ff532`.
+Failure and interruption now carry distinct kinds, the terminal reason
+and a possible-partial-effects flag. Crash uncertainty remains reserved
+for work without reliable terminal evidence. Independent contract review
+and the reviewed causal hook are still pending.

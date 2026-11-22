@@ -89,12 +89,14 @@ and notice. A successful folded turn supplies the full shared result to
 each binding, with its own destination and the shared policy restrictions.
 
 A terminal failure or interruption observed by the current owner stages a
-`failed` outcome and stable notice per affected assignment in the same
-transaction that persists the terminal lifecycle records. The notice
-identifies the assignment and worker and says the worker did not complete
-the assignment. It does not claim the worker had no effects. Explicit
-cancellation uses this same outcome. Reserve uncertainty for abandoned
-work with no recoverable final result or committed failure. Use causal message
+`failed` or `interrupted` outcome, respectively, with the terminal reason
+and one stable notice per affected assignment. Explicit cancellation is
+interrupted. The notice identifies the assignment and worker, reports the
+known kind and reason, and mentions possible partial effects when tools
+were dispatched or dispatch history cannot rule them out. This outcome
+and notice commit in the transaction that persists terminal lifecycle
+records. Reserve uncertainty for abandoned work without reliable
+terminal evidence. Use causal message
 IDs to find the bindings and compute the same shared policy union. Failure
 attaches no final record pointer. If that transaction never commits, the
 replacement owner resolves each abandoned binding independently.
@@ -131,7 +133,7 @@ A redirect alone adds no contributor. Staging freezes the union, including
 the original names, and identifies the worker as source. The durable result remains
 inspectable after any delivery outcome.
 
-Result, failure and uncertainty notices start in `pending`. Flush them through
+Result, failure, interruption and uncertainty notices start in `pending`. Flush them through
 the owning host after earlier channel changes. Suspension, an unresolved
 change, or a lost acknowledgement leaves the notice pending. Open, resume
 and change confirmation schedule eligible pending retries with the original
@@ -176,3 +178,7 @@ cases on SQLite. Coordinate the type placement and schema with Core.
 Conformance covers folded success and failure, including guest and owner
 assignments with both policies on the owner notice, separate immutable
 notice IDs, and exclusion of bindings outside the operation's causes.
+
+Conformance verifies a live provider failure with its reason, a targeted
+interruption with its reason, and pre-finalization crash uncertainty. Each
+produces exactly one immutable outcome and notice on repeated staging.
