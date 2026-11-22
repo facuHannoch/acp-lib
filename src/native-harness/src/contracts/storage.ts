@@ -54,8 +54,15 @@ export interface StorageIdentity {
 export interface StorageOpenOptions {
   mode: "create" | "open";
   identity: StorageIdentity;
-  /** Scripted owners require the exact model digest before storage recovery.
-   * A missing or different digest on reopen returns incompatible without writes. */
+  /** Opt-in scripted identity check. Create persists identity.compatibilityKey
+   * as scripted-jsonl-v1:<digest>:<systemHash>, with both hashes lowercase
+   * 64-character hexadecimal SHA-256. The digest segment must equal this value.
+   * Under ownership, open matches that segment of the stored key exactly.
+   * Untagged, malformed, or mismatched keys return incompatible without writes,
+   * before format upgrade, recovery, attempt repair, or any reservation.
+   * Existing checkpoint comparison uses the entire key, including systemHash.
+   * Changing only the system preserves open but blocks checkpoint resume.
+   * Callers that omit this option retain the existing behavior. */
   requiredScriptDigest?: string;
   /** Validated policies for this owner; legacy callers use the legacy policy. */
   config?: import("./config-permissions.ts").ManagedConfig;

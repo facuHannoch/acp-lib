@@ -53,3 +53,29 @@ method is added. Contract details are pinned in decision 0023.
 Gate 1 submission passed `bun run typecheck --pretty false` in the root
 and harness package. No loader, playback, storage runtime or fixture
 conversion is in this revision. Independent review is pending.
+
+## Gate 1 review follow-up
+
+Clad declined `779a200f97b5b5c44f19d6be71f13c33cf84acb6` after passing both
+typechecks. This revision pins the boundary evidence and storage check
+ordering, and completes the loader inventory. The exact model-boundary IDs
+are separate from the existing receipt set. Gate 2 will include a golden
+provider request that omits them.
+
+`interfaces/cli/start.ts` (`bun run start --script`) passes the selected
+script into `openDevelopment`. The shared JSONL loader belongs at that
+development assembly point so explicit paths and saved configuration both
+reach one read and validation.
+
+| Remaining harness test user | Script source |
+| --- | --- |
+| approval-gate, model-channel-double, owner-config, tools-catalog | Inline model doubles with placeholder paths. They never open script files. |
+| model-crash, crash, e2e | Checked-in crash and hold fixtures, converted to JSONL. |
+| model-e2e | Checked-in model-e2e and echo fixtures, converted to JSONL. |
+| permissions-e2e | Checked-in approval fixture, converted to JSONL. |
+| persistence, protocol, suspension | Checked-in crash, echo or hold fixture for public tests, plus inline model doubles for direct session tests. |
+| startup-channel-changes | Checked-in hold fixture, converted to JSONL. |
+| session-file | Config path string only, deliberately absent for portability tests. No file is read. |
+
+The contract-only follow-up passed both package typechecks. Independent
+re-review is pending.
