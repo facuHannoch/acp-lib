@@ -170,3 +170,80 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 - Docs in from cod2a, `70ba71a` (changelog and Limitations; docs only). **R1 gate passed**
   ([gate](../.plan-execution/status/11-22-GATE-R1-final.md)): two full runs, 1,463 in 132 files. Combined as
   `pre-alpha` for the user.
+
+### 2026-11-22: R2
+
+- R1 merged into alpha by the user (fast-forward to `a180301`). The three branches continue for R2 from `a180301`.
+- R2 (the permission setting and matcher, ACP side) assigned to cod2a: step 0 grounding first.
+- R2 step 0 in from cod2a, `2619e12` ([report](reports/11-22-REPORT-R2-grounding.md)): every `defaultPermission`
+  line mapped; two fallback paths (the session's recording handler and the raw client's `defaultOutcome`); adapter
+  input evidence (Claude captures, OpenCode and Grok from source); exact normalization; a pure match-to-level API for
+  the orchestrator's `worker:` rules; a neutral request reusable by R3. Behaviour points for the user: native asks
+  leave the ACP setting (removing the old approve opt-in); deny selects `reject_once` (recorded denied, not
+  cancelled); ask refuses at once until R3. Sent to clad2a.
+- R2 grounding review in from clad2a, `29c97db` ([review](reports/11-22-REVIEW-R2-grounding.md)): accurate and
+  complete. Agrees on native outside the ACP setting (an explicit refusal when no handler), deny selecting
+  `reject_once` (A1 snapshots unchanged; `permissions.test.ts` assertions change in their own commit), and ask
+  refusing until R3. Decision needed before step 3: the order of handler and rules (handler-first, as R2's step
+  text implies, vs level-first, as the Permissions design says). Recommends level-first, with an omitted setting
+  meaning `{ default: "ask" }` and `"cancel"` migrating to ask. Steps 1 and 2 released to cod2a (not affected).
+- R2 step 1 in from cod2a, `ccfc32f` (amended from `3453d86`: `tool` omitted when ACP gives neither kind nor input,
+  after an empty field showed in three A1 handler callback snapshots; no snapshot edits); full `./test` 1,464 green.
+  Step 2, `7c8c18e` (the matcher; Grok source pinned); cod2a's full run in progress. Both sent to clad2a. Step 3
+  held for the user's decisions.
+- alpha moved to `d403bf4` (worker delivery merged by haurness-l, on R1). R2 merges with it cleanly (trial merge);
+  cod2a merges alpha after the step 2 gate. The orchestrator's O1 builds on the worker repository and adds no
+  second assignments store.
+- R2 steps 1–2 review in from clad2a, `c994609` ([review](reports/11-22-REVIEW-R2-steps1-2.md)): no blocking
+  findings. The neutral view is additive (`tool` on handler callbacks, never in records; snapshots unchanged);
+  command matching held against 40 of 40 bypass attempts; most restrictive across kind and command. For step 3:
+  validate rule values and key prefixes at config time; document that a `command:` allow can't override a stricter
+  `kind:execute`; a changelog line for `tool`.
+- cod2a merged alpha `29715a3` (`e87907f`), report `ead74b8`. **Steps 1–2 gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R2-steps1-2.md)): 1,484 in 136 files. Step 3 waits on the user.
+- User decisions for R2 step 3: rules first (the level comes from `permissionRule`, then the most restrictive rule,
+  then the default; only ask goes to the prompt's handler); an omitted setting means `{ default: "ask" }`;
+  `"cancel"` → ask, `"approve"` → allow; deny selects `reject_once` on ACP (native: harness `deny`); ask refuses at
+  once until R3; native approvals use only `permissionRule` and the default, never the ACP rules (matching R3's
+  order), with `default: "allow"` documented as also approving native. Step 3 released to cod2a.
+- R2 step 3 in from cod2a: implementation and migration `0ef8da4`, raw ACP permission assertions `43db21a` (their own
+  commit), report `928f865`. Full `./test` 1,488 in 136 files green, A1 snapshots unchanged; `client.ts` 1,077 →
+  1,062, `agent-session.ts` 4,567 → 4,565. Sent to clad2a with the final R2 review.
+- Final R2 review in from clad2a, `677ce63` ([review](reports/11-22-REVIEW-R2-final.md)): complete, every decision
+  implemented, no blocking findings; `43db21a` is broader than the deny assertions (handler precedence and
+  validation tests), consistent with the decisions. **R2 gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R2-final.md)): 1,488 in 136 files.
+
+### 2026-11-22: R3
+
+- R3 (permissions as conversation events, ACP and native) assigned to cod2a, on `928f865`: step 0 grounding first.
+- R3 step 0 in from cod2a, `757e062` ([report](reports/11-22-REPORT-R3-grounding.md)): both native approval routes,
+  replay and close deduplication with attribution, one resolution point on ACP, the config and API wiring, the two
+  R2 notes. Review points: a native `requestedAt` (a first-receipt fallback for older harnesses: does it need a
+  harness wire change?); bounding handlers by the deadline; host responder → `by: "handler"`, force stop and stop →
+  `turn_ended`; the harness's 10-minute timer is armed today, contradicting two spec paragraphs. Sent to clad2a.
+- R3 grounding review in from clad2a, `299eb24` ([review](reports/11-22-REVIEW-R3-grounding.md)): accurate; a native
+  `requestedAt` would be a harness wire change and isn't needed (stamp at host ingress); the 10-minute harness timer
+  confirmed, contradicting the spec's "Nothing waits forever" row (L739) and the Permissions "When nobody will
+  answer" bullet (~L778–782), for the spec owner.
+- User decisions: handlers stay unlimited (the harness's 10 minutes still applies on native); `permissionTimeoutMs`
+  bounds only the consumer wait; an ask nobody can answer is refused at once (`by: "default"`), never falling back to
+  a looser default (replaces the spec's "else the setting's default"). Steps 1–3 released to cod2a.
+- R3 step 1 in from cod2a, `c0fcf62` (the events on ACP and both native routes, one resolution per id, replay
+  deduplication). Review from clad2a, `b6e5b9d`: no blocking findings, exactly one resolved per requested on every
+  path they could reach. **Coordinator gate failed:** full `./test` on a clean copy, 3 deterministic failures in
+  `test/native/controller.test.ts` (the fake host lacks the new `approvalFor`); the focused suites missed it. Fix
+  assigned to cod2a in its own commit; full runs required before each report from now on. clad2a's notes into step
+  2: deny on a local close so the harness gate is released; `expiresAt`; the resolved event a microtask after
+  close; test the harness's `approval_timeout` mapping.
+- R3 step 2 in from cod2a, `fef2020` (answering, the consumer wait from ingress, handlers unbounded, an unattended ask
+  refused even under a default allow; a native answer over real stdio). Only focused tests so far; cod2a reminded
+  of the step 1 test fix and the review notes before step 3 and the full run.
+- R3 complete from cod2a, HEAD `c5b10b0`: the step 1 test fix `8776401` (the stand-in host uses the real ticket
+  helper); `ce5e3d5` (a timed-out refusal reaches the provider while a record write is held); step 3 `c5b10b0`
+  (changelog, spec, [report](reports/11-22-REPORT-R3.md)). Full `./test` on `ce5e3d5`: 1,507 in 137 files green.
+  Sent to clad2a for the final R3 review.
+- Final R3 review in from clad2a, `9039369` (complete; full suite 1,507 green on `c5b10b0`); cod2a's follow-ups
+  `a95f82a` and `fcd6f09`, reviewed in `aad1f10` (resolved). **R3 gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R3-final.md)): 1,509 in 137 files.
+- **R1–R3 complete.** Combined as `pre-alpha` for the user. R4–R6 remain (can run in parallel with the orchestrator).
