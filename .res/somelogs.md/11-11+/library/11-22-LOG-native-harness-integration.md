@@ -90,3 +90,8 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
   barriers really raced in the tests; the timeouts are the machine (timings unchanged against `e55afcf`).
 - **Step 2 gate passed** ([gate](../.plan-execution/status/11-22-GATE-R1-step2.md)).
 - Step 3 (the delete and its intent in one transaction) released to cod2a, on top of `acc6d5d`.
+- `beforeDispatch` review in from clad2a, `0fd1e2e` ([review](reports/11-22-REVIEW-beforeDispatch.md)): **blocking**
+  for Cod1a's keying. Native: the hook gets the message id, but `afterPrompt`'s `operationId` is `native-turn-N`. ACP
+  combined runs pass the first message's id to every hook. Fix assigned to cod2a ahead of step 3: the hook receives
+  its own message id on both paths, and `OwnedPromptCompleted` and `promptFailed` gain `messageIds`. Cod1a told to key
+  by message id (a contract amendment for Clad1a); haurness-l informed.
