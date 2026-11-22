@@ -558,7 +558,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private providerFailedTurnId: string | null = null;
   private readonly ownerLifecycle?: AgentConversationOwnerLifecycle;
   private _participants: ParticipantRef[];
-  private readonly permissions = new ConversationPermissions(event => this.emit(event), () => this.log);
+  private readonly permissions = new ConversationPermissions(event => this.emit(event), () => this.log, this, () => this.controllerDefaults);
   private ownerRecordWrite: Promise<void> = Promise.resolve();
 
   private constructor(

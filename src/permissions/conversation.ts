@@ -1,3 +1,4 @@
+import type { AgentConversationId } from "../agent-ids.ts";
 import type { AgentSessionEvent } from "../agent-conversation-contracts.ts";
 import type { Logger } from "../logger.ts";
 import type { PermissionOutcome, PermissionRequest, PromptHandlers } from "../types.ts";
@@ -13,9 +14,24 @@ export type PermissionResolution = {
   /** ACP can only cancel on the wire if no reject option is offered. */
   readonly refused?: boolean;
 };
+export interface WorkerPermissionSource {
+  readonly kind: "worker";
+  readonly handle: string;
+  readonly conversationId: AgentConversationId;
+}
+
+interface PermissionRequestEventFields {
+  readonly kind: "permission_requested";
+  readonly id: string;
+  readonly tool: PermissionRequest["tool"];
+  readonly title: string | undefined;
+  readonly options: readonly Readonly<PermissionRequest["options"][number]>[];
+  readonly expiresAt?: number;
+}
+
 export type ConversationPermissionEvent =
-  | { kind: "permission_requested"; id: string; turnId: string; tool: PermissionRequest["tool"]; title: string | undefined;
-      options: readonly Readonly<PermissionRequest["options"][number]>[]; expiresAt?: number }
+  | (PermissionRequestEventFields & ({ readonly turnId: string; readonly source?: never }
+    | { readonly turnId?: string; readonly source: WorkerPermissionSource }))
   | { kind: "permission_resolved"; id: string; outcome: "approved" | "denied" | "cancelled"; by: PermissionResolutionSource };
 
 export const cancelledPermission: PermissionResolution = { outcome: { outcome: "cancelled" }, by: "turn_ended" };
@@ -51,10 +67,35 @@ export function refuseNativeOnClose(native: NativePermission | undefined, stoppi
 export const nativePermissionRequests = new WeakMap<PermissionRequest, NativePermission>();
 
 interface PermissionEntry {
-  readonly turnId: string;
+  readonly turnId?: string;
   close(resolution: PermissionResolution): void;
   closeLocally(stopping?: boolean): void;
   answer?(optionId: string): Promise<boolean>;
+}
+
+const forwarding = new WeakMap<object, {
+  readonly coordinator: ConversationPermissions;
+  readonly policy: () => ConversationPermissionConfig;
+}>();
+
+export interface ForwardPermissionOptions {
+  readonly source: WorkerPermissionSource;
+  readonly includeAllowAlways: boolean;
+  readonly signal?: AbortSignal;
+}
+
+export async function forwardPermission(
+  conversation: object | undefined, request: PermissionRequest, options: ForwardPermissionOptions,
+): Promise<PermissionOutcome> {
+  const destination = conversation && forwarding.get(conversation);
+  if (!destination) return selectPermissionOutcome("deny", request.options)!;
+  const { source, signal, includeAllowAlways } = options;
+  const offered = includeAllowAlways ? request : {
+    ...request, options: request.options.filter(option => option.kind !== "allow_always"),
+  };
+  const time = acpPermissionArrivals.get(request);
+  if (time && offered !== request) acpPermissionArrivals.set(offered, time);
+  return (await destination.coordinator.request(undefined, offered, destination.policy(), undefined, signal, undefined, source)).outcome;
 }
 
 export class ConversationPermissions {
@@ -64,7 +105,11 @@ export class ConversationPermissions {
   constructor(
     private readonly emit: (event: AgentSessionEvent) => void,
     private readonly log: () => Logger,
-  ) {}
+    conversation?: object,
+    policy?: () => ConversationPermissionConfig,
+  ) {
+    if (conversation && policy) forwarding.set(conversation, { coordinator: this, policy });
+  }
 
   end(turnId: string): void {
     for (const entry of this.pending.values()) if (entry.turnId === turnId) entry.closeLocally();
@@ -87,12 +132,13 @@ export class ConversationPermissions {
   }
 
   request(
-    turnId: string,
+    turnId: string | undefined,
     request: PermissionRequest,
     policy: ConversationPermissionConfig,
     consumer: PromptHandlers | undefined,
     signal?: AbortSignal,
     recordRequested?: () => Promise<void>,
+    source?: WorkerPermissionSource,
   ): Promise<PermissionResolution> {
     const native = nativePermissionRequests.get(request);
     if (this.stopped || signal?.aborted) {
@@ -109,7 +155,8 @@ export class ConversationPermissions {
     const refuse = (by: PermissionResolutionSource): PermissionResolution =>
       ({ outcome: selectPermissionOutcome("deny", request.options)!, by, refused: true });
     let level: ReturnType<typeof permissionLevel> | undefined;
-    if (!native?.hostHandled && !native?.settled) {
+    if (source) level = "ask";
+    else if (!native?.hostHandled && !native?.settled) {
       try {
         level = permissionLevel(request, policy, Boolean(native));
       } catch (error) {
@@ -194,7 +241,8 @@ export class ConversationPermissions {
     }
 
     this.emit({
-      kind: "permission_requested", id, turnId, tool: request.tool && Object.freeze(structuredClone(request.tool)),
+      kind: "permission_requested", id, ...(source ? { source: Object.freeze({ ...source }) } : { turnId: turnId! }),
+      tool: request.tool && Object.freeze(structuredClone(request.tool)),
       title: request.title, options: offered, ...(waitForConsumer ? { expiresAt: arrival.wallTime + budget } : {}),
     });
 
