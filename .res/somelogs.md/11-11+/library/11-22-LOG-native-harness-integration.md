@@ -209,3 +209,11 @@ All three branches start from alpha at `44bbc25` (spec 1 verification merged on 
 - R2 step 3 in from cod2a: implementation and migration `0ef8da4`, raw ACP permission assertions `43db21a` (their own
   commit), report `928f865`. Full `./test` 1,488 in 136 files green, A1 snapshots unchanged; `client.ts` 1,077 →
   1,062, `agent-session.ts` 4,567 → 4,565. Sent to clad2a with the final R2 review.
+- Final R2 review in from clad2a, `677ce63` ([review](reports/11-22-REVIEW-R2-final.md)): complete, every decision
+  implemented, no blocking findings; `43db21a` is broader than the deny assertions (handler precedence and
+  validation tests), consistent with the decisions. **R2 gate passed**
+  ([gate](../.plan-execution/status/11-22-GATE-R2-final.md)): 1,488 in 136 files.
+
+### 2026-11-22: R3
+
+- R3 (permissions as conversation events, ACP and native) assigned to cod2a, on `928f865`: step 0 grounding first.
