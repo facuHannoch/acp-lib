@@ -65,3 +65,11 @@ into alpha before integration brief R1 starts (decided by the user, 2026-11-22).
   stop only weakly asserted (a probe shows the fake can get a late chunk recorded on the old turn); the fake's
   ended-turn cancel replays as cancelled; stale changelog lines. Sent to clad2a for review.
 - cod2a started the flake fixes.
+- B2 review in from clad2a, `e370f4f` ([review](reports/11-22-REVIEW-B2-verify.md)): no blocking findings. Late
+  output after force stop: the session has no guard of its own, but real controllers never call the old handlers
+  (probe: a flood fixture on a real HarnessController, force-stopped mid-stream five times, 0 chunks after);
+  accepted, the spec should say dropping is the controller's contract. The fake's ended-turn cancel is a test-double
+  bug. The changelog withdrawal bullet is wrong against the code. Both added to cod2a's test/doc batch, with the
+  stale conformance header.
+- B1 and B2 gates held: one combined gate will run on the commit with the fixes (the code under test is otherwise
+  identical to `d11cd18`).
