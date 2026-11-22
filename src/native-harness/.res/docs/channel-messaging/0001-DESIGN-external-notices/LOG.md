@@ -141,3 +141,12 @@ identity from a reply ID or use a test-local lookup shortcut.
 
 Only this log changed. No R1–R3 files, migrations, atomic staging or
 worker delivery implementation are included.
+
+Core-p identified a third option for the spec owner. Persist assignment
+correlation to the Agent-owned ACP worker operation before dispatch and
+recover from the worker's durable records after finalization. This could
+support recovery before notice staging if finalized worker records are
+permitted as the authoritative source. The current gate asks for death
+before any result is saved in the Agent database, so this option needs an
+explicit boundary decision. A death before worker finalization would
+remain an interrupted assignment under that option.
