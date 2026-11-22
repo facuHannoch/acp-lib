@@ -201,7 +201,7 @@ it can send work to an idle worker if both allow it, but guest restrictions prev
 ```ts
 interface Orchestrator {
   open(actor: Actor, input: { text: string; about?: string }): Promise<OpenResult>;
-  send(actor: Actor, handle: string, input: { text: string; about?: string; redirect?: boolean }): Promise<SendResult>;
+  send(actor: Actor, handle: string, input: { text: string; about?: string; redirect?: boolean; assignment?: "new" }): Promise<SendResult>;
   check(actor: Actor, handle: string): Promise<WorkerStatus>;
   stop(actor: Actor, handle: string): Promise<void>;
   drop(actor: Actor, handle: string): Promise<void>;
@@ -244,16 +244,26 @@ owner (agc-1): "The /login page returns 403, fix it"
 ```
 send(w1, text) from conversation X:
 
-  w1 idle ─────────────────────────────────────────► prompt it             → "sent"
-  w1 busy, X gave its running work ────────────────► steer into it         → "steered"
+  w1 idle ─────────────────────────────────────────► prompt it             → "sent" (a new assignment)
+  w1 busy, X gave its running work ────────────────► steer into it         → "steered" (the SAME assignment
+                                                       continues, with the steer's policy names added)
   w1 busy, other work, no redirect ────────────────► nothing sent          → "busy" + about, where, for whom, how long
   w1 busy, other work, redirect: true ─────────────► policy allows?
-                                                       yes → steer; assignment destination and last_conversation = X
-                                                             (the previous conversation gets no notice in v1)
+                                                       yes → steer into the same assignment; its destination
+                                                             and last_conversation = X (X's names added)
                                                        no  → refused
   w1 evicted ──────────────────────────────────────► take a slot, reload, then as above
+
+  assignment: "new" (optional, any busy case above that is allowed):
+                                                       the running assignment ends as interrupted (steered), its
+                                                       notice going to ITS destination; the text starts a NEW
+                                                       assignment (destination X, X's names), with its own result
 ```
 
+- **By default a send continues the running assignment:** a steer doesn't break it, and `redirect` only moves where
+  its result goes (with the redirecting conversation's names added). The agent starts separate tracking only by
+  asking for it with `assignment: "new"`; the tool description says so. A redirect with a new assignment is how
+  another conversation takes a worker over and tells the previous owner (its assignment ends interrupted, steered).
 - Queueing behind another conversation's work is not offered: it suits users rarely and agent-to-agent never.
 - The agent turns "busy" into words for its user ("I'm in the middle of something you asked in our other chat; should
   I drop it?"). Renderers say "another conversation with Bob", never "another agent".
@@ -500,9 +510,10 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 
 **Scope:** steps 1–2.
 
-1. **Busy rules:** steer when the same conversation gave the running work; `busy` with the listing otherwise;
-   `redirect: true` steers, retargets the running assignment (`redirect`), moves `last_conversation` (the previous conversation gets no notice in v1). **Gate:**
-   each case, with two conversations on one worker.
+1. **Busy rules:** steer (the same assignment continues) when the same conversation gave the running work; `busy`
+   with the listing otherwise; `redirect: true` steers into the same assignment, retargets it (`redirect`) and moves
+   `last_conversation`; `assignment: "new"` ends the running assignment as interrupted (steered) and starts a new
+   one. **Gate:** each case, and the combinations, with two conversations on one worker.
 2. **Policy checks:** `use`, `scope`, `redirect` (also gating stop by others and drop), `maxOpen`. **Gate:** a
    refusal for each.
 
@@ -530,7 +541,7 @@ events only for a conversation's own turns). Corrections go to the spec owner be
 
 1. **Assignments:** each delegated `delegate` or `send` reserves its assignment (id = the call's invocation id) in
    `workerDelivery?` before dispatch, through the `beforeDispatch` hook, with the destination and the call's
-   contributing `policyNames`; a steer joins the running assignment (`addContributingPolicies`, and the binding carried to the successor run) and a
+   contributing `policyNames`; a steer joins the running assignment (`addContributingPolicies`, and the binding carried to the successor run; with `assignment: "new"` the awaiting continuation is closed as interrupted, steered, and the new text reserves its own assignment) and a
    redirect retargets it (`redirect`). **Gate:** an assignment exists before the worker's prompt reaches the provider; a steer
    and a redirect each change it; a refused hook sends nothing.
 2. **The delivery port's ACP half** (`src/orchestrator/contracts.ts`): out-of-band messages with a kind and a sender

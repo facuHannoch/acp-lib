@@ -102,3 +102,15 @@ edit to `src/agent-session.ts`.
   messages) must chain `continueAssignment` message by message; name when `closeContinuation` is needed and who calls
   it; the ACP stable-id append is the orchestrator's (O3a, added to the spec). Schema 20 allocated to Cod1a, after
   O1's 19 is in alpha (O1 must merge first).
+- O1 in from cod2a, `bf368b6` ([report](reports/11-22-REPORT-O1.md)); review from clad2a, `73a8852`
+  ([review](reports/11-22-REVIEW-O1.md)): meets the brief, no blocking findings (real v16 and v18 databases upgrade to 19;
+  6 racing opens with limit 2 gave exactly 2). **O1 gate passed** ([gate](../.plan-execution/status/11-22-GATE-O1.md)):
+  1,521 in 140 files. Carry-over: zombie row for a directly deleted worker (O5a), a failed reload evicting another
+  worker (O2), the direct-open limit bypass (Limitations), restore three comments in `conversation-manager.ts`, a
+  changelog line for `AgentEvent`.
+- **Correction to my steer proposal.** I had misread the user: they did NOT say every `send` creates a new
+  assignment. The model: by default a send continues the running assignment (a steer does not break it; `redirect`
+  only moves where its result goes); `send(..., { redirect?, assignment?: "new" })` lets the agent explicitly start
+  a new assignment (the running one ends interrupted, steered, notice to its destination). So Cod1a's continuation
+  contract (`18df7e1`) stands and the hold on it is lifted; `closeContinuation` also serves `assignment: "new"`.
+  Spec updated (Operations, Flow 2, O2, O3a).
