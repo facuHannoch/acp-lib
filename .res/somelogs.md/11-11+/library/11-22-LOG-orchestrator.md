@@ -120,3 +120,7 @@ edit to `src/agent-session.ts`.
   possiblePartialEffects true; an idle worker only reserves; redirect plus new changes only the new destination.
   Asked: O3a runs both calls in one `persistence.transaction` on the scoped repositories, from the successor's
   `beforeDispatch`: confirm and add a rollback test to the contract.
+- Clad1a did not approve `0c9ce89`: the explicit-new close and reserve must be one atomic repository method, not
+  two calls. Agreed: `replaceAssignment` returning `replaced`, `old_settled` or `conflict`; O3a calls that one method
+  from the successor's `beforeDispatch`. Asked Cod1a to pin the orchestrator's action for each result and the
+  idempotent retry. Next owner: Cod1a.
