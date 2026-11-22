@@ -14,6 +14,10 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 
 ## Added
 
+- **Stored controller kind:** Agent conversation rows record `controller_kind` as `acp` or `native`. The SQLite
+  schema 16 to 17 migration leaves older rows unset. Native deletion uses the stored kind to retire channels,
+  including conversations that never completed a prompt. Switches and handoffs across controller kinds reject
+  with `UnsupportedError` before transition events or records.
 - **`beforeDispatch` prompt option:** session-scheduled turns await this hook after durable prompt preparation
   and before provider dispatch. Each hook receives its own message ID. Combined steer messages run their hooks
   in message order. A rejection fails the whole ACP run, calls `abandonTurn` and emits `turn_failed`. The owned

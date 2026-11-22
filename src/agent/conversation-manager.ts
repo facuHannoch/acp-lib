@@ -24,6 +24,7 @@ import {
   type ParticipantRef,
 } from "../persistence/backend.ts";
 import { ProviderSessionError, ProviderSessionInUseError } from "../agent-conversation-errors.ts";
+import { UnsupportedError } from "../errors.ts";
 import {
   OUT_OF_BAND_MESSAGE_ORIGIN,
   type AppendAssistantMessageInput,
@@ -220,6 +221,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         ...(config.title !== undefined ? { title: config.title } : {}),
         ...(config.metadata !== undefined ? { metadata: config.metadata } : {}),
         adoptProviderSessionId: adoption.providerSessionId,
+        controllerKind: this.agent.adapters.native(this.resolveAdapterId(config.adapterId)) ? "native" : "acp",
       });
     });
     const attemptId = `provider-load-${randomUUID()}`;
@@ -435,7 +437,10 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     };
     // Validate caller input before the recorded region so a configuration mistake is not
     // persisted as a provider-session failure.
-    this.prepareStart({ ...startConfig, providerSession: active ? "load" : "new" });
+    const adapterId = this.prepareStart({ ...startConfig, providerSession: active ? "load" : "new" });
+    if (summary.controllerKind && summary.controllerKind !== (this.agent.adapters.native(adapterId) ? "native" : "acp")) {
+      throw new UnsupportedError("opening with a different conversation controller kind is unsupported");
+    }
     const attemptId = active ? `provider-load-${randomUUID()}` : `provider-create-${randomUUID()}`;
     try {
       const conversation = await this.start(id, summary.participants, {
@@ -620,21 +625,12 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     id: AgentConversationId,
     options: string | DeleteConversationOptions = {},
   ): Promise<DeleteConversationResult> {
-    const { deletedAt, providerSession = "no", checkpoints = false }: DeleteConversationOptions =
-      typeof options === "string" ? { deletedAt: options } : options;
-    // Read what the provider side needs before the conversation is gone from view.
-    const nativeHost = this.agent.nativeHarness;
-    const descriptor = providerSession === "best-effort" || nativeHost
-      ? await this.agent.persistence.providerSessions.active(id)
-      : null;
     const live = this.live.get(id);
-    const adapterId = descriptor?.adapterId ?? live?.adapterId;
-    const isNative = !!nativeHost && !!adapterId && this.agent.adapters.native(adapterId) !== null;
-    // A native conversation has no provider session of its own to delete: its channel is retired instead.
-    const active = providerSession === "best-effort" && !isNative ? descriptor : null;
     if (live) await live.stop();
     this.live.delete(id);
-    const checkpointsDeleted = await deleteConversationWithChannel(this.agent, id, isNative ? nativeHost : null, checkpoints, deletedAt);
+    const { active, checkpointsDeleted } = await deleteConversationWithChannel(
+      this.agent, id, typeof options === "string" ? { deletedAt: options } : options, live?.adapterId,
+    );
     // A deleted conversation runs no next turn, so its waiting out-of-band parts would never leave.
     forgetPendingParts(this.agent, id);
     let providerDeleted: boolean | "unsupported" = false;
@@ -911,6 +907,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         ...("title" in config && config.title !== undefined ? { title: config.title } : {}),
         adapter,
         adapterId,
+        isNativeAdapter: (id) => this.agent.adapters.native(id) !== null,
         ...(nativeHost ? { native: { host: nativeHost, channelId: id } } : {}),
         agentSessionId: this.agent.id,
         ownerAgentSessionId: this.agent.id,

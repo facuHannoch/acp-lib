@@ -610,6 +610,70 @@ describe("the native conversation at the Agent", () => {
     expect(status.channels).toHaveLength(2);
   }, 30_000);
 
+  for (const state of ["an acknowledged intent", "a pending intent", "no initial settings"] as const) {
+    test(`a native row with ${state} survives restart with enough identity to retire`, async () => {
+      const rig = await rigWith();
+      const first = await rig.open();
+      const conversation = await first.conversations.create(state === "no initial settings" ? {} : { title: "Unused" });
+      const intent = await first.persistence.channels!.pendingChange(conversation.id);
+      if (state === "no initial settings") expect(intent).toBeUndefined();
+      else expect(intent?.desire).toEqual({ displayName: "Unused" });
+      if (state === "an acknowledged intent") {
+        // Simulate the open acknowledgement without starting a stdio harness.
+        expect(await first.persistence.channels!.confirmChange(conversation.id, intent!.version)).toBe(true);
+      }
+      expect(await first.persistence.providerSessions.active(conversation.id)).toBeNull();
+      await first.close();
+
+      const second = await rig.open();
+      expect((await second.persistence.conversations.get(conversation.id))?.controllerKind).toBe("native");
+      await second.conversations.delete(conversation.id);
+      expect((await second.persistence.conversations.get(conversation.id))?.deletedAt).toEqual(expect.any(String));
+      const retirement = await second.persistence.channels!.pendingChange(conversation.id);
+      expect(retirement?.desire.lifecycle).toBe("retired");
+      if (intent) expect(retirement!.version).toBeGreaterThan(intent.version);
+      expect(rig.launches).toEqual([]);
+    }, 30_000);
+  }
+
+  test("a legacy row with an active native descriptor still retires after restart", async () => {
+    const rig = await rigWith();
+    const first = await rig.open();
+    const id = createAgentConversationId();
+    await first.persistence.conversations.create({ agentConversationId: id, agentSessionId: first.id });
+    await first.persistence.providerSessions.append({
+      providerSessionRecordId: crypto.randomUUID(), agentConversationId: id,
+      internalSessionId: first.id, adapterId: "main", mode: "normal", activatedAt: new Date().toISOString(),
+    });
+    await first.close();
+
+    const second = await rig.open();
+    expect((await second.persistence.conversations.get(id))?.controllerKind).toBeUndefined();
+    await second.conversations.delete(id);
+    expect((await second.persistence.conversations.get(id))?.deletedAt).toEqual(expect.any(String));
+    expect((await second.persistence.channels!.pendingChange(id))?.desire.lifecycle).toBe("retired");
+    expect(rig.launches).toEqual([]);
+  }, 30_000);
+
+  test("switch and handoff across controller kinds refuse before records or transition events", async () => {
+    const rig = await rigWith();
+    const command = ["bun", new URL("../fixtures/echo-prompt-agent.ts", import.meta.url).pathname];
+    const agent = await rig.open({ adapters: { main: { kind: "native" }, external: { command } } });
+    const native = await agent.conversations.create() as AgentSession;
+    const acp = await agent.conversations.create({ adapterId: "external" }) as AgentSession;
+    expect((await agent.persistence.conversations.get(acp.id))?.controllerKind).toBe("acp");
+    for (const [conversation, target] of [[native, "external"], [acp, "main"]] as const) {
+      const events = rig.watch(conversation);
+      const records = () => agent.persistence.records.list(conversation.id);
+      const before = await records();
+      await expect(conversation.switch(target)).rejects.toBeInstanceOf(UnsupportedError);
+      await expect(conversation.handoff({ target: { adapterId: target } })).rejects.toBeInstanceOf(UnsupportedError);
+      expect(await records()).toEqual(before);
+      expect(events.filter(({ kind }) => kind.startsWith("handoff_") || kind.startsWith("switch_"))).toEqual([]);
+    }
+    expect(agent.nativeHarness!.launches).toBe(0);
+  }, 30_000);
+
   test("closing the Agent stops the shared process", async () => {
     const rig = await rigWith();
     const agent = await rig.open();

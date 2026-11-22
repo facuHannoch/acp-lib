@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS conversations (
   deleted_at TEXT,
   metadata TEXT,
   adopted INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1)),
-  adopt_provider_session_id TEXT
+  adopt_provider_session_id TEXT,
+  controller_kind TEXT CHECK (controller_kind IN ('acp', 'native'))
 );
 
 CREATE INDEX IF NOT EXISTS conversations_updated_idx
@@ -701,7 +702,13 @@ export function migrateSqliteAgentSchema(database: Database): void {
           database.exec("INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild')");
         }
       }
-      if (version < 17) database.exec(CHANNEL_INTENT_SCHEMA);
+      if (version < 17) {
+        database.exec(CHANNEL_INTENT_SCHEMA);
+        const columns = database.query<{ name: string }, []>("PRAGMA table_info(conversations)").all();
+        if (!columns.some(({ name }) => name === "controller_kind")) {
+          database.exec("ALTER TABLE conversations ADD COLUMN controller_kind TEXT CHECK (controller_kind IN ('acp', 'native'))");
+        }
+      }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
           "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",

@@ -70,12 +70,12 @@ export class NativeChannelChanges {
     return running ? this.enqueue(channel, deliver) : deliver();
   }
 
-  async deliverCommitted<T>(channel: string, commit: Promise<T>, running: () => boolean): Promise<T> {
+  async deliverCommitted<T>(channel: string, commit: Promise<T>, running: () => boolean, deliver: (result: T) => boolean): Promise<T> {
     this.#trackWrite(commit);
     if (!running()) return commit;
     return this.enqueue(channel, async () => {
       const result = await commit;
-      if (running()) await this.#deliverPending(channel);
+      if (running() && deliver(result)) await this.#deliverPending(channel);
       return result;
     });
   }

@@ -1,7 +1,7 @@
 import type { NativeAdapter } from "../adapters.ts";
 import type { Agent } from "../agent.ts";
 import type { AgentConversationId } from "../agent-ids.ts";
-import type { NativeHarnessHost } from "../native/host.ts";
+import type { DeleteConversationOptions } from "./config.ts";
 import type { CreateAgentConversationInput, PersistenceBackend, PersistenceScope } from "../persistence/backend.ts";
 import type { ChannelDesire, ChannelPersistence } from "../persistence/channels.ts";
 
@@ -40,6 +40,7 @@ export async function createConversationWithChannel(
   adapter: NativeAdapter | null,
 ): Promise<boolean> {
   const { persistence, nativeHarness } = agent;
+  input = { ...input, controllerKind: adapter ? "native" : "acp" };
   const desire = adapter && initialChannelDesire(adapter, input.title);
   if (!nativeHarness || !persistence.capabilities.channels || !desire) {
     await persistence.conversations.create(input);
@@ -56,23 +57,33 @@ export async function createConversationWithChannel(
 export async function deleteConversationWithChannel(
   agent: Agent,
   id: AgentConversationId,
-  nativeHost: NativeHarnessHost | null,
-  checkpoints: boolean,
-  deletedAt?: string,
-): Promise<number> {
-  const { persistence } = agent;
+  { checkpoints, deletedAt, providerSession }: DeleteConversationOptions,
+  liveAdapterId?: string,
+) {
+  const { persistence, nativeHarness } = agent;
+  const classify = async (scope: PersistenceScope) => {
+    const kind = (await scope.conversations.get(id))?.controllerKind;
+    const descriptor = kind !== "native" && (kind === undefined || providerSession === "best-effort")
+      ? await scope.providerSessions.active(id)
+      : null;
+    const adapterId = descriptor?.adapterId ?? liveAdapterId;
+    const retired = kind === "native" || (kind === undefined && !!adapterId && agent.adapters.native(adapterId) !== null);
+    return { retired, active: !retired && providerSession === "best-effort" ? descriptor : null };
+  };
   const remove = async (scope: PersistenceScope) => {
     const count = checkpoints ? (await scope.recoveryCheckpoints?.deleteForConversation?.(id)) ?? 0 : 0;
     await scope.conversations.delete(id, deletedAt);
     return count;
   };
-  if (nativeHost && persistence.capabilities.channels) {
+  if (persistence.capabilities.channels) {
     const committed = persistence.transaction(async (scope) => {
-      await scope.channels!.desire(id, { lifecycle: "retired" });
-      return remove(scope);
+      const disposition = await classify(scope);
+      if (disposition.retired) await scope.channels!.desire(id, { lifecycle: "retired" });
+      return { ...disposition, checkpointsDeleted: await remove(scope) };
     });
-    return nativeHost.deliverCommittedChannelChange(id, committed);
+    return nativeHarness ? nativeHarness.deliverCommittedChannelChange(id, committed, ({ retired }) => retired) : committed;
   }
-  await nativeHost?.changeChannel(id, { lifecycle: "retired" });
-  return remove(persistence);
+  const disposition = await classify(persistence);
+  if (disposition.retired) await nativeHarness?.changeChannel(id, { lifecycle: "retired" });
+  return { ...disposition, checkpointsDeleted: await remove(persistence) };
 }
