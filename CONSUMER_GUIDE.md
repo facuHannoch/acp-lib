@@ -31,7 +31,7 @@ provider or harness thread behind that conversation.
 consumer
   └── Agent ags-…                           stable agent identity + SQLite database
         └── AgentConversation agc-…         stable conversation identity
-              └── AgentController
+              └── ConversationController (ACP or native)
                     └── internal thread abc replaceable harness identity
 ```
 
@@ -947,25 +947,184 @@ All non-deleted conversations are shared in v1, including conversations with dif
 users, so consumers should enable this only where such cross-conversation visibility is
 appropriate. A custom `AgentIdentityRuntime` remains available for other policies.
 
-## Native harness conversations (experimental)
+## Permissions and approval UI
 
-An Agent can run conversations on its own harness instead of an external ACP
-agent. This is opt-in and experimental: it currently runs the scripted harness
-used for offline development, and existing ACP conversations are unaffected.
+Use `permissions: { default, rules? }` for Agent, conversation, direct session,
+or raw ACP client configuration. Omission means `ask`. Agent defaults are
+overridden by `conversationDefaults`, then conversation settings, then its
+`runtime`. Each supplied `permissions` object replaces the previous one.
+
+An explicit `permissionRule(request)` result wins. On ACP, the next step matches
+`kind:<tool-kind>` and `command:<exact command>`. Command rules apply to execute
+requests whose arguments the library can normalize to one command. Supported
+input includes a single command string, a simple argument array, and the
+recognized `bash -lc` wrappers. Rules match exactly and do not use glob or
+substring matching. The stricter matching level wins
+(`deny`, then `ask`, then `allow`). An unmatched request uses the default.
+Deny selects `reject_once` where offered and otherwise cancels the request.
 
 ```ts
-const agent = await Agent.open({
-  persistence: { kind: "sqlite", path: "./agent.sqlite" },
-  adapters: { main: { kind: "native" }, codex: ADAPTERS.codex },
-  defaultAdapterId: "main",
-  harness: {
-    home: "./harness-home",          // must survive process restarts
-    config: { version: 1, system: "...", model: { protocol: "scripted", script: "./script.json" },
-      defaultPolicy: "open", policies: { open: { fallback: "allow", tools: {} } } },
+import { Agent, type AgentAdapter } from "@qlairoslabs/acp-client";
+
+export async function openApprovalDemo(adapter: AgentAdapter, path: string) {
+  const agent = await Agent.open({
+    persistence: { kind: "sqlite", path },
+    adapters: { main: adapter },
+    defaultAdapterId: "main",
+    permissions: {
+      default: "ask",
+      rules: { "kind:read": "allow", "command:git status": "allow", "kind:delete": "deny" },
+    },
+    permissionRule: request => request.tool?.name === "publish" ? "deny" : undefined,
+    conversationDefaults: { answersPermissions: true, permissionTimeoutMs: 60_000 },
+  });
+  const conversation = await agent.conversations.create();
+  const unsubscribe = conversation.subscribe(({ event }) => {
+    if (event.kind === "permission_requested") {
+      console.log(event.id, event.title, event.options, event.expiresAt);
+    } else if (event.kind === "permission_resolved") {
+      console.log(event.id, event.outcome, event.by);
+    }
+  });
+  // Call with the request ID and the option ID selected by your UI.
+  const answer = (id: string, optionId: string) => conversation.answerPermission(id, optionId);
+  return { agent, conversation, answer, unsubscribe };
+}
+```
+
+Allow and deny resolve immediately. Ask first uses a per-prompt
+`onPermissionRequest` handler. Without one, it waits for a consumer only if
+`answersPermissions` is true. Otherwise the unattended ask is refused. The
+consumer wait defaults to five minutes, starts at request ingress, and expires
+to a refusal. Supply a positive integer below 600,000 to override it.
+`expiresAt` is epoch milliseconds and is present only for a consumer wait.
+Check `answerPermission()`'s `{ accepted }` result. Unknown, expired,
+invalid-option, handler-owned and already resolved requests return false.
+Each request has one resolution event in a microtask after it closes.
+`by` is `handler`, `consumer`, `default`, `timeout` or `turn_ended`.
+Forwarded worker requests include a worker `source` and can omit `turnId`.
+
+A harness policy first decides whether a native tool needs approval. For
+native asks the library uses `permissionRule` and the configured default.
+Native requests supply the tool name and raw argument string. ACP kind and
+command rules apply only to ACP. Native approval options are `allow_once`
+and `deny`. The harness also has a ten-minute approval limit. A configured
+`harness.approvalResponder(request, answer, signal)` can answer centrally,
+including while detached. Await `answer("allow_once")` or `answer("deny")`
+to learn whether the harness accepted the decision.
+
+## Cancellable ACP startup and deferred connections
+
+Agent-owned normal ACP conversations connect on open by default. Use
+`providerStart: "on_first_use"` in `conversationDefaults` or override it in
+`runtime` on create or reopen. The first provider-bound operation starts the
+connection. A deferred reopen returns `providerSession: "deferred"`. Provider
+settings and commands can be empty until then. Watch reopen progress and
+`provider_reconnected` for first-use recovery.
+
+```ts
+import { AgentSession, ConnectionCancelledError, type Agent, type Adapter,
+  type AgentConversationId } from "@qlairoslabs/acp-client";
+
+export async function reopenLazily(agent: Agent, id: AgentConversationId) {
+  const opened = await agent.conversations.open(id, {
+    runtime: { providerStart: "on_first_use" },
+    onRecoveryProgress: event => console.log(event),
+  });
+  if (opened.providerSession === "deferred") console.log("Connects on first use");
+  return opened.conversation;
+}
+
+export async function startDirect(adapter: Adapter, adapterId: string, signal: AbortSignal) {
+  try {
+    return await AgentSession.create({ adapter, adapterId, signal });
+  } catch (error) {
+    if (error instanceof ConnectionCancelledError) return null;
+    throw error;
+  }
+}
+```
+
+An explicit stop or a superseding ACP connection attempt rejects the pending
+connection with `ConnectionCancelledError` and code `connection_cancelled`.
+Direct session startup accepts an `AbortSignal`, as above. Use eager startup
+when a failed session creation must leave the connection available for
+authentication.
+
+## Native harness conversations (experimental)
+
+An Agent can run native conversations on its own harness alongside external ACP
+adapters. Configure a real OpenRouter model with a key supplied through the
+environment, or use a scripted model with a local JSONL scenario for offline
+development. Keep the harness home on durable storage. Backend kind stays fixed
+across a conversation's mode changes and handoffs.
+
+```ts
+import { Agent, ADAPTERS, type AgentHarnessConfig } from "@qlairoslabs/acp-client";
+
+export async function openNative(
+  directory: string,
+  model: AgentHarnessConfig["config"]["model"] = {
+    protocol: "openrouter", model: "openai/gpt-4.1-mini", apiKeyEnv: "OPENROUTER_API_KEY",
   },
-});
-const conversation = await agent.conversations.create({ title: "Alice" });
-const result = await conversation.prompt("hello", { onPermissionRequest: (request) => ({ outcome: "selected", optionId: "allow_once" }) });
+) {
+  return Agent.open({
+    persistence: { kind: "sqlite", path: `${directory}/agent.sqlite` },
+    adapters: { main: { kind: "native" }, codex: ADAPTERS.codex },
+    defaultAdapterId: "main",
+    harness: {
+      home: `${directory}/harness-home`,
+      config: {
+        version: 1, system: "Be concise.", model,
+        defaultPolicy: "open",
+        policies: { open: { fallback: "deny", tools: { lookup: "ask" } } },
+      },
+      approvalResponder: async (request, answer) => {
+        await answer(request.tool === "lookup" ? "allow_once" : "deny");
+      },
+      functions: {
+        tools: {
+          lookup: {
+            description: "Read the configured status.",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+            handler: (_args, context) => ({ status: "ready", channel: context.channel }),
+          },
+        },
+      },
+    },
+  });
+}
+```
+
+Use a supported OpenRouter model ID configured for your account. For an offline
+equivalent, pass `{ protocol: "scripted", script: "/path/to/scenario.jsonl" }`
+as the second argument. Function parameters are JSON Schema. Functions return
+JSON values and receive a context with invocation identity and an abort signal.
+Harness policies grant `allow`, `ask` or `deny` by tool name and define a
+fallback. This host responder grants one call to the read-only lookup.
+Subscribe to `items_receipt` when you need delivery evidence.
+
+```ts
+import { NativeInputStoppedError, type Agent, type ItemsReceipt } from "@qlairoslabs/acp-client";
+
+export async function nativePrompt(agent: Agent) {
+  const conversation = await agent.conversations.create({ title: "Native example" });
+  const receipts: ItemsReceipt[] = [];
+  const unsubscribe = conversation.subscribe(({ event }) => {
+    if (event.kind === "items_receipt") receipts.push(event);
+  });
+  try {
+    const prompt = conversation.prompt("Report the status.");
+    // Use await prompt.withdrawAsync() if the user asks to take it back.
+    return { result: await prompt, receipts };
+  } catch (error) {
+    if (error instanceof NativeInputStoppedError) return { stoppedInput: error.messageId, receipts };
+    throw error;
+  } finally {
+    unsubscribe();
+    await conversation.stop();
+  }
+}
 ```
 
 - **One Agent is one harness session; one conversation is one channel.** All
@@ -992,12 +1151,7 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   include external notices as well as prompts. Receipts can arrive for a held
   turn and are not replayed as history after reconnect. The existing
   `message_delivered` event and prompt settlement keep their own meanings.
-- **Approvals** for tools a policy marks `ask` reach the `onPermissionRequest`
-  handler of the first message the turn took, with `allow_once` and `deny`
-  options. Without a handler the session's `defaultPermission` applies.
-  Set `harness.approvalResponder(request, answer, signal)` to answer centrally,
-  including while detached. `answer("allow_once")` and `answer("deny")`
-  report whether the harness accepted the answer.
+- **Approvals** use the [permission configuration and events](#permissions-and-approval-ui) above.
 - **Interrupting** (`conversation.interrupt()`, or `connection.forceStop()`)
   ends that conversation's turn only. Other conversations and the shared
   process keep running, and the interrupted conversation accepts new input.
@@ -1048,7 +1202,7 @@ Persist each page and its position together, using message IDs to deduplicate.
 The default acp-client transcript remains available independently. Use
 `timeline()` for harness activity and `usage(channel?)` for reported token
 totals, missing field counts, and completeness. Usage is an explicit scan
-of the model-call pages.
+of the model-call pages. For per-turn records, see [Native turn metering](#native-turn-metering).
 
 ### Native turn metering
 
@@ -1178,9 +1332,114 @@ Tool changes need a running harness: `revokeTool` and the others fail with
 
 Not available on a native conversation yet: `startFresh` and anything that
 needs a fresh context (`conversationCapabilities.freshContext` is `false`),
-handoff, modes, config options, session listing, adoption, usage metering
-(records report usage as unavailable), and a user-message record for prompts.
-`PromptResult.endedBy` is not reported.
+handoff, modes, config options, provider session listing, adoption, and a
+local user-message record for native prompts. See [native turn metering](#native-turn-metering)
+for available usage evidence and its limits.
+
+## Orchestrator and worker delivery
+
+Enable the orchestrator on the same Agent as the native harness. It requires
+`capture.message: "content"` and persistence capabilities for workers and worker
+delivery. SQLite provides both. Use an ACP adapter for the worker pool. The
+example adds a native `owner` policy that can call the delegation tools and a
+separate policy for approvals requested by workers.
+
+```ts
+import { Agent, type AgentAdapter, type AgentHarnessConfig } from "@qlairoslabs/acp-client";
+
+export async function openWorkerPool(
+  directory: string,
+  worker: AgentAdapter,
+  model: AgentHarnessConfig["config"]["model"],
+) {
+  const delegation = { use: true, scope: "all", redirect: true, maxOpen: 2 } as const;
+  return Agent.open({
+    persistence: { kind: "sqlite", path: `${directory}/agent.sqlite` },
+    adapters: { main: { kind: "native" }, worker },
+    defaultAdapterId: "main",
+    capture: { message: "content" },
+    harness: {
+      home: `${directory}/harness-home`,
+      config: {
+        version: 1, system: "Delegate bounded tasks and report the results.", model,
+        defaultPolicy: "owner",
+        policies: { owner: { fallback: "deny", tools: {
+          delegate: "allow", check: "allow", list: "allow", stop: "allow",
+        } } },
+      },
+    },
+    orchestrator: {
+      workers: { adapterId: "worker", cwd: directory, limit: 2, idleStopMs: 60_000 },
+      ownerPolicies: ["owner"],
+      defaults: { delegation, workerPermissions: { default: "ask" } },
+      policies: { owner: { delegation, workerPermissions: { default: "ask" } } },
+    },
+  });
+}
+
+export async function workerControls(agent: Agent, handle: string) {
+  const workers = agent.workers;
+  if (!workers) throw new Error("Enable the orchestrator first");
+  const summary = await workers.check(handle);
+  return {
+    summary,
+    list: () => workers.list(),
+    retryBlockedDelivery: () => workers.retryDelivery(handle),
+    stop: () => workers.stop(handle),
+    delete: () => workers.delete(handle),
+  };
+}
+```
+
+The harness exposes `delegate`, `check`, `list` and `stop` as native tools.
+Grant them in the harness policy as well as configuring the corresponding
+orchestrator policy. For `delegate`, send `{ text, about? }` to create a
+worker, or include `worker` to send to a known handle. `check` and `stop`
+take `{ worker }`; `list` takes an empty object. These names are reserved
+while native delegation is enabled. The trusted host can also use
+`agent.orchestrator` with a consumer actor. Use
+`agent.events.subscribeWorkers` for worker lifecycle events.
+
+A busy worker follows its current assignment. Its current giver can steer
+with another message for the same handle. A different giver needs redirect
+authority and `redirect: true` to take over the destination. Without a redirect,
+a send from another giver reports `busy` and queues nothing. Use
+`assignment: "new"` to replace the assignment. Outstanding forwarded
+approvals stay with their original giving conversation. The giving
+conversation answers forwarded requests with `answerPermission`. Non-owner
+requests omit persistent approval options. Without an eligible answerer,
+an ask is refused.
+
+`workers.limit` bounds the active pool. Policy can further narrow scope,
+redirection and the maximum number opened by a giver. An idle worker may be
+evicted to make room. If no slot can be freed, sending reports
+`no_worker_free`. Idle stop defaults to ten minutes and accepts `false`
+to keep idle connections open. The next send reloads a stopped worker.
+`workers.delete` returns the provider cleanup outcome. Consumer defaults
+apply to consumer work or when no native policy contributes. When several
+named policies contribute, their restrictions compose and all must be in
+`ownerPolicies` to grant owner authority.
+
+The Agent records the assignment before dispatch. A finished worker leaves
+one saved outcome, tied to that assignment and destination. An ACP
+destination receives an out-of-band message for the next prompt. A native
+destination receives a harness notice. Restart recovery looks for the saved
+result by assignment ID, and retries eligible notices without running the
+worker again. A lost result can be reported as uncertain. `check` and
+`list` show the latest outcome and delivery state when available. Native
+results may be absent until the harness opens. `retryDelivery` explicitly
+retries only the newest policy-blocked delivery. A retired or missing
+destination remains a failed delivery.
+
+From the source checkout, run the offline smoke test with
+`bun smoke-tests/orchestrator/run.ts`. Live mode requires explicit approval
+for spend, `ACP_ORCH_LIVE=1`, `OPENROUTER_API_KEY`, local Codex binaries
+and a separately authenticated disposable `ACP_ORCH_CODEX_HOME`. Use
+throwaway work, supervise with the documented external wall-clock cap, and
+never set the flag for an offline run. The runner caps native requests and
+worker submissions. The Codex CLI's internal calls are uncapped.
+[Smoke-test instructions](smoke-tests/orchestrator/README.md)
+
 
 ## Legacy direct and managed sessions
 
@@ -1272,7 +1531,7 @@ async function createSession(adapterId: string): Promise<AgentSession> {
     adapterId,
     cwd: process.cwd(),
     title: "Repository agent",
-    defaultPermission: "cancel",
+    permissions: { default: "ask" },
     persistence: {
       transcript: { preset: "activity" },
     },
@@ -1759,7 +2018,7 @@ async function loadSession(agentSessionId: string): Promise<AgentSession> {
   const opened = await sessions.loadAgentSession(agentSessionId, {
     adapter: resolveAdapter(info.adapterId),
     adapterId: info.adapterId,
-    defaultPermission: "cancel",
+    permissions: { default: "ask" },
     onOpenProgress: projectOpenProgress,
   });
 
