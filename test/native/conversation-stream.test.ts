@@ -111,7 +111,7 @@ for (const mode of ["stream", "default final"] as const) {
   }, 30_000);
 }
 
-test("native stop cancels while a streamed message completion is in flight", async () => {
+test("native stop records a held completion once across reopen", async () => {
   const rig = await nativeRig();
   const completedOnWire = holdFirstCompletion(rig);
   const text = Promise.withResolvers<void>();
@@ -130,6 +130,22 @@ test("native stop cancels while a streamed message completion is in flight", asy
     await Promise.race([Promise.all([text.promise, completedOnWire.reached]), deadline, earlyFailure]);
     await Promise.race([conversation.stop(), deadline]);
     expect(await run).toMatchObject({ status: "cancelled", text: "", messages: [] });
+    const id = conversation.id;
+    const { messages } = await agent.nativeHarness!.conversationMessages({ channel: id });
+    expect(messages.filter(message => message.actor.kind === "agent")).toHaveLength(1);
+    const committed = messages.find(message => message.actor.kind === "agent")!;
+    const finalReplies = async () => (await agent.persistence.records.list(id)).records.filter(record =>
+      record.kind === "message" && record.role === "assistant" && record.status !== "in_progress");
+    const persisted = await finalReplies();
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({ status: "completed", content: "Provisional" });
+    expect(JSON.parse(persisted[0]!.metadata!).providerMessageId).toBe(committed.messageId);
+    const first = (await agent.conversations.open(id)).conversation;
+    expect(await finalReplies()).toEqual(persisted);
+    completedOnWire.release();
+    await first.stop();
+    await agent.conversations.open(id);
+    expect(await finalReplies()).toEqual(persisted);
   } finally {
     clearTimeout(timer);
     completedOnWire.release();

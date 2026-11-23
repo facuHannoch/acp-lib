@@ -36,7 +36,7 @@ import { isDegradedController } from "../conversation-controller/guards.ts";
 import type { ResponseMessage } from "../types.ts";
 import { backendTurnItem } from "./backend-turns.ts";
 import type { TurnContext, TurnRunContext } from "./context.ts";
-import { createTurnRecording } from "./recording.ts";
+import { createTurnRecording, stoppedRepliesForPersistence } from "./recording.ts";
 import { legacyTranscriptMessages, legacyTranscriptText, persistenceOperationKind } from "./record-helpers.ts";
 
 export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<AgentSessionPromptResult> {
@@ -246,6 +246,9 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
     // Phase 6: Agent-owned afterPrompt.
     await ctx.owner.recordWrite;
     if (ctx.owner.lifecycle) {
+      const stored = res.status === "cancelled" && prepared.recoverStoppedReplies
+        ? await stoppedRepliesForPersistence(ctx.log, prepared.recoverStoppedReplies, result, recording)
+        : { result, messageEnds };
       const completed = {
         operationId: turnId,
         messageIds: [...(turn.cause.messageIds ?? [])],
@@ -257,8 +260,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
           : {}),
         ...(item.participantId ? { participantId: item.participantId } : {}),
         text: item.text,
-        result,
-        messageEnds,
+        ...stored,
         providerAttachment: ctx.session.providerAttachment,
       };
       try {

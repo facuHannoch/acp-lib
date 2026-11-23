@@ -62,24 +62,20 @@ type Outcome = { outcome: "completed" | "failed" | "interrupted"; error?: string
 type TurnScoped = Extract<ChannelEvent["event"], { turnId: string }>;
 
 interface Turn {
-  /** The id the session knows the turn by. */
   readonly id: string;
   readonly harnessId: string;
   readonly items: Set<string>;
-  /** Events received before `prompt()` attached; replayed there, in order. */
   held: TurnScoped[];
-  /** Attached by `prompt()`. */
   sink: ((event: TurnScoped) => void) | null;
-  /** Message ids whose completion was received: a reconciled reply is restored once, by id. */
   readonly completed: Set<string>;
   readonly approvals: Set<string>;
   ended: Outcome | null;
   terminalOnWire?: boolean;
+  stoppedBeforeResult?: true;
   /** This conversation asked for the interruption, so an interrupted end is a cancel, not a failure. */
   cancelRequested: boolean;
   /** Given up locally (`forceStop`, `abandonTurn`, `stop`): later events only release bookkeeping. */
   released: boolean;
-  /** Rejects the open `prompt()`, if any. */
   fail: ((error: Error, stopping?: boolean) => void) | null;
 }
 
@@ -413,6 +409,7 @@ export class NativeController implements ConversationController, ChannelPort {
         terminalEarlierTurns: terminalNativeTurns(this.#host, this.#channel), read: position =>
           (this.#usage ??= new NativeInferenceSource(this.#host.sessionId, this.#channel, this.#host.usageLedger))
             .readTurn(turn.harnessId, position) },
+      recoverStoppedReplies: async seen => turn.stoppedBeforeResult ? this.#host.recoverStoppedReplies(this.#channel, turn.harnessId, seen) : undefined,
       get live() { return !replay; },
       subscribeOutput: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
       cancel: () => this.#interrupt(turn),
@@ -443,7 +440,11 @@ export class NativeController implements ConversationController, ChannelPort {
       const cancelled = (terminal: boolean) => finish(() => resolve({
         text: joined(), messages, stopReason: "cancelled", status: "cancelled", usage: null,
       }), terminal);
-      turn.fail = (error, stopping) => stopping ? cancelled(false) : finish(() => reject(error));
+      turn.fail = (error, stopping) => {
+        if (!stopping) return finish(() => reject(error));
+        turn.stoppedBeforeResult = true;
+        cancelled(false);
+      };
       const text = (chunk: string, messageId: string, startsMessage: boolean) => {
         handlers.onChunk?.(chunk);
         handlers.onResponseChunk?.({ text: chunk, messageId, startsMessage });
@@ -540,7 +541,6 @@ export class NativeController implements ConversationController, ChannelPort {
     finally { signal({ kind: "permission_ended", sessionId }); }
   }
 
-  /** Interrupts exactly this turn. Does nothing once it has ended in the harness. */
   #interrupt(turn: Turn): void {
     if (turn.ended) return;
     turn.cancelRequested = true;

@@ -1021,7 +1021,10 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   grace period before interrupting the active turn. A prompt whose input was
   taken resolves as cancelled. It returns completed messages from the turn
   and its cancelled metering record. If the first message was still
-  streaming without a completion, the returned text is empty. Submitted
+  streaming without a completion, the returned text is empty. Before stop
+  finishes, the Agent tries to recover missed committed replies from that
+  turn for persistence. Recovered replies are stored once and do not change
+  the caller's result. Submitted
   inputs that were never taken reject with `NativeInputStoppedError` (includes
   `messageId`). If take wins or the host is unavailable or silent, the input
   may still run and incur model charges.

@@ -125,6 +125,28 @@ describe("a turn's early output is held until the prepared prompt attaches", () 
     expect(calls).toContain("read:big");
   });
 
+  test("native by-reference completion finishing after stop cannot reach the live handlers", async () => {
+    const { controller, host, emit } = standIn();
+    const entered = Promise.withResolvers<void>();
+    const reply = Promise.withResolvers<string>();
+    host.readMessage = async () => {
+      entered.resolve();
+      return reply.promise;
+    };
+    await controller.start();
+    emit({ type: "turn_started", turnId: "1", items: [] });
+    const seen = recorder();
+    const run = controller.prepareTurn("native-turn-1", { handlers: seen.handlers }).prompt();
+    emit({ type: "message_completed", turnId: "1", messageId: "late", reference: true });
+    await entered.promise;
+    await controller.stop();
+    expect(await run).toMatchObject({ status: "cancelled", text: "", messages: [] });
+    reply.resolve("Late committed text.");
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(seen.chunks).toEqual([]);
+    expect((await run).messages).toEqual([]);
+  });
+
   test("failed and interrupted turns reject with the outcome and the uncertain calls; an interrupt this conversation asked for is a cancel", async () => {
     const { controller, emit, calls } = standIn();
     await controller.start();

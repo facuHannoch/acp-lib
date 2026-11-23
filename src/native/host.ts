@@ -36,7 +36,7 @@ import {
   type ToolAvailability,
   type ToolInvocation,
 } from "../native-harness/src/client.ts";
-import { openOrCreate, readCompleteMessage, recoverChannel } from "./recovery.ts";
+import { openOrCreate, readCompleteMessage, recoverChannel, recoverStoppedReplies } from "./recovery.ts";
 import { createNativeFunctionHost, type NativeFunctionHost, type NativeFunctionsConfig } from "./functions.ts";
 import { prepareNativeLaunch, onceDispose, type AcpLauncher } from "../launcher.ts";
 import { noopLogger, type Logger } from "../logger.ts";
@@ -864,7 +864,6 @@ export class NativeHarnessHost {
     return result.interrupted;
   }
 
-  /** Answers one approval request. False when the answer was late: the request is closed and stays closed. */
   async respondApproval(requestId: string, decision: "allow_once" | "deny"): Promise<boolean> {
     if (this.#config.approvalResponder) return false;
     return this.#answerApproval(requestId, decision);
@@ -905,5 +904,6 @@ export class NativeHarnessHost {
     });
   }
 
+  recoverStoppedReplies(channel: string, turnId: string, seen: Parameters<typeof recoverStoppedReplies>[3]) { return recoverStoppedReplies(this.#client(), channel, turnId, seen); }
   readMessage(messageId: string): Promise<string> { return readCompleteMessage(this.#client(), messageId); }
 }

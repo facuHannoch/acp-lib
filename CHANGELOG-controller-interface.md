@@ -214,7 +214,10 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   metering record with outcome `cancelled`. Previously the caller received
   empty text and no metering record. Stopping during the first streamed message
   still returns a cancelled result with empty text while that message's
-  completion is outstanding. Inputs can still incur spend if take has won or
+  completion is outstanding. That result now also includes a cancelled
+  metering record. During stop, the Agent reads any missed committed replies
+  for the exact turn and stores them once by harness message ID. A late
+  completion does not re-enter the live output. Inputs can still incur spend if take has won or
   the host is unavailable or silent.
   `TurnEvent` now includes the controller's `input_withdrawn` confirmation.
 

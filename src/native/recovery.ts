@@ -1,3 +1,4 @@
+import type { ResponseMessage } from "../types.ts";
 import { codeOf } from "./errors.ts";
 import type { HarnessClient, ItemStatus, PendingChannelChange, StoredMessage, TurnStatus } from "../native-harness/src/client.ts";
 
@@ -32,10 +33,12 @@ export async function recoverChannel(
   return { observation, items, turns, messages };
 }
 
-export async function readCompleteMessage(client: HarnessClient, messageId: string): Promise<string> {
+export async function readCompleteMessage(client: HarnessClient, messageId: string, signal?: AbortSignal): Promise<string> {
   const chunks: Buffer[] = [];
   for (let offset: number | undefined = 0; offset !== undefined;) {
-    const page: { data: string; nextOffset?: number } = await client.readMessage({ messageId, offset });
+    const page: { data: string; nextOffset?: number } = signal
+      ? await client.request("session/message/read", { messageId, offset }, signal)
+      : await client.readMessage({ messageId, offset });
     chunks.push(Buffer.from(page.data, "base64"));
     offset = page.nextOffset;
   }
@@ -64,4 +67,27 @@ export async function openOrCreate(
   }
   signal.throwIfAborted();
   return client.createSession({ sessionId: config.sessionId, config: config.config, participants: [], channels: {}, ...changes });
+}
+
+/** Recover only the stopped turn, on one connection and within one shared deadline. */
+export async function recoverStoppedReplies(
+  client: HarnessClient, channel: string, turnId: string, seen: readonly ResponseMessage[],
+): Promise<readonly ResponseMessage[]> {
+  const signal = AbortSignal.timeout(5_000);
+  const known = new Set(seen.map(message => message.messageId));
+  const recovered: ResponseMessage[] = [];
+  let cursor: string | undefined;
+  do {
+    const page: Awaited<ReturnType<HarnessClient["reconcileChannel"]>> = await client.request(
+      "channel/reconcile", cursor === undefined ? { channel, turnIds: [turnId] } : { channel, cursor }, signal,
+    );
+    if (page.unknownTurnIds.includes(turnId)) throw new Error(`native stop recovery could not find turn ${turnId}`);
+    for (const { messageId } of page.replies) {
+      if (known.has(messageId)) continue;
+      known.add(messageId);
+      recovered.push({ messageId, text: await readCompleteMessage(client, messageId, signal) });
+    }
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return recovered;
 }

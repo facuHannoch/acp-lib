@@ -21,7 +21,7 @@ import type { ConversationCapabilities } from "./capabilities.ts";
 import type { MeteredOperationKind } from "../metering/record.ts";
 import type { OutputListener, SupervisedProvider } from "../operations/contracts.ts";
 import type { CombinedMessage } from "../steering/contracts.ts";
-import type { InternalSessionCommand, PromptHandlers, SessionListPage } from "../types.ts";
+import type { InternalSessionCommand, PromptHandlers, ResponseMessage, SessionListPage } from "../types.ts";
 
 /** The turn path of a conversation's backend. */
 export interface ConversationController {
@@ -160,6 +160,8 @@ export interface PreparedTurn extends SupervisedProvider {
   readonly turnId: string;
   /** Pulls usage for this exact wire turn at the operation's close. */
   readonly nativeMetering?: NativeTurnMetering;
+  /** Committed replies missed by a graceful stop, for persistence only. */
+  recoverStoppedReplies?(seen: readonly ResponseMessage[]): Promise<readonly ResponseMessage[] | undefined>;
   /** False while replaying output held for a turn that already ended; the stall check applies only while live. */
   readonly live: boolean;
 }

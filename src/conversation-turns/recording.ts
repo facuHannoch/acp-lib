@@ -8,6 +8,9 @@ import { recordingPermissionHandlers } from "../permissions/policy.ts";
  */
 import { transcriptParts, type ResolvedPart } from "../media/parts.ts";
 import { ResponseAccumulator } from "../response.ts";
+import type { AgentSessionPromptResult } from "../agent-conversation-contracts.ts";
+import type { PreparedTurn } from "../conversation-controller/contracts.ts";
+import type { Logger } from "../logger.ts";
 import type { PromptHandlers } from "../types.ts";
 import type { TurnRunContext } from "./context.ts";
 import {
@@ -207,4 +210,26 @@ export function createTurnRecording(
     beginAssistantMessage,
     flushAssistantMessage,
   };
+}
+
+/** Store recovered text without publishing it as part of the already-settled live result. */
+export async function stoppedRepliesForPersistence(
+  log: Logger, recover: NonNullable<PreparedTurn["recoverStoppedReplies"]>,
+  result: AgentSessionPromptResult, recording: TurnRecording,
+) {
+  const messageEnds = [...recording.messageEnds];
+  let extra: Awaited<ReturnType<typeof recover>>;
+  try {
+    extra = await recover(result.messages);
+    const stoppedAt = new Date().toISOString();
+    for (let index = 0; index < (extra?.length ?? 0); index++) messageEnds[result.messages.length + index] = stoppedAt;
+  } catch (error) {
+    log.warn("native_stopped_reply_recovery_failed", { operationId: result.operationId, error: String(error) });
+    const seen = new Set(result.messages.map(message => message.messageId));
+    // Keep the draft as an incomplete reply if the authoritative read could not finish.
+    extra = recording.response.snapshot().filter(message => !seen.has(message.messageId));
+  }
+  if (!extra?.length) return { result, messageEnds };
+  const messages = [...result.messages, ...extra];
+  return { result: { ...result, messages, text: messages.map(message => message.text).join("\n\n") }, messageEnds };
 }
