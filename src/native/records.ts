@@ -30,6 +30,8 @@ export interface Submission {
    * the turn that takes it.
    */
   state: "saved" | "unknown" | "accepted";
+  /** Withdrawal requested. A reopen reconciles it without replaying its push. */
+  withdrawing?: true;
 }
 
 export interface NativeHostRecords {
@@ -46,6 +48,7 @@ export interface NativeHostRecords {
   /** A push for it is about to be written: from now on its outcome is unknown until confirmed. */
   markSent(id: string): void;
   markAccepted(id: string): void;
+  markWithdrawing?(id: string): void;
   /** The input reached a terminal outcome (its turn ended, or it was withdrawn or refused): nothing left to retry. */
   settleSubmission(id: string): void;
 }
@@ -98,6 +101,12 @@ function build(state: State, commit: () => void): NativeHostRecords {
       found.state = "accepted";
       commit();
     },
+    markWithdrawing(id) {
+      const found = state.submissions[id];
+      if (!found || found.withdrawing) return;
+      found.withdrawing = true;
+      try { commit(); } catch (error) { delete found.withdrawing; throw error; }
+    },
     settleSubmission(id) {
       if (!state.submissions[id]) return;
       delete state.submissions[id];
@@ -128,6 +137,7 @@ export function submissionRecords(records: NativeHostRecords): NativeHostRecords
     submissions: records.submissions.bind(records),
     markSent: records.markSent.bind(records),
     markAccepted: records.markAccepted.bind(records),
+    markWithdrawing: records.markWithdrawing?.bind(records),
     settleSubmission: records.settleSubmission.bind(records),
   };
 }

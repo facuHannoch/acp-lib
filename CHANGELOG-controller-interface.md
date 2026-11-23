@@ -194,3 +194,16 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   unsupported, before any handoff events or reset records are created.
 - Test-only: the A1 characterization snapshots are unchanged except `cause`, plus a reviewed ordering exception for the
   two non-contractual orders (metering vs presentation events / the last in-progress assistant snapshot).
+
+
+## Native input withdrawal
+
+- `PromptHandle.withdrawAsync()` and `AgentSession.withdrawAsync(id)` request confirmed
+  withdrawal of submitted native input. Synchronous withdrawal is local for native.
+  A `taken` result leaves the prompt following its turn. An unresolved reply can reject.
+- Native submission recovery suppresses push replay while a withdrawal is pending.
+  The built-in file store retains the intent across Agent reopen. Custom host records
+  can implement `markWithdrawing` to support withdrawal of submitted input.
+- Native `interrupt({ clearQueue: true })` clears local inputs and leaves submitted
+  input to the harness. Stop and close reject handles that the session stops observing.
+  `TurnEvent` now includes the controller's `input_withdrawn` confirmation.

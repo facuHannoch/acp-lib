@@ -113,8 +113,6 @@ export class NativeController implements ConversationController, ChannelPort {
 
   get channelId(): string { return this.#channel; }
 
-  // --- lifecycle --------------------------------------------------------------------------------
-
   /** Attaches the conversation to its channel. Never starts the process: the first real work does. */
   async start(): Promise<StartResult> {
     this.#stopped = false;
@@ -263,6 +261,7 @@ export class NativeController implements ConversationController, ChannelPort {
     if (this.#stopped) throw new Error("the conversation is stopped");
     if (!this.#detach) await this.start();
     for (const message of run.messages) {
+      if (run.beginInput?.(message.id) === false) continue;
       await this.#host.push({
         id: message.id,
         channel: this.#channel,
@@ -272,6 +271,7 @@ export class NativeController implements ConversationController, ChannelPort {
     }
   }
 
+  withdrawInput(messageId: string): Promise<boolean> { return this.#host.withdrawSubmission(this.#channel, messageId); }
   subscribeTurns(listener: (event: TurnEvent) => void): () => void {
     this.#turnListeners.add(listener);
     return () => this.#turnListeners.delete(listener);
@@ -302,7 +302,7 @@ export class NativeController implements ConversationController, ChannelPort {
     const payload = event.event;
     if (payload.type === "channel_state") { this.#notifyConnection(); return; }
     if (payload.type === "approval_closed") return; // The host settles the shared approval ticket.
-    if (payload.type === "item_withdrawn") { this.#host.settle([payload.item]); return; }
+    if (payload.type === "item_withdrawn") { this.#report({ kind: "input_withdrawn", messageId: payload.item }); return; }
     if (payload.type === "turn_started") {
       if (!this.#turns.has(sessionTurnId(payload.turnId))) this.#begin(payload.turnId, payload.items);
       return;
@@ -355,7 +355,7 @@ export class NativeController implements ConversationController, ChannelPort {
     const byTurn = new Map<string, StoredMessage[]>();
     for (const message of view.messages) byTurn.set(message.turnId, [...(byTurn.get(message.turnId) ?? []), message]);
     const statuses = new Map(view.turns.map((turn) => [turn.turnId, turn]));
-    for (const item of view.items) if (item.milestone === "withdrawn") this.#host.settle([item.id]);
+    for (const item of view.items) if (item.milestone === "withdrawn") this.#report({ kind: "input_withdrawn", messageId: item.id });
 
     const settle = (turn: Turn, status: TurnStatus | undefined) => {
       if (!status) {

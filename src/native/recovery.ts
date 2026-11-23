@@ -1,4 +1,5 @@
-import type { HarnessClient, ItemStatus, StoredMessage, TurnStatus } from "../native-harness/src/client.ts";
+import { codeOf } from "./errors.ts";
+import type { HarnessClient, ItemStatus, PendingChannelChange, StoredMessage, TurnStatus } from "../native-harness/src/client.ts";
 
 export async function recoverChannel(
   client: HarnessClient, channel: string, itemIds: readonly string[], trackedTurns: readonly string[], options: { signal?: AbortSignal; atObservation?: () => void } = {},
@@ -29,4 +30,38 @@ export async function recoverChannel(
     }
   }
   return { observation, items, turns, messages };
+}
+
+export async function readCompleteMessage(client: HarnessClient, messageId: string): Promise<string> {
+  const chunks: Buffer[] = [];
+  for (let offset: number | undefined = 0; offset !== undefined;) {
+    const page: { data: string; nextOffset?: number } = await client.readMessage({ messageId, offset });
+    chunks.push(Buffer.from(page.data, "base64"));
+    offset = page.nextOffset;
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/** The catalog and startup edits are installed before recovered work can start. */
+export async function openOrCreate(
+  client: HarnessClient, config: Pick<Parameters<HarnessClient["openSession"]>[0], "sessionId" | "config">,
+  batch: PendingChannelChange[], tools: Parameters<HarnessClient["openSession"]>[0]["tools"], signal: AbortSignal,
+) {
+  const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(tools ? { tools } : {}) };
+  const open = () => {
+    signal.throwIfAborted();
+    return client.openSession({ sessionId: config.sessionId, config: config.config, ...changes });
+  };
+  try {
+    try { return await open(); }
+    catch (error) {
+      // An identical open on the same connection returns its original result.
+      if (codeOf(error) !== "timeout") throw error;
+      return await open();
+    }
+  } catch (error) {
+    if (codeOf(error) !== "not_found") throw error;
+  }
+  signal.throwIfAborted();
+  return client.createSession({ sessionId: config.sessionId, config: config.config, participants: [], channels: {}, ...changes });
 }

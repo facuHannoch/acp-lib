@@ -41,10 +41,13 @@ export interface ConversationController {
    * controller throws).
    */
   send(run: TurnRun): Promise<void>;
+  /** Requests withdrawal of a submitted input, true only when confirmed. */
+  withdrawInput?(messageId: string): Promise<boolean>;
   /**
    * Turn reports: `turn_started` whenever a turn starts (because of a `send`, or on the backend's
    * own), and, for backend-scheduled controllers only, `turn_took` when more items are folded into
-   * a running turn. The controller never reports a turn's end: that is its prepared turn's
+   * a running turn. Native controllers also report confirmed input withdrawal.
+   * The controller never reports a turn's end: that is its prepared turn's
    * `prompt()` settling.
    */
   subscribeTurns(listener: (event: TurnEvent) => void): () => void;
@@ -135,6 +138,8 @@ export interface TurnRun {
    */
   readonly messages: readonly CombinedMessage[];
   readonly operationKind: MeteredOperationKind;
+  /** Claims the local dispatch boundary for a native input, false if already withdrawn. */
+  readonly beginInput?: (messageId: string) => boolean;
 }
 
 /** What a prepared turn runs with. */
@@ -185,7 +190,7 @@ export interface TurnTook {
   readonly cause: TurnCause;
 }
 
-export type TurnEvent = TurnStarted | TurnTook;
+export type TurnEvent = TurnStarted | TurnTook | { readonly kind: "input_withdrawn"; readonly messageId: string };
 
 /** A start's result: `{ sessionId, resumed }`, as today. */
 export type StartResult = ConnectResult;

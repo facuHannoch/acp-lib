@@ -169,6 +169,7 @@ import type {
   TranscriptContinuationBuilder,
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
+import { withdrawBackendInput } from "./conversation-turns/backend-turns.ts";
 import { dropClearedOperations } from "./conversation-turns/clear-operations.ts";
 import { AgentConversationQueue } from "./agent-conversation-queue.ts";
 import type { ImportedTurn } from "./agent/adoption/replay.ts";
@@ -663,6 +664,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   /** A turn the controller reports. The session announces it; completion stays the session's. */
   private onControllerTurnEvent(controller: ConversationController, event: TurnEvent): void {
+    if (event.kind === "input_withdrawn") { this.backendTurns.confirmWithdrawal(event.messageId, messages => this.steering.dropped(messages)); return; }
     if (event.kind === "turn_took") return reportTurnTook(this.backendTurnHost(), event);
     if (!event.sentBySession) return reportBackendTurn(this.backendTurnHost(), controller, event);
     const sent = this.sentRuns.get(event.turnId);
@@ -1871,7 +1873,13 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   /** Take back a message that has not been sent yet. Returns whether it was still pending. */
   withdraw(id: PendingMessageId): boolean {
-    return this.steering.withdraw(id);
+    return this.steering.withdraw(id) || (this.controller.withdrawInput !== undefined &&
+      this.backendTurns.withdrawable(id) === "local" && this.backendTurns.confirmWithdrawal(id, messages => this.steering.dropped(messages)));
+  }
+
+  /** Also requests confirmed withdrawal of a native input already submitted. */
+  async withdrawAsync(id: PendingMessageId): Promise<boolean> {
+    return this.withdraw(id) || withdrawBackendInput(this.backendTurns, this.controller, id, messages => this.steering.dropped(messages));
   }
 
   /** Prompt while attributing the caller to a stable participant identity. */
@@ -1903,7 +1911,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private rejectedPrompt(error: Error): PromptHandle {
     const id = this.mintTurnId();
     const rejected = Promise.reject<AgentSessionPromptResult>(error);
-    return Object.assign(rejected, { id, withdraw: () => false });
+    return Object.assign(rejected, { id, withdraw: () => false, withdrawAsync: async () => false });
   }
 
   private enqueuePrompt(
@@ -1962,7 +1970,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       this.emitStateIfChanged();
       void this.pump();
     });
-    return Object.assign(promise, { id, withdraw: () => this.steering.withdraw(id) || withdrawWaiting(this.backendTurns, id, (messages) => this.steering.dropped(messages)) });
+    return Object.assign(promise, { id, withdraw: () => this.withdraw(id) || (!this.controller.withdrawInput && withdrawWaiting(this.backendTurns, id, messages => this.steering.dropped(messages))), withdrawAsync: () => this.withdrawAsync(id) });
   }
 
   /**
@@ -3932,7 +3940,9 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const cancellation = reason === "stop" && (this.reconnecting || this.connecting > 0)
         ? new ConnectionCancelledError() : undefined;
       const dropped = settleClearedBackendTurns(this.operations.clear(), reason === "stop", (turn) => { this.operations.enqueue(turn); void this.pump(); });
-      dropClearedOperations(dropped, this.backendTurns.clear(reason === "stop"), (messages, error) => this.steering.dropped(messages, error), cancellation);
+      const backend = this.backendTurns.clear(reason === "stop", Boolean(this.controller.withdrawInput));
+      if (reason === "stop" && this.controller.withdrawInput) for (const item of backend.splice(0)) item.reject(new Error("the conversation stopped observing this native input"));
+      dropClearedOperations(dropped, backend, (messages, error) => this.steering.dropped(messages, error), cancellation);
       this.emitStateIfChanged();
     }
     this.cancelOperation(reason);

@@ -46,18 +46,41 @@ type MessageState = "sending" | "waiting" | "taken";
 
 export class BackendTurns {
   readonly #turns = new Map<string, BackendTurnItem>();
-  readonly #messages = new Map<string, { readonly item: PromptQueueItem; state: MessageState }>();
+  readonly #messages = new Map<string, { readonly item: PromptQueueItem; state: MessageState; offered?: true; release?: () => void }>();
   /** The backend turn running now (it holds the session's queue), if any. */
   running: string | null = null;
 
   /** A message is handed to a backend-scheduled controller: `send` is in flight. */
-  wait(item: PromptQueueItem): void { this.#messages.set(item.turnId, { item, state: "sending" }); }
+  wait(item: PromptQueueItem, release?: () => void): void { this.#messages.set(item.turnId, { item, state: "sending", release }); }
   /** `send` resolved: the message is accepted (unless a turn already claimed it meanwhile). */
   accepted(messageId: string): void {
     const message = this.#messages.get(messageId);
     if (message?.state === "sending") message.state = "waiting";
   }
-  unwait(messageId: string): void { this.#messages.delete(messageId); }
+  unwait(messageId: string): boolean {
+    this.#messages.get(messageId)?.release?.();
+    return this.#messages.delete(messageId);
+  }
+
+  beginInput(messageId: string): boolean {
+    const message = this.#messages.get(messageId);
+    if (!message) return false;
+    message.offered = true;
+    return true;
+  }
+
+  withdrawable(messageId: string): "local" | "submitted" | undefined {
+    const message = this.#messages.get(messageId);
+    if (message && message.state !== "taken") return message.offered ? "submitted" : "local";
+  }
+
+  confirmWithdrawal(messageId: string, drop: (messages: PromptQueueItem[]) => void): boolean {
+    const message = this.#messages.get(messageId);
+    if (!message || message.state === "taken") return false;
+    this.unwait(messageId);
+    drop([{ ...message.item, waited: true }]);
+    return true;
+  }
 
   report(item: BackendTurnItem): void {
     this.#turns.set(item.turnId, item);
@@ -91,7 +114,7 @@ export class BackendTurns {
         log?.warn("backend_turn_names_unknown_message", { turnId: turn.turnId, messageId: id }); // recorded, not trusted for settlement
         continue;
       }
-      this.#messages.delete(id);
+      this.unwait(id);
       if ("result" in outcome) message.item.resolve(outcome.result);
       else message.item.reject(outcome.error);
     }
@@ -125,12 +148,12 @@ export class BackendTurns {
   }
 
   /**
-   * `interrupt({ clearQueue })`: the accepted, unclaimed messages leave (to be dropped as cancelled); messages in flight or
-   * taken by a turn stay. Stop: every message leaves and the turns are forgotten.
+   * On native interrupt, locally held items leave and submitted items keep following the harness.
+   * Other controllers keep their accepted, unclaimed clear behavior. Stop forgets all tracked items and turns.
    */
-  clear(stopping: boolean): PromptQueueItem[] {
-    const leaving = [...this.#messages].filter(([, message]) => stopping || message.state === "waiting");
-    for (const [id] of leaving) this.#messages.delete(id);
+  clear(stopping: boolean, native = false): PromptQueueItem[] {
+    const leaving = [...this.#messages].filter(([, message]) => stopping || (native ? !message.offered && message.state !== "taken" : message.state === "waiting"));
+    for (const [id] of leaving) this.unwait(id);
     if (stopping) this.#turns.clear();
     return leaving.map(([, message]) => message.item);
   }
@@ -206,15 +229,16 @@ export function reportTurnTook(host: BackendTurnHost, event: TurnTook): void {
  * operation ends when `send` resolves. The message waits for the turn that takes it; a rejected acceptance rejects it.
  */
 export async function sendToBackend(host: BackendTurnHost, controller: ConversationController, message: PromptQueueItem): Promise<void> {
-  host.turns.wait(message);
+  const release = controller.withdrawInput ? Promise.withResolvers<void>() : undefined;
+  host.turns.wait(message, release?.resolve);
   try {
     // No turn id: the backend assigns turn ids. The message goes as the queue holds it.
     const { turnId: _sessionTurnId, ...run } = turnRunOf(message);
-    await controller.send(run);
+    const send = controller.send(release ? { ...run, beginInput: id => host.turns.beginInput(id) } : run);
+    await (release ? Promise.race([send, release.promise]) : send);
     host.turns.accepted(message.turnId);
   } catch (error) {
-    host.turns.unwait(message.turnId);
-    message.reject(error);
+    if (host.turns.unwait(message.turnId)) message.reject(error);
   }
 }
 
@@ -222,6 +246,17 @@ export async function sendToBackend(host: BackendTurnHost, controller: Conversat
  * Withdraws a message the backend accepted and no turn has taken yet: it resolves as cancelled and the wait ends. Local only
  * (the backend is not told; a turn that later names the id finds it unknown and ignores it). False when it isn't waiting.
  */
+export async function withdrawBackendInput(
+  turns: BackendTurns, controller: ConversationController, id: string, drop: (messages: PromptQueueItem[]) => void,
+): Promise<boolean> {
+  if (!controller.withdrawInput) return withdrawWaiting(turns, id, drop);
+  const state = turns.withdrawable(id);
+  if (state === "local") return turns.confirmWithdrawal(id, drop);
+  if (state !== "submitted" || !await controller.withdrawInput(id)) return false;
+  turns.confirmWithdrawal(id, drop);
+  return true;
+}
+
 export function withdrawWaiting(turns: BackendTurns, messageId: string, drop: (messages: PromptQueueItem[]) => void): boolean {
   const message = turns.take(messageId);
   if (message) drop([message]);

@@ -3,6 +3,7 @@ import { summarizeModelUsage } from "./usage.ts";
 import { NativeWorkerDelivery } from "./worker-delivery.ts";
 import type { WorkerDeliveryRepository } from "../persistence/worker-delivery-contract.ts";
 import { NativeApprovals } from "./approvals.ts";
+import { SubmissionWithdrawal } from "./submission-withdrawal.ts";
 import { takenSender } from "./delegation-sender.ts";
 /**
  * The shared native harness host: one per Agent (acp-client integration spec, Ownership).
@@ -28,7 +29,6 @@ import {
   type ChannelStatusResult,
   type ItemStatus,
   type LoadResult,
-  type PendingChannelChange,
   type ProtocolConfig,
   type StatusResult,
   type StoredMessage,
@@ -36,7 +36,7 @@ import {
   type ToolAvailability,
   type ToolInvocation,
 } from "../native-harness/src/client.ts";
-import { recoverChannel } from "./recovery.ts";
+import { openOrCreate, readCompleteMessage, recoverChannel } from "./recovery.ts";
 import { createNativeFunctionHost, type NativeFunctionHost, type NativeFunctionsConfig } from "./functions.ts";
 import { prepareNativeLaunch, onceDispose, type AcpLauncher } from "../launcher.ts";
 import { noopLogger, type Logger } from "../logger.ts";
@@ -156,6 +156,7 @@ export class NativeHarnessHost {
   readonly #workerDelivery?: NativeWorkerDelivery;
   /** Callers waiting for a submission's acceptance, across reopens. */
   readonly #waiters = new Map<string, Deferred<ItemStatus>>();
+  readonly #withdrawals: SubmissionWithdrawal;
   readonly #stateListeners = new Set<() => void>();
   readonly #restarts: number[] = [];
   /** How many processes this host has started (observability and tests). */
@@ -173,6 +174,10 @@ export class NativeHarnessHost {
     this.#approvals = new NativeApprovals(config.approvalResponder, this.#log);
     const records = config.records ?? createMemoryHostRecords();
     this.records = channels ? submissionRecords(records) : records;
+    this.#withdrawals = new SubmissionWithdrawal(this.records, config.requestTimeoutMs ?? 30_000,
+      (channel, item) => this.withdraw(channel, item),
+      async (channel, item) => (await this.#client().reconcileChannel({ channel, itemIds: [item] })).items[0],
+      (channel, item) => this.#deliver({ channel, event: { type: "item_withdrawn", item } }));
     this.#changes = new NativeChannelChanges(channels ?? channelStore(records), this.#channels, () => this.#client(),
       this.#log, config.onChannelChangeBlocked);
     if (workerDelivery) this.#workerDelivery = new NativeWorkerDelivery(
@@ -439,7 +444,7 @@ export class NativeHarnessHost {
     // The startup cutoff: what is pending now goes inside the open and is applied before any work
     // can run. An edit made after this line is sent through the live channel methods once open.
     const batch = await this.#changes.startupBatch(signal);
-    const opened = await this.#openOrCreate(client, batch, signal);
+    const opened = await openOrCreate(client, this.#config, batch, functions?.catalog(), signal);
     signal.throwIfAborted();
     await this.#changes.acknowledgeOpen(opened.channelChanges ?? [], signal);
     signal.throwIfAborted();
@@ -527,38 +532,14 @@ export class NativeHarnessHost {
   }
   async toolInvocations(turn: string): Promise<ToolInvocation[]> { return (await this.#client().toolInvocations(turn)).invocations; }
 
-  async #openOrCreate(client: HarnessClient, batch: PendingChannelChange[], signal: AbortSignal) {
-    const { sessionId, config } = this.#config;
-    const functions = this.#functionHost();
-    // The catalog and the current runtime selection go inside the open, before recovered work can start.
-    const changes = { ...(batch.length ? { channelChanges: batch } : {}), ...(functions ? { tools: functions.catalog() } : {}) };
-    const load = () => {
-      signal.throwIfAborted();
-      return client.openSession({ sessionId, config, ...changes });
-    };
-    try {
-      try {
-        return await load();
-      } catch (error) {
-        // The response was lost on a live connection: the same request again reports the recorded
-        // results and applies nothing twice.
-        if (codeOf(error) !== "timeout") throw error;
-        return await load();
-      }
-    } catch (error) {
-      if (codeOf(error) !== "not_found") throw error;
-    }
-    signal.throwIfAborted();
-    return client.createSession({ sessionId, config, participants: [], channels: {}, ...changes });
-  }
-
   /** Settles what the view answers: submissions first (they decide which turn causes are ours), then each channel. */
   #reconcile(view: LoadResult, observed: ReadonlyMap<string, number>): void {
     const items = new Map(view.items.map((item) => [item.id, item]));
     for (const submission of this.records.submissions()) {
       const item = items.get(submission.id);
       if (!item) continue; // unknown to the harness: retried after the open, with the same id and payload
-      this.records.markAccepted(submission.id);
+      if (item.milestone === "withdrawn") this.records.settleSubmission(submission.id);
+      else this.records.markAccepted(submission.id);
       this.#waiters.get(submission.id)?.resolve(item);
       this.#waiters.delete(submission.id);
     }
@@ -576,6 +557,7 @@ export class NativeHarnessHost {
   /** Queue unresolved submissions behind the post-cutoff edits. */
   #replaySubmissions(): void {
     for (const submission of this.records.submissions()) {
+      if (submission.withdrawing) { this.#retryWithdrawal(submission, true); continue; }
       if (submission.state === "accepted") continue;
       // Saved and never written, with nobody waiting (its caller was told it failed, or is gone):
       // it is not sent now.
@@ -629,8 +611,6 @@ export class NativeHarnessHost {
     this.#waiters.clear();
   }
 
-  // --- events -----------------------------------------------------------------------------------
-
   #route(connection: NativeConnection, event: ChannelEvent): void {
     // A late event of a connection that was replaced is not this session's present.
     if (this.#stopped || (this.#connection !== null && this.#connection !== connection)) return;
@@ -640,6 +620,13 @@ export class NativeHarnessHost {
   }
 
   #deliver(event: ChannelEvent): void {
+    if (event.event.type === "item_withdrawn") {
+      const id = event.event.item;
+      const sender = this.records.submission(id)?.sender ?? "";
+      this.records.settleSubmission(id);
+      this.#waiters.get(id)?.resolve({ id, channel: event.channel, sender, kind: "participant_message", milestone: "withdrawn" });
+      this.#waiters.delete(id);
+    }
     if (event.event.type === "approval_requested") this.#approvals.start(event.event);
     if (event.event.type === "approval_closed") this.#approvals.closed(event.event);
     if (event.event.type === "turn_ended") this.#approvals.end(event.channel, event.event.turnId);
@@ -661,8 +648,6 @@ export class NativeHarnessHost {
     if (held.length > 2000) held.shift();
     this.#backlog.set(event.channel, held);
   }
-
-  // --- channel work -----------------------------------------------------------------------------
 
   #client(): HarnessClient {
     // Also during an open, once the view is in: reconciliation may read a message by reference.
@@ -696,7 +681,7 @@ export class NativeHarnessHost {
 
   async #submit(id: string): Promise<void> {
     const submission = this.records.submission(id);
-    if (!submission) return;
+    if (!submission || submission.withdrawing) return;
     if (submission.state === "accepted" && !this.#waiters.has(id)) return;
     // Read when the outcome is known, not now: a caller may start waiting for this id while the
     // request is in flight (a retry after a reopen, then the conversation's own send).
@@ -724,16 +709,22 @@ export class NativeHarnessHost {
       catch (error) {
         // No answer on a live connection: the same id and payload again. The harness answers a
         // repeat with the original item, so this never creates a second input.
-        if (codeOf(error) !== "timeout" || this.#state !== "running") throw error;
+        const pending = this.records.submission(id);
+        if (codeOf(error) !== "timeout" || this.#state !== "running" || !pending || pending.withdrawing) throw error;
         receipt = await request();
       }
-      this.records.markAccepted(id);
       const item: ItemStatus = receipt.item ?? { id, channel: submission.channel, kind: "participant_message", sender: submission.sender, milestone: "received" };
+      if (item.milestone === "withdrawn") { this.#deliver({ channel: submission.channel, event: { type: "item_withdrawn", item: id } }); return; }
+      this.records.markAccepted(id);
       settle((waiter) => waiter.resolve(item));
+      if (this.records.submission(id)?.withdrawing) this.#retryWithdrawal(submission);
     } catch (error) {
       // Unknown outcome: the saved submission stays `unknown`. The next open finds it in the view
       // (accepted) or retries it with this id and payload.
-      if (ambiguous(error)) return;
+      if (ambiguous(error)) {
+        if (codeOf(error) === "timeout" && this.records.submission(id)?.withdrawing) this.#retryWithdrawal(submission, true);
+        return;
+      }
       // Not running, so nothing was written this time. Whoever waits is reopened for by `#lost`, or
       // was already told the host stopped or failed.
       if (error instanceof HarnessUnavailableError) return;
@@ -891,19 +882,27 @@ export class NativeHarnessHost {
   /** Withdraws an accepted input the harness has not taken. `taken` names the turn that owns it instead. */
   async withdraw(channel: string, item: string): Promise<{ outcome: "withdrawn" } | { outcome: "taken"; turnId: string | undefined }> {
     const result = await this.#client().withdrawItem({ channel, item });
-    if (result.outcome === "withdrawn") { this.records.settleSubmission(item); return { outcome: "withdrawn" }; }
-    return { outcome: "taken", turnId: result.item.turnId };
+    if (result.outcome === "withdrawn") this.#deliver({ channel, event: { type: "item_withdrawn", item } });
+    else { this.records.markAccepted(item); this.#waiters.get(item)?.resolve(result.item); this.#waiters.delete(item); }
+    return result.outcome === "withdrawn" ? { outcome: "withdrawn" } : { outcome: "taken", turnId: result.item.turnId };
+  }
+
+  withdrawSubmission(channel: string, id: string): Promise<boolean> {
+    return this.#withdrawals.withdraw(channel, id, this.#waiters.get(id)?.promise);
+  }
+
+  #retryWithdrawal(submission: Submission, reopened = false): void {
+    const connection = this.#connection;
+    void this.#withdrawals.retry(submission.channel, submission.id, undefined, reopened).catch(error => {
+      this.#log.warn("native_withdrawal_unresolved", { item: submission.id, error: String(error) });
+      // Once reconciliation is exhausted, unblock an unacknowledged push with uncertainty.
+      if (reopened && this.#connection === connection && this.records.submission(submission.id)?.withdrawing) {
+        this.#waiters.get(submission.id)?.reject(error);
+        this.#waiters.delete(submission.id);
+      }
+    });
   }
 
   /** The committed text of one assistant message, whatever its size. */
-  async readMessage(messageId: string): Promise<string> {
-    const client = this.#client();
-    const chunks: Buffer[] = [];
-    for (let offset: number | undefined = 0; offset !== undefined;) {
-      const page: { data: string; nextOffset?: number } = await client.readMessage({ messageId, offset });
-      chunks.push(Buffer.from(page.data, "base64"));
-      offset = page.nextOffset;
-    }
-    return Buffer.concat(chunks).toString("utf8");
-  }
+  readMessage(messageId: string): Promise<string> { return readCompleteMessage(this.#client(), messageId); }
 }

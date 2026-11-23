@@ -995,6 +995,22 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
 - **Interrupting** (`conversation.interrupt()`, or `connection.forceStop()`)
   ends that conversation's turn only. Other conversations and the shared
   process keep running, and the interrupted conversation accepts new input.
+- **Withdrawing input.** `promptHandle.withdraw()` and `conversation.withdraw(id)`
+  remove local input synchronously. Use `await promptHandle.withdrawAsync()` or
+  `await conversation.withdrawAsync(id)` once a native input has been submitted.
+  A confirmed withdrawal cancels its prompt. If take wins, the call returns
+  false and the prompt follows its turn. Push and withdraw can be dispatched
+  concurrently. A `not_found` reply can leave the withdrawal unresolved and
+  the async call can reject. The host retains its intent and suppresses push
+  replay while checking the original channel and item ID on reconnect. If those
+  checks still leave a push unacknowledged, its prompt can reject with the
+  unresolved error. The intent remains available for later reconciliation.
+  Default submission records are in memory even with SQLite persistence.
+  Configure file-backed host records to retain the intent across Agent reopen.
+  A custom submission store needs `markWithdrawing` to track async withdrawal.
+  `interrupt({ clearQueue: true })` still clears locally queued input. Already
+  submitted native input remains with the harness. Stop and Agent close reject
+  local handles they no longer observe and leave accepted input with the harness.
 - **Channel changes** go through `agent.nativeHarness.changeChannel(conversationId,
   { displayName, policy, lifecycle })`. While the harness is stopped they are
   stored (they never start it) and applied by the next start before any pending

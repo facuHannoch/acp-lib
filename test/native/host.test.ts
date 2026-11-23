@@ -35,6 +35,8 @@ async function rig(options: {
   steps?: Parameters<typeof modelScenario>[0];
   restart?: { limit: number; windowMs: number };
   startupTimeoutMs?: number;
+  requestTimeoutMs?: number;
+  fileRecords?: boolean;
   approvalResponder?: NativeApprovalResponder;
   durable?: boolean;
   configureChannels?: (channels: ChannelPersistence) => void;
@@ -72,16 +74,23 @@ async function rig(options: {
     cleanups.push(end);
     return { client, closed: gone, async kill() { end(); } };
   };
-  const records = createMemoryHostRecords();
+  const recordsPath = join(directory, "host-records.json");
+  const records = options.fileRecords ? createFileHostRecords(recordsPath) : createMemoryHostRecords();
   const persistence = options.durable ? await SqliteAgentPersistence.open({ path: join(directory, "agent.sqlite") }) : undefined;
   if (persistence) {
     cleanups.push(() => persistence.close());
     options.configureChannels?.(persistence.channels);
   }
   const blocked: unknown[] = [];
-  const host = new NativeHarnessHost({ sessionId: "agent-1", config, home: directory, records, connect, requestTimeoutMs: 2000,
+  const makeHost = (records: ReturnType<typeof createMemoryHostRecords>) => new NativeHarnessHost({ sessionId: "agent-1", config, home: directory, records, connect, requestTimeoutMs: options.requestTimeoutMs ?? 2000,
     approvalResponder: options.approvalResponder, onChannelChangeBlocked: (result) => blocked.push(result), ...(options.restart ? { restart: options.restart } : {}),
     ...(options.startupTimeoutMs ? { startupTimeoutMs: options.startupTimeoutMs } : {}) }, persistence?.channels);
+  const host = makeHost(records);
+  const reopen = () => {
+    const replacement = makeHost(createFileHostRecords(recordsPath));
+    cleanups.push(() => replacement.stop());
+    return replacement;
+  };
   cleanups.push(() => host.stop());
   const attach = (channel: string, busy = false) => {
     const events: ChannelEvent[] = [], views: ChannelView[] = [], notes: string[] = [];
@@ -90,7 +99,7 @@ async function rig(options: {
     host.attach(channel, port);
     return { events, views, notes };
   };
-  return { host, records, calls, intercept, connections, blocked, attach, config, effects, failConnect: (error: Error | null) => { failConnect = error; } };
+  return { host, records, calls, intercept, connections, blocked, attach, config, effects, reopen, failConnect: (error: Error | null) => { failConnect = error; } };
 }
 const input = (id: string, channel = "a", text = "hello") => ({ id, channel, sender: "ana", text });
 
@@ -608,4 +617,74 @@ test("catch-up advances only through committed pages and stays opt-in", async ()
   expect(committed).toHaveLength(2);
   expect(committed[1]).not.toBe(committed[0]);
   observer.detach();
+});
+
+describe("native withdrawal over a controlled client", () => {
+  const pending = { id: "r6", channel: "a", sender: "user", kind: "participant_message", milestone: "received" };
+
+  test("retries not_found after the original push is accepted, without replaying it", async () => {
+    const { host, records, intercept, calls } = await rig();
+    const sent = barrier(), allowReceipt = barrier(), notFound = barrier();
+    intercept.push = async () => {
+      sent.release();
+      await allowReceipt.reached;
+      return { item: pending };
+    };
+    intercept.withdrawItem = async (_real, params) => {
+      expect(params).toEqual({ channel: "a", item: "r6" });
+      if (calls.filter(method => method === "withdrawItem").length === 1) {
+        notFound.release();
+        throw new HarnessClientError("not_found", "no committed item yet");
+      }
+      return { outcome: "withdrawn", item: { ...pending, milestone: "withdrawn" } };
+    };
+
+    const push = host.push(input("r6", "a"));
+    await sent.reached;
+    const withdrawing = host.withdrawSubmission("a", "r6");
+    await notFound.reached;
+    expect(records.submission("r6")).toMatchObject({ state: "unknown", withdrawing: true });
+    allowReceipt.release();
+    expect(await withdrawing).toBe(true);
+    expect(await push).toMatchObject({ id: "r6" });
+    expect(records.submission("r6")).toBeUndefined();
+    expect(calls.filter(method => method === "push")).toHaveLength(1);
+    expect(calls.filter(method => method === "withdrawItem")).toHaveLength(2);
+  });
+
+  test("bounds unresolved withdrawal and suppresses push replay across a file-backed host reopen", async () => {
+    const { host, records, intercept, calls, reopen } = await rig({ fileRecords: true, requestTimeoutMs: 50 });
+    const sent = barrier(), confirmed = barrier();
+    intercept.push = async () => { sent.release(); throw new HarnessClientError("transport_closed", "push outcome unknown"); };
+    intercept.withdrawItem = async () => { throw new HarnessClientError("not_found", "nothing committed yet"); };
+    const push = host.push(input("r6", "a")).catch(error => error);
+    await sent.reached;
+    await expect(host.withdrawSubmission("a", "r6")).rejects.toMatchObject({ code: "not_found" });
+    expect(records.submission("r6")).toMatchObject({ state: "unknown", withdrawing: true });
+    await host.stop();
+    expect(await push).toBeInstanceOf(HarnessUnavailableError);
+
+    intercept.withdrawItem = async (_real, params) => {
+      expect(params).toEqual({ channel: "a", item: "r6" });
+      confirmed.release();
+      return { outcome: "withdrawn", item: { ...pending, milestone: "withdrawn" } };
+    };
+    const replacement = reopen();
+    await replacement.ensureStarted();
+    await confirmed.reached;
+    await until(() => replacement.records.submission("r6") === undefined, "confirmed withdrawal to clear the intent");
+    expect(calls.filter(method => method === "push")).toHaveLength(1);
+    expect(calls.filter(method => method === "withdrawItem")).toHaveLength(2);
+  });
+});
+
+test("a native withdrawal that loses to take preserves the submission", async () => {
+  const { host, records, intercept, calls } = await rig();
+  const item = { id: "taken", channel: "a", sender: "user", kind: "participant_message", milestone: "taken", turnId: "12" };
+  intercept.push = async () => ({ item });
+  intercept.withdrawItem = async () => ({ outcome: "taken", item });
+  await host.push(input(item.id, item.channel));
+  expect(await host.withdrawSubmission(item.channel, item.id)).toBe(false);
+  expect(records.submission(item.id)).toMatchObject({ state: "accepted" });
+  expect(calls.filter(method => method === "push")).toHaveLength(1);
 });

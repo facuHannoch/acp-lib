@@ -38,6 +38,8 @@ export interface PromptHandle extends Promise<AgentSessionPromptResult> {
   readonly id: PendingMessageId;
   /** Remove the message if it has not been delivered yet. Returns whether it was still pending. */
   withdraw(): boolean;
+  /** Also requests confirmed withdrawal of a native input already submitted. */
+  withdrawAsync(): Promise<boolean>;
 }
 
 /** Events about messages that wait. They go on the conversation event stream. */

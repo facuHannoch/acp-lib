@@ -51,7 +51,7 @@ export interface NativeRig {
   clean(): Promise<void>;
 }
 
-export async function nativeRig(options: { policies?: ProtocolConfig["policies"]; defaultPolicy?: string } = {}): Promise<NativeRig> {
+export async function nativeRig(options: { policies?: ProtocolConfig["policies"]; defaultPolicy?: string; beforeLaunch?: (count: number) => Promise<void> } = {}): Promise<NativeRig> {
   const directory = await mkdtemp(join(tmpdir(), "acp-native-"));
   const home = join(directory, "harness-home"), scriptPath = join(directory, "script.jsonl"), effectsPath = join(directory, "effects.log");
   const env: Record<string, string> = { HARNESS_TEST_EFFECTS: effectsPath };
@@ -66,6 +66,7 @@ export async function nativeRig(options: { policies?: ProtocolConfig["policies"]
   const launcher = {
     async prepare(request: { kind: "acp" | "pty" | "native-harness"; targetCommand: readonly string[] }) {
       launches.push({ kind: request.kind, target: request.targetCommand });
+      await options.beforeLaunch?.(launches.length);
       if (broken) throw broken;
       return { command: [...request.targetCommand], spawnCwd: directory, spawnEnv: { ...(process.env as Record<string, string>), ...env } };
     },
