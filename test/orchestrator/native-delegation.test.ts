@@ -9,7 +9,7 @@ import { modelScenario } from "../../src/native-harness/test/helpers/scenario.ts
 import { createNativeFunctionHost } from "../../src/native/functions.ts";
 import type { NativeFunctionContext } from "../../src/native/functions.ts";
 import type { OrchestratorConfig } from "../../src/orchestrator/config.ts";
-import { takenSender } from "../../src/orchestrator/delegation-sender.ts";
+import { takenSender } from "../../src/native/delegation-sender.ts";
 import { withDelegationTools } from "../../src/orchestrator/native-delegation.ts";
 import { matchWorkerPermissionLevel } from "../../src/orchestrator/policy.ts";
 import { nativeRig } from "../native/support.ts";
@@ -143,6 +143,7 @@ test.each([
   ["leading space", " notice:w1", "participant:notice:w1"],
   ["leading NBSP", "\u00a0notice:w1", "participant:notice:w1"],
   ["leading tab", "\tparticipant:w1", "participant:participant:w1"],
+  ["zero-width space only", "\u200b \u200b", null],
 ])("the production host resolves delegation attribution during open (%s)", async (_case, sender, attribution) => {
   const rig = await nativeRig();
   try {
@@ -176,6 +177,11 @@ test.each([
     const open = spyOn(agent.orchestrator!, "open");
     channel = (await agent.conversations.create({ title: "Giver" })).id;
     await agent.nativeHarness!.start();
+    if (attribution === null) {
+      expect(await result.promise).toMatchObject({ ok: false, code: "delegation_sender_unavailable" });
+      expect(open).not.toHaveBeenCalled();
+      return;
+    }
     expect(await result.promise).toMatchObject({ ok: true, output: { status: "sent", handle: "w1" } });
     expect(open).toHaveBeenCalledTimes(1);
     expect(open.mock.calls[0]?.[0]).toMatchObject({ kind: "conversation", sender: attribution,

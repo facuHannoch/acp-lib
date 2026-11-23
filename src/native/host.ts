@@ -1,7 +1,7 @@
 import { NativeWorkerDelivery } from "./worker-delivery.ts";
 import type { WorkerDeliveryRepository } from "../persistence/worker-delivery-contract.ts";
 import { NativeApprovals } from "./approvals.ts";
-import { takenSender } from "../orchestrator/delegation-sender.ts";
+import { takenSender } from "./delegation-sender.ts";
 /**
  * The shared native harness host: one per Agent (acp-client integration spec, Ownership).
  *

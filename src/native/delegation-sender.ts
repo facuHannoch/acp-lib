@@ -1,5 +1,5 @@
 import type { HarnessClient } from "../native-harness/src/client.ts";
-import { FunctionError } from "../native/functions.ts";
+import { FunctionError } from "./functions.ts";
 
 /** Use the first taken input as the caller's attribution, even if more inputs arrive during the turn. */
 export async function takenSender(
@@ -17,6 +17,7 @@ export async function takenSender(
   const id = item?.sender.trim();
   if (!item || !id) throw new FunctionError("delegation_sender_unavailable", "No sender identifies the turn's first taken input");
   if (item.kind !== "participant_message") return `notice:${id}`;
+  if (/^[\s\u200b]+$/u.test(id)) throw new FunctionError("delegation_sender_unavailable", "Blank participant ID");
   // Escape reserved prefixes so arbitrary participant IDs stay distinct from notice labels.
   if (id.startsWith("notice:") || id.startsWith("participant:")) return `participant:${id}`;
   return id;
