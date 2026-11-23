@@ -143,13 +143,19 @@ function prompt(m: any): void {
     });
     return;
   }
-  if (mode === "tool") {
+  if (mode === "tool" || mode === "natural") {
     update(session, { sessionUpdate: "tool_call", toolCallId: "sleep", title: "sleep", status: "in_progress" });
     const toolGate = process.env.LIFECYCLE_TOOL_GATE_FILE;
     const finishTool = () => {
       if (pending?.id !== m.id) return;
       if (toolGate && !existsSync(toolGate)) {
         setTimeout(finishTool, 5);
+        return;
+      }
+      if (mode === "natural") {
+        text(session, "natural final result");
+        reply(m.id, { stopReason: "end_turn" });
+        pending = null;
         return;
       }
       update(session, { sessionUpdate: "tool_call_update", toolCallId: "sleep", status: "completed" });

@@ -9,7 +9,7 @@ interface Slot {
   readonly completions: Set<Promise<void>>;
   touched: number;
   idleTimer?: ReturnType<typeof setTimeout>;
-  work?: { readonly started: number; readonly sender?: string; readonly assignment: RunningAssignment };
+  work?: { readonly started: number; readonly sender?: string; assignment: RunningAssignment };
 }
 
 export class WorkerPool {

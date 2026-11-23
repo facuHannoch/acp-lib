@@ -43,6 +43,8 @@ export interface WorkerSummary extends WorkerRow {
   readonly sender?: string;
   readonly busyMs?: number;
   readonly latestOutcome?: WorkerAssignmentOutcome;
+  /** The last successful result, when the most recent outcome is a dispatch refusal. */
+  readonly latestResult?: Extract<WorkerAssignmentOutcome, { kind: "result" }>;
 }
 
 export type OpenWorkerResult = { readonly status: "sent"; readonly handle: string } |

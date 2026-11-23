@@ -10,7 +10,7 @@ const lifecyclePeer = new URL("../fixtures/lifecycle-agent.ts", import.meta.url)
 const allowed = ["continue", "redirect", "replace"] as const;
 const refused = ["conflict", "hook_error"] as const;
 
-for (const mode of [...allowed, ...refused, "folded_conflict"] as const) {
+for (const mode of [...allowed, ...refused, "folded_conflict", "natural"] as const) {
   test(`a busy ACP successor ${mode} uses the durable assignment boundary`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "orchestrator-assignment-"));
     const toolGate = join(directory, "release-tool"), state = join(directory, "worker-history.json");
@@ -32,7 +32,8 @@ for (const mode of [...allowed, ...refused, "folded_conflict"] as const) {
         if (event.kind === "worker_idle") idle.resolve();
       });
       const pool = agent.orchestrator!, repo = agent.persistence.workerDelivery!;
-      expect(await pool.open(originalActor, { text: "[lifecycle:tool] old" })).toEqual({ status: "sent", handle: "w1" });
+      const originalText = mode === "natural" ? "[lifecycle:natural] old" : "[lifecycle:tool] old";
+      expect(await pool.open(originalActor, { text: originalText })).toEqual({ status: "sent", handle: "w1" });
       await waitFor(tool.promise, "original worker to reach the tool barrier");
       const originalBinding = (await repo.readBinding("original"))!;
       expect(originalBinding).toMatchObject({ destination: { kind: "acp", id: original.id }, originatingPolicyNames: ["guest"] });
@@ -71,7 +72,14 @@ for (const mode of [...allowed, ...refused, "folded_conflict"] as const) {
       }
       const dispatched = Object.values(JSON.parse(await readFile(state, "utf8")) as Record<string, string[]>).flat();
       const redirected = events.filter(event => event.kind === "worker_redirected");
-      if (mode === "folded_conflict") {
+      if (mode === "natural") {
+        expect(dispatched).toEqual([originalText, "successor"]);
+        expect(old).toMatchObject({ outcome: { kind: "result", text: "natural final result" },
+          delivery: { destination: { id: original.id }, policyNames: ["guest"], state: "delivered" } });
+        expect(await repo.readStaged("next")).toMatchObject({ outcome: { kind: "result" },
+          delivery: { destination: { id: other.id }, policyNames: ["owner"], state: "delivered" } });
+        expect(events.filter(event => event.kind === "worker_failed")).toHaveLength(0);
+      } else if (mode === "folded_conflict") {
         expect(dispatched).toEqual(["[lifecycle:tool] old"]);
         expect(redirected).toHaveLength(0);
         expect(events).toContainEqual(expect.objectContaining({
@@ -135,6 +143,55 @@ test("a send after reopen reserves fresh work while an abandoned continuation co
     expect(await repo.readBinding("old")).toMatchObject({ messageId: "old-message" });
     expect(await repo.readStaged("fresh")).toMatchObject({ outcome: { kind: "result", text: expect.stringContaining("fresh work") },
       delivery: { state: "delivered" } });
+  } finally {
+    try { await agent.close(); }
+    finally { await rm(directory, { recursive: true, force: true }); }
+  }
+}, 20_000);
+
+test("an idle start refused by a transient reservation error reports failure and keeps the last result", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "orchestrator-start-refusal-"));
+  const agent = await Agent.open(config(join(directory, "agent.sqlite"), [process.execPath, lifecyclePeer]));
+  try {
+    const target = await agent.conversations.create();
+    const events: WorkerEvent[] = [];
+    let idle = Promise.withResolvers<void>();
+    agent.events.subscribeWorkers(({ event }) => {
+      events.push(event);
+      if (event.kind === "worker_idle") idle.resolve();
+    });
+    const pool = agent.orchestrator!;
+    expect(await pool.open(actor(target.id, "saved"), { text: "saved result" })).toEqual({ status: "sent", handle: "w1" });
+    await waitFor(idle.promise, "the first result");
+    const transaction = agent.persistence.transaction.bind(agent.persistence);
+    agent.persistence.transaction = work => transaction(scope => {
+      const repo = scope.workerDelivery;
+      if (repo) {
+        const reserve = repo.reserve.bind(repo);
+        repo.reserve = async binding => {
+          if (binding.assignmentId === "rejected") throw new Error("transient reservation error");
+          return reserve(binding);
+        };
+      }
+      return work(scope);
+    });
+    idle = Promise.withResolvers<void>();
+    expect(await pool.send(actor(target.id, "rejected"), "w1", { text: "must not reach provider" })).toEqual({ status: "sent" });
+    await waitFor(idle.promise, "the start refusal notice");
+    expect(events.filter(event => event.kind === "worker_failed")).toMatchObject([{
+      reason: "refused", cause: "hook_error", destination: target.id,
+    }]);
+    const notices = (await agent.persistence.messages.list(target.id)).messages;
+    expect(notices.map(message => message.consumerMetadata)).toEqual([
+      { kind: "worker_reply", sender: "w1" },
+      { kind: "worker_failed", sender: "w1", errorKind: "failed", reason: "refused", cause: "hook_error" },
+    ]);
+    const summary = {
+      latestOutcome: { kind: "failed", reason: "worker refused: dispatch hook failed" },
+      latestResult: { kind: "result", text: expect.stringContaining("saved result") },
+    };
+    expect(await agent.workers!.check("w1")).toMatchObject(summary);
+    expect(await agent.workers!.list()).toMatchObject([summary]);
   } finally {
     try { await agent.close(); }
     finally { await rm(directory, { recursive: true, force: true }); }

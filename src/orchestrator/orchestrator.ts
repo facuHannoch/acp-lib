@@ -218,7 +218,10 @@ export class Orchestrator {
 
   private async summary(row: WorkerRow): Promise<WorkerSummary> {
     const latest = await this.assignments?.latestOutcome?.(row);
-    return { ...this.pool.summary(row), ...(latest ? { latestOutcome: latest.outcome } : {}) };
+    const result = latest?.assignmentId.startsWith("refused-steer:")
+      ? (await this.assignments?.latestResult?.(row))?.outcome : undefined;
+    return { ...this.pool.summary(row), ...(latest ? { latestOutcome: latest.outcome } : {}),
+      ...(result?.kind === "result" ? { latestResult: result } : {}) };
   }
 
   private async activeRows(rows: readonly WorkerRow[]): Promise<WorkerRow[]> {
@@ -261,7 +264,8 @@ export class Orchestrator {
       },
       delivery: plan.kind === "start" ? "queue" as const : "steer" as const,
       ...(actor.kind === "conversation" || accepted ? { beforeDispatch: async (messageId: string) => {
-        await this.assignments?.beforeDispatch(row, plan, messageId, policyNames, actor.kind === "conversation" ? actor : undefined);
+        const assignment = await this.assignments?.beforeDispatch(row, plan, messageId, policyNames, actor.kind === "conversation" ? actor : undefined);
+        if (assignment) active.assignment = assignment;
         crossedDispatch = true;
         // Reservation and retarget have committed. Bookkeeping errors must not refuse that accepted dispatch.
         try { announceRedirect = await accepted?.(); }
@@ -276,7 +280,7 @@ export class Orchestrator {
       } else if (result.status === "error") this.emit({ ...identity, kind: "worker_failed", reason: workerTerminalFailure(false).reason });
     }, async (error: unknown) => {
       this.log.warn("worker_prompt_failed", { conversationId: slot.conversation.id, error: String(error) });
-      if (!crossedDispatch && plan.kind !== "start" && actor.kind === "conversation") {
+      if (!crossedDispatch && actor.kind === "conversation") {
         const cause = error instanceof WorkerAssignmentConflict ? "conflict" : "hook_error";
         this.emit({ ...identity, kind: "worker_failed", reason: "refused", cause, destination: actor.conversationId });
         try { await this.assignments?.refuse?.(row, plan, { actor, cause }); }

@@ -75,7 +75,7 @@ export interface WorkerDeliveryRepository {
     Promise<WorkerAssignmentReplacement>;
   discoverAssignments(query: WorkerAssignmentDiscovery):
     Promise<{ readonly assignments: readonly DiscoveredWorkerAssignment[]; readonly next?: string }>;
-  latestOutcome(workerConversationId: string): Promise<StagedWorkerAssignment | undefined>;
+  latestOutcome(workerConversationId: string, kind?: "result"): Promise<StagedWorkerAssignment | undefined>;
   /** Record completed output in the same transaction as the final conversation records. */
   recordFinal(workerConversationId: string, operationId: string, messageIds: readonly string[]): Promise<void>;
   /** Stage failure for each causal binding inside its failed terminal commit. */

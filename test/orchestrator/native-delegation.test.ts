@@ -144,6 +144,9 @@ test.each([
   ["leading NBSP", "\u00a0notice:w1", "participant:notice:w1"],
   ["leading tab", "\tparticipant:w1", "participant:participant:w1"],
   ["zero-width space only", "\u200b \u200b", null],
+  ["joiners only", "\u200c\u200d\u2060", null],
+  ["soft hyphen and tag only", "\u00ad\u{e0061}", null],
+  ["visible ID with a joiner", "a\u200db", "a\u200db"],
 ])("the production host resolves delegation attribution during open (%s)", async (_case, sender, attribution) => {
   const rig = await nativeRig();
   try {

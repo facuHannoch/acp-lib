@@ -2,7 +2,7 @@ import type { PersistenceBackend, PersistenceScope } from "../persistence/backen
 import type { AgentConversationId } from "../agent-ids.ts";
 import type { WorkerAssignmentReservation, WorkerDestination } from "../persistence/worker-delivery-contract.ts";
 import type { WorkerRow } from "../persistence/workers.ts";
-import type { AssignmentPlan, RefusedSteer, WorkerAssignmentPort, WorkingPlan } from "./assignments.ts";
+import type { AssignmentPlan, RefusedSteer, RunningAssignment, WorkerAssignmentPort } from "./assignments.ts";
 import { REFUSED_STEER_REASONS } from "../persistence/worker-terminal-reason.ts";
 import type { WorkerConversationActor } from "./contracts.ts";
 
@@ -19,10 +19,10 @@ export class DurableWorkerAssignments implements WorkerAssignmentPort {
 
   async beforeDispatch(
     row: WorkerRow, plan: AssignmentPlan, messageId: string, policyNames: readonly string[], actor?: WorkerConversationActor,
-  ): Promise<void> {
+  ): Promise<RunningAssignment | void> {
     const target = plan.assignment.destination;
     if (!target) return;
-    const replacement = await this.persistence.transaction(async scope => {
+    const accepted = await this.persistence.transaction(async scope => {
       const repository = scope.workerDelivery!;
       const destination = await this.destination(scope, target, actor?.destinationKind);
       const binding = this.binding(row, plan.assignment.id, messageId, destination, policyNames);
@@ -33,6 +33,11 @@ export class DurableWorkerAssignments implements WorkerAssignmentPort {
       }
       const old = await repository.readBinding(plan.previous.id);
       if (!old || old.workerConversationId !== row.conversationId) throw new WorkerAssignmentConflict();
+      if (plan.kind === "continue" && old.finalRecordId && actor) {
+        const result = await repository.replaceAssignment(old.assignmentId, old.messageId, { ...binding, assignmentId: actor.invocationId });
+        if (result.kind !== "old_settled" || result.reservation !== "reserved") throw new WorkerAssignmentConflict();
+        return { id: actor.invocationId, destination: target };
+      }
       if (plan.kind === "replace") {
         const result = await repository.replaceAssignment(old.assignmentId, old.messageId, binding);
         if (result.kind === "conflict" || result.reservation !== "reserved") throw new WorkerAssignmentConflict();
@@ -45,14 +50,15 @@ export class DurableWorkerAssignments implements WorkerAssignmentPort {
       }
       return false;
     });
-    if (replacement) void this.flushNative();
+    if (accepted === true) void this.flushNative();
     if (plan.kind === "replace") void this.flushAcp();
+    if (typeof accepted === "object") return accepted;
   }
 
-  async refuse(row: WorkerRow, plan: WorkingPlan, { actor, cause }: RefusedSteer): Promise<void> {
+  async refuse(row: WorkerRow, plan: AssignmentPlan, { actor, cause }: RefusedSteer): Promise<void> {
     await this.persistence.transaction(async scope => {
       const repository = scope.workerDelivery!;
-      const old = await repository.readBinding(plan.previous.id);
+      const old = plan.kind === "start" ? undefined : await repository.readBinding(plan.previous.id);
       if (old?.workerConversationId === row.conversationId) {
         await repository.closeContinuation(old.assignmentId, old.messageId, {
           kind: "interrupted", reason: "worker interrupted by steering", possiblePartialEffects: true,
@@ -76,6 +82,7 @@ export class DurableWorkerAssignments implements WorkerAssignmentPort {
   settled(): Promise<void> { return this.flushAcp(); }
 
   latestOutcome(row: WorkerRow) { return this.persistence.workerDelivery!.latestOutcome(row.conversationId); }
+  latestResult(row: WorkerRow) { return this.persistence.workerDelivery!.latestOutcome(row.conversationId, "result"); }
 
   private async destination(scope: PersistenceScope, id: AgentConversationId, kind?: WorkerDestination["kind"]): Promise<WorkerDestination> {
     return { id, kind: (await scope.conversations.get(id))?.controllerKind ?? kind ?? "acp" };
