@@ -172,3 +172,14 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   withdraw intent across reconnect, suppress push replay once withdrawal is requested, resolve via the push outcome or a
   bounded reconcile/retry with the original channel and item id; test the ambiguity with a controlled peer or barrier
   (no claim of reproducing overtaking on the stock server). Documented as an assumption in R6.
+- R6 step 1 in from cod2a (the amended brief `069efba`/`b13417c`, the pure extraction `5602999`, the withdrawal
+  `592a2c1`, report `81574bc`, the R5 doc nits `e7d90e6`) and reviewed by clad2a (`4240f02`): the withdrawal protocol is
+  correct (intent before the request, push replay suppressed, `taken` follows the turn, `not_found` unresolved, a
+  controlled-client ambiguity test, eight of nine mutations killed; coordinator gate 1,659 in 156 files, sizes at or
+  below ceilings, harness tree untouched). Three fixes before it passes: (1) decision: stop and close must best-effort
+  `channel/withdraw` the conversation's submitted, unclaimed items (bounded, then reject): clad2a measured that after
+  stop an accepted unclaimed input was run by the harness in a new unobserved turn (real spend after stop); document
+  `taken` and a down host; (2) the handle rejection is an untyped error where stop used to settle cancelled results: a
+  typed error or the cancellation result, and a changelog line; (3) the surviving mutation (interrupt clearing
+  submitted native inputs). Minor: clear `withdrawing` once `taken`; the changelog should say the default submission
+  store is memory.
