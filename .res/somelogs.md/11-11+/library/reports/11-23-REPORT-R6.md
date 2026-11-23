@@ -56,3 +56,17 @@ A disposable mutation that restored interrupt clearing for already-submitted inp
 The clean RAM archive of `ee78c68` passed typecheck and the full `bun test ./test` suite with **1,668 tests in 158 files in 128.13 s**. Both new stream tests passed **20/20** in isolation. All 35 snapshots passed, and the A1 hash remained `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`. Logs are in `/tmp/acp-o1-acp-r6-stream-final.7kzrWR`.
 
 R6 covers confirmed withdrawal, the bounded shutdown path, native supervision through reopen, live receipts, and real stdio text through the public conversation. The protected files finish at or below the Step 1 baseline. `agent-session.ts` is 4,491 lines. `native/host.ts` and `native/controller.ts` are 909 and 599. The remaining line counts are unchanged from the initial table. No provider was called.
+
+## Final review follow-up — taken inputs keep their turn result
+
+Commit `ac33f2d` limits `NativeInputStoppedError` to submitted native inputs that remain unclaimed at shutdown. Local inputs that never reached submission keep ordinary cancellation. An input taken by the running turn stays attached to that turn and receives its normal cancelled result, including partial text. Held turns that never reach preparation keep a cancelled result without fabricated text. Take evidence can arrive through a turn event or the withdrawal response, including when the response wins the race with the event.
+
+Stop and close deliberately withdraw before interrupting. This keeps an unclaimed input from being taken at the next turn boundary. A silent withdrawal can use the full one-second grace before the active turn is interrupted. If the host cannot confirm what happened, shutdown can reject the unclaimed handle while the harness still has work that may run.
+
+The real-stdio standalone stop test and the mixed stop and close tests preserve the running prompt's partial text. Both mixed tests prove the unclaimed input was withdrawn, reject that handle with the typed error, and verify the harness ran only the original model call. The take-race test checks that both taken prompts receive the same cancelled operation and partial text. The pre-submission test keeps local cancellation and launches no harness. The controlled client verifies that a taken response carries the harness turn ID.
+
+The same standalone fixture on `a9b3ae1` returned a cancelled result with empty caller text while persisting `Partial reply.`. On `2e1869f` it rejected with `NativeInputStoppedError` and persisted the same reply. The corrected code returns `Partial reply.` in the cancelled result. Comparison logs are in `/tmp/acp-r6-stop-compare.pt7DhI`.
+
+The real-process scenario format requires concatenated chunks to equal the committed content, so that fixture cannot script a strict prefix of the eventual reply. Suffix completion remains covered by the native controller unit test.
+
+The clean RAM archive of `ac33f2d` passed typecheck and **1,670 tests in 159 files in 118.70 s**. All six new or strengthened cases passed **20/20** in isolation. All 35 snapshots and the A1 hash were unchanged. The protected line counts remain 4,491 for `agent-session.ts`, 909 for `native/host.ts` and 599 for `native/controller.ts`. Logs are in `/tmp/acp-o1-acp-r6-taken-stop-final.UfYsnE`.
