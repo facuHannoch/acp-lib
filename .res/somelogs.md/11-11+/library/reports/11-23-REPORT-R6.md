@@ -70,3 +70,13 @@ The same standalone fixture on `a9b3ae1` returned a cancelled result with empty 
 The real-process scenario format requires concatenated chunks to equal the committed content, so that fixture cannot script a strict prefix of the eventual reply. Suffix completion remains covered by the native controller unit test.
 
 The clean RAM archive of `ac33f2d` passed typecheck and **1,670 tests in 159 files in 118.70 s**. All six new or strengthened cases passed **20/20** in isolation. All 35 snapshots and the A1 hash were unchanged. The protected line counts remain 4,491 for `agent-session.ts`, 909 for `native/host.ts` and 599 for `native/controller.ts`. Logs are in `/tmp/acp-o1-acp-r6-taken-stop-final.UfYsnE`.
+
+## Short review follow-up — a completion in flight
+
+Commit `92a02d2` documents the caller-visible change from `a9b3ae1`. When a stopped turn had a completed reply, the caller now receives that reply as partial text with a cancelled metering record. The old result returned empty text and no metering record. Stopping during the first streamed message still returns a cancelled result with empty text until the completion is available to the client.
+
+The native controller reuses its normal cancellation result for a graceful stop even if its terminal notification is still in flight. The fallback uses only completed messages already applied and fences out a late by-reference read. It does not mark an unseen provider terminal notification as observed. The real stdio test holds the completion frame and subsequent events, waits for provisional text, then stops while the frame is held. The same fixture passed on `a9b3ae1` and failed on `ac09144` with “the conversation stopped.” Those comparison logs are in `/tmp/acp-r6-stop-frame-compare.bZRzRl`.
+
+The take-race test withholds the actual `turn_took` notification. The real withdrawal response is then the only take evidence during the shutdown grace. The prompt follows the active turn and receives its cancelled result with partial text. In a disposable archive, removing the `noteTaken` callback caused that test to fail with `NativeInputStoppedError`. The mutation log is in `/tmp/acp-r6-note-taken.ClDf9s.log`. The completed-reply test now asserts the returned message and cancelled metering outcome. The native controller remains at 599 lines, with the other protected counts unchanged.
+
+The clean RAM archive passed typecheck and **1,671 tests in 159 files in 118.20 s**. All three new or strengthened tests passed **20/20** in isolation. All 35 snapshots passed and the A1 hash stayed `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`. Gate logs are in `/tmp/acp-o1-acp-r6-stop-completion.v39S8b`.
