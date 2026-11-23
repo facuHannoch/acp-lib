@@ -93,3 +93,46 @@ delivery-repository file changed.
    sequence, so `check` and `list` show `latestOutcome: failed (worker refused: …)` even when the worker's last real work succeeded
    (my chain probe's final state). Probably acceptable, but the agent reading `check` may take it as a worker failure.
 - **Baseline:** 1,576 tests, up from 1,565.
+
+## Follow-up: `d030961` (a steer racing completion, refused dispatches, invisible ids, latest result)
+
+All four resolved. No blocking findings. Clean `git archive d030961` (`/tmp/clad2a-o3b`, `TMPDIR` on `/dev/shm`): typecheck clean,
+**1,581 pass, 0 fail, 147 files**, 35 snapshots, hash `fbc6ec2c…` unchanged. My probes are in `zz-o3b*.test.ts` there.
+
+**(a) A steer racing natural completion now runs, once, as a new assignment.** When the predecessor's final record is already
+committed (`old.finalRecordId`), `beforeDispatch` calls `replaceAssignment` with the steering call's invocation id and requires
+`old_settled` with a fresh `reserved` binding; the pool's running assignment is switched to the new one. **My probe** (a tool
+gate released with steers queued, so the old turn ends by itself first):
+
+| Case | Result |
+| --- | --- |
+| One steer | dispatched exactly once (`old`, then `steer 1`); the old result stayed staged and **delivered once** (`tool finished`); the steer became its own assignment with its own result delivered once; **no refusal notices** |
+| Two steers | folded into **one** dispatch (`steer 1 / steer 2`, no double-run); the old result delivered once, and **both** new assignments received the shared result, so three result notices in all, which matches decision 0025 ("a folded turn supplies the full shared result to each binding") |
+
+A predecessor that ended in failure or interruption (no final record) still conflicts and is refused with a notice, which is
+reasonable: the agent decides whether to rerun a worker that failed.
+
+**(b) A refused first dispatch notifies the sender.** `refuse` now also runs for `start` plans (it skips the continuation close when
+there's no predecessor). **My probes:** a reused invocation id gave a `worker_failed` notice on the sender with metadata
+`reason: "refused"`, `cause: "conflict"` (and the event); a one-time injected `SQLITE_BUSY` during an idle start gave a
+`worker_failed:hook_error` notice, the `sent` the tool had already returned, and **no leak** of the private error text.
+
+**(c) The invisible-id guard covers the class.** It's now `/^[\s\p{Default_Ignorable_Code_Point}]+$/u`. **My probe:** ZWNJ, ZWJ, word
+joiner, soft hyphen, tag character, BOM, a lone VS16, CGJ, Hangul filler, a bidi mark, mixes with spaces, and NBSP + ZWSP are
+**all declined**. Real names still work: a joiner or soft hyphen inside a word, a Persian name with ZWNJ, an emoji ZWJ
+sequence, an emoji with VS16, a name ending in a ZWJ, and `alice`.
+
+**(d) `check` and `list` show the last real result.** `latestResult` appears only when the newest outcome is a synthetic refusal;
+`latestOutcome` still shows the refusal, as agreed. **My probe:** after a real result there's no `latestResult`; after a refused
+send, `latestOutcome` was `failed: worker refused: assignment conflict` and `latestResult` carried the earlier real result; `list`
+agrees with `check`.
+
+**The two Cod1a files touched.** `worker-delivery-contract.ts` and `sqlite-worker-delivery.ts` gain an optional second parameter,
+`latestOutcome(worker, kind?)`. It's backward compatible: my probe shows the one-argument call still returns the newest outcome
+including a refusal, and `kind: "result"` returns the newest real result. Cod1a's repository tests pass in the suite. The
+`lifecycle-agent` fixture only gains a new `natural` mode.
+
+**One note for the integration slice.** The fresh-assignment branch returns an object, and only a `replaced` result triggers
+`flushNative()`. For a native destination, the old result (staged when the predecessor finished) then depends on the host's
+other flush triggers, not on this call. The ACP flush follows every completion, so ACP is unaffected, but please confirm in the
+integration tests that a native destination gets the old result promptly after an `old_settled`.
