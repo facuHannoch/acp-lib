@@ -116,3 +116,40 @@ policy names, and attribution to Alice.
    participant could have the same id, the two would merge in the worker's records. Namespace it (for example a
    `notice:` prefix), or confirm the harness's source labels can't clash.
 - **Baseline:** 1,549 tests, up from 1,546.
+
+## Follow-up: `7087637` (tool results, stop outcome, sender labels)
+
+(a) and (b) are resolved. **(c) is mostly resolved, but I produced one collision**, which needs a small fix.
+
+I merged alpha (`0003f20`, worker delivery) into `orchestrator-reviews`, then ran a clean `git archive 7087637`
+(`/tmp/clad2a-o6b`): typecheck clean, **1,550 pass, 0 fail, 144 files**, 35 snapshots, hash `fbc6ec2c…` unchanged.
+
+**(a) Tool descriptions: done.** `delegate`'s text now says what `about` is for ("a short label for check and list"), that the call
+"returns immediately without waiting for the worker's reply", and what each outcome means: `sent` (accepted for a new run, with a
+handle when opening), `steered` (a busy worker accepted the input), `busy` ("nothing was sent or queued") and `no_worker_free`
+("no slot is available and nothing was sent or queued"). The `stop` description says what it returns.
+
+**(b) `stop`: done.** `Orchestrator.stop` returns `"stopped"` after an interruption and `"idle"` if there was nothing to stop, and the
+tool returns that as `{ status }`. **My probe** (the production tool handler on a real worker): a stop on an idle worker gave
+`idle`, on a busy worker `stopped`, and the **consumer API still returns `undefined`**.
+
+**(c) Sender labels: one collision.**
+
+- **The change.** A native item that isn't a `participant_message` (a channel or external notice) is labelled `notice:<source>`.
+  A participant whose id begins with `notice:` or `participant:` is escaped to `participant:<id>`. I confirmed the
+  `ItemKind` literals match the harness types.
+- **For exact prefixes it's collision-free.** The mapping is one-to-one: participant ids never come out starting with
+  `notice:`, and escaped ones always start with `participant:`. My probe: a participant `notice:w1` becomes
+  `participant:notice:w1` (not `notice:w1`), `participant:w1` becomes `participant:participant:w1`, and channel and external
+  notices both give `notice:w1`.
+- **The collision I produced.** The prefix test runs on the **untrimmed** sender, but the worker prompt's participant is
+  trimmed downstream (`promptFrom` uses `participantId.trim()`, and a leading non-breaking space is trimmed too). A participant
+  sender `" notice:w1"` (a leading space) passes through unescaped, then becomes `notice:w1`, **identical to a real notice
+  label**. End to end, the worker conversation recorded participant `notice:w1` for *both* the real notice and the
+  space-prefixed participant. The same works with ` notice:w1` and, symmetrically, `\tparticipant:w1`.
+- **How realistic.** acp-client trims participant ids when it pushes them itself, so this needs an item that reached the
+  harness with an untrimmed sender (a direct `nativeHarness.push`, or another host). Low likelihood, but it defeats the guarantee the
+  change set out to give.
+- **Fix (one line).** Trim before testing the prefix, and return what the downstream will see:
+  `const id = item.sender.trim();` then `if (!id) throw …` and the same `startsWith` checks on `id`. Add a test with a
+  leading-space and a leading-NBSP sender.
