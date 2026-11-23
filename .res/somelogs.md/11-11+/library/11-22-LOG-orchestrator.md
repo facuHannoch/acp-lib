@@ -172,3 +172,11 @@ edit to `src/agent-session.ts`.
   1,549 in 144 files. `pre-alpha` rebuilt to include O2, O4, O5a and O6a (supersedes `ab58e73`).
 - Cod1a's F1 fix `1ae9a90` (evidence head `1ebf6f5`): an abandoned ACP predecessor is staged as uncertain inside
   `replaceAssignment`, which returns `old_settled`; with Clad1a for re-review.
+- Worker delivery approved at `1ebf6f5` (Clad1a; the F1 fix) and merged into alpha by haurness-l (alpha is now
+  `0003f20`, docs closure on top). `pre-alpha` (`d9efe13`) is no longer a fast-forward. Coordinator trial: the merge of
+  `pre-alpha` with `1ebf6f5` is conflict-free; the full suite on that merge (1,558 tests in 145 files): green with
+  `TMPDIR` in RAM (`/dev/shm`, 164 s); on disk three runs failed in a different test each time (an audit and a
+  native conformance test timing out, a consumer transcript test), each passing on its own: load (load average 4–7
+  with several agents running suites), as seen before. **Gate procedure from now on: `TMPDIR` on `/dev/shm`.**
+- cod2a's O6a follow-up `7087637` (descriptions, a real `stop` outcome, `notice:` labels) goes to clad2a for a short
+  review; cod2a merges alpha `0003f20` into `orchestrator` and gates it; then `pre-alpha` is rebuilt.
