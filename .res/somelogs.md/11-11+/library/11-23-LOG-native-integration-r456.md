@@ -142,3 +142,10 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   failure behaviour, the two retention limitations: `CHANGELOG-metering.md`, `CONSUMER_GUIDE.md`), `d6c35b8` (the final gate
   result in the R5 report: 1,649 in 155 files); alpha `b77c3d7` merged at `9a0e0fd`. Nothing under `src/` or `test/`
   changed. With clad2a for a docs review; cod2a is writing R6's grounding.
+- R5 step 4 docs reviewed by clad2a (`465552d`): accurate, no overclaim (no between-turn support, no certification,
+  `billing_required` refused; the gate table and line counts exact; nothing under `src/` or `test/` changed; the new
+  guide section is prose), but four sentences are imprecise and several limitations are missing (the harness-dependency
+  list in the guide and changelog; `unallocatedUsage` means unaccounted usage of an earlier turn; a truncated proof can
+  list an already-counted attempt as unmeasured; the schema change is one-way; `MeteringPreflightError`;
+  `earlierEvidencePending`; where `state.totals` is read). Docs-only fix assigned to cod2a; then a short check and the
+  pre-alpha with the whole of R5.
