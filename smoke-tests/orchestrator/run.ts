@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { Agent } from "../../src/index.ts";
 import type { ConversationPermissionEvent } from "../../src/permissions/conversation.ts";
 import { createInProcessHarness } from "../../src/native-harness/src/testing.ts";
@@ -24,13 +24,22 @@ if (!process.env.OPENROUTER_API_KEY || !configuredCodexHome || !existsSync(codex
   throw new Error("Live mode requires OpenRouter environment authentication, Codex, and a disposable ACP_ORCH_CODEX_HOME");
 }
 const codexHome = await realpath(configuredCodexHome);
-const usualHome = join(homedir(), ".codex");
-if (existsSync(usualHome) && codexHome === await realpath(usualHome)) throw new Error("Use a disposable Codex home");
+const home = await realpath(homedir());
+const usualHome = join(home, ".codex");
+const protectedHomes = [usualHome, ...(existsSync(usualHome) ? [await realpath(usualHome)] : [])];
+if (codexHome === home || protectedHomes.some(path => containsPath(path, codexHome) || containsPath(codexHome, path))) {
+  throw new Error("Use a disposable Codex home that does not overlap the normal Codex home");
+}
 const codexAcp = Bun.which("codex-acp");
 if (!codexAcp) throw new Error("The installed codex-acp binary is required");
 
 function check(condition: unknown, failure: string): asserts condition {
   if (!condition) throw new Error(failure);
+}
+
+function containsPath(parent: string, child: string): boolean {
+  const suffix = relative(parent, child);
+  return suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
 }
 
 const start = performance.now();
