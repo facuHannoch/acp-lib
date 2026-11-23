@@ -65,3 +65,5 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   seven paths, mutation-checked) and the orchestrator follow-up (`2cdc35e`: no findings). **R4 gate passed**
   ([gate](../.plan-execution/status/11-23-GATE-R4.md)): 1,618 in 151 files. `pre-alpha` rebuilt with R4, the orchestrator
   follow-up and R5's amended brief (R5 step 1 awaits clad2a's review).
+- The user merged `pre-alpha` (`173e4e7`: R4, the orchestrator follow-up and R5's amended brief) into alpha. R4 is
+  complete; R5 step 1 is with clad2a; 2a, 2b and 4 follow; then R6.
