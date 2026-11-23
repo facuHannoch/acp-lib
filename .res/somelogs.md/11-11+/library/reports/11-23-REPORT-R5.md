@@ -158,3 +158,13 @@ The close-out gate passed typecheck and all 35 snapshots. The A1 hash is unchang
 | `src/metering/engine.ts` | 1,059 | 1,034 |
 
 R5 closes with best-effort native usage and the capability-specific refusal of native `billing_required`. Billing-grade admission still needs harness evidence for provider and model identity, normalized cache fields, reported cost and currency when available, attempt purpose, and a sealed per-turn manifest that can attest zero. The harness must advertise that capability before admission. Between-turn billing needs a producer for calls without turn ownership and bounded collection during idle. Native per-call usage events and `TurnResult.usage` remain deferred.
+
+## Next-merge follow-up — keep the native ledger's budget across pages
+
+Commit `a058cce` replaces the ledger's `AbortSignal.timeout()` with an explicit timer and one controller. The existing 15-second default is still a total budget shared by all pages. The caller's signal is still combined with the budget. The timer clears on completion, cancellation and error. This avoids Bun 1.3.14 dropping the timeout when a completed request and a pending request both briefly have no abort listeners. The source search found no remaining `AbortSignal.timeout()` calls under `src/`.
+
+The two-page test uses a real harness client over a controlled transport with a 30-second request timeout. It answers the first page, leaves the second silent, and observes the ledger's 250 ms test budget. In a disposable archive, the old ledger outlasted the test's 3.5-second guard. The two subprocess tests exercise normal completion, empty return and failure for both the ledger and stopped-reply recovery, plus caller cancellation for the ledger. Removing either timer cleanup independently kept the child alive after the fixture reported that its reads had settled. Comparison logs are in `/tmp/acp-native-page-mutations.i4vsKg`.
+
+The consumer guide and changelog drop the tracked-submission qualifier from the documented new-Agent recovery. The previously documented same-Agent gap for an unprepared turn remains.
+
+Each new test passed **20/20** in isolation. Typecheck and the full clean RAM-backed suite passed **1,678 tests in 162 files in 126.58 s**. All 35 snapshots passed and the A1 hash was unchanged. Gate logs are in `/tmp/acp-o1-acp-native-page-deadline-final.j9Xg29`.
