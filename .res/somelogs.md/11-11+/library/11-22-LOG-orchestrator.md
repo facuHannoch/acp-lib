@@ -254,3 +254,13 @@ edit to `src/agent-session.ts`.
   `.agents`; `auth.json` mode 0600, the directory 0755; outside `~/.codex`). The live run (O6 step 3) is released to cod2a
   after the current R4 follow-up, with that `ACP_ORCH_CODEX_HOME`: no agent reads or prints the login; the script never
   removes the supplied home; the user logs out and deletes it afterwards.
+- **The one live attempt (O6 step 3)** ran with the hardened runner `f73fde1` and is documented in `93d12a1`
+  ([report](reports/11-23-REPORT-O6-live.md)): the native agent on `deepseek/deepseek-v4.1-flash` (OpenRouter), the
+  worker a real Codex conversation on `gpt-6.1-terra`; 82 s, 3 OpenRouter requests, 1 worker submission. Observed live:
+  delegation (the agent said `queued`), the worker's `orch live ok`, the result staged and delivered to the original
+  conversation, the agent reporting it on the notice-driven turn; cleanup verified (`providerDeleted: true`, both
+  native conversations deleted, both temp trees removed; the supplied Codex home untouched, never read). **Not
+  verified live:** the forwarded permission and the redirect: Codex ran the command without asking, so the runner
+  stopped at the first mismatch; Bob's prompt was never sent; no retry. Those paths are covered by the scripted stdio
+  tests and by the capture-backed Codex permission shapes from R2. Whether to try a second attempt (the disposable Codex
+  home configured to always ask) is the user's decision. Sent to clad2a (the runner hardening and the report).
