@@ -185,3 +185,7 @@ edit to `src/agent-session.ts`.
   that waits for a worker tool boundary: the tool returns "steered" at once, so a later `beforeDispatch` conflict
   or rejection is reported as `worker_failed` to the conversation that sent the steer (and a worker event), the queued
   dispatch is not sent, and the old assignment's continuation is closed (interrupted, steered). Spec updated.
+- O6a follow-up `7087637` reviewed by clad2a (`7751b84`): the descriptions and `stop` resolved; the `notice:` label
+  collision: the prefix check ran on the untrimmed sender while the worker prompt trims the participant downstream,
+  so a sender with a leading space or NBSP became exactly `notice:w1`. One-line fix (trim first) assigned to cod2a;
+  then the host hook commit and O3a.
