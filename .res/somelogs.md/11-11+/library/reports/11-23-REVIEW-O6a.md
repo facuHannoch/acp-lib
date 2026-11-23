@@ -153,3 +153,58 @@ tool returns that as `{ status }`. **My probe** (the production tool handler on 
 - **Fix (one line).** Trim before testing the prefix, and return what the downstream will see:
   `const id = item.sender.trim();` then `if (!id) throw …` and the same `startsWith` checks on `id`. Add a test with a
   leading-space and a leading-NBSP sender.
+
+## Follow-up: `0e9c79b` (the sender-trim fix) and `41a225d` (the production host hook)
+
+Both resolved. No blocking findings. The branch tip is `0e9c79b`, which sits on top of `41a225d` (alpha `0003f20` merged at
+`1c5829a`). A first run on a `41a225d` archive still showed my old collision, because the trim fix is the later commit, so I
+reran everything on the tip. Clean `git archive 0e9c79b` with `TMPDIR` on `/dev/shm`: typecheck clean, **1,565 pass, 0 fail,
+146 files**, 35 snapshots, characterization hash `fbc6ec2c…` unchanged.
+
+### (1) The trim fix: collision gone
+
+`takenSender` now trims the sender first, declines if it's blank, and runs the notice-prefix escaping on the **trimmed** id.
+**My collision cases, on the tip** (a real notice from source `w1` is labelled `notice:w1`):
+
+| Sender | Kind | Label | Distinct from `notice:w1`? |
+| --- | --- | --- | --- |
+| `notice:w1` | participant | `participant:notice:w1` | yes |
+| leading space, NBSP, tab, newline+space, BOM or U+2028 `+ notice:w1` | participant | `participant:notice:w1` | yes (all trimmed, then escaped) |
+| `  participant:w1  ` | participant | `participant:participant:w1` | yes |
+| only whitespace (`"   "`, `"\t\n"`, NBSP) | participant | **declined** (`delegation_sender_unavailable`) | n/a |
+| Cyrillic `о` in `notice`, fullwidth `ｎ`, capital `N` | participant | left as is, a different string | yes |
+| `w1`, or `  w1` | channel or external notice | `notice:w1` | the label itself |
+
+**End to end:** the worker conversation recorded participant `notice:w1` for the real notice and `participant:notice:w1` for
+both the leading-space and the leading-NBSP participants. The tests in the commit cover plain, space, NBSP and tab senders
+through the production host path.
+
+Two harmless equivalences remain: notices from sources differing only by surrounding whitespace share a label, and a
+participant id with and without surrounding whitespace is one participant, which is how the downstream trim already treats it.
+One quirk: **a zero-width space (U+200B) isn't trimmed by JavaScript**, so an id made only of U+200B passes as a non-blank id.
+It can't collide with `notice:`, but it's an invisible participant id; treating U+200B-only ids as blank would be tidy.
+
+### (2) The production host hook
+
+**The change is the only `host.ts` change, in one region.** `git diff 0003f20 0e9c79b -- src/native/host.ts` is one import and the
+`serveFunctions` call (916 lines, up from alpha's 914). It leaves Cod1a's worker-delivery flush hooks, `channel-changes.ts` and
+the persistence files alone. The hook is
+`() => takenSender(client, call.channel, call.turnId, signal)`, where `client` is the one `#open` received for this connection.
+
+**Probed on the real in-process harness** (two connections to one harness home, a scripted model that delegates on each turn):
+
+| Case | Result |
+| --- | --- |
+| **A callback arriving before `#connection` is installed** | covered by cod2a's test, which forces the harness to finish the callback during open |
+| **Reconnect:** stop the host, restart, a second input from another sender | 2 connections; the delegations arrived with senders `alice` then `bob`; reconcile calls per client `[2, 2]`, and **client 0's count stayed at 2** after the restart, so each connection uses its **own** client |
+| **A callback in flight when the host stops** (the sender lookup held, then `stop()`) | nothing reached the orchestrator, **0 worker rows**, 0 unhandled rejections: it fails closed |
+| **No leak:** hold only a weak reference to the first connection's client, stop, restart, force GC | the **first client was collected**, the second alive |
+
+A call delivered over an old connection after a reconnect would try its own (closed) client and its aborted signal, and decline.
+
+### Notes (none blocking)
+
+1. **Layering.** `src/native/host.ts` now imports `takenSender` from `src/orchestrator/`. It's a harness query (reconcile a
+   channel), so it fits better under `src/native/`, with the orchestrator importing it. There's no import cycle, and the thunk
+   is lazy, so tools that don't use it pay nothing.
+2. **A U+200B-only sender** (above).
