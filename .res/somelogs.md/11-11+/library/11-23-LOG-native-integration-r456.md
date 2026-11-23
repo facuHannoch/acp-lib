@@ -67,3 +67,11 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   follow-up and R5's amended brief (R5 step 1 awaits clad2a's review).
 - The user merged `pre-alpha` (`173e4e7`: R4, the orchestrator follow-up and R5's amended brief) into alpha. R4 is
   complete; R5 step 1 is with clad2a; 2a, 2b and 4 follow; then R6.
+- R5 step 1 reviewed by clad2a (`fc655b2`): meets its gate, no blockers (the full suite 1,624 in 152 files; each of the
+  seven new tests 20 of 20 isolated; the eight protected files exactly at their ceilings; three new files, 80, 110 and
+  56 lines, referenced by nothing yet). Their independent probe over a real stdio harness (four scripted attempts, a
+  tool turn with three calls and a retried transient failure): exactly four inferences staged with ids `1:0`, `2:0`,
+  `2:1`, `3:0`, tokens matching the script (714 of 714); seven of eight mutations caught. So the existing wire is enough
+  for the in-turn parity gate. **Step 1 gate passed** (coordinator: 1,624 in 152 files, RAM-backed). 2a released with
+  five notes: a call-level seal test; an empty turn is not proven zero; a detached pull's request outliving the 15 s
+  budget (30 s host timeout); serialize `pullTurn` per channel; nothing treats `native-harness-unverified` as verified.
