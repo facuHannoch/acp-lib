@@ -154,3 +154,60 @@ The last four are untested behaviours; add a test for each (a turn without a ter
 2. **After one gap the cursor never advances again, so every later close rescans from the gap.** My probe: a partial turn, then eight normal turns: every close read `after: 1`, and the persisted cursor stayed `1` throughout (coverage `partial`). That is by design ("keeps the cursor behind the gap"), but it makes the cost of every later close grow with history since the gap, and the reader's 1,000-page budget (100,000 calls) would then make closes fail as unavailable. It also means the partial turn's later-sealed attempts are never counted. Decide how a gap is retired (resolved when its turn is re-read as sealed, or acknowledged explicitly) before 3a.
 3. A pruned replay hands the live caller a synthesized "unavailable, detail was pruned" record when the operation was already committed; correct, but only reachable through a crash replay, so it is worth one line in the changelog.
 4. The four test gaps above.
+
+# Part 4 — R5 step 2b follow-up (`9fb2b2e..4bbefcb`): retirement, earlier evidence and SQLite schema 21
+
+`3ef44c2` (code) and `4bbefcb` (report). I used a clean `git archive 4bbefcb` (`/tmp/clad2a-r5d`, `TMPDIR` on `/dev/shm`) and a second archive of alpha `173e4e7` (`/tmp/clad2a-alpha`) to write a real schema-20 database. Probes and mutations ran only in those archives.
+
+**Verdict: the follow-up fixes the loss I found and the schema change is safe. 2b can be approved, with one design point you should decide knowingly (the 110 earlier tokens are visible on a record but are in no aggregate), and two small notes.**
+
+- **Typecheck clean. Full suite: 1,646 pass, 0 fail, 154 files**, 35 snapshots (none changed; A1 unchanged). Harness suites **367 pass**, no leftover process.
+- **Sizes:** `agent-session.ts` **4,492** (≤ 4,493) and `metering/engine.ts` **1,038** (≤ 1,051); `client.ts` 1,046, `controller.ts` 764, `native/host.ts` 909, `native/controller.ts` 599, `conversation-manager.ts` 1,012, `agent.ts` 563: all at or below their ceilings. New: `retirement.ts` 73, `durability.ts` 110, `ledger.ts` 100, `operation.ts` 83, `native/metering.ts` 12.
+- **Each of the seven new tests and the four strengthened ones: 20 / 20 in isolation** (each `-t` matched one test), and the touched files whole-file **20 / 20** (`metering-durability`, `metering-native-source`, `orchestrator/workers`, `worker-delivery-repository`, `persistence-sqlite-backend`).
+
+## SQLite schema 21, checked like R1's
+
+| Check | Result |
+| --- | --- |
+| **Additive and idempotent** | One column, `metering_records.native_metering_proof_json TEXT` (nullable). `CREATE TABLE IF NOT EXISTS` carries it for fresh databases; for existing ones the migration runs `ALTER TABLE … ADD COLUMN` only when `PRAGMA table_info` lacks it, **unconditionally of the version row**, inside the same `BEGIN IMMEDIATE` transaction, and inserts the `21` row only when `version < 21`. No index or statement in the base schema references the new column before the `ALTER` |
+| **A REAL database written by alpha `173e4e7`'s source (schema 20), opened twice** | I wrote it with alpha's own code: an Agent with an ACP conversation (a prompt, so a metering row) and a worker whose result was delivered (worker assignment and delivery rows). It had schema 20, two metering rows, one worker assignment, no proof column. With the new source, **two successive opens**: versions `20,21` (one `21` row), the column present, **every other table byte-identical** (I compared all table contents except the new column, after each open), the worker's staged delivery still `delivered`, the worker list intact, the old metering row readable through `operationIdentity` with **no proof invented** for it, and a new prompt after the upgrade completed and wrote its record. 0 rows have a proof (none were native) |
+| **A fresh database** | schema 21, column present |
+| **The chain 16/18 → 21 and the early-state repair** | The existing upgrade tests were updated to the constant and pass: workers from 16 and 18, the worker repository from 16, 17 and "early 17", the early schema-17 repair, and the new `SQLite v20 upgrades native metering proof…` test (it simulates v20 by dropping the column from a v21 database, which also exercises the unconditional column check). All 20 / 20 |
+| **Open order with worker delivery (20) and the orchestrator (19)** | The version-gated blocks (`< 17`, `< 18`, `< 19`, `< 20`) are unchanged and run before the new column check, which doesn't depend on any of them |
+| **What exactly is stored** | A small JSON object per native operation: the measured attempt ids (`["1:0"]`, `[]`) and, when a close preserved earlier calls, for each call its call id, turn id, attempt ids and counts, the token sums when they were known, and a reason string. Observed rows: 37, 32 and 212 bytes. **No message content, no raw usage payload, no secrets.** It is stored whether or not detailed records are kept, which is why it survives pruning. **Bound:** not capped; it grows with the attempts of one turn (a few bytes per attempt) and up to 100 earlier turns per close, which is small in practice but worth a ceiling if a turn can have thousands of attempts |
+| **Old rows without the proof still work** | Yes: the proof is read only for native operations; an old complete record falls back to its retained calls, an old partial one is treated as "proof unavailable" and its tokens are **not** re-attributed (no double count), as the test checks |
+| **Downgrade** | Alpha's code refuses a schema-21 database ("incompatible … recreate the database"), as for any newer schema; fine, but state it in the changelog if deployments mix versions |
+
+## My probes, re-run
+
+All over a real stdio harness with SQLite triggers for the failures.
+
+| Probe | Result |
+| --- | --- |
+| **Both writes failing, in-process and after a reopen** (triggers on the state save and the record insert, then removed) | Turn 1 rejects; turn 2's record shows its own 220 and `unaccountedEarlierCalls: [{ call 1, tokens 110 }]`; turn 3 then 33. **The earlier 110 is visibly attributed, not lost, and not repeated on turn 3.** Same in both modes |
+| **Several closes after a gap** (a partial turn, then eight normal turns) | **Bounded:** every close read `after` = the previous cursor (`3, 4, 5 … 9`), one request each, and the persisted cursor advanced each time (`3 … 10`). The gap is retired when the partial turn's row is recorded as unmeasured on a terminal turn, so the permanent rescan from my earlier probe is gone |
+| **A late-sealed attempt of a partial turn** (the call hidden as running at turn 1, visible after a reopen; detail retained) | Turn 2's record carries the late call once (`2:0`, tokens 30); turn 3 carries nothing: **counted once**. The test for the pruned variant also passes |
+| **A failed save during retirement** (staging works, the final commit fails on the turn that retires the earlier evidence) | The pending record holds the earlier evidence; reopening **twice** commits it **once** (one metering row, no change on the second reopen); turn 3 doesn't repeat it (1 of 2 records carries the evidence) |
+| **Two channels closing at once, with a double failure on one channel** (triggers scoped to alpha's conversation) | Beta untouched: **224 = 77 + 147 exactly**, coverage `complete`, cursor 4. Alpha's next record carries its lost turn's 1,001 tokens as earlier evidence, totals 2,002 |
+| **The cursor ignoring its `channelKey`** | Now fails a targeted test (`native cursor requires channel ownership…`); a cursor saved for another channel is not used |
+| **Double counting between the retired evidence and a record** | None found: the earlier call's attempts that an operation's proof already attests are excluded (`already` set), a call with no proof contributes evidence but no tokens, and a replayed close finds the committed operation first |
+
+## Mutations (each reverted; the three native metering files, 28 tests)
+
+| Mutation | Result |
+| --- | --- |
+| cursor advances without a terminal turn | **fails** (was a survivor) |
+| no dedupe in `record()` | **fails** (was a survivor) |
+| no recovery at close | **fails** (was a survivor) |
+| the cursor ignores its channel key | **fails** (was a survivor) |
+| earlier turns retired without terminal proof | fails |
+| accounted attempts not excluded (late-sealed double count) | fails (3 tests) |
+| the proof not persisted | fails (2 tests) |
+| earlier evidence dropped | fails (4 tests) |
+| an earlier unmeasured row's tokens counted | fails |
+
+## Notes
+
+1. **Design point for you to confirm: the earlier tokens are visible, but in no aggregate.** In the double-failure probe the persisted totals after turn 3 are **count 2, known 253 = 220 + 33**; the 110 is in turn 2's `nativeUsage.unaccountedEarlierCalls` only, and `unallocatedUsage` is empty. The coverage is `partial`, so a consumer is told the total is a lower bound, but anyone summing `state.totals` (the usual limit-enforcement input) misses 110, and "330 expected" in your brief is true of the evidence (110 + 220), not of the state. The engine already has an `unallocated` accrual for usage that belongs to no operation; accruing the earlier tokens there would put them in an aggregate as well as in the record. If "recorded separately" is the intended design, the changelog should say that totals exclude earlier unaccounted calls.
+2. **The proof column has no explicit size bound** (see the table).
+3. The report's disk-backed focused trials hit `session/create` timeouts before the RAM-backed gate; I saw none, but note that these are heavy tests on a slow disk.
