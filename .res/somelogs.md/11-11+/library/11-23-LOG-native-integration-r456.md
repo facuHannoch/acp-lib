@@ -132,3 +132,9 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   Decision (coordinator): accrue earlier-unaccounted tokens once into the existing unallocated accrual, named
   "unaccounted usage of an earlier turn" (not between-turn support), and cap the proof column; then a short re-check;
   then step 4 (docs) and R6.
+- R5 step 2b's final follow-up (`c271475`, report `147bd63`) approved by clad2a (`d93d139`, no findings): totals plus
+  unallocated cover everything known to have been spent with no double count (turn 3: 253 attributed plus 110 unallocated
+  = 363 after both writes failed; two channels closing at once exact); the proof cap tested at 127/128/129 ids and at
+  the 32 KiB boundary; nine mutations killed; a record from the intermediate source still reads. **Gate passed**
+  ([gate](../.plan-execution/status/11-23-GATE-R5-2b.md)): 1,649 in 155 files. `pre-alpha` rebuilt with R5 step 2b (the
+  harness tree untouched). Step 4 (docs) and R6 released.
