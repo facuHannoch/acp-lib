@@ -202,3 +202,13 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   never-taken inputs all verified. Three fixes: the changelog; a stop racing an in-flight `message_completed` gives
   `AgentSessionOperationError` where `a9b3ae1` returned cancelled (settle it as cancelled); a test for the `taken`
   answer during the grace (the `noteTaken` mutation survives).
+- R6's last follow-up (`92a02d2`, report `fde102b`) checked by clad2a (`8e11514`): **R6 approved**, with two small items
+  (coordinator gate 1,671 in 159 files green RAM-backed). Side by side on `a9b3ae1`, `ac09144` and `fde102b`: a stop
+  mid-turn after a completed message now returns cancelled with the partial text and a cancelled metering record (was
+  empty text and no record); a stop with the completion held settles cancelled with empty text (a regression to
+  `AgentSessionOperationError` in `ac09144` fixed); a streamed message stopped halfway is identical on all three;
+  mixed stop and close and a 30-round take-wins race clean. Open: in the held-completion stop, `fde102b` drops a
+  completion arriving after settle, so nothing is persisted although the harness committed the message (the older
+  commits persisted a failed record): asked cod2a to verify that the next open's recovery restores the reply exactly
+  once (test and changelog) or persist it; plus a test for the late-completion guard and the changelog's metering
+  sentence. The pre-alpha waits for that short follow-up.
