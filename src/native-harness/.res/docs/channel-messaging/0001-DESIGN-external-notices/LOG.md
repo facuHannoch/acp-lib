@@ -419,3 +419,19 @@ The harness `bun test ./test --timeout 30000` passed 360/0 (47 files,
 34.70 s). No timeout settings changed. The earlier failures remain
 recorded above, and this successful gate does not by itself isolate
 machine load from the effect of the temporary filesystem.
+
+### Gate 3 review closure
+
+Clad approved `1ebf6f5ceeacba047f62feeae024886423479c37` (runtime
+`1ae9a90963856d5380ae09d92983708a980a00ff`). Independent checks passed
+both typechecks and 55 focused tests. Clad's reopen probe confirmed one
+uncertainty notice with the original ACP destination and source, followed
+by an idempotent old_settled retry. The review also confirmed that a
+conflict writes nothing and settlement and reservation commit together.
+
+The independent loaded root run passed 1529 tests with one timeout in
+the unchanged "owned partial stall" test. That case passed three isolated
+runs. Clad accepted the gate with the clean 1530/0 root runs and matching
+baseline comparison recorded above. Haurness-l owns integration. The
+combined orchestrator checkpoint and live ACP provider validation remain
+open as recorded above.
