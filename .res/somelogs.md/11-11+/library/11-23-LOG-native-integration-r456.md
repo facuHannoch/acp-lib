@@ -95,3 +95,9 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   `usage.status` "metered" (add a reason or a status); the `billing_required` refusal should name the capability; the
   harness client change needs haurness-l's confirmation (Clad1a reviewing). **Coordinator gate passed**; the next
   `pre-alpha` holds until Clad1a's verdict. 2b released, with haurness-l's constraint: no between-turn support claimed.
+- Clad1a approved the harness client change in step 2a (`f56de5e`): `finish()` is settle-once on every path (pre-abort,
+  response vs abort in both orders, timeout, transport close, send throw, `close()`; eight probe tests against a fake
+  transport), with one item to add before alpha: harness client tests for the abort paths (none in the diff); and a
+  doc note that `cancelled` means the caller stopped waiting, not that the call wasn't applied. cod2a adds both in a
+  small commit before 2b; then `pre-alpha` can take 2a. (Clad1a also saw intermittent harness-suite failures under
+  load, on the base too: not a regression.)
