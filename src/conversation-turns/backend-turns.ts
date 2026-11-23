@@ -74,6 +74,23 @@ export class BackendTurns {
     if (message && message.state !== "taken") return message.offered ? "submitted" : "local";
   }
 
+  /** Allow a single grace period for all submitted, unclaimed native inputs before stopping. */
+  async withdrawBeforeStop(controller: ConversationController): Promise<void> {
+    const withdraw = controller.withdrawInput?.bind(controller);
+    if (!withdraw) return;
+    const submitted = [...this.#messages.keys()].filter(id => this.withdrawable(id) === "submitted");
+    if (submitted.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(submitted.map(async id => withdraw(id))),
+        new Promise<void>(resolve => { timer = setTimeout(() => resolve(), 1_000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   confirmWithdrawal(messageId: string, drop: (messages: PromptQueueItem[]) => void): boolean {
     const message = this.#messages.get(messageId);
     if (!message || message.state === "taken") return false;
@@ -234,7 +251,7 @@ export async function sendToBackend(host: BackendTurnHost, controller: Conversat
   try {
     // No turn id: the backend assigns turn ids. The message goes as the queue holds it.
     const { turnId: _sessionTurnId, ...run } = turnRunOf(message);
-    const send = controller.send(release ? { ...run, beginInput: id => host.turns.beginInput(id) } : run);
+    const send = controller.send(release ? { ...run, beginInput: id => !host.stopped && host.turns.beginInput(id) } : run);
     await (release ? Promise.race([send, release.promise]) : send);
     host.turns.accepted(message.turnId);
   } catch (error) {
@@ -248,12 +265,13 @@ export async function sendToBackend(host: BackendTurnHost, controller: Conversat
  */
 export async function withdrawBackendInput(
   turns: BackendTurns, controller: ConversationController, id: string, drop: (messages: PromptQueueItem[]) => void,
+  shouldSettle: () => boolean,
 ): Promise<boolean> {
   if (!controller.withdrawInput) return withdrawWaiting(turns, id, drop);
   const state = turns.withdrawable(id);
   if (state === "local") return turns.confirmWithdrawal(id, drop);
   if (state !== "submitted" || !await controller.withdrawInput(id)) return false;
-  turns.confirmWithdrawal(id, drop);
+  if (shouldSettle()) turns.confirmWithdrawal(id, drop);
   return true;
 }
 

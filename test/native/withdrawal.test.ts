@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { NativeInputStoppedError } from "../../src/index.ts";
 import { hold, nativeRig, reply } from "./support.ts";
 
 test("native withdrawal confirms an inbox item, and a taken prompt follows its turn", async () => {
@@ -58,46 +59,174 @@ test("withdrawal while a native dispatch hook waits cannot send the input", asyn
   }
 }, 30_000);
 
-for (const action of ["interrupt", "stop", "close"] as const) {
-  test(`native ${action} leaves an accepted input in the harness`, async () => {
+async function heldPair(rig: Awaited<ReturnType<typeof nativeRig>>, script = [hold("active"), reply("Kept.")]) {
+  rig.script(script);
+  const agent = await rig.open();
+  const conversation = await agent.conversations.create();
+  const host = agent.nativeHarness!;
+  const tool = Promise.withResolvers<void>();
+  const taken = Promise.withResolvers<void>();
+  const running = conversation.prompt("first", { onActivity(event) {
+    if (event.kind === "tool" && event.toolCallId === "hold-active") tool.resolve();
+    if (event.kind === "tool" && event.toolCallId === "hold-taken") taken.resolve();
+  } });
+  void running.catch(() => undefined);
+  await tool.promise;
+  const receipt = Promise.withResolvers<void>();
+  const push = host.push.bind(host);
+  host.push = async input => {
+    const result = await push(input);
+    receipt.resolve();
+    return result;
+  };
+  const queued = conversation.prompt({ text: "submitted", delivery: "steer" });
+  const result = queued.catch(error => error);
+  await receipt.promise;
+  const { items } = await host.reconcileChannel({ channel: conversation.id, itemIds: [queued.id] });
+  expect(items[0]?.milestone).toBe("received");
+  return { agent, conversation, host, running, queued, result, taken: taken.promise };
+}
+
+test("native interrupt retains an accepted input that has not been taken", async () => {
+  const rig = await nativeRig();
+  try {
+    const { conversation, result, queued } = await heldPair(rig);
+    const events = rig.watch(conversation);
+    conversation.interrupt({ clearQueue: true });
+    expect(await result).toMatchObject({ status: "completed", text: "Kept." });
+    expect(events.some(event => event.kind === "message_withdrawn" && event.id === queued.id)).toBe(false);
+  } finally {
+    rig.release("active");
+    await rig.clean();
+  }
+}, 30_000);
+
+for (const action of ["stop", "close"] as const) {
+  test(`native ${action} withdraws unclaimed input without another model call`, async () => {
     const rig = await nativeRig();
     try {
-      rig.script([hold("active"), reply("Kept.")]);
-      const agent = await rig.open();
-      const conversation = await agent.conversations.create();
-      const host = agent.nativeHarness!;
-      const events = rig.watch(conversation);
-      const tool = Promise.withResolvers<void>();
-      const interrupted = conversation.prompt("first", { onActivity: event => { if (event.kind === "tool") tool.resolve(); } });
-      void interrupted.catch(() => undefined);
-      await tool.promise;
-      const accepted = Promise.withResolvers<void>();
-      const push = host.push.bind(host);
-      host.push = async input => { const receipt = await push(input); accepted.resolve(); return receipt; };
-      const queued = conversation.prompt({ text: "left with the harness", delivery: "steer" });
-      const queuedResult = queued.catch(error => error);
-      await accepted.promise;
-
-      if (action === "interrupt") {
-        conversation.interrupt({ clearQueue: true });
-        expect(await queuedResult).toMatchObject({ status: "completed", text: "Kept." });
-      } else {
-        if (action === "stop") await conversation.stop();
-        else await agent.close();
-        expect(await queuedResult).toMatchObject({ message: "the conversation stopped observing this native input" });
-        const current = action === "stop" ? host : (await rig.open()).nativeHarness!;
-        await current.ensureStarted();
-        const { items } = await current.reconcileChannel({ channel: conversation.id, itemIds: [queued.id] });
-        expect(items).toHaveLength(1);
-        expect(items[0]?.milestone).not.toBe("withdrawn");
-      }
-      expect(events.filter(event => event.kind === "message_withdrawn" && event.id === queued.id)).toEqual([]);
+      const { agent, conversation, host, queued, result } = await heldPair(rig);
+      if (action === "stop") await conversation.stop();
+      else await agent.close();
+      expect(await result).toBeInstanceOf(NativeInputStoppedError);
+      expect(await result).toMatchObject({ messageId: queued.id });
+      const current = action === "stop" ? host : (await rig.open()).nativeHarness!;
+      await current.ensureStarted();
+      const { items } = await current.reconcileChannel({ channel: conversation.id, itemIds: [queued.id] });
+      expect(items[0]?.milestone).toBe("withdrawn");
+      expect((await current.modelCalls()).calls).toHaveLength(1);
     } finally {
       rig.release("active");
       await rig.clean();
     }
   }, 30_000);
+
+  test(`native ${action} shares an already pending withdrawal`, async () => {
+    const rig = await nativeRig();
+    const release = Promise.withResolvers<void>();
+    try {
+      const { agent, conversation, host, queued, result } = await heldPair(rig);
+      const first = Promise.withResolvers<void>();
+      const joining = Promise.withResolvers<void>();
+      const withdraw = host.withdraw.bind(host);
+      let wireRequests = 0, attempts = 0;
+      host.withdraw = async (channel, id) => {
+        wireRequests++;
+        first.resolve();
+        await release.promise;
+        return withdraw(channel, id);
+      };
+      const request = host.withdrawSubmission.bind(host);
+      host.withdrawSubmission = (channel, id) => {
+        if (++attempts === 2) joining.resolve();
+        return request(channel, id);
+      };
+      const pending = queued.withdrawAsync();
+      void pending.catch(() => undefined);
+      await first.promise;
+      const stopped = action === "stop" ? conversation.stop() : agent.close();
+      await joining.promise;
+      release.resolve();
+      await stopped;
+      expect(await pending).toBe(true);
+      expect(await result).toBeInstanceOf(NativeInputStoppedError);
+      expect(wireRequests).toBe(1);
+    } finally {
+      release.resolve();
+      rig.release("active");
+      await rig.clean();
+    }
+  }, 30_000);
 }
+
+test("native stop rejects the unclaimed handle with a down host", async () => {
+  const rig = await nativeRig();
+  try {
+    const { conversation, host, queued, result } = await heldPair(rig);
+    await host.stop();
+    const started = performance.now();
+    await conversation.stop();
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(await result).toBeInstanceOf(NativeInputStoppedError);
+    expect(host.records.submission(queued.id)?.withdrawing).toBe(true);
+  } finally {
+    rig.release("active");
+    await rig.clean();
+  }
+}, 30_000);
+
+test("native stop bounds an unanswered withdrawal", async () => {
+  const rig = await nativeRig();
+  const release = Promise.withResolvers<void>();
+  try {
+    const { conversation, host, result } = await heldPair(rig);
+    const issued = Promise.withResolvers<void>();
+    host.withdraw = async () => {
+      issued.resolve();
+      await release.promise;
+      throw new Error("withdrawal did not answer");
+    };
+    const stopped = conversation.stop();
+    await issued.promise;
+    await stopped;
+    expect(await result).toBeInstanceOf(NativeInputStoppedError);
+  } finally {
+    release.resolve();
+    rig.release("active");
+    await rig.clean();
+  }
+}, 30_000);
+
+test("native stop cannot withdraw when take wins", async () => {
+  const rig = await nativeRig();
+  const release = Promise.withResolvers<void>();
+  try {
+    const { conversation, host, result, taken } = await heldPair(rig, [hold("active"), hold("taken"), reply("Done.")]);
+    const issued = Promise.withResolvers<void>();
+    const actual = host.withdraw.bind(host);
+    let outcome: string | undefined;
+    host.withdraw = async (channel, id) => {
+      issued.resolve();
+      await release.promise;
+      const result = await actual(channel, id);
+      outcome = result.outcome;
+      return result;
+    };
+    const stopped = conversation.stop();
+    await issued.promise;
+    rig.release("active");
+    await taken;
+    release.resolve();
+    await stopped;
+    expect(outcome).toBe("taken");
+    expect(await result).toBeInstanceOf(NativeInputStoppedError);
+  } finally {
+    release.resolve();
+    rig.release("active");
+    rig.release("taken");
+    await rig.clean();
+  }
+}, 30_000);
 
 test("native supervision leaves a turn pending past the client stall limits during reopen", async () => {
   const reopening = Promise.withResolvers<void>();

@@ -12,6 +12,14 @@ export class AgentSessionPromptBlockedError extends Error {
   }
 }
 
+/** The conversation stopped observing a submitted native input. */
+export class NativeInputStoppedError extends Error {
+  constructor(readonly messageId: string) {
+    super("the conversation stopped observing this native input");
+    this.name = "NativeInputStoppedError";
+  }
+}
+
 export class ContinuationUnavailableError extends Error {
   constructor(readonly continuation: ContinuationReport, options?: ErrorOptions) {
     super("recorded internal session could not be loaded", options);

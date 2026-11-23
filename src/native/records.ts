@@ -47,7 +47,7 @@ export interface NativeHostRecords {
   submissions(channel?: string): Submission[];
   /** A push for it is about to be written: from now on its outcome is unknown until confirmed. */
   markSent(id: string): void;
-  markAccepted(id: string): void;
+  markAccepted(id: string, taken?: boolean): void;
   markWithdrawing?(id: string): void;
   /** The input reached a terminal outcome (its turn ended, or it was withdrawn or refused): nothing left to retry. */
   settleSubmission(id: string): void;
@@ -95,10 +95,11 @@ function build(state: State, commit: () => void): NativeHostRecords {
       found.state = "unknown";
       commit();
     },
-    markAccepted(id) {
+    markAccepted(id, taken) {
       const found = state.submissions[id];
-      if (!found || found.state === "accepted") return;
+      if (!found || (found.state === "accepted" && !(taken && found.withdrawing))) return;
       found.state = "accepted";
+      if (taken) delete found.withdrawing;
       commit();
     },
     markWithdrawing(id) {

@@ -539,7 +539,7 @@ export class NativeHarnessHost {
       const item = items.get(submission.id);
       if (!item) continue; // unknown to the harness: retried after the open, with the same id and payload
       if (item.milestone === "withdrawn") this.records.settleSubmission(submission.id);
-      else this.records.markAccepted(submission.id);
+      else this.records.markAccepted(submission.id, item.turnId !== undefined);
       this.#waiters.get(submission.id)?.resolve(item);
       this.#waiters.delete(submission.id);
     }
@@ -627,6 +627,7 @@ export class NativeHarnessHost {
       this.#waiters.get(id)?.resolve({ id, channel: event.channel, sender, kind: "participant_message", milestone: "withdrawn" });
       this.#waiters.delete(id);
     }
+    if (event.event.type === "turn_started" || event.event.type === "turn_took") for (const id of event.event.items) if (this.records.submission(id)?.withdrawing) this.records.markAccepted(id, true);
     if (event.event.type === "approval_requested") this.#approvals.start(event.event);
     if (event.event.type === "approval_closed") this.#approvals.closed(event.event);
     if (event.event.type === "turn_ended") this.#approvals.end(event.channel, event.event.turnId);
@@ -715,7 +716,7 @@ export class NativeHarnessHost {
       }
       const item: ItemStatus = receipt.item ?? { id, channel: submission.channel, kind: "participant_message", sender: submission.sender, milestone: "received" };
       if (item.milestone === "withdrawn") { this.#deliver({ channel: submission.channel, event: { type: "item_withdrawn", item: id } }); return; }
-      this.records.markAccepted(id);
+      this.records.markAccepted(id, item.turnId !== undefined);
       settle((waiter) => waiter.resolve(item));
       if (this.records.submission(id)?.withdrawing) this.#retryWithdrawal(submission);
     } catch (error) {
@@ -883,7 +884,7 @@ export class NativeHarnessHost {
   async withdraw(channel: string, item: string): Promise<{ outcome: "withdrawn" } | { outcome: "taken"; turnId: string | undefined }> {
     const result = await this.#client().withdrawItem({ channel, item });
     if (result.outcome === "withdrawn") this.#deliver({ channel, event: { type: "item_withdrawn", item } });
-    else { this.records.markAccepted(item); this.#waiters.get(item)?.resolve(result.item); this.#waiters.delete(item); }
+    else { this.records.markAccepted(item, true); this.#waiters.get(item)?.resolve(result.item); this.#waiters.delete(item); }
     return result.outcome === "withdrawn" ? { outcome: "withdrawn" } : { outcome: "taken", turnId: result.item.turnId };
   }
 

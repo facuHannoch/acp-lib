@@ -170,7 +170,7 @@ import type {
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
 import { withdrawBackendInput } from "./conversation-turns/backend-turns.ts";
-import { dropClearedOperations } from "./conversation-turns/clear-operations.ts";
+import { captureStopFailure, dropClearedOperations } from "./conversation-turns/clear-operations.ts";
 import { AgentConversationQueue } from "./agent-conversation-queue.ts";
 import type { ImportedTurn } from "./agent/adoption/replay.ts";
 import {
@@ -662,9 +662,12 @@ export class AgentConversation implements AgentClient, Bridgeable {
     };
   }
 
+  private onNativeWithdrawal(messageId: string): void {
+    if (!this.stopPromise) this.backendTurns.confirmWithdrawal(messageId, messages => this.steering.dropped(messages));
+  }
   /** A turn the controller reports. The session announces it; completion stays the session's. */
   private onControllerTurnEvent(controller: ConversationController, event: TurnEvent): void {
-    if (event.kind === "input_withdrawn") { this.backendTurns.confirmWithdrawal(event.messageId, messages => this.steering.dropped(messages)); return; }
+    if (event.kind === "input_withdrawn") return this.onNativeWithdrawal(event.messageId);
     if (event.kind === "turn_took") return reportTurnTook(this.backendTurnHost(), event);
     if (!event.sentBySession) return reportBackendTurn(this.backendTurnHost(), controller, event);
     const sent = this.sentRuns.get(event.turnId);
@@ -1879,7 +1882,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   /** Also requests confirmed withdrawal of a native input already submitted. */
   async withdrawAsync(id: PendingMessageId): Promise<boolean> {
-    return this.withdraw(id) || withdrawBackendInput(this.backendTurns, this.controller, id, messages => this.steering.dropped(messages));
+    return this.withdraw(id) || withdrawBackendInput(this.backendTurns, this.controller, id, messages => this.steering.dropped(messages), () => !this.stopPromise);
   }
 
   /** Prompt while attributing the caller to a stable participant identity. */
@@ -3941,8 +3944,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
         ? new ConnectionCancelledError() : undefined;
       const dropped = settleClearedBackendTurns(this.operations.clear(), reason === "stop", (turn) => { this.operations.enqueue(turn); void this.pump(); });
       const backend = this.backendTurns.clear(reason === "stop", Boolean(this.controller.withdrawInput));
-      if (reason === "stop" && this.controller.withdrawInput) for (const item of backend.splice(0)) item.reject(new Error("the conversation stopped observing this native input"));
-      dropClearedOperations(dropped, backend, (messages, error) => this.steering.dropped(messages, error), cancellation);
+      dropClearedOperations(dropped, backend, (messages, error) => this.steering.dropped(messages, error), cancellation, reason === "stop" && Boolean(this.controller.withdrawInput));
       this.emitStateIfChanged();
     }
     this.cancelOperation(reason);
@@ -3950,18 +3952,21 @@ export class AgentConversation implements AgentClient, Bridgeable {
 
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
-    // Publish the terminal state synchronously. All callers then share the same
-    // completion promise, including callers arriving while teardown is in progress.
+    // Publish the terminal state synchronously and share teardown with later callers.
     this.phase = "stopped";
     const failures: unknown[] = [];
+    const cancel = captureStopFailure(() => this.cancelRunning("stop", { clearQueue: true }), failures);
+    const native = this.controller.withdrawInput !== undefined;
     const completion = Promise.resolve().then(async () => {
+      if (native) {
+        await this.backendTurns.withdrawBeforeStop(this.controller);
+        cancel();
+      }
       const controllers = new Set([this.controller, this.handoffTarget]);
       for (const result of await Promise.allSettled([...controllers].map(async controller => controller?.stop()))) {
         if (result.status === "rejected") failures.push(result.reason);
       }
-      // Closing the provider can reject an active prompt. Its catch/finally path may
-      // enqueue final message and metering writes, so the pre-stop write tail is not
-      // sufficient evidence that persistence is quiescent.
+      // Wait for the provider rejection and its finalization writes before draining persistence.
       try {
         await this.operations.waitForIdle();
       } catch (error) {
@@ -3992,11 +3997,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     });
     this.stopPromise = completion;
     this.permissions.stop();
-    try {
-      this.cancelRunning("stop", { clearQueue: true });
-    } catch (error) {
-      failures.push(error);
-    }
+    if (!native) cancel();
     this.emitStateIfChanged();
     return completion;
   }

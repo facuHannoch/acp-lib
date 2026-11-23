@@ -794,6 +794,7 @@ export type { SharedFile, SharedFilePage, SharedFileQuery, SharedFilesPersistenc
 
 export type * from "./persistence/worker-delivery-contract.ts";
 export type { PermissionLevel, PermissionSettings } from "./permissions/matcher.ts";
+export { NativeInputStoppedError } from "./agent-conversation-errors.ts";
 export type { ConversationPermissionEvent, PermissionResolutionSource, WorkerPermissionSource } from "./permissions/conversation.ts";
 export type { PermissionConsumerConfig } from "./permissions/consumer-config.ts";
 export type { PermissionPolicyConfig } from "./permissions/policy.ts";

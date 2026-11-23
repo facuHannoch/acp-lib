@@ -1009,8 +1009,12 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   Configure file-backed host records to retain the intent across Agent reopen.
   A custom submission store needs `markWithdrawing` to track async withdrawal.
   `interrupt({ clearQueue: true })` still clears locally queued input. Already
-  submitted native input remains with the harness. Stop and Agent close reject
-  local handles they no longer observe and leave accepted input with the harness.
+  submitted native input remains with the harness on interrupt. Stop and Agent
+  close give withdrawal of submitted, unclaimed inputs a shared one-second
+  grace period before interrupting the active turn and rejecting the tracked
+  native handles with `NativeInputStoppedError` (includes `messageId`). If a
+  turn already took an input or the host is unavailable or silent, that input
+  may still run and incur model charges.
 - **Channel changes** go through `agent.nativeHarness.changeChannel(conversationId,
   { displayName, policy, lifecycle })`. While the harness is stopped they are
   stored (they never start it) and applied by the next start before any pending

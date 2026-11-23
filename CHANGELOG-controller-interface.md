@@ -202,8 +202,13 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   withdrawal of submitted native input. Synchronous withdrawal is local for native.
   A `taken` result leaves the prompt following its turn. An unresolved reply can reject.
 - Native submission recovery suppresses push replay while a withdrawal is pending.
-  The built-in file store retains the intent across Agent reopen. Custom host records
-  can implement `markWithdrawing` to support withdrawal of submitted input.
+  The default submission store is memory. An Agent backed by SQLite alone has no
+  local submission state to replay or withdraw after close. The file store retains
+  the intent across Agent reopen. Custom host records can implement `markWithdrawing`
+  to support withdrawal of submitted input.
 - Native `interrupt({ clearQueue: true })` clears local inputs and leaves submitted
-  input to the harness. Stop and close reject handles that the session stops observing.
+  input to the harness. Stop and close give withdrawal of submitted, unclaimed
+  native inputs one second before interrupting the active turn. Tracked native handles
+  reject with `NativeInputStoppedError` instead of returning a cancelled result.
+  Inputs can still incur spend if take has won or the host is unavailable or silent.
   `TurnEvent` now includes the controller's `input_withdrawn` confirmation.

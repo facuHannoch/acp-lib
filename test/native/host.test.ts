@@ -686,5 +686,6 @@ test("a native withdrawal that loses to take preserves the submission", async ()
   await host.push(input(item.id, item.channel));
   expect(await host.withdrawSubmission(item.channel, item.id)).toBe(false);
   expect(records.submission(item.id)).toMatchObject({ state: "accepted" });
+  expect(records.submission(item.id)?.withdrawing).toBeUndefined();
   expect(calls.filter(method => method === "push")).toHaveLength(1);
 });
