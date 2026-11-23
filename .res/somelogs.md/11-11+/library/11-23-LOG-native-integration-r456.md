@@ -222,3 +222,12 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   deadline, the provider-id dedupe, the unknown-turn check); the worst-case native stop with a silent host is about 6 s.
   **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-R6.md)): 1,672 in 159 files. `pre-alpha` built with R5's
   docs and all of R6.
+- R6's last follow-up (`f45fdab`, report `bb87489`) checked by clad2a (`ee20196`): approved (coordinator gate 1,675 in 160
+  files green RAM-backed). The Bun 1.3.14 issue reproduced: `AbortSignal.timeout(2000)` used by two sequential requests
+  that each add and remove an abort listener never fired in 6 s (exactly 2,000 ms with a listener left attached); the
+  one explicit timer fixes it (5,002 ms across requests); the full-stack worst-case stop took 6,023 ms; the three
+  surviving mutations killed; one more survives (removing `clearTimeout`: a leak test needed). A related finding in R5's
+  ledger reader: `NativeUsageLedger.readTurn` builds its 15 s budget from `AbortSignal.timeout` and uses it for every
+  page, so a hung later page is bounded only by the client's own 30 s timeout. Small fix assigned to cod2a (a single
+  timer, a two-page test, leak tests, drop the "when the submission is still tracked" qualifier, grep for other uses);
+  then the pre-alpha.
