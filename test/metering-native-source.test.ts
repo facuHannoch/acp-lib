@@ -167,8 +167,18 @@ test("a hung native usage pull does not hold the next channel and can be cancell
 });
 
 test("native usage fails closed on the elapsed and page budgets", async () => {
-  const hung = ledgerFrom(() => new Promise(() => {}), { timeoutMs: 15, maxPages: 3 });
-  await expect(hung.readTurn("alpha", "t1")).rejects.toThrow("read timed out");
+  const unanswered = Promise.withResolvers<{ calls: ModelCallSummary[] }>();
+  const hung = ledgerFrom(() => unanswered.promise, { timeoutMs: 15, maxPages: 3 });
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const deadline = new Promise<never>((_, reject) => {
+      guard = setTimeout(() => reject(new Error("the stalled read outlived the ledger budget")), 1_000);
+    });
+    await expect(Promise.race([hung.readTurn("alpha", "t1"), deadline])).rejects.toThrow("read timed out");
+  } finally {
+    clearTimeout(guard);
+    unanswered.resolve({ calls: [] });
+  }
   const paged = ledgerFrom(async () => ({
     calls: [call("1", "alpha", "t1")], next: "1",
   }), { timeoutMs: 5_000, maxPages: 1 });
