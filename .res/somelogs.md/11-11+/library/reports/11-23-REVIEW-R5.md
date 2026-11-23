@@ -309,3 +309,25 @@ It now says: the turn record's usage and `state.totals` carry usage attributed t
 - **The refusal's type and text:** name `MeteringPreflightError` and say it is raised when a native conversation is created or opened with `billing_required`, with the message naming `native-harness@1` (it does).
 - **`earlierEvidencePending`:** a record can say earlier evidence is awaiting terminal proof (the cursor waits); the guide doesn't mention it.
 - **Where `state.totals` lives:** a record's `nextState` and `agent.persistence.metering.state(id)`; the guide writes `state.totals` without saying where to read it.
+
+# Part 7 — the R5 documentation follow-up (`d6c35b8..a9b3ae1`)
+
+`a9b3ae1` changes `CHANGELOG-metering.md` and `CONSUMER_GUIDE.md` only. **Nothing under `src/` or `test/` changed** (the diff of those trees is empty; the commit's three files are the changelog, the guide and, from the neighbouring commit, the R6 report).
+
+**Verdict: every note landed accurately, nothing overclaims. Two wording nits.**
+
+| My note | Where it landed | Accurate? |
+| --- | --- | --- |
+| best-effort is the default; `inferenceSource` and pricing policy ignored for native | both: "meter turns by default (`best_effort`)"; "ignores a consumer-supplied `inferenceSource` and pricing policy" | Yes (`enforcement ?? "best_effort"`; the engine drops the source for native and never applies a policy) |
+| where the cursor and the proof live | both: cursor in the metering state; bounded proof on the operation index row, surviving pruning | Yes |
+| the staged-save replay caveat | both: replays "if/when the write-ahead record was staged"; if both writes fail, a later close recovers the sealed calls as earlier-turn usage | Yes (my double-failure probes) |
+| always `native_ledger` / unknown routing / partial / no certification id | both, with "even when every attempt was measured" | Yes |
+| the harness-dependency list in guide **and** changelog | both list provider and model identity, normalized cache categories, reported cost and currency, attempt purpose, a sealed manifest that can attest zero, and the between-turn producer with bounded idle collection | Yes |
+| `unallocatedUsage` is earlier-turn usage, not between-turn | both: "These additions … represent unaccounted usage of an earlier turn. Between-turn usage remains unsupported" | Yes |
+| a truncated proof can list an already-counted attempt as unmeasured, not summable | both | Yes (my 130-attempt probe) |
+| the one-way schema 21 | both: "The upgrade is one-way. Older code refuses a schema 21 database" | Yes |
+| `MeteringPreflightError` | both: "throws `MeteringPreflightError` until the harness can attest `native-harness@1` sealed per-turn accounting" | Yes |
+| `earlierEvidencePending` | both | Imprecise, below |
+| where `state.totals` is read | both: `record.nextState.totals` or `(await persistence.metering.state(id))?.state.totals` | Yes (the second form is the call I used) |
+
+Nits: (1) `earlierEvidencePending` is described as "awaiting durable accounting"; in the code it is set when an earlier call belongs to a turn whose **terminal outcome is not yet confirmed**, so the cursor can't retire it yet. Say "awaiting confirmation that the earlier turn ended". (2) The changelog's list of unavailable cases omits "an unavailable host", which the guide includes.
