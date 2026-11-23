@@ -138,7 +138,12 @@ test("taken-item attribution keeps notice labels distinct from participant IDs",
   await expect(read("participant_message", "participant:notice:alice")).resolves.toBe("participant:participant:notice:alice");
 });
 
-test("the production host resolves delegation attribution before installing the connection", async () => {
+test.each([
+  ["plain sender", "alice", "alice"],
+  ["leading space", " notice:w1", "participant:notice:w1"],
+  ["leading NBSP", "\u00a0notice:w1", "participant:notice:w1"],
+  ["leading tab", "\tparticipant:w1", "participant:participant:w1"],
+])("the production host resolves delegation attribution during open (%s)", async (_case, sender, attribution) => {
   const rig = await nativeRig();
   try {
     rig.script([call("delegate", { text: "Work on this" }), { content: "Delegated." }]);
@@ -156,7 +161,7 @@ test("the production host resolves delegation attribution before installing the 
       const create = client.createSession.bind(client);
       client.createSession = async params => {
         const opened = await create(params);
-        await client.push({ channel, item: { id: "during-open", kind: "user_message", sender: "alice",
+        await client.push({ channel, item: { id: "during-open", kind: "user_message", sender,
           content: [{ type: "text", text: "Delegate this while opening" }] } });
         // Keep the production host in #open until the real harness records the callback result.
         await waitFor(result.promise, "the delegation callback during host open");
@@ -173,7 +178,7 @@ test("the production host resolves delegation attribution before installing the 
     await agent.nativeHarness!.start();
     expect(await result.promise).toMatchObject({ ok: true, output: { status: "sent", handle: "w1" } });
     expect(open).toHaveBeenCalledTimes(1);
-    expect(open.mock.calls[0]?.[0]).toMatchObject({ kind: "conversation", sender: "alice",
+    expect(open.mock.calls[0]?.[0]).toMatchObject({ kind: "conversation", sender: attribution,
       conversationId: channel, invocationId: "1:delegate", policyNames: ["open"] });
   } finally {
     await rig.clean();
