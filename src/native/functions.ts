@@ -33,6 +33,8 @@ export interface NativeFunctionContext {
   /** Configured contributors from the harness authorization snapshot.
    * Order grants no precedence. An empty list means none contributed. */
   readonly policyNames: readonly string[];
+  /** Read the first taken input sender from the connection that delivered the call. */
+  readonly takenSender?: () => Promise<string>;
   /** Aborts when the harness stops waiting: the tool's deadline, an interrupt, a stop or a lost connection. */
   readonly signal: AbortSignal;
 }
@@ -80,7 +82,7 @@ export interface NativeFunctionHost {
   catalog(): ToolCatalogInput;
   /** Remember a runtime selection so the next open supplies it again. */
   select(name: string, enabled: boolean): void;
-  call(call: FunctionCall, signal: AbortSignal): Promise<FunctionResult>;
+  call(call: FunctionCall, signal: AbortSignal, takenSender?: () => Promise<string>): Promise<FunctionResult>;
   read(read: ResultRead): ResultPage;
   /** Calls being handled now, by invocation ID. */
   active(): string[];
@@ -107,12 +109,12 @@ export function createNativeFunctionHost(config: NativeFunctionsConfig): NativeF
       ...(config.defaultDeadlineMs === undefined ? {} : { defaultDeadlineMs: config.defaultDeadlineMs }),
     }),
     select(name, on) { if (on) enabled.add(name); else enabled.delete(name); },
-    async call(call, signal) {
+    async call(call, signal, takenSender) {
       const tool = Object.hasOwn(config.tools, call.handler) ? config.tools[call.handler] : undefined;
       if (!tool) throw new FunctionError("handler_missing", `No function is registered as ${call.handler}`);
       active.add(call.invocationId);
       try {
-        const output = await tool.handler(call.arguments, { invocationId: call.invocationId, channel: call.channel, turnId: call.turnId, tool: call.tool, policyNames: [...call.policyNames], signal });
+        const output = await tool.handler(call.arguments, { invocationId: call.invocationId, channel: call.channel, turnId: call.turnId, tool: call.tool, policyNames: [...call.policyNames], signal, ...(takenSender ? { takenSender } : {}) });
         const text = JSON.stringify(output ?? null);
         const bytes = Buffer.byteLength(text);
         if (bytes <= inlineBytes) return { output: output ?? null };

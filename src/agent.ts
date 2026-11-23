@@ -1,3 +1,4 @@
+import { withDelegationTools } from "./orchestrator/native-delegation.ts";
 import { workerConsumerApi, type WorkerConsumerApi } from "./orchestrator/consumer-api.ts";
 import { Orchestrator } from "./orchestrator/orchestrator.ts";
 import { validateOrchestrator } from "./orchestrator/config.ts";
@@ -160,6 +161,8 @@ export class Agent {
       ? new NativeHarnessHost({
         sessionId: id,
         ...config.harness,
+        ...(config.orchestrator ? { functions: withDelegationTools(config.harness.functions, config.orchestrator,
+          () => this.orchestrator!, () => this.conversations) } : {}),
         ...(config.harness.launcher ?? config.conversationDefaults?.launcher
           ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
           : {}),

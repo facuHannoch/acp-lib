@@ -1,9 +1,18 @@
+import type { DelegationPolicy } from "./contracts.ts";
 import type { PermissionSettings } from "../permissions/matcher.ts";
 import { PersistenceCapabilityError } from "../persistence/backend.ts";
 import type { PersistenceBackend, RecordCaptureLevel } from "../persistence/backend.ts";
 
 export interface OrchestratorConfig {
+  /** Each entry corresponds to a configured native harness policy name. */
+  readonly policies?: Readonly<Record<string, {
+    readonly delegation: DelegationPolicy;
+    readonly workerPermissions?: PermissionSettings;
+  }>>;
+  /** Forwarded requests retain owner options only when every contributing name is listed here. */
+  readonly ownerPolicies?: readonly string[];
   readonly defaults?: {
+    readonly delegation?: DelegationPolicy;
     /** Worker policy for consumer work and callbacks with no contributing policies. */
     readonly workerPermissions?: PermissionSettings;
   };

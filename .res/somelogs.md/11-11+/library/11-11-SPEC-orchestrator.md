@@ -36,7 +36,7 @@ consumer register tools and set the system prompt, and then behaves as if it cou
 agent its delegation capacity from outside:
 
 - **acp-client registers `delegate`, `check`, `list` and `stop`** (names provisional) in the tool catalog it supplies
-  on every `session/create` and `session/load` (`tools.catalog`, group `fixed`, the harness's decision 0021), and
+  on every `session/create` and `session/open` (`tools.catalog`, group `fixed`, the harness's decision 0021), and
   declares their handler names in `initialize` (`functions`). Definitions are never stored by the harness, so they
   are always current. **How to use workers is said in the tool descriptions,** not in a system prompt section: the
   system prompt is part of the harness's own config, fixed for an open session and the consumer's; a consumer that
