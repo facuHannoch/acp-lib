@@ -41,3 +41,11 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   runs, so it is a race, not load. clad2a's full run passed (timing). cod2a to find the cause (a test race or a real
   bug in first-use recovery), prove it with 20 isolated runs, and fold in clad2a's notes. Lesson: run every new test of
   a commit 20 times in isolation.
+- The R4 follow-up (`491cf66`, report `cb6f959`: the first-use recovery test fix, a test race found by clad2a: a queued
+  checkpoint lands before the first-use recovery but after the eager one; plus clad2a's R4 notes) passed the coordinator
+  gate: 20 of 20 isolated runs of `test/checkpointing/recovery.test.ts`, the full suite 1,616 in 151 files, RAM-backed.
+  clad2a is reviewing it.
+- R5 step 0 in from cod2a, `4e07939` ([report](reports/11-23-REPORT-R5-grounding.md); the full brief): the in-turn
+  parity gate works on the existing wire; native `billing_required` certification needs harness work (token category
+  semantics, reported cost, a sealed per-turn manifest, between-turn ownership). Heads-up sent to haurness-l; with clad2a
+  for review.
