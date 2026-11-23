@@ -270,3 +270,9 @@ edit to `src/agent-session.ts`.
   `CODEX_CONFIG` sandbox setting does not win against the bridge's mode. Not a bug in the forwarding. The user
   authorized one more (the second and last) live attempt with `INITIAL_AGENT_MODE=read-only`, a recorded redacted trace of
   the worker's permission requests and our responses (for diagnosis), and the same caps.
+- **The second live attempt PASSED** (cod2a, runner `0ab13e9`, report `9c50ffb` on `orchestrator`): 11 s, five
+  OpenRouter requests, two native prompts, two ACP worker submissions. One `execute` request from `w1` reached Alice;
+  Bob's redirect queued while it was open and could not answer it; Alice's `allow_once` produced one approved resolution
+  and one ACP `allow_once` response; the harness recorded one notice from `w1` to Bob. Cleanup verified (provider delete
+  true, both native conversations tombstoned, both temp trees removed; the supplied Codex home untouched). No third
+  attempt. With clad2a for review of the live-run files.
