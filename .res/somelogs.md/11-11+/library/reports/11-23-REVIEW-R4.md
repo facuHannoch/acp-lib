@@ -85,3 +85,26 @@ This part covers `2f83270..ec298c5` on `integration-r456`: `0c4d12e` (handoff ta
 3. **My fe7d28c manager size was misquoted in the brief** (see above); the gate itself is met.
 
 **Whole of R4, against my eight additions and the grounding report:** every item holds (step 1 table above, with the shutdown items from step 2). The Agent-close ordering gap is closed and mutation-checked; the PTY start remains out of scope as stated.
+
+# Part 3 — the first-use recovery test is timing-dependent (core-p's gate failure)
+
+core-p's gate failed `test/checkpointing/recovery.test.ts` > "creates and seeds a new provider session when the recorded one is missing (first use)" at line 140. **My review missed it**: my full run passed, and I had run the new tests once, not repeatedly. I reproduced it in the same clean archive of `ec298c5` (`TMPDIR` on `/dev/shm`).
+
+**Reproduction.**
+
+| Runs | Failures |
+| --- | --- |
+| The whole file, 20 isolated runs | **2 of 20**, both the first-use test |
+| The eager variant (`-t "on open"`), 20 isolated runs | **0 of 20** |
+| The first-use variant (`-t "first use"`), 20 isolated runs | **7 of 20** |
+
+**Cause: (a), a test race, not a recovery bug.** I instrumented the test (in the archive only) to print the checkpoint it expected and the one recovery used. On the failing runs:
+
+- the test's `checkpoint` is the one it read early, `covered: 4`;
+- the one recovery used is the **newest** checkpoint, `covered: 9`, which equals the conversation's `latestSequence`, and it was also the latest checkpoint at the end of the run.
+
+The test calls `checkpointing.request()` just before closing the first agent, so a newer checkpoint is queued across shutdown, and the reopened agent builds it from the transcript while it starts up. **Eager open** recovers at once, usually before that checkpoint lands, so it picks the older one and the assertion `recoveryCheckpointId == checkpoint.checkpointId` holds. **First-use** recovery runs later, after the open and the first prompt are issued, so it often finds the newer checkpoint and uses it. Recovery picking "the latest checkpoint at the time of recovery" is the same rule in both modes, and the newer checkpoint (covering the whole transcript) is a valid, arguably better, choice. The data are consistent: two provider-session rows, the recovery action recorded, and a checkpoint that covers every record.
+
+**Fix for the test (cod2a):** for the first-use variant, don't compare with the early checkpoint's id. Assert that the recovery checkpoint id is one of the stored checkpoints and that its `coveredSequence` is at least the early one's; or wait for the queued checkpoint to complete before closing the first agent (so there is only one candidate); or drop the `request()` for that variant. The eager variant needs no change. Also consider asserting `recoveredThroughSequence` for the first-use variant, which it currently skips.
+
+**Process lesson (mine):** run each *new* test of a commit about 20 times in isolation, and the touched test files repeatedly, as well as the full suite. A test that depends on a background task racing the code under test passes on a quiet full run and fails under other timing. I'll do this from now on.
