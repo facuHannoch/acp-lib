@@ -9,7 +9,7 @@ import { actor, assignmentId, config, peer, waitFor } from "./delivery-support.t
 const fixture = new URL("../fixtures/orchestrator-delivery-process.ts", import.meta.url).pathname;
 const deliveryId = `worker-result:${assignmentId}`;
 
-for (const boundary of ["final", "append"] as const) {
+for (const boundary of ["final", "append", "partial"] as const) {
   test(`ACP delivery recovers once after SIGKILL at the ${boundary} boundary`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "orchestrator-delivery-"));
     const path = join(directory, "agent.sqlite");
@@ -34,27 +34,33 @@ for (const boundary of ["final", "append"] as const) {
       const db = new Database(path, { readonly: true });
       try {
         expect(db.query("SELECT delivery_state, final_record_id FROM worker_assignments WHERE assignment_id = ?").get(assignmentId))
-          .toMatchObject({ delivery_state: boundary === "final" ? null : "pending", final_record_id: expect.any(String) });
+          .toMatchObject({ delivery_state: boundary === "append" ? "pending" : null,
+            final_record_id: boundary === "partial" ? null : expect.any(String) });
         expect(db.query("SELECT count(*) AS count FROM conversation_records WHERE record_id = ?").get(deliveryId))
-          .toEqual({ count: boundary === "final" ? 0 : 1 });
+          .toEqual({ count: boundary === "append" ? 1 : 0 });
       } finally { db.close(); }
       for (let attempt = 0; attempt < 2; attempt++) {
         const agent = await Agent.open(config(path));
         try {
           const repo = agent.persistence.workerDelivery!;
+          expect(await agent.workers!.list()).toMatchObject([{ handle: "w1", state: "offline" }]);
           expect(await repo.readStaged(assignmentId)).toMatchObject({
-            outcome: { kind: "result", text: "Exact worker result" },
+            outcome: boundary === "partial" ? { kind: "uncertain" } : { kind: "result", text: "Exact worker result" },
             delivery: { id: deliveryId, state: "delivered", destination: { kind: "acp", id: barrier.target }, policyNames: ["guest"] },
           });
           const records = await agent.persistence.records.list(barrier.target);
+          expect((await agent.persistence.messages.list(barrier.target)).messages).toHaveLength(1);
           expect(records.records.filter(record => record.recordId === deliveryId)).toMatchObject([{
-            kind: "message", role: "assistant", consumerMetadata: { kind: "worker_reply", sender: "w1" },
+            kind: "message", role: "assistant", consumerMetadata: boundary === "partial"
+              ? { kind: "worker_failed", errorKind: "uncertain", sender: "w1" }
+              : { kind: "worker_reply", sender: "w1" },
           }]);
           if (attempt === 1) {
             const { conversation } = await agent.conversations.open(barrier.target);
             const result = await conversation.prompt("next prompt");
-            expect(result.text).toContain("Exact worker result");
-            expect(result.text?.match(/Exact worker result/g)).toHaveLength(1);
+            const evidence = boundary === "partial" ? "has no reliable result for assignment" : "Exact worker result";
+            expect(result.text).toContain(evidence);
+            expect(result.text.split(evidence)).toHaveLength(2);
           }
         } finally { await agent.close(); }
       }
