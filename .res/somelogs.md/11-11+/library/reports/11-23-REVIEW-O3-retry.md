@@ -225,3 +225,17 @@ I can't re-observe the live output (I did not run it), so "11 s" and the quoted 
 2. `codex login status` is given the real `HOME`; with `CODEX_HOME` set, Codex should not read `~/.codex`, but it's the one place the real home directory reaches a child process.
 3. Add one sentence to the first report on why Codex did not ask (the mode variable).
 4. **Free mode now depends on the installed bridge.** `checkWorkerMode` throws if the bundle doesn't match the pinned 2.9.0 text, and nothing catches it in the free path: I put a stub `codex-acp` on `PATH` and the "free, scripted" run **exited with an error before running its test**. A newer bridge version would break the free smoke the same way. Catch it in free mode and print "cannot verify", as the not-installed branch already does.
+
+# Part 6 — the live-run follow-up (`9c50ffb..1a769da`)
+
+One commit, `1a769da` (`codex-permissions.ts`, `run.ts`, the README and the first live report). I used a clean `git archive 1a769da` (`/tmp/clad2a-live3`) and a fake `HOME`/stub bridges; no live run, no paid call, no Codex home touched.
+
+**Verdict: both notes are closed. No findings.**
+
+| Check | Result |
+| --- | --- |
+| **The first report says why Codex did not ask** | Yes: at that run `INITIAL_AGENT_MODE` was unset, so the bridge used its default `agent` mode ("Auto review", on-request approvals with an auto reviewer and a workspace-write sandbox); the worker wrote inside its own working directory, where the bridge may allow it without asking, and the runner's `CODEX_CONFIG` setting did not select read-only. I checked it against the installed bridge's bundle: it has the `Agent` mode ("Auto review", `on-request`, reviewer `auto_review`) as the default and reads `INITIAL_AGENT_MODE` to choose another, which matches |
+| **Free mode prints "cannot verify" for an incompatible bridge** | Yes. With a stub `codex-acp` on `PATH` the free run printed `plannedWorkerPermissions: "cannot verify: Installed bridge differs from the reviewed permission path (found no recognized ReadOnly entry; INITIAL_AGENT_MODE lookup absent)"` and still ran and **passed** the scripted test (1 pass). A stub with a partly matching `ReadOnly` entry reported what it found ("approval on-request and sandbox readOnly") the same way. With no bridge on `PATH`: "cannot verify: Codex ACP bridge was not found on PATH". With the real bridge it prints the verified settings, also with no network (`unshare -rn`) |
+| **The incompatible bridge is never started** | The stub, which writes a marker file when executed, **was not executed** in any free run (marker absent). The check only reads the bundle as data, and the "found …" text is built from the three values the check extracts (approval, sandbox, whether the lookup exists), not from file contents |
+| **No credential involved** | The free runs ran with no `OPENROUTER_API_KEY` and no Codex home; the message contains no credential material |
+| **Live mode is still strict** | Yes: with the stub bridge and `ACP_ORCH_LIVE=1` the runner still throws the same "differs from the reviewed permission path" error before creating any work tree, and the stub wasn't executed |
