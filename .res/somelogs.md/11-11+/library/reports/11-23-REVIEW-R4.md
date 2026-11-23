@@ -149,3 +149,32 @@ I also ran the whole `acp-connect-cancellation.test.ts` file 20 times: **1 failu
 | `cb6f959` (this follow-up) | **3 / 50** |
 
 The `setMode` test alone passed 40 / 40 on `cb6f959` and on `2f83270`. With the rejection printed and the `-t "stop cancels ACP"` cases run in six parallel loops (72 runs) I could not reproduce it, so the trigger seems to depend on the earlier tests in the file. The only source files changed between `ec298c5` and `cb6f959` are `connection-attempt.ts`, `controller-connection.ts` and `controller.ts` (the observer and progress change), so I suspect that change: `setMode` now routes through the same attempt with its `ConnectionAttempt<ControllerStartEvent>`, and a stop that arrives at the right moment settles the promise with `undefined` instead of rejecting. I did not find the exact cause. **Ask cod2a to look at it** before the gate counts it as green; `controller.setMode`'s settle path under `stop()` is where I would start. It is the kind of flake a single clean full run hides (core-p's 1,616 run was green).
+
+# Part 5 — the setMode flake fix (`cb6f959..c2ba881`)
+
+`d752262` (code and one test) and `c2ba881` (report). I used a clean `git archive c2ba881` (`/tmp/clad2a-r4h`, `TMPDIR` on `/dev/shm`).
+
+**Verdict: the fix is correct and holds. Reproduced 0 failures in 50 whole-file runs and 20/20 in isolation for every test in the file. One caveat on the diagnosis: I could not see the "undefined reason" happen, so the cause of the original flake is still not demonstrated, though the fix removes the dependence on it.**
+
+## The reproduction
+
+| Run | Result |
+| --- | --- |
+| `test/acp-connect-cancellation.test.ts`, whole file, **50 runs** | **0 / 50** failed (it was 3 / 50 on `cb6f959`) |
+| Each of the file's 21 tests, 20 isolated runs each (`-t`, each confirmed to match one test) | **0 / 20 for all 21** |
+
+## The diagnosis against the code
+
+The change adds a `cancellation` field to `ConnectionAttempt`: `cancel()` stores one `ConnectionCancelledError` and aborts the signal with it, and every guard that used `signal.throwIfAborted()` now calls `throwIfCancelled()`, which throws the stored error. `ConnectionAttempts.run` also wraps the attempt's result: on success **and on any rejection** it first calls `throwIfCancelled()`, so a cancelled attempt's public outcome is always the stored typed error, whatever the leaf rejected with.
+
+- **Does the fix keep the typed error for every path?** Yes: `start`, `startFresh`, `reconnect` and `setMode` (and with them the handoff targets, which call `startFresh`) all go through `connections.run`, so the settlement conversion applies to all of them, and `AcpClient.connect` goes through its own `ConnectionAttempts` and gets the same wrapper. The remaining `signal.throwIfAborted()` calls in `client.ts` (lines 313–396) sit inside that wrapped scope.
+- **Mutation:** removing the rejection-side conversion fails the new test `a cancelled attempt rejects with its own error when the leaf rejects without one`. The test uses a leaf that rejects with `undefined` and checks the outcome is `ConnectionCancelledError`.
+- **Is the reason really lost?** I could not show it. In Bun 1.3.14, `abort(new ConnectionCancelledError())` followed by `signal.throwIfAborted()` throws the same typed error (probe), and 84 random-delay stops (below) never produced an `undefined`. The report says the outer signal's reason and `throwIfAborted`'s value were `undefined` in the failing runs; that may be a Bun timing behaviour I can't trigger, or the leaf may have rejected with `undefined` some other way. The fix doesn't need the answer, but the new test only covers a *synthetic* leaf that rejects with `undefined`, not the original cause. If it reappears elsewhere, that is the thing to chase.
+
+## Trying to defeat it
+
+A throwaway test in the archive: 12 rounds over seven paths (`start`, `startFresh`, `reconnect`, `setMode` from degraded, and `start`/`start`/`reconnect` against a fixture that never answers `initialize`, `session/new` and `session/load`), each with `stop()` at a random 0–90 ms delay. **84 of 84 rejected, every one with `ConnectionCancelledError` (none `undefined` or another error), none resolved late, no controller connected after its rejection, and 0 leftover child processes.**
+
+## The changelog line
+
+Present in `CHANGELOG-controller-interface.md`: "Superseding a fresh-session start on an existing ACP connection intentionally closes that connection before starting its replacement. The cancelled session creation cannot finish on the old connection." That closes my earlier note.
