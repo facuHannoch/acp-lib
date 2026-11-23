@@ -78,7 +78,13 @@ for (const scenario of ["continue", "redirect", "replace", "take over with new a
   }, 20_000);
 }
 
-test("worker tool guidance explains how a busy send starts a separate assignment", () => {
+test("worker tool guidance explains busy sends and their immediate results", () => {
   expect(WORKER_SEND_DESCRIPTION).toContain('assignment to "new"');
   expect(WORKER_SEND_DESCRIPTION).toContain("interrupt that assignment");
+  expect(WORKER_SEND_DESCRIPTION).toContain("Use about");
+  expect(WORKER_SEND_DESCRIPTION).toContain("without waiting for the worker's reply");
+  expect(WORKER_SEND_DESCRIPTION).toContain('"sent" means');
+  expect(WORKER_SEND_DESCRIPTION).toContain('"steered" means');
+  expect(WORKER_SEND_DESCRIPTION).toContain('"busy" means nothing was sent or queued');
+  expect(WORKER_SEND_DESCRIPTION).toContain('"no_worker_free" means');
 });

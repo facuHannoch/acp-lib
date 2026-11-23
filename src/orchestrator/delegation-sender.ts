@@ -15,5 +15,8 @@ export async function takenSender(
   signal.throwIfAborted();
   const item = items.find(value => value.id === first && value.channel === channel && value.turnId === turnId);
   if (!item?.sender) throw new FunctionError("delegation_sender_unavailable", "No sender identifies the turn's first taken input");
+  if (item.kind !== "participant_message") return `notice:${item.sender}`;
+  // Escape reserved prefixes so arbitrary participant IDs stay distinct from notice labels.
+  if (item.sender.startsWith("notice:") || item.sender.startsWith("participant:")) return `participant:${item.sender}`;
   return item.sender;
 }

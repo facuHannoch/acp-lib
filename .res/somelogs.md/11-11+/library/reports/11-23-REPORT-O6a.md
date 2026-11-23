@@ -30,3 +30,9 @@ After the worker-delivery merge, a separate commit will pass `() => takenSender(
 | `d0a927b` | 1,549 tests across 144 files in 104.97 s | `/tmp/acp-o1-o6a.5JfVUo` |
 
 Both archives passed typecheck and all 35 snapshots. The A1 snapshot SHA-256 was identical across both archives and before and after each run.
+
+## Review follow-up
+
+The delegate description explains `about`, the immediate return and each outcome, including that `busy` queues no work. The stop tool reports `stopped` when it interrupts work and `idle` when there is no work to interrupt. The consumer API retains its void return. The in-process test calls stop twice and verifies both outcomes.
+
+Taken notice sources are labeled `notice:<source>`, with `notice:host` for an external notice without a source. A participant ID beginning with `notice:` or `participant:` is escaped with a leading `participant:` so the sender labels remain distinct even when an ID already uses a reserved prefix. Other participant IDs retain their original attribution.

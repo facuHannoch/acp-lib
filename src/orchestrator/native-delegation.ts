@@ -96,11 +96,8 @@ export function withDelegationTools(
         (args, actor) => orchestrator().check(actor, args.worker as string)),
       list: tool("List the workers visible to this conversation.", { type: "object", properties: {}, additionalProperties: false },
         (_args, actor) => orchestrator().list(actor)),
-      stop: tool("Interrupt a worker's running work and clear its pending prompts.", handleOnly,
-        async (args, actor) => {
-          await orchestrator().stop(actor, args.worker as string);
-          return { status: "stopped" };
-        }),
+      stop: tool('Interrupt running work and clear pending prompts. Returns "stopped" after an interruption or "idle" if there was no work to stop.', handleOnly,
+        async (args, actor) => ({ status: await orchestrator().stop(actor, args.worker as string) })),
     },
   };
 }

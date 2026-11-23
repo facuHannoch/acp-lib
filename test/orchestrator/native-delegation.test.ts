@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent, createAgentConversationId } from "../../src/index.ts";
 import { createInProcessHarness } from "../../src/native-harness/src/testing.ts";
+import type { ItemStatus } from "../../src/native-harness/src/client.ts";
 import { modelScenario } from "../../src/native-harness/test/helpers/scenario.ts";
 import { createNativeFunctionHost } from "../../src/native/functions.ts";
 import type { NativeFunctionContext } from "../../src/native/functions.ts";
@@ -33,7 +34,8 @@ test("native tools route an in-process two-policy turn with taken-input attribut
   const workerText = "[lifecycle:tool]";
   await writeFile(script, modelScenario([
     call("pause", {}), call("delegate", { text: workerText, about: "Investigate" }),
-    call("check", { worker: "w1" }), call("list", {}), call("stop", { worker: "w1" }), { content: "Done." },
+    call("check", { worker: "w1" }), call("list", {}), call("stop", { worker: "w1" }),
+    call("stop", { worker: "w1" }, "stop-idle"), { content: "Done." },
   ]));
   const config: OrchestratorConfig = {
     workers: { limit: 1, idleStopMs: false },
@@ -55,6 +57,7 @@ test("native tools route an in-process two-policy turn with taken-input attribut
   const channel = createAgentConversationId();
   const open = spyOn(agent.orchestrator!, "open");
   const outputs = new Map<string, unknown>();
+  const stopResults: unknown[] = [];
   let delegateInvocationId: string | undefined;
   const functions = createNativeFunctionHost(withDelegationTools({
     tools: { pause: { description: "Wait for the next input", parameters: { type: "object" }, async handler() {
@@ -68,6 +71,7 @@ test("native tools route an in-process two-policy turn with taken-input attribut
     const result = await functions.call(call, signal, () => takenSender(client, call.channel, call.turnId, signal));
     outputs.set(call.tool, result.output);
     if (call.tool === "delegate") delegateInvocationId = call.invocationId;
+    if (call.tool === "stop") stopResults.push(result.output);
     return result;
   }, read => functions.read(read));
   client.onChannelEvent(event => {
@@ -96,7 +100,7 @@ test("native tools route an in-process two-policy turn with taken-input attribut
     expect(outputs.get("delegate")).toEqual({ status: "sent", handle: "w1" });
     expect(outputs.get("check")).toMatchObject({ state: "busy", sender: "alice" });
     expect(outputs.get("list")).toMatchObject([{ handle: "w1", state: "busy" }]);
-    expect(outputs.get("stop")).toEqual({ status: "stopped" });
+    expect(stopResults).toEqual([{ status: "stopped" }, { status: "idle" }]);
     expect(open).toHaveBeenCalledTimes(1);
     const [actor] = open.mock.calls[0]!;
     expect(actor).toMatchObject({
@@ -114,6 +118,24 @@ test("native tools route an in-process two-policy turn with taken-input attribut
     }
   }
 }, 30_000);
+
+test("taken-item attribution keeps notice labels distinct from participant IDs", async () => {
+  const read = (kind: ItemStatus["kind"], sender: string) => takenSender({
+    async reconcileChannel({ turnIds }) {
+      return {
+        revision: 1, unknownItemIds: [], unknownTurnIds: [], replies: [],
+        turns: turnIds ? [{ channel: "giver", turnId: "1", state: "running", items: ["first"] }] : [],
+        items: turnIds ? [] : [{ channel: "giver", turnId: "1", id: "first", kind, sender, milestone: "taken" }],
+      };
+    },
+  }, "giver", "1", new AbortController().signal);
+  await expect(read("external_notice", "alice")).resolves.toBe("notice:alice");
+  await expect(read("external_notice", "host")).resolves.toBe("notice:host");
+  await expect(read("channel_notice", "other-channel")).resolves.toBe("notice:other-channel");
+  await expect(read("participant_message", "alice")).resolves.toBe("alice");
+  await expect(read("participant_message", "notice:alice")).resolves.toBe("participant:notice:alice");
+  await expect(read("participant_message", "participant:notice:alice")).resolves.toBe("participant:participant:notice:alice");
+});
 
 test("native delegation declines unknown or absent policies, and uses explicit empty-list defaults", async () => {
   const channel = createAgentConversationId();

@@ -15,7 +15,7 @@ export function workerConsumerApi(orchestrator: Orchestrator): WorkerConsumerApi
   return Object.freeze({
     list: () => orchestrator.list(consumer),
     check: (handle: string) => orchestrator.check(consumer, handle),
-    stop: (handle: string) => orchestrator.stop(consumer, handle),
+    async stop(handle: string) { await orchestrator.stop(consumer, handle); },
     delete: (handle: string) => orchestrator.drop(consumer, handle),
   });
 }

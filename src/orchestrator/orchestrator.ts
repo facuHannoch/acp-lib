@@ -111,14 +111,16 @@ export class Orchestrator {
     });
   }
 
-  stop(actor: WorkerActor, handle: string): Promise<void> {
+  stop(actor: WorkerActor, handle: string): Promise<"stopped" | "idle"> {
     return this.run(async () => {
       const row = await this.requireWorker(actor, handle);
       const running = this.pool.get(handle)?.work;
       if (actor.kind === "conversation" && running && running.assignment.destination !== actor.conversationId) {
         requireWorkerRedirect(actor);
       }
-      if (await this.interrupt(handle)) this.emit({ ...this.identity(row), kind: "worker_stopped", reason: "requested" });
+      if (!await this.interrupt(handle)) return "idle";
+      this.emit({ ...this.identity(row), kind: "worker_stopped", reason: "requested" });
+      return "stopped";
     });
   }
 
