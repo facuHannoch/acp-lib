@@ -9,11 +9,22 @@ export interface NativeTurnUsage {
   readonly unmeasured: number;
 }
 
+export const UNVERIFIED_NATIVE_SOURCE = "native-harness-unverified";
+
+export interface NativeTurnRead extends NativeTurnUsage {
+  readonly inferences: readonly NativeUsageInference[];
+}
+
+export interface NativeTurnMetering {
+  readonly turnId: string;
+  read(): Promise<NativeTurnRead>;
+}
+
 /** Stages one explicitly owned turn before the engine's synchronous drain. */
 export class NativeInferenceSource implements InferenceSource {
-  readonly certificationId = "native-harness-unverified";
+  readonly certificationId = UNVERIFIED_NATIVE_SOURCE;
   readonly sessionKey: string;
-  #pulling = false;
+  #queue = Promise.resolve();
   #current: NativeTurnUsage | undefined;
   #ready: readonly NativeUsageInference[] = [];
 
@@ -25,20 +36,32 @@ export class NativeInferenceSource implements InferenceSource {
     this.sessionKey = `${agentId}/${channel}`;
   }
 
-  async pullTurn(turnId: string, position?: NativeLedgerPosition): Promise<NativeTurnUsage> {
-    if (this.#pulling) throw new Error("A native usage pull is already in progress for this channel");
-    this.#pulling = true;
+  pullTurn(turnId: string, position?: NativeLedgerPosition): Promise<NativeTurnUsage> {
+    return this.#enqueue(() => this.#pull(turnId, position));
+  }
+
+  /** Keep pull and drain in the same queued operation, even if a second close is waiting. */
+  readTurn(turnId: string, position?: NativeLedgerPosition): Promise<NativeTurnRead> {
+    return this.#enqueue(async () => {
+      const evidence = await this.#pull(turnId, position);
+      return { ...evidence, inferences: this.drain(this.sessionKey) };
+    });
+  }
+
+  #enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.#queue.then(work);
+    this.#queue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  async #pull(turnId: string, position?: NativeLedgerPosition): Promise<NativeTurnUsage> {
     this.#ready = [];
     this.#current = undefined;
-    try {
-      const { calls, lastSeenCallId } = await this.ledger.readTurn(this.channel, turnId, position);
-      const { evidence, inferences, unmeasured } = projectNativeUsage(calls, this.sessionKey);
-      this.#current = { calls: evidence, lastSeenCallId, unmeasured };
-      this.#ready = inferences;
-      return this.#current;
-    } finally {
-      this.#pulling = false;
-    }
+    const { calls, lastSeenCallId } = await this.ledger.readTurn(this.channel, turnId, position);
+    const { evidence, inferences, unmeasured } = projectNativeUsage(calls, this.sessionKey);
+    this.#current = { calls: evidence, lastSeenCallId, unmeasured };
+    this.#ready = inferences;
+    return this.#current;
   }
 
   isHealthy(): boolean { return this.#current !== undefined; }

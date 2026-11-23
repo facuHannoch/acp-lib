@@ -14,6 +14,7 @@ import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { ConversationController, TurnCause } from "../conversation-controller/contracts.ts";
 import type { Logger } from "../logger.ts";
 import type { ResolvedPart } from "../media/parts.ts";
+import type { NativeTurnMetering } from "../metering/native/source.ts";
 import type { OpenOperation } from "../metering/engine.ts";
 import type { SupervisedProvider } from "../operations/contracts.ts";
 import type { MeteredOperationKind, OperationMeteringRecord } from "../metering/record.ts";
@@ -88,6 +89,7 @@ export interface TurnRunContext {
       outcome: "completed" | "cancelled" | "error",
       reportedCumulative: TokenUsage | null,
       usageFailureReason?: string,
+      nativeMetering?: NativeTurnMetering,
     ): Promise<OperationMeteringRecord>;
   };
 

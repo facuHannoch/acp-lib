@@ -15,6 +15,7 @@ import type { Money } from "./money.ts";
 import type { AttributableUsage } from "./rating.ts";
 import type { AgentSessionMeteringState, StateRestoration } from "./state.ts";
 import type { PricingConfiguration } from "./pricing.ts";
+import type { NativeCallEvidence } from "./native/projection.ts";
 import type { InferenceSource } from "./engine.ts";
 
 export type MeteredOperationKind =
@@ -63,7 +64,7 @@ export interface ProviderIdentitySnapshot {
  * traffic bypassed it. Network isolation is a deployment property, not a library claim.
  */
 export interface MeteringProvenance {
-  readonly source: "certified" | "acp_usage" | "none";
+  readonly source: "certified" | "native_ledger" | "acp_usage" | "none";
   readonly measurement: "provider_normalized" | "acp_derived" | "unavailable";
   readonly routing: "observed" | "unknown";
   readonly attribution: "complete" | "partial" | "unavailable";
@@ -101,6 +102,15 @@ export type CostReconciliation =
       readonly reason: string;
     };
 
+/** Evidence from the native harness ledger for this operation's wire turn. */
+export type NativeOperationUsage = {
+  readonly channel: string;
+  readonly turnId: string | null;
+} & (
+  | { readonly status: "observed"; readonly calls: readonly NativeCallEvidence[]; readonly unmeasured: number }
+  | { readonly status: "unavailable"; readonly reason: string }
+);
+
 export interface OperationMeteringRecord {
   readonly operationId: string;
   readonly operationKind: MeteredOperationKind;
@@ -114,6 +124,7 @@ export interface OperationMeteringRecord {
   readonly provenance: MeteringProvenance;
 
   readonly usage: MeteringUsageResult;
+  readonly nativeUsage?: NativeOperationUsage;
   readonly pricingStatus: MeteringPricingStatus;
   readonly pricingFailureReason?: string;
   /** Latest observation received by completion; not guaranteed to include this operation. */

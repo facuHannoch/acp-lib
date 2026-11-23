@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
+import { MeteringEngine } from "../src/metering/engine.ts";
 import { NativeUsageLedger } from "../src/metering/native/ledger.ts";
 import { NativeInferenceSource } from "../src/metering/native/source.ts";
 import type { ModelAttemptSummary, ModelCallSummary, ModelUsage } from "../src/native-harness/src/client.ts";
+
+const ledgerFrom = (readPage: ReturnType<ConstructorParameters<typeof NativeUsageLedger>[0]>,
+  bounds?: ConstructorParameters<typeof NativeUsageLedger>[1]) => new NativeUsageLedger(() => readPage, bounds);
 
 const startedAt = "2026-11-23T00:00:00.000Z";
 const endedAt = "2026-11-23T00:00:01.000Z";
@@ -22,7 +26,7 @@ function call(callId: string, channel: string, turnId: string,
 
 test("native usage pages isolate a channel and turn and keep a retry's own usage and IDs", async () => {
   const requested: Array<string | undefined> = [];
-  const ledger = new NativeUsageLedger(async ({ after }) => {
+  const ledger = ledgerFrom(async ({ after }) => {
     requested.push(after);
     if (after === undefined) return { calls: [
       call("1", "beta", "t1"), call("2", "alpha", "t0"),
@@ -57,7 +61,7 @@ test("native usage pages isolate a channel and turn and keep a retry's own usage
 
 test("native usage keeps running and missing evidence separate from the sealed projection", async () => {
   let reopened = false;
-  const ledger = new NativeUsageLedger(async () => ({ calls: reopened ? [
+  const ledger = ledgerFrom(async () => ({ calls: reopened ? [
     call("2", "alpha", "t1", [attempt("2", 0, firstUsage, "interrupted")], "interrupted"),
     call("3", "alpha", "t1", [attempt("3", 0, { inputTokens: 0 }, "timeout")], "timeout"),
     call("4", "alpha", "t1", [attempt("4", 0, undefined, "provider_failure")], "failed"),
@@ -84,7 +88,7 @@ test("native usage reads from an accounted cursor without scanning historical pa
     return call(String(id), "alpha", id > 400 ? "last" : "historical");
   });
   const queries: Array<string | undefined> = [];
-  const ledger = new NativeUsageLedger(async ({ after }) => {
+  const ledger = ledgerFrom(async ({ after }) => {
     queries.push(after);
     const index = after === undefined ? 0 : Number(after);
     const calls = history.slice(index, index + 2);
@@ -101,7 +105,7 @@ test("native usage reads from an accounted cursor without scanning historical pa
 test("native usage publishes no stale or partial batch after a paging or host failure", async () => {
   let state: "normal" | "repeated" | "bad-cursor" | "host-down" = "normal";
   const down = new Error("host stopped");
-  const ledger = new NativeUsageLedger(async ({ after }) => {
+  const ledger = ledgerFrom(async ({ after }) => {
     if (state === "host-down") throw down;
     if (state === "bad-cursor") return { calls: [call("1", "alpha", "t1")], next: "0" };
     if (state === "repeated" && after === undefined) return { calls: [call("1", "alpha", "t1")], next: "1" };
@@ -125,7 +129,7 @@ test("native usage publishes no stale or partial batch after a paging or host fa
 
 test("native usage rejects invalid counts and attempt IDs without publishing an inference", async () => {
   let attempts = [attempt("1", 0, { inputTokens: -1, outputTokens: 0, totalTokens: 0 })];
-  const ledger = new NativeUsageLedger(async () => ({ calls: [call("1", "alpha", "t1", attempts)] }));
+  const ledger = ledgerFrom(async () => ({ calls: [call("1", "alpha", "t1", attempts)] }));
   const source = new NativeInferenceSource("agent", "alpha", ledger);
   await expect(source.pullTurn("t1")).rejects.toThrow("Invalid native model usage field");
   expect(source.drain(source.sessionKey)).toEqual([]);
@@ -138,7 +142,7 @@ test("a hung native usage pull does not hold the next channel and can be cancell
   const entered = Promise.withResolvers<void>();
   const never = Promise.withResolvers<{ calls: ModelCallSummary[] }>();
   let reads = 0;
-  const ledger = new NativeUsageLedger(async () => {
+  const ledger = ledgerFrom(async () => {
     if (++reads === 1) {
       entered.resolve();
       return never.promise;
@@ -163,10 +167,87 @@ test("a hung native usage pull does not hold the next channel and can be cancell
 });
 
 test("native usage fails closed on the elapsed and page budgets", async () => {
-  const hung = new NativeUsageLedger(() => new Promise(() => {}), { timeoutMs: 15, maxPages: 3 });
+  const hung = ledgerFrom(() => new Promise(() => {}), { timeoutMs: 15, maxPages: 3 });
   await expect(hung.readTurn("alpha", "t1")).rejects.toThrow("read timed out");
-  const paged = new NativeUsageLedger(async () => ({
+  const paged = ledgerFrom(async () => ({
     calls: [call("1", "alpha", "t1")], next: "1",
   }), { timeoutMs: 5_000, maxPages: 1 });
   await expect(paged.readTurn("alpha", "t1")).rejects.toThrow("exceeded its page budget");
+});
+
+test("a succeeded attempt waits for its call outcome and end timestamp to seal", async () => {
+  const beforeEnd = call("1", "alpha", "t1", [attempt("1", 0, firstUsage)], "running");
+  const noTimestamp = { ...call("2", "alpha", "t1"), endedAt: undefined };
+  const source = new NativeInferenceSource("agent", "alpha", ledgerFrom(async () => ({ calls: [beforeEnd, noTimestamp] })));
+  const read = await source.readTurn("t1");
+  expect(read.calls).toHaveLength(2);
+  expect(read.unmeasured).toBe(2);
+  expect(read.inferences).toEqual([]);
+
+  const engine = new MeteringEngine({ agentSessionId: "agent", adapterId: "main",
+    createdActiveThread: true, pricing: false, enforcement: "best_effort" });
+  const open = await engine.open({ operationId: "native-turn-t1", operationKind: "prompt",
+    internalSessionId: "agent", providerId: null, model: null, degraded: false,
+    native: { host: { sessionId: "agent" }, channelId: "alpha" } });
+  const result = await engine.close(open, { outcome: "error", reportedCumulative: null,
+    contextAfter: null, providerCostAfter: null, nativeMetering: { turnId: "t1", read: async () => read } });
+  expect(result.usage).toEqual({ status: "usage_unavailable", reason: "native model-call usage is incomplete" });
+  expect(result.nativeUsage).toMatchObject({ status: "observed", unmeasured: 2 });
+});
+
+test("concurrent same-channel turn reads serialize their pull and drain", async () => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let reads = 0;
+  const ledger = ledgerFrom(async () => {
+    if (++reads === 1) {
+      entered.resolve();
+      await release.promise;
+    }
+    return { calls: [call("1", "alpha", "t1"), call("2", "alpha", "t2")] };
+  });
+  const source = new NativeInferenceSource("agent", "alpha", ledger);
+  const first = source.readTurn("t1");
+  const second = source.readTurn("t2");
+  await entered.promise;
+  expect(reads).toBe(1);
+  release.resolve();
+  expect((await first).inferences.map(value => value.attemptId)).toEqual(["1:0"]);
+  expect((await second).inferences.map(value => value.attemptId)).toEqual(["2:0"]);
+  expect(reads).toBe(2);
+});
+
+test("an unverified native source cannot supply certified engine attribution", async () => {
+  const source = new NativeInferenceSource("agent", "alpha", ledgerFrom(async () => ({
+    calls: [call("1", "alpha", "t1", [attempt("1", 0, firstUsage), attempt("1", 1)])],
+  })));
+  await source.pullTurn("t1");
+  const config = { agentSessionId: "agent", adapterId: "opencode", createdActiveThread: true,
+    pricing: false, inferenceSource: source } as const;
+  expect(() => new MeteringEngine({ ...config, enforcement: "billing_required" })).toThrow("opencode-plugin@1");
+  const engine = new MeteringEngine({ ...config, enforcement: "best_effort" });
+  expect(source.outstandingReports(source.sessionKey)).toBe(1);
+  expect(engine.outstandingReports(source.sessionKey)).toBe(0);
+  const open = await engine.open({ operationId: "t1", operationKind: "prompt", internalSessionId: source.sessionKey,
+    providerId: null, model: null, degraded: false });
+  const recorded = await engine.close(open, { outcome: "completed", reportedCumulative: null,
+    contextAfter: null, providerCostAfter: null });
+  expect(recorded.provenance.source).toBe("none");
+  expect(recorded.provenance.certificationId).toBeUndefined();
+  expect(source.drain(source.sessionKey)).toHaveLength(1);
+});
+
+test("a healthy empty native ledger cannot prove a dispatched turn spent zero", async () => {
+  const source = new NativeInferenceSource("agent", "alpha", ledgerFrom(async () => ({ calls: [] })));
+  const engine = new MeteringEngine({ agentSessionId: "agent", adapterId: "main",
+    createdActiveThread: true, pricing: false, enforcement: "best_effort" });
+  const open = await engine.open({ operationId: "native-turn-unlisted", operationKind: "prompt",
+    internalSessionId: "agent", providerId: "configured", model: "configured", degraded: false,
+    native: { host: { sessionId: "agent" }, channelId: "alpha" } });
+  const recorded = await engine.close(open, { outcome: "completed", reportedCumulative: null,
+    contextAfter: null, providerCostAfter: null,
+    nativeMetering: { turnId: "unlisted", read: () => source.readTurn("unlisted") } });
+  expect(source.isHealthy()).toBe(true);
+  expect(recorded.nativeUsage).toEqual({ status: "observed", turnId: "unlisted", channel: "alpha", calls: [], unmeasured: 0 });
+  expect(recorded.usage).toEqual({ status: "usage_unavailable", reason: "native ledger has no calls for this turn" });
+  expect(recorded.nextState.unmeteredOperationCount).toBe(1);
 });

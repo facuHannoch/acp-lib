@@ -25,7 +25,7 @@ const defaultBounds: LedgerBounds = { timeoutMs: 15_000, maxPages: 1_000 };
 /** A shared, stateless reader. A stalled pull owns only its own deadline. */
 export class NativeUsageLedger {
   constructor(
-    private readonly readPage: ReadPage,
+    private readonly openRead: () => ReadPage,
     private readonly bounds: LedgerBounds = defaultBounds,
   ) {}
 
@@ -37,9 +37,10 @@ export class NativeUsageLedger {
     const calls: ModelCallSummary[] = [];
 
     try {
+      const readPage = this.openRead();
       for (let count = 0; count < this.bounds.maxPages; count++) {
         signal.throwIfAborted();
-        const page = await untilAborted(this.readPage(after === undefined ? {} : { after }, signal), signal);
+        const page = await untilAborted(readPage(after === undefined ? {} : { after }, signal), signal);
         signal.throwIfAborted();
         const seenThrough = collectPage(page, channel, turnId, seenIds, calls);
         if (page.next === undefined) return { calls, lastSeenCallId: seenThrough ?? after };

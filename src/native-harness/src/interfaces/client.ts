@@ -30,7 +30,7 @@ export class HarnessClient {
   private readonly listeners = new Set<EventSink>();
   private readonly sessionListeners = new Set<SessionEventSink>();
   private unsubscribeSession = () => {};
-  private readonly waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
   private readonly unsubscribe: () => void;
   private unsubscribeCallbacks = () => {};
   private functionHandler: FunctionHandler | undefined;
@@ -46,7 +46,6 @@ export class HarnessClient {
         if (message.id === null) return;
         const waiting = this.waiting.get(message.id);
         if (!waiting) return;
-        this.waiting.delete(message.id); clearTimeout(waiting.timer);
         if ("error" in message) waiting.reject(new HarnessClientError(message.error.data.code, message.error.message));
         else waiting.resolve(message.result);
       }
@@ -94,14 +93,25 @@ export class HarnessClient {
       this.close();
     });
   }
-  request<K extends keyof Calls>(method: K, params: Calls[K]["params"]): Promise<Calls[K]["result"]> {
+  request<K extends keyof Calls>(method: K, params: Calls[K]["params"], signal?: AbortSignal): Promise<Calls[K]["result"]> {
     if (this.closed) return Promise.reject(this.terminalError);
+    const cancelled = () => new HarnessClientError("cancelled", `Request cancelled: ${method}`);
+    if (signal?.aborted) return Promise.reject(cancelled());
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.waiting.delete(id); reject(new HarnessClientError("timeout", `Request timed out: ${method}`)); }, this.timeoutMs);
-      this.waiting.set(id, { timer, reject, resolve: value => resolve(value as Calls[K]["result"]) });
+      const finish = () => {
+        if (!this.waiting.delete(id)) return false;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        return true;
+      };
+      const fail = (error: unknown) => { if (finish()) reject(error); };
+      const abort = () => fail(cancelled());
+      const timer = setTimeout(() => fail(new HarnessClientError("timeout", `Request timed out: ${method}`)), this.timeoutMs);
+      this.waiting.set(id, { reject: fail, resolve: value => { if (finish()) resolve(value as Calls[K]["result"]); } });
+      signal?.addEventListener("abort", abort, { once: true });
       try { this.transport.send({ jsonrpc: "2.0", id, method, params }); }
-      catch (error) { clearTimeout(timer); this.waiting.delete(id); reject(error); }
+      catch (error) { fail(error); }
     });
   }
   initialize(params: InitializeParams = { protocolVersion: 1, host: { name: "harness-client", version: "0" }, callbacks: [], subscription: { text: "final", tools: "full" } }) {
@@ -129,7 +139,7 @@ export class HarnessClient {
   timeline(params: Calls["session/timeline"]["params"] = {}) { return this.request("session/timeline", params); }
   notify(params: Calls["channel/notify"]["params"]) { return this.request("channel/notify", params); }
   status() { return this.request("session/status", {}); }
-  modelCalls(params: Calls["session/model-calls"]["params"] = {}) { return this.request("session/model-calls", params); }
+  modelCalls(params: Calls["session/model-calls"]["params"] = {}, signal?: AbortSignal) { return this.request("session/model-calls", params, signal); }
   readMessage(params: Calls["session/message/read"]["params"]) { return this.request("session/message/read", params); }
   /** Resolves once the session is cleanly suspended: active iterations have
    * finished and every unfinished turn is checkpointed. May take as long as a
@@ -189,7 +199,6 @@ export class HarnessClient {
     // The harness no longer waits for anything this connection was handling.
     for (const control of this.running.values()) control.abort(this.terminalError);
     this.running.clear(); this.listeners.clear(); this.sessionListeners.clear();
-    for (const pending of this.waiting.values()) { clearTimeout(pending.timer); pending.reject(this.terminalError); }
-    this.waiting.clear();
+    for (const pending of this.waiting.values()) pending.reject(this.terminalError);
   }
 }

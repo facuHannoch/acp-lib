@@ -19,13 +19,10 @@ import {
   type MeteredOperationKind,
   type MeteringEnforcement,
   type MeteringPricingStatus,
-  type MeteringProvenance,
   type MeteringUsageResult,
   type OperationMeteringRecord,
   type OperationOutcome,
   type CostReconciliation,
-  acpProvenance,
-  UNAVAILABLE_PROVENANCE,
 } from "./record.ts";
 import type {
   CategoryApplicability,
@@ -38,6 +35,9 @@ import type {
 import { validatePricingPolicy } from "./pricing.ts";
 import { counterInterpretationForAdapter, type CounterInterpretation } from "./provider.ts";
 import { billingRefusalReason, certificationFor } from "./certification.ts";
+import { measurementProvenance } from "./measurement-provenance.ts";
+import { measureNativeTurn, nativeRouteUnavailable } from "./native/operation.ts";
+import { UNVERIFIED_NATIVE_SOURCE, type NativeTurnMetering } from "./native/source.ts";
 import type { ProviderInference } from "./opencode/channel.ts";
 
 /**
@@ -145,6 +145,7 @@ export interface OpenOperation {
    * charged to whichever operation happens to be draining.
    */
   readonly sequenceHighWaterAtOpen: number;
+  readonly nativeChannel?: string;
 }
 
 export interface CloseOperationInput {
@@ -155,6 +156,7 @@ export interface CloseOperationInput {
   readonly contextAfter: ContextWindowStatus | null;
   readonly providerCostAfter: ProviderCostSnapshot | null;
   readonly billingFacts?: BillingFacts;
+  readonly nativeMetering?: NativeTurnMetering;
 }
 
 export interface OpenDetachedOperation {
@@ -180,12 +182,15 @@ export class MeteringEngine {
   private trustedZeroBaseline: boolean;
   private baseline: MeteringBaseline | null;
   private readonly interpretation: CounterInterpretation;
+  private readonly inferenceSource: InferenceSource | undefined;
   /** Provider cumulative cost as of the previous close, for per-operation deltas. */
   private lastProviderCost: Money | null = null;
   /** Records drained this close that belong to an operation already finished. */
   private lateArrivals: readonly ProviderInference[] = [];
 
   constructor(private readonly options: MeteringEngineOptions) {
+    const source = options.inferenceSource;
+    this.inferenceSource = source?.certificationId === UNVERIFIED_NATIVE_SOURCE ? undefined : source;
     const restoration = restoreMeteringState(options.initialState, options.agentSessionId);
     this._restoration = restoration;
     this.state =
@@ -205,7 +210,7 @@ export class MeteringEngine {
     const certification = certificationFor(options.adapterId);
     if (
       options.enforcement === "billing_required" &&
-      (!certification || options.inferenceSource?.certificationId !== certification.certificationId)
+      (!certification || this.inferenceSource?.certificationId !== certification.certificationId)
     ) {
       // Refused at construction rather than at the first prompt: a consumer asking for
       // billing-grade metering should learn it is unavailable before any work is queued,
@@ -234,7 +239,7 @@ export class MeteringEngine {
   }
   /** Reports the certified source is still missing for a thread; retractable. */
   outstandingReports(internalSessionId: string | null): number {
-    return this.options.inferenceSource?.outstandingReports?.(internalSessionId) ?? 0;
+    return this.inferenceSource?.outstandingReports?.(internalSessionId) ?? 0;
   }
   get counterInterpretation(): CounterInterpretation {
     return this.interpretation;
@@ -280,6 +285,7 @@ export class MeteringEngine {
     providerId: string | null;
     model: string | null;
     degraded: boolean;
+    native?: { readonly host: { readonly sessionId: string }; readonly channelId: string };
   }): Promise<OpenOperation> {
     const strict = this.options.enforcement !== "best_effort";
 
@@ -296,7 +302,7 @@ export class MeteringEngine {
     // A certified source that is already unhealthy must fail BEFORE the provider is paid.
     // Checking only afterwards let the first operation through, which defeats the point of
     // a preflight in the one mode that exists to guarantee measurement.
-    if (strict && this.options.inferenceSource && !this.options.inferenceSource.isHealthy()) {
+    if (strict && this.inferenceSource && !this.inferenceSource.isHealthy()) {
       throw new MeteringPreflightError(
         "certified metering channel is not healthy; refusing to dispatch billable work",
       );
@@ -317,7 +323,9 @@ export class MeteringEngine {
     let policy: PricingPolicy | null = null;
     let pricingFailureReason: string | null = null;
 
-    if (this.options.pricing === false) {
+    if (input.native) {
+      pricingFailureReason = nativeRouteUnavailable;
+    } else if (this.options.pricing === false) {
       if (strict) {
         throw new MeteringPreflightError("pricing is disabled but this mode requires rating");
       }
@@ -347,14 +355,15 @@ export class MeteringEngine {
       operationId: input.operationId,
       operationKind: input.operationKind,
       startedAt,
-      internalSessionId: input.internalSessionId,
-      providerId: input.providerId,
-      model: input.model,
+      internalSessionId: input.native ? `${input.native.host.sessionId}/${input.native.channelId}` : input.internalSessionId,
+      providerId: input.native ? null : input.providerId,
+      model: input.native ? null : input.model,
+      ...(input.native ? { nativeChannel: input.native.channelId } : {}),
       policy,
       pricingFailureReason,
-      permanentlyLostAtOpen: this.options.inferenceSource?.permanentlyLostCount?.() ?? 0,
+      permanentlyLostAtOpen: this.inferenceSource?.permanentlyLostCount?.() ?? 0,
       sequenceHighWaterAtOpen:
-        this.options.inferenceSource?.sequenceHighWater?.(input.internalSessionId) ?? 0,
+        this.inferenceSource?.sequenceHighWater?.(input.internalSessionId) ?? 0,
     });
   }
 
@@ -427,10 +436,11 @@ export class MeteringEngine {
    */
   async close(open: OpenOperation, input: CloseOperationInput): Promise<OperationMeteringRecord> {
     const strict = this.options.enforcement !== "best_effort";
-    const source = this.options.inferenceSource;
+    const native = open.nativeChannel === undefined ? undefined : await measureNativeTurn(open.nativeChannel, input.nativeMetering);
+    const source = native ? undefined : this.inferenceSource;
     const certified = source ? await this.measureCertified(source, open, input) : null;
     const { usage, attributable, applicability, nextBaseline, ratingFailureReason, ratingComplete } =
-      certified ?? this.measure(open, input);
+      native ? { ...native, nextBaseline: this.baseline } : certified ?? this.measure(open, input);
 
     let pricingStatus: MeteringPricingStatus;
     // A post-operation rating failure is more specific than a preflight one, so it wins.
@@ -442,7 +452,7 @@ export class MeteringEngine {
     // pricing_unavailable and blocked strict mode on correctly priced work.
     if (usage.status !== "metered") {
       pricingStatus = "not_attributable";
-    } else if (this.options.pricing === false) {
+    } else if (this.options.pricing === false && !native) {
       pricingStatus = "not_configured";
     } else if (ratingComplete && attributable && isTotalComplete(attributable.ratedTotal)) {
       // Completeness is read off the DATA, not from a flag travelling beside it. The two
@@ -462,27 +472,8 @@ export class MeteringEngine {
     const permanentlyLost =
       (source?.permanentlyLostCount?.() ?? 0) > open.permanentlyLostAtOpen;
 
-    const provenance: MeteringProvenance =
-      usage.status !== "metered"
-        ? UNAVAILABLE_PROVENANCE
-        : certified
-          ? Object.freeze({
-              source: "certified" as const,
-              measurement: "provider_normalized" as const,
-              // Still "observed", never "enforced": the plugin reports what the harness
-              // ran, but a library cannot prove no model call bypassed it.
-              routing: "observed" as const,
-              // "complete" has to be EARNED. If the source lost a report while this
-              // operation ran, some inference happened that we never saw, and claiming
-              // complete attribution would be exactly the overstatement this design
-              // refuses everywhere else.
-              attribution:
-                outstanding > 0 || permanentlyLost || foreign.length > 0
-                  ? ("partial" as const)
-                  : ("complete" as const),
-              certificationId: source!.certificationId,
-            })
-          : acpProvenance(this.interpretation);
+    const provenance = native?.provenance ?? measurementProvenance(usage, this.interpretation,
+      certified ? source?.certificationId : undefined, outstanding > 0 || permanentlyLost || foreign.length > 0);
 
     this.state = accrueOperation(this.state, {
       attributable,
@@ -515,6 +506,7 @@ export class MeteringEngine {
       }),
       provenance,
       usage,
+      ...(native ? { nativeUsage: native.evidence } : {}),
       pricingStatus,
       ...(pricingFailureReason ? { pricingFailureReason } : {}),
       contextAfter: input.contextAfter,
