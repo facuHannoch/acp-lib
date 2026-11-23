@@ -22,3 +22,12 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   the user.
 - From here the coordinator keeps both tracks on this status branch (`integration-r456-status`, which now contains
   `orchestrator-status`); the orchestrator log is `11-22-LOG-orchestrator.md`, this file is for R4–R6.
+- R4 step 0 in from cod2a, `ba36596` ([report](reports/11-23-REPORT-R4-grounding.md); the full brief); review from
+  clad2a, `b6b9378`: accurate, ready to implement, no blockers. Verified: `stop()` reaches only the installed client;
+  `reconnect` installs before it validates; `setMode` publishes the replacement before tearing down the source; a
+  handoff target's stop is unreachable while startup hangs; the Agent-close ordering gap is real (the initial create is
+  in neither `openings` nor `live`). Eight additions: bypass `bringUp`'s auth-preserving catch on cancel; guard
+  `onCrash` by attempt identity; dispose a late `launcher.prepare` result; PTY in or out of scope; a post-await check
+  before every install; a second start while one is in flight; keep the optional caller signal; assert the child pid
+  is dead. Size gate: the attempt registry in a new module; `controller.ts`, `client.ts` and `agent-session.ts` must
+  not grow; A1 hash unchanged. **R4 released** (after cod2a's small orchestrator fixes).
