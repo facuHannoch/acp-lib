@@ -21,7 +21,11 @@ export class HarnessClientError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = "HarnessClientError"; }
 }
 
-/** Typed host API; transport details stay below this boundary. */
+/**
+ * Typed host API. A `cancelled` error from `request()` or `modelCalls()` means
+ * the caller stopped waiting. The harness may already have applied the request.
+ * Aborting sends no cancellation frame.
+ */
 export class HarnessClient {
   private nextId = 0;
   private closed = false;
