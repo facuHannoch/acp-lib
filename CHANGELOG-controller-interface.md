@@ -4,6 +4,9 @@
 
 - An explicit stop or superseding ACP connection attempt rejects with `ConnectionCancelledError`
   and code `connection_cancelled`. Direct session factories accept a startup `signal`.
+- Superseding a fresh-session start on an existing ACP connection intentionally closes that
+  connection before starting its replacement. The cancelled session creation cannot finish on
+  the old connection.
 - Agent-owned normal ACP conversations default to `providerStart: "on_open"`. Set
   `conversationDefaults.providerStart` or override it with `runtime.providerStart: "on_first_use"`
   on creation or reopen to connect on the first provider-bound operation. Before first use,

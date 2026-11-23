@@ -5,16 +5,22 @@ export class ConnectionAttempt<Progress = never> {
   private readonly observers = new Set<(event: Progress) => void>();
   private readonly progress: Progress[] = [];
   private cleanup?: () => Promise<void>;
+  private cancellation?: ConnectionCancelledError;
 
   get signal(): AbortSignal { return this.abort.signal; }
 
+  throwIfCancelled(): void {
+    if (this.cancellation) throw this.cancellation;
+  }
+
   own(cleanup: () => Promise<void>): void {
-    this.signal.throwIfAborted();
+    this.throwIfCancelled();
     this.cleanup = cleanup;
   }
 
   async cancel(): Promise<void> {
-    this.abort.abort(new ConnectionCancelledError());
+    this.cancellation ??= new ConnectionCancelledError();
+    this.abort.abort(this.cancellation);
     await this.cleanup?.();
   }
 
@@ -51,8 +57,15 @@ export class ConnectionAttempts<T, Progress = never> {
     const attempt = new ConnectionAttempt<Progress>();
     if (observer) attempt.observe(observer);
     const result = prior.then(() => {
-      attempt.signal.throwIfAborted();
+      attempt.throwIfCancelled();
       return work(attempt);
+    }).then(value => {
+      attempt.throwIfCancelled();
+      return value;
+    }, error => {
+      // A stopped attempt owns its public outcome, regardless of how the leaf unwinds.
+      attempt.throwIfCancelled();
+      throw error;
     }).finally(() => {
       if (this.active?.attempt === attempt) this.active = undefined;
     });

@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { noopLogger } from "../src/logger.ts";
+import { ConnectionAttempts } from "../src/connection-attempt.ts";
 import type { AcpLauncher, PreparedLaunch } from "../src/launcher.ts";
 
 const command = [process.execPath, new URL("./fixtures/lifecycle-agent.ts", import.meta.url).pathname];
@@ -357,3 +358,18 @@ test("superseding a fresh session on the live transport stops it before reconnec
     await rm(directory, { recursive: true, force: true });
   }
 }, 12_000);
+
+test("a cancelled attempt rejects with its own error when the leaf rejects without one", async () => {
+  const attempts = new ConnectionAttempts<void>();
+  const entered = Promise.withResolvers<void>();
+  const leaf = Promise.withResolvers<void>();
+  const pending = attempts.run("mode:normal", attempt => {
+    attempt.own(async () => { leaf.reject(); });
+    entered.resolve();
+    return leaf.promise;
+  });
+  const rejected = pending.catch(error => error);
+  await bounded(entered.promise, "leaf startup");
+  await attempts.cancel();
+  expect(await rejected).toBeInstanceOf(ConnectionCancelledError);
+});

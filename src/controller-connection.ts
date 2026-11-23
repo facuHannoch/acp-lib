@@ -25,7 +25,7 @@ export async function bringUp(
   const adapter = config.adapter;
   if (mode === "degraded") {
     const { PtyClient } = await import("./degraded/index.ts");
-    attempt.signal.throwIfAborted();
+    attempt.throwIfCancelled();
     const client = new PtyClient({
       adapter,
       launcher: config.launcher,
@@ -36,7 +36,7 @@ export async function bringUp(
     });
     try {
       await client.start();
-      attempt.signal.throwIfAborted();
+      attempt.throwIfCancelled();
     } catch (err) {
       await client.stop();
       throw err;
@@ -66,11 +66,11 @@ export async function bringUp(
   try {
     attempt.own(() => client.stop());
     const capabilities = await client.connect();
-    attempt.signal.throwIfAborted();
+    attempt.throwIfCancelled();
     attempt.report({ stage: "initialized", capabilities });
   } catch (err) {
     await client.stop();
-    attempt.signal.throwIfAborted();
+    attempt.throwIfCancelled();
     throw err;
   }
   let result: ConnectResult;
@@ -82,7 +82,7 @@ export async function bringUp(
       ...(config.onSessionReplay ? { onReplayUpdate: config.onSessionReplay } : {}),
     });
   } catch (err) {
-    attempt.signal.throwIfAborted();
+    attempt.throwIfCancelled();
     if (err instanceof ConnectionCancelledError || err instanceof ProcessCrashError ||
       config.requireStartupSession || (sessionId && loadFailure === "error")) {
       await client.stop();
@@ -91,7 +91,7 @@ export async function bringUp(
     config.logger?.warn("session_start_failed", { error: String(err) });
     result = { sessionId: "", resumed: false };
   }
-  attempt.signal.throwIfAborted();
+  attempt.throwIfCancelled();
   if (result.sessionId) {
     attempt.report({
       stage: "internal_session_acquired",

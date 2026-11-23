@@ -185,9 +185,9 @@ export class HarnessController implements AgentClient, ConversationController {
   reconnect(sessionId: string): Promise<ConnectResult> {
     return this.connections.run(`reconnect:${sessionId}`, async attempt => {
       await this.stopCurrent();
-      attempt.signal.throwIfAborted();
+      attempt.throwIfCancelled();
       const brought = await bringUp(this.config, attempt, this.mode, sessionId, "error");
-      attempt.signal.throwIfAborted();
+      attempt.throwIfCancelled();
       if (!brought.result.resumed || brought.result.sessionId !== sessionId) {
         await brought.client.stop();
         throw new Error("provider did not load the requested session");
@@ -280,13 +280,13 @@ export class HarnessController implements AgentClient, ConversationController {
     return this.connections.run(fresh ? "fresh" : "start", async attempt => {
       await this.stopping;
       if (this.current && !this.isConnected) await this.stopCurrent();
-      attempt.signal.throwIfAborted();
+      attempt.throwIfCancelled();
       if (this.current && !fresh) return this.existingConnection();
       if (this.current) {
         if (!this.acp) throw new Error("fresh provider sessions require ACP normal mode");
         attempt.own(() => this.stopCurrent());
         const result = await this.newSession();
-        attempt.signal.throwIfAborted();
+        attempt.throwIfCancelled();
         return result;
       }
       const brought = await bringUp(this.config, attempt, this.mode, fresh ? undefined : this.config.sessionId);
@@ -299,7 +299,7 @@ export class HarnessController implements AgentClient, ConversationController {
   }
 
   private installConnection(attempt: ConnectionAttempt<ControllerStartEvent>, brought: ReadyConnection, mode = this.mode): ConnectResult {
-    attempt.signal.throwIfAborted();
+    attempt.throwIfCancelled();
     this.current = brought.client;
     this.acp = brought.acp;
     this.mode = mode;
@@ -458,13 +458,13 @@ export class HarnessController implements AgentClient, ConversationController {
   setMode(mode: AgentMode): Promise<ConnectResult> {
     return this.connections.run(`mode:${mode}`, async attempt => {
       await this.stopping;
-      attempt.signal.throwIfAborted();
+      attempt.throwIfCancelled();
       if (mode === this.mode && this.current) return this.existingConnection();
       const previous = this.current;
       const brought = await bringUp(this.config, attempt, mode);
       const result = this.installConnection(attempt, brought, mode);
       if (previous) await previous.stop();
-      attempt.signal.throwIfAborted();
+      attempt.throwIfCancelled();
       return result;
     });
   }
