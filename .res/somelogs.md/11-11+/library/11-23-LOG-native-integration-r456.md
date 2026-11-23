@@ -20,3 +20,5 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
 
 - Branches created at `fe7d28c`; R4 (grounding and the full brief) goes to cod2a when the live run is done or waiting on
   the user.
+- From here the coordinator keeps both tracks on this status branch (`integration-r456-status`, which now contains
+  `orchestrator-status`); the orchestrator log is `11-22-LOG-orchestrator.md`, this file is for R4–R6.
