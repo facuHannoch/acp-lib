@@ -470,6 +470,7 @@ export class Agent {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.manager.cancelStarts();
     let shutdownError: unknown;
     try {
       this.checkpointing?.close();

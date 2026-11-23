@@ -258,9 +258,10 @@ export class SteeringController<T extends { readonly kind: string }> {
   }
 
   /** Settle prompts that left the queue without running (withdrawn, or dropped by `interrupt`). */
-  dropped(items: readonly SteeringPrompt[]): void {
+  dropped(items: readonly SteeringPrompt[], error?: Error): void {
     for (const item of items) {
-      item.resolve(cancelledPromptResult(item));
+      if (error) item.reject(error);
+      else item.resolve(cancelledPromptResult(item));
       if (item.waited) this.host.emit({ kind: "message_withdrawn", id: item.turnId });
     }
   }

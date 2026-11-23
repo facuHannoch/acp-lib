@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { AcpClient, ConnectionCancelledError, HarnessController, ProcessCrashError } from "../src/index.ts";
+import { AcpClient, Agent, AgentSession, AgentSessionHandoffError, ConnectionCancelledError, HarnessController, ProcessCrashError } from "../src/index.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { noopLogger } from "../src/logger.ts";
 import type { AcpLauncher, PreparedLaunch } from "../src/launcher.ts";
 
@@ -186,3 +189,107 @@ test("a delayed crash callback cannot clear the replacement transport and sessio
     await client.stop();
   }
 }, 12_000);
+
+test("a direct factory caller can abort a session while its handshake is in flight", async () => {
+  const { seen, env, logger } = waitingForHang("initialize");
+  const abort = new AbortController();
+  const opening = AgentSession.create({ adapter, adapterId: "test", env, logger, signal: abort.signal }).catch(error => error);
+  const pid = await bounded(seen, "direct factory handshake");
+  abort.abort();
+  expect(await bounded(opening, "direct factory cancellation")).toBeInstanceOf(ConnectionCancelledError);
+  expect(() => process.kill(pid, 0)).toThrow();
+}, 12_000);
+
+for (const crossAdapter of [false, true]) {
+  test(`conversation stop cancels the ${crossAdapter ? "cross" : "same"}-adapter handoff candidate`, async () => {
+    const { seen, env, logger } = waitingForHang("session/new");
+    let launches = 0;
+    const source = await AgentSession.create({
+      adapter, adapterId: "source", logger,
+      launcher: { async prepare({ targetCommand }) { return { command: [...targetCommand], spawnEnv: launches++ === 0 ? {} : env }; } },
+    });
+    const events: string[] = [];
+    source.subscribe(({ event }) => events.push(event.kind));
+    try {
+      const handoff = source.handoff(crossAdapter ? { target: { adapterId: "other", adapter } }
+        : { continuation: { kind: "none" } }).catch(error => error);
+      const pid = await bounded(seen, "handoff target session/new");
+      await bounded(source.stop(), "stop during target connect");
+      const failure = await bounded(handoff, "cancelled handoff");
+      if (crossAdapter) {
+        expect(failure).toBeInstanceOf(AgentSessionHandoffError);
+        expect(failure.cause).toBeInstanceOf(ConnectionCancelledError);
+        expect(failure.meteringRecords).toHaveLength(1);
+      } else {
+        expect(failure).toBeInstanceOf(ConnectionCancelledError);
+      }
+      expect(() => process.kill(pid, 0)).toThrow();
+      expect(events).toContain("handoff_failed");
+      expect(events).not.toContain("handoff_completed");
+      expect(source.adapterId).toBe("source");
+    } finally { await source.stop(); }
+  }, 15_000);
+}
+
+test("stop during ACP reconnect settles the active prompt and queued operations with the typed error", async () => {
+  const { seen, env, logger } = waitingForHang("session/load");
+  let launches = 0;
+  const outbound: string[] = [];
+  const session = await AgentSession.create({ adapter, adapterId: "test", logger, wire: entry => {
+    if (entry.dir === "out") outbound.push(JSON.parse(entry.line).method);
+  }, launcher: { async prepare({ targetCommand }) { return { command: [...targetCommand], spawnEnv: launches++ === 0 ? {} : env }; } } });
+  const facts: string[] = [];
+  session.subscribe(({ event }) => facts.push(event.kind));
+  try {
+    await session.connection.forceStop();
+    const active = session.prompt("blocked by readiness").catch(error => error);
+    const pid = await bounded(seen, "reconnecting session/load");
+    const queued = session.prompt({ text: "queued", delivery: "queue" }).catch(error => error);
+    const setting = session.setConfig("unused", "value").catch(error => error);
+    await bounded(session.stop(), "conversation queue drain");
+    for (const failure of await Promise.all([active, queued, setting])) expect(failure).toBeInstanceOf(ConnectionCancelledError);
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(facts).not.toContain("provider_reconnected");
+    expect(outbound.filter(method => method === "session/new")).toHaveLength(1);
+    expect(outbound).not.toContain("session/prompt");
+    expect(session.state.phase).toBe("stopped");
+  } finally { await session.stop(); }
+}, 15_000);
+
+for (const stage of ["create", "reopen"] as const) {
+  test(`Agent close cancels eager Provider ${stage} before the conversation handle is exposed`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acp-cancel-owner-"));
+    const { seen, env, logger } = waitingForHang(stage === "create" ? "session/new" : "session/load");
+    const options = {
+      persistence: { kind: "sqlite" as const, path: join(directory, "agent.sqlite") },
+      adapters: { test: adapter },
+      checkpointing: { enabled: false },
+    };
+    let agent = await Agent.open(options);
+    try {
+      let id: Awaited<ReturnType<typeof agent.conversations.create>>["id"] | undefined;
+      if (stage === "reopen") {
+        const saved = await agent.conversations.create();
+        await saved.prompt("establish recorded thread");
+        id = saved.id;
+        await agent.close();
+      } else await agent.close();
+      agent = await Agent.open({ ...options, conversationDefaults: { env, logger } });
+      const opening = (id ? agent.conversations.open(id) : agent.conversations.create()).catch(error => error);
+      const pid = await bounded(seen, "owner startup request");
+      await bounded(agent.close(), "Agent shutdown");
+      expect(await bounded(opening, "owner startup cancellation")).toBeInstanceOf(ConnectionCancelledError);
+      expect(() => process.kill(pid, 0)).toThrow();
+      const recovered = await Agent.open(options);
+      try {
+        const rows = (await recovered.conversations.list()).conversations;
+        expect(rows).toHaveLength(1);
+        const records = (await recovered.persistence.records.list(rows[0]!.agentConversationId)).records;
+        expect(records.filter(record => record.kind === "error" && record.source === "provider_session")).toHaveLength(0);
+      } finally { await recovered.close(); }
+    } finally {
+      await agent.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 16_000);
+}

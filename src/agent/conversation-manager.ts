@@ -26,7 +26,8 @@ import {
   type ParticipantRef,
 } from "../persistence/backend.ts";
 import { ProviderSessionError, ProviderSessionInUseError } from "../agent-conversation-errors.ts";
-import { UnsupportedError } from "../errors.ts";
+import { ConnectionCancelledError, UnsupportedError } from "../errors.ts";
+import { recordAdoptedProviderSession } from "./adoption/provider-attachment.ts";
 import type { AppendAssistantMessageInput } from "../out-of-band-messages.ts";
 import type {
   ProviderAttachmentCommitAcknowledgement,
@@ -89,6 +90,8 @@ import { createConversationWithChannel, deleteConversationWithChannel, initialCh
 
 export class DefaultAgentConversationManager implements AgentConversationManager {
   private readonly live = new Map<AgentConversationId, AgentConversation>();
+  private readonly shutdownStarts = new AbortController();
+  private readonly creating = new Set<Promise<AgentConversation>>();
   private readonly openings = new Map<AgentConversationId, Promise<OpenOwnedAgentConversationResult>>();
   private readonly meteringSetupLocks = new Map<AgentConversationId, Promise<void>>();
   private readonly detachedMeteringBarriers = new Map<AgentConversationId, Promise<void>>();
@@ -130,7 +133,14 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       || this.policies.settingsFor(conversationPersistenceContext(summary));
   }
 
-  async create(config: CreateAgentConversationConfig = {}): Promise<AgentConversation> {
+  create(config: CreateAgentConversationConfig = {}): Promise<AgentConversation> {
+    const creating = this.createOnce(config).finally(() => { this.creating.delete(creating); });
+    this.creating.add(creating);
+    return creating;
+  }
+
+  private async createOnce(config: CreateAgentConversationConfig): Promise<AgentConversation> {
+    this.shutdownStarts.signal.throwIfAborted();
     const id = config.id ?? createAgentConversationId();
     const participants = normalizeParticipants(config.participants);
     if (config.role === "worker" && config.adopt) throw new UnsupportedError("workers cannot adopt provider sessions");
@@ -175,6 +185,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         settings,
       });
     } catch (error) {
+      if (error instanceof ConnectionCancelledError) throw error;
       return await this.throwCreateFailure(id, attemptId, error, settings);
     }
   }
@@ -222,10 +233,11 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         ...(adoption.importHistory ? { onReplay: (notification: unknown) => replay.push(notification) } : {}),
       });
     } catch (error) {
+      if (error instanceof ConnectionCancelledError) throw error;
       throw await this.loadFailure(id, attemptId, adoption.providerSessionId, error, settings);
     }
     try {
-      await this.recordAdoptedProviderSession(conversation, id, attemptId);
+      await recordAdoptedProviderSession(this.agent.persistence, conversation.providerAttachmentState, id, attemptId);
       const recap = adoption.recap ? await this.recap(conversation, id, attemptId, settings) : undefined;
       if (adoption.importHistory) {
         const turns = selectTail(withoutRecapTurns(turnsFromReplay(replay)), adoption.importHistory.last);
@@ -341,39 +353,11 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     });
   }
 
-  /**
-   * Write the provider-session row of a loaded session that no conversation had recorded yet (an adoption). A
-   * loaded thread is "recorded" in memory already, so this is the one write that makes it durable; the
-   * identity delivery cursors restart, as for any new provider context.
-   */
-  private async recordAdoptedProviderSession(
-    conversation: AgentConversation,
-    id: AgentConversationId,
-    transitionId: string,
-  ): Promise<void> {
-    const attachment = conversation.providerAttachmentState;
-    if (attachment.kind === "absent") throw new Error("the adopted provider session is not attached");
-    const descriptor = attachment.descriptor;
-    await this.agent.persistence.transaction(async (persistence) => {
-      await persistence.identityDelivery?.reset(id, descriptor.internalSessionId);
-      await persistence.providerSessions.append({
-        providerSessionRecordId: `provider-${randomUUID()}`,
-        agentConversationId: id,
-        internalSessionId: descriptor.internalSessionId,
-        adapterId: descriptor.adapterId,
-        mode: descriptor.mode,
-        ...(descriptor.model ? { model: descriptor.model } : {}),
-        activatedAt: descriptor.acquiredAt,
-        transitionId,
-        metadata: JSON.stringify({ adopted: true }),
-      });
-    });
-  }
-
   async open(
     id: AgentConversationId,
     config: OpenAgentConversationConfig = {},
   ): Promise<OpenOwnedAgentConversationResult> {
+    this.shutdownStarts.signal.throwIfAborted();
     const existing = this.live.get(id);
     if (existing && existing.state.phase !== "stopped") {
       return Object.freeze({ conversation: existing, providerSession: "already_open" });
@@ -436,7 +420,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       });
       if (pendingAdoption) {
         try {
-          await this.recordAdoptedProviderSession(conversation, id, attemptId);
+          await recordAdoptedProviderSession(this.agent.persistence, conversation.providerAttachmentState, id, attemptId);
         } catch (recordError) {
           this.live.delete(id);
           await conversation.stop().catch(() => undefined);
@@ -448,6 +432,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         providerSession: active ? "loaded" : "new",
       });
     } catch (error) {
+      if (error instanceof ConnectionCancelledError) throw error;
       // No recorded mapping means this open was creating a thread, not loading one.
       if (!active) return await this.throwCreateFailure(id, attemptId, error, settings);
       return await this.recoverAfterLoadFailure(id, active.internalSessionId, error, settings, config,
@@ -665,11 +650,13 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       summary => this.writeSettings(summary), stableId);
   }
 
+  cancelStarts(): void { this.shutdownStarts.abort(new ConnectionCancelledError()); }
+
   async stopAll(): Promise<void> {
-    await Promise.allSettled([...this.openings.values()]);
-    const conversations = [...this.live.values()];
+    this.cancelStarts();
+    const stopping = [...this.live.values()].map(conversation => conversation.stop());
+    await Promise.allSettled([...this.creating, ...this.openings.values(), ...stopping]);
     this.live.clear();
-    await Promise.allSettled(conversations.map((conversation) => conversation.stop()));
   }
 
   async beginInternalInferenceMetering(
@@ -827,8 +814,10 @@ export class DefaultAgentConversationManager implements AgentConversationManager
             });
         },
       );
+      this.shutdownStarts.signal.throwIfAborted();
       this.liveSettings.set(id, config.settings);
       conversation = await AgentConversation.create({
+        signal: this.shutdownStarts.signal,
         ...runtime,
         ...(persistedMetering
           ? { metering: { ...runtime.metering, initialState: persistedMetering.state } }
@@ -855,6 +844,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
           : { kind: "new" },
         persistence: false,
       });
+      this.shutdownStarts.signal.throwIfAborted();
       const openedConversation = conversation;
       this.live.set(id, openedConversation);
       openedConversation.subscribe((notification) => {

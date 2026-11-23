@@ -54,6 +54,7 @@ type OwnerControlledConversationKey =
   | "ownerLifecycle"
   | "isNativeAdapter"
   | "providerSession"
+  | "signal"
   | "persistence"
   | "transcriptPath"
   | "transcriptDir"
