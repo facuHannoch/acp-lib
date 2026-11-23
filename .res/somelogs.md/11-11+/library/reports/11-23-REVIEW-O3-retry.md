@@ -93,3 +93,52 @@ exception. Reword the bullet: "no edit to `src/agent-session.ts` except the one-
   to the previous conversation on a redirect. **Candidates to add**, from notes already accepted: a native destination's result isn't visible in `check`
   until the harness opens; `worker_idle` waits for the native flush; a folded steer emits one `worker_replied` per handle; a blocked notice is visible
   in `check` only while it's the newest.
+
+# Part 3 — the ACP busy-worker SIGKILL regression (`0f11c79`) and the smoke runner (`e1b378b`)
+
+Read through `git show` and a clean `git archive 0f11c79` (`/tmp/clad2a-o3r`, the branch tip; `ea5a34c` is its parent). I didn't check out the branch.
+
+**Verdict: the regression is real and fails when the behaviour breaks. The smoke runner is correctly gated, but one of the stated properties is not true: live mode copies a credential file (below). No blocking findings for the free path.**
+
+- **Full suite on the archive** (`TMPDIR` on `/dev/shm`): typecheck clean, **1,590 pass, 0 fail, 149 files** (up from 1,589).
+- `test/orchestrator/acp-delivery.test.ts`: 6 pass.
+
+## `0f11c79`: the busy-worker regression
+
+It adds a third boundary, `partial`, to the existing crash fixture. The producer runs a real ACP worker (the lifecycle fixture) and waits for the tool call to be announced (the gate file is never created, so the worker stays at the tool), then holds so the test can SIGKILL it. It reuses the two-reopen loop of `final` and `append`.
+
+At the crash point it asserts no final record, no delivery state and no staged row. After each of two reopens it asserts: the worker is `offline`, the outcome is `uncertain`, the delivery is `delivered` to the giver, exactly one message on the giver, and exactly one `worker_failed` record with `errorKind: "uncertain"` and sender `w1`. On the second reopen, the next prompt's text contains the "no reliable result" evidence exactly once. The reopen config's worker command is `no-work-dispatched`, so a redispatch would fail.
+
+**Mutations applied to the archive** (each reverted after):
+
+| Mutation | Result |
+| --- | --- |
+| `stage()` no longer settles unfinished inherited work | **`partial` fails** (others pass) |
+| `stage()` settles it as `failed` instead of `uncertain` | **`partial` fails** |
+| the ACP scan skips `stage()` for unstaged entries | `final`, `append`, `partial` and the deleted-outcome test all fail |
+| the record kind is always `worker_reply` | `partial` and the blank and fail tests fail |
+| `deliver` called twice for a pending entry | passes, as it should: the stable record id makes the append idempotent |
+
+So the test pins the contract of my probe: one uncertain notice, one record on the giver, worker `offline`, nothing redispatched, reopened twice.
+
+**Notes:**
+
+1. **Orphan process.** The SIGKILL kills the producer, not its worker child. After the suite a `lifecycle-agent.ts` from the archive directory was still running, held at the tool gate (as was one from my earlier probe). It's a stray test process, but `partial` leaks one per run. Make the fixture worker exit when its stdin closes, or kill the process group in the test.
+2. **No explicit "not redispatched" assertion.** The `no-work-dispatched` command makes a redispatch fail, but the test doesn't assert the absence of a launch or `worker_failed` event; the single-record and `offline` checks cover it today. I'd leave it.
+
+## `e1b378b`: the smoke runner
+
+| Property | Result |
+| --- | --- |
+| **Free mode is the default** | `ACP_ORCH_LIVE` unset (or anything but `"1"`) spawns `bun test native-delivery.test.ts -t "stdio delegation redirects"`. I ran it: **1 pass, 4 filtered out**, no network, no credentials read. The test name exists (`native-delivery.test.ts:14`) |
+| **Live needs `ACP_ORCH_LIVE=1`** | Yes, checked first. With the flag set and no `OPENROUTER_API_KEY` it stops at once ("This run needs OpenRouter environment authentication and an existing Codex CLI login") before any spend. I ran that |
+| **No paid calls so far** | None made by me: I ran only free mode and the fail-fast live path |
+| **No credentials copied** | **Not true for live mode.** `run.ts:53` copies `~/.codex/auth.json` into a temp `CODEX_HOME` (file 0600, directory 0700) and runs `codex login status` against it. The README states it ("the isolated Codex login copy") and asks for explicit authorization. The copy is removed in the `finally` (it removes the root and checks it is gone), but a SIGKILL from the supervising limit would leave it in `/tmp`. `OPENROUTER_API_KEY` comes from the environment and is redacted in the error output; the worker gets `OPENROUTER_API_KEY: ""` |
+
+Other checks:
+
+- **Caps.** The native request cap of 6 runs inside the provider before `fetch`. The runner also aborts on an unexpected `open`/`send` (the wrappers check actor, text, redirect flag and count), on an extra worker permission, and on a permission appearing on the successor. A 7-minute deadline bounds the work. **The Codex CLI's own model calls are not capped** (the README says so); that is where spend can exceed the six-request count.
+- **The result checks are strict**: exactly one `external_notice` on Bob's channel with source `w1`, one permission ask and one resolution, the old permission refused on Bob and accepted on Alice, `deliveryState: "delivered"`, and cleanup that checks `providerDeleted === true`.
+- **Model names** (`deepseek/deepseek-v4.1-flash`, `gpt-6.1-terra`) are hard-coded; I can't check they exist without a paid call, so confirm them before the live run.
+
+**For the held O6 step 3:** because live mode copies the user's Codex login, get the user's go-ahead for the copy as well as the spend, and make cleanup survive a kill (a signal handler that removes the root, or a user-provided isolated `CODEX_HOME`).
