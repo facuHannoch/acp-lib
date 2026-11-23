@@ -53,3 +53,60 @@ So the existing wire is enough for the in-turn gate, as the brief says; the scri
 5. `certificationId` is `"native-harness-unverified"`, which the engine will treat as a certification label; confirm in 2a that nothing treats a source with that id as a verified source.
 
 **Process:** per my own rule, each of the seven new tests ran 20 times in isolation, plus the whole file 20 times and the full suite once; all clean.
+
+# Part 2 — R5 step 2a (in-turn parity and the operation close)
+
+This covers `7e537af..28da8d5` on `integration-r456`: `f56de5e` (code) and `28da8d5` (report), plus the alpha merge `e3ebb0b`. I used a clean `git archive 28da8d5` (`/tmp/clad2a-r5b`, `TMPDIR` on `/dev/shm`) and didn't check out the branch. Probes and mutations ran only there.
+
+**Verdict: step 2a meets its gate. No blocking findings.** Every item you listed holds, and the independent real-wire parity matches. Four notes.
+
+- **Typecheck clean. Full suite: 1,635 pass, 0 fail, 153 files**, 35 snapshots (none changed; the A1 hash is unchanged). The harness's own suites, which this commit touches (`HarnessClient`), also pass: `src/native-harness/test` **360 pass, 0 fail, 47 files**. No leftover process.
+- **Each of the ten new tests: 20 / 20 in isolation** (each `-t` matched one test), and both touched files **20 / 20** whole-file.
+- **Size gates** (measured): `agent-session.ts` **4,493** (≤ 4,495), `client.ts` 1,046, `controller.ts` 764, `native/host.ts` **909** (≤ 916), `native/controller.ts` 599, `conversation-manager.ts` 1,012, `agent.ts` 563, `metering/engine.ts` **1,051** (≤ 1,059). New modules: `ledger.ts` 81, `operation.ts` 61, `projection.ts` 110, `source.ts` 79, `measurement-provenance.ts` 20, `native/usage.ts` 15. The engine and host shrank by extraction.
+
+## Your five notes
+
+| # | Note | Result |
+| --- | --- | --- |
+| 1 | A running call (or one with no `endedAt`) whose attempt succeeded stays unstaged | **Closed.** New test `a succeeded attempt waits for its call outcome and end timestamp to seal`. *Mutation:* forcing `sealed = true` now fails it (it passed before) |
+| 2 | An empty healthy turn is unavailable, not proven zero | **Closed.** `measureNativeTurn` returns `usage_unavailable` ("native ledger has no calls for this turn") with the evidence `calls: []`, and the engine counts it as an unmetered operation. *Mutation:* treating an empty read as measured fails `a healthy empty native ledger cannot prove a dispatched turn spent zero`. Note 1 below on the undispatched case |
+| 3 | The slow channel and cancellation against the **real** host client | **Closed.** `HarnessClient.request` now takes an optional `AbortSignal`; an abort or the reader's deadline rejects the waiter and clears its timer and listener, and `close()` rejects remaining waiters. The new test `a slow model-call read through the real host client…` uses the real `NativeHarnessHost` and `HarnessClient` over a controlled transport: a hung read is cancellable and the deadline fires against the client's 30 s default, while **another channel reads independently**. The reader's `openRead` pins **one client** across pages, so a restart mid-read can't splice pages from two sessions |
+| 4 | Concurrent `pullTurn` on one channel is serialized | **Closed.** `NativeInferenceSource` runs pull and drain through one promise queue (`readTurn` = pull + drain as one queued operation), so a second close can't overwrite the first's batch. Test `concurrent same-channel turn reads serialize…`. *Mutation:* removing the queue fails it |
+| 5 | `native-harness-unverified` is excluded from every certified path | **Closed, and I tried to defeat it.** The engine drops a source with that id before use (`inferenceSource = undefined`), so it can't supply attribution, outstanding reports, health preflight or strict certification. Probes: `new MeteringEngine({ adapterId: "opencode", enforcement: "billing_required", inferenceSource: <native source> })` throws (needs a live `opencode-plugin@1`), and so does `adapterId: "main"`; a native conversation configured with `billing_required` and that source is refused at create; with `best_effort` the source's staged batch is left undrained and the record's provenance is `none`. *Mutation:* removing the exclusion fails the test. A native conversation also ignores a consumer-supplied `inferenceSource` (`!config.native`) |
+
+## Parity on the persisted record
+
+`native metering matches the scripted attempts and the paged stdio ledger`: Alpha runs a tool turn (a held tool, a transient failure with its own usage, a retry, a final reply) while Beta runs an interleaved turn; the script fixes 101/7/108, 55/1/56, 207/13/220, 311/19/330 for Alpha and 41/3/44 for Beta. The persisted record has `reportedCumulative` 674/40/714, `nextState.totals.total.knownTokens` 714, the evidence's per-attempt usage and outcomes equal to the **script**, and its call list equal to an independent `limit: 1` page of the ledger, call id by call id. `result.usage` stays `null`, `providerId`/`model` are `null`, `pricingStatus: pricing_unavailable` with the route reason, provenance `native_ledger` / `partial` / `routing: unknown` with **no certification id**, and the pricing function is never called. Beta's 44 tokens are in Beta's record only.
+
+**My additional probes (a throwaway test over the real stdio harness):**
+
+- **Interleaved channels, two turns closing at once:** 6 rounds with both channels prompted together and distinct per-step usage (1,00x/x on Alpha, 5,00x/50+x on Beta). Every record carried its own exact usage, and the final persisted totals were Alpha **6,042** and Beta **30,342**, exactly the script's sums: no bleed.
+- **A failed save of the metering record:** I made the first metering commit throw once. The first prompt failed with `AgentSessionOperationError`, but the retry in the catch path persisted the record once; the next prompt completed, and the persisted state was **operation counts 1 then 2, totals 110 then 330**: nothing double-counted. (Failed-save replay across a restart is 2b's.)
+- **Duplicate drains:** the source's `drain` empties its batch and `readTurn` returns pull and drain together, so a second `drain` returns nothing.
+
+## Mutations (each reverted; both new test files, 17 tests)
+
+| Mutation | Result |
+| --- | --- |
+| zero-fill partial usage | fails |
+| no channel filter | fails |
+| no turn filter | fails (4 tests, including the stdio ones) |
+| double drain | fails |
+| stale batch kept after a failed pull | fails |
+| no call-level seal | fails |
+| empty turn counted as measured | fails |
+| unverified source accepted as verified | fails |
+| no per-channel queue | fails |
+
+## Seam and record shape
+
+One close seam, `engine.close` → `measureNativeTurn`, is used by the live turn, the already-ended backend turn, the reconciled terminal turn after a stdio restart (tests for each, including a kill after the durable terminal commit) and the error/cancel path, with the wire turn id captured at `prepareTurn`. The pull is **awaited before** the synchronous `drain` (`readTurn` does pull then drain). The record carries `nativeUsage` (channel, wire turn id, calls, attempts, `unmeasured`) and is persisted through the normal `meteringRecorded` commit under the stable operation id; host loss at close gives an `unavailable` record with the wire identity and does **not** relaunch the harness.
+
+## Notes (none blocking)
+
+1. **Undispatched or cancelled-before-dispatch turns are `unavailable`, not exact zero.** The brief allows exact zero for a provably undispatched operation; 2a conservatively never does that. It is safe; say so in the changelog so consumers don't read it as a bug.
+2. **A turn with some sealed inferences and some unmeasured ones is `usage.status: "metered"`.** The summed total excludes the unmeasured attempts, and the honesty is carried by `provenance.attribution: "partial"` (always partial for native) and `nativeUsage.unmeasured > 0`. A consumer that reads only `usage.status` would see a measured total that under-counts. Consider a reason on `usage` or a distinct status when `unmeasured > 0`, or document that `nativeUsage.unmeasured` must be checked.
+3. **A `billing_required` native conversation is refused with an opaque message** ("The provider session could not be created."). 3a owns the refusal text; make sure it names the missing capability.
+4. **`HarnessClient.request` was changed** (`src/native-harness/src/interfaces/client.ts`): an optional signal and a restructured waiter/timer. It is additive and the 360 harness tests pass, but it is a harness-owned file: have haurness-l confirm it.
+
+**Process:** per my rule I ran every new test 20 times in isolation plus both files whole 20 times, the touched harness suite and the full suite.
