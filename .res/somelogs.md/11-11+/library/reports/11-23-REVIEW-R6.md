@@ -139,3 +139,51 @@ My probes (real stdio, two conversations on one harness session, interleaved ste
 | **Docs for every public change** | `NativeInputStoppedError`, `withdrawAsync`, `TurnEvent` `input_withdrawn`, `ItemsReceipt`, the custom records' `markWithdrawing` and `markAccepted(id, true)`: all in the changelog and the guide |
 
 **Verdict: R6 is complete and I recommend building the pre-alpha with it, with one required decision first.** The decision is the Part 2 finding: stop now **rejects** a running native prompt where it used to resolve `cancelled` with its partial text. Either narrow the rejection to inputs that were never taken, or document it as a breaking change. Everything else I found is minor (the one-second grace before the interrupt, the opt-in file-backed records for withdrawal across a reopen, and the unit-only coverage of suffix completion).
+
+# Part 5 — the stop narrowing (`2e1869f..ac09144`) and a correction to my own claim
+
+`ac33f2d` (fix, tests, docs) and `ac09144` (report). Clean archive of `ac09144`: typecheck clean, **1,670 pass, 0 fail, 159 files** (the report's number), 35 snapshots unchanged, A1 unchanged, harness suites 367 pass, no leftover process. Sizes: `agent-session.ts` 4,491, `native/host.ts` 909, `native/controller.ts` 599, the others unchanged. All six new or strengthened cases **20 / 20** in isolation; `stop-partial.test.ts` and `withdrawal.test.ts` whole-file 20 / 20.
+
+## The discrepancy: I was wrong, cod2a was right
+
+In Part 1 I wrote that on `a9b3ae1` stop "resolved `cancelled` with its partial text". **That was wrong.** My probe printed only the status; I never printed the text. I re-ran one probe, printing the status, the text, the messages and the metering record, on all three commits, in two shapes (the turn held in a tool after a completed partial message; and `stream` mode with the completion frame held):
+
+| Commit | Stop or close, turn held in a tool | `stream`, completion held |
+| --- | --- | --- |
+| **`a9b3ae1`** (before R6) | `status=cancelled`, **`text=""`**, no messages, **no metering record** | the same, empty |
+| **`2e1869f`** | **rejects** `NativeInputStoppedError` | rejects `NativeInputStoppedError` |
+| **`ac09144`** | `status=cancelled`, **`text="Partial reply."`**, one message, **a `cancelled` metering record** | rejects `AgentSessionOperationError` ("the conversation stopped"), see below |
+
+The persisted assistant record was `Partial reply.` in all three (status `completed` after a tool, `failed` mid-stream), so history did not change.
+
+So the corrected behaviour is **not** the same as the old one: for a prompt whose message had completed before the stop, the caller now gets the **partial reply** where it used to get an empty text, and a metering record exists for the stopped turn where there was none. Both are improvements, but they are changes, and the changelog's wording ("keeps its cancelled result and any partial reply") reads as "unchanged". **Say it as a change** ("now returns the partial reply that earlier returned empty text, and records metering for the stopped turn").
+
+Two more facts from the same comparison:
+
+- **Mid-message stop (a realistic one, no barrier; a streamed message whose second chunk arrives 4 s later, stopped at 0.7 s):** `ac09144` returns `cancelled` with `text=""`, **identical to `a9b3ae1`** (the partial text is not in the result, though the consumer's chunk callback had already received `"Partial "`); `2e1869f` rejected. So partial text comes back only for messages that had completed.
+- **Stop racing a `message_completed` still in flight** (my barrier shape, stream mode): `ac09144` rejects with `AgentSessionOperationError: the conversation stopped`, where `a9b3ae1` returned `cancelled`. It is a narrow race (the completion arrives after the stop began), the persisted record is the same, but it is neither the old result nor the intended one; consider settling that case as `cancelled` as well.
+
+## The requested cases (on `ac09144`)
+
+| Case | Result |
+| --- | --- |
+| **Mixed: a running prompt plus an unclaimed steered input, stop and close** | running prompt `cancelled` with `"Partial reply."`; the unclaimed input rejected `NativeInputStoppedError` (typed); **one model call** (no extra turn); the unclaimed item reads `withdrawn`. Same for close (checked after a reopen) |
+| **A take-winning race** (30 rounds, stop first or the tool released first, with 0–25 ms offsets) | `{ running cancelled, unclaimed typed }` 15 times (stop first, withdrawn, no call on another turn), `{ completed, completed }` 14 times (the turn took the input first, so it completed with the turn), `{ completed, typed }` once (the withdrawal won just before the turn finished); **never stuck, never both, never a model call on another turn** |
+| **A pre-submission prompt** (held in `beforeDispatch`) | still `cancelled` locally on stop (`text=""`), not typed |
+| **The typed error only for never-taken inputs** | yes: in every case the running (taken) prompt never rejected typed; only submitted, unclaimed inputs did |
+
+## The changelog and the guide
+
+They now say that only submitted inputs that were never taken reject with `NativeInputStoppedError`, that a taken prompt keeps its cancelled result, that the grace is "up to one second", and that spend is possible if take wins or the host is unavailable. Missing: the **text/metering change** above and the **mid-message and in-flight-completion** behaviours (empty text; the rare rejection).
+
+## Mutations (each reverted; the three native test files, 49 tests)
+
+| Mutation | Result |
+| --- | --- |
+| taken prompts rejected on stop (the exemption for the active turn removed) | fails four tests |
+| a local (pre-submission) prompt rejected typed | fails |
+| **the `taken` answer during the grace not noted (`noteTaken`)** | **passes: a test gap.** Add a case where the withdraw answers `taken` during the shutdown grace and check the prompt keeps the turn's result |
+
+## Verdict
+
+The narrowing does what was decided and the previous failure (a running prompt rejecting) is gone. Required before release: correct the changelog as above (the partial reply and the metering record are changes from `a9b3ae1`). Recommended: settle the stop-racing-`message_completed` case as `cancelled`, and add the `noteTaken` test.
