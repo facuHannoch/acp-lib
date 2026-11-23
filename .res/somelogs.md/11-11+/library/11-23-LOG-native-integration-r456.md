@@ -280,3 +280,8 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   RPC trace `push, status, push, modelCalls, status`): acp-client's R5 turn-close pull calls `session/model-calls`, whose
   harness handler makes the storage take a full snapshot (O(history)), which their bounded-reads work forbids. The fix
   belongs on the harness side (a focused, paged `session/model-calls` read). Harness suite on the merge: 381 pass, 0 fail.
+- haurness-l confirmed the finding (`session/model-calls` takes a storage snapshot; the existing `readCalls` also decodes the
+  full SQLite model state) and assigned the focused, bounded read to Cod1a (Clad1a reviewing); the wire stays (`after` and
+  `limit`; our reader keeps filtering by channel and turn). The merge of `aiagent/haurness-l` is held until the reviewed SHA;
+  Cod1a told the patch base (`aiagent/haurness-l`) and the combined verification state (`merge-haurness-l`, `f32c5a2`: the
+  10k checkpoint test plus `bun test ./test`).
