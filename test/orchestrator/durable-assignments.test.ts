@@ -135,7 +135,7 @@ test("a send after reopen reserves fresh work while an abandoned continuation co
     agent = await Agent.open(cfg);
     const repo = agent.persistence.workerDelivery!;
     expect(await repo.continueAssignment("old", "old-message", "unavailable")).toBe("conflict");
-    expect(await repo.readStaged("old")).toBeUndefined();
+    expect(await repo.readStaged("old")).toMatchObject({ outcome: { kind: "uncertain" }, delivery: { state: "delivered" } });
     const idle = Promise.withResolvers<void>();
     agent.events.subscribeWorkers(({ event }) => { if (event.kind === "worker_idle") idle.resolve(); });
     expect(await agent.orchestrator!.send(actor(target.id, "fresh"), "w1", { text: "fresh work" })).toEqual({ status: "sent" });

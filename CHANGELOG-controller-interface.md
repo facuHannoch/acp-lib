@@ -19,6 +19,10 @@
 - `agent.workers.check` and `list` include the latest staged outcome, including when its destination
   was deleted. A steer refused after enqueue emits `worker_failed` with reason `refused`, its cause and
   the conversation that sent the steer.
+- A start refused before provider dispatch also notifies its sender. When a refusal is the latest
+  outcome, `check` and `list` include the last successful result as `latestResult` if one exists.
+- Native destinations receive durable worker notices through the harness. Opening the harness
+  retries eligible notices and recovers prior assignments by ID without redispatching work.
 
 ## Worker permission forwarding
 

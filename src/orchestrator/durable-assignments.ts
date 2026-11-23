@@ -79,7 +79,9 @@ export class DurableWorkerAssignments implements WorkerAssignmentPort {
     void this.flushNative();
   }
 
-  settled(): Promise<void> { return this.flushAcp(); }
+  async settled(): Promise<void> {
+    await Promise.all([this.flushAcp(), this.flushNative()]);
+  }
 
   latestOutcome(row: WorkerRow) { return this.persistence.workerDelivery!.latestOutcome(row.conversationId); }
   latestResult(row: WorkerRow) { return this.persistence.workerDelivery!.latestOutcome(row.conversationId, "result"); }

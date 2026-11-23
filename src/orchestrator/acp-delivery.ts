@@ -28,8 +28,7 @@ export class AcpWorkerDelivery {
         const page = await this.repository.discoverAssignments({ destinationKind: "acp", state, after });
         for (const entry of page.assignments) {
           if (entry.state === "pending") await this.deliver(entry.staged);
-          // Recover committed finals here. O5b owns inherited work with no terminal evidence.
-          else if (entry.binding.finalRecordId) await this.repository.stage(entry.binding.assignmentId);
+          else await this.repository.stage(entry.binding.assignmentId);
         }
         after = page.next;
       } while (after !== undefined);
