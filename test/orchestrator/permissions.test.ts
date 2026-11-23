@@ -8,7 +8,7 @@ import type { WorkerActor } from "../../src/orchestrator/contracts.ts";
 import type { PermissionLevel } from "../../src/permissions/matcher.ts";
 import type { ConversationPermissionEvent } from "../../src/permissions/conversation.ts";
 
-async function rig(level: PermissionLevel, options: { answers?: boolean; timeoutMs?: number; owner?: boolean } = {}) {
+async function rig(level: PermissionLevel, options: { answers?: boolean; timeoutMs?: number; owner?: boolean; consumerDefault?: PermissionLevel } = {}) {
   const root = await mkdtemp(join(tmpdir(), "acp-worker-permissions-"));
   const agent = await Agent.open({
     persistence: { kind: "sqlite", path: join(root, "agent.sqlite") },
@@ -20,7 +20,10 @@ async function rig(level: PermissionLevel, options: { answers?: boolean; timeout
     permissions: { default: "allow" },
     capture: { message: "content" },
     checkpointing: { enabled: false },
-    orchestrator: { workers: { adapterId: "worker", limit: 1 } },
+    orchestrator: {
+      workers: { adapterId: "worker", limit: 1 },
+      ...(options.consumerDefault ? { defaults: { workerPermissions: { default: options.consumerDefault } } } : {}),
+    },
   });
   try {
     const giver = await agent.conversations.create({ answersPermissions: options.answers, permissionTimeoutMs: options.timeoutMs });
@@ -130,3 +133,14 @@ test("automatic worker allow falls back to allow_always when the provider offers
     expect(events).toEqual([]);
   } finally { await close(); }
 }, 15_000);
+
+for (const level of ["allow", "ask"] as const) {
+  test(`consumer-opened worker applies configured ${level} without a giving conversation`, async () => {
+    const { agent, events, outcome, close } = await rig("deny", { consumerDefault: level });
+    try {
+      await agent.orchestrator!.open({ kind: "consumer" }, { text: "reject-first" });
+      expect(await outcome()).toEqual({ outcome: "selected", optionId: level === "allow" ? "allow" : "reject" });
+      expect(events).toEqual([]);
+    } finally { await close(); }
+  }, 15_000);
+}

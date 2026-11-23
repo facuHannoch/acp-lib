@@ -239,7 +239,8 @@ export class Agent {
       const adapterId = workerOptions.adapterId ?? config.defaultAdapterId ?? adapters.list()[0]?.id;
       if (!adapterId || adapters.native(adapterId)) throw new Error("orchestrator workers require an ACP adapter");
       adapters.require(adapterId);
-      this.orchestrator = new Orchestrator(persistence.workers!, this.conversations, { ...workerOptions, adapterId }, logger,
+      this.orchestrator = new Orchestrator(persistence.workers!, this.conversations, { ...workerOptions, adapterId,
+        defaultPermissions: config.orchestrator.defaults?.workerPermissions }, logger,
         event => this.eventBus.publishWorker(event), undefined, id => this.manager.liveConversation(id));
       this.workers = workerConsumerApi(this.orchestrator);
     }

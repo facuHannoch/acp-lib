@@ -5,6 +5,13 @@
 - `AgentEvent` includes worker lifecycle facts. Subscribe with `agent.events.subscribeWorkers` for
   worker events. Existing committed-record subscriptions retain their record payloads.
 
+## Worker permission forwarding
+
+- A forwarded `permission_requested` event carries a `source` with the worker handle and conversation ID.
+  Its `turnId` is optional. The public `WorkerPermissionSource` type describes the source, and the giving
+  conversation answers through its existing `answerPermission` method.
+- Consumer-opened workers use `orchestrator.defaults.workerPermissions`. An unattended ask is refused.
+
 ## Conversation permission events
 
 - ACP and native conversations emit `permission_requested` for a request and exactly one

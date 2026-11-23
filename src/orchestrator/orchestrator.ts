@@ -1,3 +1,5 @@
+import { ownPermissions } from "../permissions/policy.ts";
+import type { PermissionSettings } from "../permissions/matcher.ts";
 import { workerPermissionHandler, type FindGivingConversation } from "./permissions.ts";
 import { WorkerPolicyError } from "../errors.ts";
 import { canSeeWorker, checkWorkerOpenLimit, requireWorkerRedirect, requireWorkerUse } from "./policy.ts";
@@ -14,18 +16,21 @@ import { WorkerPool } from "./pool.ts";
 export class Orchestrator {
   private readonly pool: WorkerPool;
   private closed = false;
+  private readonly defaultWorkerPermissions: readonly PermissionSettings[];
   private readonly evicted = (row: WorkerRow) => this.emit({ ...this.identity(row), kind: "worker_stopped", reason: "eviction" });
 
   constructor(
     private readonly workers: WorkerPersistence,
     private readonly conversations: AgentConversationManager,
-    private readonly options: OrchestratorConfig["workers"],
+    private readonly options: OrchestratorConfig["workers"] & { readonly defaultPermissions?: PermissionSettings },
     private readonly log: Logger,
     private readonly emit: (event: WorkerEvent) => void,
     private readonly assignments?: WorkerAssignmentPort,
     private readonly findGivingConversation?: FindGivingConversation,
   ) {
     this.pool = new WorkerPool(options.limit);
+    const defaults = ownPermissions(options.defaultPermissions);
+    this.defaultWorkerPermissions = defaults ? [defaults] : [];
   }
 
   open(actor: WorkerActor, input: WorkerInput): Promise<OpenWorkerResult> {
@@ -200,7 +205,7 @@ export class Orchestrator {
     const policyNames = actor.kind === "conversation" ? [...actor.policyNames] : [];
     const input = {
       text,
-      handlers: { onPermissionRequest: workerPermissionHandler(actor, row, this.findGivingConversation) },
+      handlers: { onPermissionRequest: workerPermissionHandler(actor, row, this.findGivingConversation, this.defaultWorkerPermissions) },
       delivery: plan.kind === "start" ? "queue" as const : "steer" as const,
       ...(this.assignments ? { beforeDispatch: (messageId: string) => this.assignments!.beforeDispatch(row, plan, messageId, policyNames) } : {}),
     };

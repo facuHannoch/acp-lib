@@ -1,7 +1,12 @@
+import type { PermissionSettings } from "../permissions/matcher.ts";
 import { PersistenceCapabilityError } from "../persistence/backend.ts";
 import type { PersistenceBackend, RecordCaptureLevel } from "../persistence/backend.ts";
 
 export interface OrchestratorConfig {
+  readonly defaults?: {
+    /** Worker policy for consumer work and callbacks with no contributing policies. */
+    readonly workerPermissions?: PermissionSettings;
+  };
   readonly workers: {
     readonly adapterId?: string;
     readonly cwd?: string;
