@@ -11,6 +11,7 @@ export type {
   AgentEventBus,
   AgentEventListener,
   AgentEventNotification,
+  WorkerEventNotification,
   AgentEventSubscriptionOptions,
   ConversationRecordCommittedEvent,
 } from "./agent-event-bus.ts";

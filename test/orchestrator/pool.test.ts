@@ -1,0 +1,152 @@
+import { expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { Agent, type AgentConversation, type WorkerEvent } from "../../src/index.ts";
+
+const actor = { kind: "consumer" } as const;
+
+async function rig(limit: number, holds = true) {
+  const directory = await mkdtemp(join(tmpdir(), "acp-worker-pool-"));
+  const release = join(directory, "release");
+  const fixture = resolve(import.meta.dir, holds ? "../fixtures/lifecycle-agent.ts" : "../fixtures/echo-prompt-agent.ts");
+  const agent = await Agent.open({
+    persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+    adapters: { fixture: { command: ["bun", fixture] } },
+    capture: { message: "content" },
+    checkpointing: { enabled: false },
+    orchestrator: { workers: { limit } },
+    conversationDefaults: { env: { LIFECYCLE_TOOL_GATE_FILE: release, LIFECYCLE_STATE: join(directory, "provider-sessions.json") } },
+  });
+  return { agent, pool: agent.orchestrator!, release: () => writeFile(release, ""), async close() {
+    try { await agent.close(); }
+    finally { await rm(directory, { recursive: true, force: true }); }
+  } };
+}
+
+async function idle(conversation: AgentConversation) {
+  if (!conversation.isBusy) return;
+  const done = Promise.withResolvers<void>();
+  const detach = conversation.subscribe(({ event }) => {
+    if (event.kind === "state_changed" && event.state.phase === "idle") done.resolve();
+  });
+  const timer = setTimeout(() => done.reject(new Error("worker did not go idle")), 8_000);
+  try { await done.promise; } finally { clearTimeout(timer); detach(); }
+}
+
+test("two opens racing for the last slot admit one, with the busy worker in the refusal", async () => {
+  const { agent, pool, release, close } = await rig(1);
+  try {
+    const results = await Promise.all([pool.open(actor, { text: "[lifecycle:tool]", about: "first" }),
+      pool.open(actor, { text: "[lifecycle:tool]", about: "second" })]);
+    expect(results[0]).toEqual({ status: "sent", handle: "w1" });
+    expect(results[1]).toMatchObject({ status: "no_worker_free", workers: [{ handle: "w1", state: "busy", about: "first" }] });
+    expect(await pool.send(actor, "w1", { text: "unexpected second prompt" })).toMatchObject({ status: "busy" });
+    const worker = await pool.check("w1");
+    const { conversation } = await agent.conversations.open(worker.conversationId);
+    const settled = idle(conversation);
+    await release();
+    await settled;
+    expect(await pool.check("w1")).toMatchObject({ state: "idle" });
+    expect(await pool.list()).toHaveLength(1);
+  } finally {
+    await close();
+  }
+}, 20_000);
+
+test("idle eviction is least-recently used and send reloads the same conversation", async () => {
+  const { agent, pool, release, close } = await rig(2, false);
+  const events: WorkerEvent[] = [];
+  agent.events.subscribeWorkers(({ event }) => events.push(event));
+  try {
+    await release();
+    for (const handle of ["w1", "w2"]) {
+      expect(await pool.open(actor, { text: "[lifecycle:tool]" })).toMatchObject({ handle });
+      const row = await pool.check(handle);
+      const { conversation } = await agent.conversations.open(row.conversationId);
+      await idle(conversation);
+    }
+    expect(await pool.send(actor, "w1", { text: "[lifecycle:tool]", about: "recent" })).toEqual({ status: "sent" });
+    const recent = await pool.check("w1");
+    await idle((await agent.conversations.open(recent.conversationId)).conversation);
+    const older = await pool.check("w2");
+    const original = (await agent.conversations.open(older.conversationId)).conversation;
+
+    expect(await pool.open(actor, { text: "[lifecycle:tool]" })).toMatchObject({ handle: "w3" });
+    expect(original.state.phase).toBe("stopped");
+    expect(await pool.check("w2")).toMatchObject({ state: "offline" });
+    const newest = await pool.check("w3");
+    await idle((await agent.conversations.open(newest.conversationId)).conversation);
+
+    expect(await pool.send(actor, "w2", { text: "[lifecycle:tool]", about: "reopened" })).toEqual({ status: "sent" });
+    const reopened = await pool.check("w2");
+    expect(reopened).toMatchObject({ conversationId: older.conversationId, about: "reopened" });
+    const replacement = (await agent.conversations.open(reopened.conversationId)).conversation;
+    expect(replacement).not.toBe(original);
+    await idle(replacement);
+    expect(await pool.check("w1")).toMatchObject({ state: "offline", about: "recent" });
+    expect(await pool.list()).toHaveLength(3);
+    expect(events).toContainEqual(expect.objectContaining({ kind: "worker_stopped", handle: "w2", reason: "eviction" }));
+    expect(events).toContainEqual(expect.objectContaining({ kind: "worker_reloaded", handle: "w2", conversationId: older.conversationId }));
+    expect(events).toContainEqual(expect.objectContaining({ kind: "worker_replied", handle: "w2" }));
+  } finally {
+    await close();
+  }
+}, 20_000);
+
+test("the consumer lists, interrupts and drops workers while worker events stay distinct from records", async () => {
+  const { agent, pool, close } = await rig(2);
+  const events: WorkerEvent[] = [];
+  const recordKinds: string[] = [];
+  const workAtProvider = Promise.withResolvers<void>();
+  const accesses = new Set<string>();
+  agent.events.subscribeWorkers(({ event }) => events.push(event));
+  agent.events.subscribe(({ event }) => {
+    recordKinds.push(event.kind);
+    const record = event.record;
+    if (record.kind !== "tool_call" || record.state !== "announced") return;
+    accesses.add(record.agentConversationId);
+    if (accesses.size === 2) workAtProvider.resolve();
+  });
+  try {
+    const workers = agent.workers!;
+    await pool.open(actor, { text: "[lifecycle:tool]" });
+    await pool.open(actor, { text: "[lifecycle:tool]" });
+    await workAtProvider.promise;
+    const listed = await workers.list();
+    expect(listed.map(worker => [worker.handle, worker.state])).toEqual([["w1", "busy"], ["w2", "busy"]]);
+    await Promise.all(listed.map(worker => workers.stop(worker.handle)));
+    expect((await workers.check("w1")).state).toBe("idle");
+    expect((await workers.check("w2")).state).toBe("idle");
+    await workers.delete("w1");
+    expect((await workers.list()).map(worker => worker.handle)).toEqual(["w2"]);
+    expect(await agent.persistence.workers!.get("w1")).toMatchObject({ droppedAt: expect.any(String) });
+    expect((await agent.conversations.get(listed[0]!.conversationId))?.deletedAt).toBeDefined();
+
+    expect(events.filter(event => event.handle === "w1").map(event => event.kind))
+      .toEqual(["worker_opened", "worker_busy", "worker_idle", "worker_stopped", "worker_dropped"]);
+    expect(events.find(event => event.kind === "worker_stopped")).toMatchObject({ reason: "requested" });
+    expect(new Set(recordKinds)).toEqual(new Set(["conversation_record_committed"]));
+  } finally {
+    await close();
+  }
+}, 15_000);
+
+test("worker failure notifications expose a fixed reason and the worker returns idle", async () => {
+  const { agent, pool, close } = await rig(1, false);
+  const idleEvent = Promise.withResolvers<void>();
+  const events: WorkerEvent[] = [];
+  agent.events.subscribeWorkers(({ event }) => {
+    events.push(event);
+    if (event.kind === "worker_idle") idleEvent.resolve();
+  });
+  try {
+    await pool.open(actor, { text: "FAIL_TURN sensitive provider details" });
+    await idleEvent.promise;
+    expect(events.map(event => event.kind)).toEqual(["worker_opened", "worker_busy", "worker_failed", "worker_idle"]);
+    expect(events[2]).toMatchObject({ reason: "worker failed" });
+    expect((await agent.workers!.check("w1")).state).toBe("idle");
+  } finally {
+    await close();
+  }
+}, 15_000);

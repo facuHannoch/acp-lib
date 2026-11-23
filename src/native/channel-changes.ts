@@ -33,6 +33,8 @@ export class NativeChannelChanges {
     private readonly onBlocked?: (result: ChannelChangeResult) => void,
   ) {}
 
+  pendingChange(channel: string): Promise<PendingChange | undefined> { return this.store.pendingChange(channel); }
+
   pendingChanges(): Promise<PendingChange[]> { return this.store.pendingChanges(); }
 
   async resume(channel: string) {

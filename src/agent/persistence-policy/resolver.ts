@@ -49,6 +49,13 @@ export class ConversationSettingsResolver {
   ) {}
 
   settingsFor(context: ConversationPersistenceContext): ManagerSettings {
+    const settings = this.#resolve(context);
+    if (context.role !== "worker") return settings;
+    if (settings.capture.message !== "content") throw new Error('worker conversations require message capture "content"');
+    return { ...settings, role: "worker" };
+  }
+
+  #resolve(context: ConversationPersistenceContext): ManagerSettings {
     if (!this.resolver) return this.base;
     const override = this.resolver(context);
     if (override === undefined) return this.base;

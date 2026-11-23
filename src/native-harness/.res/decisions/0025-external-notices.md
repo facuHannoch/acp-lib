@@ -197,3 +197,168 @@ Conformance verifies recognized safe reasons, fallback for absent or
 untrusted details, and absence of provider-supplied secrets and oversized
 reason text in both the outcome and notice. A known interrupted outcome
 keeps the same delivery ID and reason on repeated staging.
+
+## Gate 3 amendment
+
+An assignment may span a steer chain. The lifecycle records an observed
+steered cancellation as awaiting continuation, without staging a notice.
+This is distinct from explicit interruption. Under the writer lock,
+`continueAssignment` checks the current predecessor, claims the successor
+worker/message key, and durably moves the active binding before successor
+dispatch. The same committed triple is idempotent. A different successor,
+an already claimed message, or a terminal predecessor is a conflict.
+Keep predecessor keys as superseded for uniqueness and retries. Late
+terminal records for superseded messages remain inspectable and cannot
+settle the assignment. Linkage is an authorization fence, not evidence
+that the successor actually ran.
+
+If the successor will not run, the current owner explicitly closes the
+awaiting continuation with a known failure or interruption and stages its
+notice atomically. If the owner dies before an authoritative terminal
+record, the next owner can settle the abandoned assignment as uncertain.
+Neither recovery nor an idempotent continuation sends the prompt again.
+Test both commit orders against predecessor finalization, a crash after
+steer cancellation and before linkage, and a crash after linkage before
+the successor's terminal commit. An assignment emits one terminal notice.
+Original provenance survives a move. Policies attributed to taken work
+survive the chain; terminal folded work unions the active causal policies
+and staging freezes the applicable union.
+
+Use typed native and ACP destinations. Native flush reads only native
+destinations and respects earlier unresolved channel changes. ACP
+delivery shares staging and compare-and-set transitions. It marks
+delivered only on durable acceptance at the destination keyed by the
+stable delivery ID, with idempotent retries; an unconfirmed append leaves
+the notice pending. Until that receipt and deduplication path exists,
+ACP delivery remains pending. Persist the worker handle before dispatch
+as immutable attribution; staging and every retry use the same source,
+ID, destination, text and policy set.
+
+Discovery is read-only and indexed. Pages are oldest first using an
+exclusive cursor over immutable increasing reservation sequence, scoped to
+the destination kind and discovery state. Default 50, maximum 100. The
+unstaged filter includes finalized but unstaged work and abandoned
+bindings that the current owner may settle. It excludes unfinished work
+owned by the current process, including awaiting continuation. Pending
+means pending only; blocked_policy requires explicit retry. Concurrent
+changes can make earlier rows eligible after a cursor has passed them,
+so each new drain starts at the beginning. Latest outcome per worker is
+the last staged outcome by greatest reservation sequence, with assignment
+ID retained in the result. This supports restoring the worker view and
+does not replace exact lookup by assignment ID.
+
+Project only the last completed assistant message in the final operation,
+by committed timeline sequence. Preserve its text exactly. A missing
+message or an empty/whitespace-only text projection is a known failure
+with the public reason "worker produced no saved result". Do not fall
+back to intermediate output. A crash without reliable terminal evidence
+remains uncertain.
+
+Keep the existing harness wire contract. Prefer a typed, indexed additive
+Agent migration for continuations, eligibility and provenance over
+encoding searchable fields inside unrelated text columns. Core owns
+schema 19. Allocate any new migration with Core, after the orchestrator
+schema, before implementation. Legacy rows default to native destinations.
+Legacy source falls back to the persisted worker conversation ID where
+no handle was recorded. Existing staged results and notices retain their
+original bytes and IDs, including their original text projection.
+
+Gate 3 native delivery applies the existing delivery state transitions.
+Schedule pending scans on open after channel changes, on eligible resume,
+and after confirmation of an earlier change. Lost acknowledgement keeps
+the same notice pending with the same ID and bytes. An invalid policy
+moves it to blocked_policy until explicit retry. A missing or retired
+destination moves it to failed_destination. Match confirmation to the
+attempted delivery ID so a stale response cannot settle unrelated work.
+
+If an Agent schema migration is needed, use version 20 after O1's version
+19 lands. Exercise it on an actual alpha `3fd2db2` database through
+schema 19, retaining legacy rows and pending payloads. Reopen a second
+time to verify idempotence.
+
+Combined successor prompts call continueAssignment in beforeDispatch
+message order. The orchestrator reads the active predecessor from
+readBinding. After m0→m1→m2, m1 is superseded even if both m1 and m2
+appear in the final causes. Only m2 settles the assignment and one notice
+results. The orchestrator calls closeContinuation if it knows an awaiting
+successor will never dispatch and no terminal lifecycle callback will
+settle it. Examples include a refused send before beforeDispatch or a
+worker stopped while awaiting continuation. Once linked, promptFailed
+for the active successor settles it; closing the stale predecessor
+cannot overwrite it. Owner death leaves unfinished work for the
+replacement to settle as uncertain.
+
+The stable ID remains worker-result:<assignmentId> and can be derived
+before staging. Delivery requires the committed staged payload. The
+orchestrator owns the ACP idempotent append keyed by that ID. Its
+worker_reply is the projected final text; missing or blank projection
+maps to worker_failed with "worker produced no saved result".
+
+Core allocated schema 20 after O1's schema 19. Implementation waits for
+the reviewed O1 base before changing SQLite schema.
+
+### Explicit new assignment
+
+A normal steer continues the active assignment. Redirect alone changes
+where its eventual notice goes, subject to the existing staging fence.
+An explicit new-assignment send on an idle worker only reserves the new
+assignment.
+
+On a busy worker, before dispatching an explicit new assignment, close
+the old assignment against its expected active message ID and reserve
+the new assignment. The explicit replacement may close an unfinished
+active binding or an awaiting continuation. Ordinary continuation
+cleanup may only close an awaiting continuation. Use interrupted with
+the public reason "worker interrupted by steering" and
+possiblePartialEffects true. The new assignment has its own ID,
+provenance and delivery ID. Redirect combined with new sets only the
+new assignment's destination. The old notice retains its destination.
+
+If the old final record or staged outcome commits first, it wins and
+the old outcome stays unchanged. If explicit replacement closes first,
+a later old terminal record stays inspectable but cannot settle it
+again or mark it awaiting continuation. Test each order, including old
+steered cancellation before and after the replacement transaction.
+Commit the close and new reservation together before dispatch. A crash
+after that commit leaves the old outcome staged and an unfinished new
+binding recoverable as uncertain, without redispatch.
+
+Use the same new assignment and message IDs on retry. Repeating the
+transaction returns the existing matching reservation and leaves the old
+notice unchanged. A reservation conflict rolls back the close. A crash
+between the close and reservation rolls back both. The new assignment
+captures the requesting callback's originating policies; it does not
+inherit the old assignment merely because the worker is the same.
+Where terminal output actually reflects taken inputs subject to earlier
+restrictions, keep the applicable contributing policy union.
+
+The orchestrator calls replaceAssignment before dispatch. The repository
+owns the atomic transaction for the old settlement and new reservation.
+Ordinary closeContinuation still only closes awaiting continuation.
+A stale predecessor or conflicting reservation returns conflict without
+writes. If the expected predecessor already finalized or settled, reserve
+the new assignment and return old_settled without changing or staging the
+old result. Otherwise stage its interruption and return replaced. The old
+notice uses "worker interrupted by steering" as its public reason.
+
+Persist the replacement relation with the new reservation in that
+transaction, including the predecessor IDs and disposition. An identical
+retry reports existing and the original replaced or old_settled disposition.
+A different predecessor or payload conflicts. The new reservation result
+reports whether the binding was newly reserved or existing; an existing
+reservation cannot authorize redispatch. Test rollback on a conflicting
+reservation and a crash between settlement and reservation.
+
+From beforeDispatch, proceed only when replaceAssignment reports a fresh
+reserved binding. Both replaced and old_settled reserve the binding
+directly; neither requires a separate reserve call. An existing binding
+reports the same original disposition without sending again. Conflict
+refuses the send before dispatch.
+
+An unfinished predecessor inherited from a dead owner is settled as
+uncertain within replaceAssignment, together with the new reservation.
+Return old_settled. Preserve the predecessor destination and provenance
+and persist the same disposition for retries. This applies to native and
+ACP destinations independently of any host scan. A successor cannot
+continue an abandoned binding. Orchestration must reserve fresh work
+instead, settling the abandoned predecessor through replacement or recovery.

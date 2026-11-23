@@ -37,6 +37,7 @@ export interface ConversationPersistenceContext {
   readonly metadata?: string;
   /** True when the conversation was created by adopting an existing provider session. */
   readonly adopted: boolean;
+  readonly role?: "worker";
 }
 
 /**

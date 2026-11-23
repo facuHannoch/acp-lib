@@ -1,3 +1,6 @@
+import { workerConsumerApi, type WorkerConsumerApi } from "./orchestrator/consumer-api.ts";
+import { Orchestrator } from "./orchestrator/orchestrator.ts";
+import { validateOrchestrator } from "./orchestrator/config.ts";
 import { validatePermissionConsumerConfig } from "./permissions/consumer-config.ts";
 import { inheritPermissionConfig, ownPermissions } from "./permissions/policy.ts";
 import { randomUUID } from "node:crypto";
@@ -107,6 +110,9 @@ export class Agent {
    */
   readonly nativeHarness: NativeHarnessHost | null;
   readonly conversations: AgentConversationManager;
+  /** @internal Delegation routes use this pool. */
+  readonly orchestrator?: Orchestrator;
+  readonly workers?: WorkerConsumerApi;
   readonly internalInferences?: InternalInferenceManager;
   readonly checkpointing?: ConversationCheckpointCoordinator;
   readonly audit?: AgentAuditRuntime;
@@ -143,6 +149,7 @@ export class Agent {
   ) {
     this.media = config.media ?? {};
     this.id = id;
+    if (config.orchestrator) validateOrchestrator(config.orchestrator, persistence, resolveConversationRecordCapture(config.capture).message);
     this.persistence = persistence;
     this.adapters = adapters;
     const channels = persistence.capabilities.channels ? persistence.channels : undefined;
@@ -157,7 +164,7 @@ export class Agent {
           ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
           : {}),
         ...(config.conversationDefaults?.logger ? { logger: config.conversationDefaults.logger } : {}),
-      }, channels && protectPendingRetirement(persistence, channels))
+      }, channels && protectPendingRetirement(persistence, channels), persistence.workerDelivery)
       : null;
     this.audit = audit;
     const logger = config.conversationDefaults?.logger ?? noopLogger;
@@ -227,6 +234,15 @@ export class Agent {
       },
     });
     this.conversations = this.manager;
+    if (config.orchestrator) {
+      const workerOptions = config.orchestrator.workers;
+      const adapterId = workerOptions.adapterId ?? config.defaultAdapterId ?? adapters.list()[0]?.id;
+      if (!adapterId || adapters.native(adapterId)) throw new Error("orchestrator workers require an ACP adapter");
+      adapters.require(adapterId);
+      this.orchestrator = new Orchestrator(persistence.workers!, this.conversations, { ...workerOptions, adapterId }, logger,
+        event => this.eventBus.publishWorker(event));
+      this.workers = workerConsumerApi(this.orchestrator);
+    }
     if (checkpointing?.enabled) {
       // Checkpoints summarize stored messages, so `metadata` (messages with no text) would checkpoint nothing
       // useful. `none` is allowed: a conversation that stores no messages has nothing to checkpoint, and the
@@ -450,6 +466,7 @@ export class Agent {
       this.detachInternalInferenceAudit = undefined;
       await this.auditObservationTail;
       const observationError = this.auditObservationError;
+      await this.orchestrator?.close();
       await this.manager.stopAll();
       // The shared harness process is the Agent's: it stops with it, after its conversations.
       await this.nativeHarness?.stop();

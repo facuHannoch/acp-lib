@@ -24,6 +24,7 @@ import type {
 import type { ConversationPersistenceResolver } from "./persistence-policy/types.ts";
 
 export interface ManagerSettings {
+  readonly role?: "worker";
   readonly defaultAdapterId?: string;
   readonly identityConsistency: IdentityConsistency;
   readonly identityTimeoutMs?: number;
