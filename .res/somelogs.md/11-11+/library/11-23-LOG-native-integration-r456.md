@@ -183,3 +183,13 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   typed error or the cancellation result, and a changelog line; (3) the surviving mutation (interrupt clearing
   submitted native inputs). Minor: clear `withdrawing` once `taken`; the changelog should say the default submission
   store is memory.
+- R6 complete from cod2a: step 1 `592a2c1` (withdrawal) with the shutdown follow-up `212e462`; receipts `76cd233`; the
+  real-stdio stream gate `ee78c68`; final report `2e1869f` (coordinator gate on `2e1869f`: typecheck clean, 1,668 in 158
+  files green RAM-backed, sizes at or below ceilings, harness tree untouched). clad2a's reviews (`4240f02`, `3466c64`):
+  shutdown re-check clean (a silent host with six unclaimed items takes 1,015 ms: one shared grace); receipts correct
+  (two conversations with interleaved steers: no bleed, no duplicates, monotonic); the stream gate deterministic
+  (50 of 50). One required decision: stop now REJECTS a running native prompt with `NativeInputStoppedError` where it
+  used to settle `{ status: "cancelled" }` with the partial text. Decision (coordinator): narrow the rejection to inputs
+  never taken by a turn; a running (taken) prompt keeps the previous cancelled-result behaviour; changelog accurate;
+  report notes that a real-process strict prefix can't be scripted. Then a short check and the pre-alpha with R5's docs
+  and all of R6.
