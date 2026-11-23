@@ -202,3 +202,9 @@ edit to `src/agent-session.ts`.
   1,013 (the stable-id append extracted to `src/agent/append-assistant-message.ts`). One edit in a worker delivery file
   (`worker-terminal-reason.ts`: `REFUSED_STEER_REASONS`, +6 −1): sent to clad2a for review and to Cod1a to object.
   With clad2a for review.
+- O3a reviewed by clad2a (`8e12d86`): meets its brief, no blocking findings (reserve, chain, replace, the refused
+  successor, redirect, restart, both ACP kill points, the blank result and the native-only scan all probed; the edit in
+  Cod1a's `worker-terminal-reason.ts` is needed and consistent). **O3a gate passed**
+  ([gate](../.plan-execution/status/11-23-GATE-O3a.md)): 1,576 in 147 files. `pre-alpha` rebuilt with O3a.
+  Decision (spec, follow-up for cod2a): a steer that loses the race against the worker's natural completion reserves a
+  fresh assignment (the worker is idle), as after a restart.
