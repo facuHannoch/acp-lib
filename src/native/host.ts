@@ -1,6 +1,7 @@
 import { NativeWorkerDelivery } from "./worker-delivery.ts";
 import type { WorkerDeliveryRepository } from "../persistence/worker-delivery-contract.ts";
 import { NativeApprovals } from "./approvals.ts";
+import { takenSender } from "../orchestrator/delegation-sender.ts";
 /**
  * The shared native harness host: one per Agent (acp-client integration spec, Ownership).
  *
@@ -411,7 +412,8 @@ export class NativeHarnessHost {
     });
     // Handlers are in place before `initialize` names them: a recovered call can arrive right after the open.
     const functions = this.#functionHost();
-    if (functions) client.serveFunctions((call, signal) => functions.call(call, signal), (read) => functions.read(read));
+    if (functions) client.serveFunctions((call, signal) => functions.call(call, signal,
+      () => takenSender(client, call.channel, call.turnId, signal)), (read) => functions.read(read));
     const initialized = await client.initialize({
       protocolVersion: 1,
       host: { name: "acp-client", version: "1" },

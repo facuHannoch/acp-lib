@@ -12,6 +12,7 @@ import type { OrchestratorConfig } from "../../src/orchestrator/config.ts";
 import { takenSender } from "../../src/orchestrator/delegation-sender.ts";
 import { withDelegationTools } from "../../src/orchestrator/native-delegation.ts";
 import { matchWorkerPermissionLevel } from "../../src/orchestrator/policy.ts";
+import { nativeRig } from "../native/support.ts";
 
 const allowed = { use: true, scope: "all", redirect: true } as const;
 const call = (name: string, args: Record<string, unknown>, id = name) =>
@@ -136,6 +137,48 @@ test("taken-item attribution keeps notice labels distinct from participant IDs",
   await expect(read("participant_message", "notice:alice")).resolves.toBe("participant:notice:alice");
   await expect(read("participant_message", "participant:notice:alice")).resolves.toBe("participant:participant:notice:alice");
 });
+
+test("the production host resolves delegation attribution before installing the connection", async () => {
+  const rig = await nativeRig();
+  try {
+    rig.script([call("delegate", { text: "Work on this" }), { content: "Delegated." }]);
+    let channel: string;
+    const result = Promise.withResolvers<unknown>();
+    rig.harness.connect = async () => {
+      const harness = createInProcessHarness({ home: rig.home });
+      const { client } = harness;
+      const closed = Promise.withResolvers<void>();
+      client.onChannelEvent(({ channel: eventChannel, event }) => {
+        if (eventChannel === channel && event.type === "tool_call" && event.output !== undefined) {
+          result.resolve(JSON.parse(event.output));
+        }
+      });
+      const create = client.createSession.bind(client);
+      client.createSession = async params => {
+        const opened = await create(params);
+        await client.push({ channel, item: { id: "during-open", kind: "user_message", sender: "alice",
+          content: [{ type: "text", text: "Delegate this while opening" }] } });
+        // Keep the production host in #open until the real harness records the callback result.
+        await waitFor(result.promise, "the delegation callback during host open");
+        return opened;
+      };
+      return { client, closed: closed.promise, async kill() { harness.close(); closed.resolve(); } };
+    };
+    const agent = await rig.open({
+      adapters: { main: { kind: "native" }, worker: { command: ["bun", resolve(import.meta.dir, "../fixtures/lifecycle-agent.ts")] } },
+      orchestrator: { workers: { adapterId: "worker", limit: 1 }, policies: { open: { delegation: allowed } } },
+    });
+    const open = spyOn(agent.orchestrator!, "open");
+    channel = (await agent.conversations.create({ title: "Giver" })).id;
+    await agent.nativeHarness!.start();
+    expect(await result.promise).toMatchObject({ ok: true, output: { status: "sent", handle: "w1" } });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open.mock.calls[0]?.[0]).toMatchObject({ kind: "conversation", sender: "alice",
+      conversationId: channel, invocationId: "1:delegate", policyNames: ["open"] });
+  } finally {
+    await rig.clean();
+  }
+}, 30_000);
 
 test("native delegation declines unknown or absent policies, and uses explicit empty-list defaults", async () => {
   const channel = createAgentConversationId();
