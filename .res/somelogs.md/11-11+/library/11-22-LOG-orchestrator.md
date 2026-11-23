@@ -180,3 +180,8 @@ edit to `src/agent-session.ts`.
   with several agents running suites), as seen before. **Gate procedure from now on: `TMPDIR` on `/dev/shm`.**
 - cod2a's O6a follow-up `7087637` (descriptions, a real `stop` outcome, `notice:` labels) goes to clad2a for a short
   review; cod2a merges alpha `0003f20` into `orchestrator` and gates it; then `pre-alpha` is rebuilt.
+- cod2a merged alpha `0003f20` into `orchestrator` (`1c5829a`; RAM-backed clean run 1,559 in 145 files green; the
+  production host hook test, including a callback before the connection is installed, is green). Decision on a steer
+  that waits for a worker tool boundary: the tool returns "steered" at once, so a later `beforeDispatch` conflict
+  or rejection is reported as `worker_failed` to the conversation that sent the steer (and a worker event), the queued
+  dispatch is not sent, and the old assignment's continuation is closed (interrupted, steered). Spec updated.

@@ -561,8 +561,11 @@ events only for a conversation's own turns). Corrections go to the spec owner be
    nothing twice. **Gate:** an item reaches an ACP conversation and is marked delivered; a retry after a kill between
    the append and the mark appends once; after a kill between the final record and the append, the restart finishes
    the delivery once. **If a steer's successor won't run** (its `beforeDispatch` rejects, or `replaceAssignment`
-   answers `conflict`), the send is refused and the orchestrator closes the awaiting continuation of the old
-   assignment (`closeContinuation`, interrupted, steered), so its notice isn't lost; `worker_redirected` is emitted
+   answers `conflict`), the orchestrator closes the awaiting continuation of the old
+   assignment (`closeContinuation`, interrupted, steered), so its notice isn't lost. A busy steer can wait for a
+   worker tool boundary while the tool call returns at once ("steered"), so a later refusal can't be a tool error:
+   it is reported as `worker_failed` to the conversation that sent the steer (reason: refused, with the cause) and
+   as a worker event, and the queued provider dispatch is not sent; `worker_redirected` is emitted
    only after the successor's dispatch is accepted. After a `replaced` result the orchestrator triggers the host's
    pending-notice flush (`agent.nativeHarness?.flushWorkerDelivery()`). **After a restart,** an assignment left by
    the previous owner is abandoned: `continueAssignment` on it answers `conflict` (correctly), and the orchestrator
