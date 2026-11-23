@@ -129,3 +129,67 @@ edit to `src/agent-session.ts`.
   complete from cod2a, HEAD `ce28ee5` ([report](reports/11-22-REPORT-O2.md)): busy rules on real ACP steering with a
   fake assignment port, and the policy checks; 1,527 in 141 files green on cod2a's runs; not yet reviewed.
 - **O1 combined as `pre-alpha` at `9fa7745`** (O1 only, so Cod1a's schema 20 can build on schema 19).
+- O2 in from cod2a, HEAD `ce28ee5`; review from clad2a, `c1ad02b` ([review](reports/11-22-REVIEW-O2.md)): meets the
+  brief, no blocking findings (1,527 green). Carry: `policyNames` on the actor and the port (added to the spec); the
+  composition across `policyNames` helpers (use and redirect need all names to allow, scope none wins, maxOpen the
+  minimum); `busyMs` restarts at every steer (count from the busy period); a same-giver `redirect: true` without
+  authority is refused (decided: an ordinary steer); `use: true` with `scope: "none"` can't open (decided: scope
+  `none` hides other conversations' workers; a conversation always sees workers it opened or gave running work to);
+  a rejected hook after a steer, the old assignment closed by the orchestrator, and `worker_redirected` only after the
+  successor's dispatch is accepted (added to the spec for O3a). One question to Cod1a: whether a steered
+  cancellation is recorded as awaiting continuation by the lifecycle (so no `prepare` call is needed before the
+  prompt).
+- Cod1a's runtime is in progress on `3c28130` and schema 20; `flushWorkerDelivery()` is triggered by the orchestrator
+  after a `replaced` result; an optional third host constructor repository argument is wired in `src/agent.ts`.
+- The user merged `pre-alpha` (`3c28130`, O1 and schema 19) into alpha. Cod1a's schema 20 now builds on alpha; the
+  orchestrator and reviews branches continue from it.
+- O2 follow-up `efb3aae` reviewed by clad2a (`723daeb`, all notes closed). O4 in from cod2a, HEAD `fc6a922`
+  ([report](reports/11-22-REPORT-O4.md)); review from clad2a, `ea79693`: meets the brief, no blocking findings
+  (the registry is a WeakMap; `forwardPermission` isn't exported; zero-or-two hunt gave one pair each path).
+  **O2 and O4 gate passed** ([gate](../.plan-execution/status/11-23-GATE-O2-O4.md)): 1,538 in 143 files. Spec: the
+  ask after a redirect stays with the previous giver; consumer-opened workers use the configured defaults;
+  `ownerPolicies` sets `isOwner`. Cod1a's runtime (`f580069`, crash follow-up `2fb1bcf`) is awaiting its serial
+  full runs and Clad1a; O3a waits for it. O5a (no dependency on it) goes to cod2a next.
+- O4 follow-up in from cod2a, `71b63d8` (consumer workers use `orchestrator.defaults.workerPermissions`; changelog for
+  the optional `turnId`, the `source` mark and `WorkerPermissionSource`); 1,540 green on cod2a's run; sent to clad2a.
+  O5a step 1 (`a6ec0af`) is in cod2a's gate.
+- O4 follow-up reviewed by clad2a (`4ff1d1c`, resolved). O5a complete from cod2a, HEAD `c092af6`
+  ([report](reports/11-23-REPORT-O5a.md)); review from clad2a, `f997c9b`: meets the brief, no blocking findings, the
+  races clean. **O5a gate passed** ([gate](../.plan-execution/status/11-23-GATE-O5a.md)): 1,546 in 143 files.
+  `pre-alpha` rebuilt to include O2, O4 and O5a (supersedes `c1bef00`).
+- Cod1a's runtime `d78bee1` (on O1 `3c28130`; schema 20; the lifecycle, the flush, ACP filtered) is with Clad1a; their
+  root runs are not green (load deadlines in the audit flush and two fixture watchdogs, each passing in focused
+  reruns). O3a waits for it. O6 step 1 (the route, the actor, the tool catalog) has no dependency on it: given to cod2a.
+- Clad1a did not approve Cod1a's implementation `d78bee1`: F1, after a restart `replaceAssignment` on an abandoned
+  predecessor returns `conflict`, blocking an explicit `assignment: "new"` send to an ACP-destination worker until the
+  old row is staged; Cod1a to settle it as uncertain inside the same transaction. Schema 20 verified on a real
+  `3fd2db2` database (19, then 20, reopened twice). For O3a (spec updated): after a restart `continueAssignment` on
+  abandoned work answers `conflict`, so the orchestrator reserves a fresh assignment for the send.
+- O5a follow-up `20af857` and O6 step 1 `d0a927b` (the delegation route; [report](reports/11-23-REPORT-O6a.md)) in
+  from cod2a; review from clad2a, `2f2a559`: both meet their briefs, no blocking findings (the sender is the running
+  turn's first taken item and authority is the frozen `policyNames`, not the sender; a model-supplied sender is
+  ignored; 40-plus probes fail closed). **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O6a.md)):
+  1,549 in 144 files. `pre-alpha` rebuilt to include O2, O4, O5a and O6a (supersedes `ab58e73`).
+- Cod1a's F1 fix `1ae9a90` (evidence head `1ebf6f5`): an abandoned ACP predecessor is staged as uncertain inside
+  `replaceAssignment`, which returns `old_settled`; with Clad1a for re-review.
+- Worker delivery approved at `1ebf6f5` (Clad1a; the F1 fix) and merged into alpha by haurness-l (alpha is now
+  `0003f20`, docs closure on top). `pre-alpha` (`d9efe13`) is no longer a fast-forward. Coordinator trial: the merge of
+  `pre-alpha` with `1ebf6f5` is conflict-free; the full suite on that merge (1,558 tests in 145 files): green with
+  `TMPDIR` in RAM (`/dev/shm`, 164 s); on disk three runs failed in a different test each time (an audit and a
+  native conformance test timing out, a consumer transcript test), each passing on its own: load (load average 4–7
+  with several agents running suites), as seen before. **Gate procedure from now on: `TMPDIR` on `/dev/shm`.**
+- cod2a's O6a follow-up `7087637` (descriptions, a real `stop` outcome, `notice:` labels) goes to clad2a for a short
+  review; cod2a merges alpha `0003f20` into `orchestrator` and gates it; then `pre-alpha` is rebuilt.
+- cod2a merged alpha `0003f20` into `orchestrator` (`1c5829a`; RAM-backed clean run 1,559 in 145 files green; the
+  production host hook test, including a callback before the connection is installed, is green). Decision on a steer
+  that waits for a worker tool boundary: the tool returns "steered" at once, so a later `beforeDispatch` conflict
+  or rejection is reported as `worker_failed` to the conversation that sent the steer (and a worker event), the queued
+  dispatch is not sent, and the old assignment's continuation is closed (interrupted, steered). Spec updated.
+- O6a follow-up `7087637` reviewed by clad2a (`7751b84`): the descriptions and `stop` resolved; the `notice:` label
+  collision: the prefix check ran on the untrimmed sender while the worker prompt trims the participant downstream,
+  so a sender with a leading space or NBSP became exactly `notice:w1`. One-line fix (trim first) assigned to cod2a;
+  then the host hook commit and O3a.
+- The production host hook `41a225d` and the sender trim `0e9c79b` reviewed by clad2a (`cfd831d`): both resolved, no
+  blocking findings (a reconnect uses the new client each time; a callback in flight when the host stops fails closed;
+  no client leak). **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O6a-final.md)): 1,563 tests in 145
+  files green with a RAM-backed `TMPDIR`. `pre-alpha` rebuilt on the new alpha (`0003f20`). cod2a is on O3a.

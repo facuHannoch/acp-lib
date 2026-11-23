@@ -210,7 +210,8 @@ interface Orchestrator {
 type Actor =
   | { kind: "consumer" }
   | { kind: "conversation"; conversationId: string; sender: SenderRef; invocationId: string;
-      policy: DelegationPolicy; workerPermissions: WorkerPermissions };  // composed from the call's policyNames
+      policyNames: readonly string[];  // the call's contributing names (assignments keep them)
+      policy: DelegationPolicy; workerPermissions: WorkerPermissions };  // composed from policyNames
 type OpenResult = { status: "sent"; handle: string } | { status: "no_worker_free"; workers: WorkerSummary[] };
 type SendResult =
   | { status: "sent" | "steered" }
@@ -326,6 +327,13 @@ w1 wants to run `bun test` → ACP request_permission → acp-client
   (decided in integration R3: an ask nobody can answer is never loosened to the default). No routing to another conversation; a headless
   conversation gets worker approvals through rules instead (the policy allows the specific commands). The levels are
   allow, deny and ask me; "ask the agent" (the agent approving its own worker) is not in v1 (Limitations).
+- **After a redirect, an ask already open stays with the previous giver** until it resolves (a steer waits for a
+  boundary and a permission isn't one); it is bounded by `permissionTimeoutMs`. New asks go to the new giver.
+- **A consumer-opened worker has no giving conversation:** its requests are decided by the orchestrator's configured
+  defaults (the same as an empty list of policy names); an ask nobody can answer is refused.
+- **`isOwner` comes from the harness names:** `orchestrator.ownerPolicies` (default `["owner"]`) names the owner
+  policies; a call is the owner's only if every one of its `policyNames` is one of them. O6 sets it; it controls
+  whether `allow_always` is offered.
 - **Forwarded requests use the conversation's own events:** `permission_requested` on the giving conversation, marked
   with the worker, answered with its `answerPermission`, closed by `permission_resolved`. No separate worker
   permission events.
@@ -552,7 +560,17 @@ events only for a conversation's own turns). Corrections go to the spec owner be
    is marked delivered only after the append commits, an unconfirmed append leaves it pending, and a retry appends
    nothing twice. **Gate:** an item reaches an ACP conversation and is marked delivered; a retry after a kill between
    the append and the mark appends once; after a kill between the final record and the append, the restart finishes
-   the delivery once.
+   the delivery once. **If a steer's successor won't run** (its `beforeDispatch` rejects, or `replaceAssignment`
+   answers `conflict`), the orchestrator closes the awaiting continuation of the old
+   assignment (`closeContinuation`, interrupted, steered), so its notice isn't lost. A busy steer can wait for a
+   worker tool boundary while the tool call returns at once ("steered"), so a later refusal can't be a tool error:
+   it is reported as `worker_failed` to the conversation that sent the steer (reason: refused, with the cause) and
+   as a worker event, and the queued provider dispatch is not sent; `worker_redirected` is emitted
+   only after the successor's dispatch is accepted. After a `replaced` result the orchestrator triggers the host's
+   pending-notice flush (`agent.nativeHarness?.flushWorkerDelivery()`). **After a restart,** an assignment left by
+   the previous owner is abandoned: `continueAssignment` on it answers `conflict` (correctly), and the orchestrator
+   then treats the worker as idle and reserves a fresh assignment for the send, rather than refusing it; the
+   abandoned one is settled as uncertain by the recovery (O5b).
 3. **Items:** `worker_reply` (the final message) on a normal turn end, `worker_failed` with the error kind, to
    the assignment's destination; a gone target keeps the reply on the
    worker (`check`, `list`). **Gate:** each item; a deleted target.
