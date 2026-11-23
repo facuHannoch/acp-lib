@@ -237,3 +237,16 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   `smoke-tests`; the leak mutations are killed. Coordinator gate on `6e6930c`: 1,678 in 162 files green RAM-backed, sizes
   unchanged, the harness tree untouched. **Spec 2 (R1 to R6) is complete**; the final `pre-alpha` is built. One nit
   (a pre-existing metering test hangs instead of failing if the timer regresses) is assigned.
+
+### 2026-11-23: spec 2 merged; release documentation
+
+- The user merged `pre-alpha` (`510e2a7`: R5 step 2b and its follow-ups, R5's docs and all of R6) into alpha. Spec 2 (R1
+  to R6) is complete; the only commit not in alpha is cod2a's test guard `8ba7662` (a bounded guard on a metering test).
+- Release preparation for trying `~agents` end to end: a type-check of `agents-core` (libs/agents) against the new tree
+  in a scratch copy found four migrations it needs (`defaultPermission` removed in favour of `permissions`; the launcher's
+  new `native-harness` kind; `connection` is now the interface, use `harnessConnection()`; a persistence context type
+  gained fields). The consumer guide is stale (`defaultPermission` examples; "scripted harness" wording; no sections for
+  permissions and events, `providerStart`, the orchestrator, worker delivery, receipts); `CHANGELOG-controller-interface.md`
+  isn't in the package's `files`; the pack holds 513 files (4.6 MB) including 103 internal design docs. The user asked for the
+  guide and a migration note from 0.12.1 to now; version, tag and pack exclusions still wait for the user. cod2a writes,
+  clad2a reviews, on `release-docs` and `release-docs-reviews` (from alpha `510e2a7`).
