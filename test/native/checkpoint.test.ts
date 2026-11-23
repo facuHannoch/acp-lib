@@ -350,7 +350,7 @@ function traceStdio(rig: NativeRig) {
   const methods: string[] = [];
   const intercept: Partial<Record<string, (real: () => Promise<unknown>, args: unknown[]) => Promise<unknown>>> = {};
   rig.harness.connect = async () => {
-    const child = spawnHarness({ home: rig.home, effects: rig.effectsPath, fault: rig.env.HARNESS_TEST_FAULT, snapshotLog: rig.env.HARNESS_TEST_SNAPSHOT_LOG, stallChannel: rig.env.HARNESS_TEST_STALL_CHANNEL, modelTimeoutMs: Number(rig.env.HARNESS_TEST_MODEL_TIMEOUT_MS) || undefined });
+    const child = spawnHarness({ home: rig.home, effects: rig.effectsPath, fault: rig.env.HARNESS_TEST_FAULT, snapshotLog: rig.env.HARNESS_TEST_SNAPSHOT_LOG, requests: rig.env.HARNESS_TEST_REQUESTS, stallChannel: rig.env.HARNESS_TEST_STALL_CHANNEL, modelTimeoutMs: Number(rig.env.HARNESS_TEST_MODEL_TIMEOUT_MS) || undefined });
     children.push(child);
     const client = new Proxy(child.client, { get(target, key) {
       const value = Reflect.get(target, key);
@@ -497,10 +497,14 @@ test("operator stdio reads stay bounded on 10,000 records, catch-up retries from
   const dbPath = join(rig.home, agent.id, "session.sqlite");
   seedOperatorHistory(dbPath, alice.id, bob.id);
   trace.methods.length = 0;
-  // Model context assembly can read a snapshot. Opening and observing must
-  // leave the count unchanged, including while that inference is held.
+  // Opening, assembling inference context, and observing use focused reads
+  // even while a model call is held over a long timeline.
   const log = join(rig.directory, "snapshots.log");
   rig.env.HARNESS_TEST_SNAPSHOT_LOG = log;
+  const requestLog = join(rig.directory, "context-requests.jsonl");
+  rig.env.HARNESS_TEST_REQUESTS = requestLog;
+  const captured = () => readFileSync(requestLog, "utf8").trim().split("\n")
+    .map(line => JSON.parse(line) as { channel: string; revision: number; messages: unknown[] });
   const snapshots = () => existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).length : 0;
   rig.env.HARNESS_TEST_STALL_CHANNEL = alice.id;
   rig.env.HARNESS_TEST_MODEL_TIMEOUT_MS = "20000";
@@ -514,10 +518,15 @@ test("operator stdio reads stay bounded on 10,000 records, catch-up retries from
     last = await host.status();
     return last.channels.find(channel => channel.channel === alice.id)?.activeTurn?.phase?.kind === "model";
   }, "held inference", 2000).catch(error => { throw new Error(JSON.stringify(last), { cause: error }); });
-  const executionReads = snapshots();
-  expect(executionReads).toBeGreaterThan(0);
+  await until(() => existsSync(requestLog), "held request capture");
+  expect(await bob.prompt("Correction from Bob during Alice's inference")).toMatchObject({ status: "completed" });
+  const held = captured().find(request => request.channel === alice.id)!;
+  expect(JSON.stringify(held.messages)).not.toContain("Correction from Bob");
+  expect(held.revision).toBeLessThan((await host.status()).revision);
+  expect(Buffer.byteLength(JSON.stringify(held.messages))).toBeLessThan(16_384);
+  expect(snapshots()).toBe(0);
   await alice.attachObservation();
-  expect(snapshots()).toBe(executionReads);
+  expect(snapshots()).toBe(0);
   expect(trace.methods).toContain("reconcileChannel");
   expect(trace.methods).not.toContain("channelMessages");
   expect(trace.methods).not.toContain("timeline");
@@ -561,6 +570,13 @@ test("operator stdio reads stay bounded on 10,000 records, catch-up retries from
   expect((await host.timeline({ cursor: activity.next, limit: 8 })).events.every(event =>
     !activity.events.some(previous => previous.position === event.position))).toBe(true);
   expect(await host.operatorStatus()).toMatchObject({ process: "running", stale: false });
+  await host.stop();
+  await host.start();
+  expect(await alice.prompt("Continue after reopen")).toMatchObject({ status: "completed" });
+  const fresh = captured().filter(request => request.channel === alice.id).at(-1)!;
+  expect(fresh.revision).toBeGreaterThan(held.revision);
+  expect(JSON.stringify(fresh.messages)).toContain("Correction from Bob");
+  expect(snapshots()).toBe(0);
 }, 30_000);
 
 test("operator stdio suspension waits for a callback, preserves checkpoints across replacement, and stop stays responsive", async () => {

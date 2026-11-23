@@ -118,8 +118,9 @@ const CONTEXT_BYTES = `${entryOverhead} + octet_length(message) + octet_length(a
   coalesce(octet_length(source_channel_id), 0) + coalesce(octet_length(item_id), 0) +
   coalesce(octet_length(external_source), 0) + coalesce(
     (SELECT octet_length(message_id) FROM entry_reply_ids WHERE seq = e.seq), 0)`;
-const contextHeader = (kind: string) => `e.seq, ${CONTEXT_BYTES} AS bytes, ${kind} AS kind`;
-const contextRow = (row: Row): ContextRow => ({ seq: row.seq, bytes: row.bytes, kind: row.kind });
+const contextHeader = (kind: string, legacy = false) =>
+  `e.seq, ${legacy ? CONTEXT_BYTES.replace("coalesce(octet_length(external_source), 0)", "0") : CONTEXT_BYTES} AS bytes, ${kind} AS kind`;
+const contextRow = (row: Row): ContextRow => ({ seq: row.seq, bytes: row.bytes, kind: row.kind, ...(row.text_bytes === undefined ? {} : { textBytes: row.text_bytes }) });
 const CHAT = `kind = 'participant_message' OR (${REPLY})`;
 const installReadIndexes = (db: Database) => db.exec(`
   CREATE INDEX IF NOT EXISTS turns_by_channel ON turns(channel_id, turn_id);
@@ -189,10 +190,10 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
   };
   const s = {
     contextTurnStart: q("SELECT started_seq FROM turns WHERE turn_id = ? AND channel_id = ?"),
-    contextTrigger: q(`SELECT ${contextHeader("'input'")} FROM entries AS e
+    contextTrigger: q(`SELECT ${contextHeader("'input'")}, (SELECT octet_length(text) FROM items WHERE items.item_id = e.item_id) AS text_bytes FROM entries AS e
       WHERE turn_id = ? AND item_id IS NOT NULL ORDER BY seq LIMIT 1`),
     contextPreviousResponse: q(`SELECT seq FROM entries WHERE turn_id = ? AND ${ASSISTANT} ORDER BY seq DESC LIMIT 1`),
-    contextInputs: q(`SELECT ${contextHeader("'input'")} FROM entries AS e
+    contextInputs: q(`SELECT ${contextHeader("'input'")}, (SELECT octet_length(text) FROM items WHERE items.item_id = e.item_id) AS text_bytes FROM entries AS e
       WHERE turn_id = ? AND item_id IS NOT NULL AND seq > ? ORDER BY seq LIMIT ?`),
     contextActive: q(`SELECT ${contextHeader(`CASE WHEN item_id IS NOT NULL THEN 'input'
       WHEN EXISTS (SELECT 1 FROM entries AS a INDEXED BY entries_context_assistants
@@ -200,6 +201,8 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       FROM entries AS e WHERE turn_id = ? ORDER BY seq DESC LIMIT ?`),
     contextLocal: q(`SELECT ${contextHeader("'other'")} FROM entries AS e
       WHERE channel_id = ? AND seq < ? AND (${CHAT}) ORDER BY seq DESC LIMIT ?`),
+    contextRecent: q(`SELECT ${contextHeader("'other'")} FROM entries AS e WHERE seq < ? ORDER BY seq DESC LIMIT ?`),
+    contextRecentLegacy: q(`SELECT ${contextHeader("'other'", true)} FROM entries AS e WHERE seq < ? ORDER BY seq DESC LIMIT ?`),
     contextShared: q(`WITH recent AS MATERIALIZED (SELECT seq, channel_id FROM entries ORDER BY seq DESC LIMIT ?)
       SELECT ${contextHeader("'other'")} FROM recent JOIN entries AS e ON e.seq = recent.seq
       WHERE recent.channel_id <> ? AND EXISTS (
@@ -210,6 +213,9 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
         SELECT octet_length(name) + 1 AS bytes FROM context_turn_policies WHERE turn_id = ? LIMIT ?
       )`),
     contextPolicies: q("SELECT name FROM context_turn_policies WHERE turn_id = ? ORDER BY name LIMIT ?"),
+    contextUnfinishedSize: q(`SELECT ${entryOverhead} + octet_length(channel_id) + octet_length(state) AS bytes
+      FROM turns WHERE turn_id = ? AND status IN ('failed', 'interrupted')`),
+    contextUnfinished: q("SELECT channel_id, state FROM turns WHERE turn_id = ?"),
     contextEntry: q(`SELECT *, (SELECT message_id FROM entry_reply_ids WHERE seq = e.seq) AS reply_id
       FROM entries AS e WHERE e.seq = ?`),
     pendingCount: q("SELECT count(*) AS n FROM items WHERE channel_id = ? AND milestone = 'received'"),
@@ -232,7 +238,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     putItem: q(`INSERT INTO items (item_id, kind, channel_id, sender_id, source_channel_id, text, signature, accepted_seq, accepted_at, milestone, turn_id, entry_seq, withdrawn_at, policy_metadata, external_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(item_id) DO UPDATE SET milestone = excluded.milestone, turn_id = excluded.turn_id, entry_seq = excluded.entry_seq,
         withdrawn_at = excluded.withdrawn_at, signature = excluded.signature, policy_metadata = excluded.policy_metadata`),
-    pending: q("SELECT * FROM items WHERE channel_id = ? AND milestone = 'received' ORDER BY accepted_seq"),
+    pending: q("SELECT * FROM items WHERE channel_id = ? AND milestone = 'received' ORDER BY accepted_seq LIMIT ?"),
     ofTurn: q("SELECT * FROM items WHERE turn_id = ? ORDER BY entry_seq"), items: q("SELECT * FROM items ORDER BY accepted_seq"),
     turn: q("SELECT * FROM turns WHERE turn_id = ?"),
     putTurn: q(`INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -254,11 +260,18 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     contextInputs: (turnId, after, limit) => s.contextInputs.all(turnId, after, limit).map(contextRow),
     contextActive: (turnId, limit) => s.contextActive.all(turnId, limit).map(contextRow),
     contextLocal: (channelId, start, limit) => s.contextLocal.all(channelId, start, limit).map(contextRow),
+    contextRecent: (before, limit, legacy) => (legacy ? s.contextRecentLegacy : s.contextRecent).all(before, limit).map(contextRow),
     contextShared: (channelId, limit) => s.contextShared.all(limit, channelId).map(contextRow),
     contextPolicies(turnId, limit, budget) {
       const { count, bytes } = s.contextPolicySize.get(turnId, limit + 1)!;
       if (count > limit || bytes > budget) return undefined;
       return { names: s.contextPolicies.all(turnId, count).map(row => String(row.name)).sort(), bytes };
+    },
+    contextUnfinished(turnId, budget) {
+      const size = s.contextUnfinishedSize.get(turnId);
+      if (!size || size.bytes > budget) return undefined;
+      const row = s.contextUnfinished.get(turnId)!;
+      return { outcome: { turnId, channelId: row.channel_id, state: JSON.parse(row.state) }, bytes: size.bytes };
     },
     contextEntry: seq => entry(s.contextEntry.get(seq)!),
     pendingCount(id) {
@@ -309,7 +322,7 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
     item(id) { const row = s.item.get(id); return row ? item(row) : undefined; },
     putItem(i) { s.putItem.run(i.itemId, i.kind, i.channelId, i.senderId, i.sourceChannelId ?? null, i.text, i.signature,
       i.acceptedSeq, i.acceptedAt, i.milestone, i.turnId ?? null, i.entrySeq ?? null, i.withdrawnAt ?? null, JSON.stringify(i.policy ?? { resolved: "__legacy_allow", inherited: [] }), i.externalSource ?? null); },
-    pendingItems: channelId => s.pending.all(channelId).map(item),
+    pendingItems: (channelId, limit) => s.pending.all(channelId, limit ?? -1).map(item),
     itemsOfTurn: turnId => s.ofTurn.all(turnId).map(item),
     items: () => s.items.all().map(item),
     turn(id) { const row = s.turn.get(id); return row ? turn(row) : undefined; },

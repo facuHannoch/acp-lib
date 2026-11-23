@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { buildContext, buildSharedContext } from "../src/capabilities/context/build.ts";
+import { bindModelAttempt } from "../src/capabilities/model/attempt.ts";
+import { createMemoryStorageAdapter } from "../src/state/storage/memory.ts";
 import { createSession } from "../src/index.ts";
 import type { ContextEntry } from "../src/contracts/context.ts";
 import type { Message } from "../src/contracts/loop.ts";
@@ -93,4 +95,83 @@ test("external notice golden context uses host attribution without a participant
   expect(context[1]?.content).toStartWith('Current channel: "alice"\nTurn triggered by an external notice\n');
   expect(context[2]).toEqual({ role: "user", content: 'External notice from "worker" to channel "alice":\nchecked' });
   expect(buildSharedContext(entries, "system")[1]?.content).toContain('"externalSource":"worker"');
+});
+
+test("admission rejects oversized UTF-8 without records and the take leaves a bounded suffix pending", async () => {
+  const batches: string[][] = [];
+  const session = createSession({ systemPrompt: "system", captureContext: ({ context }) => {
+    batches.push([...context.takenItemIds]);
+  }, configureTurn: () => ({
+    tools: [], executeTool: async () => "unused",
+    model: async () => ({ role: "assistant", content: "answer", calls: [] }),
+  }) });
+  const input = { channelId: "a", participantId: "alice" };
+  const before = session.snapshot();
+  expect(session.agent.send({ ...input, text: "é".repeat(4097) })).toMatchObject({ accepted: false, code: "invalid_input" });
+  expect(session.snapshot()).toEqual(before);
+  const ended = new Promise<void>(resolve => {
+    const stop = session.subscribe(({ event }) => { if (event.type === "turn_ended") { stop(); resolve(); } });
+  });
+  for (let i = 0; i < 17; i++)
+    expect(session.agent.send({ ...input, text: "queued", itemId: String(i) }).accepted).toBe(true);
+  session.start();
+  await ended;
+  expect(batches).toEqual([Array.from({ length: 16 }, (_, i) => String(i)), ["16"]]);
+  expect(session.snapshot().items.map(item => item.milestone)).toEqual(Array(17).fill("seen"));
+});
+
+test("context limit ends the turn before reserving an attempt or marking input seen", async () => {
+  let calls = 0;
+  const session = createSession({ systemPrompt: "system", configureTurn: () => ({
+    tools: [{ name: "large", description: "d".repeat(14000), parameters: {} }],
+    executeTool: async () => "unused",
+    model: async () => { calls++; return { role: "assistant", content: "answer", calls: [] }; },
+  }) });
+  const ended = new Promise<void>(resolve => {
+    const stop = session.subscribe(({ event }) => { if (event.type === "turn_ended") { stop(); resolve(); } });
+  });
+  session.start();
+  expect(session.agent.send({ channelId: "a", participantId: "alice", text: "small" }).accepted).toBe(true);
+  await ended;
+  const snapshot = session.snapshot();
+  expect(snapshot.turns[0]?.state).toMatchObject({ status: "failed", reason: "context_limit" });
+  expect(snapshot.items[0]?.milestone).toBe("taken");
+  expect(snapshot.modelCalls).toEqual([]);
+  expect(calls).toBe(0);
+});
+
+test("a provider retry reuses the request after another channel commits", async () => {
+  const attempts: unknown[] = [], revisions: number[] = [];
+  const opened = createMemoryStorageAdapter().open({ mode: "create", identity: { sessionId: "retry", compatibilityKey: "" } });
+  if (!opened.ok) throw new Error(opened.error.message);
+  const fullSnapshot = spyOn(opened.value, "snapshot");
+  const session = createSession({ storage: opened.value, systemPrompt: "system", captureContext: ({ context }) => {
+    if (context.channelId === "a") revisions.push(context.timelineRevision);
+  }, configureTurn: turn => {
+    const answer = { role: "assistant", content: "done", calls: [] } as const;
+    const model: import("../src/contracts/loop.ts").Model = async () => ({ ...answer, calls: [] });
+    if (turn.channelId === "a") bindModelAttempt(model, { scripted: false, settings: { retryDelayMs: 1 },
+      create: (_step, ordinal) => async function* (request) {
+        attempts.push(structuredClone(request));
+        if (ordinal === 0 && attempts.length === 1) {
+          await ask(session, { channelId: "b", participantId: "bob", text: "Correction committed" });
+          yield { type: "failure", kind: "transient", message: "retry" };
+          return;
+        }
+        yield { type: "response", response: { ...answer, calls: [], stopReason: "complete" } };
+      },
+    });
+    return { model, tools: [], executeTool: async () => "unused" };
+  } });
+  session.start();
+  await ask(session, { channelId: "a", participantId: "alice", text: "First" });
+  expect(attempts).toHaveLength(2);
+  expect(attempts[0]).toEqual(attempts[1]);
+  expect(JSON.stringify(attempts[1])).not.toContain("Correction committed");
+  expect(revisions).toHaveLength(1);
+  await ask(session, { channelId: "a", participantId: "alice", text: "Next" });
+  expect(revisions[1]).toBeGreaterThan(revisions[0]!);
+  expect(JSON.stringify(attempts[2])).toContain("Correction committed");
+  expect(fullSnapshot).not.toHaveBeenCalled();
+  opened.value.close();
 });

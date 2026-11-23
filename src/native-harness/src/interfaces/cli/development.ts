@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import { createSession } from "../../index.ts";
 import type { Model } from "../../contracts/loop.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
-import { buildSharedContext } from "../../capabilities/context/build.ts";
 import { openRouter } from "../../capabilities/model/openrouter.ts";
 import { loadScenario, scriptedCompatibilityKey } from "../../capabilities/model/scenario-file.ts";
 import { scenarioAttempt } from "../../capabilities/model/scenario-attempt.ts";
@@ -15,7 +14,7 @@ import { createScenarioTools, scenarioDefinitions } from "../../capabilities/too
 import { createMemoryStorageAdapter } from "../../state/storage/memory.ts";
 import { createSqliteStorageAdapter } from "../../state/storage/sqlite.ts";
 import { createInspection } from "../inspector/state.ts";
-import { observeContext, observeModel, observeSession } from "../inspector/observe.ts";
+import { observeModel, observeSession } from "../inspector/observe.ts";
 import type { ManagedConfig } from "../../contracts/config-permissions.ts";
 import { chooseManagedConfig } from "../../runtime/config/paths.ts";
 import { resolveCredential, validateManagedConfig } from "../../runtime/config/managed.ts";
@@ -80,10 +79,11 @@ export async function openDevelopment(options: DevelopmentOptions) {
     if (!saved.ok && saved.error.code !== "incompatible") { storage.close(); throw new Error(`Cannot save config: ${saved.error.message}`); }
   }
 
-  const inspection = createInspection(systemPrompt, scenarioDefinitions);
+  const inspection = createInspection(systemPrompt, scenarioDefinitions, storage, options.database ?? "memory");
   const dashboard = createDashboardWork(options.dashboardWait);
+  const captureScript = (options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1";
   const session: PersistentSession = createSession({
-    systemPrompt, storage, config: managedConfig,
+    systemPrompt, storage, config: managedConfig, captureContext: (!script || captureScript) ? inspection.capture : undefined,
     configureTurn(turn, notify) {
       const scenario = createScenarioTools(turn, dashboard, notify);
       const model = observeModel(inspection, turn.channelId, onRequest => {
@@ -96,7 +96,7 @@ export async function openDevelopment(options: DevelopmentOptions) {
           const next = scenarioAttempt(script, turn.channelId, step!);
           return async function* (request, signal) {
             scenario.beginInference();
-            if ((options.environment ?? process.env).HARNESS_CAPTURE_SCRIPT_REQUESTS === "1")
+            if (captureScript)
               inspection.request(turn.channelId, JSON.stringify(request), turn.turnId);
             for await (const event of next(request, signal)) { if (event.type === "response") inspection.response(turn.channelId, event.response); yield event; }
           };
@@ -108,14 +108,13 @@ export async function openDevelopment(options: DevelopmentOptions) {
       return { model, tools: scenarioDefinitions, executeTool: scenario.execute };
     },
   });
-  // Both observers read storage at attach, so a reopened session's timeline,
-  // lifecycle and pending input are in the inspector before any new message.
-  const stopContext = observeContext(session.store, inspection, entries => buildSharedContext(entries, systemPrompt, session.snapshot().turns));
-  const observed = observeSession(session, inspection, options.database ?? "memory");
+  const observed = observeSession(session, inspection);
+  const stop = session.stop;
+  session.stop = reason => { const result = stop(reason); inspection.stopped(); return result; };
   return {
     session, inspection, storage: options.database ?? "memory",
     /** The session as local clients use it: acceptance also refreshes the inspector. */
     local: { agent: observed.agent, subscribe: session.subscribe },
-    close() { stopContext(); observed.stop(); const closed = storage.close(); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
+    close() { observed.stop(); const closed = storage.close(); if (!closed.ok) throw new Error(`Cannot close session storage (${closed.error.code}): ${closed.error.message}`); },
   };
 }

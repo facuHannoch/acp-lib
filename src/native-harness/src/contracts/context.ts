@@ -1,6 +1,6 @@
 import type { Message, ToolCall, ExecuteTool, ToolDefinition } from "./loop.ts";
 import type { LoopEvent } from "./events.ts";
-import type { StorageResult, TimelineEntry } from "./storage.ts";
+import type { StorageResult, StoredTurn, TimelineEntry } from "./storage.ts";
 
 /** Effective limits for one session. Bytes refer to UTF-8 text or serialized
  * records as documented by the relevant operation. */
@@ -16,6 +16,9 @@ export interface ContextLimits {
   readonly estimationMarginTokens: number;
 }
 
+/** Historical failure evidence associated with selected history. */
+export type ContextTurnOutcome = Pick<StoredTurn, "channelId" | "turnId" | "state">;
+
 /** Detached inputs for one build, all read at the StorageResult revision.
  * Each record list is ordered by timeline sequence. Merge required and optional
  * turn records by sequence before rendering them. Required records and complete
@@ -25,6 +28,7 @@ export interface InferenceRead {
   readonly optionalTurn: readonly TimelineEntry[];
   readonly localHistory: readonly TimelineEntry[];
   readonly sharedHistory: readonly TimelineEntry[];
+  readonly unfinished: readonly ContextTurnOutcome[];
   /** Newly taken items in boundary order, including those taken before resume. */
   readonly takenItemIds: readonly string[];
   /** Complete policy provenance of the turn, independent of prompt trimming. */
@@ -33,8 +37,16 @@ export interface InferenceRead {
 
 /** The session storage adapter supplies the coherent bounded read. */
 export interface InferenceStorageReads {
+  readInferencePolicies(turnId: number, limits: ContextLimits): StorageResult<readonly string[] | { readonly code: "context_limit" }>;
   readInferenceContext(input: { channelId: string; turnId: number; limits: ContextLimits }):
     StorageResult<InferenceRead | { readonly code: "context_limit" }>;
+}
+
+/** Optional diagnostics for an assembled request. */
+export interface ContextCapture {
+  context: InferenceContext;
+  estimatedInputBytes: number;
+  omitted: { active: number; local: number; shared: number };
 }
 
 /** One provider-neutral request. A retry reuses this capture. */
@@ -76,10 +88,9 @@ export interface SharedContextStore {
   subscribe(listener: () => void): () => void;
 }
 
-/** Turn-scoped operations. Build must read a fresh snapshot on every call. */
+/** Turn-scoped operations available to the execution loop. */
 export interface TurnContext {
   append(message: Message): void;
-  build(): Message[];
   /** The sole dispatch boundary. It records dispatch before invoking the tool,
    * invokes before publishing started to prevent reentrant cancellation, and
    * returns a paired skipped result for denial or closed approval. A test

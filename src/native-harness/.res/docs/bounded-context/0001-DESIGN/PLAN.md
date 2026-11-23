@@ -2,7 +2,7 @@
 
 Date: 2026-11-23
 
-Status: Gate 3 wires bounded context into inference. Inspector read changes and the end-to-end checkpoint are next.
+Status: Gate 4 implements the inspector and end-to-end checkpoint.
 
 ## Scope and base
 
@@ -105,3 +105,25 @@ from provider wait time. The current model-call store reads and rewrites an
 accumulated model-state record. This plan's scale gate proves bounded context
 assembly. If bookkeeping still grows with session length, record that separately
 with the measurements so it can be addressed in its owning design.
+
+
+Gate 4 scale evidence uses 10,000 timeline entries over real stdio. A correction
+commits on Bob's channel while Alice's inference is held. Alice's held request
+keeps its older revision and the request after reopen sees the correction.
+That checkpoint makes zero full-session snapshot reads. Paging and invalidation
+are checked separately through the inspector HTTP interface. In Chrome, the
+scripted development chat exercised a notice wake and Bob completing while
+Alice waited for a dashboard tool. Alice's requests at revisions 44 and 60
+showed the later correction entering only the continuation.
+
+The reopen test exposed a record-allocation issue under a long local history.
+Storage now reserves up to one third of the remaining record and byte budget
+for recent shared records, with unused space returned to local records. The
+request estimator, token reserves, and input limits kept their starting values.
+
+An offline warm SQLite probe with 10,000 timeline entries and 5,000 mock model
+calls measured medians of 1.56 ms for the inference read, 3.77 ms for assembly
+with a preloaded read, and 2.33 ms for inspector status plus Live Context.
+Fetching recent call summaries took 5.26 ms. Starting and closing a model
+call took 65.02 ms together, including durable writes. These are local
+measurements with no model or network wait.

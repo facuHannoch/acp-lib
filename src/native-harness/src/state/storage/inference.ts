@@ -1,4 +1,4 @@
-import type { ContextLimits, InferenceRead, InferenceStorageReads } from "../../contracts/context.ts";
+import type { ContextLimits, ContextTurnOutcome, InferenceRead, InferenceStorageReads } from "../../contracts/context.ts";
 import type { TimelineEntry } from "../../contracts/storage.ts";
 
 /** Charge the serialized message, the UTF-8 bytes of variable entry fields,
@@ -9,6 +9,7 @@ export const byteLength = (value: string) => Buffer.byteLength(value, "utf8");
 export interface ContextRow {
   seq: number;
   bytes: number;
+  textBytes?: number;
   kind: "input" | "assistant" | "other";
 }
 
@@ -19,13 +20,15 @@ export interface ContextRows {
   contextInputs(turnId: number, after: number, limit: number): ContextRow[];
   contextActive(turnId: number, limit: number): ContextRow[];
   contextLocal(channelId: string, before: number, limit: number): ContextRow[];
+  contextRecent(before: number, limit: number, legacy?: boolean): ContextRow[];
   contextShared(channelId: string, candidates: number): ContextRow[];
   contextPolicies(turnId: number, limit: number, bytes: number): { names: string[]; bytes: number } | undefined;
+  contextUnfinished(turnId: number, maxBytes: number): { outcome: ContextTurnOutcome; bytes: number } | undefined;
   contextEntry(seq: number): TimelineEntry;
 }
 
 export function validReadLimits(limits: ContextLimits): boolean {
-  return [limits.maxReadRecords, limits.maxReadBytes, limits.maxSharedCandidates]
+  return [limits.maxReadRecords, limits.maxReadBytes, limits.maxSharedCandidates, limits.maxInputBytes, limits.maxTakenTextBytes, limits.maxTakenItems]
     .every(n => Number.isSafeInteger(n) && n > 0 && n < Number.MAX_SAFE_INTEGER);
 }
 
@@ -38,6 +41,9 @@ export function readInference(rows: ContextRows, input: Parameters<InferenceStor
   const overflow = { code: "context_limit" } as const;
   const trigger = rows.contextTrigger(turnId);
   const taken = rows.contextInputs(turnId, rows.contextPreviousResponse(turnId), maxReadRecords + 1);
+  if (taken.length > limits.maxTakenItems ||
+      taken.reduce((total, row) => total + (row.textBytes ?? 0), 0) > limits.maxTakenTextBytes ||
+      (trigger?.textBytes ?? 0) > limits.maxInputBytes || taken.some(row => (row.textBytes ?? 0) > limits.maxInputBytes)) return overflow;
   const requiredRows = trigger && trigger.seq !== taken[0]?.seq ? [trigger, ...taken] : taken;
   const requiredBytes = requiredRows.reduce((total, row) => total + row.bytes, 0);
   if (requiredRows.length > maxReadRecords || requiredBytes > maxReadBytes) return overflow;
@@ -82,10 +88,16 @@ export function readInference(rows: ContextRows, input: Parameters<InferenceStor
   if (records && bytes) {
     const local = rows.contextLocal(channelId, turnStart, maxReadRecords);
     const shared = rows.contextShared(channelId, maxSharedCandidates).slice(0, maxReadRecords);
-    // Preserve local priority while leaving room for a small shared record.
-    const reserve = records > 1 ? shared.find(row => row.bytes <= Math.floor(bytes / 4)) : undefined;
-    const reserveRecords = reserve ? 1 : 0;
-    const reserveBytes = reserve?.bytes ?? 0;
+    // Reserve room for a recent shared exchange even when a long local
+    // transcript can fill every record slot. Return unused space to local.
+    let reserveRecords = 0, reserveBytes = 0;
+    const sharedSlots = records > 1 ? Math.max(1, Math.floor(records / 3)) : 0;
+    for (const row of shared) {
+      if (reserveRecords === sharedSlots) break;
+      if (reserveBytes + row.bytes > Math.floor(bytes / 3)) continue;
+      reserveRecords++;
+      reserveBytes += row.bytes;
+    }
     const deferred: ContextRow[] = [];
     for (const row of local) {
       if (charge([row], reserveRecords, reserveBytes))
@@ -95,7 +107,17 @@ export function readInference(rows: ContextRows, input: Parameters<InferenceStor
     for (const row of shared) if (charge([row])) sharedHistory.push(rows.contextEntry(row.seq));
     for (const row of deferred) if (charge([row])) localHistory.push(rows.contextEntry(row.seq));
   }
+  const unfinished: ContextTurnOutcome[] = [];
+  const historicalTurns = new Set([...localHistory, ...sharedHistory].sort((a, b) => b.seq - a.seq).map(row => row.turnId));
+  for (const id of historicalTurns) {
+    if (!records || !bytes) break;
+    const record = rows.contextUnfinished(id, bytes);
+    if (!record) continue;
+    bytes -= record.bytes;
+    records--;
+    unfinished.push(record.outcome);
+  }
   const order = (a: TimelineEntry, b: TimelineEntry) => a.seq - b.seq;
   return { required, optionalTurn: optionalTurn.sort(order), localHistory: localHistory.sort(order),
-    sharedHistory: sharedHistory.sort(order), takenItemIds, policyNames: policies.names };
+    sharedHistory: sharedHistory.sort(order), unfinished, takenItemIds, policyNames: policies.names };
 }

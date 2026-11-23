@@ -1,3 +1,5 @@
+import type { InspectionStorageReads } from "./inspection.ts";
+import type { IntakeLimit } from "./input-limits.ts";
 import type { OperatorStorageReads } from "./operator-controls.ts";
 import type { ModelCallStore } from "./model-execution.ts";
 import type { ItemKind, ItemMilestone } from "./agent.ts";
@@ -282,7 +284,7 @@ export type InterruptOutcome =
   | { interrupted: false; turn: StoredTurn };
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
-export interface SessionStorage extends ModelCallStore, OperatorStorageReads, InferenceStorageReads {
+export interface SessionStorage extends ModelCallStore, OperatorStorageReads, InferenceStorageReads, InspectionStorageReads {
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;
@@ -320,7 +322,7 @@ export interface SessionStorage extends ModelCallStore, OperatorStorageReads, In
    * Nothing is added to the timeline and no turn is created or changed. */
   /** External notice retries compare durable identity before admission or
    * policy validation for new work, through a path that writes nothing. */
-  acceptItem(input: AcceptItem): StorageResult<{ item: StoredItem; duplicate: boolean }>;
+  acceptItem(input: AcceptItem, maxInputBytes?: number): StorageResult<{ item: StoredItem; duplicate: boolean }>;
 
   /** Start the channel's next turn by taking ALL its pending items, in
    * acceptance order, in one transaction: create the running turn, move each
@@ -330,7 +332,7 @@ export interface SessionStorage extends ModelCallStore, OperatorStorageReads, In
    * or suspended turn or has nothing pending. Requires `running` session
    * lifecycle (`not_running`) and an `open` channel (`channel_suspended`; an
    * unknown or retired channel is `not_found`/`channel_retired`). */
-  beginTurn(channelId: string): StorageResult<TurnTake | null>;
+  beginTurn(channelId: string, intake?: IntakeLimit): StorageResult<TurnTake | null>;
 
   /** Steering: take all items pending on a running turn's channel, exactly as
    * beginTurn does, at the turn's inference boundary. An empty take commits
@@ -340,7 +342,7 @@ export interface SessionStorage extends ModelCallStore, OperatorStorageReads, In
    * state, so suspension never forces an extra inference. The same holds for the
    * turn's channel while `suspending`: `channel_suspended`, taking nothing. A
    * resumed turn calls this before its first inference. */
-  takePending(turnId: number): StorageResult<TurnTake>;
+  takePending(turnId: number, intake?: IntakeLimit): StorageResult<TurnTake>;
 
   /** Append only to a running turn. Storage assigns seq/time/channel/turn/from.
    * Assistant messages are from agent; tool results are from tool. Calls are

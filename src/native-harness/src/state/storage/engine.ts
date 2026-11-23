@@ -1,8 +1,11 @@
+import type { InspectionEntry } from "../../contracts/inspection.ts";
+import type { ContextTurnOutcome } from "../../contracts/context.ts";
+import type { IntakeLimit } from "../../contracts/input-limits.ts";
 import type { OperatorStorageReads } from "../../contracts/operator-controls.ts";
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import type { ManagedConfig } from "../../contracts/config-permissions.ts";
 import { externalNoticeSignature, policyItemSignature, contributingPolicies, fingerprint } from "./policy-metadata.ts";
-import { readInference, validReadLimits, type ContextRows } from "./inference.ts";
+import { byteLength, readInference, validReadLimits, type ContextRows } from "./inference.ts";
 import { validateManagedConfig } from "../../util/config.ts";
 import type {
   AcceptItem, ChannelLifecycle, SessionArchive, SessionLifecycle, SessionStorage, StorageErrorCode, StorageResult,
@@ -57,7 +60,7 @@ export interface Tables extends ContextRows {
   /** Insert, or update milestone/turn link of an existing item. */
   putItem(item: StoredItem): void;
   /** Milestone `received` (never `withdrawn`), in acceptedSeq order. */
-  pendingItems(channelId: string): StoredItem[];
+  pendingItems(channelId: string, limit?: number): StoredItem[];
   /** In take (entrySeq) order. */
   itemsOfTurn(turnId: number): StoredItem[];
   items(): StoredItem[];
@@ -270,6 +273,22 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
     if (turn.state.status !== "running") fail("invalid_state", `Turn ${turnId} is ${turn.state.status}, not running`);
     return turn;
   }
+  function boundaryPending(channelId: string, intake?: IntakeLimit, turnId?: number): StoredItem[] {
+    if (!intake) return tables.pendingItems(channelId);
+    const already = turnId === undefined ? [] : tables.contextInputs(turnId, tables.contextPreviousResponse(turnId), intake.maxTakenItems);
+    const slots = intake.maxTakenItems - already.length;
+    if (slots <= 0) return [];
+    let bytes = intake.maxTakenTextBytes - already.reduce((sum, row) => sum + (row.textBytes ?? 0), 0);
+    const selected: StoredItem[] = [];
+    for (const item of tables.pendingItems(channelId, slots)) {
+      bytes -= byteLength(item.text);
+      // A legacy oversized head advances alone and gets a typed build failure.
+      if (bytes < 0 && (selected.length || already.length)) break;
+      selected.push(item);
+      if (bytes < 0) break;
+    }
+    return selected;
+  }
   function take(meta: Meta, turn: TurnRow, pending: StoredItem[]): TurnTake {
     const items: StoredItem[] = [], entries: TimelineEntry[] = [];
     for (const item of pending) {
@@ -421,7 +440,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       if (after && at < 0) fail("not_found", "Unknown model call cursor");
       const page = calls.slice(at + 1, at + 1 + limit); return { calls: page, ...(at + 1 + limit < calls.length ? { next: page.at(-1)!.callId } : {}) };
     }, true),
-    acceptItem: input => run(meta => {
+    acceptItem: (input, maxInputBytes) => run(meta => {
       const external = input?.kind === "external_notice";
       if (!external) requireCompatible();
       if (external && (!text(input.itemId) || !text(input.channelId) || !text(input.text)
@@ -445,6 +464,8 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         || (input.itemId !== undefined && !text(input.itemId))
         || (notice ? !text(input.sourceChannelId) : input.sourceChannelId !== undefined))
         fail("invalid_input", "Item needs kind, channelId, senderId and text; a notice also needs sourceChannelId");
+      if (maxInputBytes !== undefined && typeof input?.text === "string" && byteLength(input.text) > maxInputBytes)
+        fail("invalid_input", `Input exceeds the ${maxInputBytes}-byte UTF-8 limit`);
       if (external) {
         if (incompatibleViewOnly) fail("incompatible", "Stored policy is not available in the open configuration");
         requireCompatible();
@@ -492,13 +513,13 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return { item, duplicate: false };
     }, input?.kind === "external_notice"),
 
-    beginTurn: channelId => run(meta => {
+    beginTurn: (channelId, intake) => run(meta => {
       requireCompatible();
       if (meta.lifecycle !== "running") fail("not_running", `Session is ${meta.lifecycle}; no turn can begin`);
       const channel = channelOf(channelId);
       if (channel.lifecycle !== "open") fail("channel_suspended", `Channel ${channel.channelId} is ${channel.lifecycle}; no turn can begin`);
       if (tables.liveTurn(channel.channelId)) return null;
-      const pending = tables.pendingItems(channelId);
+      const pending = boundaryPending(channelId, intake);
       if (!pending.length) return null;
       const turn: TurnRow = { turnId: meta.nextTurnId++, channelId, startedSeq: seq(meta), startedAt: now(),
         compatibilityKey: ownerKey, state: { status: "running" } };
@@ -506,12 +527,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
       return take(meta, turn, pending);
     }),
 
-    takePending: turnId => run(meta => {
+    takePending: (turnId, intake) => run(meta => {
       const turn = running(turnId);
       if (meta.lifecycle !== "running") fail("not_running", `Session is ${meta.lifecycle}; input stays pending`);
       const channel = channelOf(turn.channelId);
       if (channel.lifecycle !== "open") fail("channel_suspended", `Channel ${channel.channelId} is ${channel.lifecycle}; input stays pending`);
-      return take(meta, turn, tables.pendingItems(turn.channelId));
+      return take(meta, turn, boundaryPending(turn.channelId, intake, turnId));
     }),
 
     appendMessage: (turnId, raw) => run(meta => {
@@ -559,7 +580,7 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         const last = tables.entriesOfTurn(turnId).at(-1)?.message;
         if (!last || last.role !== "assistant" || last.calls.length)
           fail("invalid_state", "Completion needs a final assistant response without tool calls");
-        const pending = tables.pendingItems(turn.channelId).length;
+        const pending = tables.pendingCount(turn.channelId);
         if (pending) return { finished: false as const, pending };
         const done: TurnRow = { ...turn, state: { status: "completed" } };
         tables.putTurn(done); settle(turn.channelId); seq(meta);
@@ -767,6 +788,49 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         fail("invalid_input", "Invalid timeline bounds");
       const rows = tables.readRange(range);
       return { entries: rows.slice(0, range.limit), more: rows.length > range.limit };
+    }, true),
+    readInspectionStatus: () => run(meta => ({
+      session: session(meta),
+      channels: tables.channels().map(({ channelId, lifecycle }) => {
+        const live = tables.liveTurn(channelId), latest = tables.latestTurn(channelId);
+        const state = latest?.state;
+        return { id: channelId, lifecycle, pending: tables.pendingCount(channelId),
+          ...(live ? { turn: live.state.status as "running" | "suspended" } : {}),
+          ...(latest && (state?.status === "failed" || state?.status === "interrupted")
+            ? { unresolved: { turnId: latest.turnId, ...state } } : {}) };
+      }),
+    }), true),
+    readInspectionPage: before => run(meta => {
+      if (before !== undefined && (!Number.isSafeInteger(before) || before < 1)) fail("invalid_input", "Invalid inspection cursor");
+      const pageSize = 40, rows = tables.contextRecent(before ?? Number.MAX_SAFE_INTEGER, pageSize + 1, meta.formatVersion < 6);
+      const entries: InspectionEntry[] = [], unfinished: ContextTurnOutcome[] = [], turns = new Set<number>();
+      let budget = 64 * 1024;
+      for (const row of rows.slice(0, pageSize)) {
+        if (row.bytes > budget || row.bytes > 16 * 1024) { entries.push({ seq: row.seq, omitted: true }); continue; }
+        budget -= row.bytes;
+        const saved = tables.contextEntry(row.seq);
+        entries.push(saved);
+        turns.add(saved.turnId);
+      }
+      for (const id of turns) {
+        if (!budget) break;
+        const outcome = tables.contextUnfinished(id, Math.min(budget, 4096));
+        if (outcome) { budget -= outcome.bytes; unfinished.push(outcome.outcome); }
+      }
+      return { entries, unfinished, ...(rows.length > pageSize ? { next: entries.at(-1)!.seq } : {}) };
+    }, true),
+    readInspectionCalls: channel => run(() => {
+      const calls = tables.getModelState()?.calls ?? [];
+      const page: ModelCallSummary[] = [];
+      for (let i = calls.length - 1; i >= 0 && page.length < 40; i--) {
+        const call = calls[i]!;
+        if (call.channel === channel) page.push(call);
+      }
+      return page;
+    }, true),
+    readInferencePolicies: (turnId, limits) => run(() => {
+      if (!validReadLimits(limits)) fail("invalid_input", "Invalid inference read limits");
+      return tables.contextPolicies(turnId, limits.maxReadRecords, limits.maxReadBytes)?.names ?? { code: "context_limit" as const };
     }, true),
     readInferenceContext: input => run(meta => {
       if (meta.formatVersion !== 6) fail("incompatible", "Inference reads need a recovered session");

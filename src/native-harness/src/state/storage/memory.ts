@@ -39,7 +39,8 @@ function memoryTables(data: Data): Tables {
   };
   const recent = <T>(rows: T[], limit: number, end = rows.length) => rows.slice(Math.max(0, end - limit), end).reverse();
   const header = ({ seq, bytes, kind, entry }: ContextEntry): ContextRow => ({
-    seq, bytes: bytes + byteLength(data.modelState?.entryIds[String(seq)] ?? entry.messageId ?? ""), kind,
+    seq, ...(entry.itemId === undefined ? {} : { textBytes: byteLength(data.items.get(entry.itemId)?.text ?? "") }),
+    bytes: bytes + byteLength(data.modelState?.entryIds[String(seq)] ?? entry.messageId ?? ""), kind,
   });
   return {
     contextTurnStart(channelId, turnId) {
@@ -61,6 +62,9 @@ function memoryTables(data: Data): Tables {
       const rows = data.conversation.get(channelId) ?? [];
       return recent(rows, limit, before(rows, start)).map(row => header(data.bySeq.get(row.seq)!));
     },
+    contextRecent(cursor, limit) {
+      return recent(data.entries, limit, before(data.entries, cursor)).map(row => header(data.bySeq.get(row.seq)!));
+    },
     contextShared(channelId, limit) {
       return recent(data.entries, limit).filter(row => row.channelId !== channelId &&
         (row.kind === "participant_message" || (row.message.role === "assistant" && !!row.message.content)))
@@ -76,6 +80,13 @@ function memoryTables(data: Data): Tables {
         if (bytes > budget) return undefined;
       }
       return { names: [...names].sort(), bytes };
+    },
+    contextUnfinished(turnId, budget) {
+      const turn = data.turns.get(turnId);
+      if (!turn || (turn.state.status !== "failed" && turn.state.status !== "interrupted")) return undefined;
+      const { channelId, state } = turn;
+      const bytes = entryOverhead + byteLength(channelId) + byteLength(JSON.stringify(state));
+      return bytes <= budget ? { outcome: { channelId, turnId, state }, bytes } : undefined;
     },
     contextEntry(seq) {
       const entry = data.bySeq.get(seq)!.entry;
@@ -128,8 +139,8 @@ function memoryTables(data: Data): Tables {
         log(() => { namesForUndo.delete(name); });
       }
     },
-    pendingItems: channelId => copy([...data.items.values()].filter(item => item.channelId === channelId && item.milestone === "received")
-      .sort((a, b) => a.acceptedSeq - b.acceptedSeq)),
+    pendingItems: (channelId, limit) => copy([...data.items.values()].filter(item => item.channelId === channelId && item.milestone === "received")
+      .sort((a, b) => a.acceptedSeq - b.acceptedSeq).slice(0, limit ?? Infinity)),
     itemsOfTurn: turnId => copy([...data.items.values()].filter(item => item.turnId === turnId).sort((a, b) => a.entrySeq! - b.entrySeq!)),
     items: () => copy([...data.items.values()].sort((a, b) => a.acceptedSeq - b.acceptedSeq)),
     turn: id => copy(data.turns.get(id)),

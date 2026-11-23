@@ -1,28 +1,19 @@
 import type { SessionAgent } from "../../contracts/agent.ts";
-import type { Message, Model } from "../../contracts/loop.ts";
-import type { ContextEntry, SharedContextStore } from "../../contracts/context.ts";
+import type { Model } from "../../contracts/loop.ts";
 import type { PersistentSession } from "../../contracts/session.ts";
 import type { Inspection } from "./state.ts";
 
-/** Keep the inspector's session and channel status equal to storage: once at
- * attach, so restored state is visible before any new message, and again after
- * every acceptance and every committed event. Reading status never starts,
- * resumes or changes work. */
-export function observeSession(session: PersistentSession, inspection: Inspection, storage: string) {
-  const refresh = () => {
-    const view = session.snapshot();
-    inspection.status(session.status(), storage, Object.fromEntries(view.channels.map(channel => [channel.channelId,
-      [...new Set(view.items.filter(item => item.channelId === channel.channelId).map(item => item.senderId))]])), view.modelCalls);
-  };
-  refresh();
-  const stopEvents = session.subscribe(refresh), stopLifecycle = session.subscribeSession(refresh);
+/** Turn and lifecycle events only invalidate the development views. */
+export function observeSession(session: PersistentSession, inspection: Inspection) {
+  const stopEvents = session.store.subscribe(inspection.invalidate);
+  const stopLifecycle = session.subscribeSession(inspection.invalidate);
   const agent: SessionAgent = {
     idle: () => session.agent.idle(),
-    send(input) { const result = session.agent.send(input); refresh(); return result; },
-    notifyExternal(notice) { const result = session.agent.notifyExternal(notice); refresh(); return result; },
-    notify(notice) { const result = session.agent.notify(notice); refresh(); return result; },
+    send(input) { const result = session.agent.send(input); if (result.accepted && !result.duplicate) inspection.invalidate(); return result; },
+    notifyExternal(notice) { const result = session.agent.notifyExternal(notice); if (result.accepted && !result.duplicate) inspection.invalidate(); return result; },
+    notify(notice) { const result = session.agent.notify(notice); if (result.accepted && !result.duplicate) inspection.invalidate(); return result; },
   };
-  return { agent, refresh, stop() { stopEvents(); stopLifecycle(); } };
+  return { agent, stop() { stopEvents(); stopLifecycle(); } };
 }
 
 export function observeModel(
@@ -41,16 +32,4 @@ export function observeModel(
     inspection.response(channelId, response);
     return response;
   };
-}
-
-// Channel history is a projection of the shared store, not an independent log.
-export function observeContext(store: SharedContextStore, inspection: Inspection,
-  renderBase: (entries: readonly ContextEntry[]) => Message[],
-) {
-  const update = () => {
-    const entries = store.snapshot();
-    inspection.sharedContext(entries, renderBase(entries));
-  };
-  update();
-  return store.subscribe(update);
 }

@@ -357,6 +357,6 @@ test("inference sizes rows before point-reading bodies and uses bounded indexed 
       expect(plans.some(plan => plan.startsWith("SEARCH") && plan.includes(index))).toBe(true);
     expect(plans).toContain("MATERIALIZE recent");
     const calls = trace.mock.calls.map(([sql]) => sql);
-    expect(calls.every(sql => !/\bmodelState\b|SELECT \* FROM (entries|items)|FROM items\b/.test(sql))).toBe(true);
+    expect(calls.every(sql => !/\bmodelState\b|SELECT \* FROM (entries|items)/.test(sql))).toBe(true);
   } finally { trace.mockRestore(); ok(s.close()); }
 });

@@ -137,6 +137,30 @@ export function storageConformance(name: string, location: () => SessionStorageA
       } finally { ok(s.close()); }
     });
 
+    test("inspector pages advance across omitted payloads and pin older positions", () => {
+      const seed = createMemoryStorageAdapter(), source = create(seed).s;
+      ok(msg(source, "start"));
+      const active = begin(source);
+      for (let i = 0; i < 44; i++) say(source, active.turn.turnId, i === 42 ? "é".repeat(32000) : "reply");
+      ok(source.finishTurn(active.turn.turnId, { status: "completed" }));
+      const target = location();
+      ok(target.importArchive(ok(source.exportArchive())));
+      ok(source.close());
+      const s = ok(target.open({ mode: "open", identity: id() }));
+      try {
+        expect(ok(s.readInspectionStatus()).channels).toMatchObject([{ id: "c1", pending: 0 }]);
+        const recent = ok(s.readInspectionPage());
+        expect(recent.entries).toHaveLength(40);
+        expect(recent.entries[1]).toEqual({ seq: recent.entries[0]!.seq - 1, omitted: true });
+        expect(recent.next).toBeDefined();
+        ok(msg(s, "new pending"));
+        const older = ok(s.readInspectionPage(recent.next));
+        expect(older.entries).toHaveLength(5);
+        expect(older.entries.every(row => row.seq < recent.next!)).toBe(true);
+        expect(older.next).toBeUndefined();
+      } finally { ok(s.close()); }
+    });
+
     test("external notice identity, drain admission, inspection and archive round trip", () => {
       const adapter = location();
       const config = { version: 1 as const, system: "test", model: { protocol: "scripted" as const, script: "fixture" },

@@ -76,7 +76,11 @@ not a verified participant identity. No provider key is sent to the browser.
 
 Set `HARNESS_CHAT_PORT` to change port 3001, or use 0 for an available port. The
 phone needs network access to that port. The inspector stays local-only on port
-3000; the LAN chat does not expose its snapshots. Web chat currently shows future
+3000. Its Live Context tab shows a bounded preview across the session. Timeline
+pages older events on request, and Channels shows recent captured requests
+and can load recent durable model-call summaries. For an offline capture run,
+use `HARNESS_CAPTURE_SCRIPT_REQUESTS=1 bun run start --script test/fixtures/development-scenario.jsonl`.
+New messages and notices have an 8 KiB UTF-8 text limit. Web chat currently shows future
 replies, without replay or persistent browser history. Browser connections do not
 automatically reconnect after a network loss; press Connect again.
 

@@ -1,5 +1,4 @@
-import type { ContextEntry } from "../../contracts/context.ts";
-import type { StoredTurn } from "../../contracts/storage.ts";
+import type { ContextEntry, ContextTurnOutcome } from "../../contracts/context.ts";
 import type { Message } from "../../contracts/loop.ts";
 
 /** Notices keep user API role but never impersonate a human participant. */
@@ -18,7 +17,7 @@ export function renderContextEntry(entry: ContextEntry): Message {
 /** Turns that ended without completing. Their recorded calls without a result
  * may or may not have taken effect, so the model is told rather than left to
  * assume either outcome. Completed turns add nothing to the context. */
-function unfinished(turns: readonly StoredTurn[]): string {
+function unfinished(turns: readonly ContextTurnOutcome[]): string {
   const ended = turns.flatMap(turn => turn.state.status === "failed" || turn.state.status === "interrupted"
     ? [{ channelId: turn.channelId, turnId: turn.turnId, outcome: turn.state.status, reason: turn.state.reason,
       uncertainToolCalls: turn.state.uncertainCallIds }] : []);
@@ -26,7 +25,7 @@ function unfinished(turns: readonly StoredTurn[]): string {
 }
 
 /** Channel-independent base, available even when no turn is running. */
-export function buildSharedContext(entries: readonly ContextEntry[], systemPrompt: string, turns: readonly StoredTurn[] = []): Message[] {
+export function buildSharedContext(entries: readonly ContextEntry[], systemPrompt: string, turns: readonly ContextTurnOutcome[] = []): Message[] {
   const shared = entries.map((entry) => {
     const { providerState: _opaque, ...message } = renderContextEntry(entry) as Message & { providerState?: unknown };
     return { seq: entry.seq, at: entry.at, channelId: entry.channelId, turnId: entry.turnId, from: entry.from,
@@ -40,7 +39,7 @@ export function buildSharedContext(entries: readonly ContextEntry[], systemPromp
 
 /** Add routing and native active-turn exchanges to the shared base. */
 export function buildContext(entries: readonly ContextEntry[], systemPrompt: string,
-  input: { channelId: string; turnId: number }, turns: readonly StoredTurn[] = []): Message[] {
+  input: { channelId: string; turnId: number }, turns: readonly ContextTurnOutcome[] = []): Message[] {
   const own = (entry: ContextEntry) => entry.channelId === input.channelId && entry.turnId === input.turnId;
   // A turn may hold several inputs; the one that started it names its origin.
   const first = entries.find(entry => own(entry) && entry.message.role === "user");

@@ -16,7 +16,13 @@ import { spawnHarness } from "./helpers/stdio.ts";
 
 const root = mkdtempSync(join(tmpdir(), "harness-port-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
+// Keep the large archive fixture above one frame via committed model output.
+const scenarioPath = join(root, "portable.jsonl");
+const records = readFileSync(new URL("./fixtures/hold-scenario.jsonl", import.meta.url), "utf8").trimEnd().split("\n");
+records[1] = JSON.stringify({ ...JSON.parse(records[1]!), content: "p".repeat(1_100_000) });
+writeFileSync(scenarioPath, records.join("\n") + "\n");
 const config: ProtocolConfig = { version: 1, system: "Test system", model: { protocol: "scripted", script: new URL("./fixtures/hold-scenario.jsonl", import.meta.url).pathname }, defaultPolicy: "__legacy_allow", policies: { __legacy_allow: { fallback: "allow", tools: {} } } };
+const largeConfig: ProtocolConfig = { ...config, model: { protocol: "scripted", script: scenarioPath } };
 const setup: CreateParams = { sessionId: "moved", participants: [], channels: {}, config };
 const push = (channel: string, id: string, text: string) => ({ channel, item: { id, kind: "user_message" as const, sender: channel, content: [{ type: "text" as const, text }] } });
 const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
@@ -39,7 +45,7 @@ function home(transport: "in-process" | "stdio", effects: string, limits?: { max
   return { directory, files: () => readdirSync(directory).sort(),
     open: () => transport === "stdio" ? spawnHarness({ home: directory, effects }) : createInProcessHarness({ adapter, effects, transfers: directory, limits }) };
 }
-const big = (i: number) => `${i}:${"p".repeat(300_000)}`;
+const pendingText = (i: number) => `Pending message ${i}`;
 
 test("stdio: active config and individual checkpoint survive path import after source config removal", async () => {
   const source = mkdtempSync(join(root, "source-config-")), dest = mkdtempSync(join(root, "dest-config-"));
@@ -83,12 +89,12 @@ test("stdio: active config and individual checkpoint survive path import after s
   expect(db.value.importedConfig()).toMatchObject({ ok: true, value: active }); db.value.close();
 }, 30000);
 
-/** A suspended session holding a checkpointed turn and pending input larger than one frame in total. */
+/** A suspended session holding a checkpointed turn, a large committed response and pending input. */
 async function suspendedSource(client: HarnessClient, effects: string) {
-  await client.initialize(); await client.createSession(setup);
+  await client.initialize(); await client.createSession({ ...setup, config: largeConfig });
   await client.push(push("a", "a1", "start"));
   await until(() => lines(effects).includes("start:k"), "tool to start");
-  for (let i = 0; i < 5; i++) await client.push(push("a", `big-${i}`, big(i)));
+  for (let i = 0; i < 5; i++) await client.push(push("a", `big-${i}`, pendingText(i)));
   const suspending = client.suspend();
   await until(async () => (await client.status()).lifecycle === "suspending", "suspension to begin");
   writeFileSync(`${effects}.release-k`, "");
@@ -103,14 +109,14 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
   try {
     const status = await suspendedSource(first.client, effects);
     expect(status).toMatchObject({ lifecycle: "suspended" });
-    before = await inspectOperatorView(first.client, { sessionId: "moved", config });
+    before = await inspectOperatorView(first.client, { sessionId: "moved", config: largeConfig });
     archive = await first.client.exportArchive();
     // Larger than one 1 MiB frame, so it can only have crossed in chunks.
     expect(archive.length).toBeGreaterThan(1024 * 1024);
     // One binary envelope contains both the logical archive and active config.
     const payload = decodeSessionFile(archive, 268435456) as any;
     const document = payload.archive;
-    expect(payload.config).toEqual(config);
+    expect(payload.config).toEqual(largeConfig);
     expect(Object.keys(document).sort()).toEqual(["allocation", "archiveVersion", "exportedAt", "format", "snapshot"]);
     expect(document).toMatchObject({ format: "harness-session", archiveVersion: 5, snapshot: { revision: before.status.revision, session: { sessionId: "moved", lifecycle: "suspended" } } });
     // Export by path writes the same document; its reported length and hash are those of the file.
@@ -122,7 +128,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     await expect(first.client.exportTo(path)).rejects.toMatchObject({ code: "already_exists" });
     expect(readFileSync(path).equals(file)).toBe(true);
     // Export leaves the session as it was, and no transfer file behind.
-    expect(await inspectOperatorView(first.client, { sessionId: "moved", config })).toEqual(before);
+    expect(await inspectOperatorView(first.client, { sessionId: "moved", config: largeConfig })).toEqual(before);
     expect(source.files().filter(name => name.includes("transfer") || name.includes("draft"))).toEqual([]);
   } finally { await first.close(); }
 
@@ -135,14 +141,14 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     await expect(second.client.status()).rejects.toMatchObject({ code: "not_ready" });
     // An occupied destination is refused and left alone.
     await expect(second.client.importArchive(archive)).rejects.toMatchObject({ code: "already_exists" });
-    const loaded = await inspectOperatorView(second.client, { sessionId: "moved", config });
+    const loaded = await inspectOperatorView(second.client, { sessionId: "moved", config: largeConfig });
     expect(loaded).toEqual(before);
     expect(loaded.turns).toMatchObject([{ turnId: "1", state: "suspended", items: ["a1"] }]);
     expect(loaded.items.map(item => [item.id, item.milestone])).toEqual([["a1", "seen"], ...[0, 1, 2, 3, 4].map(i => [`big-${i}`, "received"])]);
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(events).toEqual([]);
     // Deduplication travelled with the session.
-    expect(await second.client.push(push("a", "big-2", big(2)))).toMatchObject({ duplicate: true, item: { milestone: "received" } });
+    expect(await second.client.push(push("a", "big-2", pendingText(2)))).toMatchObject({ duplicate: true, item: { milestone: "received" } });
     await expect(second.client.push(push("a", "big-2", "other text"))).rejects.toMatchObject({ code: "item_conflict" });
     await second.client.resume();
     await until(() => events.some(event => event.event.type === "turn_ended"), "resumed turn");
@@ -150,7 +156,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
     expect(events[1]!.event).toMatchObject({ turnId: "1", items: [0, 1, 2, 3, 4].map(i => `big-${i}`) });
     // The tool that completed in the source process never ran in the destination.
     expect(lines(effects)).toEqual(["start:k", "done:k"]);
-    const after = await inspectOperatorView(second.client, { sessionId: "moved", config });
+    const after = await inspectOperatorView(second.client, { sessionId: "moved", config: largeConfig });
     expect(after.turns).toMatchObject([{ turnId: "1", state: "completed", items: ["a1", "big-0", "big-1", "big-2", "big-3", "big-4"] }]);
     // IDs continue from the source's allocation state.
     await second.client.push(push("b", "b1", "fresh"));
@@ -164,7 +170,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: a 
   try {
     await third.client.initialize();
     expect(await third.client.importFrom(join(source.directory, "moved.harness"), "renamed")).toMatchObject({ sessionId: "renamed", lifecycle: "suspended" });
-    const renamed = await inspectOperatorView(third.client, { sessionId: "renamed", config });
+    const renamed = await inspectOperatorView(third.client, { sessionId: "renamed", config: largeConfig });
     expect(renamed).toEqual({ ...before, status: { ...before.status, sessionId: "renamed" } });
   } finally { await third.close(); }
 }, 30000);
@@ -183,7 +189,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: in
     const baseline = destination.files();
     const refused = async (attempt: Promise<unknown>, code: string) => {
       await expect(attempt).rejects.toMatchObject({ code });
-      await expect(inspectOperatorView(client, { sessionId: "moved", config })).rejects.toMatchObject({ code: "not_found" });
+      await expect(inspectOperatorView(client, { sessionId: "moved", config: largeConfig })).rejects.toMatchObject({ code: "not_found" });
       expect(destination.files()).toEqual(baseline);
     };
     // Damaged documents: truncated, not JSON, edited content, illegal lifecycle.
@@ -236,7 +242,7 @@ for (const transport of ["in-process", "stdio"] as const) test(`${transport}: in
     // After all of that, the real archive still imports.
     expect(await client.importArchive(archive)).toMatchObject({ sessionId: "moved", lifecycle: "suspended" });
     await expect(client.importArchive(encodeSessionFile(invalidConfig, 268435456))).rejects.toMatchObject({ code: "invalid_archive" });
-    expect((await inspectOperatorView(client, { sessionId: "moved", config })).status.lifecycle).toBe("suspended");
+    expect((await inspectOperatorView(client, { sessionId: "moved", config: largeConfig })).status.lifecycle).toBe("suspended");
     expect(destination.files().filter(name => name.includes("transfer") || name.includes("draft"))).toEqual([]);
   } finally { await second.close(); }
 }, 30000);

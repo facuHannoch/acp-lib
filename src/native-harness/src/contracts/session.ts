@@ -101,6 +101,8 @@ export interface PersistentSessionOptions {
    * must not collide with the tools `configureTurn` returns. */
   catalog?: import("./tools.ts").ToolCatalogInput;
   toolLimits?: Partial<import("./tools.ts").ToolLimits>;
+  /** Development-only, detached observation of the assembled model request. */
+  captureContext?: (value: import("./context.ts").ContextCapture) => void;
   wrapTurn?: (run: TurnExecutor) => TurnExecutor;
 }
 

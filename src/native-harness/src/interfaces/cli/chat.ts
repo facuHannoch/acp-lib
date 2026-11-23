@@ -1,3 +1,4 @@
+import { SESSION_INPUT_MAX_BYTES } from "../../contracts/input-limits.ts";
 import { createInterface, clearLine, cursorTo } from "node:readline";
 import { once } from "node:events";
 import { localConnection } from "../../runtime/config/development.ts";
@@ -54,6 +55,8 @@ export async function chat(channelId: string, participantId: string) {
     if (command === "/clear") {
       // Purely local: neither channel state nor its output subscription changes.
       if (process.stdout.isTTY) process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+    } else if (Buffer.byteLength(text, "utf8") > SESSION_INPUT_MAX_BYTES) {
+      print(`Input exceeds the ${SESSION_INPUT_MAX_BYTES}-byte UTF-8 limit`);
     } else if (command) {
       pending++;
       if (process.stdout.isTTY && !spinner) spinner = setInterval(drawPrompt, 100);

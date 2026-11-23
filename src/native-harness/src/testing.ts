@@ -118,7 +118,9 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
       hit("tool");
       return result;
     };
-    const session = createSession({ systemPrompt: config.system, config, storage, ...(catalog ? { catalog } : {}), configureTurn(turn) {
+    const revisions = new Map<string, number>();
+    const session = createSession({ ...(options.requests ? { captureContext: ({ context }: import("./contracts/context.ts").ContextCapture) =>
+      revisions.set(context.channelId, context.timelineRevision) } : {}), systemPrompt: config.system, config, storage, ...(catalog ? { catalog } : {}), configureTurn(turn) {
       if (config.model.protocol === "openrouter") {
         const model = (options.providerFactory ?? openRouter)(credential!, config.model.model);
         if (!options.providerFactory) bindModelAttempt(model, { scripted: false, create: () => openRouterAttempt(credential!, config.model.protocol === "openrouter" ? config.model.model : "") });
@@ -134,7 +136,7 @@ export function createScriptedServer(options: ScriptedServerOptions = {}) {
             requests.push(structuredClone(request));
             models.set(turn.channelId, requests);
           }
-          if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, messages: request.messages, tools: request.tools.map(tool => tool.name) })}\n`);
+          if (options.requests) appendFileSync(options.requests, `${JSON.stringify({ channel: turn.channelId, turnId: turn.turnId, revision: revisions.get(turn.channelId), messages: request.messages, tools: request.tools.map(tool => tool.name) })}\n`);
           if (options.stallChannel === turn.channelId && step === 0) {
             yield { type: "accepted" }; yield { type: "usage", usage: { inputTokens: 7 } };
             yield { type: "text_delta", text: "Partial reply" };

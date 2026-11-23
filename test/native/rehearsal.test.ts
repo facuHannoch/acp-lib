@@ -232,17 +232,24 @@ test("the timed fixture runs in CI with shortened offsets and the same bounded h
 }, 20_000);
 
 test("settlement accounts for more than one reconcile page of inputs", async () => {
-  const release = hold();
+  const entered = hold(), release = hold();
   const records = Array.from({ length: 105 }, (_, index) => send("alice", `input-${index}`));
-  const run = await rehearsal([...records, call("alice", "batch", "hold_batch"), reply("alice", "ok")], {
-    deadlineMs: 20_000,
+  // The first inference takes one input. The remaining 104 take seven
+  // batches of at most 16 before the turn can finish.
+  const replies = Array.from({ length: 7 }, () => reply("alice", "ok"));
+  const run = await rehearsal([...records, call("alice", "batch", "hold_batch"), ...replies], {
+    deadlineMs: 20_000, exactConsumption: true,
     functions: { tools: { hold_batch: {
       description: "Hold one turn while the test submits a batch of inputs", parameters: { type: "object" },
-      async handler() { await release.waiting; return { done: true }; },
+      async handler() { entered.release(); await release.waiting; return { done: true }; },
     } } },
   });
   await run.setup();
-  try { await run.schedule(); } finally { release.release(); }
+  try {
+    await run.issue(records[0]!);
+    await entered.waiting;
+    await Promise.all(records.slice(1).map(record => run.issue(record)));
+  } finally { release.release(); }
   const report = await run.finish();
   expect(report.sends).toHaveLength(105);
   expect(report.sends.every(send => send.outcome === "completed" && send.turnId !== undefined)).toBe(true);

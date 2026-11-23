@@ -68,14 +68,14 @@ test("timeout aborts a stalled attempt and ignores its late response", async () 
 test("atomic model commit precedes tool dispatch in the turn loop", async () => {
   const { runTurn } = await import("../src/kernel/loop.ts");
   const h = harness([[{ type: "response", response: { role: "assistant", content: "working", stopReason: "tool_calls", calls: [{ id: "x", name: "echo", arguments: "{}" }] } }], [{ type: "response", response: success }]]);
-  const context = { build: () => [], append: () => { h.records.push("append-tool-result"); },
+  const context = { append: () => { h.records.push("append-tool-result"); },
     dispatchTool: async () => { h.records.push("dispatch"); return { content: "ok", dispatched: true }; },
     finish: () => true };
   const infer = async () => (await h.run()).response;
   // Each logical call reserves its own attempt sequence in storage. Here use
   // independent harnesses so the example can stop after the tool iteration.
   let count = 0;
-  await runTurn({ ...context, checkpoint: () => count++ > 0 }, infer, [], async () => "ok");
+  await runTurn({ ...context, checkpoint: () => count++ > 0 }, infer, async () => "ok");
   expect(h.records).toEqual(["start:0", "commit", "dispatch", "append-tool-result"]);
 });
 

@@ -27,7 +27,9 @@ test("a reopened development session shows its restored timeline and status in t
   const noticed = turnsEnd(first.session, 2);
   first.local.agent.send({ channelId: "channel1", participantId: "alice", text: "Tell Bob the design is approved" });
   await noticed.done;
-  const before = first.inspection.snapshot();
+  const before = first.inspection.status();
+  const liveBefore = first.inspection.liveContext();
+  const callsBefore = before.channels.map(channel => first.inspection.modelCalls(channel.id).modelCalls);
   expect(before.session).toMatchObject({ storage: database, lifecycle: "running", execution: "idle" });
   first.close();
   await expect(openDevelopment({ systemPrompt, database, create: true, script })).rejects.toThrow("already_exists");
@@ -36,18 +38,19 @@ test("a reopened development session shows its restored timeline and status in t
   const server = serveInspector(second.inspection, 0);
   try {
     // Nothing has been sent, started or resumed in this process.
-    const state = second.inspection.snapshot();
-    expect(state.liveContext.entries).toEqual(before.liveContext.entries);
-    expect(state.liveContext.entries.map(entry => `${entry.channelId}:${entry.message.role}`).sort()).toEqual([
+    const state = second.inspection.status();
+    const live = second.inspection.liveContext();
+    expect(live.entries).toEqual(liveBefore.entries);
+    expect(live.entries.map(entry => `${entry.channelId}:${entry.message.role}`).sort()).toEqual([
       "channel1:assistant", "channel1:assistant", "channel1:tool", "channel1:user", "channel2:assistant", "channel2:assistant", "channel2:user", "channel2:user"]);
-    expect(state.liveContext.base).toEqual(buildSharedContext(second.session.store.snapshot(), systemPrompt));
-    expect(state.liveContext.base[1]!.content).toContain("The design is approved.");
-    expect(state.channels.map(channel => [channel.id, channel.participants, channel.pending, channel.running])).toEqual([
-      ["channel2", ["bob", "channel:channel1"], 0, false], ["channel1", ["alice"], 0, false]]);
-    expect(state.channels[0]!.messages.map(message => message.content)).toEqual([systemPrompt, 'Participant: "bob"\n\nHi, I am Bob', "Hello Bob.", "The design is approved.", "Noted: the design is approved."]);
-    expect(state.session).toMatchObject({ storage: database, sessionId: "development", lifecycle: "running", execution: "idle", revision: before.session!.revision });
-    expect(state.channels.map(channel => channel.modelCalls)).toEqual(before.channels.map(channel => channel.modelCalls));
-    expect(state.channels.flatMap(channel => channel.modelCalls).every(call => call.outcome === "succeeded")).toBe(true);
+    expect(live.base).toEqual(buildSharedContext(second.session.store.snapshot(), systemPrompt));
+    expect(live.base[1]!.content).toContain("The design is approved.");
+    expect(state.channels.map(channel => [channel.id, channel.pending, channel.running])).toEqual([
+      ["channel2", 0, false], ["channel1", 0, false]]);
+    expect(state.session).toMatchObject({ storage: database, sessionId: "development", lifecycle: "running", execution: "idle", revision: before.session.revision });
+    const calls = state.channels.map(channel => second.inspection.modelCalls(channel.id).modelCalls);
+    expect(calls).toEqual(callsBefore);
+    expect(calls.flat().every(call => call.outcome === "succeeded")).toBe(true);
     // The served page data is the same restored state.
     expect(await (await fetch(new URL("/state", server.url))).json()).toEqual(state);
     expect((await (await fetch(server.url)).text())).toContain("session ' + session.lifecycle");
@@ -75,11 +78,11 @@ test("development startup controls: suspend over the local socket, reopen paused
     await until(() => waits === 1, "dashboard step to start");
     expect(await controlLocal(socket, "status")).toMatchObject({ lifecycle: "running", execution: "working" });
     const suspending = controlLocal(socket, "suspend");
-    await until(() => first.inspection.snapshot().session!.lifecycle === "suspending", "suspension to begin");
+    await until(() => first.inspection.status().session!.lifecycle === "suspending", "suspension to begin");
     await expect(sendLocal(socket, { channelId: "channel2", participantId: "bob", text: "too late" })).rejects.toThrow("not admitted");
     releaseDashboard();
     expect(await suspending).toMatchObject({ lifecycle: "suspended", execution: "suspended" });
-    expect(first.inspection.snapshot().channels.find(channel => channel.id === "channel1")).toMatchObject({ turn: "suspended", running: false });
+    expect(first.inspection.status().channels.find(channel => channel.id === "channel1")).toMatchObject({ turn: "suspended", running: false });
     // The request held for that turn is released rather than left open across the suspension.
     expect(await working).toContain("suspended before this turn finished");
   } finally { await firstServer.stop(true); first.session.stop("test shutdown"); first.close(); }
@@ -89,13 +92,13 @@ test("development startup controls: suspend over the local socket, reopen paused
   const secondServer = serveLocal(second.local, socket, undefined, second.session);
   try {
     second.session.start();
-    const state = second.inspection.snapshot();
+    const state = second.inspection.status();
     expect(state.session).toMatchObject({ lifecycle: "suspended", execution: "suspended" });
     expect(state.channels.find(channel => channel.id === "channel1")).toMatchObject({ turn: "suspended", running: false, pending: 0 });
-    expect(state.liveContext.entries.at(-1)).toMatchObject({ channelId: "channel1", message: { role: "tool", callId: "dash-1" } });
+    expect(second.inspection.liveContext().entries.at(-1)).toMatchObject({ channelId: "channel1", message: { role: "tool", callId: "dash-1" } });
     await new Promise(resolve => setTimeout(resolve, 50));
-    expect(second.inspection.snapshot()).toEqual(state);
-    expect(state.channels.every(channel => channel.requests.length === 0)).toBe(true);
+    expect(second.inspection.status()).toEqual(state);
+    expect(state.channels.every(channel => second.inspection.channel(channel.id).requests.length === 0)).toBe(true);
     await expect(sendLocal(socket, { channelId: "channel2", participantId: "bob", text: "still paused" })).rejects.toThrow("not admitted");
     // Explicit resume continues the checkpointed turn without repeating the dashboard step.
     const ended = turnsEnd(second.session);
@@ -103,7 +106,7 @@ test("development startup controls: suspend over the local socket, reopen paused
     const events = await ended.done;
     expect(events.map(event => event.event.type)).toEqual(["turn_resumed", "message_completed", "turn_ended"]);
     expect(waits).toBe(1);
-    expect(second.inspection.snapshot().session).toMatchObject({ lifecycle: "running", execution: "idle" });
+    expect(second.inspection.status().session).toMatchObject({ lifecycle: "running", execution: "idle" });
     expect(await sendLocal(socket, { channelId: "channel2", participantId: "bob", text: "back?" })).toBe("Bob, I received your later message.");
     await expect(fetch("http://localhost/session?action=delete", { unix: socket, method: "POST" }).then(response => response.status)).resolves.toBe(400);
   } finally { await secondServer.stop(true); second.close(); }
@@ -125,13 +128,30 @@ test("a process that ends without suspending reopens with its unfinished turn sh
 
   const second = await openDevelopment({ systemPrompt, database, script, dashboardWait: async () => { waits++; } });
   try {
-    const channel = second.inspection.snapshot().channels.find(candidate => candidate.id === "channel1")!;
+    const channel = second.inspection.status().channels.find(candidate => candidate.id === "channel1")!;
     expect(channel).toMatchObject({ running: false, unresolved: { status: "interrupted", uncertainCallIds: ["dash-1"] } });
     expect(channel.error).toContain("interrupted");
-    expect(second.inspection.snapshot().liveContext.base[1]!.content).toContain('"uncertainToolCalls":["dash-1"]');
+    expect(second.inspection.liveContext().base[1]!.content).toContain('"uncertainToolCalls":["dash-1"]');
     second.session.start();
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(waits).toBe(1);
     expect(second.session.agent.idle()).toBe(true);
   } finally { second.close(); }
+});
+
+test("opted-in Channels diagnostics annotate the actual scripted request with its context revision", async () => {
+  const development = await openDevelopment({ systemPrompt, script, environment: { HARNESS_CAPTURE_SCRIPT_REQUESTS: "1" } });
+  try {
+    development.session.start();
+    await ask(development.session, { channelId: "channel2", participantId: "bob", text: "Hello" });
+    const snapshot = development.inspection.status();
+    const request = development.inspection.channel("channel2").requests[0]!;
+    expect(request.context!.revision).toBeLessThan(snapshot.session!.revision);
+    expect(request.context!.estimatedInputBytes).toBeGreaterThan(0);
+    expect(request.context!.omitted).toEqual({ active: 0, local: 0, shared: 0 });
+    expect(request.body).toMatchObject({
+      messages: expect.arrayContaining([{ role: "user", content: 'Participant: "bob"\n\nHello' }]),
+      tools: expect.any(Array),
+    });
+  } finally { development.close(); }
 });

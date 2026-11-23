@@ -62,3 +62,20 @@ The contracts are additive at Gate 1. Gate 2 wires the storage extension into
 both adapters and proves its bounds. Gate 3 wires admission, receipts, and
 assembly through normal entry points. Existing text inputs and tool policies
 retain their representation.
+
+Gate 3 uses the published UTF-8 cap for new session input. A retry of an
+existing item resolves by its original identity. An oversized item already in
+a legacy inbox advances alone and fails with `context_limit`, allowing later
+pending work to proceed. Tool results retained in a request are shortened to
+2 KiB of source text plus an explicit marker. Historical failure evidence uses
+the same bounded read and is eligible for turns represented in the selected
+history candidates. Diagnostics count candidates trimmed during assembly.
+
+Gate 4 uses a loopback inspection read port. Status reads use channel counts
+and latest turn state. Events invalidate views without reading storage.
+Timeline and Live Context page recent headers and load bodies within a byte
+budget. Oversized rows retain their position and advance the cursor. Channels
+requests recent accounting summaries on demand from the existing model-state
+record, whose storage cost remains separate. Captured requests are process
+local and limited per channel. The development HTTP endpoints change, with
+the inspector page updated in the same change.
