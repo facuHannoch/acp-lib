@@ -1039,8 +1039,8 @@ operation detail is pruned.
 A failed final save can replay under the same operation ID when the write-ahead
 record was staged. If staging and final save both fail, a later close can
 recover the sealed calls as unaccounted usage of an earlier turn.
-`nativeUsage.earlierEvidencePending` means some earlier call evidence is still
-awaiting durable accounting.
+`nativeUsage.earlierEvidencePending` means an earlier turn is still awaiting confirmation
+that it ended.
 
 The turn's usage and `state.totals` carry attributed usage. Read totals from the
 record's `nextState.totals` or from `(await persistence.metering.state(id))?.state.totals`

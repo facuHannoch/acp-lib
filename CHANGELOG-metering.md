@@ -10,14 +10,14 @@ Pre-1.0 changes introduced by the `AgentSession` metering feature
   unknown routing, partial attribution and no certification ID, even when every attempt was
   measured. Without provider or model identity, measured usage reports `pricing_unavailable`.
 - `nativeUsage` carries observed call and attempt evidence. `usage.reason` explains partial
-  measurement. Empty scans and undispatched turns with a metering record report unavailable usage.
+  measurement. Empty scans, an unavailable host, and undispatched turns with a metering record report
+  unavailable usage.
   A prompt cancelled in the queue may have no metering record. Neither case establishes zero usage.
 - A failed final save replays under its original operation ID if the write-ahead record was staged.
   If both writes fail, a later close can recover sealed calls as unaccounted usage of an earlier turn.
   The evidence is on that record in `nativeUsage.unaccountedEarlierCalls`, and its measured tokens
   accrue once to `state.unallocatedUsage`. These additions cover earlier-turn usage. Between-turn
-  usage remains unsupported. `nativeUsage.earlierEvidencePending` flags evidence still awaiting
-  durable accounting. Read attributed totals in `record.nextState.totals` or from the state returned
+  usage remains unsupported. `nativeUsage.earlierEvidencePending` flags earlier evidence still awaiting confirmation that its turn ended. Read attributed totals in `record.nextState.totals` or from the state returned
   by `persistence.metering.state(id)` for the conversation.
 - SQLite schema 21 stores the per-channel cursor in metering state and bounded proof on the
   operation index row. The proof survives pruning of operation detail. The upgrade is one-way.
