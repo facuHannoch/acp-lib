@@ -286,3 +286,77 @@ test("format 5 adds external attribution columns without changing existing signa
   reopened.value.close();
   expect(rawFormat(path)).toBe("6");
 });
+
+test("inference sizes rows before point-reading bodies and uses bounded indexed queries", () => {
+  const path = fresh(), adapter = createSqliteStorageAdapter(path);
+  const ok = <T>(result: import("../src/contracts/storage.ts").StorageResult<T>): T => {
+    if (!result.ok) throw new Error(result.error.message);
+    return result.value;
+  };
+  let s = ok(adapter.open({ mode: "create", identity }));
+  const input = (channelId: string, text: string) =>
+    ok(s.acceptItem({ kind: "participant_message", channelId, senderId: "ana", text }));
+  function historical(channelId: string, content: string) {
+    input(channelId, "history");
+    const turnId = ok(s.beginTurn(channelId))!.turn.turnId;
+    const reply = ok(s.appendMessage(turnId, { role: "assistant", content, calls: [] }));
+    ok(s.finishTurn(turnId, { status: "completed" }));
+    return reply;
+  }
+  const large = historical("other", "é".repeat(50_000));
+  historical("local", "local reply");
+  input("local", "trigger");
+  const start = ok(s.beginTurn("local"))!;
+  const turnId = start.turn.turnId;
+  ok(s.beginSuspend());
+  ok(s.checkpointTurn(turnId));
+  ok(s.completeSuspend());
+  ok(s.close());
+
+  // Reopen a format-6 database from before the derived projection existed.
+  const old = new Database(path);
+  old.exec("DROP TRIGGER context_policy_insert; DROP TRIGGER context_policy_take; DROP TABLE context_turn_policies");
+  old.close();
+  s = ok(adapter.open({ mode: "open", identity }));
+  const query = Database.prototype.query;
+  const bodies: number[] = [];
+  const plans: string[] = [];
+  const trace = spyOn(Database.prototype, "query").mockImplementation(function (this: Database, sql: string) {
+    const statement = query.call(this, sql);
+    const preparePlan = (bindings: (string | number)[]) => {
+      const compiled = this.prepare("EXPLAIN QUERY PLAN " + sql);
+      try { plans.push(...compiled.all(...bindings).map(row => String((row as { detail: string }).detail))); }
+      finally { compiled.finalize(); }
+    };
+    if (sql.includes("AS bytes")) {
+      const bindings = sql.includes("WITH recent") ? [8, "local"] : sql.includes("context_turn_policies") ? [turnId, 9]
+        : sql.includes("channel_id = ?") ? ["local", start.turn.startedSeq, 8]
+        : sql.includes("seq > ?") ? [turnId, 0, 9] : sql.includes("DESC LIMIT ?") ? [turnId, 8] : [turnId];
+      preparePlan(bindings);
+    }
+    if (sql.includes("AS reply_id")) {
+      const get = statement.get.bind(statement);
+      statement.get = (...args: Parameters<typeof get>) => { bodies.push(Number(args[0])); return get(...args); };
+    }
+    return statement;
+  } as typeof Database.prototype.query);
+  try {
+    const read = ok(s.readInferenceContext({ channelId: "local", turnId, limits: {
+      maxInputBytes: 8192, maxTakenTextBytes: 8192, maxTakenItems: 16,
+      maxReadBytes: 4096, maxReadRecords: 8, maxSharedCandidates: 8,
+      contextTokens: 16384, outputReserveTokens: 2048, estimationMarginTokens: 1024,
+    } }));
+    if ("code" in read) throw new Error(read.code);
+    expect(read.policyNames).toEqual(["__legacy_allow"]);
+    expect(read.sharedHistory).toHaveLength(1);
+    expect(bodies.toSorted((a, b) => a - b)).toEqual(
+      [...read.required, ...read.optionalTurn, ...read.localHistory, ...read.sharedHistory].map(row => row.seq).sort((a, b) => a - b),
+    );
+    expect(bodies).not.toContain(large.seq);
+    for (const index of ["entries_context_inputs", "entries_by_turn", "entries_context_assistants", "entries_conversation", "context_turn_policies"])
+      expect(plans.some(plan => plan.startsWith("SEARCH") && plan.includes(index))).toBe(true);
+    expect(plans).toContain("MATERIALIZE recent");
+    const calls = trace.mock.calls.map(([sql]) => sql);
+    expect(calls.every(sql => !/\bmodelState\b|SELECT \* FROM (entries|items)|FROM items\b/.test(sql))).toBe(true);
+  } finally { trace.mockRestore(); ok(s.close()); }
+});

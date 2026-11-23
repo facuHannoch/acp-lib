@@ -1,7 +1,7 @@
 import type { OperatorStorageReads } from "./operator-controls.ts";
 import type { ModelCallStore } from "./model-execution.ts";
 import type { ItemKind, ItemMilestone } from "./agent.ts";
-import type { ContextEntry } from "./context.ts";
+import type { ContextEntry, InferenceStorageReads } from "./context.ts";
 import type { Message } from "./loop.ts";
 
 /** Storage contract revision 4 (decisions 0013, 0014, 0016).
@@ -282,7 +282,7 @@ export type InterruptOutcome =
   | { interrupted: false; turn: StoredTurn };
 
 /** Only the adapter's owner closes this handle; borrowers must not close it. */
-export interface SessionStorage extends ModelCallStore, OperatorStorageReads {
+export interface SessionStorage extends ModelCallStore, OperatorStorageReads, InferenceStorageReads {
   readSession(): StorageResult<StoredSession>;
   readExecution(): StorageResult<Pick<StorageSnapshot, "revision" | "session" | "channels" | "turns" | "items">>;
   readReadyChannels(): StorageResult<{ lifecycle: SessionLifecycle; channels: string[] }>;

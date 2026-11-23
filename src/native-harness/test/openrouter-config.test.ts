@@ -1,3 +1,4 @@
+import { useFormat3Schema } from "./fixtures/format3-schema.ts";
 import { expect, test, spyOn } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -147,7 +148,7 @@ test("legacy OpenRouter checkpoint resumes with its original compatibility key",
   const db = new Database(path); db.query("UPDATE items SET signature = ?").run(legacyItemSignature(input));
   const raw = db.query<{ state: string }, []>("SELECT state FROM turns").get()!; const state = JSON.parse(raw.state); delete state.checkpoint.policyFingerprint;
   db.query("UPDATE turns SET state = ?").run(JSON.stringify(state));
-  db.exec("ALTER TABLE items DROP COLUMN external_source; ALTER TABLE entries DROP COLUMN external_source; ALTER TABLE items DROP COLUMN policy_metadata; ALTER TABLE channels DROP COLUMN policy; UPDATE meta SET value = '3' WHERE key = 'formatVersion'"); db.close();
+  useFormat3Schema(db); db.close();
   expect(adapter.readSavedConfig()).toMatchObject({ ok: true });
   const calls: { key: string; model: string }[] = [];
   const legacy = await openDevelopment({ systemPrompt: config.system, database: path, provider: { apiKey: secret, model: "saved/model" }, environment: {}, providerFactory: fake(calls) });

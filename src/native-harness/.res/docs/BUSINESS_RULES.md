@@ -53,6 +53,23 @@ These rules are proposed in the
 | Quiet callbacks | Show the active tool and phase start time. Use `session/status` to probe the connection. Native turn supervision leaves a quiet callback running under its own execution deadline and cancellation rules. | A responsive connection and a silent handler provide different information. |
 | Temporary result retention | The producer owns retention and declares how long it can serve the bytes, including any restart or relocation guarantees. Report expiry explicitly and keep the original outcome. Choose inline and per-read bounds at the contract gate using the wire and model-context budgets. | Keep temporary storage and retrieval limits visible to consumers. |
 
+## Bounded context
+
+Starting values for [decision 0026](../decisions/0026-bounded-context.md). Tune
+them with captured requests and the long-session fixture.
+
+| Rule | Initial default | Why |
+| --- | --- | --- |
+| Input admission | 8 KiB of normalized UTF-8 text per message or notice. | Gives clients an exact check and bounds one new input. |
+| Input take | 8 KiB of text and 16 items per inference boundary. | Several messages can steer the same turn while keeping the next batch small. |
+| Context storage read | 256 KiB of serialized records and 64 records. Scan at most 128 recent candidates for shared history. | Bound how much the builder loads even when the session is long. |
+| Text request estimate | Default to a 16,384-token context target, clamped to a lower configured model ceiling. Reserve 2,048 tokens for output and 1,024 for estimation error. Estimate one token per UTF-8 byte of serialized model-visible text and tool definitions for the initial text-only build. | Keeps the starting estimator simple and deliberately conservative. Tune with observed usage before adding image accounting. |
+| History allocation | Start with two thirds of the remaining budget for local history and one third for shared history. Either slice can use spare capacity from the other. | Preserve local conversation continuity on a busy shared session. |
+
+Store adjustable defaults together in the context module at implementation.
+Validate that one admitted item fits an empty intake batch and that the two
+reserves leave a positive request input budget.
+
 ## Operator and consumer controls
 
 These defaults are proposed for the

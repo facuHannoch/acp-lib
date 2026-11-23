@@ -1,5 +1,59 @@
-import type { Message, ToolCall, ExecuteTool } from "./loop.ts";
+import type { Message, ToolCall, ExecuteTool, ToolDefinition } from "./loop.ts";
 import type { LoopEvent } from "./events.ts";
+import type { StorageResult, TimelineEntry } from "./storage.ts";
+
+/** Effective limits for one session. Bytes refer to UTF-8 text or serialized
+ * records as documented by the relevant operation. */
+export interface ContextLimits {
+  readonly maxInputBytes: number;
+  readonly maxTakenTextBytes: number;
+  readonly maxTakenItems: number;
+  readonly maxReadBytes: number;
+  readonly maxReadRecords: number;
+  readonly maxSharedCandidates: number;
+  readonly contextTokens: number;
+  readonly outputReserveTokens: number;
+  readonly estimationMarginTokens: number;
+}
+
+/** Detached inputs for one build, all read at the StorageResult revision.
+ * Each record list is ordered by timeline sequence. Merge required and optional
+ * turn records by sequence before rendering them. Required records and complete
+ * policy evidence fit in full or the read reports context_limit. */
+export interface InferenceRead {
+  readonly required: readonly TimelineEntry[];
+  readonly optionalTurn: readonly TimelineEntry[];
+  readonly localHistory: readonly TimelineEntry[];
+  readonly sharedHistory: readonly TimelineEntry[];
+  /** Newly taken items in boundary order, including those taken before resume. */
+  readonly takenItemIds: readonly string[];
+  /** Complete policy provenance of the turn, independent of prompt trimming. */
+  readonly policyNames: readonly string[];
+}
+
+/** The session storage adapter supplies the coherent bounded read. */
+export interface InferenceStorageReads {
+  readInferenceContext(input: { channelId: string; turnId: number; limits: ContextLimits }):
+    StorageResult<InferenceRead | { readonly code: "context_limit" }>;
+}
+
+/** One provider-neutral request. A retry reuses this capture. */
+export interface InferenceContext {
+  readonly sessionId: string;
+  readonly channelId: string;
+  readonly turnId: number;
+  readonly timelineRevision: number;
+  readonly messages: readonly Message[];
+  readonly tools: readonly ToolDefinition[];
+  readonly fixedToolCount?: number;
+  /** Only original input items represented in this request may get receipts. */
+  readonly representedItemIds: readonly string[];
+  readonly takenItemIds: readonly string[];
+}
+
+/** Size failures happen before reserving a model call or attempt. */
+export type ContextBuildResult = { readonly ok: true; readonly value: InferenceContext }
+  | { readonly ok: false; readonly code: "context_limit"; readonly message: string };
 
 /** Attributed agent experience; system instructions are configuration, not events. */
 export interface ContextEntry {

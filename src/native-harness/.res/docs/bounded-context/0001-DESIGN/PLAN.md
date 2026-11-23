@@ -2,7 +2,7 @@
 
 Date: 2026-11-23
 
-Status: Gate 1 contracts drafted. Review the decision before Gate 2.
+Status: Gate 2 implements the bounded storage read. Inference integration is next.
 
 ## Scope and base
 

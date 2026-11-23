@@ -1,3 +1,4 @@
+import { entryOverhead, type ContextRow } from "./inference.ts";
 import { checkScriptIdentity } from "./script-identity.ts";
 import { Database } from "bun:sqlite";
 import { existsSync, linkSync, rmSync } from "node:fs";
@@ -110,11 +111,21 @@ const entry = (row: Row): TimelineEntry => ({ seq: row.seq, at: row.at, channelI
   ...(row.kind === null ? {} : { kind: row.kind }), ...(row.source_channel_id === null ? {} : { sourceChannelId: row.source_channel_id }),
   ...(row.item_id === null ? {} : { itemId: row.item_id }), ...(typeof row.reply_id === "string" ? { messageId: row.reply_id } : {}), message: JSON.parse(row.message) });
 
-const REPLY = "json_extract(message, '$.role') = 'assistant' AND length(json_extract(message, '$.content')) > 0";
+const ASSISTANT = "json_extract(message, '$.role') = 'assistant'";
+const REPLY = `${ASSISTANT} AND length(json_extract(message, '$.content')) > 0`;
+const CONTEXT_BYTES = `${entryOverhead} + octet_length(message) + octet_length(at) +
+  octet_length(e.channel_id) + octet_length(sender) + coalesce(octet_length(kind), 0) +
+  coalesce(octet_length(source_channel_id), 0) + coalesce(octet_length(item_id), 0) +
+  coalesce(octet_length(external_source), 0) + coalesce(
+    (SELECT octet_length(message_id) FROM entry_reply_ids WHERE seq = e.seq), 0)`;
+const contextHeader = (kind: string) => `e.seq, ${CONTEXT_BYTES} AS bytes, ${kind} AS kind`;
+const contextRow = (row: Row): ContextRow => ({ seq: row.seq, bytes: row.bytes, kind: row.kind });
 const CHAT = `kind = 'participant_message' OR (${REPLY})`;
 const installReadIndexes = (db: Database) => db.exec(`
   CREATE INDEX IF NOT EXISTS turns_by_channel ON turns(channel_id, turn_id);
   CREATE INDEX IF NOT EXISTS entries_conversation ON entries(channel_id, seq) WHERE ${CHAT};
+  CREATE INDEX IF NOT EXISTS entries_context_inputs ON entries(turn_id, seq) WHERE item_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS entries_context_assistants ON entries(turn_id, seq) WHERE ${ASSISTANT};
   CREATE INDEX IF NOT EXISTS entries_replies ON entries(turn_id, seq) WHERE ${REPLY};
   CREATE TABLE IF NOT EXISTS entry_reply_ids (seq INTEGER PRIMARY KEY REFERENCES entries(seq), message_id TEXT NOT NULL);
   INSERT OR IGNORE INTO meta VALUES ('replyIdsDirty', '1');
@@ -139,6 +150,30 @@ function refreshReplyIds(db: Database): void {
   `);
 }
 
+/** Backfill once under the owner transaction. Triggers keep the projection
+ * current even when an older format-6 writer subsequently takes input. */
+function installContextPolicyIndex(db: Database): void {
+  const exists = db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'context_turn_policies'");
+  try { if (exists.get()) return; } finally { exists.finalize(); }
+  const project = `
+    INSERT INTO context_turn_policies
+      SELECT NEW.turn_id, coalesce(json_extract(NEW.policy_metadata, '$.resolved'), '__legacy_allow')
+      UNION ALL SELECT NEW.turn_id, value FROM json_each(NEW.policy_metadata, '$.inherited') WHERE true
+      ON CONFLICT(turn_id, name) DO NOTHING;`;
+  db.exec(`
+    CREATE TABLE context_turn_policies (
+      turn_id INTEGER NOT NULL REFERENCES turns(turn_id), name TEXT NOT NULL, PRIMARY KEY (turn_id, name)
+    ) WITHOUT ROWID;
+    INSERT OR IGNORE INTO context_turn_policies
+      SELECT turn_id, coalesce(json_extract(policy_metadata, '$.resolved'), '__legacy_allow') FROM items WHERE turn_id IS NOT NULL
+      UNION ALL SELECT turn_id, value FROM items, json_each(items.policy_metadata, '$.inherited') WHERE turn_id IS NOT NULL;
+    CREATE TRIGGER context_policy_insert AFTER INSERT ON items WHEN NEW.turn_id IS NOT NULL
+      BEGIN ${project} END;
+    CREATE TRIGGER context_policy_take AFTER UPDATE OF turn_id ON items WHEN OLD.turn_id IS NULL AND NEW.turn_id IS NOT NULL
+      BEGIN ${project} END;
+  `);
+}
+
 function sqliteTables(db: Database): Tables & { dispose(): void } {
   // Prepared on first use: statements for tables a format 2 file does not have
   // yet must not be compiled before the upgrade runs.
@@ -153,6 +188,30 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
       run: (...args: any[]) => { prepared().run(...args); } };
   };
   const s = {
+    contextTurnStart: q("SELECT started_seq FROM turns WHERE turn_id = ? AND channel_id = ?"),
+    contextTrigger: q(`SELECT ${contextHeader("'input'")} FROM entries AS e
+      WHERE turn_id = ? AND item_id IS NOT NULL ORDER BY seq LIMIT 1`),
+    contextPreviousResponse: q(`SELECT seq FROM entries WHERE turn_id = ? AND ${ASSISTANT} ORDER BY seq DESC LIMIT 1`),
+    contextInputs: q(`SELECT ${contextHeader("'input'")} FROM entries AS e
+      WHERE turn_id = ? AND item_id IS NOT NULL AND seq > ? ORDER BY seq LIMIT ?`),
+    contextActive: q(`SELECT ${contextHeader(`CASE WHEN item_id IS NOT NULL THEN 'input'
+      WHEN EXISTS (SELECT 1 FROM entries AS a INDEXED BY entries_context_assistants
+        WHERE a.turn_id = e.turn_id AND a.seq = e.seq AND ${ASSISTANT}) THEN 'assistant' ELSE 'other' END`)}
+      FROM entries AS e WHERE turn_id = ? ORDER BY seq DESC LIMIT ?`),
+    contextLocal: q(`SELECT ${contextHeader("'other'")} FROM entries AS e
+      WHERE channel_id = ? AND seq < ? AND (${CHAT}) ORDER BY seq DESC LIMIT ?`),
+    contextShared: q(`WITH recent AS MATERIALIZED (SELECT seq, channel_id FROM entries ORDER BY seq DESC LIMIT ?)
+      SELECT ${contextHeader("'other'")} FROM recent JOIN entries AS e ON e.seq = recent.seq
+      WHERE recent.channel_id <> ? AND EXISTS (
+        SELECT 1 FROM entries AS c INDEXED BY entries_conversation
+        WHERE c.channel_id = recent.channel_id AND c.seq = recent.seq AND (${CHAT}))
+      ORDER BY e.seq DESC`),
+    contextPolicySize: q(`SELECT count(*) AS count, coalesce(sum(bytes), 0) AS bytes FROM (
+        SELECT octet_length(name) + 1 AS bytes FROM context_turn_policies WHERE turn_id = ? LIMIT ?
+      )`),
+    contextPolicies: q("SELECT name FROM context_turn_policies WHERE turn_id = ? ORDER BY name LIMIT ?"),
+    contextEntry: q(`SELECT *, (SELECT message_id FROM entry_reply_ids WHERE seq = e.seq) AS reply_id
+      FROM entries AS e WHERE e.seq = ?`),
     pendingCount: q("SELECT count(*) AS n FROM items WHERE channel_id = ? AND milestone = 'received'"),
     latestTurn: q("SELECT * FROM turns WHERE channel_id = ? ORDER BY turn_id DESC LIMIT 1"),
     liveTurns: q("SELECT * FROM turns WHERE status IN ('running','suspended') ORDER BY turn_id"),
@@ -186,6 +245,22 @@ function sqliteTables(db: Database): Tables & { dispose(): void } {
   };
   let depth = 0;
   return {
+    contextTurnStart: (channelId, turnId) => s.contextTurnStart.get(turnId, channelId)?.started_seq,
+    contextTrigger(turnId) {
+      const row = s.contextTrigger.get(turnId);
+      return row ? contextRow(row) : undefined;
+    },
+    contextPreviousResponse: turnId => s.contextPreviousResponse.get(turnId)?.seq ?? 0,
+    contextInputs: (turnId, after, limit) => s.contextInputs.all(turnId, after, limit).map(contextRow),
+    contextActive: (turnId, limit) => s.contextActive.all(turnId, limit).map(contextRow),
+    contextLocal: (channelId, start, limit) => s.contextLocal.all(channelId, start, limit).map(contextRow),
+    contextShared: (channelId, limit) => s.contextShared.all(limit, channelId).map(contextRow),
+    contextPolicies(turnId, limit, budget) {
+      const { count, bytes } = s.contextPolicySize.get(turnId, limit + 1)!;
+      if (count > limit || bytes > budget) return undefined;
+      return { names: s.contextPolicies.all(turnId, count).map(row => String(row.name)).sort(), bytes };
+    },
+    contextEntry: seq => entry(s.contextEntry.get(seq)!),
     pendingCount(id) {
       return Number(s.pendingCount.get(id)?.n ?? 0);
     },
@@ -269,7 +344,7 @@ function publish(path: string, meta: Meta, fill?: (tables: Tables) => void): voi
       db.exec(SCHEMA);
       installReadIndexes(db);
       const tables = sqliteTables(db);
-      try { tables.transaction(() => { tables.setMeta(meta); fill?.(tables); refreshReplyIds(db); }); }
+      try { tables.transaction(() => { tables.setMeta(meta); installContextPolicyIndex(db); fill?.(tables); refreshReplyIds(db); }); }
       finally { tables.dispose(); }
     } finally { db.close(); }
     try { linkSync(draft, path); }
@@ -353,6 +428,7 @@ export function createSqliteStorageAdapter(path: string): SessionStorageAdapter 
           if (meta.formatVersion >= 4 && meta.formatVersion < 6 && compatible) addExternalSource(owner);
           if (compatible)
             recover(tables, meta.formatVersion < 4 ? () => { if (meta.formatVersion === 2) upgradeFromFormat2(owner); upgradeFromFormat3(owner); addExternalSource(owner); } : undefined);
+          if (tables.getMeta().formatVersion === 6) installContextPolicyIndex(owner);
         });
         return { ok: true, value: createEngine(tables, identity.compatibilityKey, () => { tables.dispose(); owner.close(true); }, config), revision: tables.getMeta().revision };
       } catch (error) {

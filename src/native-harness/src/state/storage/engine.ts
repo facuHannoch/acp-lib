@@ -2,6 +2,7 @@ import type { OperatorStorageReads } from "../../contracts/operator-controls.ts"
 import type { ModelCallSummary } from "../../contracts/model-execution.ts";
 import type { ManagedConfig } from "../../contracts/config-permissions.ts";
 import { externalNoticeSignature, policyItemSignature, contributingPolicies, fingerprint } from "./policy-metadata.ts";
+import { readInference, validReadLimits, type ContextRows } from "./inference.ts";
 import { validateManagedConfig } from "../../util/config.ts";
 import type {
   AcceptItem, ChannelLifecycle, SessionArchive, SessionLifecycle, SessionStorage, StorageErrorCode, StorageResult,
@@ -31,7 +32,7 @@ export const emptyModelState = (): ModelState => ({ nextCall: 1, calls: [], item
 /** Row access shared by the memory and SQLite adapters. The engine owns every
  * rule of the storage contract; a backend only stores rows and makes
  * `transaction` atomic (all writes of a throwing callback are undone). */
-export interface Tables {
+export interface Tables extends ContextRows {
   readRange(range: Parameters<OperatorStorageReads["readTimeline"]>[0]): TimelineEntry[];
   pendingCount(channel: string): number;
   getModelState(): ModelState | undefined;
@@ -766,6 +767,12 @@ export function createEngine(tables: Tables, ownerKey: string, release: () => vo
         fail("invalid_input", "Invalid timeline bounds");
       const rows = tables.readRange(range);
       return { entries: rows.slice(0, range.limit), more: rows.length > range.limit };
+    }, true),
+    readInferenceContext: input => run(meta => {
+      if (meta.formatVersion !== 6) fail("incompatible", "Inference reads need a recovered session");
+      if (!validReadLimits(input.limits)) fail("invalid_input", "Invalid inference read limits");
+      const start = tables.contextTurnStart(input.channelId, input.turnId) ?? fail("not_found", "Turn not found on channel");
+      return readInference(tables, input, start);
     }, true),
     snapshot: () => run(() => readSnapshot(tables), true),
 
