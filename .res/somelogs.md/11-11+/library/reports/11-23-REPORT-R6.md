@@ -92,3 +92,13 @@ The test holds the actual completion notification across stop and the first reop
 The changelog covers the new metering record in the held-completion case as well as the recovered reply. The protected files stay at 4,491 lines for `agent-session.ts`, 909 for `native/host.ts` and 599 for `native/controller.ts`.
 
 The clean RAM-backed archive passed typecheck and **1,672 tests in 159 files in 118.49 s**. Both new or strengthened tests passed **20/20** in isolation. All 35 snapshots passed and the A1 hash remained `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`. Logs are in `/tmp/acp-o1-acp-r6-stopped-reply.2mfPPH`.
+
+## Next-merge follow-up — stop-recovery limits and coverage
+
+Clad2a's two-conversation probe found a separate case from the prepared-turn recovery. When a conversation's turn events are still in flight and the withdrawal response is the only evidence of take, no prepared turn exists. Stop and a same-Agent reopen can therefore leave a committed reply absent locally. A new Agent recovered the reply under its original provider ID in the probe. The guide and changelog document that boundary. Extending it would require a separate persistence entry for a turn the conversation never prepared, which is outside this follow-up.
+
+The new silent-read test exposed a Bun 1.3.14 timer issue in `AbortSignal.timeout()`. A successful first RPC removed its abort listener. The listener gap could cancel the timeout before the next RPC attached its listener, so the silent read waited for the longer per-request timeout. Commit `f45fdab` uses an explicit timer and one controller across all reconciliation and message reads. The timer is cleared on completion or error. The changelog spells out the combined budget of about six seconds for the one-second withdrawal grace and five-second reply recovery on a silent host. Other shutdown requests keep their own deadlines.
+
+The tests use a real `HarnessClient` over a controlled transport. They check the shared five-second deadline with a silent second RPC, deduplication of already-seen provider IDs and repeats across pages, and an unknown-turn error with no attempted message read. No harness wire or schema changes were needed. The protected source files are unchanged from the prior gate.
+
+Removing the timer, provider-ID deduplication, or unknown-turn check independently failed its matching test. Mutation logs are in `/tmp/acp-r6-recovery-mutations.Syh55x`. All three tests passed **20/20** in isolation. The clean RAM-backed archive passed typecheck and **1,675 tests in 160 files in 124.85 s**. All 35 snapshots and the A1 hash were unchanged. Gate logs are in `/tmp/acp-o1-acp-r6-recovery-bound.kMMEIC`.
