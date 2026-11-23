@@ -42,3 +42,46 @@ All in a throwaway test in the archive (removed afterwards).
 5. **The handoff-grace test is timing-sensitive** (30 ms grace, `< 1000 ms`), and it failed once in 1,600 under full-suite load. It passed in 30 loaded runs on both `fe7d28c` and `2f83270`, so I don't tie it to this change. If it shows up again, look at its bound first.
 
 **Not covered here (step 2, cod2a):** Agent close and conversation stop reaching an eager start, handoff-target cancellation cause, the caller signal, and `providerStart`.
+
+# Part 2 — step 2 (shutdown), step 3 (`providerStart`) and the whole of R4
+
+This part covers `2f83270..ec298c5` on `integration-r456`: `0c4d12e` (handoff targets, reconnect, Agent close), `504eaf1` (`providerStart`, `deferred`), the alpha merge `d6c3fa9` (alpha `3d96dbd`) and the gate reports. I used a clean `git archive ec298c5` (`/tmp/clad2a-r4f`, `TMPDIR` on `/dev/shm`) and didn't check out the branch. My probes were throwaway tests in that archive.
+
+**Verdict: R4 meets its Done criteria. No blocking findings.** Three notes, none blocking.
+
+- **Typecheck clean. Full suite: 1,614 tests, 151 files, 0 fail**, 35 snapshots; no snapshot file changed in `fe7d28c..ec298c5`, so the A1 hash is unchanged. No `lifecycle-agent` process left afterwards.
+- **Size gate**, measured on the archive: `agent-session.ts` **4,564 → 4,495**, `client.ts` **1,062 → 1,046**, `controller.ts` **840 → 764**, `conversation-manager.ts` **1,013 → 1,012**. One correction to the brief: the manager's baseline at `fe7d28c` is **1,013**, not 1,081, so the gate is met by one line, not 69. The session shrank by moving its config types to `src/agent-session-config.ts` (133 lines) and the adoption record write to `src/agent/adoption/provider-attachment.ts`.
+- The orchestrator and persistence changes in the range come from the alpha merge (delivery retry); I didn't re-review them here.
+
+## Step 2: shutdown
+
+| Check | Result |
+| --- | --- |
+| **Optional caller signal** (my item 6) | **Present.** `signal` is an owner-controlled runtime key (`config.ts`), and `withStartupCancellation(signal, stop, start)` wraps the three startup entry points (create, open, restore). A signal that fires before or during the start stops the session and rejects with `ConnectionCancelledError`, and a result that arrives after the abort is discarded |
+| **Agent close reaches an eager start** (the ordering gap) | **Closed.** `Agent.close()` calls `manager.cancelStarts()` first; `stopAll` then cancels, stops live conversations and awaits **creations, openings and stops together**. Creation is now tracked in a `creating` set (it was in neither map before). *Mutation:* removing `cancelStarts` fails `Agent close cancels eager Provider create…` and `…reopen…` |
+| **Handoff targets** | The session keeps the candidate controller in `handoffTarget` for the life of the operation and `stop()` stops it with the main controller. A cancelled handoff with spent work keeps its metering records and carries the typed cancellation as the cause; with none it rejects directly. *Mutation:* not stopping the target fails both `conversation stop cancels the same-adapter / cross-adapter handoff candidate` tests |
+| **Reconnect and queued work** | A stop during a reconnect gives `ConnectionCancelledError` (it was a plain `Error`), with no fresh fallback and no provider failure record; queued prompts and settings settle with the typed error only when the stop interrupted readiness, and ordinary queue clears keep their results |
+| **Typed errors escape the recovery paths** | `create`, adoption load, `open` and the recovery path rethrow `ConnectionCancelledError` before `throwCreateFailure`/`loadFailure`/`recoverAfterLoadFailure`, so a cancel is not recorded as a provider failure |
+
+## Step 3: `providerStart`
+
+| Check | Result |
+| --- | --- |
+| **Create and reopen with `on_first_use` start nothing** | **Yes.** My probe: `create`, `list`, `get`, `stop`, a reopen and a `delete` of a never-started conversation produced **0 provider processes and 0 wire calls**; the reopen returned `deferred` |
+| **The first operation starts; concurrent first uses share one start** | **Yes.** Probe: two prompts (one queued), a `setConfig` and a third prompt issued together: all four fulfilled, **one `initialize` and one `session/new`**. A settings write alone also starts it (their test) |
+| **Stop during first use** | **Yes.** I hung `initialize` and `session/new` and called `conversation.stop()` and, separately, `Agent.close()` during the first prompt: the prompt rejected with `ConnectionCancelledError`, the child was **dead** in all four cases, and the phase was `stopped` |
+| **Agent close during eager create or reopen** | The create rejects with `ConnectionCancelledError`, the child is dead (hung `initialize` and hung `session/new`), and a later `create` is refused |
+| **Leaks and late installs, randomized** | 40 rounds of `Agent.close()` at a random 0–120 ms delay against `create` and `create`+`prompt`, alternating lazy and eager: **0 leftover processes** |
+| **Missing provider session on first use: a recorded reload, not a silent fresh session** | **Yes.** With the provider reporting every session missing, the eager open and the first use on a deferred open behave the same: `ProviderSessionError`, no `session/new` call, no session-id change, and the same error record in the transcript. With checkpointing on, their recovery test now runs both ways: on first use the same progress stages (`load_failed … seeding … completed`) appear, a second provider session row is written with the recovery checkpoint id, and the `conversation_recovery` action is recorded |
+| **Managed path unchanged** | `deferProviderStart` takes effect only for an Agent-owned session with `persistence: false`, a normal-mode ACP adapter and `deferProviderStart` set by the manager; standalone and session-manager startup never receives it, adoption (`!summary.adopted`) stays eager, native channels and degraded mode ignore the option (their native test: 0 launches). `providerStart` is validated at `Agent.open` and for the per-conversation runtime (a bad value throws `TypeError`; I saw no conversation row or process created) |
+| **`deferred` is a public type addition** | Added to `OpenOwnedAgentConversationResult.providerSession`; `ProviderStart` exported from `index.ts` and `agent.ts`. The changelog entry is in `CHANGELOG-controller-interface.md` (lines 5–11: `ConnectionCancelledError`, the signal, `providerStart`, `deferred`). I found **no exhaustive switch** over `providerSession` in `src` or `test`; the remaining `loaded`/`new`/`recovered` assertions are for eager callers |
+| **Handle behaviour before first use** | `connection.isConnected` is false, config and command views are empty, `model` is null, `capabilities` throws `NotConnectedError`; a recorded internal session id stays visible |
+| **Mutation** | Making `defersProvider` always false fails six tests (`provider-start` ×5 and `stop reaches deferred first use while initialize is pending`) |
+
+## Notes (none blocking)
+
+1. **Lazy conversations lose the connection-kept-for-authentication behaviour.** `requireStartupSession` makes a failed `session/new` stop the client and throw, so a conversation that opens lazily against a provider that needs login can only fail its first prompt; it never holds a connected client waiting for `authenticate`. The flag is set from the construction-time value, so for these conversations it appears to stay on after the first use too (read from the code, not probed): later restarts of a lazy conversation would not keep an unauthenticated connection either. Say so in the changelog, or clear the flag with `deferredProviderStart`.
+2. **The result of a first-use recovery is not in the open result.** `open` has already returned `deferred`, so the recovery outcome (`recovery`, the checkpoint id) is visible only through the `onRecoveryProgress`-style progress, the `provider_reconnected` event and the stored records. That follows from the design; mention it in the changelog.
+3. **My fe7d28c manager size was misquoted in the brief** (see above); the gate itself is met.
+
+**Whole of R4, against my eight additions and the grounding report:** every item holds (step 1 table above, with the shutdown items from step 2). The Agent-close ordering gap is closed and mutation-checked; the PTY start remains out of scope as stated.
