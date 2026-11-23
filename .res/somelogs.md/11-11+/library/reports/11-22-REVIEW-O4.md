@@ -106,3 +106,40 @@ Nothing changed under `src/native`, `src/persistence` or `src/native-harness`. `
    optional in the public event type (consumers who read it as a string must narrow on `source`) and `WorkerPermissionSource`
    is a new export. Add a line before release.
 - **Baseline:** 1,538 tests, up from 1,529.
+
+## Follow-up: `71b63d8` (consumer-opened workers use the configured defaults)
+
+Resolved. No findings. Clean `git archive 71b63d8` (`/tmp/clad2a-o4b`): typecheck clean, **1,540 pass, 0 fail,
+143 files**, 35 snapshots, hash `fbc6ec2c…` unchanged.
+
+**The change.** `orchestrator.defaults.workerPermissions` is validated in the `Orchestrator` constructor with
+`ownPermissions`, so a bad setting is refused when the `Agent` opens. A consumer actor's handler now computes its level from
+those defaults (`matchWorkerPermissionLevel`, the same R2 matcher), and only an `ask` falls through to the refusal. A
+conversation actor is unchanged.
+
+**My probe** (consumer-opened worker, permission fixture, same worker adapter each time):
+
+| Defaults | Prompt | Worker received |
+| --- | --- | --- |
+| none configured | ask | `reject` (refused) |
+| `default: allow` | ask | `allow` |
+| `default: deny` | ask | `reject` |
+| `default: ask` | ask | `reject` (an ask nobody can answer is refused) |
+| `deny` + `kind:execute: allow` | an execute request | `allow` |
+| `deny` + `kind:execute: allow` | a non-execute request | `reject` |
+| `deny` + `command:bun test: allow` | an execute request | `allow` (exact command) |
+| `allow` + `kind:execute: ask` | an execute request | `reject` (the ask is refused, not allowed by the default) |
+| `allow` | a provider that offers only `allow_always` | `always` (the auto-approve rule is unchanged) |
+| conversation actor `deny`, consumer default `allow` | ask | `reject`, nothing forwarded (the defaults don't leak into a conversation actor) |
+
+Validation at `Agent.open`: a typo in a rule key (`kind:exectue`) and in a level (`alow`), and a missing `default`,
+are all refused. A valid setting opens.
+
+**Changelog.** The new "Worker permission forwarding" section is accurate: the forwarded `permission_requested` carries a
+`source` with the worker handle and conversation id, its `turnId` is optional, `WorkerPermissionSource` is exported, the giver
+answers with `answerPermission`, consumer workers use `orchestrator.defaults.workerPermissions`, and an unattended ask is
+refused. Two small additions would complete it:
+
+- say that `turnId` stays required on ordinary requests (the union: a required `turnId` without `source`, an optional one
+  with it), so a reader doesn't take it as optional everywhere;
+- one line that `allow_always` is removed from forwarded asks shown to a non-owner and rejected as an answer.
