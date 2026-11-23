@@ -36,7 +36,7 @@ import { NotConnectedError } from "./errors.ts";
 import { conversationCapabilitiesOf, type ConversationCapabilities } from "./conversation-controller/capabilities.ts";
 import type { ClientPrompt } from "./agent-client.ts";
 import { ConnectionAttempts, type ConnectionAttempt } from "./connection-attempt.ts";
-import { bringUp, type ReadyConnection } from "./controller-connection.ts";
+import { bringUp, observeStartProgress, type ReadyConnection } from "./controller-connection.ts";
 
 const NO_AVAILABLE_COMMANDS: readonly InternalSessionCommand[] = Object.freeze([]);
 
@@ -141,7 +141,7 @@ export class HarnessController implements AgentClient, ConversationController {
   private readonly connectionListeners = new Set<() => void>();
   private detachDisconnect: (() => void) | null = null;
   private stopping: Promise<void> = Promise.resolve();
-  private readonly connections = new ConnectionAttempts<ConnectResult>();
+  private readonly connections = new ConnectionAttempts<ConnectResult, ControllerStartEvent>();
   private current: AgentClient | null = null;
   private acp: AcpClient | null = null;
   private mode: AgentMode;
@@ -186,7 +186,7 @@ export class HarnessController implements AgentClient, ConversationController {
     return this.connections.run(`reconnect:${sessionId}`, async attempt => {
       await this.stopCurrent();
       attempt.signal.throwIfAborted();
-      const brought = await bringUp(this.config, attempt, this.mode, sessionId, undefined, "error");
+      const brought = await bringUp(this.config, attempt, this.mode, sessionId, "error");
       attempt.signal.throwIfAborted();
       if (!brought.result.resumed || brought.result.sessionId !== sessionId) {
         await brought.client.stop();
@@ -289,16 +289,16 @@ export class HarnessController implements AgentClient, ConversationController {
         attempt.signal.throwIfAborted();
         return result;
       }
-      const brought = await bringUp(this.config, attempt, this.mode, fresh ? undefined : this.config.sessionId, onProgress);
+      const brought = await bringUp(this.config, attempt, this.mode, fresh ? undefined : this.config.sessionId);
       return this.installConnection(attempt, brought);
-    });
+    }, observeStartProgress(this.config, onProgress));
   }
 
   private existingConnection(): ConnectResult {
     return { sessionId: this.currentSessionId ?? "", resumed: this.acp?.hasSession ?? false };
   }
 
-  private installConnection(attempt: ConnectionAttempt, brought: ReadyConnection, mode = this.mode): ConnectResult {
+  private installConnection(attempt: ConnectionAttempt<ControllerStartEvent>, brought: ReadyConnection, mode = this.mode): ConnectResult {
     attempt.signal.throwIfAborted();
     this.current = brought.client;
     this.acp = brought.acp;

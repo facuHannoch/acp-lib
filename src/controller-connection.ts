@@ -17,10 +17,9 @@ export interface ReadyConnection {
  */
 export async function bringUp(
   config: AgentControllerConfig,
-  attempt: ConnectionAttempt,
+  attempt: ConnectionAttempt<ControllerStartEvent>,
   mode: AgentMode,
   sessionId?: string,
-  onProgress?: (event: ControllerStartEvent) => void,
   loadFailure = config.sessionLoadFailure,
 ): Promise<ReadyConnection> {
   const adapter = config.adapter;
@@ -68,7 +67,7 @@ export async function bringUp(
     attempt.own(() => client.stop());
     const capabilities = await client.connect();
     attempt.signal.throwIfAborted();
-    reportStartProgress(config, onProgress, { stage: "initialized", capabilities });
+    attempt.report({ stage: "initialized", capabilities });
   } catch (err) {
     await client.stop();
     attempt.signal.throwIfAborted();
@@ -94,7 +93,7 @@ export async function bringUp(
   }
   attempt.signal.throwIfAborted();
   if (result.sessionId) {
-    reportStartProgress(config, onProgress, {
+    attempt.report({
       stage: "internal_session_acquired",
       internalSessionId: result.sessionId,
       disposition: result.resumed ? "resumed" : "created",
@@ -103,17 +102,13 @@ export async function bringUp(
   return { client, acp: client, result };
 }
 
-function reportStartProgress(
+export function observeStartProgress(
   config: AgentControllerConfig,
   listener: ((event: ControllerStartEvent) => void) | undefined,
-  event: ControllerStartEvent,
-): void {
+): ((event: ControllerStartEvent) => void) | undefined {
   if (!listener) return;
-  try {
-    listener(event);
-  } catch (error) {
-    config.logger?.warn("controller_start_progress_listener_failed", {
-      error: String(error),
-    });
-  }
+  return event => {
+    try { listener(event); }
+    catch (error) { config.logger?.warn("controller_start_progress_listener_failed", { error: String(error) }); }
+  };
 }

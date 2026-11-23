@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { AcpClient, Agent, AgentSession, AgentSessionHandoffError, ConnectionCancelledError, HarnessController, ProcessCrashError } from "../src/index.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { noopLogger } from "../src/logger.ts";
@@ -314,3 +314,46 @@ test("stop reaches deferred first use while initialize is pending", async () => 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("an equivalent start replays prior progress and observes the rest of startup", async () => {
+  const controller = new HarnessController({ adapter, adapterId: "test" });
+  const primary: string[] = [], joined: string[] = [];
+  let second: ReturnType<typeof controller.start> | undefined;
+  try {
+    const first = controller.start(event => {
+      primary.push(event.stage);
+      if (event.stage === "initialized") second = controller.start(progress => joined.push(progress.stage));
+    });
+    await first;
+    expect(second).toBe(first);
+    expect(primary).toEqual(["initialized", "internal_session_acquired"]);
+    expect(joined).toEqual(primary);
+  } finally { await controller.stop(); }
+});
+
+test("superseding a fresh session on the live transport stops it before reconnecting", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "acp-supersede-fresh-"));
+  const state = join(directory, "sessions.json");
+  await writeFile(state, JSON.stringify({ recorded: [] }));
+  const { seen, env, logger } = waitingForHang("session/new");
+  let launches = 0;
+  const controller = new HarnessController({
+    adapter, adapterId: "test", sessionId: "recorded", sessionLoadFailure: "error", logger,
+    launcher: { async prepare({ targetCommand }) {
+      return { command: [...targetCommand], spawnEnv: { LIFECYCLE_STATE: state, ...(launches++ === 0 ? env : {}) } };
+    } },
+  });
+  try {
+    expect((await controller.start()).sessionId).toBe("recorded");
+    const fresh = controller.startFresh().catch(error => error);
+    const pid = await bounded(seen, "live session/new");
+    expect(await bounded(controller.start(), "replacement load")).toEqual({ sessionId: "recorded", resumed: true });
+    expect(await fresh).toBeInstanceOf(ConnectionCancelledError);
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(launches).toBe(2);
+    expect((await controller.prompt("restored")).status).toBe("completed");
+  } finally {
+    await controller.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 12_000);

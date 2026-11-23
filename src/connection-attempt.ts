@@ -1,7 +1,9 @@
 import { ConnectionCancelledError } from "./errors.ts";
 
-export class ConnectionAttempt {
+export class ConnectionAttempt<Progress = never> {
   private readonly abort = new AbortController();
+  private readonly observers = new Set<(event: Progress) => void>();
+  private readonly progress: Progress[] = [];
   private cleanup?: () => Promise<void>;
 
   get signal(): AbortSignal { return this.abort.signal; }
@@ -15,18 +17,39 @@ export class ConnectionAttempt {
     this.abort.abort(new ConnectionCancelledError());
     await this.cleanup?.();
   }
+
+  observe(observer: (event: Progress) => void): void {
+    this.observers.add(observer);
+    for (const event of this.progress) {
+      if (this.signal.aborted) break;
+      observer(event);
+    }
+  }
+
+  report(event: Progress): void {
+    this.progress.push(event);
+    for (const observer of [...this.observers]) {
+      if (this.signal.aborted) break;
+      observer(event);
+    }
+  }
 }
 
 /** Equivalent attempts share readiness. An incompatible request cancels and drains the candidate first. */
-export class ConnectionAttempts<T> {
-  private active?: { key: string; attempt: ConnectionAttempt; result: Promise<T> };
+export class ConnectionAttempts<T, Progress = never> {
+  private active?: { key: string; attempt: ConnectionAttempt<Progress>; result: Promise<T> };
   private teardown = Promise.resolve();
 
-  run(key: string, work: (attempt: ConnectionAttempt) => Promise<T>): Promise<T> {
-    if (this.active?.key === key) return this.active.result;
+  run(key: string, work: (attempt: ConnectionAttempt<Progress>) => Promise<T>, observer?: (event: Progress) => void): Promise<T> {
+    const active = this.active;
+    if (active?.key === key) {
+      if (observer) active.attempt.observe(observer);
+      return active.result;
+    }
     void this.cancel().catch(() => undefined);
     const prior = this.teardown;
-    const attempt = new ConnectionAttempt();
+    const attempt = new ConnectionAttempt<Progress>();
+    if (observer) attempt.observe(observer);
     const result = prior.then(() => {
       attempt.signal.throwIfAborted();
       return work(attempt);
