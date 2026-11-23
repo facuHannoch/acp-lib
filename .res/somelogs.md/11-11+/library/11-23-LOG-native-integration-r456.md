@@ -101,3 +101,8 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   doc note that `cancelled` means the caller stopped waiting, not that the call wasn't applied. cod2a adds both in a
   small commit before 2b; then `pre-alpha` can take 2a. (Clad1a also saw intermittent harness-suite failures under
   load, on the base too: not a regression.)
+- C1/N1 (`2aff51c`: seven fake-transport client tests and the doc note) confirmed by Clad1a (the seven pass 5 of 5 runs and
+  all fail on the base `7e537af`; nothing missing against their eight probes); the harness-side hold is released by
+  haurness-l. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-R5-2a.md)). `pre-alpha` built with R5 steps 1 and
+  2a; the exact SHA goes to haurness-l for confirmation before the user merges. R5 step 2b (`0fdb886`, report `9fb2b2e`;
+  coordinator run: 1,639 in 154 files green, sizes unchanged) is with clad2a.
