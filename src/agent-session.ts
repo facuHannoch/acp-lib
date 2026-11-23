@@ -169,6 +169,7 @@ import type {
   TranscriptContinuationBuilder,
   TranscriptContinuationBuilderContext,
 } from "./agent-conversation-contracts.ts";
+import { dropClearedOperations } from "./conversation-turns/clear-operations.ts";
 import { AgentConversationQueue } from "./agent-conversation-queue.ts";
 import type { ImportedTurn } from "./agent/adoption/replay.ts";
 import {
@@ -3931,21 +3932,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
       const cancellation = reason === "stop" && (this.reconnecting || this.connecting > 0)
         ? new ConnectionCancelledError() : undefined;
       const dropped = settleClearedBackendTurns(this.operations.clear(), reason === "stop", (turn) => { this.operations.enqueue(turn); void this.pump(); });
-      // Cancelled before dispatch: nothing was sent, so nothing was consumed and no
-      // metering record is minted (§16).
-      // On stop, messages already handed to a backend-scheduled controller, still waiting for their turn, are dropped too.
-      this.steering.dropped([...dropped.filter((item): item is PromptQueueItem => item.kind === "prompt"), ...this.backendTurns.clear(reason === "stop")], cancellation);
-      for (const item of dropped) {
-        if (item.kind === "prompt") continue;
-        const label = item.kind === "handoff"
-          ? "handoff"
-          : item.kind === "set_config" || item.kind === "resolve_config"
-            ? "configuration change"
-            : item.kind === "resolve_recovery"
-              ? "recovery resolution"
-              : "mode change";
-        item.reject(cancellation ?? new Error(`${label} cancelled before it started`));
-      }
+      dropClearedOperations(dropped, this.backendTurns.clear(reason === "stop"), (messages, error) => this.steering.dropped(messages, error), cancellation);
       this.emitStateIfChanged();
     }
     this.cancelOperation(reason);
