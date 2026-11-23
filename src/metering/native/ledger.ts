@@ -32,13 +32,15 @@ export class NativeUsageLedger {
   ) {}
 
   async readTurn(channel: string, turnId: string, position: NativeLedgerPosition = {}): Promise<NativeLedgerRead> {
-    const timeout = AbortSignal.timeout(this.bounds.timeoutMs);
-    const signal = position.signal ? AbortSignal.any([position.signal, timeout]) : timeout;
+    const timeout = new AbortController();
+    const signal = position.signal ? AbortSignal.any([position.signal, timeout.signal]) : timeout.signal;
     let after = position.after;
     const seenIds = new Set(after === undefined ? [] : [after]);
     const calls: ModelCallSummary[] = [];
     const channelCalls: ModelCallSummary[] = [];
 
+    // Keep one timer even when consecutive pages briefly have no abort listeners.
+    const timer = setTimeout(() => timeout.abort(new DOMException("Native usage ledger read timed out", "TimeoutError")), this.bounds.timeoutMs);
     try {
       const readPage = this.openRead();
       for (let count = 0; count < this.bounds.maxPages; count++) {
@@ -53,9 +55,11 @@ export class NativeUsageLedger {
       }
       throw new Error("Native usage ledger exceeded its page budget");
     } catch (error) {
-      if (timeout.aborted) throw new Error("Native usage ledger read timed out", { cause: error });
+      if (timeout.signal.aborted) throw new Error("Native usage ledger read timed out", { cause: error });
       if (position.signal?.aborted) throw new Error("Native usage ledger read cancelled", { cause: error });
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

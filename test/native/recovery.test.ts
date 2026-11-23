@@ -1,31 +1,15 @@
 import { expect, spyOn, test } from "bun:test";
-import { HarnessClient } from "../../src/native-harness/src/client.ts";
-import type { ClientTransport, RpcRequest } from "../../src/native-harness/src/contracts/protocol.ts";
 import { recoverStoppedReplies } from "../../src/native/recovery.ts";
+import { controlledHarnessPeer } from "./controlled-peer.ts";
 
-function recoveryPeer(answer: (request: RpcRequest) => unknown) {
-  const requests: RpcRequest[] = [];
-  let deliver: Parameters<ClientTransport["subscribe"]>[0] = () => {};
-  const transport: ClientTransport = {
-    send(request) {
-      requests.push(request);
-      const result = answer(request);
-      if (result !== undefined) deliver({ jsonrpc: "2.0", id: request.id, result });
-    },
-    subscribe(listener) { deliver = listener; return () => {}; },
-    onClose: () => () => {},
-    close() {},
-  };
-  return { client: new HarnessClient(transport, 12_000), requests };
-}
 
 const emptyPage = { revision: 10, items: [], turns: [], unknownItemIds: [], unknownTurnIds: [], replies: [] };
 const reply = (messageId: string, position: string) => ({ messageId, position, turnId: "7" });
 
 test("native stopped-reply recovery bounds a silent read with one shared deadline", async () => {
-  const { client, requests } = recoveryPeer(request => {
+  const { client, requests } = controlledHarnessPeer(request => {
     if (request.method === "channel/reconcile") return { ...emptyPage, replies: [reply("missing", "1")] };
-  });
+  }, 12_000);
   const request = spyOn(client, "request");
   const started = performance.now();
   try {
@@ -44,12 +28,12 @@ test("native stopped-reply recovery bounds a silent read with one shared deadlin
 }, 15_000);
 
 test("native stopped-reply recovery dedupes seen and repeated provider IDs", async () => {
-  const { client, requests } = recoveryPeer(request => {
+  const { client, requests } = controlledHarnessPeer(request => {
     if (request.method === "session/message/read") return { data: Buffer.from("Recovered reply.").toString("base64") };
     return "cursor" in request.params
       ? { ...emptyPage, replies: [reply("missing", "2")] }
       : { ...emptyPage, replies: [reply("seen", "1"), reply("missing", "2")], next: "replies-page-two" };
-  });
+  }, 12_000);
   try {
     const seen = [{ messageId: "seen", text: "Already delivered." }];
     expect(await recoverStoppedReplies(client, "alpha", "7", seen)).toEqual([
@@ -66,7 +50,7 @@ test("native stopped-reply recovery dedupes seen and repeated provider IDs", asy
 });
 
 test("native stopped-reply recovery surfaces an unknown turn", async () => {
-  const { client, requests } = recoveryPeer(() => ({ ...emptyPage, unknownTurnIds: ["7"] }));
+  const { client, requests } = controlledHarnessPeer(() => ({ ...emptyPage, unknownTurnIds: ["7"] }), 12_000);
   try {
     await expect(recoverStoppedReplies(client, "alpha", "7", [])).rejects.toThrow("native stop recovery could not find turn 7");
     expect(requests.map(({ method }) => method)).toEqual(["channel/reconcile"]);

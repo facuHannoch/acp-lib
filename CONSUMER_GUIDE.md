@@ -1027,7 +1027,7 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   change the caller's result. If the controller never saw the turn and learned
   of the take only from withdrawal, a committed reply can remain missing
   after reopening the conversation in the same Agent. A new Agent can recover
-  it from the persisted harness session when the submission is still tracked.
+  it from the persisted harness session.
   A silent host can add about six seconds for withdrawal and reply recovery.
   Submitted
   inputs that were never taken reject with `NativeInputStoppedError` (includes

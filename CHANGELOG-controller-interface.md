@@ -226,7 +226,7 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 - Stop-time reply recovery needs a prepared turn. If the only take evidence
   arrived in the withdrawal response, a committed reply can be missing locally
   after stop and a same-Agent reopen. A new Agent can recover the reply from
-  the harness's persisted session when the submission is still tracked.
+  the harness's persisted session.
 
 ## Native item receipts
 
