@@ -15,6 +15,9 @@ v1 design; it builds on it.
 
 ## 1. Background work and waking
 
+> **2026-11-23:** reminders and waking a stopped harness are now specified in
+> `../../11-23-SPEC-reminders-and-routines.md`. Watches stay here.
+
 Watches, reminders and other work the agent does without being asked (`11-11-TODO-watches.md`) need the harness
 running, or a way to wake it.
 
