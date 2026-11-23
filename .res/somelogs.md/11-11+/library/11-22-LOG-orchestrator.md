@@ -193,3 +193,34 @@ edit to `src/agent-session.ts`.
   blocking findings (a reconnect uses the new client each time; a callback in flight when the host stops fails closed;
   no client leak). **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O6a-final.md)): 1,563 tests in 145
   files green with a RAM-backed `TMPDIR`. `pre-alpha` rebuilt on the new alpha (`0003f20`). cod2a is on O3a.
+- The user merged `pre-alpha` (`2d7a5b9`: O2, O4, O5a and O6 step 1 with its follow-ups and the production host hook)
+  into alpha. Remaining: O3a (cod2a, in progress), then O3b, O5b and O6's real-harness steps.
+- O3a complete from cod2a (`ae54682` the feature, `f1937fe` worker_redirected only after provider acceptance,
+  `ee6026e` `takenSender` under `src/native/` and invisible ids rejected, report `97d91f0`, merge of alpha `2d7a5b9`
+  at `4163d9d`; [report](reports/11-23-REPORT-O3a.md)). Coordinator run on `4163d9d`, `TMPDIR` in RAM: typecheck
+  clean, 1,576 tests in 147 files green, snapshot unchanged; `agent-session.ts` untouched, `conversation-manager.ts`
+  1,013 (the stable-id append extracted to `src/agent/append-assistant-message.ts`). One edit in a worker delivery file
+  (`worker-terminal-reason.ts`: `REFUSED_STEER_REASONS`, +6 −1): sent to clad2a for review and to Cod1a to object.
+  With clad2a for review.
+- O3a reviewed by clad2a (`8e12d86`): meets its brief, no blocking findings (reserve, chain, replace, the refused
+  successor, redirect, restart, both ACP kill points, the blank result and the native-only scan all probed; the edit in
+  Cod1a's `worker-terminal-reason.ts` is needed and consistent). **O3a gate passed**
+  ([gate](../.plan-execution/status/11-23-GATE-O3a.md)): 1,576 in 147 files. `pre-alpha` rebuilt with O3a.
+  Decision (spec, follow-up for cod2a): a steer that loses the race against the worker's natural completion reserves a
+  fresh assignment (the worker is idle), as after a restart.
+- O3a follow-up `d030961` reviewed by clad2a (`1520f80`): all four resolved, no blocking findings (a steer racing
+  natural completion runs once as a new assignment; a refused first dispatch notifies the sender; the invisible-id
+  guard is `[\s\p{Default_Ignorable_Code_Point}]+`; `check` and `list` show `latestResult`). It adds an optional
+  `kind` parameter to `latestOutcome` in two of Cod1a's files (backward compatible; Cod1a told). Gate: 1,581 in 147
+  files green (clad2a and the coordinator, RAM-backed). Clad2a's note for the integration slice: confirm a NATIVE
+  destination gets the old result promptly after an `old_settled` (only `replaced` triggers the flush).
+- The integration slice (O3b, O5b and O6 step 2: native delivery, restart recovery, the route end to end over stdio)
+  is in from cod2a, HEAD `bc974ce`, `8db2c67` plus eight stdio tests; coordinator run RAM-backed: typecheck clean,
+  1,589 tests in 149 files green, snapshot unchanged. With clad2a for review. O6 step 3, the live run, is held for
+  the user.
+- Integration slice reviewed by clad2a (`f51243e`): meets the briefs, no blocking findings; no gap for a native
+  destination after `old_settled` (`settled()` flushes the native host after every completion); three real SIGKILL
+  boundaries probed. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O3b-O5b-O6b.md)): 1,589 in 149 files.
+  `pre-alpha` rebuilt with O3a, its follow-up and the slice. Follow-up for cod2a: a product path for the explicit
+  retry of a blocked notice, and the delivery state in `check` and `list`. Remaining: the live run (O6 step 3, the
+  user's authorization), the acceptance read-through, R4–R6.
