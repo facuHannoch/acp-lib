@@ -668,6 +668,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   /** A turn the controller reports. The session announces it; completion stays the session's. */
   private onControllerTurnEvent(controller: ConversationController, event: TurnEvent): void {
     if (event.kind === "input_withdrawn") return this.onNativeWithdrawal(event.messageId);
+    if (event.kind === "items_receipt") { if (!this.stopPromise) this.emit(event); return; }
     if (event.kind === "turn_took") return reportTurnTook(this.backendTurnHost(), event);
     if (!event.sentBySession) return reportBackendTurn(this.backendTurnHost(), controller, event);
     const sent = this.sentRuns.get(event.turnId);

@@ -1,3 +1,4 @@
+import { advanceItemReceipts } from "./item-receipts.ts";
 import { terminalNativeTurns } from "./metering.ts";
 import { NativeInferenceSource } from "../metering/native/source.ts";
 import { nativeConversationStopping, nativeProviderTurnEnded, refuseNativeOnClose } from "../permissions/conversation.ts";
@@ -233,8 +234,6 @@ export class NativeController implements ConversationController, ChannelPort {
   /** The last confirmed delivery milestone of an input this conversation sent, if any. */
   receiptOf(messageId: string): "delivered" | "seen" | undefined { return this.#receipts.get(messageId); }
 
-  // --- turns ------------------------------------------------------------------------------------
-
   /**
    * Pushes each message as an input of the channel, in order, under its own id. Resolves once the
    * harness has stored every one durably (a receipt, or the reconciled state after a reopen). Promises
@@ -321,11 +320,12 @@ export class NativeController implements ConversationController, ChannelPort {
     this.#accept(turn, payload);
   }
 
-  /** One event of a turn: bookkeeping that must not wait for the supervisor, then the handlers (or the hold). */
   #accept(turn: Turn, event: TurnScoped, terminalOnWire = true): void {
     if (turn.ended) return; // terminal once: a second end (live after reconciled, or the reverse) changes nothing
     if (event.type === "items_receipt") {
-      for (const item of event.items) if (this.#receipts.get(item) !== "seen") this.#receipts.set(item, event.milestone);
+      const itemIds = advanceItemReceipts(this.#receipts, event.items, event.milestone);
+      if (itemIds.length && !turn.released) this.#report({ kind: "items_receipt", turnId: turn.id, itemIds, milestone: event.milestone });
+      return;
     }
     if (event.type === "message_completed" && event.messageId !== undefined) {
       if (turn.completed.has(event.messageId)) return;

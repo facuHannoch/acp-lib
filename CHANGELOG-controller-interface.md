@@ -212,3 +212,10 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   reject with `NativeInputStoppedError` instead of returning a cancelled result.
   Inputs can still incur spend if take has won or the host is unavailable or silent.
   `TurnEvent` now includes the controller's `input_withdrawn` confirmation.
+
+## Native item receipts
+
+- `AgentSessionEvent` and `TurnEvent` now include the exported `ItemsReceipt` variant.
+  It reports the session turn ID and the harness item IDs whose live `delivered`
+  or `seen` milestone advanced. Update exhaustive switches to handle the new kind.
+  Receipt events carry no historical replay or transcript record.

@@ -1,6 +1,6 @@
 import type { ConversationPermissionEvent } from "./permissions/conversation.ts";
 import type { OperationActivity } from "./operations/contracts.ts";
-import type { TurnCause } from "./conversation-controller/contracts.ts";
+import type { ItemsReceipt, TurnCause } from "./conversation-controller/contracts.ts";
 import type { AgentMode } from "./controller.ts";
 import type { MessageEvent, PendingMessageId, PromptEndedBy } from "./steering/contracts.ts";
 import type { Adapter } from "./adapters.ts";
@@ -220,6 +220,7 @@ export type AgentSessionEvent =
   | { kind: "turn_completed"; turnId: string; result: PromptResult }
   | { kind: "turn_failed"; turnId: string; error: string }
   | MessageEvent
+  | ItemsReceipt
   | { kind: "presentation_recorded"; item: TranscriptPresentationItem }
   | { kind: "internal_session_commands_changed"; commands: readonly InternalSessionCommand[] }
   | { kind: "handoff_started"; handoffId: string; fromInternalSessionId: string | null }

@@ -224,6 +224,28 @@ describe("inputs and the turns that take them", () => {
     expect(controller.receiptOf("m1")).toBe("seen");
   });
 
+  test("native receipt forwarding is monotonic while held and after reconnect", async () => {
+    const { controller, emit, turns, reconcile } = standIn();
+    await controller.start();
+    emit({ type: "turn_started", turnId: "3", items: [] });
+    emit({ type: "items_receipt", turnId: "3", items: ["a", "a"], milestone: "delivered" });
+    emit({ type: "items_receipt", turnId: "3", items: ["a", "b"], milestone: "delivered" });
+    emit({ type: "items_receipt", turnId: "3", items: ["a", "notice"], milestone: "seen" });
+    controller.disconnected();
+    const beforeReconcile = turns.length;
+    reconcile({ turns: [{ turnId: "3", channel: "c1", items: [], state: "running" }] });
+    expect(turns).toHaveLength(beforeReconcile);
+    emit({ type: "items_receipt", turnId: "3", items: ["a", "b", "notice"], milestone: "delivered" });
+    emit({ type: "items_receipt", turnId: "3", items: ["a", "b"], milestone: "seen" });
+    expect(turns.filter(event => event.kind === "items_receipt")).toEqual([
+      { kind: "items_receipt", turnId: "native-turn-3", itemIds: ["a"], milestone: "delivered" },
+      { kind: "items_receipt", turnId: "native-turn-3", itemIds: ["b"], milestone: "delivered" },
+      { kind: "items_receipt", turnId: "native-turn-3", itemIds: ["a", "notice"], milestone: "seen" },
+      { kind: "items_receipt", turnId: "native-turn-3", itemIds: ["b"], milestone: "seen" },
+    ]);
+    expect(controller.receiptOf("notice")).toBe("seen");
+  });
+
   test("a refused push rejects send with the harness's error", async () => {
     const { controller, pushes } = standIn();
     await controller.start();

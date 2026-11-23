@@ -6,6 +6,7 @@ export type {
   PreparedTurn,
   StartResult,
   ItemRef,
+  ItemsReceipt,
   TurnCause,
   TurnContent,
   TurnEvent,

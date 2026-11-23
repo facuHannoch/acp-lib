@@ -986,6 +986,12 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   message. A `delivery: "steer"` message sent while a turn runs is accepted at
   once and taken by that turn at its next model call; both prompts then resolve
   with the same `operationId`.
+- **Item receipts** are live conversation events with
+  `{ kind: "items_receipt", turnId, itemIds, milestone }`. They carry the
+  harness's committed `delivered` and `seen` advances for a turn. The IDs can
+  include external notices as well as prompts. Receipts can arrive for a held
+  turn and are not replayed as history after reconnect. The existing
+  `message_delivered` event and prompt settlement keep their own meanings.
 - **Approvals** for tools a policy marks `ask` reach the `onPermissionRequest`
   handler of the first message the turn took, with `allow_once` and `deny`
   options. Without a handler the session's `defaultPermission` applies.

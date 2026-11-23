@@ -46,7 +46,7 @@ export interface ConversationController {
   /**
    * Turn reports: `turn_started` whenever a turn starts (because of a `send`, or on the backend's
    * own), and, for backend-scheduled controllers only, `turn_took` when more items are folded into
-   * a running turn. Native controllers also report confirmed input withdrawal.
+   * a running turn. Native controllers also report committed item receipts and confirmed input withdrawal.
    * The controller never reports a turn's end: that is its prepared turn's
    * `prompt()` settling.
    */
@@ -190,7 +190,15 @@ export interface TurnTook {
   readonly cause: TurnCause;
 }
 
-export type TurnEvent = TurnStarted | TurnTook | { readonly kind: "input_withdrawn"; readonly messageId: string };
+/** A live advance in the harness's evidence for one or more items. */
+export interface ItemsReceipt {
+  readonly kind: "items_receipt";
+  readonly turnId: string;
+  readonly itemIds: readonly string[];
+  readonly milestone: "delivered" | "seen";
+}
+
+export type TurnEvent = TurnStarted | TurnTook | ItemsReceipt | { readonly kind: "input_withdrawn"; readonly messageId: string };
 
 /** A start's result: `{ sessionId, resumed }`, as today. */
 export type StartResult = ConnectResult;
