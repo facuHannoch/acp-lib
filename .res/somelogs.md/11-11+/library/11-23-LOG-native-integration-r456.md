@@ -121,3 +121,14 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
 - The user merged `pre-alpha` (`b77c3d7`: R5 steps 1 and 2a, the harness client abort tests and doc) into alpha. R5 2b's
   follow-up (`3ef44c2`, report `4bbefcb`: the lost-usage fix, the gap-retirement rule, SQLite schema 21; coordinator run
   1,646 in 154 files green RAM-backed) is with clad2a.
+- R5 step 2b follow-up (`3ef44c2`, report `4bbefcb`) reviewed by clad2a (`d7edd6d`): recommends approval. Verified on a
+  real schema-20 database written by alpha `173e4e7` (an ACP prompt plus a delivered worker assignment) opened twice:
+  versions 20 and 21, one 21 row, every other table byte-identical, the worker delivery state intact; schema 21 adds one
+  nullable column `metering_records.native_metering_proof_json` (idempotent). Probes over real stdio: both writes
+  failing (in-process and after a reopen): the earlier 110 tokens show on turn 2's record as `unaccountedEarlierCalls`
+  and are not repeated on turn 3; eight closes after a gap are bounded; a late-sealed attempt is counted once; a failed
+  save during retirement commits once; two channels closing at once, exact. Nine mutations killed. Design point:
+  those 110 tokens appear in no aggregate (totals 253 = 220 + 33; `unallocatedUsage` empty; coverage partial).
+  Decision (coordinator): accrue earlier-unaccounted tokens once into the existing unallocated accrual, named
+  "unaccounted usage of an earlier turn" (not between-turn support), and cap the proof column; then a short re-check;
+  then step 4 (docs) and R6.
