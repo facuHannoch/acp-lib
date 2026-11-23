@@ -250,3 +250,17 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   isn't in the package's `files`; the pack holds 513 files (4.6 MB) including 103 internal design docs. The user asked for the
   guide and a migration note from 0.12.1 to now; version, tag and pack exclusions still wait for the user. cod2a writes,
   clad2a reviews, on `release-docs` and `release-docs-reviews` (from alpha `510e2a7`).
+- Release docs (`da4e0c0`: `CONSUMER_GUIDE.md`, `MIGRATION-0.12-to-0.13.md`, the `files` allowlist, the report) reviewed by
+  clad2a (`0cac532`): accurate and nearly complete; the new guide examples compile and run; a real 0.12.1-written schema-16
+  database opens at schema 21 twice and 0.12.1 then refuses it; the scratch type-check numbers confirmed (112, 125, 13 in four
+  groups, restored byte for byte). Fixes before release: (1) the byte-identical baseline proves types only: agents-core's own
+  tests fail on alpha until its test doubles gain `harnessConnection()` (`steer-delivery.test.ts` 9 pass to 1,
+  `user-chat-acceptance.test.ts` 11 to 9); name the doubles in the note; (2) `README.md` still documents the removed
+  `defaultPermission`, ships in the package, and its Quick start fails to compile; (3) `PersistenceCapabilities.channels` is a
+  required member new since 0.12.1 (list every new required member); (4) split the checklist into breaking changes vs new
+  features and add the verified surface (no export removed: 828 in 0.12.1, 913 in alpha, all kept); (5) unlisted type-level
+  breaks (`MeteringProvenance.source`, the adapter types widened to `Adapter | NativeAdapter`, `PromptHandle.withdrawAsync`
+  required, `AgentEvent` widened); (6) the guide lacks the worker event kinds, the delivery states and an experimental label
+  on the orchestrator. Packaging, for the user's decision: the pack is 515 files, 4.61 MB, with no secrets; it ships
+  `src/native-harness/.res` (internal docs, a marketing draft, sandbox transcripts), 708 KB of harness tests, twelve files
+  containing the author's absolute path, and a smoke-test README link that points outside the package.
