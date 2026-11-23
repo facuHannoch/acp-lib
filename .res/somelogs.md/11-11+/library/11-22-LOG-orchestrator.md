@@ -224,3 +224,10 @@ edit to `src/agent-session.ts`.
   `pre-alpha` rebuilt with O3a, its follow-up and the slice. Follow-up for cod2a: a product path for the explicit
   retry of a blocked notice, and the delivery state in `check` and `list`. Remaining: the live run (O6 step 3, the
   user's authorization), the acceptance read-through, R4–R6.
+- The user merged `pre-alpha` (`fe7d28c`: O3a, its follow-up and the integration slice) into alpha. Alpha now holds the
+  orchestrator through O3b, O5b and O6 step 2. Remaining: the retry and delivery-state follow-up (cod2a), the
+  acceptance read-through (clad2a), the live run (O6 step 3, the user's authorization), R4–R6.
+- The user authorized the live run (O6 step 3) with **Codex** as the workers, and decided that R4, R5 and R6 follow in
+  that order. The delegating agent is the native harness on a cheap OpenRouter model (`OPENROUTER_API_KEY` is in the
+  environment; never printed or saved). cod2a: the retry and delivery-state follow-up, then the live run (plan to the
+  coordinator first, hard caps, a smoke script that needs an explicit env var), then R4.
