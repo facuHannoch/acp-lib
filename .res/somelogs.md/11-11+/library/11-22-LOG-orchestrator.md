@@ -241,3 +241,8 @@ edit to `src/agent-session.ts`.
   `finally`, but a SIGKILL would leave it): still needs the user's go-ahead, and the cleanup must survive a kill; the
   `partial` test leaks an orphan worker process; the model names are hard-coded. Coordinator run on `0f11c79`:
   1,590 in 149 files green (RAM-backed). cod2a to fix, then R4.
+- cod2a's fixes `c1b1c04` (orchestrator): the smoke runner never copies a login file: live mode requires an explicitly
+  supplied disposable `ACP_ORCH_CODEX_HOME` (a login the user creates there themselves); SIGINT/SIGTERM cleanup; the
+  lifecycle fixture exits on stdin EOF; model choices configurable and printed in free mode. Gate (cod2a, RAM-backed):
+  1,590 in 149 files green. clad2a short review. The live run now needs the user to provide that Codex home (or to
+  say the normal Codex home may be used).
