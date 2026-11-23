@@ -49,3 +49,11 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   parity gate works on the existing wire; native `billing_required` certification needs harness work (token category
   semantics, reported cost, a sealed per-turn manifest, between-turn ownership). Heads-up sent to haurness-l; with clad2a
   for review.
+- clad2a reviewed the R4 follow-up (`195e929`): every note addressed, every new or changed test 20 of 20 isolated; new
+  finding: `test/acp-connect-cancellation.test.ts` > "stop cancels ACP setMode and reaps its process" failed 3 of 50
+  whole-file runs on `cb6f959` (0 of 60 earlier). cod2a found the cause: the ACP leaf rejected with
+  `ConnectionCancelledError`, then the outer attempt signal was aborted but its reason (and `throwIfAborted`'s thrown
+  value) was undefined (the progress observer was not in the path); fixed in `d752262` (the typed cancellation is kept
+  on the attempt; report `c2ba881`). Coordinator gate on `c2ba881`: 0 failing runs of 50, typecheck clean, 1,617 in 151
+  files green RAM-backed; sizes unchanged (session 4,495, client 1,046, controller 764, manager 1,012). With clad2a.
+- cod2a amended R5's brief per clad2a's five gaps (`f4d9fab`) and starts R5 step 1.
