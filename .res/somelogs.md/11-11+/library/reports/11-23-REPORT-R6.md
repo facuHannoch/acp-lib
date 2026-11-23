@@ -42,3 +42,17 @@ Commit `76cd233` forwards the native controller's live receipt advances as the e
 The controller test covers held output, mixed duplicate and new IDs, Seen followed by Delivered, and reconnect without synthetic replay. The real stdio test asserts conversation routing and ordered milestones for the original and steered inputs with one turn completion. The changelog and consumer guide document the event. The repository's event consumers use discriminant filters or forwarding. There were no other exhaustive switches over these unions to update, and typecheck passed.
 
 The clean RAM-backed full suite passed **1,666 tests in 157 files in 124.15 s**. Each new test passed **20/20** in isolation. All 35 snapshots and the A1 hash were unchanged. `agent-session.ts` is 4,491 lines, `native/controller.ts` is 599 and `native/host.ts` is 909. Logs are in `/tmp/acp-o1-acp-r6-receipts.ARkGy0`.
+
+## Step 4 — consumer text over real stdio
+
+Commit `ee78c68` adds real-child coverage for `harness.text: "stream"` and the default final subscription. The scripted model emits a partial answer and enters a held tool. The test holds the first real `message_completed` frame and preserves event order when it releases the frame. While the completion is held, stream mode has already delivered the text to both consumer chunk callbacks. Final mode has sent no provisional deltas. The test counts wire deltas without requiring a particular chunk split because the stdio writer may coalesce adjacent chunks.
+
+After the tool is released, both modes finish with the same full result and provider message IDs. The stored transcript contains one final committed entry per logical reply. Activity snapshots can share the same logical ID and capture a completed revision before the authoritative final commit. Both tests check that these revisions introduce no extra reply. No runtime, harness protocol or configuration change was needed.
+
+A disposable mutation that restored interrupt clearing for already-submitted input failed the strengthened Step 1 test. The harness still had the item in Received at interrupt time, and the mutated client incorrectly resolved its prompt as cancelled. Mutation log is in `/tmp/acp-r6-interrupt-mutation.q6cxkS.log`.
+
+### Final gate
+
+The clean RAM archive of `ee78c68` passed typecheck and the full `bun test ./test` suite with **1,668 tests in 158 files in 128.13 s**. Both new stream tests passed **20/20** in isolation. All 35 snapshots passed, and the A1 hash remained `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`. Logs are in `/tmp/acp-o1-acp-r6-stream-final.7kzrWR`.
+
+R6 covers confirmed withdrawal, the bounded shutdown path, native supervision through reopen, live receipts, and real stdio text through the public conversation. The protected files finish at or below the Step 1 baseline. `agent-session.ts` is 4,491 lines. `native/host.ts` and `native/controller.ts` are 909 and 599. The remaining line counts are unchanged from the initial table. No provider was called.

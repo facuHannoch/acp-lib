@@ -1013,7 +1013,8 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   unresolved error. The intent remains available for later reconciliation.
   Default submission records are in memory even with SQLite persistence.
   Configure file-backed host records to retain the intent across Agent reopen.
-  A custom submission store needs `markWithdrawing` to track async withdrawal.
+  A custom submission store needs `markWithdrawing` to track async withdrawal
+  and clears that flag on `markAccepted(id, true)` when take is confirmed.
   `interrupt({ clearQueue: true })` still clears locally queued input. Already
   submitted native input remains with the harness on interrupt. Stop and Agent
   close give withdrawal of submitted, unclaimed inputs a shared one-second

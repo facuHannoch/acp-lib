@@ -205,7 +205,7 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   The default submission store is memory. An Agent backed by SQLite alone has no
   local submission state to replay or withdraw after close. The file store retains
   the intent across Agent reopen. Custom host records can implement `markWithdrawing`
-  to support withdrawal of submitted input.
+  and clear the flag on `markAccepted(id, true)` to support withdrawal of submitted input.
 - Native `interrupt({ clearQueue: true })` clears local inputs and leaves submitted
   input to the harness. Stop and close give withdrawal of submitted, unclaimed
   native inputs one second before interrupting the active turn. Tracked native handles
