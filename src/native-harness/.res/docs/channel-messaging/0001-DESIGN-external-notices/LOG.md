@@ -320,3 +320,66 @@ worker handles, bounded recovery, final-message projection and delivery
 acknowledgement rules. No runtime changes. Core retains schema 19 and
 shared host/orchestrator integration. Migration allocation and an ACP
 durable acceptance seam remain to be coordinated before implementation.
+
+## Gate 3 implementation evidence
+
+Core's reviewed O1 base `3c28130` was merged at `447c1bb`; alpha was
+confirmed at `3c28130` before schema 20 integration. Clad approved the
+steer and delivery contract at `18df7e1` and the atomic explicit
+replacement addition at `88ef0fb82426f00061ba58592c34e8b41ee71778`.
+
+Runtime `f5800693b8eeefd458e843684922dac91513b470` implements
+schema 20, indexed reads, continuation and replacement transactions,
+last-assistant-message projection, terminal lifecycle hooks and
+native host flush. `2fb1bcf4923788c23c18867cfaae986ae2afeb74` adds
+process-crash assertions. The discovery query walks separate indexed
+ranges for finalized rows and the unfinished rows from prior owners,
+using the reservation sequence at open to exclude current-owner work.
+
+A database created by the actual `3fd2db2` SQLite adapter with a pending
+notice was opened by archived `3c28130`, then by schema 20 twice. The
+delivery ID, native destination and fallback source were preserved and
+the stored staged JSON was byte-identical. The migration suite also
+covers the version 16 chain and the existing worker and conversation
+records.
+
+The real stdio tests kill the harness after notice acceptance and
+before its reply. Reopen retries the same ID and records one external
+notice. They also verify startup suspension before flush, delivery
+after resume, ACP destinations excluded from native flush, invalid
+policy blocking and explicit retry, and terminal missing destinations.
+An offline ACP fixture worker completes before host startup and wakes
+a detached native destination. The external notice is excluded from
+conversation message paging. Another ACP fixture folds two steer
+messages into one successor and confirms one staged result.
+Repository tests cover the final projection, missing or blank output,
+immutable staged redirects, duplicate continuation and replacement,
+and a stale predecessor. Process tests kill before the final record,
+after final commit but before staging, after staging, before and
+after successor linkage, and before replacement transaction commit.
+
+The explicit new-assignment orchestration call and ACP idempotent
+append belong to O3a. The native test calls the same public flush
+method after replacement; it does not run O3a. Fixture ACP peers cover
+offline record semantics; no live ACP provider was exercised. The test
+for post-stage owner death and the real stdio lost-receipt test are
+separate cases. A single driven orchestrator public checkpoint remains
+for the integrated workstreams.
+
+Both typechecks passed. The focused migration, repository, process and
+native suite passed 52/0 before the last boundary tests. The final
+worker process and native tests passed again in the 24/0 rerun with
+the audit file. The full serial harness suite passed 360/0.
+
+The full root gate remains open. The overlapping root and harness runs
+reported three existing native stdio timeouts and one harness restart
+timeout respectively. The serial root run reached 1528/2 (1530 tests),
+with default five-second test timeouts in checkpoint persistence and
+the schema 16 worker migration. Those files passed 10/0 in isolation.
+The final serial root run with a runner-only timeout of 30000 ms
+reached 1527/3 (1530 tests). The audit flush timed out and two worker
+fixture children hit their own watchdogs (partial SIGKILL and live ACP
+interrupt). The audit and both worker files passed together 24/0 in
+the focused rerun. No source timeout settings were changed, and no
+full root pass is claimed. Independent review is requested with this
+verification caveat.
