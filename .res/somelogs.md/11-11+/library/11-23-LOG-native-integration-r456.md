@@ -81,3 +81,10 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   R5 stays on in-turn parity over the existing wire plus the refusal: native `billing_required` stays refused; method
   availability or parity alone is not certification; between-turn support is not claimed before a producer and bounded
   pull or idle behaviour exist. No harness work requested from our track.
+- R5 step 2a in from cod2a, `f56de5e` (report `28da8d5`): the native pull connected to the turn's metering close on the
+  existing record path; parity exact (three calls, four attempts, 714 tokens: 674 input and 40 output, matched against
+  the script and the ledger; the other channel's 44 tokens did not bleed). Coordinator run: typecheck clean, 1,635 in
+  153 files green RAM-backed; sizes at or below the ceilings (`agent-session.ts` 4,493, `host.ts` 909, `engine.ts`
+  1,051). It edits two files in the harness tree (`src/native-harness/src/interfaces/client.ts`: an optional
+  `AbortSignal` on `HarnessClient.request` and `modelCalls`; `test/helpers/scenario.ts`): asked haurness-l for review;
+  held out of the next `pre-alpha` until they agree. With clad2a for review.
