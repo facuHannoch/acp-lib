@@ -195,3 +195,10 @@ edit to `src/agent-session.ts`.
   files green with a RAM-backed `TMPDIR`. `pre-alpha` rebuilt on the new alpha (`0003f20`). cod2a is on O3a.
 - The user merged `pre-alpha` (`2d7a5b9`: O2, O4, O5a and O6 step 1 with its follow-ups and the production host hook)
   into alpha. Remaining: O3a (cod2a, in progress), then O3b, O5b and O6's real-harness steps.
+- O3a complete from cod2a (`ae54682` the feature, `f1937fe` worker_redirected only after provider acceptance,
+  `ee6026e` `takenSender` under `src/native/` and invisible ids rejected, report `97d91f0`, merge of alpha `2d7a5b9`
+  at `4163d9d`; [report](reports/11-23-REPORT-O3a.md)). Coordinator run on `4163d9d`, `TMPDIR` in RAM: typecheck
+  clean, 1,576 tests in 147 files green, snapshot unchanged; `agent-session.ts` untouched, `conversation-manager.ts`
+  1,013 (the stable-id append extracted to `src/agent/append-assistant-message.ts`). One edit in a worker delivery file
+  (`worker-terminal-reason.ts`: `REFUSED_STEER_REASONS`, +6 −1): sent to clad2a for review and to Cod1a to object.
+  With clad2a for review.
