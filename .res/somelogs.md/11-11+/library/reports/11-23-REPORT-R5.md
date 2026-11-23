@@ -141,8 +141,10 @@ The consumer guide now describes where to read native turn metering, which evide
 | Step 2b, durable state and cursor | `0fdb886` | 1,639 / 154 | 125.66 s |
 | Step 2b, retire earlier evidence | `3ef44c2` | 1,646 / 154 | 117.88 s |
 | Step 2b, unallocated accrual and proof bounds | `c271475` | 1,649 / 155 | 126.06 s |
+| Step 4, clean close-out archive | `910b7fd` | 1,649 / 155 | 146.28 s |
 
 The scripted stdio parity fixture reports 714 tokens across four attempts in three calls, including one retry. The metering operation matches both the paginated harness ledger and the independent script's per-attempt usage and IDs. SQLite schema 21 upgrades schema 20 on open and preserves the metering cursor, pending save and bounded operation proof. The channel-scoped source pulls before the synchronous drain and uses the same close path for dispatched, held backend and recovered terminal turns.
+The close-out gate passed typecheck and all 35 snapshots. The A1 hash is unchanged at `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`.
 
 | File | Before R5 | After R5 |
 | --- | ---: | ---: |
