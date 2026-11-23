@@ -19,3 +19,20 @@ Clean `bun run typecheck` and `bun test ./test` with a RAM-backed `TMPDIR` passe
 The six additional offline cases cover direct factory cancellation, same-adapter and cross-adapter handoff targets, an active prompt and queued prompt/settings during reconnect, and Agent close during eager creation or reopen. They verify dead child PIDs, no reconnect fact after cancel, no target activation, no fresh fallback and no provider failure record. The queued operations settle once with connection cancellation only when stop interrupts readiness. Ordinary queue clears retain their previous results.
 
 Clean typecheck and `bun test ./test` passed **1,606 tests in 150 files in 123.49 s** with `TMPDIR` on `/dev/shm`. All 35 snapshots passed and the A1 hash was unchanged. Logs are in `/tmp/acp-o1-r4-step2.PoEQ9p`. Extracting session configuration and adoption persistence left the session at 4,485 lines and its manager at 1,003.
+
+## Step 3. Deferred provider start
+
+`504eaf1` keeps `on_open` as the default. Normal ACP conversations can opt into `on_first_use` in Agent conversation defaults or override it through the creation or reopen runtime options. A live handle is reused regardless of a new runtime option. The option is evaluated at each creation or reopen and does not add a persistence field. Native channels and degraded PTY mode keep their existing startup behavior. Managed and standalone session startup and the adoption path stay eager where they were eager before.
+
+A newly opened deferred handle returns `providerSession: "deferred"`. It can hold a previously recorded provider ID while its provider remains disconnected. Inspecting the handle exposes empty model/configuration and command views, and ACP-only capability reads still raise the not-connected error. First prompt or settings change uses the existing readiness path, sharing the queue's startup attempt. Recorded sessions load by their original ID, and first-use recovery still applies checkpoint continuation and reports its progress. A new session that fails to start surfaces the provider error at first use. A stop before first use spawns nothing, and stop during initialize reaps the child.
+
+The changelog documents `deferred` and the configuration. A search of the repository's `providerSession` consumers found no exhaustive switches over `OpenOwnedAgentConversationResult.providerSession`. Remaining `loaded`, `new` and `recovered` assertions are scoped to eager callers. Tests cover concurrent first use, default and override precedence, first settings write, recorded reload, missing-session checkpoint recovery, launch and session errors, a native detached open, and eager adoption with lazy defaults.
+
+`d6c3fa9` merged alpha `3d96dbd`, including the worker retry follow-up, before the final gate. Clean typecheck and `bun test ./test` with a RAM-backed `TMPDIR` passed **1,614 tests across 151 files in 123.69 s**. All 35 snapshots passed and the A1 snapshot hash was unchanged. Logs are in `/tmp/acp-o1-r4-step3.Yq0ksm`.
+
+| File | Before R4 | After R4 |
+| --- | ---: | ---: |
+| `src/agent-session.ts` | 4,564 | 4,495 |
+| `src/client.ts` | 1,062 | 1,046 |
+| `src/controller.ts` | 840 | 764 |
+| `src/agent/conversation-manager.ts` | 1,013 | 1,012 |
