@@ -193,3 +193,5 @@ edit to `src/agent-session.ts`.
   blocking findings (a reconnect uses the new client each time; a callback in flight when the host stops fails closed;
   no client leak). **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O6a-final.md)): 1,563 tests in 145
   files green with a RAM-backed `TMPDIR`. `pre-alpha` rebuilt on the new alpha (`0003f20`). cod2a is on O3a.
+- The user merged `pre-alpha` (`2d7a5b9`: O2, O4, O5a and O6 step 1 with its follow-ups and the production host hook)
+  into alpha. Remaining: O3a (cod2a, in progress), then O3b, O5b and O6's real-harness steps.
