@@ -57,3 +57,7 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   on the attempt; report `c2ba881`). Coordinator gate on `c2ba881`: 0 failing runs of 50, typecheck clean, 1,617 in 151
   files green RAM-backed; sizes unchanged (session 4,495, client 1,046, controller 764, manager 1,012). With clad2a.
 - cod2a amended R5's brief per clad2a's five gaps (`f4d9fab`) and starts R5 step 1.
+- The user merged `pre-alpha` (`ae71995`: the live-run files, the smoke runner hardening and the ACP busy-worker restart
+  test) into alpha. Pending for the next one: R4 (`c2ba881`), the orchestrator follow-up (`1a769da`) and R5's brief
+  amendment; R5 step 1 (`47e2750`, report `7e537af`; coordinator run `7e537af`: typecheck clean, 1,624 in 152 files
+  green RAM-backed, sizes unchanged) awaits clad2a's review.
