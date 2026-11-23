@@ -75,3 +75,9 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   for the in-turn parity gate. **Step 1 gate passed** (coordinator: 1,624 in 152 files, RAM-backed). 2a released with
   five notes: a call-level seal test; an empty turn is not proven zero; a detached pull's request outliving the 15 s
   budget (30 s host timeout); serialize `pullTurn` per channel; nothing treats `native-harness-unverified` as verified.
+- haurness-l (R5 harness dependency): the missing billing-grade accounting guarantees (provider and category
+  semantics, a complete sealed per-turn manifest including failed attempts, between-turn ownership and admission) are
+  scoped as a separate harness design owned by the harness track (Cod1a drafting, Clad1a reviewing, when scheduled).
+  R5 stays on in-turn parity over the existing wire plus the refusal: native `billing_required` stays refused; method
+  availability or parity alone is not certification; between-turn support is not claimed before a producer and bounded
+  pull or idle behaviour exist. No harness work requested from our track.
