@@ -208,8 +208,9 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
   and clear the flag on `markAccepted(id, true)` to support withdrawal of submitted input.
 - Native `interrupt({ clearQueue: true })` clears local inputs and leaves submitted
   input to the harness. Stop and close give withdrawal of submitted, unclaimed
-  native inputs one second before interrupting the active turn. Tracked native handles
-  reject with `NativeInputStoppedError` instead of returning a cancelled result.
+  native inputs up to one second before interrupting the active turn. Only submitted
+  inputs that were never taken reject with `NativeInputStoppedError`. A taken
+  prompt keeps its cancelled result and any partial reply from its running turn.
   Inputs can still incur spend if take has won or the host is unavailable or silent.
   `TurnEvent` now includes the controller's `input_withdrawn` confirmation.
 

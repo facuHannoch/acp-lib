@@ -684,7 +684,9 @@ test("a native withdrawal that loses to take preserves the submission", async ()
   intercept.push = async () => ({ item });
   intercept.withdrawItem = async () => ({ outcome: "taken", item });
   await host.push(input(item.id, item.channel));
-  expect(await host.withdrawSubmission(item.channel, item.id)).toBe(false);
+  const reported: Array<string | undefined> = [];
+  expect(await host.withdrawSubmission(item.channel, item.id, id => reported.push(id))).toBe(false);
+  expect(reported).toEqual(["12"]);
   expect(records.submission(item.id)).toMatchObject({ state: "accepted" });
   expect(records.submission(item.id)?.withdrawing).toBeUndefined();
   expect(calls.filter(method => method === "push")).toHaveLength(1);

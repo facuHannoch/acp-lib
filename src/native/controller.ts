@@ -114,7 +114,6 @@ export class NativeController implements ConversationController, ChannelPort {
 
   get channelId(): string { return this.#channel; }
 
-  /** Attaches the conversation to its channel. Never starts the process: the first real work does. */
   async start(): Promise<StartResult> {
     this.#stopped = false;
     if (!this.#detach) {
@@ -141,7 +140,6 @@ export class NativeController implements ConversationController, ChannelPort {
     return Promise.reject(new UnsupportedError("a native conversation cannot start a fresh context: the harness has no context reset"));
   }
 
-  /** The conversation is done with its channel for now. The shared process keeps running for the others. */
   async stop(): Promise<void> {
     if (this.#stopped) return;
     this.#closeAttachmentApprovals(true);
@@ -270,7 +268,9 @@ export class NativeController implements ConversationController, ChannelPort {
     }
   }
 
-  withdrawInput(messageId: string): Promise<boolean> { return this.#host.withdrawSubmission(this.#channel, messageId); }
+  withdrawInput(messageId: string, onTaken?: (turnId?: string) => void): Promise<boolean> {
+    return this.#host.withdrawSubmission(this.#channel, messageId, onTaken && (id => onTaken(id === undefined ? undefined : sessionTurnId(id))));
+  }
   subscribeTurns(listener: (event: TurnEvent) => void): () => void {
     this.#turnListeners.add(listener);
     return () => this.#turnListeners.delete(listener);

@@ -12,7 +12,7 @@ export class AgentSessionPromptBlockedError extends Error {
   }
 }
 
-/** The conversation stopped observing a submitted native input. */
+/** The conversation stopped observing a native input before a turn took it. */
 export class NativeInputStoppedError extends Error {
   constructor(readonly messageId: string) {
     super("the conversation stopped observing this native input");

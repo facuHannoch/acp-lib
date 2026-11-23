@@ -15,6 +15,7 @@
 import type { AgentSessionPromptResult } from "../agent-conversation-contracts.ts";
 import type { AgentSessionEvent } from "../agent-conversation-contracts.ts";
 import type { ConversationController, TurnCause, TurnStarted, TurnTook } from "../conversation-controller/contracts.ts";
+import { cancelledPromptResult } from "../steering/controller.ts";
 import type { Logger } from "../logger.ts";
 import type { PromptHandlers } from "../types.ts";
 import type { PromptQueueItem, TurnContext } from "./context.ts";
@@ -83,11 +84,20 @@ export class BackendTurns {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        Promise.allSettled(submitted.map(async id => withdraw(id))),
+        Promise.allSettled(submitted.map(async id => withdraw(id, turnId => this.noteTaken(id, turnId)))),
         new Promise<void>(resolve => { timer = setTimeout(() => resolve(), 1_000); }),
       ]);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  noteTaken(id: string, turnId?: string): void {
+    this.#claim([id]);
+    const turn = turnId && this.#turns.get(turnId);
+    if (turn) {
+      turn.messageIds.add(id);
+      turn.cause = mergeCause(turn.cause, { messageIds: [id] });
     }
   }
 
@@ -166,13 +176,28 @@ export class BackendTurns {
 
   /**
    * On native interrupt, locally held items leave and submitted items keep following the harness.
-   * Other controllers keep their accepted, unclaimed clear behavior. Stop forgets all tracked items and turns.
+   * On native stop, the active turn still owns its taken inputs and finalizes their result.
    */
   clear(stopping: boolean, native = false): PromptQueueItem[] {
+    if (stopping && native) return this.#clearNativeStop();
     const leaving = [...this.#messages].filter(([, message]) => stopping || (native ? !message.offered && message.state !== "taken" : message.state === "waiting"));
     for (const [id] of leaving) this.unwait(id);
     if (stopping) this.#turns.clear();
     return leaving.map(([, message]) => message.item);
+  }
+
+  #clearNativeStop(): PromptQueueItem[] {
+    const active = this.running === null ? undefined : this.#turns.get(this.running);
+    const untaken: PromptQueueItem[] = [];
+    for (const [id, message] of this.#messages) {
+      if (active?.messageIds.has(id)) continue;
+      this.unwait(id);
+      // Local input and held turns without a prepared result keep legacy cancellation.
+      if (!message.offered || message.state === "taken") message.item.resolve(cancelledPromptResult(message.item));
+      else untaken.push(message.item);
+    }
+    for (const id of this.#turns.keys()) if (id !== this.running) this.#turns.delete(id);
+    return untaken;
   }
 }
 
@@ -219,6 +244,7 @@ export function backendTurnItem(turnId: string, handlers?: PromptHandlers): Prom
 /** The controller reported a turn the session didn't send: queue it (or abandon it if the conversation is stopped). */
 export function reportBackendTurn(host: BackendTurnHost, controller: ConversationController, event: TurnStarted): void {
   if (host.stopped) {
+    if (controller.withdrawInput) for (const id of event.cause.messageIds ?? []) host.turns.noteTaken(id);
     controller.abandonTurn(event.turnId, new Error("the conversation is stopped"));
     return;
   }
@@ -255,7 +281,7 @@ export async function sendToBackend(host: BackendTurnHost, controller: Conversat
     await (release ? Promise.race([send, release.promise]) : send);
     host.turns.accepted(message.turnId);
   } catch (error) {
-    if (host.turns.unwait(message.turnId)) message.reject(error);
+    if ((!release || host.turns.withdrawable(message.turnId)) && host.turns.unwait(message.turnId)) message.reject(error);
   }
 }
 

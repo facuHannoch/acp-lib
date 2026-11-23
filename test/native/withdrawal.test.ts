@@ -105,9 +105,10 @@ for (const action of ["stop", "close"] as const) {
   test(`native ${action} withdraws unclaimed input without another model call`, async () => {
     const rig = await nativeRig();
     try {
-      const { agent, conversation, host, queued, result } = await heldPair(rig);
+      const { agent, conversation, host, queued, running, result } = await heldPair(rig);
       if (action === "stop") await conversation.stop();
       else await agent.close();
+      expect(await running).toMatchObject({ status: "cancelled", text: "Working." });
       expect(await result).toBeInstanceOf(NativeInputStoppedError);
       expect(await result).toMatchObject({ messageId: queued.id });
       const current = action === "stop" ? host : (await rig.open()).nativeHarness!;
@@ -201,7 +202,7 @@ test("native stop cannot withdraw when take wins", async () => {
   const rig = await nativeRig();
   const release = Promise.withResolvers<void>();
   try {
-    const { conversation, host, result, taken } = await heldPair(rig, [hold("active"), hold("taken"), reply("Done.")]);
+    const { conversation, host, result, running, taken } = await heldPair(rig, [hold("active"), hold("taken", "Taken text."), reply("Done.")]);
     const issued = Promise.withResolvers<void>();
     const actual = host.withdraw.bind(host);
     let outcome: string | undefined;
@@ -219,7 +220,7 @@ test("native stop cannot withdraw when take wins", async () => {
     release.resolve();
     await stopped;
     expect(outcome).toBe("taken");
-    expect(await result).toBeInstanceOf(NativeInputStoppedError);
+    expect(await result).toMatchObject({ status: "cancelled", text: "Working.\n\nTaken text.", operationId: (await running).operationId });
   } finally {
     release.resolve();
     rig.release("active");

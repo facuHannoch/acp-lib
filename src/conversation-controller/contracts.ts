@@ -42,7 +42,7 @@ export interface ConversationController {
    */
   send(run: TurnRun): Promise<void>;
   /** Requests withdrawal of a submitted input, true only when confirmed. */
-  withdrawInput?(messageId: string): Promise<boolean>;
+  withdrawInput?(messageId: string, onTaken?: (turnId?: string) => void): Promise<boolean>;
   /**
    * Turn reports: `turn_started` whenever a turn starts (because of a `send`, or on the backend's
    * own), and, for backend-scheduled controllers only, `turn_took` when more items are folded into

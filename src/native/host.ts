@@ -880,7 +880,6 @@ export class NativeHarnessHost {
     }
   }
 
-  /** Withdraws an accepted input the harness has not taken. `taken` names the turn that owns it instead. */
   async withdraw(channel: string, item: string): Promise<{ outcome: "withdrawn" } | { outcome: "taken"; turnId: string | undefined }> {
     const result = await this.#client().withdrawItem({ channel, item });
     if (result.outcome === "withdrawn") this.#deliver({ channel, event: { type: "item_withdrawn", item } });
@@ -888,8 +887,10 @@ export class NativeHarnessHost {
     return result.outcome === "withdrawn" ? { outcome: "withdrawn" } : { outcome: "taken", turnId: result.item.turnId };
   }
 
-  withdrawSubmission(channel: string, id: string): Promise<boolean> {
-    return this.#withdrawals.withdraw(channel, id, this.#waiters.get(id)?.promise);
+  async withdrawSubmission(channel: string, id: string, onTaken?: (turnId?: string) => void): Promise<boolean> {
+    const result = await this.#withdrawals.withdraw(channel, id, this.#waiters.get(id)?.promise);
+    if (result?.outcome === "taken") onTaken?.(result.turnId);
+    return result?.outcome === "withdrawn";
   }
 
   #retryWithdrawal(submission: Submission, reopened = false): void {
@@ -904,6 +905,5 @@ export class NativeHarnessHost {
     });
   }
 
-  /** The committed text of one assistant message, whatever its size. */
   readMessage(messageId: string): Promise<string> { return readCompleteMessage(this.#client(), messageId); }
 }

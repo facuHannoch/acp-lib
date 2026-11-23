@@ -1018,9 +1018,10 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   `interrupt({ clearQueue: true })` still clears locally queued input. Already
   submitted native input remains with the harness on interrupt. Stop and Agent
   close give withdrawal of submitted, unclaimed inputs a shared one-second
-  grace period before interrupting the active turn and rejecting the tracked
-  native handles with `NativeInputStoppedError` (includes `messageId`). If a
-  turn already took an input or the host is unavailable or silent, that input
+  grace period before interrupting the active turn. A prompt whose input was
+  taken keeps its cancelled result and any partial reply. Submitted inputs
+  that were never taken reject with `NativeInputStoppedError` (includes
+  `messageId`). If take wins or the host is unavailable or silent, the input
   may still run and incur model charges.
 - **Channel changes** go through `agent.nativeHarness.changeChannel(conversationId,
   { displayName, policy, lifecycle })`. While the harness is stopped they are
