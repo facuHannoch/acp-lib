@@ -218,3 +218,9 @@ edit to `src/agent-session.ts`.
   is in from cod2a, HEAD `bc974ce`, `8db2c67` plus eight stdio tests; coordinator run RAM-backed: typecheck clean,
   1,589 tests in 149 files green, snapshot unchanged. With clad2a for review. O6 step 3, the live run, is held for
   the user.
+- Integration slice reviewed by clad2a (`f51243e`): meets the briefs, no blocking findings; no gap for a native
+  destination after `old_settled` (`settled()` flushes the native host after every completion); three real SIGKILL
+  boundaries probed. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O3b-O5b-O6b.md)): 1,589 in 149 files.
+  `pre-alpha` rebuilt with O3a, its follow-up and the slice. Follow-up for cod2a: a product path for the explicit
+  retry of a blocked notice, and the delivery state in `check` and `list`. Remaining: the live run (O6 step 3, the
+  user's authorization), the acceptance read-through, R4–R6.
