@@ -267,3 +267,45 @@ It now says: the turn record's usage and `state.totals` carry usage attributed t
 1. Records written by the intermediate `4bbefcb` aren't backfilled (above).
 2. **A truncated proof forfeits recovery of later-sealed attempts of that turn:** they are shown as unmeasured evidence, not accrued. That is the safe choice and it is visible, but say it in the changelog next to "oversized evidence".
 3. The accrual list can hold one entry per earlier measured attempt in a single close (bounded by the 100 earlier turns per close); fine in practice.
+
+# Part 6 — R5 step 4 (the documentation)
+
+`910b7fd` (`CHANGELOG-metering.md`, `CONSUMER_GUIDE.md`) and `d6c35b8` (the R5 report's final gate), on top of the alpha merge. I read the diff against the code I reviewed and ran a clean `git archive d6c35b8` (`/tmp/clad2a-r5f`, `TMPDIR` on `/dev/shm`).
+
+**Verdict: the documentation is accurate and has no overclaim. It is missing several limitations a consumer needs, and a few sentences are imprecise. None blocks the close-out; I'd fix the first four before release.**
+
+- **Nothing under `src/` or `test/` changed** (`diff -r` against the `147bd63` archive shows both trees identical).
+- **Numbers in the report match what I measured.** The gate table's rows (1,624/152; 1,635/153; harness 367/48; 1,639/154; 1,646/154; 1,649/155) are the counts I reproduced at each step. The new close-out row, `910b7fd` at 1,649/155, holds: on `d6c35b8` typecheck is clean and **1,649 pass, 0 fail, 155 files**, 35 snapshots. The line counts "before / after" are exact: `agent-session.ts` 4,495 → **4,492**, `native/host.ts` 916 → **909**, `engine.ts` 1,059 → **1,034**, the other five unchanged (1,046 / 764 / 599 / 1,012 / 563).
+- **No example in `CONSUMER_GUIDE.md` can fail to run: the new section is prose only** (no code block).
+
+## What the text claims, against the code
+
+| Claim | Verdict |
+| --- | --- |
+| The source is scoped to `<Agent id>/<channel id>`, reads bounded pages of the model-call ledger, matches the exact channel and wire turn id | Accurate (the key is `<host session id>/<channel id>`, equal to the Agent id; 15 s and 1,000-page bounds) |
+| Read `result.metering` or the persisted operation; `TurnResult.usage` and per-call events are deferred | Accurate (`result.usage` is `null`) |
+| `nativeUsage` carries observed ids, outcomes and usage fields, or an unavailable reason | Accurate; it also carries `unmeasured`, `accountedAttemptIds` and `earlierEvidencePending`, which the guide doesn't name (below) |
+| Missing or running attempts stay unmeasured; a partial turn has a reason and partial attribution | Accurate |
+| An empty scan, an unavailable host, or an undispatched turn gives **unavailable** usage; a queued-cancelled prompt may have no record | Accurate against the tests and probes |
+| Unknown model identity, `pricing_unavailable`, never the configured model | Accurate (`providerId`/`model` are `null`; the pricing function is never called) |
+| Totals attributed; earlier unaccounted usage in `unaccountedEarlierCalls` and accrued **once** to `state.unallocatedUsage`; together they cover known spend and may be a lower bound | Accurate (my 253 + 110 = 363 probes); "known" and "lower bound" are the right hedges |
+| Truncated proof: later-sealed attempts outside it can't be recovered as tokens and stay visible as unmeasured | Accurate (my 130-attempt probe) |
+| Native `billing_required` is refused; no between-turn support; no certification | Accurate and not overclaimed: it says between-turn billing "needs its own harness evidence", and the changelog keeps "between-turn usage remains a harness dependency" |
+| Schema 20 → 21 on open; intermediate-`4bbefcb` records not backfilled | Accurate (changelog and report; my compatibility probe) |
+
+## Imprecise or overclaiming sentences
+
+1. **"enable best-effort metering to get usage at turn close."** Best-effort is the **default** (`config.metering?.enforcement ?? "best_effort"`), and a native turn is metered with no opt-in. Say "Native turns are metered by default (`best_effort`)", and that a consumer-supplied `inferenceSource` and a configured `pricing` policy are ignored for native conversations (the route is unknown, so pricing is never applied).
+2. **"stores the per-channel cursor and bounded proof with the operation index."** The cursor lives in the conversation's metering **state** (`nativeCursor` in the state record); the proof is on the operation index row (`metering_records.native_metering_proof_json`). Two places, and only the proof survives `meteringRecords: "none"` on the index.
+3. **"A failed final save can replay under the same operation ID."** True when the write-ahead record was staged. If the database refused the staging write as well, nothing is replayed; the usage reappears in the **next** close as unaccounted usage of an earlier turn. State the condition, since the sentence reads as a guarantee.
+4. **"A partially measured turn includes a reason and partial attribution."** Native provenance is **always** `native_ledger` / `routing: unknown` / `attribution: partial`, even for a fully measured turn, and has no certification id. Say so, so a consumer doesn't read "partial" as "this turn was incomplete".
+
+## Missing limitations
+
+- **The harness-dependency list is only in the report.** The consumer guide and changelog should say why there is no cost, cache split or model identity and why strict is refused: the wire lacks provider/model identity, cache categories, reported cost and currency, attempt purpose, and a sealed per-turn manifest that can attest zero; the between-turn producer is also missing.
+- **`unallocatedUsage` is not between-turn usage.** Elsewhere that bucket means foreign threads or late arrivals; here its reason is "unaccounted usage of an earlier turn". One sentence prevents a consumer from reading it as background-call support.
+- **A truncated proof can list an already-counted attempt as "unmeasured".** In my probe a measured call that was already attributed in its own turn appeared in the next turn's earlier evidence as `unmeasured: 1` ("proof was truncated"). The sentence about truncation should add that such evidence can include attempts already counted, so a consumer shouldn't add the unmeasured count up as lost spend.
+- **The schema change is one-way:** a schema-21 database can't be opened by older code (the `173e4e7` source refuses it). Worth one line next to the upgrade note.
+- **The refusal's type and text:** name `MeteringPreflightError` and say it is raised when a native conversation is created or opened with `billing_required`, with the message naming `native-harness@1` (it does).
+- **`earlierEvidencePending`:** a record can say earlier evidence is awaiting terminal proof (the cursor waits); the guide doesn't mention it.
+- **Where `state.totals` lives:** a record's `nextState` and `agent.persistence.metering.state(id)`; the guide writes `state.totals` without saying where to read it.
