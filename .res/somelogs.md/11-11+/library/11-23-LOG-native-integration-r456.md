@@ -164,3 +164,11 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   changelog, guide and exhaustive-switch check; the size extraction comes first (`agent-session.ts` is at its ceiling).
   Question to haurness-l: is per-channel order guaranteed between push and withdraw, or a tombstone planned (no harness
   change needed). cod2a amends the brief and starts step 1.
+- haurness-l answered the R6 ordering question: **option (c)**. The harness wire makes no per-channel ordering guarantee
+  between `channel/push` and `channel/withdraw` for in-flight requests on one connection, and no tombstones for unknown
+  ids will be added. `withdraw` is atomic against take for a committed inbox item; `not_found` means no matching item
+  was committed at lookup time (for an unresolved push: not a cancellation, not proof of non-acceptance); only
+  `withdrawn` confirms cancellation of an accepted item; `taken` reports that take won. Rules for R6: retain the
+  withdraw intent across reconnect, suppress push replay once withdrawal is requested, resolve via the push outcome or a
+  bounded reconcile/retry with the original channel and item id; test the ambiguity with a controlled peer or barrier
+  (no claim of reproducing overtaking on the stock server). Documented as an assumption in R6.
