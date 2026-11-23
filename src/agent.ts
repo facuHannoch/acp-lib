@@ -1,3 +1,4 @@
+import { resolveProviderStart } from "./conversation-startup.ts";
 import { withDelegationTools } from "./orchestrator/native-delegation.ts";
 import { AcpWorkerDelivery } from "./orchestrator/acp-delivery.ts";
 import { DurableWorkerAssignments } from "./orchestrator/durable-assignments.ts";
@@ -98,6 +99,7 @@ export type {
   CreateAgentConversationConfig,
   OpenAgentConversationConfig,
   OpenOwnedAgentConversationResult,
+  ProviderStart,
 } from "./agent/config.ts";
 
 /** Durable owner of one agent identity, its adapters, identity runtime, and conversations. */
@@ -368,6 +370,7 @@ export class Agent {
 
   static async open(config: AgentConfig): Promise<Agent> {
     validatePermissionConsumerConfig(config.conversationDefaults);
+    resolveProviderStart(config.conversationDefaults?.providerStart);
     config = {
       ...config,
       permissions: ownPermissions(config.permissions),

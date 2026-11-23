@@ -1,5 +1,17 @@
 # Controller interface
 
+## ACP startup
+
+- An explicit stop or superseding ACP connection attempt rejects with `ConnectionCancelledError`
+  and code `connection_cancelled`. Direct session factories accept a startup `signal`.
+- Agent-owned normal ACP conversations default to `providerStart: "on_open"`. Set
+  `conversationDefaults.providerStart` or override it with `runtime.providerStart: "on_first_use"`
+  on creation or reopen to connect on the first provider-bound operation. Before first use,
+  provider settings and commands are empty and ACP-only capabilities are unavailable.
+- `OpenOwnedAgentConversationResult.providerSession` includes `"deferred"` for an open that has
+  yet to connect. Consumers with exhaustive switches over this field can handle the new status.
+  The startup policy is runtime configuration and can be selected anew on each reopen.
+
 ## Worker observation
 
 - `AgentEvent` includes worker lifecycle facts. Subscribe with `agent.events.subscribeWorkers` for

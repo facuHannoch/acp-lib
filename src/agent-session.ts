@@ -433,6 +433,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private managedInitializationReported = false;
   private readonly operationLifecycle: OperationLifecycleConfig;
   private reconnecting = false;
+  private deferredProviderStart: boolean;
   private connecting = 0;
   private handoffTarget?: ConversationController;
   private detachControllerConnection: (() => void) | null = null;
@@ -550,6 +551,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
     this._cwd = config.cwd;
     this._title = config.title;
     this._internalSessionId = requestedInternalSessionId ?? null;
+    this.deferredProviderStart = config.deferProviderStart === true && this.ownerAgentSessionId !== undefined &&
+      !config.native && this._mode === "normal" && this.persistence === false;
     this.meteringConfig = Object.freeze({ ...(config.metering ?? {}) });
     this.metering = new MeteringEngine({
       agentSessionId: this.agentSessionId,
@@ -597,6 +600,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     if (providerSession.kind === "load") this.sessionLoadFailure = providerSession.onFailure ?? "error";
     this.controller = this.createController(config.adapter, config.adapterId, this._mode, {
       sessionId: requestedInternalSessionId,
+      requireStartupSession: this.deferredProviderStart,
       sessionLoadFailure: providerSession.kind === "load"
         ? providerSession.onFailure ?? "error"
         : undefined,
@@ -611,7 +615,7 @@ export class AgentConversation implements AgentClient, Bridgeable {
     adapter: Adapter,
     adapterId: string,
     mode: AgentMode,
-    startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure" | "onSessionReplay"> = {},
+    startup: Pick<AgentControllerConfig, "sessionId" | "sessionLoadFailure" | "onSessionReplay" | "requireStartupSession"> = {},
   ): ConversationController {
     return createController({
       ...this.controllerDefaults,
@@ -1018,6 +1022,10 @@ export class AgentConversation implements AgentClient, Bridgeable {
   private async start(): Promise<void> {
     if (this.persistence !== false) {
       await this.startPersistent();
+      return;
+    }
+    if (this.deferredProviderStart) {
+      if (this._internalSessionId) this.installProviderAttachment(this._internalSessionId, "recorded", false);
       return;
     }
     const result = await this.startController();
@@ -3550,6 +3558,8 @@ export class AgentConversation implements AgentClient, Bridgeable {
       if (via === "loaded" && loadedId && loadedId !== this._internalSessionId) {
         this.installProviderAttachment(loadedId, "runtime_only", !sessionId);
       }
+      if (this.deferredProviderStart && !sessionId) via = "fresh";
+      this.deferredProviderStart = false;
       this.emit({ kind: "provider_reconnected", via, internalSessionId: this._internalSessionId! });
     } catch (error) {
       await this.controller.forceStop().catch(() => {});

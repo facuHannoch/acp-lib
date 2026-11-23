@@ -19,6 +19,8 @@ import type { OpenContinuationOptions, ProviderSession, TranscriptActivityConfig
 export interface AgentSessionConfig extends ConversationPermissionConfig {
   /** Cancels the factory's startup before it returns the conversation. */
   signal?: AbortSignal;
+  /** @internal Agent-owned ACP startup policy. */
+  deferProviderStart?: boolean;
   /** The resolved adapter this conversation talks to. */
   adapter: Adapter;
   /** Stable adapter id for the catalog/display (e.g. "codex"). */

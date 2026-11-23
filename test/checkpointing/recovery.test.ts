@@ -69,7 +69,7 @@ describe("checkpoint recovery", () => {
     });
   });
 
-  test("creates and seeds a new provider session when the recorded one is missing", async () => {
+  for (const deferred of [false, true]) test(`creates and seeds a new provider session when the recorded one is missing (${deferred ? "first use" : "on open"})`, async () => {
     const root = await mkdtemp(join(tmpdir(), "acp-checkpoint-recovery-"));
     roots.push(root);
     const path = join(root, "agent.sqlite");
@@ -105,18 +105,26 @@ describe("checkpoint recovery", () => {
     const reopenedAgent = await Agent.open(config);
     const [opened, concurrentOpen] = await Promise.all([
       reopenedAgent.conversations.open(conversationId, {
+        ...(deferred ? { runtime: { providerStart: "on_first_use" as const } } : {}),
         onRecoveryProgress: (event) => progress.push(event),
       }),
       reopenedAgent.conversations.open(conversationId),
     ]);
 
-    expect(opened.providerSession).toBe("recovered");
+    expect(opened.providerSession).toBe(deferred ? "deferred" : "recovered");
     expect(concurrentOpen.conversation).toBe(opened.conversation);
-    expect(concurrentOpen.providerSession).toBe("recovered");
-    expect(opened.recovery?.checkpointId).toBe(checkpoint?.checkpointId);
-    expect(opened.recovery?.previousInternalSessionId).toBe(oldSessionId);
-    expect(opened.recovery?.recoveredThroughSequence).toBe(latestSequence);
-    expect(opened.recovery!.recoveredThroughSequence).toBeGreaterThan(checkpoint!.coveredSequence);
+    expect(concurrentOpen.providerSession).toBe(opened.providerSession);
+    if (deferred) {
+      expect(progress).toEqual([]);
+      expect(opened.conversation.internalSessionId).toBe(oldSessionId);
+      expect(opened.conversation.connection.isConnected).toBe(false);
+      expect((await opened.conversation.prompt("first use after reopen")).status).toBe("completed");
+    } else {
+      expect(opened.recovery?.checkpointId).toBe(checkpoint?.checkpointId);
+      expect(opened.recovery?.previousInternalSessionId).toBe(oldSessionId);
+      expect(opened.recovery?.recoveredThroughSequence).toBe(latestSequence);
+      expect(opened.recovery!.recoveredThroughSequence).toBeGreaterThan(checkpoint!.coveredSequence);
+    }
     expect(progress.map(({ stage }) => stage)).toEqual([
       "load_failed",
       "loading_checkpoint",

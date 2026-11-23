@@ -293,3 +293,24 @@ for (const stage of ["create", "reopen"] as const) {
     }
   }, 16_000);
 }
+
+test("stop reaches deferred first use while initialize is pending", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "acp-cancel-first-use-"));
+  const { seen, env, logger } = waitingForHang("initialize");
+  const agent = await Agent.open({
+    persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
+    adapters: { test: adapter },
+    conversationDefaults: { env, logger, providerStart: "on_first_use" },
+  });
+  try {
+    const conversation = await agent.conversations.create();
+    const first = conversation.prompt("wait for initialize").catch(error => error);
+    const pid = await bounded(seen, "first-use handshake");
+    await bounded(conversation.stop(), "deferred startup stop");
+    expect(await first).toBeInstanceOf(ConnectionCancelledError);
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    await agent.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

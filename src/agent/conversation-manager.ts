@@ -1,3 +1,4 @@
+import { defersProvider, resolveProviderStart } from "../conversation-startup.ts";
 import { appendAssistantMessage } from "./append-assistant-message.ts";
 import { inheritPermissionConfig, validateConversationPermissionConfig, type ConversationPermissionConfig } from "../permissions/policy.ts";
 import { writeConversationError } from "./error-record-writer.ts";
@@ -182,6 +183,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         ...config,
         providerSession: "new",
         channelIntentCommitted,
+        deferProviderStart: defersProvider(config, this.settings.defaults, this.agent.adapters.native(adapterId) !== null),
         settings,
       });
     } catch (error) {
@@ -410,12 +412,14 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     if (summary.controllerKind && summary.controllerKind !== (this.agent.adapters.native(adapterId) ? "native" : "acp")) {
       throw new UnsupportedError("opening with a different conversation controller kind is unsupported");
     }
+    const deferProviderStart = !summary.adopted && defersProvider(startConfig, this.settings.defaults, this.agent.adapters.native(adapterId) !== null);
     const attemptId = active ? `provider-load-${randomUUID()}` : `provider-create-${randomUUID()}`;
     try {
       const conversation = await this.start(id, summary.participants, {
         ...startConfig,
         providerSession: active ? "load" : "new",
         internalSessionId: active?.internalSessionId,
+        deferProviderStart,
         settings,
       });
       if (pendingAdoption) {
@@ -429,7 +433,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       }
       return Object.freeze({
         conversation,
-        providerSession: active ? "loaded" : "new",
+        providerSession: deferProviderStart ? "deferred" : active ? "loaded" : "new",
       });
     } catch (error) {
       if (error instanceof ConnectionCancelledError) throw error;
@@ -522,6 +526,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       config.onRecoveryProgress?.({ stage: "completed", checkpointId: checkpoint.checkpointId });
       return Object.freeze({ conversation, providerSession: "recovered", recovery: result });
     } catch (recoveryError) {
+      if (recoveryError instanceof ConnectionCancelledError) throw recoveryError;
       // A recovery failure is a distinct root cause from the load failure already
       // recorded above; it prevents the logical conversation from reopening.
       const recoveryRecorded = await this.recordConversationError({
@@ -773,6 +778,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
     config: (CreateAgentConversationConfig | OpenAgentConversationConfig) & {
       readonly providerSession: "new" | "load";
       readonly channelIntentCommitted?: boolean;
+      readonly deferProviderStart?: boolean;
       readonly internalSessionId?: string;
       /** What this conversation persists, resolved before it started. */
       readonly settings: ManagerSettings;
@@ -804,7 +810,8 @@ export class DefaultAgentConversationManager implements AgentConversationManager
         config.settings,
         async (loadError) => {
           const current = conversation!;
-          await this.recoverAfterLoadFailure(id, current.internalSessionId!, loadError, config.settings, {},
+          await this.recoverAfterLoadFailure(id, current.internalSessionId!, loadError, config.settings,
+            "onRecoveryProgress" in config ? config : {},
             async () => {
               await current.restartProviderFresh();
               return current;
@@ -818,6 +825,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
       this.liveSettings.set(id, config.settings);
       conversation = await AgentConversation.create({
         signal: this.shutdownStarts.signal,
+        deferProviderStart: config.deferProviderStart,
         ...runtime,
         ...(persistedMetering
           ? { metering: { ...runtime.metering, initialState: persistedMetering.state } }
@@ -926,6 +934,7 @@ export class DefaultAgentConversationManager implements AgentConversationManager
   } & ConversationPermissionConfig): string {
     validateConversationPermissionConfig(config);
     validateConversationPermissionConfig(config.runtime);
+    resolveProviderStart(config.runtime?.providerStart);
     const adapterId = this.resolveAdapterId(config.adapterId);
     this.agent.adapters.require(adapterId);
     const mode = config.mode ?? config.runtime?.mode ?? this.settings.defaults.mode;

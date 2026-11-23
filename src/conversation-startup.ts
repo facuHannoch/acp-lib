@@ -1,4 +1,18 @@
 import { ConnectionCancelledError } from "./errors.ts";
+import type { AgentConversationRuntimeDefaults, OpenAgentConversationConfig, ProviderStart } from "./agent/config.ts";
+
+export function resolveProviderStart(value: ProviderStart | undefined): ProviderStart {
+  if (value === undefined) return "on_open";
+  if (value === "on_open" || value === "on_first_use") return value;
+  throw new TypeError("providerStart must be on_open or on_first_use");
+}
+
+export function defersProvider(
+  config: Pick<OpenAgentConversationConfig, "runtime" | "mode">, defaults: AgentConversationRuntimeDefaults, native: boolean,
+): boolean {
+  return (config.runtime?.providerStart ?? defaults.providerStart) === "on_first_use" && !native
+    && (config.mode ?? config.runtime?.mode ?? defaults.mode) !== "degraded";
+}
 
 /** The factory can be cancelled before it hands its session back to the caller. */
 export async function withStartupCancellation<T>(

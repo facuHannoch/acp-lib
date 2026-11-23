@@ -74,6 +74,8 @@ export interface AgentControllerConfig extends PermissionPolicyConfig {
   sessionId?: string;
   /** Policy when sessionId cannot be loaded. Default "new" for compatibility. */
   sessionLoadFailure?: SessionLoadFailure;
+  /** @internal First use of a deferred Agent conversation must surface session creation errors. */
+  requireStartupSession?: boolean;
   /** Receives the history a loaded `sessionId` replays (raw `session/update` notifications). */
   onSessionReplay?: (notification: unknown) => void;
   /** Default MCP servers bound at session creation/switch, unless a call overrides them. */

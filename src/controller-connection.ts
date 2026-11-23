@@ -84,7 +84,8 @@ export async function bringUp(
     });
   } catch (err) {
     attempt.signal.throwIfAborted();
-    if (err instanceof ConnectionCancelledError || err instanceof ProcessCrashError || (sessionId && loadFailure === "error")) {
+    if (err instanceof ConnectionCancelledError || err instanceof ProcessCrashError ||
+      config.requireStartupSession || (sessionId && loadFailure === "error")) {
       await client.stop();
       throw err;
     }

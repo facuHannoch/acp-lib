@@ -49,6 +49,7 @@ export type {
   CreateAgentConversationConfig,
   OpenAgentConversationConfig,
   OpenOwnedAgentConversationResult,
+  ProviderStart,
   AdoptProviderSessionConfig,
   ClearTranscriptOptions,
   ClearTranscriptResult,
