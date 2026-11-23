@@ -63,3 +63,36 @@ The host's aggregate summary and the engine's provenance selection moved into fo
 ### Step 2a gate
 
 The clean RAM-backed archive of `f56de5e` passed the two focused files together (17 tests), and all ten new tests passed 20/20 each in isolated processes. Forcing the call-level seal check to pass unconditionally in a disposable archive made the new regression fail. The normal typecheck and strict typecheck of the new test files passed. The full `bun test ./test` passed **1,635 tests in 153 files in 118.16 s**, including the ACP busy-worker restart case merged from alpha since the step 1 gate. The offline harness protocol, stdio and model suites also passed **24 tests in 3 files in 2.48 s**. All 35 snapshots passed. The A1 hash stayed `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`. Logs are in `/tmp/acp-r5-2a.CbsAQ3`.
+
+## HarnessClient review follow-up
+
+Commit `2aff51c` adds seven fake-transport tests for the pre-aborted request, a reply after abort, abort after a reply or timeout, transport closure, a throwing send, and a single signal shared by 64 concurrent requests. They check that the pending map is empty, each registered listener is removed exactly once, and no cancel frame is sent. The client doc explains that `cancelled` ends the caller's wait and the harness may have applied the request.
+
+All seven tests passed 20/20 in isolation. Typecheck and the RAM-backed clean archive gates passed on the first run, with **367 harness tests in 48 files in 21.12 s** and **1,635 application tests in 153 files in 123.61 s**. The A1 snapshot hash was unchanged. Logs are in `/tmp/acp-c1.POwt58`.
+
+## Step 2b — durable native cursor and write replay
+
+Commit `0fdb886` stores the native cursor in the existing metering state. Only wire-confirmed terminal turns with sealed, measured calls can advance it. The reader uses the last call of that turn's accounted channel prefix. It ignores other channels for this proof and retains the old cursor if it sees earlier calls from another turn on this channel. A later known subtotal can be recorded while an earlier gap remains visible. The high-water is persisted with the operation record and restored before the next scan. There is no schema migration.
+
+A native close stages one exact write-ahead record in the existing SQLite metering state, then commits through the normal operation, state and timeline transaction. A failed final save leaves the staged operation and its candidate state intact while the committed cursor and totals stay at their previous values. Open or the next close can finish the same save without starting a provider or rereading its ledger. The SQLite operation index survives pruning and prevents replay from accruing or emitting a new metering operation. A pruned replay supplies the saved completion identity and a detail-unavailable result. Custom backends can expose the optional operation identity lookup for the same pruned-record behavior.
+
+The long-history test seeds 320 other-channel calls in a stopped scripted harness fixture, then reads them through the real stdio server. After accounting for the next own turn, a second Agent restart uses one request with `after: "322"`. Detailed retention stays off throughout. The failed-save test uses a SQLite trigger to reject both commit attempts, checks that the staged record survives with operation count zero and no new cursor, reopens with the trigger removed, and observes exactly 110 tokens followed by 330 after the next paid turn. Recovery adds one operation each time and the old pruned operation ID is still recognized.
+
+Mixed measured and unmeasured attempts keep their known subtotal and carry an explicit reason. The persisted aggregate coverage remains partial, and the cursor stays before the gap. Unknown or undispatched operations with a metering record are unavailable. Queued cancellation can return no record. Neither is evidence of zero spend. Replay preserves an already committed partial or unavailable record as recorded. This step does not perform retroactive replacements of committed evidence, and a same-channel gap can keep the cursor behind the unresolved tail. The supported restart path uses the same durable harness ledger.
+
+Native `billing_required` now reports the missing `native-harness@1` sealed per-turn accounting capability before a conversation is created or a harness is admitted. The static refusal also covers custom launchers. Between-turn accounting waits for the harness producer and bounded idle contract. There are no channel-close sweeps or native certification claims.
+
+| Protected file | Before | After |
+| --- | ---: | ---: |
+| `src/agent-session.ts` | 4,493 | 4,495 |
+| `src/client.ts` | 1,046 | 1,046 |
+| `src/controller.ts` | 764 | 764 |
+| `src/native/host.ts` | 909 | 909 |
+| `src/native/controller.ts` | 599 | 599 |
+| `src/agent/conversation-manager.ts` | 1,012 | 1,012 |
+| `src/agent.ts` | 563 | 563 |
+| `src/metering/engine.ts` | 1,051 | 1,059 |
+
+### Step 2b gate
+
+The clean RAM-backed archive of `0fdb886` passed the three focused files together (21 tests), and all four new tests passed 20/20 each in isolated processes. Typecheck passed. The full `bun test ./test` passed **1,639 tests in 154 files in 125.66 s**. All 35 snapshots passed, with the A1 hash unchanged at `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`. Step 2b did not change the harness client or harness tests. Logs are in `/tmp/acp-r5-2b.kgHHkz`.
