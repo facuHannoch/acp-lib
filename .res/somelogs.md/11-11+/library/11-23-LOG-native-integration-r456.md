@@ -88,3 +88,10 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   1,051). It edits two files in the harness tree (`src/native-harness/src/interfaces/client.ts`: an optional
   `AbortSignal` on `HarnessClient.request` and `modelCalls`; `test/helpers/scenario.ts`): asked haurness-l for review;
   held out of the next `pre-alpha` until they agree. With clad2a for review.
+- R5 step 2a reviewed by clad2a (`2c5691e`): meets its gate, no blockers (1,635 in 153 files; the 360 harness tests; the
+  ten new tests 20 of 20; all five notes closed; six rounds of two channels closing at once gave exact per-channel
+  totals, 6,042 and 30,342, no bleed; a failed metering save gave no double count; nine mutations killed). Notes:
+  document that undispatched turns are `unavailable`, not zero; a turn with unmeasured attempts is still
+  `usage.status` "metered" (add a reason or a status); the `billing_required` refusal should name the capability; the
+  harness client change needs haurness-l's confirmation (Clad1a reviewing). **Coordinator gate passed**; the next
+  `pre-alpha` holds until Clad1a's verdict. 2b released, with haurness-l's constraint: no between-turn support claimed.
