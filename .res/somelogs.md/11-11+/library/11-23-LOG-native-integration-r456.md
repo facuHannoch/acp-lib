@@ -61,3 +61,7 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   test) into alpha. Pending for the next one: R4 (`c2ba881`), the orchestrator follow-up (`1a769da`) and R5's brief
   amendment; R5 step 1 (`47e2750`, report `7e537af`; coordinator run `7e537af`: typecheck clean, 1,624 in 152 files
   green RAM-backed, sizes unchanged) awaits clad2a's review.
+- R4 final reviews by clad2a (`1cc3984`: the cancellation fix holds: 0 of 50 whole-file runs, 84 random stops across
+  seven paths, mutation-checked) and the orchestrator follow-up (`2cdc35e`: no findings). **R4 gate passed**
+  ([gate](../.plan-execution/status/11-23-GATE-R4.md)): 1,618 in 151 files. `pre-alpha` rebuilt with R4, the orchestrator
+  follow-up and R5's amended brief (R5 step 1 awaits clad2a's review).
