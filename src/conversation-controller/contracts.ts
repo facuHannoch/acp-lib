@@ -12,6 +12,7 @@
  * members (Brief B1). `HarnessController implements ConversationController`; a native controller
  * (later) implements the core and leaves the optional members absent.
  */
+import type { NativeTurnMetering } from "../metering/native/source.ts";
 import type { ClientPrompt } from "../agent-client.ts";
 import type { ConnectResult } from "../client.ts";
 import type { AgentMode, ControllerStartEvent, HarnessController } from "../controller.ts";
@@ -152,6 +153,8 @@ export interface TurnContent {
  */
 export interface PreparedTurn extends SupervisedProvider {
   readonly turnId: string;
+  /** Pulls usage for this exact wire turn at the operation's close. */
+  readonly nativeMetering?: NativeTurnMetering;
   /** False while replaying output held for a turn that already ended; the stall check applies only while live. */
   readonly live: boolean;
 }

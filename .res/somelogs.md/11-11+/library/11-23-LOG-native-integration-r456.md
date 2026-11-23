@@ -65,3 +65,44 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   seven paths, mutation-checked) and the orchestrator follow-up (`2cdc35e`: no findings). **R4 gate passed**
   ([gate](../.plan-execution/status/11-23-GATE-R4.md)): 1,618 in 151 files. `pre-alpha` rebuilt with R4, the orchestrator
   follow-up and R5's amended brief (R5 step 1 awaits clad2a's review).
+- The user merged `pre-alpha` (`173e4e7`: R4, the orchestrator follow-up and R5's amended brief) into alpha. R4 is
+  complete; R5 step 1 is with clad2a; 2a, 2b and 4 follow; then R6.
+- R5 step 1 reviewed by clad2a (`fc655b2`): meets its gate, no blockers (the full suite 1,624 in 152 files; each of the
+  seven new tests 20 of 20 isolated; the eight protected files exactly at their ceilings; three new files, 80, 110 and
+  56 lines, referenced by nothing yet). Their independent probe over a real stdio harness (four scripted attempts, a
+  tool turn with three calls and a retried transient failure): exactly four inferences staged with ids `1:0`, `2:0`,
+  `2:1`, `3:0`, tokens matching the script (714 of 714); seven of eight mutations caught. So the existing wire is enough
+  for the in-turn parity gate. **Step 1 gate passed** (coordinator: 1,624 in 152 files, RAM-backed). 2a released with
+  five notes: a call-level seal test; an empty turn is not proven zero; a detached pull's request outliving the 15 s
+  budget (30 s host timeout); serialize `pullTurn` per channel; nothing treats `native-harness-unverified` as verified.
+- haurness-l (R5 harness dependency): the missing billing-grade accounting guarantees (provider and category
+  semantics, a complete sealed per-turn manifest including failed attempts, between-turn ownership and admission) are
+  scoped as a separate harness design owned by the harness track (Cod1a drafting, Clad1a reviewing, when scheduled).
+  R5 stays on in-turn parity over the existing wire plus the refusal: native `billing_required` stays refused; method
+  availability or parity alone is not certification; between-turn support is not claimed before a producer and bounded
+  pull or idle behaviour exist. No harness work requested from our track.
+- R5 step 2a in from cod2a, `f56de5e` (report `28da8d5`): the native pull connected to the turn's metering close on the
+  existing record path; parity exact (three calls, four attempts, 714 tokens: 674 input and 40 output, matched against
+  the script and the ledger; the other channel's 44 tokens did not bleed). Coordinator run: typecheck clean, 1,635 in
+  153 files green RAM-backed; sizes at or below the ceilings (`agent-session.ts` 4,493, `host.ts` 909, `engine.ts`
+  1,051). It edits two files in the harness tree (`src/native-harness/src/interfaces/client.ts`: an optional
+  `AbortSignal` on `HarnessClient.request` and `modelCalls`; `test/helpers/scenario.ts`): asked haurness-l for review;
+  held out of the next `pre-alpha` until they agree. With clad2a for review.
+- R5 step 2a reviewed by clad2a (`2c5691e`): meets its gate, no blockers (1,635 in 153 files; the 360 harness tests; the
+  ten new tests 20 of 20; all five notes closed; six rounds of two channels closing at once gave exact per-channel
+  totals, 6,042 and 30,342, no bleed; a failed metering save gave no double count; nine mutations killed). Notes:
+  document that undispatched turns are `unavailable`, not zero; a turn with unmeasured attempts is still
+  `usage.status` "metered" (add a reason or a status); the `billing_required` refusal should name the capability; the
+  harness client change needs haurness-l's confirmation (Clad1a reviewing). **Coordinator gate passed**; the next
+  `pre-alpha` holds until Clad1a's verdict. 2b released, with haurness-l's constraint: no between-turn support claimed.
+- Clad1a approved the harness client change in step 2a (`f56de5e`): `finish()` is settle-once on every path (pre-abort,
+  response vs abort in both orders, timeout, transport close, send throw, `close()`; eight probe tests against a fake
+  transport), with one item to add before alpha: harness client tests for the abort paths (none in the diff); and a
+  doc note that `cancelled` means the caller stopped waiting, not that the call wasn't applied. cod2a adds both in a
+  small commit before 2b; then `pre-alpha` can take 2a. (Clad1a also saw intermittent harness-suite failures under
+  load, on the base too: not a regression.)
+- C1/N1 (`2aff51c`: seven fake-transport client tests and the doc note) confirmed by Clad1a (the seven pass 5 of 5 runs and
+  all fail on the base `7e537af`; nothing missing against their eight probes); the harness-side hold is released by
+  haurness-l. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-R5-2a.md)). `pre-alpha` built with R5 steps 1 and
+  2a; the exact SHA goes to haurness-l for confirmation before the user merges. R5 step 2b (`0fdb886`, report `9fb2b2e`;
+  coordinator run: 1,639 in 154 files green, sizes unchanged) is with clad2a.

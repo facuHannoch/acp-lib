@@ -1,3 +1,5 @@
+import { NativeUsageLedger } from "../metering/native/ledger.ts";
+import { summarizeModelUsage } from "./usage.ts";
 import { NativeWorkerDelivery } from "./worker-delivery.ts";
 import type { WorkerDeliveryRepository } from "../persistence/worker-delivery-contract.ts";
 import { NativeApprovals } from "./approvals.ts";
@@ -19,7 +21,6 @@ import { takenSender } from "./delegation-sender.ts";
  * by channel id (the conversation id) and receive that channel's events and reconciled view.
  */
 import {
-  aggregateUsage,
   HarnessClient,
   createStdioTransport,
   type ChannelChangeResult,
@@ -159,6 +160,11 @@ export class NativeHarnessHost {
   readonly #restarts: number[] = [];
   /** How many processes this host has started (observability and tests). */
   launches = 0;
+  /** @internal Pins reads of one turn to the same connection across pages. */
+  readonly usageLedger = new NativeUsageLedger(() => {
+    const client = this.#client();
+    return (query, signal) => client.modelCalls(query, signal);
+  });
 
   constructor(config: NativeHarnessHostConfig, channels?: ChannelPersistence, workerDelivery?: WorkerDeliveryRepository) {
     this.#config = config;
@@ -786,20 +792,7 @@ export class NativeHarnessHost {
     return { process: this.#state, stale: !confirmed || this.#connection !== connection, session, workingChannels };
   }
 
-  async usage(channel?: string) {
-    const client = this.#client();
-    const attempts: Parameters<typeof aggregateUsage>[0][number][] = [];
-    for (let after: string | undefined; ;) {
-      const page = await client.modelCalls({ after });
-      for (const call of page.calls) if (channel === undefined || call.channel === channel) attempts.push(...call.attempts);
-      if (!page.next) break;
-      after = page.next;
-    }
-    const totals = aggregateUsage(attempts);
-    const missing = Object.fromEntries((["inputTokens", "outputTokens", "totalTokens"] as const)
-      .map(field => [field, attempts.filter(attempt => attempt.usage?.[field] === undefined).length]));
-    return { totals, missing, attempts: attempts.length, partial: Object.values(missing).some(count => count > 0) };
-  }
+  async usage(channel?: string) { return summarizeModelUsage(this.#client(), channel); }
 
   start(): Promise<void> { return this.ensureStarted(); }
   async suspend(): Promise<StatusResult> {
@@ -827,7 +820,7 @@ export class NativeHarnessHost {
     catch (error) { this.#log.warn("native_worker_delivery_failed", { error: String(error) }); }
   }
   reconcileChannel(params: Parameters<HarnessClient["reconcileChannel"]>[0]) { return this.#client().reconcileChannel(params); }
-  modelCalls(params: Parameters<HarnessClient["modelCalls"]>[0] = {}) { return this.#client().modelCalls(params); }
+  modelCalls(params: Parameters<HarnessClient["modelCalls"]>[0] = {}, signal?: AbortSignal) { return this.#client().modelCalls(params, signal); }
   conversationMessages(params: Parameters<HarnessClient["channelMessages"]>[0]) { return this.#client().channelMessages(params); }
   /** Commit each page atomically with its position. On failure the caller's
    * last committed position is the retry boundary. */

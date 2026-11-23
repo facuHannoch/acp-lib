@@ -1,4 +1,4 @@
-import { modelScenario } from "../../src/native-harness/test/helpers/scenario.ts";
+import { modelScenario, type ModelScenarioStep } from "../../src/native-harness/test/helpers/scenario.ts";
 /**
  * Shared rig for the native tests: an Agent with one native adapter over a real `serve --stdio` harness
  * child process (scripted model, SQLite session in a temporary home). No provider credentials.
@@ -13,7 +13,7 @@ import type { AgentSession } from "../../src/agent-session.ts";
 import type { ProtocolConfig } from "../../src/native-harness/src/client.ts";
 
 export type Seen = { kind: string; [key: string]: any };
-export type Step = { content: string | null; calls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }> };
+export type Step = ModelScenarioStep;
 
 export const reply = (content: string): Step => ({ content, calls: [] });
 /** A step that runs the `hold` tool: the turn stays in its tool until `release(key)`. */

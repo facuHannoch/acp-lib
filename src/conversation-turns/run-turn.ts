@@ -23,6 +23,7 @@
 import type { AgentSessionPromptResult } from "../agent-conversation-contracts.ts";
 import { OwnedPromptPostCommitError } from "../agent-conversation-owner.ts";
 import { unresolvedParts } from "../media/parts.ts";
+import type { PreparedTurn } from "../conversation-controller/contracts.ts";
 import type { OpenOperation } from "../metering/engine.ts";
 import { AgentSessionOperationError, type OperationMeteringRecord } from "../metering/record.ts";
 import { OperationStalledError } from "../operations/errors.ts";
@@ -130,6 +131,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
   let transcriptClosed = false;
   let providerSettled = false;
   let hookInProgress = false;
+  let prepared: PreparedTurn | undefined;
   try {
     // Phase 4: dispatch under the supervisor.
     if (sent) {
@@ -143,19 +145,19 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
     const dispatchedAt = new Date().toISOString();
     // The prepared turn starts nothing; the supervisor subscribes to its output, then calls its
     // `prompt()` (the attachment barrier).
-    let res = await ctx.supervisedPrompt(ctx.controller, turnId, "turn",
-      ctx.controller.prepareTurn(turnId, {
-        // An owned conversation already resolved the parts and wrapped them with the provider-only
-        // text (identity, out-of-band messages); otherwise the client resolves them.
-        ...(!sent ? {} : {
-          input: owned?.providerParts
-            ? { parts: unresolvedParts(owned.providerParts) }
-            : item.messageParts
-              ? { parts: item.messageParts, attachments: item.attachments }
-              : { text: item.text, attachments: item.attachments },
-        }),
-        handlers: recording.handlers,
-      }));
+    prepared = ctx.controller.prepareTurn(turnId, {
+      // An owned conversation already resolved the parts and wrapped them with the provider-only
+      // text (identity, out-of-band messages); otherwise the client resolves them.
+      ...(!sent ? {} : {
+        input: owned?.providerParts
+          ? { parts: unresolvedParts(owned.providerParts) }
+          : item.messageParts
+            ? { parts: item.messageParts, attachments: item.attachments }
+            : { text: item.text, attachments: item.attachments },
+      }),
+      handlers: recording.handlers,
+    });
+    let res = await ctx.supervisedPrompt(ctx.controller, turnId, "turn", prepared);
     if (res.cancel === "forced") {
       const messages = response.snapshot();
       res = { ...res, messages, text: response.text || chunks.join("") };
@@ -203,7 +205,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
     // `closed` then guards the catch path. Closing twice would accrue the operation
     // twice and emit a second record for it — double-counting tokens and cost, which is
     // a worse failure than the one closing early prevents.
-    const record = await ctx.metering.close(operation, res.status, res.usage);
+    const record = await ctx.metering.close(operation, res.status, res.usage, undefined, prepared.nativeMetering);
     closed = record;
     await ctx.owner.lifecycle?.meteringRecorded?.(record);
     // The Agent-owned and transcript paths record the attachment inside their own
@@ -342,7 +344,7 @@ export async function runTurn(ctx: TurnRunContext, turn: TurnContext): Promise<A
     // Already metered: the failure happened after the operation closed (a transcript or
     // catalog write), so the record stands and must not be minted a second time.
     const outcome = err instanceof OperationStalledError ? "cancelled" : "error";
-    const record = closed ?? (await ctx.metering.close(operation, outcome, null, String(err)));
+    const record = closed ?? (await ctx.metering.close(operation, outcome, null, String(err), prepared?.nativeMetering));
     await ctx.owner.lifecycle?.meteringRecorded?.(record);
     if (ctx.persistence.v2Transcript && !transcriptClosed) {
       await ctx.persistence.finishV2Prompt("error", record, "unknown").catch(
