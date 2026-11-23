@@ -118,3 +118,6 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   numbers. Decision (coordinator): a row behind the cursor is retired only once its outcome is durably recorded (accounted,
   or recorded as `unaccountedEarlierCalls`, or recorded as unmeasured for a terminal turn or a closed channel), never on a
   guess. Follow-up to cod2a; step 4 and R6 held.
+- The user merged `pre-alpha` (`b77c3d7`: R5 steps 1 and 2a, the harness client abort tests and doc) into alpha. R5 2b's
+  follow-up (`3ef44c2`, report `4bbefcb`: the lost-usage fix, the gap-retirement rule, SQLite schema 21; coordinator run
+  1,646 in 154 files green RAM-backed) is with clad2a.
