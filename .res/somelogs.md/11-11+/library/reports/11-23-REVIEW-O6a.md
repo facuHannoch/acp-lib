@@ -1,0 +1,118 @@
+# Review — the O5a follow-up and orchestrator brief O6 step 1 (the delegation route)
+
+This review covers `c092af6..3117847` on `orchestrator`:
+
+- `20af857`: the O5a follow-up;
+- `d0a927b`: O6 step 1;
+- `3117847`: the report.
+
+I read them through `git diff`/`git show` and a clean `git archive 3117847` (`/tmp/clad2a-o6a`); I didn't check out the
+branch. The spec is the latest `orchestrator-status`. I wrote my own probes (`test/zz-probe/o6a.test.ts`,
+`zombie.test.ts` in that archive).
+
+**Verdict: both meet their briefs. No blocking findings.**
+
+- **Full suite on the archive:** typecheck clean, **1,549 pass, 0 fail, 144 files**, 35 snapshots; the characterization
+  hash is still `fbc6ec2c…`.
+- **The route's authority comes only from the call's frozen policy names**, and every case I probed matched the spec.
+- Three small notes (below).
+
+## (1) The O5a follow-up (`20af857`): done
+
+- **A drop of a zombie not yet noticed succeeds.** `drop` reads the row without reconciling, then reconciles: if the
+  conversation is gone it tombstones the row, releases the slot, emits one `worker_dropped`, and returns
+  `{ providerDeleted: false, checkpointsDeleted: 0 }`. **My probe:** delete a live worker's conversation directly, then
+  `workers.delete("w1")` as the first call: it returned that result; a second `delete` said "unknown active worker"; `list`
+  showed only `w2`; exactly one `worker_dropped`.
+- **The O5a changelog** has a "Worker shutdown" section: `workers.delete` returns a `DeleteConversationResult`,
+  `workers.idleStopMs` (default 10 minutes, `false` off), and the `idle` stop reason. It's accurate.
+- **My two O4 lines are in:** "`turnId` is optional only on a request with a worker source; ordinary requests require it", and
+  "forwarded asks shown to a non-owner hide `allow_always` and reject it as an answer".
+
+## (2) O6 step 1 against the brief
+
+### The tools and the catalog
+
+`withDelegationTools` adds `delegate`, `check`, `list` and `stop` as `group: "fixed"` to the native functions config, only
+when both the harness and the orchestrator are configured (`agent.ts`). The existing function host already declares handler
+names in `initialize` and supplies the catalog on `session/create` and `session/open`, so nothing else was needed.
+`delegate` opens a worker when `worker` is omitted and sends to it when given; `assignment` or `redirect` without a worker is
+`invalid_arguments`.
+
+**Collisions:** a consumer tool using any of the four names makes `Agent` construction fail with "native delegation tool name is
+already registered: stop"; the consumer's other tools are kept (probe: `mine,delegate,check,list,stop`).
+
+### The actor built from the call, probed
+
+I built synthetic callback contexts against a **real** orchestrator and the production route:
+
+| Case | Result |
+| --- | --- |
+| An unknown policy name, alone or beside a known one | declined, `delegation_policy_unknown` |
+| A two-policy turn, `owner` + `guest` where guest has `use: false` | declined, `delegation_policy_denied`: the most restrictive wins |
+| The same turn with two allowing policies | `sent` |
+| A callback with no `policyNames` field | declined, `delegation_policy_unknown` |
+| An explicit empty list, defaults unconfigured | `delegation_policy_denied` (unconfigured defaults refuse use) |
+| An explicit empty list, defaults configured | proceeds as a non-owner with the configured defaults |
+| No giving conversation, or a channel that isn't a conversation id | `delegation_conversation_unavailable` |
+| No `takenSender` lookup (production today) | `delegation_sender_unavailable`, an explicit decline |
+
+- **Owner needs every name.** `["owner"]` → `isOwner: true`; `["owner", "trusted"]` → `false`; `[]` → `false`. With
+  `ownerPolicies: ["trusted"]`, `trusted` is the owner and `owner` isn't.
+- **The actor's `invocationId` is the call's id**, and the composed delegation policy and the per-policy worker
+  permissions come from the O2 helpers (most restrictive; each policy's own default).
+- **Model arguments play no role.** I passed `{ text, sender: "mallory" }` to `delegate`: the actor's sender was still `alice`
+  (from the lookup), because the handler never reads a sender argument, and the harness schema has
+  `additionalProperties: false` anyway.
+- **Errors are mapped.** A `WorkerPolicyError` becomes `FunctionError("delegation_policy_denied")`. Other errors (for example
+  an unknown worker) pass through with their message.
+
+### The sender: sound
+
+`takenSender` reconciles the call's own channel and turn, requires the turn to be `running`, takes the **first item in
+the turn's recorded order**, reads that item, and requires its channel and turn to match and a stored `sender`. My probe:
+
+| Situation | Result |
+| --- | --- |
+| Alice's input first, Bob's second | `alice` |
+| A turn taken only from a notice | the notice's stored source (`w1`) |
+| The turn isn't running | declined |
+| No items | declined |
+| The item belongs to another turn, or the channel differs | declined |
+| The item has no sender | declined |
+
+**Why I think it's sound.** The first taken item of a turn never changes once taken, so the answer is stable even if more
+inputs arrive during the turn. Every case that can't be established from the harness's own records declines, so it fails
+closed. And **authority never depends on the sender**: it comes from the call's frozen `policyNames`, which are the union of
+all contributors for the turn, composed most restrictively. So in a turn that took Alice's then Bob's input, the worker task is
+*attributed* to Alice (its participant), but Bob's policy still limits what the call may do. For a notice-only turn the
+attribution is the notice's source label, which is fine for display; just make sure a source label can't collide with a real
+participant id (see notes).
+
+### Production without the hook
+
+`takenSender` is an optional third argument of the function host's `call` and an optional field of the context; other tools
+ignore it. **Nothing breaks without it:** every native delegation call declines with `delegation_sender_unavailable`, as
+cod2a says. `host.ts`, `channel-changes.ts` and the persistence files are untouched; `src/native/functions.ts` is the only
+native file (a small change); `agent-session.ts` is untouched.
+
+### The end-to-end test
+
+cod2a's in-process-harness test, which is in the suite, runs a two-policy turn (an owner message plus a guest notice) through
+the real harness, with a stand-in callback supplying `takenSender`. It checks the catalog, all four tools, the combined
+policy names, and attribution to Alice.
+
+## Notes (none blocking)
+
+1. **The tool descriptions are thin.** `delegate` explains the open/send split, "a busy send continues the running
+   assignment", `assignment: "new"` and `redirect`. It doesn't say what the results mean (`sent`, `steered`, **`busy`: nothing
+   was sent and nothing is queued**, `no_worker_free` with its listing), what `about` is for, or that the call returns at
+   once and the reply arrives later. The spec says the guidance lives in the descriptions, and a model decides how to use
+   `busy` from them. Add a sentence on results. `check`, `list` and `stop` are one line each.
+2. **`stop` always answers `{ status: "stopped" }`**, even if the worker was idle. The orchestrator's `stop` returns nothing, so
+   the tool can't say whether it interrupted anything. Make it return a real outcome (`stopped` or `idle`).
+3. **A notice's source label is used as a participant id.** For a notice-only turn the sender is the notice's source (for
+   example a worker handle such as `w1`), and `promptFrom` uses it as the worker prompt's participant. If a real
+   participant could have the same id, the two would merge in the worker's records. Namespace it (for example a
+   `notice:` prefix), or confirm the harness's source labels can't clash.
+- **Baseline:** 1,549 tests, up from 1,546.
