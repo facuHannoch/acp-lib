@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "../../src/index.ts";
@@ -8,19 +8,24 @@ import type { ConversationPermissionEvent } from "../../src/permissions/conversa
 import { createInProcessHarness } from "../../src/native-harness/src/testing.ts";
 import { openRouter } from "../../src/native-harness/src/capabilities/model/openrouter.ts";
 
+const nativeModel = process.env.ACP_ORCH_NATIVE_MODEL || "deepseek/deepseek-v4.1-flash";
+const workerModel = process.env.ACP_ORCH_WORKER_MODEL || "gpt-6.1-terra";
+
 if (process.env.ACP_ORCH_LIVE !== "1") {
+  console.log(JSON.stringify({ mode: "scripted", plannedLiveModels: { native: nativeModel, worker: workerModel } }));
   const test = new URL("../../test/orchestrator/native-delivery.test.ts", import.meta.url).pathname;
   process.exit(await Bun.spawn([process.execPath, "test", test, "-t", "stdio delegation redirects"],
     { stdin: "ignore", stdout: "inherit", stderr: "inherit" }).exited);
 }
 
-const nativeModel = "deepseek/deepseek-v4.1-flash";
-const workerModel = "gpt-6.1-terra";
 const codex = join(homedir(), ".local/bin/codex");
-const auth = join(homedir(), ".codex/auth.json");
-if (!process.env.OPENROUTER_API_KEY || !existsSync(auth) || !existsSync(codex)) {
-  throw new Error("This run needs OpenRouter environment authentication and an existing Codex CLI login");
+const configuredCodexHome = process.env.ACP_ORCH_CODEX_HOME;
+if (!process.env.OPENROUTER_API_KEY || !configuredCodexHome || !existsSync(codex)) {
+  throw new Error("Live mode requires OpenRouter environment authentication, Codex, and a disposable ACP_ORCH_CODEX_HOME");
 }
+const codexHome = await realpath(configuredCodexHome);
+const usualHome = join(homedir(), ".codex");
+if (existsSync(usualHome) && codexHome === await realpath(usualHome)) throw new Error("Use a disposable Codex home");
 const codexAcp = Bun.which("codex-acp");
 if (!codexAcp) throw new Error("The installed codex-acp binary is required");
 
@@ -32,6 +37,10 @@ const start = performance.now();
 const root = await mkdtemp(join(tmpdir(), "acp-orch-live-"));
 const deadline = new AbortController();
 const timer = setTimeout(() => deadline.abort(new Error("Live work deadline reached")), 7 * 60_000);
+const onInterrupt = () => deadline.abort(new Error("Live run interrupted"));
+const onTerminate = () => deadline.abort(new Error("Live run terminated"));
+process.on("SIGINT", onInterrupt);
+process.on("SIGTERM", onTerminate);
 let agent: Agent | undefined;
 let nativeCalls = 0;
 let workerSubmissions = 0;
@@ -47,10 +56,8 @@ function bounded<T>(promise: Promise<T>): Promise<T> {
 }
 
 try {
-  const codexHome = join(root, "codex"), work = join(root, "worker"), output = join(work, "result.txt");
-  await mkdir(codexHome, { mode: 0o700 });
+  const work = join(root, "worker"), output = join(work, "result.txt");
   await mkdir(work, { mode: 0o700 });
-  await writeFile(join(codexHome, "auth.json"), await readFile(auth), { mode: 0o600 });
   const login = Bun.spawn([codex, "login", "status"], {
     env: { HOME: homedir(), PATH: process.env.PATH, CODEX_HOME: codexHome },
     stdin: "ignore", stdout: "ignore", stderr: "ignore",
@@ -209,6 +216,8 @@ try {
   try { await agent?.close(); }
   finally {
     await rm(root, { recursive: true, force: true });
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
     check(!existsSync(root), "Temporary smoke files remain");
     console.log(JSON.stringify({ tempRemoved: true, durationSeconds: Math.round((performance.now() - start) / 1000) }));
   }
