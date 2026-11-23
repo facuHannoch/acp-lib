@@ -48,3 +48,40 @@ Reviewed as documentation against the code: `CONSUMER_GUIDE.md`, `MIGRATION-0.12
 **4. `package.json`.** `files` gains exactly `CHANGELOG-controller-interface.md` and `MIGRATION-0.12-to-0.13.md` and both are packed; the version is `0.12.1`; the `exports` map is identical to 0.12.1's; there is no `.npmignore` and no exclusion was added.
 
 **The report** (`11-23-REPORT-release-docs.md`) matches my numbers (112, 125, nine plus one plus one plus two, byte-identical). It doesn't mention what the pack contains (finding 6) or that agents-core's tests need the doubles updated (finding 1).
+
+# Re-check of the fixes (`da4e0c0..b8d627b`)
+
+Clean archive of `release-docs` at `b8d627b` (`/tmp/clad2a-rd2`). The commit changes `README.md`, `CONSUMER_GUIDE.md`, `MIGRATION-0.12-to-0.13.md`, `MIGRATION-0.10-to-0.12.md` and the report; **`package.json` and `src/` are untouched.**
+
+**Verdict: clean. All six items landed correctly, the new-required-member list is complete, and every number reproduces. The release documentation is done; version and pack contents remain the user's call.**
+
+## My six items
+
+| # | Item | Result |
+| --- | --- | --- |
+| 1 | agents-core test doubles | **Landed and verified at runtime.** The note names the four files and the exact line to add (`harnessConnection() { return this.connection; }`), says to keep the mutations at `hub.test.ts` 624 and 660 and that the method must return the same mutable object, and says the type-check cannot see them (details below) |
+| 2 | `README.md` | **Fixed.** Quick start and the controller section now use `HarnessController` and `permissions: { default: "ask" }`; the prose says the default is `ask`, allow and deny are final, the handler answers only an ask, an unhandled ask is refused (`reject_once` where offered, else cancel). All 15 TypeScript blocks compile (the one non-parsing block is a layout sketch), the Quick start blocks **run** against an echo ACP fixture (`session_new`, `prompt_end … status=completed`), and no packed path other than migration history and internal plural option names (`defaultPermissions` in `agent.ts` and the orchestrator) mentions `defaultPermission` |
+| 3 | `capabilities.channels` required | **Landed**: a breaking-table row ("Custom persistence backends must supply `capabilities.channels: boolean`"; use `false` without a channel repository) and a sentence in the persistence section saying it is the only newly required member of an existing backend or configuration interface, with `workers` and `workerDelivery` optional |
+| 4 | Breaking vs new behaviour | **Landed**: the table is split into "Breaking changes for 0.12.1 consumers" and "New behavior when you enable native conversations or orchestration", and the note states the export count (828 → 913, all 828 kept), the unchanged exports map and dependencies, and the deprecated `AgentController` alias |
+| 5 | Unlisted type-level breaks | **Landed**: rows for `AgentAdapter` widening, `PromptHandle.withdrawAsync`, `AgentEvent` including `WorkerEvent` with `AgentEventBus.subscribeWorkers`, `MeteringProvenance.source` `"native_ledger"`, and the event-union additions |
+| 6 | Guide gaps | **Landed**: the orchestrator heading is now "(experimental)" (and the migration links to the new anchor), the nine worker event kinds and the four delivery states are listed, and they match the code (`worker_opened … worker_stopped`; `pending`, `delivered`, `blocked_policy`, `failed_destination`, the last for a missing or retired destination) |
+
+## Is the required-member list complete?
+
+I re-diffed the public surface (public members only) of `0.12.1` against `b8d627b`, with three separate passes: object types, tagged unions and string-literal unions.
+
+- **Required members added to existing types:** `PersistenceCapabilities.channels`; `PromptHandle.withdrawAsync`; `AgentEventBus.subscribeWorkers`; the `AgentEvent` union gains `WorkerEvent`; classes: `Agent.nativeHarness`, `AgentAdapterRegistry.native`, `SqliteAgentPersistence.channels` and `workers`, `AgentConversation` and `AgentSession` gain `answerPermission`, `harnessConnection`, `withdrawAsync`, `attachObservation` and `conversationCapabilities`, and `HarnessController` gains `conversationCapabilities`, `send`, `subscribeTurns`, `prepareTurn`, `prepareInternalPrompt` and `abandonTurn` (compared with 0.12.1's `AgentController`). **Every one is in the note, and nothing else is.** In particular `AgentConfig`, `AgentSessionConfig`, `AgentConversationConfig`, `PersistenceBackend` and `PersistenceScope` gain only **optional** members, so the note's claim ("the only newly required member of an existing persistence backend or configuration interface is `PersistenceCapabilities.channels`") is true.
+- **Variants:** among 28 tagged unions in 0.12.1, only the event unions changed: three added variants (`permission_requested`, `permission_resolved`, `items_receipt`) and `turn_started` gains required `cause`. The note lists all of that.
+- **Literal unions:** of 60 string-literal aliases only `LaunchKind` widened (`"native-harness"`), already listed; `providerSession` gains `"deferred"` (listed).
+- **Accuracy of the two entries you asked about:** `subscribeWorkers` is a required `AgentEventBus` member, and `AgentEventNotification` still defaults to committed-record notifications (so ordinary `subscribe` listeners compile as before); `turn_started` requires `cause: TurnCause` in both `AgentSessionEvent` and `AgentConversationEvent` (0.12.1 was `{ kind, turnId }`). Both entries are right.
+
+## agents-core, re-run by me
+
+A fresh scratch layout this time (a sibling checkout of `agents-node-protocol` resolvable, so absolute counts are **91 → 104 → 91** here instead of the note's 112 → 125 → 112; the relative result is the same):
+
+- **Types:** 0.12.1 baseline; alpha plus the unedited source adds exactly **13** diagnostics; with all six documented edits **and the four documented test-double edits** the diagnostics are **byte-identical to the baseline** (the double edit introduces no error).
+- **Runtime** (agents-core's own tests; `TMPDIR` on `/dev/shm`): `steer-delivery` **9 → 1 pass + 8 fail → 9**, and `user-chat-acceptance` **11 → 9 + 2 fail → 11** (baseline; the documented source edits with the doubles not updated; the documented source and double edits). Both reproduce the note's numbers exactly. `hub.test.ts` still fails to load in a scratch tree (a `with { type: "macro" }` import: `ReferenceError: bundledImageSources is not defined`), as the note says, so the `hub.test.ts:752` edit remains unverified at runtime.
+
+## Packaging
+
+`bun pm pack --dry-run`: **515 files, identical to the previous list** (the only differences from alpha remain the two documents); `package.json` unchanged (version `0.12.1`, `files` with the two added entries, the `exports` map unchanged); no `.npmignore` and no exclusion added. What the pack contains (finding 6 above) is unchanged and left to the user.
