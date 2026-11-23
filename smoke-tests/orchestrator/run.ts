@@ -14,7 +14,11 @@ const workerModel = process.env.ACP_ORCH_WORKER_MODEL || "gpt-6.1-terra";
 
 const codexAcp = Bun.which("codex-acp");
 if (process.env.ACP_ORCH_LIVE !== "1") {
-  const mode = codexAcp ? await checkWorkerMode(codexAcp) : "Bridge not installed; cannot verify the live mode";
+  let mode: Awaited<ReturnType<typeof checkWorkerMode>> | string = "cannot verify: Codex ACP bridge was not found on PATH";
+  if (codexAcp) {
+    try { mode = await checkWorkerMode(codexAcp); }
+    catch (error) { mode = `cannot verify: ${error instanceof Error ? error.message : String(error)}`; }
+  }
   console.log(JSON.stringify({ mode: "scripted", plannedLiveModels: { native: nativeModel, worker: workerModel },
     plannedWorkerPermissions: mode }));
   const test = new URL("../../test/orchestrator/native-delivery.test.ts", import.meta.url).pathname;

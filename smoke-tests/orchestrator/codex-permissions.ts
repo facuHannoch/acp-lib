@@ -20,7 +20,11 @@ export async function checkWorkerMode(binary: string) {
     !bridge.includes("{ rawInput: facts4.input }") ||
     !bridge.includes('kind: "execute"') ||
     !bridge.includes("this.renderer.renderPermissionToolCall(CommandReporter.permission(")) {
-    throw new Error("The installed Codex ACP bridge does not match the reviewed read-only/permission path");
+    const approvalPolicy = mode?.match(/"(on-request|never|untrusted|on-failure)"/)?.[1] ?? "unrecognized";
+    const sandbox = mode?.match(/type:\s*"(readOnly|workspaceWrite|dangerFullAccess)"/)?.[1] ?? "unrecognized";
+    const observedMode = mode ? `ReadOnly entry with approval ${approvalPolicy} and sandbox ${sandbox}` : "no recognized ReadOnly entry";
+    const override = bridge.includes('process.env["INITIAL_AGENT_MODE"]') ? "present" : "absent";
+    throw new Error(`Installed bridge differs from the reviewed permission path (found ${observedMode}; INITIAL_AGENT_MODE lookup ${override})`);
   }
   const command = "echo 'orch live ok' > /tmp/run-owned/result.txt";
   const projected = toPermissionRequest({
