@@ -165,3 +165,10 @@ edit to `src/agent-session.ts`.
   old row is staged; Cod1a to settle it as uncertain inside the same transaction. Schema 20 verified on a real
   `3fd2db2` database (19, then 20, reopened twice). For O3a (spec updated): after a restart `continueAssignment` on
   abandoned work answers `conflict`, so the orchestrator reserves a fresh assignment for the send.
+- O5a follow-up `20af857` and O6 step 1 `d0a927b` (the delegation route; [report](reports/11-23-REPORT-O6a.md)) in
+  from cod2a; review from clad2a, `2f2a559`: both meet their briefs, no blocking findings (the sender is the running
+  turn's first taken item and authority is the frozen `policyNames`, not the sender; a model-supplied sender is
+  ignored; 40-plus probes fail closed). **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O6a.md)):
+  1,549 in 144 files. `pre-alpha` rebuilt to include O2, O4, O5a and O6a (supersedes `ab58e73`).
+- Cod1a's F1 fix `1ae9a90` (evidence head `1ebf6f5`): an abandoned ACP predecessor is staged as uncertain inside
+  `replaceAssignment`, which returns `old_settled`; with Clad1a for re-review.
