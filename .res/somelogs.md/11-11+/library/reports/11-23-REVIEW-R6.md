@@ -66,3 +66,76 @@ It uses a controlled client with barriers (`intercept.push` / `intercept.withdra
 1. The stop and close decision above; the untyped rejection; the changelog line about the default store.
 2. After `taken`, the record keeps `withdrawing: true` until its turn ends; each reopen sends one more (no-op) withdraw for it. Harmless, but clear the flag when the host learns it was taken.
 3. The file-backed store is opt-in; consider making durable records the default when persistence is SQLite.
+
+# Part 2 — the shutdown re-check (`81574bc..dde1ab6`)
+
+`212e462` (code) and `dde1ab6` (report). Clean archive of `dde1ab6`: typecheck clean, **1,664 pass, 0 fail, 156 files** (the report's number). All nine new or strengthened tests **20 / 20** in isolation, `withdrawal.test.ts` whole-file 20 / 20, `host.test.ts` 10 / 10.
+
+**Verdict: the shutdown now withdraws before it detaches and the measurement that failed before is clean. One behaviour change is broader than the changelog says (below, important).**
+
+My measurement, re-run over a real stdio harness (an accepted, unclaimed steered input while a tool is held):
+
+| Probe | Result |
+| --- | --- |
+| **Stop** | took 19 ms; the handle rejected with `NativeInputStoppedError` carrying the right `messageId`; the model ledger stayed at **one call** after the held tool was released and 1.5 s passed; the left-behind item reads **`withdrawn`**. **No extra turn** (before: a second, unobserved turn) |
+| **Close** (then reopen and read the ledger) | the same: one call, item `withdrawn`, typed rejection |
+| **Stop racing a withdraw** (10 rounds, 0–20 ms random delay) | never hung, never an extra turn, at most one `message_withdrawn`; every handle ended `cancelled` (the withdraw won, so the stop had nothing to reject) |
+| **Close with a pending (delayed 300 ms) withdraw** | close took 324 ms, the withdraw resolved `true`, the handle rejected typed |
+| **A host that never answers, six unclaimed items** | stop took **1,015 ms** (one shared grace, not six), all six handles rejected typed; the tests also cover a down host and a take winning |
+| **`taken`** | spend can still happen; the changelog and the guide both say "Inputs can still incur spend if take has won or the host is unavailable or silent" where stop and close are described |
+
+Also confirmed: `NativeInputStoppedError` is a value export from `index.ts`; the changelog names it as replacing the cancelled result; the default submission store being memory is now in the changelog; the `taken` flag clears (`markAccepted(id, true)`), which closes my earlier note. **The ninth mutation (interrupt clearing submitted inputs) now fails** `native interrupt retains an accepted input that has not been taken`.
+
+**Important: the typed rejection is not limited to unclaimed inputs.** `stop` rejects **every** tracked native handle, including a prompt whose turn is already running. I compared with the commit before R6 (`a9b3ae1`) using the same probe (a stop while a turn streams): then `prompt()` **resolved** `{ status: "cancelled" }` with its partial text; now it **rejects** with `NativeInputStoppedError` and the partial text is not available to the caller (the persisted records are identical in both, the partial reply marked failed). The changelog sentence ("Tracked native handles reject … instead of returning a cancelled result") reads as being about the withdrawn inputs. For the common case of stopping a conversation mid-turn this is a visible API change. Reject only the handles whose input was never taken, and keep the cancelled result for a prompt whose turn is running; or, if the rejection is intended for all, say so in the changelog and the guide as a breaking change.
+
+Minor: for native, stop now waits up to the one-second grace before it interrupts the active turn, so a silent host lets the running turn keep spending for up to a second.
+
+# Part 3 — receipt forwarding (`dde1ab6..55d97ab`)
+
+`76cd233` and `55d97ab`. Both new tests **20 / 20** in isolation, `controller.test.ts` and `receipts.test.ts` whole-file 20 / 20. The earlier full suite at this step is subsumed by the final run below.
+
+**Verdict: correct and scoped. No findings.** What reaches a consumer: a live `{ kind: "items_receipt", turnId, itemIds, milestone }` on the conversation subscription (`delivered` or `seen`), for the harness's committed advances, using the session turn id; held turns are included; nothing is written to history. Monotonic state is `advanceItemReceipts` (a repeated id or an older milestone is skipped and never moves it back); it also backs `receiptOf`.
+
+My probes (real stdio, two conversations on one harness session, interleaved steered items, then single-conversation cases):
+
+- **Two conversations, three interleaved steers each:** each saw only its own ids, **no cross-contamination, 0 duplicates, monotonic per item**, each in its own turn.
+- **Out-of-order and duplicate receipts:** the controller test sends repeated ids, `seen` before a late `delivered`, a reconnect and a reconcile; the event list is exactly the advances, no duplicate after reconnect, `receiptOf` ends `seen`.
+- **A receipt for another channel** can't reach a controller (events are routed by channel; an event for a turn the controller doesn't know is dropped with a warning).
+- **Before the conversation attaches:** an operator push to the channel produced `delivered` and `seen` for it once, no duplicates after the conversation then prompted.
+- **After stop:** zero receipt events (`!this.stopPromise` guard), even after releasing the held tool.
+- **Turn settlement and history:** the early `return` after the receipt bookkeeping skips the turn sink, which never handled `items_receipt` (it has no case for it), so prompt settlement, `message_delivered` and the transcript are unchanged; the full suite and the snapshots are unchanged.
+- **Docs and switches:** `ItemsReceipt` is exported and joins `TurnEvent` and `AgentSessionEvent`; the changelog says to update exhaustive switches; the guide describes it as live-only. A search of `src` and `test` finds no other exhaustive switch over these unions, and typecheck is clean.
+
+# Part 4 — the real-process stream gate (`55d97ab..2e1869f`)
+
+`ee78c68` (one test file, two cases) and `2e1869f` (the report). Nothing under `src/` changed.
+
+- **Determinism:** the test intercepts the real child's event stream and **holds the first `message_completed` frame and everything after it behind a barrier**, so the assertions run while the completion is provably not delivered. Stream mode: the consumer's chunk callbacks have received `"Working"` (and wire text deltas were seen) before the barrier is released; default `final`: **zero provisional wire deltas** and no chunks. Both then finish with the same full result (`"Working\n\nFinished."`, message ids equal to the first chunk's id) and the transcript holds **one** authoritative final record per reply (revisions that share a logical id are the activity snapshots, filtered by their `:snapshot:` suffix and checked to introduce no extra reply).
+- **Run counts:** **50 / 50** isolated runs of each of the two tests, and the file whole **20 / 20**.
+- **Varied timing (mine):** 6 rounds each of stream and final with random chunk delays (0–40 ms) and a random hold (0–80 ms) before release: stream's provisional text was `"Working"` (a prefix of the final), final's was `""`; the final text and the two final records were identical every time, nothing recorded twice.
+- **A strict prefix:** I could not test it end to end. The scenario format requires the scripted chunks to concatenate to the content, so the scripted real child can't produce a provisional text shorter than the final (my attempt at one was rejected by the harness). Suffix completion therefore stays covered only by the controller unit tests, as the brief intended; say so in the report.
+- **Stop mid-stream** (completion held, stream mode): the prompt settled (no hang), the consumer had `"Working"`, and the records were the activity snapshot plus one final marked `failed`, **the same as before R6**; the prompt now rejects with `NativeInputStoppedError` instead of resolving cancelled (the Part 2 finding).
+- **Interrupt mutation:** now fails, as above. **Stall clock:** the regression passes 20 / 20.
+
+# Final: the whole of R6 (`a9b3ae1..2e1869f`)
+
+**Clean archive of `2e1869f` (`TMPDIR` on `/dev/shm`): typecheck clean, 1,668 pass, 0 fail, 158 files (the report's number), 35 snapshots unchanged, A1 unchanged, harness suites 367 pass, no leftover process.**
+
+| Protected file | Measured |
+| --- | ---: |
+| `agent-session.ts` | **4,491** |
+| `native/host.ts` | **909** |
+| `native/controller.ts` | **599** |
+| `client.ts` / `controller.ts` / `conversation-manager.ts` / `agent.ts` / `metering/engine.ts` | 1,046 / 764 / 1,012 / 563 / 1,034 (unchanged) |
+
+**Done criteria, item by item**
+
+| Item | Verdict |
+| --- | --- |
+| **Withdraw through the harness** | **Closed**: confirmed `withdrawAsync` (with `taken`, `not_found`, intent persistence, fenced dispatch) and the bounded shutdown withdrawal; the unobserved-turn hazard I measured is gone |
+| **Stall clock paused while the host reopens** | **Explicitly dropped as a step** (already correct by construction: backend supervision disables the limits even when configured); a regression test proves it |
+| **`items_receipt` beyond `receiptOf`** | **Closed**: live, per-conversation, monotonic, no history |
+| **Real-process `stream` text** | **Closed**: deterministic barrier, 50 / 50 |
+| **Docs for every public change** | `NativeInputStoppedError`, `withdrawAsync`, `TurnEvent` `input_withdrawn`, `ItemsReceipt`, the custom records' `markWithdrawing` and `markAccepted(id, true)`: all in the changelog and the guide |
+
+**Verdict: R6 is complete and I recommend building the pre-alpha with it, with one required decision first.** The decision is the Part 2 finding: stop now **rejects** a running native prompt where it used to resolve `cancelled` with its partial text. Either narrow the rejection to inputs that were never taken, or document it as a breaking change. Everything else I found is minor (the one-second grace before the interrupt, the opt-in file-backed records for withdrawal across a reopen, and the unit-only coverage of suffix completion).
