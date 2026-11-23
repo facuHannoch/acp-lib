@@ -264,3 +264,9 @@ edit to `src/agent-session.ts`.
   stopped at the first mismatch; Bob's prompt was never sent; no retry. Those paths are covered by the scripted stdio
   tests and by the capture-backed Codex permission shapes from R2. Whether to try a second attempt (the disposable Codex
   home configured to always ask) is the user's decision. Sent to clad2a (the runner hardening and the report).
+- Diagnosis of the first live attempt's missing ask: the Codex bridge has its own agent modes; the default is `agent`
+  ("Auto review": only ask for actions detected as potentially unsafe; on-request approvals; workspace-write sandbox),
+  and the worker wrote `result.txt` inside its own working directory, so Codex correctly asked for nothing; the runner's
+  `CODEX_CONFIG` sandbox setting does not win against the bridge's mode. Not a bug in the forwarding. The user
+  authorized one more (the second and last) live attempt with `INITIAL_AGENT_MODE=read-only`, a recorded redacted trace of
+  the worker's permission requests and our responses (for diagnosis), and the same caps.
