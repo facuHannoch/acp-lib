@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { contentText } from "../media/content.ts";
 import type { PersistedContent } from "./backend.ts";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 19;
+export const SQLITE_AGENT_SCHEMA_VERSION = 20;
 
 const WORKERS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS workers (
@@ -32,6 +32,36 @@ CREATE TABLE IF NOT EXISTS worker_assignments (
   delivery_id TEXT UNIQUE,
   delivery_state TEXT CHECK (delivery_state IN ('pending','delivered','blocked_policy','failed_destination')),
   UNIQUE (worker_id, message_id)
+);
+`;
+
+const WORKER_HANDOFF_MIGRATION = `
+ALTER TABLE worker_assignments ADD COLUMN reservation_seq INTEGER;
+UPDATE worker_assignments SET reservation_seq = rowid;
+ALTER TABLE worker_assignments ADD COLUMN destination_kind TEXT NOT NULL DEFAULT 'native' CHECK (destination_kind IN ('native','acp'));
+ALTER TABLE worker_assignments ADD COLUMN original_destination_kind TEXT NOT NULL DEFAULT 'native' CHECK (original_destination_kind IN ('native','acp'));
+ALTER TABLE worker_assignments ADD COLUMN worker_handle TEXT;
+ALTER TABLE worker_assignments ADD COLUMN initial_message_id TEXT;
+UPDATE worker_assignments SET initial_message_id = message_id;
+ALTER TABLE worker_assignments ADD COLUMN initial_contributing_policies TEXT;
+UPDATE worker_assignments SET initial_contributing_policies = contributing_policies;
+ALTER TABLE worker_assignments ADD COLUMN awaiting_continuation INTEGER NOT NULL DEFAULT 0 CHECK (awaiting_continuation IN (0,1));
+ALTER TABLE worker_assignments ADD COLUMN replacement_of TEXT;
+ALTER TABLE worker_assignments ADD COLUMN replacement_message TEXT;
+ALTER TABLE worker_assignments ADD COLUMN replacement_disposition TEXT CHECK (replacement_disposition IN ('replaced','old_settled'));
+CREATE UNIQUE INDEX worker_assignment_sequence ON worker_assignments(reservation_seq);
+CREATE INDEX worker_assignment_pending ON worker_assignments(destination_kind, reservation_seq) WHERE delivery_state = 'pending';
+CREATE INDEX worker_assignment_unfinished ON worker_assignments(destination_kind, reservation_seq)
+  WHERE staged_json IS NULL AND final_record_id IS NULL;
+CREATE INDEX worker_assignment_final ON worker_assignments(destination_kind, reservation_seq)
+  WHERE staged_json IS NULL AND final_record_id IS NOT NULL;
+CREATE INDEX worker_assignment_latest ON worker_assignments(worker_id, reservation_seq DESC) WHERE staged_json IS NOT NULL;
+CREATE TABLE IF NOT EXISTS worker_assignment_continuations (
+  worker_id TEXT NOT NULL,
+  predecessor_message_id TEXT NOT NULL,
+  successor_message_id TEXT NOT NULL,
+  assignment_id TEXT NOT NULL REFERENCES worker_assignments(assignment_id),
+  PRIMARY KEY(worker_id, predecessor_message_id)
 );
 `;
 
@@ -657,7 +687,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -741,6 +771,10 @@ export function migrateSqliteAgentSchema(database: Database): void {
       }
       if (version < 18) database.exec(WORKER_DELIVERY_SCHEMA);
       if (version < 19) database.exec(WORKERS_SCHEMA);
+      if (version < 20) {
+        const assignmentColumns = database.query<{ name: string }, []>("PRAGMA table_info(worker_assignments)").all();
+        if (!assignmentColumns.some(({ name }) => name === "reservation_seq")) database.exec(WORKER_HANDOFF_MIGRATION);
+      }
       if (!columns.some(({ name }) => name === "role")) {
         database.exec("ALTER TABLE conversations ADD COLUMN role TEXT CHECK (role = 'worker')");
       }
