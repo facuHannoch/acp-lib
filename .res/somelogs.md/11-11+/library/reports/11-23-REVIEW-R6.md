@@ -306,3 +306,39 @@ On the five native test files (43 tests): reintroducing `AbortSignal.timeout` (t
 ## Verdict
 
 The recovery fix is correct and bounded, the Bun problem is real and handled, the documentation is truthful, and nothing else changed. **R6 is approved to build** (with R5's documentation). Follow-ups, none blocking: the leaked-timer test, the "still tracked" wording, and the same timer fix in the R5 ledger reader.
+
+# Part 9 — the ledger deadline fix (`bb87489..6e6930c`)
+
+`a058cce` (fix, tests, docs) and `6e6930c` (the R5 report). Clean archive of `6e6930c`: typecheck clean, **1,678 pass, 0 fail, 162 files** (the report's number), 35 snapshots unchanged, A1 unchanged, harness suites 367 pass, no leftover process. Sizes: `agent-session.ts` 4,491, `native/host.ts` 909, `native/controller.ts` 599, `engine.ts` 1,034, the others unchanged (`ledger.ts` 104). The five new or changed test cases (the ledger two-page test, the ledger and recovery timer-cleanup cases, the two reshaped recovery tests) **20 / 20** each in isolation, and the three test files whole-file **20 / 20**.
+
+**Verdict: clean. The ledger now keeps its fifteen-second budget across pages, no timer leaks, and no `AbortSignal.timeout` is left. Approve; build the final pre-alpha.**
+
+## My probes (plain Bun scripts against the fixed ledger, and a process-exit clock)
+
+| Case (budget 1.5 s) | Result |
+| --- | --- |
+| **Page 1 answers at 300 ms, page 2 silent** (my original probe) | rejects "read timed out" at **1,502 ms** (it never fired within 8 s before) |
+| **An endless run of slow pages** (400 ms each, never silent) | rejects "timed out" at **1,501 ms**: the budget bounds the total, not each page |
+| **Success, a host failure, a bad cursor** | return or reject in 0–1 ms and the **process exits in 0.06–0.07 s**: no timer left behind |
+| **The caller cancels** (after 200 ms) | rejects "read cancelled" at 201 ms, process exits in 0.27 s |
+| **`AbortSignal.timeout` anywhere** | `grep` over `src`, `test` and `smoke-tests`: **no matches** |
+
+## Mutations (each reverted; the deadline and metering test files, 24 tests)
+
+| Mutation | Result |
+| --- | --- |
+| the ledger's `clearTimeout` removed | **fails** `native ledger clears deadline timers…` (it survived before: this is the leak test) |
+| the recovery's `clearTimeout` removed | **fails** `native recovery clears deadline timers…` |
+| the ledger reintroduces `AbortSignal.timeout` | **fails** the two-page test |
+| the recovery reintroduces `AbortSignal.timeout` | **fails** the shared-deadline test |
+| the ledger's timer never armed | the two-page test and the real-host slow-read test **fail**; **`metering-native-source.test.ts` hangs instead of failing** (no output in 60 s) |
+
+The last row is a small robustness point about the tests, not the fix: a pre-existing case there feeds the ledger a read that never settles and relies on the timer, so with the timer gone the file hangs; give that case a bounded guard so a regression fails fast.
+
+## The documentation
+
+The tracked-submission qualifier is gone from both the changelog and the guide ("a new Agent can recover the reply from the persisted harness session"), which matches my probe; the same-Agent gap for an unprepared turn is still documented. The six-second figure and the separate shutdown deadlines (Part 8) are unchanged and accurate.
+
+## Verdict
+
+Everything in R5 and R6 that I asked for is closed or documented. **Build the final pre-alpha.** Remaining nits, none blocking: a bounded guard for the one ledger test that hangs when the timer is removed, and the earlier unprepared-turn recovery limitation, which is documented.
