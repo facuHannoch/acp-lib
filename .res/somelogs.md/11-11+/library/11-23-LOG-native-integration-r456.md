@@ -31,3 +31,13 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   before every install; a second start while one is in flight; keep the optional caller signal; assert the child pid
   is dead. Size gate: the attempt registry in a new module; `controller.ts`, `client.ts` and `agent-session.ts` must
   not grow; A1 hash unchanged. **R4 released** (after cod2a's small orchestrator fixes).
+- R4 steps 1–3 in from cod2a (step 1 `83e6d3d`/`2b49b7c`; step 2 `0c4d12e`; step 3 `504eaf1`: `providerStart` and the
+  `deferred` reopen status; report `ec298c5`); clad2a reviewed all of it (`7e651f9`, `0371dc6`): meets the brief, no
+  blockers (60 randomized race rounds and 40 close rounds: no late install, no leaked process; sizes: session 4,495,
+  client 1,046, controller 764, manager 1,012; the manager baseline at `fe7d28c` is 1,013, so that gate is met by one
+  line). **Coordinator gate failed** on a clean copy of `ec298c5` (`TMPDIR` in RAM): typecheck clean, 1,613 pass and
+  1 failure: step 3's new test `checkpoint recovery > creates and seeds a new provider session when the recorded one is
+  missing (first use)` (the recorded recovery checkpoint id differs from the one the test read); alone it fails 3 of 6
+  runs, so it is a race, not load. clad2a's full run passed (timing). cod2a to find the cause (a test race or a real
+  bug in first-use recovery), prove it with 20 isolated runs, and fold in clad2a's notes. Lesson: run every new test of
+  a commit 20 times in isolation.
