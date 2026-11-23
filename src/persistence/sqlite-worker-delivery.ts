@@ -218,12 +218,14 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
     });
   }
 
-  latestOutcome(workerId: string, kind?: "result"): Promise<StagedWorkerAssignment | undefined> {
+  latestOutcome(workerId: string, filter?: "result" | "blocked_policy"): Promise<StagedWorkerAssignment | undefined> {
     return this.read(() => staged(this.database.query<Row, [string, string | null]>(`
-      SELECT * FROM worker_assignments WHERE worker_id = ? AND staged_json IS NOT NULL
-      AND (? IS NULL OR json_extract(staged_json, '$.outcome.kind') = 'result')
+      SELECT * FROM worker_assignments WHERE worker_id = ?1 AND staged_json IS NOT NULL
+      AND (?2 IS NULL
+        OR (?2 = 'result' AND json_extract(staged_json, '$.outcome.kind') = 'result')
+        OR (?2 = 'blocked_policy' AND delivery_state = 'blocked_policy'))
       ORDER BY reservation_seq DESC LIMIT 1
-    `).get(workerId, kind ?? null)));
+    `).get(workerId, filter ?? null)));
   }
 
   private causalBindings(workerId: string, messageIds: readonly string[]): Row[] {

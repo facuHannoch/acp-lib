@@ -209,6 +209,7 @@ test("native delegation declines unknown or absent policies, and uses explicit e
     async get() { return { controllerKind: "native" }; },
   }) as Pick<Agent["conversations"], "get">;
   const functions = withDelegationTools(undefined, config, getOrchestrator, getConversations);
+  expect(Object.keys(functions.tools)).toEqual(["delegate", "check", "list", "stop"]);
   const context: NativeFunctionContext = {
     tool: "list", channel, turnId: "1", invocationId: "list-1", signal: new AbortController().signal,
     policyNames: [], takenSender: async () => "notice-label",
