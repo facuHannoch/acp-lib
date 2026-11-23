@@ -246,3 +246,6 @@ edit to `src/agent-session.ts`.
   lifecycle fixture exits on stdin EOF; model choices configurable and printed in free mode. Gate (cod2a, RAM-backed):
   1,590 in 149 files green. clad2a short review. The live run now needs the user to provide that Codex home (or to
   say the normal Codex home may be used).
+- The user merged `pre-alpha` (`3d96dbd`: the retry and delivery-state follow-up and the spec's Acceptance, Events,
+  Configuration and Limitations updates) into alpha. The live run uses option A: the user logs in to a throwaway Codex
+  home (`/tmp/orch-codex`) themselves; cod2a runs it after R4 step 3, with the caps in the plan.
