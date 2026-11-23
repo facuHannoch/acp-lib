@@ -270,3 +270,39 @@ In the two-conversation probe, Bravo's turn events were also still in flight at 
 ## R6 verdict
 
 With this fix, everything I asked for across R6 is closed or documented, and the whole of R6 is **approved** for the pre-alpha, together with R5's documentation. The narrower case above and the three missing tests are follow-ups, not blockers.
+
+# Part 8 — the recovery deadline fix (`97b44e3..bb87489`)
+
+`f45fdab` (fix, tests, docs) and `bb87489` (report). Clean archive of `bb87489`: typecheck clean, **1,675 pass, 0 fail, 160 files** (the report's number), 35 snapshots unchanged, A1 unchanged, harness suites 367 pass, no leftover process. Sizes: `agent-session.ts` 4,491, `native/host.ts` 909, `native/controller.ts` 599, the others unchanged (`recovery.ts` 100). The three new tests **20 / 20** in isolation and `recovery.test.ts` whole-file **20 / 20**.
+
+**Verdict: clean. R6 is approved for the pre-alpha. One related finding outside this commit (R5's ledger reader has the same Bun problem) and one test gap.**
+
+## (1) The Bun issue, reproduced
+
+Bun 1.3.14: a signal from `AbortSignal.timeout(2000)` used by two sequential requests (each adds an `abort` listener and removes it when it completes, as `HarnessClient.request` does). Request 1 completed at 500 ms and removed its listener; request 2 then added one and waited: **the timeout never fired in 6 s** (`aborted` stayed `false`). The control, with a listener left attached throughout, fired at exactly 2,000 ms. So the timer is lost once the last listener is removed, and the fix's single explicit timer is the right remedy.
+
+The fixed function, measured directly:
+
+| Case | Result |
+| --- | --- |
+| a page, a 400 ms message read, then a second reconcile that never answers | rejected `timed out` at **5,002 ms**: one shared deadline across requests |
+| completes early / an unknown turn | returns in 1 ms / rejects in 0 ms, and the **process exits in 0.07 s**: the timer is cleared (`finally { clearTimeout }`) on both |
+| the silent case | the process exits in 5.09 s, right after the deadline: no timer outlives the call |
+| **Full stack, worst case** (a running turn with its completion held, an unclaimed input whose withdrawal never answers, and a reconcile that never answers) | the stop took **6,023 ms** (one second of withdrawal grace plus five of recovery, **not eleven**); the running prompt was `cancelled`, the unclaimed one `NativeInputStoppedError`; the Agent close afterwards took 11 ms |
+
+## (2) The mutations
+
+On the five native test files (43 tests): reintroducing `AbortSignal.timeout` (the Bun bug), removing the timer, changing five seconds to twenty, dropping the provider-id dedupe, and dropping the unknown-turn check **each fail their targeted test**. **One survives: removing `clearTimeout`** (a leaked timer) passes, so nothing guards the "no timer leaks" property; add a test that runs the function and checks the process or fake timers are clean, or one that asserts the timer count returns to zero.
+
+## (3) and (4) The documentation
+
+- The take-only limitation is documented in both the changelog and the guide: with no prepared turn and the take learned only from the withdrawal response, a committed reply can be missing after stop and after a same-Agent reopen, and a new Agent can recover it from the persisted harness session. That matches my probe (Bravo restored as a `cancelled` record only on a new Agent open). **One nit:** both add "when the submission is still tracked". In my probe the new Agent had fresh in-memory records (no tracked submission) and still restored the reply, so the qualifier is not needed and may mislead; say "a new Agent can recover it".
+- "About six seconds … one second for withdrawal and five for recovery. Other shutdown requests keep their own deadlines" is accurate (6,023 ms measured). The honest caveat is that a host that is silent for *every* request can take longer, because the other shutdown requests (for example the interrupt of the running turn) keep the client's own deadline, as the changelog says.
+
+## A related finding outside this commit: R5's ledger reader has the same defect
+
+`NativeUsageLedger.readTurn` (`src/metering/native/ledger.ts:35`) builds its fifteen-second total budget from `AbortSignal.timeout(...)` and uses that signal for **every page**. I ran it with a 1.5 s budget, page one answering after 300 ms and page two never answering (honouring the signal): **no timeout fired in eight seconds.** After the first page completes, the elapsed budget is silently gone, so a hung later page is bounded only by the host client's own request timeout (30 s by default), not the intended 15 s total. The existing test for the elapsed budget uses one hung read (a listener stays attached), so it passes. Replace it with the same single explicit timer, and add a two-page test. This does not change any R5 gate result; it is a robustness fix to schedule.
+
+## Verdict
+
+The recovery fix is correct and bounded, the Bun problem is real and handled, the documentation is truthful, and nothing else changed. **R6 is approved to build** (with R5's documentation). Follow-ups, none blocking: the leaked-timer test, the "still tracked" wording, and the same timer fix in the R5 ledger reader.
