@@ -231,3 +231,9 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   page, so a hung later page is bounded only by the client's own 30 s timeout. Small fix assigned to cod2a (a single
   timer, a two-page test, leak tests, drop the "when the submission is still tracked" qualifier, grep for other uses);
   then the pre-alpha.
+- The ledger deadline fix (`a058cce`, report `6e6930c`) checked by clad2a (`24b26d2`): clean. A 1.5 s budget with page 1 at
+  300 ms and page 2 silent now rejects at 1,502 ms (it never fired in 8 s before); an endless run of slow pages rejects
+  at 1,501 ms; no timer is left (the process exits in 0.07 s); no `AbortSignal.timeout` remains in `src`, `test` or
+  `smoke-tests`; the leak mutations are killed. Coordinator gate on `6e6930c`: 1,678 in 162 files green RAM-backed, sizes
+  unchanged, the harness tree untouched. **Spec 2 (R1 to R6) is complete**; the final `pre-alpha` is built. One nit
+  (a pre-existing metering test hangs instead of failing if the timer regresses) is assigned.
