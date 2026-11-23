@@ -175,6 +175,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   readonly workerDelivery?: SqliteWorkerDelivery;
   readonly workers: NonNullable<PersistenceScope["workers"]>;
   private readonly workerOwnerId = randomUUID();
+  private readonly workerOwnerCutoff: number;
   readonly identityDelivery: IdentityDeliveryPersistence;
   readonly search?: SearchPersistence;
   readonly auditOutbox: AuditOutboxPersistence;
@@ -194,6 +195,9 @@ export class SqliteAgentPersistence implements PersistenceBackend {
   ) {
     this.path = path;
     this.database = database;
+    this.workerOwnerCutoff = ownerLock ? database.query<{ seq: number }, []>(
+      "SELECT COALESCE(MAX(reservation_seq), 0) AS seq FROM worker_assignments",
+    ).get()!.seq : 0;
     this.identityRecord = identityRecord;
     this.capabilities = Object.freeze({
       transactions: true as const,
@@ -384,7 +388,7 @@ export class SqliteAgentPersistence implements PersistenceBackend {
       channels: new SqliteChannelPersistence(this.database, runWrite, readChannels),
       workers: new SqliteWorkers(this.database, runWrite, readChannels),
       ...(this.ownerLock ? { workerDelivery: new SqliteWorkerDelivery(
-        this.database, runWrite, readChannels, this.workerOwnerId,
+        this.database, runWrite, readChannels, this.workerOwnerId, this.workerOwnerCutoff,
       ) } : {}),
       ...(this.capabilities.fullTextSearch
         ? { search: new SqliteSearchPersistence(this.database) }

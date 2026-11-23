@@ -187,6 +187,8 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         await persistence.workerDelivery?.recordFinal(
           this.conversationId, input.operationId, input.messageIds,
         );
+      } else if (status === "cancelled" && input.result.endedBy === "steer") {
+        await persistence.workerDelivery?.markSteered(this.conversationId, input.messageIds);
       } else {
         await persistence.workerDelivery?.recordFailure(
           this.conversationId, input.operationId, input.messageIds, workerTerminalFailure(status === "cancelled", undefined, input.result.endedBy),
@@ -223,6 +225,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         });
       }
     });
+    void this.agent.nativeHarness?.flushWorkerDelivery();
     const deliveredIds = this.deliveredMessages.get(input.operationId)?.ids ?? [];
     if (status === "completed") for (const id of deliveredIds) pendingOutOfBandParts(this.agent).delete(id);
     this.deliveredMessages.delete(input.operationId);
@@ -273,6 +276,7 @@ export class PersistedConversationLifecycle implements AgentConversationOwnerLif
         this.conversationId, input.operationId, input.messageIds, workerTerminalFailure(false, input.error),
       );
     }));
+    void this.agent.nativeHarness?.flushWorkerDelivery();
   }
 
   resolveAdapter(adapterId: string) {

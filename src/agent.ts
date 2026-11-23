@@ -164,7 +164,7 @@ export class Agent {
           ? { launcher: config.harness.launcher ?? config.conversationDefaults!.launcher }
           : {}),
         ...(config.conversationDefaults?.logger ? { logger: config.conversationDefaults.logger } : {}),
-      }, channels && protectPendingRetirement(persistence, channels))
+      }, channels && protectPendingRetirement(persistence, channels), persistence.workerDelivery)
       : null;
     this.audit = audit;
     const logger = config.conversationDefaults?.logger ?? noopLogger;

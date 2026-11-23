@@ -1,7 +1,7 @@
 # External channel notices implementation plan
 
 Date: 2026-11-21.
-Status: proposed for review.
+Status: generic harness path and worker repository accepted; Gate 3 integration pending.
 
 ## Base and ownership
 
@@ -46,6 +46,38 @@ transaction that records worker completion. Reuse the transaction pattern in
 `PersistenceBackend.transaction` and the existing SQLite repository assembly.
 Keep notice delivery records separate from the audit outbox, which has a
 different destination and acknowledgment contract.
+
+## Gate 3 module and orchestrator dependency
+
+Gate 3 delivers an acp-client handoff module used by the orchestrator. The
+orchestrator retains assignment and worker orchestration; the handoff module
+uses the existing worker-delivery repository and native host. It must not
+introduce a second assignment store.
+
+Already accepted: generic harness `channel/notify` at `f522072` and the
+worker-delivery repository and lifecycle at `d403bf4`, including durable
+pre-dispatch correlation, terminal outcomes and staged notice records. These
+do not yet establish host delivery, acknowledgement-loss recovery or resume
+retry behavior.
+
+Remaining work includes:
+
+- Carry a binding to a steer successor without staging a notice for the
+  steered end. This is needed before orchestrator O3a.
+- Provide bounded, read-only discovery of unstaged and pending assignments
+  and the latest outcome per worker for recovery on open.
+- Filter native delivery by destination kind so an ACP destination never
+  reaches `channel/notify`. Route the ACP half through the same staging and
+  delivery transitions for consistent recovery.
+- Persist the worker handle as the source label for the notice.
+- Settle and document whether the delivered result projects the final message
+  or all completed assistant messages before implementing that projection.
+- Flush staged notices through the native host, retry after lost acceptance
+  acknowledgements and after resume, and recover pending work on open.
+
+Orchestrator O1, O2 and O4 can proceed independently of these changes. O3a
+depends on the steer-successor transition; O3b and O5b depend on the host
+handoff. Stop-notice suppression and a redirect notice are outside this gate.
 
 ## Implementation gates
 
