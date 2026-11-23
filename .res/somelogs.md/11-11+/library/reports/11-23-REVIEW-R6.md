@@ -224,3 +224,49 @@ In case (2), `a9b3ae1` and `ac09144` persisted the reply (`failed "Partial reply
 ## Verdict
 
 The three items were done and the in-flight-completion case, the `noteTaken` test and the changelog are correct. **R6 is approved** (the whole of it, with Parts 1 to 5), subject to the one decision above (the unpersisted late completion in case (2): intended or not, and in the changelog either way) and one small test to add for the late-completion guard. Neither blocks building the pre-alpha.
+
+# Part 7 — the stopped-reply recovery (`fde102b..97b44e3`)
+
+`1b1472d` (fix, tests, docs) and `97b44e3` (report). Clean archive of `97b44e3`: typecheck clean, **1,672 pass, 0 fail, 159 files** (the report's number), 35 snapshots unchanged, A1 unchanged, harness suites 367 pass, no leftover process. Sizes: `agent-session.ts` 4,491, `native/host.ts` 909, `native/controller.ts` 599, the others unchanged (`recovery.ts` 93, `recording.ts` 235). Both new tests **20 / 20** in isolation and the two touched files whole-file **20 / 20**.
+
+**Verdict: the fix does what it says for the case it targets, and the cancelled caller result is unchanged. Approve. Three small test gaps and one narrower case that is still not restored at stop.**
+
+## What the fix does (read from the code)
+
+When a stop settles a prompt as cancelled, the run now asks the controller to **recover the stopped turn's committed replies for persistence only**: one `channel/reconcile` for the exact harness turn id (paging, with a "turn unknown" error), reading each reply not already seen by provider id, all within **one five-second deadline**, then persists them with their message ids without changing what the caller received. If the read fails, the draft that was streamed is kept as an incomplete reply.
+
+## My probes (real stdio; a barrier holds the real `message_completed` frame)
+
+| Probe | Result |
+| --- | --- |
+| **Stop with the completion held** | the caller gets `cancelled` with **empty text** (unchanged); stop took 17 ms; **one** final record, `completed "Partial reply."`, provider id `model:1`, written at the stop |
+| **Reopen the conversation in the same Agent, twice** (frame still held) | the record is identical each time, no second one |
+| **The held live completion delivered late** | still one record (the late guard) |
+| **Close the Agent, then open a new Agent, twice** | the same single record both times |
+| **A silent host** (the reconcile never answers) | stop completes in **5,009 ms**, so the deadline is bounded; the caller is `cancelled`; the draft is persisted as an incomplete (`cancelled`) reply; the Agent close that follows took 16 ms |
+| **A stop with nothing committed** (a tool held before any message) | caller `cancelled`, empty; **no record** written |
+| **Two conversations on one harness session, both stopped with completions held** | Alpha got its own reply with its own id; **Bravo's reply is not attributed to Alpha** (no cross-attribution). See the narrower case below |
+
+## A narrower case that is still not restored at stop
+
+In the two-conversation probe, Bravo's turn events were also still in flight at the stop, so the controller had never seen its turn (the input was taken, shown only by the withdrawal answer). Bravo's reply was committed by the harness (its model call succeeded) but is **not persisted at stop**, **not restored by a same-Agent reopen**, and is restored only when a **new Agent opens** (as `cancelled "Bravo reply."`, id `model:2`). That is a narrower window than the fix covers (no prepared turn exists to recover through), but it is a real gap, so either extend the recovery to inputs that only have take evidence from the withdrawal, or document it.
+
+## Mutations (each reverted; the five native test files, 75 tests)
+
+| Mutation | Result |
+| --- | --- |
+| the late-completion guard (`if (settled) return`) removed | **fails** two tests (it survived before) |
+| the exact-turn filter dropped (reconcile the whole channel) | fails |
+| recovered replies not persisted | fails |
+| **the five-second deadline dropped** | **passes: a test gap** (add a stop with a silent reconcile and assert it returns within about five seconds) |
+| **the provider-id dedupe (`known.has`) dropped** | **passes: a gap** (the single record I measured is also protected by persistence-level dedupe; add a case where the stop already saw part of the reply) |
+| **the "turn unknown" check dropped** | **passes: a gap** |
+
+## Notes
+
+1. For native, a stop can now take up to about **six seconds** in the worst case (one second of withdrawal grace plus five of recovery) when the host is silent. It is bounded and I measured the five; say the sum in the changelog.
+2. The changelog now covers the cancelled metering record for the held-completion case and that recovered replies are stored once by harness message id and do not enter the live output.
+
+## R6 verdict
+
+With this fix, everything I asked for across R6 is closed or documented, and the whole of R6 is **approved** for the pre-alpha, together with R5's documentation. The narrower case above and the three missing tests are follow-ups, not blockers.
