@@ -1,3 +1,4 @@
+import { SQLITE_AGENT_SCHEMA_VERSION } from "../../src/persistence/sqlite-schema.ts";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -40,7 +41,7 @@ for (const version of [16, 18]) test(`worker rows migrate from schema ${version}
     expect(await backend.workers.get(worker.handle)).toMatchObject({ droppedAt: worker.createdAt, about: "task" });
     {
       using db = new Database(path, { readonly: true });
-      expect(db.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 20 });
+      expect(db.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: SQLITE_AGENT_SCHEMA_VERSION });
     }
     expect(backend.capabilities.workerDelivery).toBe(true);
   } finally {

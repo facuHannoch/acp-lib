@@ -2,9 +2,12 @@ import type { AgentConversationId } from "../../agent-ids.ts";
 import type { MeteringOperationIdentity, PersistenceBackend } from "../../persistence/backend.ts";
 import type { MeteringEngine, OpenOperation } from "../engine.ts";
 import type { OperationMeteringRecord } from "../record.ts";
+import { accountedNativeAttempts } from "./retirement.ts";
+import type { NativeTurnMetering } from "./source.ts";
 import { emptyMeteringState, type AgentSessionMeteringState } from "../state.ts";
 
 export interface NativeMeteringRecovery {
+  readonly supportsEarlierProof?: boolean;
   restore(): Promise<AgentSessionMeteringState>;
   find(operationId: string): Promise<OperationMeteringRecord | MeteringOperationIdentity | null>;
 }
@@ -17,6 +20,8 @@ export class DurableNativeMetering implements NativeMeteringRecovery {
     private readonly agentId: string,
     private readonly commit: (record: OperationMeteringRecord) => Promise<void>,
   ) {}
+
+  get supportsEarlierProof(): boolean { return this.persistence.metering.operationIdentity !== undefined; }
 
   async restore(): Promise<AgentSessionMeteringState> {
     const before = await this.persistence.metering.state(this.conversationId);
@@ -57,10 +62,11 @@ export class DurableNativeMetering implements NativeMeteringRecovery {
 
 /** Restore only committed accounting before touching the turn's ledger or accruing usage. */
 export async function recoverNativeClose(
-  recovery: NativeMeteringRecovery,
+  recovery: NativeMeteringRecovery | undefined,
   engine: MeteringEngine,
   open: OpenOperation,
 ): Promise<OperationMeteringRecord | null> {
+  if (!recovery) return null;
   const state = await recovery.restore();
   engine.adoptAccounting(state);
   const existing = await recovery.find(open.operationId);
@@ -69,11 +75,29 @@ export async function recoverNativeClose(
     operationId: open.operationId, operationKind: open.operationKind, outcome: existing.outcome,
     startedAt: existing.completedAt, completedAt: existing.completedAt, agentSessionId: state.agentSessionId,
     internalSessionId: open.internalSessionId, provider: { adapterId: existing.adapterId, providerId: null, model: null },
-    nativeUsage: { channel: open.nativeChannel!, turnId: null, status: "unavailable", reason: "metering detail was pruned" },
+    nativeUsage: { channel: open.nativeChannel!, turnId: null, status: "unavailable", reason: "metering detail was pruned",
+      ...(existing.unaccountedEarlierCalls ? { unaccountedEarlierCalls: existing.unaccountedEarlierCalls } : {}) },
     provenance: { source: "none", measurement: "unavailable", routing: "unknown", attribution: "unavailable" },
     usage: { status: "usage_unavailable", reason: "native metering was already committed and its detail was pruned" },
     pricingStatus: "not_attributable", contextAfter: null, providerCostAfter: null,
     costReconciliation: { status: "unavailable", reason: "metering record detail was pruned" }, nextState: state,
+  };
+}
+
+export function withNativeAccounting(
+  turn: NativeTurnMetering | undefined,
+  recovery: NativeMeteringRecovery | undefined,
+): NativeTurnMetering | undefined {
+  if (!turn || !recovery) return turn;
+  return {
+    ...turn,
+    terminalEarlierTurns: recovery.supportsEarlierProof ? turn.terminalEarlierTurns : undefined,
+    async accountedAttempts(turnId) {
+      const found = await recovery.find(`native-turn-${turnId}`);
+      if (!found) return null;
+      if (!("usage" in found)) return found.nativeAccountedAttemptIds;
+      return accountedNativeAttempts(found);
+    },
   };
 }
 

@@ -1,3 +1,4 @@
+import { accountedNativeAttempts } from "../metering/native/retirement.ts";
 import { SqliteWorkers } from "./sqlite-workers.ts";
 import { randomUUID } from "node:crypto";
 import { SqliteWorkerDelivery } from "./sqlite-worker-delivery.ts";
@@ -1223,11 +1224,15 @@ class SqliteMeteringPersistence implements MeteringPersistence {
         );
       }
 
+      const nativeProof = input.record.nativeUsage && {
+        nativeAccountedAttemptIds: accountedNativeAttempts(input.record),
+        unaccountedEarlierCalls: input.record.nativeUsage.unaccountedEarlierCalls,
+      };
       runSql(this.database,
         `INSERT INTO metering_records(
           agent_conversation_id, operation_id, internal_session_id, adapter_id,
-          operation_kind, outcome, completed_at, record_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          operation_kind, outcome, completed_at, record_json, native_metering_proof_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         input.agentConversationId,
         operationId,
         input.record.internalSessionId,
@@ -1236,6 +1241,7 @@ class SqliteMeteringPersistence implements MeteringPersistence {
         input.record.outcome,
         input.record.completedAt,
         input.meteringRecords === "none" ? null : serializedRecord,
+        nativeProof ? JSON.stringify(nativeProof) : null,
       );
 
       const revision = (current?.revision ?? 0) + 1;
@@ -1345,11 +1351,14 @@ class SqliteMeteringPersistence implements MeteringPersistence {
   }
 
   async operationIdentity(agentConversationId: AgentConversationId, operationId: string): Promise<MeteringOperationIdentity | null> {
-    const row = this.database.query<MeteringOperationIdentity, [string, string]>(
-      `SELECT outcome, adapter_id AS adapterId, completed_at AS completedAt FROM metering_records
+    const row = this.database.query<MeteringOperationIdentity & { proof: string | null }, [string, string]>(
+      `SELECT outcome, adapter_id AS adapterId, completed_at AS completedAt,
+              native_metering_proof_json AS proof FROM metering_records
        WHERE agent_conversation_id = ? AND operation_id = ?`,
     ).get(agentConversationId, nonblank(operationId, "metering operationId"));
-    return row ?? null;
+    if (!row) return null;
+    const { proof, ...identity } = row;
+    return proof === null ? identity : { ...identity, ...JSON.parse(proof) };
   }
 
   async get(

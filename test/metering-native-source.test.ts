@@ -251,3 +251,29 @@ test("a healthy empty native ledger cannot prove a dispatched turn spent zero", 
   expect(recorded.usage).toEqual({ status: "usage_unavailable", reason: "native ledger has no calls for this turn" });
   expect(recorded.nextState.unmeteredOperationCount).toBe(1);
 });
+
+
+test("an empty native turn can preserve earlier evidence without consuming future calls", async () => {
+  const source = new NativeInferenceSource("agent", "alpha", ledgerFrom(async () => ({
+    calls: [call("1", "alpha", "1"), call("2", "beta", "1"), call("3", "alpha", "3")],
+  })));
+  const engine = new MeteringEngine({ agentSessionId: "agent", adapterId: "main",
+    createdActiveThread: true, pricing: false, enforcement: "best_effort" });
+  const open = await engine.open({ operationId: "native-turn-2", operationKind: "prompt",
+    internalSessionId: "agent", providerId: null, model: null, degraded: false,
+    native: { host: { sessionId: "agent" }, channelId: "alpha" } });
+  const record = await engine.close(open, { outcome: "completed", reportedCumulative: null,
+    contextAfter: null, providerCostAfter: null, nativeMetering: {
+      turnId: "2", read: position => source.readTurn("2", position), isTerminal: () => true,
+      terminalEarlierTurns: async ids => {
+        expect(ids).toEqual(["1"]);
+        return new Set(ids);
+      },
+      accountedAttempts: async () => null,
+    } });
+  expect(record.usage.status).toBe("usage_unavailable");
+  expect(record.nativeUsage?.unaccountedEarlierCalls).toEqual([{
+    turnId: "1", callId: "1", attemptIds: ["1:0"], attemptCount: 1, unmeasured: 0, tokens: firstUsage,
+  }]);
+  expect(record.nextState.nativeCursor?.after).toBe("1");
+});

@@ -18,7 +18,8 @@ export interface NativeLedgerPosition {
 interface NativeLedgerRead {
   readonly calls: readonly ModelCallSummary[];
   readonly lastSeenCallId?: string;
-  readonly prefixEnd?: string;
+  /** Same-channel rows in ledger order, through the last call of the requested turn. */
+  readonly prefix: readonly ModelCallSummary[];
 }
 
 const defaultBounds: LedgerBounds = { timeoutMs: 15_000, maxPages: 1_000 };
@@ -36,8 +37,7 @@ export class NativeUsageLedger {
     let after = position.after;
     const seenIds = new Set(after === undefined ? [] : [after]);
     const calls: ModelCallSummary[] = [];
-    // Other channels have independent cursors. An earlier call on this channel is a gap.
-    const prefix = { hasEarlierTurn: false, blocked: false };
+    const channelCalls: ModelCallSummary[] = [];
 
     try {
       const readPage = this.openRead();
@@ -45,9 +45,10 @@ export class NativeUsageLedger {
         signal.throwIfAborted();
         const page = await untilAborted(readPage(after === undefined ? {} : { after }, signal), signal);
         signal.throwIfAborted();
-        const seenThrough = collectPage(page, channel, turnId, seenIds, calls, prefix);
-        if (page.next === undefined) return { calls, lastSeenCallId: seenThrough ?? after,
-          prefixEnd: prefix.blocked ? undefined : calls.at(-1)?.callId };
+        const seenThrough = collectPage(page, channel, turnId, seenIds, calls, channelCalls);
+        if (page.next === undefined) {
+          return { calls, lastSeenCallId: seenThrough ?? after, prefix: turnPrefix(channelCalls, turnId) };
+        }
         after = page.next;
       }
       throw new Error("Native usage ledger exceeded its page budget");
@@ -59,13 +60,24 @@ export class NativeUsageLedger {
   }
 }
 
+function turnPrefix(calls: readonly ModelCallSummary[], turnId: string): readonly ModelCallSummary[] {
+  const lastOwn = calls.findLastIndex(call => call.turnId === turnId);
+  if (lastOwn >= 0) return calls.slice(0, lastOwn + 1);
+  // Harness v1 allocates positive decimal turn IDs. With no target row, stop at the first
+  // same-channel row that cannot be proved to precede the target.
+  if (!/^[1-9]\d*$/.test(turnId)) return [];
+  const target = BigInt(turnId);
+  const firstUnproven = calls.findIndex(call => !/^[1-9]\d*$/.test(call.turnId) || BigInt(call.turnId) >= target);
+  return firstUnproven < 0 ? calls : calls.slice(0, firstUnproven);
+}
+
 function collectPage(
   page: LedgerPage,
   channel: string,
   turnId: string,
   seenIds: Set<string>,
   selected: ModelCallSummary[],
-  prefix: { hasEarlierTurn: boolean; blocked: boolean },
+  channelCalls: ModelCallSummary[],
 ): string | undefined {
   if (!Array.isArray(page?.calls)) throw new Error("Invalid native usage ledger page");
   const seenThrough = page.calls.at(-1)?.callId;
@@ -81,11 +93,8 @@ function collectPage(
     }
     seenIds.add(call.callId);
     if (call.channel !== channel) continue;
-    if (call.turnId !== turnId) prefix.hasEarlierTurn = true;
-    else {
-      prefix.blocked ||= prefix.hasEarlierTurn;
-      selected.push(call);
-    }
+    channelCalls.push(call);
+    if (call.turnId === turnId) selected.push(call);
   }
   return seenThrough;
 }

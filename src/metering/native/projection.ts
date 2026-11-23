@@ -51,7 +51,7 @@ export function projectNativeUsage(calls: readonly ModelCallSummary[], sessionID
       !call.messageId || !callOutcomes.has(call.outcome)) {
       throw new Error("Invalid native model-call summary");
     }
-    const sealed = call.outcome !== "running" && timestamp(call.endedAt) !== undefined;
+    const sealed = isSealedNativeCall(call);
     const attempts: NativeAttemptEvidence[] = [];
     const ids = new Set<string>();
     for (const attempt of call.attempts) {
@@ -83,6 +83,10 @@ export function projectNativeUsage(calls: readonly ModelCallSummary[], sessionID
   }
 
   return { evidence, inferences, unmeasured };
+}
+
+export function isSealedNativeCall(call: ModelCallSummary): boolean {
+  return call.outcome !== "running" && timestamp(call.endedAt) !== undefined;
 }
 
 function timestamp(value: string | undefined): number | undefined {

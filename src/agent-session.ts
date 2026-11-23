@@ -61,7 +61,7 @@ import type { ConfigOption, ConfigOptions } from "./config-options.ts";
 import type { ConnectResult } from "./client.ts";
 import { noopLogger, type Logger } from "./logger.ts";
 import { formatResponseMessages } from "./response.ts";
-import { recoverNativeClose } from "./metering/native/durability.ts";
+import { recoverNativeClose, withNativeAccounting } from "./metering/native/durability.ts";
 import { MeteringEngine, type CloseOperationInput, type OpenDetachedOperation, type OpenOperation } from "./metering/engine.ts";
 import {
   AgentSessionHandoffError,
@@ -3862,22 +3862,19 @@ export class AgentConversation implements AgentClient, Bridgeable {
     nativeMetering?: CloseOperationInput["nativeMetering"],
   ): Promise<OperationMeteringRecord> {
     const wasBlocked = engine.blocked, live = engine === this.metering;
-    if (operation.nativeChannel && this.ownerLifecycle?.nativeMetering) {
-      const replay = await recoverNativeClose(this.ownerLifecycle.nativeMetering, engine, operation);
-      if (replay) return replay;
-    }
+    const recovery = this.ownerLifecycle?.nativeMetering;
+    const replay = operation.nativeChannel ? await recoverNativeClose(recovery, engine, operation) : null;
+    if (replay) return replay;
     const record = await engine.close(operation, {
       outcome,
       reportedCumulative,
-      nativeMetering,
+      nativeMetering: withNativeAccounting(nativeMetering, recovery),
       ...(usageFailureReason ? { usageFailureReason } : {}),
       contextAfter: live ? this._contextWindow : null,
       providerCostAfter: live ? this._providerCost : null,
     });
     this.emit({ kind: "metering_recorded", record });
-    if (!wasBlocked && engine.blocked) {
-      this.emit({ kind: "metering_blocked", reason: engine.blockedReason ?? "unknown" });
-    }
+    if (!wasBlocked && engine.blocked) this.emit({ kind: "metering_blocked", reason: engine.blockedReason ?? "unknown" });
     return record;
   }
 

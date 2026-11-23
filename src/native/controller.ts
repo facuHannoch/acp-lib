@@ -1,3 +1,4 @@
+import { terminalNativeTurns } from "./metering.ts";
 import { NativeInferenceSource } from "../metering/native/source.ts";
 import { nativeConversationStopping, nativeProviderTurnEnded, refuseNativeOnClose } from "../permissions/conversation.ts";
 import { runNativeApproval } from "./approvals.ts";
@@ -297,8 +298,6 @@ export class NativeController implements ConversationController, ChannelPort {
     return turn;
   }
 
-  // --- ChannelPort ------------------------------------------------------------------------------
-
   event(event: ChannelEvent): void {
     const payload = event.event;
     if (payload.type === "channel_state") { this.#notifyConnection(); return; }
@@ -411,9 +410,10 @@ export class NativeController implements ConversationController, ChannelPort {
     const replay = turn.ended !== null;
     return {
       turnId,
-      nativeMetering: { turnId: turn.harnessId, isTerminal: () => turn.terminalOnWire === true, read: position =>
-        (this.#usage ??= new NativeInferenceSource(this.#host.sessionId, this.#channel, this.#host.usageLedger))
-          .readTurn(turn.harnessId, position) },
+      nativeMetering: { turnId: turn.harnessId, isTerminal: () => turn.terminalOnWire === true,
+        terminalEarlierTurns: terminalNativeTurns(this.#host, this.#channel), read: position =>
+          (this.#usage ??= new NativeInferenceSource(this.#host.sessionId, this.#channel, this.#host.usageLedger))
+            .readTurn(turn.harnessId, position) },
       get live() { return !replay; },
       subscribeOutput: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
       cancel: () => this.#interrupt(turn),

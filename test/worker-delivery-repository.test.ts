@@ -1,3 +1,4 @@
+import { SQLITE_AGENT_SCHEMA_VERSION } from "../src/persistence/sqlite-schema.ts";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -28,7 +29,7 @@ for (const legacy of [16, 17, "early 17"] as const) test(`worker repository upgr
     expect((await backend.conversations.get(conversationId))?.controllerKind).toBe(legacy === 17 ? "native" : undefined);
     {
       using migrated = new Database(path, { readonly: true });
-      expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 20 });
+      expect(migrated.query("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: SQLITE_AGENT_SCHEMA_VERSION });
     }
     const repo = backend.workerDelivery!;
     const binding = { assignmentId: "assignment", workerConversationId: "worker", workerHandle: "worker-handle", messageId: "operation",

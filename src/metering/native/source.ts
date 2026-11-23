@@ -1,3 +1,4 @@
+import type { ModelCallSummary } from "../../native-harness/src/client.ts";
 import type { InferenceSource } from "../engine.ts";
 import type { NativeLedgerPosition, NativeUsageLedger } from "./ledger.ts";
 import { projectNativeUsage, type NativeCallEvidence, type NativeUsageInference } from "./projection.ts";
@@ -7,7 +8,7 @@ export interface NativeTurnUsage {
   /** An observation for reconciliation. It is not an accounting acknowledgement. */
   readonly lastSeenCallId?: string;
   readonly unmeasured: number;
-  readonly prefixEnd?: string;
+  readonly prefix?: readonly ModelCallSummary[];
 }
 
 export const UNVERIFIED_NATIVE_SOURCE = "native-harness-unverified";
@@ -19,6 +20,9 @@ export interface NativeTurnRead extends NativeTurnUsage {
 export interface NativeTurnMetering {
   readonly turnId: string;
   readonly isTerminal?: () => boolean;
+  readonly terminalEarlierTurns?: (turnIds: readonly string[]) => Promise<ReadonlySet<string>>;
+  /** Null means no operation exists; undefined means its accounting cannot be established. */
+  readonly accountedAttempts?: (turnId: string) => Promise<readonly string[] | null | undefined>;
   read(position?: NativeLedgerPosition): Promise<NativeTurnRead>;
 }
 
@@ -59,9 +63,9 @@ export class NativeInferenceSource implements InferenceSource {
   async #pull(turnId: string, position?: NativeLedgerPosition): Promise<NativeTurnUsage> {
     this.#ready = [];
     this.#current = undefined;
-    const { calls, lastSeenCallId, prefixEnd } = await this.ledger.readTurn(this.channel, turnId, position);
+    const { calls, lastSeenCallId, prefix } = await this.ledger.readTurn(this.channel, turnId, position);
     const { evidence, inferences, unmeasured } = projectNativeUsage(calls, this.sessionKey);
-    this.#current = { calls: evidence, lastSeenCallId, unmeasured, prefixEnd };
+    this.#current = { calls: evidence, lastSeenCallId, unmeasured, prefix };
     this.#ready = inferences;
     return this.#current;
   }

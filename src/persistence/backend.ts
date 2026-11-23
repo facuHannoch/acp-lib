@@ -2,7 +2,7 @@ import type { WorkerPersistence } from "./workers.ts";
 import type { WorkerDeliveryRepository } from "./worker-delivery-contract.ts";
 import type { AgentConversationId, AgentSessionId } from "../agent-ids.ts";
 import type { CancelOutcome, CancelReason } from "../operations/contracts.ts";
-import type { OperationMeteringRecord } from "../metering/record.ts";
+import type { NativeEarlierCallEvidence, OperationMeteringRecord } from "../metering/record.ts";
 import type { AgentSessionMeteringState } from "../metering/state.ts";
 import type { InternalInferenceRepository } from "../internal-inference/persistence/repository.ts";
 import type { ConversationRecoveryCheckpointRepository } from "../checkpointing/contracts.ts";
@@ -700,9 +700,14 @@ export interface MeteringOperationIdentity {
   readonly outcome: OperationMeteringRecord["outcome"];
   readonly adapterId: string;
   readonly completedAt: number;
+  /** Attested measured attempt IDs, retained even when operation detail is pruned. */
+  readonly nativeAccountedAttemptIds?: readonly string[];
+  /** Earlier calls reported outside the operation's totals, retained with its cursor proof. */
+  readonly unaccountedEarlierCalls?: readonly NativeEarlierCallEvidence[];
 }
 
 export interface MeteringPersistence {
+  /** Implementations retain native proof independently of detailed record retention. */
   operationIdentity?(agentConversationId: AgentConversationId, operationId: string): Promise<MeteringOperationIdentity | null>;
   /** Atomically deduplicate the operation and advance its bounded restoration state. */
   commit(input: MeteringCommitInput): Promise<PersistedConversationMeteringState>;

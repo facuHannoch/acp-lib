@@ -105,9 +105,23 @@ export type CostReconciliation =
     };
 
 /** Evidence from the native harness ledger for this operation's wire turn. */
+export interface NativeEarlierCallEvidence {
+  readonly callId: string;
+  readonly turnId: string;
+  readonly attemptIds: readonly string[];
+  readonly attemptCount: number;
+  readonly unmeasured: number;
+  /** Known usage excluded from this operation and from its attributable totals. */
+  readonly tokens?: TokenUsage;
+  readonly reason?: string;
+}
+
 export type NativeOperationUsage = {
   readonly channel: string;
   readonly turnId: string | null;
+  readonly accountedAttemptIds?: readonly string[];
+  readonly unaccountedEarlierCalls?: readonly NativeEarlierCallEvidence[];
+  readonly earlierEvidencePending?: true;
 } & (
   | { readonly status: "observed"; readonly calls: readonly NativeCallEvidence[]; readonly unmeasured: number }
   | { readonly status: "unavailable"; readonly reason: string }

@@ -19,7 +19,6 @@ import {
   MeteringPreflightError,
   type MeteredOperationKind,
   type MeteringEnforcement,
-  type MeteringPricingStatus,
   type MeteringUsageResult,
   type OperationMeteringRecord,
   type OperationOutcome,
@@ -36,8 +35,8 @@ import type {
 import { validatePricingPolicy } from "./pricing.ts";
 import { counterInterpretationForAdapter, type CounterInterpretation } from "./provider.ts";
 import { billingRefusalReason, certificationFor } from "./certification.ts";
-import { measurementProvenance } from "./measurement-provenance.ts";
-import { measureNativeTurn, nativeRouteUnavailable } from "./native/operation.ts";
+import { measurementPricingStatus, measurementProvenance } from "./measurement-provenance.ts";
+import { advanceNativeCursor, measureNativeOperation, nativeRouteUnavailable } from "./native/operation.ts";
 import { UNVERIFIED_NATIVE_SOURCE, type NativeTurnMetering } from "./native/source.ts";
 import type { ProviderInference } from "./opencode/channel.ts";
 
@@ -439,33 +438,15 @@ export class MeteringEngine {
    */
   async close(open: OpenOperation, input: CloseOperationInput): Promise<OperationMeteringRecord> {
     const strict = this.options.enforcement !== "best_effort";
-    const cursor = this.state.nativeCursor;
-    const native = open.nativeChannel === undefined ? undefined : await measureNativeTurn(open.nativeChannel, input.nativeMetering,
-      cursor?.channelKey === open.internalSessionId ? cursor.after : undefined);
+    const nativeRead = measureNativeOperation(open, input, this.state);
+    const native = nativeRead ? await nativeRead : undefined;
     const source = native ? undefined : this.inferenceSource;
     const certified = source ? await this.measureCertified(source, open, input) : null;
     const { usage, attributable, applicability, nextBaseline, ratingFailureReason, ratingComplete } =
       native ? { ...native, nextBaseline: this.baseline } : certified ?? this.measure(open, input);
 
-    let pricingStatus: MeteringPricingStatus;
     const pricingFailureReason = ratingFailureReason ?? open.pricingFailureReason ?? undefined;
-
-    // `pricingSource` describes PROVENANCE and is legitimately null on a multi-model
-    // operation, where each model's source is engraved in its line item instead. Using it
-    // as the "was this priced" signal marked fully-rated multi-model operations
-    // pricing_unavailable and blocked strict mode on correctly priced work.
-    if (usage.status !== "metered") {
-      pricingStatus = "not_attributable";
-    } else if (this.options.pricing === false && !native) {
-      pricingStatus = "not_configured";
-    } else if (ratingComplete && attributable && isTotalComplete(attributable.ratedTotal)) {
-      // Completeness is read off the DATA, not from a flag travelling beside it. The two
-      // could drift, and did: a fully rated multi-model operation was once reported
-      // pricing_unavailable because a separate signal disagreed with the total.
-      pricingStatus = "priced";
-    } else {
-      pricingStatus = "pricing_unavailable";
-    }
+    const pricingStatus = measurementPricingStatus(usage, this.options.pricing === false && !native, ratingComplete, attributable);
 
     // Swept before provenance so the attribution claim and the blocking decision are made
     // from the same facts, not from two separate reads of a moving source.
@@ -483,7 +464,7 @@ export class MeteringEngine {
       attributable,
       applicability,
       baseline: nextBaseline,
-      partial: native?.usage.status === "metered" && native.usage.reason !== undefined,
+      partial: native?.partial,
       ...(foreign.length > 0 || this.lateArrivals.length > 0
         ? {
             unallocated: [
@@ -495,9 +476,7 @@ export class MeteringEngine {
     });
     this.baseline = nextBaseline;
     if (nextBaseline) this.trustedZeroBaseline = false;
-    if (native?.accountedThrough && open.internalSessionId) {
-      this.state = Object.freeze({ ...this.state, nativeCursor: { channelKey: open.internalSessionId, after: native.accountedThrough } });
-    }
+    this.state = advanceNativeCursor(this.state, open.internalSessionId, native?.accountedThrough);
 
     const record: OperationMeteringRecord = Object.freeze({
       operationId: open.operationId,

@@ -244,7 +244,9 @@ test("a slow model-call read through the real host client is cancellable while a
   raw = undefined;
   dropPage = true;
   const short = new NativeUsageLedger(() => (query, signal) => host.modelCalls(query, signal), { timeoutMs: 20, maxPages: 2 });
-  await expect(short.readTurn("alpha", "t1")).rejects.toThrow("read timed out");
+  const timeout = await short.readTurn("alpha", "t1").catch(error => error);
+  expect(timeout).toBeInstanceOf(Error);
+  expect(timeout.message).toContain("read timed out");
   expect(await raw!.catch(error => error)).toMatchObject({ code: "cancelled" });
   expect(await host.modelCalls()).toEqual({ calls: [] });
 }, 12_000);

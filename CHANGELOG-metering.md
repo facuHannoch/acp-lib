@@ -12,6 +12,9 @@ Pre-1.0 changes introduced by the `AgentSession` metering feature
   usage.
 - Agent-owned native metering persists a per-channel cursor with the operation's state and
   replays a failed save under its original operation ID, including when detail retention is off.
+  A later close preserves earlier usage in `nativeUsage.unaccountedEarlierCalls` when no prior
+  operation accounted for it. SQLite schema 21 keeps these observations and the measured attempt
+  IDs on the operation index, independent of detailed retention.
 - Native `billing_required` refuses admission until the harness can confirm the
   `native-harness@1` sealed per-turn accounting capability. The current wire covers turn-owned
   calls. Between-turn usage remains a harness dependency.

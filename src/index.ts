@@ -615,6 +615,7 @@ export type {
   MeteringPricingStatus,
   MeteringProvenance,
   NativeOperationUsage,
+  NativeEarlierCallEvidence,
   MeteringReconciliation,
   CostReconciliation,
   MeteringUsageResult,

@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { contentText } from "../media/content.ts";
 import type { PersistedContent } from "./backend.ts";
 
-export const SQLITE_AGENT_SCHEMA_VERSION = 20;
+export const SQLITE_AGENT_SCHEMA_VERSION = 21;
 
 const WORKERS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS workers (
@@ -373,6 +373,7 @@ CREATE TABLE IF NOT EXISTS metering_records (
   outcome TEXT NOT NULL,
   completed_at INTEGER NOT NULL,
   record_json TEXT,
+  native_metering_proof_json TEXT,
   PRIMARY KEY (agent_conversation_id, operation_id)
 );
 
@@ -687,7 +688,7 @@ export function migrateSqliteAgentSchema(database: Database): void {
         "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
       ).get()?.version ?? 0)
     : 0;
-  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
+  if (existing !== 0 && ![8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, SQLITE_AGENT_SCHEMA_VERSION].includes(existing)) {
     throw new Error(
       `SQLite agent schema ${existing} is incompatible with ${SQLITE_AGENT_SCHEMA_VERSION}; recreate the database`,
     );
@@ -777,6 +778,10 @@ export function migrateSqliteAgentSchema(database: Database): void {
       }
       if (!columns.some(({ name }) => name === "role")) {
         database.exec("ALTER TABLE conversations ADD COLUMN role TEXT CHECK (role = 'worker')");
+      }
+      const meteringColumns = database.query<{ name: string }, []>("PRAGMA table_info(metering_records)").all();
+      if (!meteringColumns.some(({ name }) => name === "native_metering_proof_json")) {
+        database.exec("ALTER TABLE metering_records ADD COLUMN native_metering_proof_json TEXT");
       }
       if (version < SQLITE_AGENT_SCHEMA_VERSION) {
         database.query<unknown, [number, string]>(
