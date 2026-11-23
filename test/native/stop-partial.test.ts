@@ -14,7 +14,10 @@ test("stopping a running native turn returns its cancelled partial text", async 
     void running.catch(entered.reject);
     await entered.promise;
     await conversation.stop();
-    expect(await running).toMatchObject({ status: "cancelled", text: "Partial reply." });
+    expect(await running).toMatchObject({
+      status: "cancelled", text: "Partial reply.", metering: { outcome: "cancelled" },
+      messages: [{ text: "Partial reply." }],
+    });
   } finally {
     rig.release("partial-stop");
     await rig.clean();

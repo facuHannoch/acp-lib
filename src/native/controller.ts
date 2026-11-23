@@ -80,7 +80,7 @@ interface Turn {
   /** Given up locally (`forceStop`, `abandonTurn`, `stop`): later events only release bookkeeping. */
   released: boolean;
   /** Rejects the open `prompt()`, if any. */
-  fail: ((error: Error) => void) | null;
+  fail: ((error: Error, stopping?: boolean) => void) | null;
 }
 
 const sessionTurnId = (harnessId: string) => `native-turn-${harnessId}`;
@@ -148,7 +148,7 @@ export class NativeController implements ConversationController, ChannelPort {
       await this.#host.interrupt(this.#channel, turn.harnessId, "interrupted by the conversation");
     }
     this.#stopped = true;
-    this.#release(new Error("the conversation stopped"), false);
+    this.#release(new Error("the conversation stopped"), false, true);
     this.disposeAttachment();
   }
 
@@ -383,7 +383,6 @@ export class NativeController implements ConversationController, ChannelPort {
     }
   }
 
-  /** The connection was lost. Turns stay pending: the reopen's view gives each its outcome. */
   disconnected(): void { this.#notifyConnection(); }
 
   failed(error: Error): void {
@@ -422,11 +421,9 @@ export class NativeController implements ConversationController, ChannelPort {
     };
   }
 
-  /** Replays the held events into the session's handlers, follows the live ones, and settles at the turn's end. */
   #run(turn: Turn, handlers: PromptHandlers, signal: (output: ProviderOutput) => void): Promise<PromptResult> {
     const sessionId = this.#host.sessionId;
     const messages: ResponseMessage[] = [];
-    /** Text already streamed for a message id: its completion sends only what is missing. */
     const drafts = new Map<string, string>();
     const approvals = new AbortController();
     const approvalWork = new Set<Promise<void>>();
@@ -442,12 +439,17 @@ export class NativeController implements ConversationController, ChannelPort {
         if (approvalWork.size) void Promise.allSettled(approvalWork).then(act);
         else act();
       };
-      turn.fail = (error) => finish(() => reject(error));
+      const joined = () => messages.map(message => message.text).join("\n\n");
+      const cancelled = (terminal: boolean) => finish(() => resolve({
+        text: joined(), messages, stopReason: "cancelled", status: "cancelled", usage: null,
+      }), terminal);
+      turn.fail = (error, stopping) => stopping ? cancelled(false) : finish(() => reject(error));
       const text = (chunk: string, messageId: string, startsMessage: boolean) => {
         handlers.onChunk?.(chunk);
         handlers.onResponseChunk?.({ text: chunk, messageId, startsMessage });
       };
       const complete = (messageId: string, full: string) => {
+        if (settled) return; // A by-reference read can finish after shutdown.
         const draft = drafts.get(messageId);
         // The committed text replaces a draft with the same id. Only the part not streamed is sent
         // on; a draft that diverged (dropped deltas) cannot be retracted, and the result below is
@@ -501,11 +503,10 @@ export class NativeController implements ConversationController, ChannelPort {
             signal({ kind: "update", sessionId });
             return;
           case "turn_ended": {
-            const joined = messages.map((message) => message.text).join("\n\n");
             if (event.outcome === "completed") {
-              finish(() => resolve({ text: joined, messages, stopReason: "end_turn", status: "completed", usage: null }), true);
+              finish(() => resolve({ text: joined(), messages, stopReason: "end_turn", status: "completed", usage: null }), true);
             } else if (event.outcome === "interrupted" && turn.cancelRequested) {
-              finish(() => resolve({ text: joined, messages, stopReason: "cancelled", status: "cancelled", usage: null }), true);
+              cancelled(true);
             } else {
               const reason = event.error ?? event.outcome;
               finish(() => reject(new NativeTurnError(event.outcome as "failed" | "interrupted", `native turn ${turn.harnessId} ${event.outcome}: ${reason}`, event.uncertainCalls)), true);
@@ -530,7 +531,6 @@ export class NativeController implements ConversationController, ChannelPort {
     });
   }
 
-  /** Translate an approval without blocking terminal events behind the answer. */
   async #approve(event: Extract<TurnScoped, { type: "approval_requested" }>, handlers: PromptHandlers, cancelled: AbortSignal, signal: (output: ProviderOutput) => void): Promise<void> {
     const ticket = this.#host.approvalFor(event);
     if (!ticket) return;
@@ -582,12 +582,12 @@ export class NativeController implements ConversationController, ChannelPort {
     this.#release(new Error("forced stop"), true);
   }
 
-  #release(error: Error, interrupt: boolean): void {
+  #release(error: Error, interrupt: boolean, stopping = false): void {
     for (const turn of [...this.#turns.values()]) {
       turn.released = true;
       this.#refuseHeldApprovals(turn);
       turn.held = [];
-      turn.fail?.(error);
+      turn.fail?.(error, stopping);
       if (interrupt && !turn.ended) this.#interrupt(turn);
       if (turn.ended) this.#turns.delete(turn.id);
     }

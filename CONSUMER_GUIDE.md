@@ -1019,8 +1019,10 @@ const result = await conversation.prompt("hello", { onPermissionRequest: (reques
   submitted native input remains with the harness on interrupt. Stop and Agent
   close give withdrawal of submitted, unclaimed inputs a shared one-second
   grace period before interrupting the active turn. A prompt whose input was
-  taken keeps its cancelled result and any partial reply. Submitted inputs
-  that were never taken reject with `NativeInputStoppedError` (includes
+  taken resolves as cancelled. It returns completed messages from the turn
+  and its cancelled metering record. If the first message was still
+  streaming without a completion, the returned text is empty. Submitted
+  inputs that were never taken reject with `NativeInputStoppedError` (includes
   `messageId`). If take wins or the host is unavailable or silent, the input
   may still run and incur model charges.
 - **Channel changes** go through `agent.nativeHarness.changeChannel(conversationId,

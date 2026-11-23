@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { NativeInputStoppedError } from "../../src/index.ts";
+import { spawnHarness } from "../../src/native-harness/test/helpers/stdio.ts";
 import { hold, nativeRig, reply } from "./support.ts";
 
 test("native withdrawal confirms an inbox item, and a taken prompt follows its turn", async () => {
@@ -198,9 +199,20 @@ test("native stop bounds an unanswered withdrawal", async () => {
   }
 }, 30_000);
 
-test("native stop cannot withdraw when take wins", async () => {
+test("native shutdown keeps partial text when the withdrawal answer is the only take evidence", async () => {
   const rig = await nativeRig();
   const release = Promise.withResolvers<void>();
+  let withheldTakes = 0;
+  rig.harness.connect = async () => {
+    const child = spawnHarness({ home: rig.home, effects: rig.effectsPath });
+    const subscribe = child.client.onChannelEvent.bind(child.client);
+    child.client.onChannelEvent = listener => subscribe(event => {
+      // The real withdrawal reply now provides the only association of the steered item.
+      if (event.event.type === "turn_took") withheldTakes++;
+      else listener(event);
+    });
+    return { client: child.client, closed: child.child.exited.then(() => undefined), kill: () => child.close() };
+  };
   try {
     const { conversation, host, result, running, taken } = await heldPair(rig, [hold("active"), hold("taken", "Taken text."), reply("Done.")]);
     const issued = Promise.withResolvers<void>();
@@ -220,6 +232,7 @@ test("native stop cannot withdraw when take wins", async () => {
     release.resolve();
     await stopped;
     expect(outcome).toBe("taken");
+    expect(withheldTakes).toBe(1);
     expect(await result).toMatchObject({ status: "cancelled", text: "Working.\n\nTaken text.", operationId: (await running).operationId });
   } finally {
     release.resolve();

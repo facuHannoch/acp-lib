@@ -209,9 +209,13 @@ backend can be plugged in later. Spec: `.res/somelogs.md/11-11+/library/11-11-SP
 - Native `interrupt({ clearQueue: true })` clears local inputs and leaves submitted
   input to the harness. Stop and close give withdrawal of submitted, unclaimed
   native inputs up to one second before interrupting the active turn. Only submitted
-  inputs that were never taken reject with `NativeInputStoppedError`. A taken
-  prompt keeps its cancelled result and any partial reply from its running turn.
-  Inputs can still incur spend if take has won or the host is unavailable or silent.
+  inputs that were never taken reject with `NativeInputStoppedError`.
+  A stopped turn with a completed reply now returns that partial text and a
+  metering record with outcome `cancelled`. Previously the caller received
+  empty text and no metering record. Stopping during the first streamed message
+  still returns a cancelled result with empty text while that message's
+  completion is outstanding. Inputs can still incur spend if take has won or
+  the host is unavailable or silent.
   `TurnEvent` now includes the controller's `input_withdrawn` confirmation.
 
 ## Native item receipts

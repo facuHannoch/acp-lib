@@ -110,3 +110,30 @@ for (const mode of ["stream", "default final"] as const) {
     }
   }, 30_000);
 }
+
+test("native stop cancels while a streamed message completion is in flight", async () => {
+  const rig = await nativeRig();
+  const completedOnWire = holdFirstCompletion(rig);
+  const text = Promise.withResolvers<void>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const working = hold("stream-stop", "Provisional");
+    rig.script([{ ...working, chunks: [{ afterMs: 0, text: "Provisional" }] }]);
+    rig.harness.text = "stream";
+    const agent = await rig.open();
+    const conversation = await agent.conversations.create();
+    const run = conversation.prompt("stop with completion in flight", { onChunk: () => text.resolve() });
+    const earlyFailure = run.catch(error => { throw error; });
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("the provisional text or stop did not arrive")), 15_000);
+    });
+    await Promise.race([Promise.all([text.promise, completedOnWire.reached]), deadline, earlyFailure]);
+    await Promise.race([conversation.stop(), deadline]);
+    expect(await run).toMatchObject({ status: "cancelled", text: "", messages: [] });
+  } finally {
+    clearTimeout(timer);
+    completedOnWire.release();
+    rig.release("stream-stop");
+    await rig.clean();
+  }
+}, 30_000);
