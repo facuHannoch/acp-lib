@@ -392,3 +392,20 @@ on the same filesystem. Baseline passed 1521/0 (140 files, 158.76 s).
 Candidate passed 1530/0 (141 files, 159.98 s). Each reported 35 snapshots.
 Neither reproduced the earlier audit timeout under these run conditions.
 No test, client or runtime timeout changes were needed.
+
+Clad withheld approval of `d78bee1` because replacing an abandoned ACP
+binding returned conflict until a separate caller staged it. The fix
+stages that predecessor's uncertainty and reserves its replacement in
+one transaction, with the persisted old_settled disposition. The
+reopen and process tests cover one immutable ACP uncertainty notice and
+idempotent replacement without a native flush.
+
+Final result projection uses the final assistant record's stored
+`search_text`, produced by `contentText`. Its projection can include
+image alt text, resource titles or text, and structured JSON. Those
+strings can make the projection nonblank. Delivery-induced connection
+loss with pending work uses the host restart budget. A notice that
+repeatedly crashes the harness can exhaust that budget and fail the
+host while its durable record stays available. A continuation of an
+abandoned assignment conflicts. Core's orchestrator must reserve fresh
+work, using atomic replacement where appropriate.

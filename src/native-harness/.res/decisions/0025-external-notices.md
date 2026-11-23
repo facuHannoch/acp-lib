@@ -354,3 +354,11 @@ reserved binding. Both replaced and old_settled reserve the binding
 directly; neither requires a separate reserve call. An existing binding
 reports the same original disposition without sending again. Conflict
 refuses the send before dispatch.
+
+An unfinished predecessor inherited from a dead owner is settled as
+uncertain within replaceAssignment, together with the new reservation.
+Return old_settled. Preserve the predecessor destination and provenance
+and persist the same disposition for retries. This applies to native and
+ACP destinations independently of any host scan. A successor cannot
+continue an abandoned binding. Orchestration must reserve fresh work
+instead, settling the abandoned predecessor through replacement or recovery.

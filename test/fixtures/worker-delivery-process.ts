@@ -14,7 +14,7 @@ const agent = await Agent.open({
 const repository = agent.persistence.workerDelivery!;
 if (mode === "steer-gap" || mode === "linked-gap" || mode === "replacement-rollback") {
   const binding = { assignmentId, workerConversationId: "worker", workerHandle: "label", messageId: "old-message",
-    destination: { kind: "native" as const, id: "original" }, originatingPolicyNames: ["guest"], contributingPolicyNames: [] };
+    destination: { kind: mode === "steer-gap" ? "acp" as const : "native" as const, id: "original" }, originatingPolicyNames: ["guest"], contributingPolicyNames: [] };
   await repository.reserve(binding);
   await repository.markSteered("worker", ["old-message"]);
   const hold = async () => {

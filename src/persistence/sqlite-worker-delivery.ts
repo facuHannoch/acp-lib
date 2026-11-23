@@ -173,9 +173,9 @@ export class SqliteWorkerDelivery implements WorkerDeliveryRepository {
       if (!old || old.worker_id !== binding.workerConversationId || old.message_id !== expected ||
         this.claimed(binding.workerConversationId, binding.messageId)) return { kind: "conflict" };
       const settled = old.final_record_id !== null || old.staged_json !== null;
-      if (!settled && old.owner_id !== this.ownerId) return { kind: "conflict" };
-      const disposition = settled ? "old_settled" : "replaced";
-      if (!settled) this.writeStage(old, {
+      const abandoned = old.owner_id !== this.ownerId;
+      const disposition = settled || abandoned ? "old_settled" : "replaced";
+      if (!settled) this.writeStage(old, abandoned ? { kind: "uncertain" } : {
         kind: "interrupted", reason: "worker interrupted by steering", possiblePartialEffects: true,
       });
       this.insert(binding, { oldId: id, messageId: expected, disposition });

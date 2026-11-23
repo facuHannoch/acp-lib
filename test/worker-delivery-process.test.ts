@@ -198,6 +198,18 @@ for (const mode of ["steer-gap", "linked-gap", "replacement-rollback"] as const)
         });
         expect(await repo.readBinding("replacement")).toBeUndefined();
         expect(await repo.readStaged(assignmentId)).toBeUndefined();
+        if (mode === "steer-gap") {
+          const old = (await repo.readBinding(assignmentId))!;
+          expect(old.destination.kind).toBe("acp");
+          const successor = { ...old, assignmentId: "fresh", messageId: "fresh-message" };
+          expect(await repo.replaceAssignment(assignmentId, "old-message", successor))
+            .toEqual({ kind: "old_settled", reservation: "reserved" });
+          expect(await repo.replaceAssignment(assignmentId, "old-message", successor))
+            .toEqual({ kind: "old_settled", reservation: "existing" });
+          const pending = await repo.discoverAssignments({ destinationKind: "acp", state: "pending" });
+          expect(pending.assignments).toEqual([{ state: "pending", staged: await repo.readStaged(assignmentId) }]);
+          expect((await repo.discoverAssignments({ destinationKind: "native", state: "pending" })).assignments).toEqual([]);
+        }
         const outcome = await repo.stage(assignmentId);
         expect(outcome).toMatchObject({ outcome: { kind: "uncertain" },
           delivery: { id: `worker-result:${assignmentId}`, source: "label", state: "pending" } });

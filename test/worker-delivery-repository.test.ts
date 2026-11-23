@@ -167,12 +167,19 @@ test("continuations fence old terminal evidence and replacement is atomic and id
     const reopened = backend.workerDelivery!;
     expect((await reopened.discoverAssignments({ destinationKind: "acp", state: "unstaged" })).assignments)
       .toEqual([{ state: "unstaged", binding: await reopened.readBinding("next") }]);
-    expect((await reopened.stage("next"))?.outcome).toEqual({ kind: "uncertain" });
+    expect(await reopened.continueAssignment("next", "m4", "m5")).toBe("conflict");
+    const fresh = { ...next, assignmentId: "after-reopen", messageId: "m5" };
+    expect(await reopened.replaceAssignment("next", "m4", fresh)).toEqual({ kind: "old_settled", reservation: "reserved" });
+    const uncertain = await reopened.readStaged("next");
+    expect(uncertain).toMatchObject({ outcome: { kind: "uncertain" },
+      delivery: { id: "worker-result:next", destination: next.destination, state: "pending" } });
+    expect(await reopened.replaceAssignment("next", "m4", fresh)).toEqual({ kind: "old_settled", reservation: "existing" });
+    expect(await reopened.stage("next")).toEqual(uncertain);
     const first = await reopened.discoverAssignments({ destinationKind: "acp", state: "pending", limit: 1 });
     expect(first.assignments[0]).toMatchObject({ staged: { assignmentId: "new" } });
     expect(first.next).toBeDefined();
-    expect((await reopened.discoverAssignments({ destinationKind: "acp", state: "pending", after: first.next })).assignments[0])
-      .toMatchObject({ staged: { assignmentId: "next" } });
+    expect((await reopened.discoverAssignments({ destinationKind: "acp", state: "pending", after: first.next })).assignments)
+      .toEqual([{ state: "pending", staged: uncertain }]);
     expect(() => reopened.discoverAssignments({ destinationKind: "native", state: "pending", after: first.next })).toThrow();
   } finally {
     await backend.close();
