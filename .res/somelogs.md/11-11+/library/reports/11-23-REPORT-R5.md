@@ -128,3 +128,31 @@ The changelog describes the attributed totals, the unallocated bucket and the pe
 ### Final follow-up gate
 
 All three new tests passed 20/20 each in isolation, and the four focused files passed together (31 tests). Disposable mutations failed when the native unallocated accrual was removed, omitted proof IDs were treated as unaccounted, or the byte cap was removed. The clean RAM-backed archive passed typecheck and the full `bun test ./test` passed **1,649 tests in 155 files in 126.06 s**. All 35 snapshots passed, with the A1 hash unchanged at `fbc6ec2c726524487bb942a0e0cd59948aac40670ae8394c97350f05d675b45d`. Logs are in `/tmp/acp-r5-unallocated.C8MetZ` and `/tmp/acp-r5-proof-mutations.ytKclg`.
+
+## Step 4 and Done
+
+The consumer guide now describes where to read native turn metering, which evidence is retained, and how to interpret unknown usage and pricing. The changelog documents the loss of later-sealed attempt recovery when only truncated proof remains. Records from the intermediate implementation at `4bbefcb` are not backfilled.
+
+| Gate | Runtime commit | Tests / files | Wall time |
+| --- | --- | ---: | ---: |
+| Step 1, ledger source | `47e2750` | 1,624 / 152 | 125.02 s |
+| Step 2a, exact in-turn parity | `f56de5e` | 1,635 / 153 | 118.16 s |
+| Harness client cancellation | `2aff51c` | 367 / 48 (harness) | 21.12 s |
+| Step 2b, durable state and cursor | `0fdb886` | 1,639 / 154 | 125.66 s |
+| Step 2b, retire earlier evidence | `3ef44c2` | 1,646 / 154 | 117.88 s |
+| Step 2b, unallocated accrual and proof bounds | `c271475` | 1,649 / 155 | 126.06 s |
+
+The scripted stdio parity fixture reports 714 tokens across four attempts in three calls, including one retry. The metering operation matches both the paginated harness ledger and the independent script's per-attempt usage and IDs. SQLite schema 21 upgrades schema 20 on open and preserves the metering cursor, pending save and bounded operation proof. The channel-scoped source pulls before the synchronous drain and uses the same close path for dispatched, held backend and recovered terminal turns.
+
+| File | Before R5 | After R5 |
+| --- | ---: | ---: |
+| `src/agent-session.ts` | 4,495 | 4,492 |
+| `src/client.ts` | 1,046 | 1,046 |
+| `src/controller.ts` | 764 | 764 |
+| `src/native/host.ts` | 916 | 909 |
+| `src/native/controller.ts` | 599 | 599 |
+| `src/agent/conversation-manager.ts` | 1,012 | 1,012 |
+| `src/agent.ts` | 563 | 563 |
+| `src/metering/engine.ts` | 1,059 | 1,034 |
+
+R5 closes with best-effort native usage and the capability-specific refusal of native `billing_required`. Billing-grade admission still needs harness evidence for provider and model identity, normalized cache fields, reported cost and currency when available, attempt purpose, and a sealed per-turn manifest that can attest zero. The harness must advertise that capability before admission. Between-turn billing needs a producer for calls without turn ownership and bounded collection during idle. Native per-call usage events and `TurnResult.usage` remain deferred.

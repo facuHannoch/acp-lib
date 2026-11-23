@@ -16,8 +16,10 @@ Pre-1.0 changes introduced by the `AgentSession` metering feature
   A later close records unaccounted usage of an earlier turn in `nativeUsage.unaccountedEarlierCalls`
   and adds its known tokens once to `state.unallocatedUsage`. SQLite schema 21 keeps bounded
   metering proof on the operation index even with detailed retention off. Oversized evidence is
-  summarized with counts and a truncation flag. Attempts without accounting proof stay visible
-  as unmeasured evidence.
+  summarized with counts and a truncation flag. If only truncated proof survives, later-sealed
+  attempts of that turn outside the retained proof cannot be recovered as tokens and show as
+  unmeasured evidence.
+- Records written by the intermediate native metering implementation at `4bbefcb` are not backfilled.
 - Native `billing_required` refuses admission until the harness can confirm the
   `native-harness@1` sealed per-turn accounting capability. The current wire covers turn-owned
   calls. Between-turn usage remains a harness dependency.

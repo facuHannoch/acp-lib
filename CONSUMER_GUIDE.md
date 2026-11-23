@@ -1012,6 +1012,37 @@ The default acp-client transcript remains available independently. Use
 totals, missing field counts, and completeness. Usage is an explicit scan
 of the model-call pages.
 
+### Native turn metering
+
+For an Agent-owned native conversation, enable best-effort metering to get usage at
+turn close. The source is scoped to `<Agent id>/<channel id>`. It reads bounded
+pages from the harness's model-call ledger and matches the exact channel and
+wire turn ID. Read `result.metering` or the persisted metering operation.
+Native per-call usage events and `TurnResult.usage` are deferred.
+
+`nativeUsage` carries either observed call and attempt IDs, outcomes, and usage
+fields, or an unavailable reason. Missing or still-running attempts stay
+unmeasured. A partially measured turn includes a reason and partial
+attribution. An empty scan, an unavailable host, or an undispatched turn gives
+unavailable usage. A prompt cancelled while still queued may have no metering
+record. Treat unknown usage and money as unknown. The current wire does not
+identify the provider or model, so measured native usage has unknown model
+identity and `pricing_unavailable`.
+
+SQLite upgrades schema 20 to 21 on open. It stores the per-channel cursor and
+bounded proof with the operation index even when detailed record retention is
+off. A failed final save can replay under the same operation ID. The turn's
+usage and `state.totals` contain attributed usage. When a later close finds
+unaccounted usage of an earlier turn, it records the evidence in
+`nativeUsage.unaccountedEarlierCalls` and accrues measured tokens once in
+`state.unallocatedUsage`. Together these buckets cover known spend and may
+still be a lower bound. With only truncated proof available, later-sealed
+attempts outside the retained proof remain visible as unmeasured evidence.
+
+Native `billing_required` refuses admission until the harness can attest
+`native-harness@1` sealed per-turn accounting. Between-turn billing needs
+its own harness evidence and bounded collection path.
+
 ### Offline native rehearsal
 
 From the repository root, run the checked-in multi-minute fixture:
