@@ -276,3 +276,7 @@ edit to `src/agent-session.ts`.
   and one ACP `allow_once` response; the harness recorded one notice from `w1` to Bob. Cleanup verified (provider delete
   true, both native conversations tombstoned, both temp trees removed; the supplied Codex home untouched). No third
   attempt. With clad2a for review of the live-run files.
+- Live-run files reviewed by clad2a (`60be735`): no blockers; the hardening, the redacted trace and the key grep checked.
+  **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O6-live.md)): 1,590 in 149 files, nothing under `src/`
+  changed. `pre-alpha` rebuilt with them. Reported to the owner: `.mcp.json` is tracked (since `2b8ff46`) with a bearer
+  token for the local agents hub.
