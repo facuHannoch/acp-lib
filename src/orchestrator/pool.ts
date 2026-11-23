@@ -35,19 +35,24 @@ export class WorkerPool {
     return slot?.conversation.state.phase === "stopped" ? undefined : slot;
   }
 
+  async release(handle: string): Promise<void> {
+    const slot = this.slots.get(handle);
+    if (!slot) return;
+    await slot.conversation.stop();
+    this.slots.delete(handle);
+  }
+
   async makeRoom(onEvicted: (row: WorkerRow) => void): Promise<boolean> {
     for (const [handle, slot] of this.slots) {
       if (slot.conversation.state.phase !== "stopped") continue;
-      await slot.conversation.stop();
-      this.slots.delete(handle);
+      await this.release(handle);
     }
     if (this.slots.size < this.limit) return true;
     const oldest = [...this.slots.entries()].filter(([, slot]) => !this.busy(slot))
       .sort(([, left], [, right]) => left.touched - right.touched)[0];
     if (!oldest) return false;
     const [handle, slot] = oldest;
-    await slot.conversation.stop();
-    this.slots.delete(handle);
+    await this.release(handle);
     onEvicted(slot.row);
     return true;
   }

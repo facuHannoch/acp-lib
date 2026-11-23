@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { expect, spyOn, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent, createAgentConversationId, type AgentConversation, type WorkerEvent } from "../../src/index.ts";
@@ -9,6 +9,7 @@ const actor = { kind: "consumer" } as const;
 async function rig(limit: number, holds = true) {
   const directory = await mkdtemp(join(tmpdir(), "acp-worker-pool-"));
   const release = join(directory, "release");
+  const providerState = join(directory, "provider-sessions.json");
   const fixture = resolve(import.meta.dir, holds ? "../fixtures/lifecycle-agent.ts" : "../fixtures/echo-prompt-agent.ts");
   const agent = await Agent.open({
     persistence: { kind: "sqlite", path: join(directory, "agent.sqlite") },
@@ -16,9 +17,9 @@ async function rig(limit: number, holds = true) {
     capture: { message: "content" },
     checkpointing: { enabled: false },
     orchestrator: { workers: { limit } },
-    conversationDefaults: { env: { LIFECYCLE_TOOL_GATE_FILE: release, LIFECYCLE_STATE: join(directory, "provider-sessions.json") } },
+    conversationDefaults: { env: { LIFECYCLE_TOOL_GATE_FILE: release, LIFECYCLE_STATE: providerState } },
   });
-  return { agent, pool: agent.orchestrator!, release: () => writeFile(release, ""), async close() {
+  return { agent, pool: agent.orchestrator!, providerState, release: () => writeFile(release, ""), async close() {
     try { await agent.close(); }
     finally { await rm(directory, { recursive: true, force: true }); }
   } };
@@ -93,6 +94,7 @@ test("idle eviction is least-recently used and send reloads the same conversatio
     expect(events).toContainEqual(expect.objectContaining({ kind: "worker_replied", handle: "w2" }));
     await agent.conversations.delete(recent.conversationId);
     await expect(pool.send(actor, "w1", { text: "gone" })).rejects.toThrow("worker conversation is unavailable");
+    expect((await agent.persistence.workers!.get("w1"))?.droppedAt).toBeDefined();
     expect(await pool.check(actor, "w2")).toMatchObject({ state: "idle" });
     expect(await pool.check(actor, "w3")).toMatchObject({ state: "idle" });
   } finally {
@@ -193,3 +195,49 @@ test("conversation policy enforces use, scope, redirect, other-giver stop/drop a
     await close();
   }
 }, 20_000);
+
+for (const providerSupportsDelete of [true, false]) {
+  test(`drop reports provider cleanup when deletion is ${providerSupportsDelete ? "supported" : "unsupported"}`, async () => {
+    const { agent, pool, close, providerState } = await rig(1, providerSupportsDelete);
+    const finished = Promise.withResolvers<void>();
+    agent.events.subscribeWorkers(({ event }) => { if (event.kind === "worker_idle") finished.resolve(); });
+    try {
+      await pool.open(actor, { text: "register a provider session" });
+      await finished.promise;
+      const worker = await agent.workers!.check("w1");
+      const thread = (await agent.persistence.providerSessions.active(worker.conversationId))!.internalSessionId;
+      if (providerSupportsDelete) expect(JSON.parse(await readFile(providerState, "utf8"))).toHaveProperty(thread);
+      expect(await agent.workers!.delete("w1")).toMatchObject({
+        providerDeleted: providerSupportsDelete ? true : "unsupported",
+      });
+      if (providerSupportsDelete) expect(JSON.parse(await readFile(providerState, "utf8"))).not.toHaveProperty(thread);
+      expect((await agent.conversations.get(worker.conversationId))?.deletedAt).toBeDefined();
+      expect((await agent.persistence.workers!.get("w1"))?.droppedAt).toBeDefined();
+    } finally { await close(); }
+  }, 20_000);
+}
+
+for (const op of ["check", "list"] as const) {
+  test(`worker ${op} reconciles a directly deleted or missing conversation once`, async () => {
+    const { agent, pool, close } = await rig(1, false);
+    const dropped: string[] = [];
+    agent.events.subscribeWorkers(({ event }) => { if (event.kind === "worker_dropped") dropped.push(event.handle); });
+    try {
+      await pool.open(actor, { text: "work" });
+      const worker = await agent.workers!.check("w1");
+      if (op === "check") {
+        await agent.conversations.delete(worker.conversationId);
+        await expect(agent.workers!.check("w1")).rejects.toThrow("worker conversation is unavailable");
+      } else {
+        const storeGet = agent.conversations.get.bind(agent.conversations);
+        const spy = spyOn(agent.conversations, "get").mockImplementation(id =>
+          id === worker.conversationId ? Promise.resolve(null) : storeGet(id));
+        try { expect(await agent.workers!.list()).toEqual([]); }
+        finally { spy.mockRestore(); }
+      }
+      expect(await agent.workers!.list()).toEqual([]);
+      expect((await agent.persistence.workers!.get("w1"))?.droppedAt).toBeDefined();
+      expect(dropped).toEqual(["w1"]);
+    } finally { await close(); }
+  }, 20_000);
+}

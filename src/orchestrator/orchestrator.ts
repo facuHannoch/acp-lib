@@ -5,7 +5,7 @@ import { WorkerPolicyError } from "../errors.ts";
 import { canSeeWorker, checkWorkerOpenLimit, requireWorkerRedirect, requireWorkerUse } from "./policy.ts";
 import type { AssignmentPlan, WorkerAssignmentPort } from "./assignments.ts";
 import { planAssignment } from "./busy.ts";
-import type { AgentConversationManager } from "../agent/config.ts";
+import type { AgentConversationManager, DeleteConversationResult } from "../agent/config.ts";
 import { workerTerminalFailure } from "../persistence/worker-terminal-reason.ts";
 import type { Logger } from "../logger.ts";
 import type { WorkerPersistence, WorkerRow } from "../persistence/workers.ts";
@@ -38,7 +38,7 @@ export class Orchestrator {
       requireWorkerUse(actor);
       this.assertInput(input);
       const rows = await this.workers.list();
-      checkWorkerOpenLimit(actor, rows);
+      checkWorkerOpenLimit(actor, await this.activeRows(rows));
       if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries(actor) };
       const ordinal = rows.reduce((highest, row) => /^w[1-9][0-9]*$/.test(row.handle)
         ? Math.max(highest, Number(row.handle.slice(1))) : highest, 0) + 1;
@@ -79,8 +79,6 @@ export class Orchestrator {
       if (!plan || (slot && this.pool.busy(slot) && !running)) return { status: "busy", worker: this.pool.summary(row) };
       if (running && running.destination !== plan.assignment.destination) requireWorkerRedirect(actor);
       if (!slot) {
-        const summary = await this.conversations.get(row.conversationId);
-        if (!summary || summary.deletedAt) throw new Error(`worker conversation is unavailable: ${handle}`);
         if (!await this.pool.makeRoom(this.evicted)) return { status: "no_worker_free", workers: await this.summaries(actor) };
         const { conversation } = await this.conversations.open(row.conversationId, this.startOptions());
         slot = this.pool.attach(row, conversation);
@@ -124,18 +122,20 @@ export class Orchestrator {
     });
   }
 
-  drop(actor: WorkerActor, handle: string): Promise<void> {
+  drop(actor: WorkerActor, handle: string): Promise<DeleteConversationResult> {
     return this.run(async () => {
       requireWorkerRedirect(actor);
       const row = await this.requireWorker(actor, handle);
       await this.interrupt(handle);
+      let result: DeleteConversationResult;
       try {
-        await this.conversations.delete(row.conversationId);
+        result = await this.conversations.delete(row.conversationId, { providerSession: "best-effort" });
       } catch (error) {
         if ((await this.conversations.get(row.conversationId))?.deletedAt) await this.markDropped(row);
         throw error;
       }
       await this.markDropped(row);
+      return result;
     });
   }
 
@@ -150,8 +150,12 @@ export class Orchestrator {
   }
 
   private async markDropped(row: WorkerRow): Promise<void> {
-    if (!await this.workers.drop(row.handle, new Date().toISOString())) return;
-    this.emit({ ...this.identity(row), kind: "worker_dropped" });
+    const dropped = await this.workers.drop(row.handle, new Date().toISOString());
+    try {
+      await this.pool.release(row.handle);
+    } finally {
+      if (dropped) this.emit({ ...this.identity(row), kind: "worker_dropped" });
+    }
   }
 
   private async interrupt(handle: string): Promise<boolean> {
@@ -188,12 +192,28 @@ export class Orchestrator {
     if (actor.kind === "conversation" && actor.policy.scope === "none" &&
       (!row || !canSeeWorker(actor, row, this.pool.get(handle)?.work?.assignment))) throw new WorkerPolicyError("scope");
     if (!row || row.droppedAt) throw new Error(`unknown active worker: ${handle}`);
+    if (!await this.reconcileWorker(row)) throw new Error(`worker conversation is unavailable: ${handle}`);
     return row;
   }
 
   private async summaries(actor: WorkerActor): Promise<readonly WorkerSummary[]> {
-    return (await this.workers.list()).filter(row => !row.droppedAt && canSeeWorker(actor, row, this.pool.get(row.handle)?.work?.assignment))
+    return (await this.activeRows(await this.workers.list())).filter(row => canSeeWorker(actor, row, this.pool.get(row.handle)?.work?.assignment))
       .map(row => this.pool.summary(row));
+  }
+
+  private async activeRows(rows: readonly WorkerRow[]): Promise<WorkerRow[]> {
+    const active: WorkerRow[] = [];
+    for (const row of rows) {
+      if (!row.droppedAt && await this.reconcileWorker(row)) active.push(row);
+    }
+    return active;
+  }
+
+  private async reconcileWorker(row: WorkerRow): Promise<boolean> {
+    const summary = await this.conversations.get(row.conversationId);
+    if (summary && !summary.deletedAt) return true;
+    await this.markDropped(row);
+    return false;
   }
 
   private dispatch(slot: ReturnType<WorkerPool["attach"]>, actor: WorkerActor, text: string, plan: AssignmentPlan): void {
