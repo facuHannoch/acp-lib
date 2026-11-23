@@ -327,6 +327,13 @@ w1 wants to run `bun test` → ACP request_permission → acp-client
   (decided in integration R3: an ask nobody can answer is never loosened to the default). No routing to another conversation; a headless
   conversation gets worker approvals through rules instead (the policy allows the specific commands). The levels are
   allow, deny and ask me; "ask the agent" (the agent approving its own worker) is not in v1 (Limitations).
+- **After a redirect, an ask already open stays with the previous giver** until it resolves (a steer waits for a
+  boundary and a permission isn't one); it is bounded by `permissionTimeoutMs`. New asks go to the new giver.
+- **A consumer-opened worker has no giving conversation:** its requests are decided by the orchestrator's configured
+  defaults (the same as an empty list of policy names); an ask nobody can answer is refused.
+- **`isOwner` comes from the harness names:** `orchestrator.ownerPolicies` (default `["owner"]`) names the owner
+  policies; a call is the owner's only if every one of its `policyNames` is one of them. O6 sets it; it controls
+  whether `allow_always` is offered.
 - **Forwarded requests use the conversation's own events:** `permission_requested` on the giving conversation, marked
   with the worker, answered with its `answerPermission`, closed by `permission_resolved`. No separate worker
   permission events.

@@ -143,3 +143,10 @@ edit to `src/agent-session.ts`.
   after a `replaced` result; an optional third host constructor repository argument is wired in `src/agent.ts`.
 - The user merged `pre-alpha` (`3c28130`, O1 and schema 19) into alpha. Cod1a's schema 20 now builds on alpha; the
   orchestrator and reviews branches continue from it.
+- O2 follow-up `efb3aae` reviewed by clad2a (`723daeb`, all notes closed). O4 in from cod2a, HEAD `fc6a922`
+  ([report](reports/11-22-REPORT-O4.md)); review from clad2a, `ea79693`: meets the brief, no blocking findings
+  (the registry is a WeakMap; `forwardPermission` isn't exported; zero-or-two hunt gave one pair each path).
+  **O2 and O4 gate passed** ([gate](../.plan-execution/status/11-23-GATE-O2-O4.md)): 1,538 in 143 files. Spec: the
+  ask after a redirect stays with the previous giver; consumer-opened workers use the configured defaults;
+  `ownerPolicies` sets `isOwner`. Cod1a's runtime (`f580069`, crash follow-up `2fb1bcf`) is awaiting its serial
+  full runs and Clad1a; O3a waits for it. O5a (no dependency on it) goes to cod2a next.
