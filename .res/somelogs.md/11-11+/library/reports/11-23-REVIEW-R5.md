@@ -110,3 +110,47 @@ One close seam, `engine.close` → `measureNativeTurn`, is used by the live turn
 4. **`HarnessClient.request` was changed** (`src/native-harness/src/interfaces/client.ts`): an optional signal and a restructured waiter/timer. It is additive and the 360 harness tests pass, but it is a harness-owned file: have haurness-l confirm it.
 
 **Process:** per my rule I ran every new test 20 times in isolation plus both files whole 20 times, the touched harness suite and the full suite.
+
+# Part 3 — R5 step 2b (durable cursor and replay) and the HarnessClient tests
+
+This covers `28da8d5..9fb2b2e` on `integration-r456`: `2aff51c` (HarnessClient tests and doc), `0fdb886` (2b) and `9fb2b2e` (report). I used a clean `git archive 9fb2b2e` (`/tmp/clad2a-r5c`, `TMPDIR` on `/dev/shm`) and didn't check out the branch. Probes and mutations ran only there.
+
+**Verdict: 2b meets its stated gate, and the replay path is sound. One important finding about what the cursor design cannot recover (it silently drops a paid turn's usage when the database is failing during staging), plus a scan-cost consequence of a gap and four mutations the tests miss.**
+
+- **Typecheck clean. Full suite: 1,639 pass, 0 fail, 154 files**, 35 snapshots (none changed; A1 unchanged). The harness suites: **367 pass, 0 fail, 48 files**. No leftover process.
+- **Each of the four new tests: 20 / 20 in isolation** (each `-t` matched one test), the durability file **20 / 20** whole-file, and the harness client-abort file **20 / 20**.
+- **`2aff51c` glance:** seven fake-transport tests (pre-abort sends nothing, a late response after abort, a response or a timeout before abort removes the listener once, transport close, a throwing send, and 64 requests sharing one signal), all checking the pending map is empty and listeners are released once; the doc says `cancelled` ends the caller's wait and the harness may already have applied the request. Reasonable and sufficient; Clad1a owns the confirmation.
+- **Size gates** (measured): `agent-session.ts` **4,495**, `client.ts` 1,046, `controller.ts` 764, `native/host.ts` 909, `native/controller.ts` 599, `agent/conversation-manager.ts` 1,012, `agent.ts` 563, `metering/engine.ts` **1,059**. Two files **grew past the step 2a numbers** you set as ceilings: `agent-session.ts` +2 (4,493 → 4,495) and `engine.ts` +8 (1,051 → 1,059). Both are back at the original `cb6f959` ceilings, but "they may only shrink" is not met; either extract a few lines or restate the ceilings. New modules: `durability.ts` 86, `requirements.ts` 10; `ledger.ts` 91, `operation.ts` 68, `source.ts` 81.
+
+## Against your checklist
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | **The cursor is derived from persisted evidence; no full rescan at a close** | **Yes.** `nativeCursor { channelKey, after }` lives in the persisted metering state and is restored before the next scan; it only advances over a wire-confirmed terminal turn whose calls are all sealed and measured (`unmeasured === 0 && terminal && prefixEnd`). The long-history test seeds 320 interleaved calls and, after a restart, one read with `after: "322"`. **My probes:** with alpha and beta interleaved, a restart and a gap on alpha, beta's cursor advanced to its own last call (`6`) and its next close read only `after: "4"`, while alpha's close read `after: "1"` (the gap); beta's total was exactly 606 (script) and alpha 35: independent per channel. A deleted/pruned record: with record detail off, a reopened conversation still knows `native-turn-1` through the SQLite operation index and does not re-accrue it |
+| 2 | **A failed save: write-ahead, reopen commits once, no launch, no double count** | **Yes for a commit failure, with one caveat (finding 1).** With the final commit failing, a write-ahead record is left; the state stays at its previous values; reopening commits it **once without a harness launch** (`launches: 0`), and the next turn totals **110 → 330 in two operations**. My probe: fail the commit, close, drop the failure, reopen **twice**: count 1, tokens 110, no pending and 0 launches both times, exactly one metering row. The live path and the replay path cannot both accrue: every native close first restores persisted state into the engine (`adoptAccounting`) and returns an already committed record, and `record()` returns without committing when the operation already exists |
+| 3 | **Partial totals carry a reason and partial coverage; "committed incomplete history is preserved as recorded"** | **Yes.** `usage.reason` ("some native model-call attempts could not be measured" or "the native turn's terminal outcome was not confirmed") and an accrual flag that marks the aggregate coverage `partial`. Preserved as recorded is true: the pull is turn-scoped, so an earlier turn's closed record is never rewritten. The flip side is finding 1 and 2 |
+| 4 | **Native strict refusal and deferred between-turn accounting** | **Yes.** `billing_required` for a native adapter throws `MeteringPreflightError` naming `native-harness@1` and the sealed per-turn accounting capability, from the manager before a conversation is created and from the engine constructor; the test checks that the conversation list stays empty and the harness was never launched. There is no sweep surface and no `drainForeign` on the native source; the changelog says between-turn usage is a harness dependency |
+| 5 | **Earlier notes** | Undispatched turns documented as unavailable (and a queued-cancelled prompt as possibly having no record) in `CHANGELOG-metering.md`; detail pruned handled (above) |
+
+## Mutations (each reverted; the three native metering test files, 21 tests)
+
+| Mutation | Result |
+| --- | --- |
+| the cursor advances over an unmeasured attempt | fails |
+| gap not blocking the cursor | fails |
+| no write-ahead staging | fails |
+| no restore at open | fails |
+| partial flag dropped from the accrual | fails |
+| **the cursor advances without a confirmed terminal turn** | **passes** |
+| **no de-duplication in `record()`** | **passes** |
+| **no recovery at close (`recoverNativeClose` skipped)** | **passes** |
+| **the cursor ignores its `channelKey`** | **passes** |
+
+The last four are untested behaviours; add a test for each (a turn without a terminal outcome must not advance the cursor; a second `record()` for a committed operation must not commit again; a close must restore a pending record before accruing; a cursor saved for one channel key must not be used for another).
+
+## Findings
+
+1. **Important: a paid turn's usage is silently lost when the database fails during staging, and nothing marks the loss.** The write-ahead record protects only a failure of the *final commit*. In my probe I made both the staging write and the commit fail for turn 1 (then restored the database and either kept the process or reopened): the next turn completed and the persisted state was **operation count 1 and 220 tokens instead of 330**, no pending record, no cursor. The turn's calls are still in the harness ledger, but later closes read only their own turn id, so the earlier rows are never accounted, and the next record carries no flag that earlier calls exist on the channel. (It is the same failure that a late-sealed attempt of an earlier partial turn would hit.) Fix options: at a close, count sealed same-channel calls of earlier turns found while scanning from the cursor and either account them as unallocated or at least record `unaccountedEarlierCalls` in that operation's `nativeUsage`, so the loss is visible; and say in the report that write-ahead covers commit failures only.
+2. **After one gap the cursor never advances again, so every later close rescans from the gap.** My probe: a partial turn, then eight normal turns: every close read `after: 1`, and the persisted cursor stayed `1` throughout (coverage `partial`). That is by design ("keeps the cursor behind the gap"), but it makes the cost of every later close grow with history since the gap, and the reader's 1,000-page budget (100,000 calls) would then make closes fail as unavailable. It also means the partial turn's later-sealed attempts are never counted. Decide how a gap is retired (resolved when its turn is re-read as sealed, or acknowledged explicitly) before 3a.
+3. A pruned replay hands the live caller a synthesized "unavailable, detail was pruned" record when the operation was already committed; correct, but only reachable through a crash replay, so it is worth one line in the changelog.
+4. The four test gaps above.
