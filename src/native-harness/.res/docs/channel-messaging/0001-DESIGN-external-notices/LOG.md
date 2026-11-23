@@ -383,3 +383,12 @@ interrupt). The audit and both worker files passed together 24/0 in
 the focused rerun. No source timeout settings were changed, and no
 full root pass is claimed. Independent review is requested with this
 verification caveat.
+
+The root gate subsequently passed on a clean archive of
+`d78bee1698cf619ccfaa48620a64556d30d3fbe9`. The O1 baseline
+`3c28130` and candidate ran back to back with the same installed
+dependencies, `bun test ./test` and separate RAM-backed temp directories
+on the same filesystem. Baseline passed 1521/0 (140 files, 158.76 s).
+Candidate passed 1530/0 (141 files, 159.98 s). Each reported 35 snapshots.
+Neither reproduced the earlier audit timeout under these run conditions.
+No test, client or runtime timeout changes were needed.
