@@ -231,3 +231,7 @@ edit to `src/agent-session.ts`.
   that order. The delegating agent is the native harness on a cheap OpenRouter model (`OPENROUTER_API_KEY` is in the
   environment; never printed or saved). cod2a: the retry and delivery-state follow-up, then the live run (plan to the
   coordinator first, hard caps, a smoke script that needs an explicit env var), then R4.
+- The retry and delivery-state follow-up reviewed by clad2a (`819ff12`): no blocking findings; the Acceptance
+  read-through done. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-O3-retry.md)): 1,589 in 149 files.
+  Spec: Acceptance, Events, Configuration and Limitations updated to what is built. Follow-up for cod2a: commit the
+  real-SIGKILL test for a busy worker with an ACP destination.
