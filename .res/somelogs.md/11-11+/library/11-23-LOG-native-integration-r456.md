@@ -106,3 +106,15 @@ different tests time out under machine load). R4 is an outline: its step 0 groun
   haurness-l. **Gate passed** ([gate](../.plan-execution/status/11-23-GATE-R5-2a.md)). `pre-alpha` built with R5 steps 1 and
   2a; the exact SHA goes to haurness-l for confirmation before the user merges. R5 step 2b (`0fdb886`, report `9fb2b2e`;
   coordinator run: 1,639 in 154 files green, sizes unchanged) is with clad2a.
+- haurness-l confirmed the exact `pre-alpha` (`b77c3d7`: R5 steps 1 and 2a and the harness client tests and doc; alpha
+  `173e4e7` fast-forwards; source and tests identical to the tested `2aff51c`); it waits for the user's merge.
+- R5 step 2b (`0fdb886`, report `9fb2b2e`) reviewed by clad2a (`38c5f33`): meets its stated gate (1,639 in 154 files; four
+  new tests 20 of 20; the cursor from persisted evidence with interleaved channels, a restart and a gap; a failed final
+  commit left a write-ahead record committed once, with no double count), **but not approved**: (1) a paid turn's usage
+  can be lost silently: with both the staging write and the commit failing for turn 1, a later prompt gave 220 tokens
+  instead of 330 with nothing flagging it (later closes read only their own turn id); (2) after one gap the cursor never
+  advances; (3) four mutations survive (the cursor advancing without a terminal turn, no dedupe in `record()`, no recovery
+  at close, the cursor ignoring its `channelKey`); (4) `agent-session.ts` 4,495 and `engine.ts` 1,059 grew past the 2a
+  numbers. Decision (coordinator): a row behind the cursor is retired only once its outcome is durably recorded (accounted,
+  or recorded as `unaccountedEarlierCalls`, or recorded as unmeasured for a terminal turn or a closed channel), never on a
+  guess. Follow-up to cod2a; step 4 and R6 held.
